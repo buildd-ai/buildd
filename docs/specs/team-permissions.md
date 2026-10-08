@@ -150,17 +150,36 @@ this spec's `last_verified` date.
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/teams/[id]/members/route.ts:92` | add a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/route.ts:108` | add a member as owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:34` | change a member's role | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:113` | remove a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:150` | remove an owner | owner (admins refused) | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:27` | list invitations | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:71` | invite (as admin or member) | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:86` | add a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:101` | add a member as owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:106` | add a member as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:49` | change a role between member and admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:74` | change a role to or from owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:142` | remove a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:160` | remove an owner | owner (admins refused) | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/ownership/route.ts:36` | transfer ownership (target → owner, caller → admin) | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:29` | list invitations | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:74` | invite | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:91` | invite as admin | owner, admin | — | `assign_team_roles` |
 | `apps/web/src/app/api/teams/[id]/invitations/[invitationId]/route.ts:33` | revoke an invitation | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/app/(protected)/teams/[id]/page.tsx:67` | UI: show member management | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:297` | UI: role picker | owner | — | `assign_team_owner` |
-| `apps/web/src/app/app/(protected)/settings/team/page.tsx:62` | UI: manage members | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/app/(protected)/teams/[id]/page.tsx:70` | UI: show member management | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:66` | UI: edit team button | owner, admin | — | `manage_team_settings` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:68` | UI: owner in the role picker, transfer ownership, remove an owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:69` | UI: role picker (member/admin, not on owner rows), invite as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/app/(protected)/settings/team/page.tsx:74` | UI: manage members | owner, admin | — | `manage_team_members` |
+
+Rules that need no permission, enforced in the same routes:
+
+- Any member MAY leave (remove themselves) without `manage_team_members`,
+  except from a personal team and except the last owner.
+- No change MAY demote or remove the team's last owner, whoever asks; the
+  check counts current owners, not whether the caller is the target.
+- Ownership transfer writes promote-then-demote in one `db.batch`, and the
+  demote only matches once the target is an owner, so a team never has zero
+  owners.
+- An invitation MAY be accepted only by a signed-in user whose email equals the
+  invitation's (trimmed, case-insensitive); anyone else gets a 403 naming the
+  masked address it was sent to.
 
 ### Team settings
 
@@ -168,7 +187,7 @@ this spec's `last_verified` date.
 |---|---|---|---|---|
 | `apps/web/src/app/api/teams/[id]/route.ts:159` | PATCH team name, slug, AI features, chat budgets, key policy, timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/api/teams/[id]/route.ts:307` | DELETE team | owner | — | `delete_team` |
-| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:253` | UI: delete team button | owner | — | `delete_team` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:67` | UI: delete team button | owner | — | `delete_team` |
 | `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx:62` | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/app/(protected)/settings/_lib/settings-context.ts:53` | UI: settings admin sections | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-timezone.ts:99` | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |

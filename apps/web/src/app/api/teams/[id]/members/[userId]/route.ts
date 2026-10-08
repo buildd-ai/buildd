@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { teamMembers } from '@buildd/core/db/schema';
+import { teamMembers, teams } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas, isTeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 
+async function ownerCount(teamId: string): Promise<number> {
+  const owners = await db.query.teamMembers.findMany({
+    where: and(
+      eq(teamMembers.teamId, teamId),
+      eq(teamMembers.role, 'owner')
+    ),
+    columns: { userId: true },
+  });
+  return owners.length;
+}
+
+/**
+ * Change a member's role. member ↔ admin takes `assign_team_roles`; any change
+ * to or from owner takes `assign_team_owner`. Demoting an owner is refused
+ * while they are the team's last owner, whoever asks.
+ */
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; userId: string }> }
@@ -23,14 +39,21 @@ export async function PATCH(
       ),
     });
 
-    if (!currentMembership || !roleHas(currentMembership.role, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
-      return NextResponse.json({ error: 'Only owners can change roles' }, { status: 403 });
+    if (!currentMembership) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Owner holds every permission, so assign_team_roles is the floor for any
+    // role change: refuse before revealing whether the target exists.
+    const overrides = await getTeamPermissionOverrides(teamId);
+    if (!roleHas(currentMembership.role, 'assign_team_roles', overrides)) {
+      return NextResponse.json({ error: 'Changing roles needs the assign_team_roles permission' }, { status: 403 });
     }
 
     const body = await req.json();
     const { role } = body;
 
-    if (!role || !['owner', 'admin', 'member'].includes(role)) {
+    if (!isTeamRole(role)) {
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
@@ -46,24 +69,20 @@ export async function PATCH(
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
 
-    // If changing own role away from owner, check if last owner
-    if (targetUserId === user.id && targetMembership.role === 'owner' && role !== 'owner') {
-      const owners = await db.query.teamMembers.findMany({
-        where: and(
-          eq(teamMembers.teamId, teamId),
-          eq(teamMembers.role, 'owner')
-        ),
-        columns: { userId: true },
-      });
+    if (
+      (targetMembership.role === 'owner' || role === 'owner') &&
+      !roleHas(currentMembership.role, 'assign_team_owner', null /* locked */)
+    ) {
+      return NextResponse.json({ error: "Changing a role to or from owner needs the assign_team_owner permission" }, { status: 403 });
+    }
 
-      if (owners.length <= 1) {
-        return NextResponse.json({ error: 'Cannot change role - you are the last owner' }, { status: 400 });
-      }
+    if (targetMembership.role === 'owner' && role !== 'owner' && (await ownerCount(teamId)) <= 1) {
+      return NextResponse.json({ error: 'Cannot demote the last owner. Make someone else an owner first.' }, { status: 400 });
     }
 
     await db
       .update(teamMembers)
-      .set({ role: role as TeamRole })
+      .set({ role })
       .where(
         and(
           eq(teamMembers.teamId, teamId),
@@ -78,6 +97,12 @@ export async function PATCH(
   }
 }
 
+/**
+ * Remove a member, or leave. Removing someone else takes
+ * `manage_team_members` (and `assign_team_owner` for an owner). Removing
+ * yourself is leaving: any member may, except the last owner and the owner of
+ * a personal team.
+ */
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; userId: string }> }
@@ -100,46 +125,45 @@ export async function DELETE(
       return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     }
 
-    const currentRole = currentMembership.role as TeamRole;
-    if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
+    const currentRole = currentMembership.role;
 
-    // Verify target is a member
-    const targetMembership = await db.query.teamMembers.findFirst({
-      where: and(
-        eq(teamMembers.teamId, teamId),
-        eq(teamMembers.userId, targetUserId)
-      ),
-    });
+    if (targetUserId === user.id) {
+      const team = await db.query.teams.findFirst({
+        where: eq(teams.id, teamId),
+        columns: { slug: true },
+      });
+      if (team?.slug.startsWith('personal-')) {
+        return NextResponse.json({ error: 'You cannot leave your personal team' }, { status: 400 });
+      }
+      if (currentRole === 'owner' && (await ownerCount(teamId)) <= 1) {
+        return NextResponse.json({ error: 'You are the last owner. Transfer ownership before leaving.' }, { status: 400 });
+      }
+    } else {
+      if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
 
-    if (!targetMembership) {
-      return NextResponse.json({ error: 'Member not found' }, { status: 404 });
-    }
-
-    // Cannot remove self if owner (must transfer first)
-    if (targetUserId === user.id && currentRole === 'owner') {
-      return NextResponse.json({ error: 'Owners cannot remove themselves. Transfer ownership first.' }, { status: 400 });
-    }
-
-    // Cannot remove last owner
-    if (targetMembership.role === 'owner') {
-      const owners = await db.query.teamMembers.findMany({
+      // Verify target is a member
+      const targetMembership = await db.query.teamMembers.findFirst({
         where: and(
           eq(teamMembers.teamId, teamId),
-          eq(teamMembers.role, 'owner')
+          eq(teamMembers.userId, targetUserId)
         ),
-        columns: { userId: true },
       });
 
-      if (owners.length <= 1) {
-        return NextResponse.json({ error: 'Cannot remove the last owner' }, { status: 400 });
+      if (!targetMembership) {
+        return NextResponse.json({ error: 'Member not found' }, { status: 404 });
       }
-    }
 
-    // Removing an owner takes more than member management: admins cannot.
-    if (targetMembership.role === 'owner' && !roleHas(currentRole, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
-      return NextResponse.json({ error: 'Admins cannot remove owners' }, { status: 403 });
+      if (targetMembership.role === 'owner') {
+        // Removing an owner takes more than member management: admins cannot.
+        if (!roleHas(currentRole, 'assign_team_owner', null /* locked */)) {
+          return NextResponse.json({ error: 'Admins cannot remove owners' }, { status: 403 });
+        }
+        if ((await ownerCount(teamId)) <= 1) {
+          return NextResponse.json({ error: 'Cannot remove the last owner' }, { status: 400 });
+        }
+      }
     }
 
     await db
