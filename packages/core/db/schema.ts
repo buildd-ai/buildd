@@ -5799,8 +5799,11 @@ export const siblingProbes = pgTable('sibling_probes', {
   probedAt: timestamp('probed_at', { withTimezone: true }),
   outcome: text('outcome').$type<SiblingProbeOutcome | null>(),
   conflictFiles: jsonb('conflict_files').$type<string[] | null>(),
-  // Last time both workers were told; a conflict inside the notice debounce is not re-sent.
+  // Last time both workers were told.
   notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  // The two branch heads (sorted, `sha:sha`) of the conflict both workers were
+  // last told about. The same heads conflicting again are never re-sent.
+  notifiedHeads: text('notified_heads'),
 }, (t) => ({
   pairIdx: uniqueIndex('sibling_probes_pair_idx').on(t.workspaceId, t.pairKey),
   proberStatusIdx: index('sibling_probes_prober_status_idx').on(t.proberWorkerId, t.status),
