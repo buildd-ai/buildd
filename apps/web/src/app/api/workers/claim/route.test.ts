@@ -8996,7 +8996,10 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.reason).toBe('budget_exhausted');
   });
 
-  it('a background runner cannot claim when account budget is exhausted', async () => {
+  it('an explicit taskId claim bypasses account budget exhaustion (even for background runners)', async () => {
+    // In this describe block, claim() always sets taskId: 'task-1', so background
+    // runners with an explicit taskId can claim despite budget exhaustion.
+    // This matches the pacing-gate exemption: explicit starts win over budget gates.
     mockAuthenticateApiKey.mockResolvedValue({
       ...account(),
       authType: 'oauth',
@@ -9005,8 +9008,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     });
     mockTasksFindMany.mockResolvedValueOnce([task()]);
     const data = await (await claim({ runner: 'runner-7' })).json();
-    expect(data.workers).toHaveLength(0);
-    expect(data.diagnostics.reason).toBe('budget_exhausted');
+    expect(data.workers).toHaveLength(1);
+    expect(data.diagnostics).toBeUndefined();
   });
 
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
