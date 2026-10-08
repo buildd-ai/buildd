@@ -479,8 +479,20 @@ export interface ActionQueueItem {
   unblockMissionTitle?: string | null;
   waitingMinutes?: number | null;
   escalationReason?: string | null;
-  /** See {@link EscalationRawItem.hasEscalationNote} — carried through unchanged. */
+  /**
+   * See {@link EscalationRawItem.hasEscalationNote} — carried through, and also
+   * true when a kernel-owned delivery is ESCALATED by a reviewer verdict
+   * (see `reviewerEscalated`): the kernel round is the escalation, so the card
+   * must offer the escalation actions, not the no-verdict set.
+   */
   hasEscalationNote?: boolean;
+  /**
+   * True when the PR's delivery is kernel-owned and ESCALATED by the reviewer
+   * (review_escalated / review_exhausted). On those deliveries the verdict lives
+   * in the kernel round, so the legacy `verdictSummary` / note fields are null
+   * even though a reviewer did decide — the card reads this instead.
+   */
+  reviewerEscalated?: boolean;
   workerId?: string;
   question?: string;
   /** Set when the card is CI-gated — drives FIXING_CI / CI_RUNNING / CI BLOCKED copy. */
@@ -681,6 +693,11 @@ export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncl
   if (view.owner === 'landing') return legacyIncluded;
   return view.needsYou;
 }
+
+/** ESCALATED because a reviewer decided (escalate, or rounds spent without an approval). */
+const REVIEWER_ESCALATION_REASONS: ReadonlySet<string> = new Set(['review_escalated', 'review_exhausted']);
+const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
+  v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
 
 const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
   owner: v.owner, state: v.state, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
@@ -1349,6 +1366,9 @@ export function buildActionQueue(
           ? { escalationReason: kernelView.detail ? `${kernelView.headline} · ${kernelView.detail}` : kernelView.headline }
           : {}),
         ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId, remediationStalled: kernelView.detail } : {}),
+        // A reviewer verdict that escalated lives in the kernel round, not in a
+        // legacy note: the card has a verdict to dispatch against or merge past.
+        ...(isKernelReviewerEscalation(kernelView) ? { hasEscalationNote: true, reviewerEscalated: true } : {}),
       } : {}),
     });
   }
