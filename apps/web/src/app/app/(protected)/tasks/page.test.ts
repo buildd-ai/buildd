@@ -140,3 +140,24 @@ describe('mission-budget plumbing — TaskCard.tsx', () => {
     expect(stageCall).toContain('isMissionBudgetExhausted: missionBudgetExhausted');
   });
 });
+
+describe('empty state header — TaskGrid.tsx', () => {
+  it('renders eyebrow/heading block in the empty state', () => {
+    const emptyState = gridSource.slice(
+      gridSource.indexOf('if (rootTasks.length === 0 && !missionFilter)'),
+      gridSource.indexOf('if (rootTasks.length === 0 && !missionFilter)') + 1500,
+    );
+    expect(emptyState).toContain('section-label');
+    expect(emptyState).toContain('Activity');
+    expect(emptyState).toContain('No activity');
+    expect(emptyState).toContain('teamName');
+  });
+
+  it('includes teamName prop in TaskGridProps interface', () => {
+    const interfaceSection = gridSource.slice(
+      gridSource.indexOf('interface TaskGridProps'),
+      gridSource.indexOf('export default function TaskGrid'),
+    );
+    expect(interfaceSection).toContain('teamName');
+  });
+});
