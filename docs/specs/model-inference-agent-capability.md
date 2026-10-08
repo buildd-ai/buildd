@@ -10,6 +10,38 @@ related: [agent-capabilities, credential-isolation, decision-kinds]
 keywords: [model.inference, Jev, TypeSafe, OpenRouter, LiteLLM, brokered inference, agent eval, decide, grant, budget ledger]
 verified_by: [apps/web/src/lib/capability-model-inference.test.ts, apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts, apps/web/src/lib/task-token-routes.test.ts]
 supersedes: []
+assertions:
+  - id: "model-inference-route"
+    type: "route"
+    method: "POST"
+    path: "/api/agent-capabilities/model-inference"
+    file: "apps/web/src/app/api/agent-capabilities/model-inference/route.ts"
+  - id: "invoke-model-inference"
+    type: "symbol"
+    name: "invokeModelInference"
+    path: "apps/web/src/lib/capability-model-inference.ts"
+  - id: "check-grant"
+    type: "symbol"
+    name: "checkGrant"
+    path: "apps/web/src/lib/capability-model-inference.ts"
+  - id: "fail-closed-grant-seam"
+    type: "symbol"
+    name: "NO_GRANT_SERVICE"
+    path: "apps/web/src/lib/capability-model-inference.ts"
+  - id: "fail-closed-ledger-seam"
+    type: "symbol"
+    name: "NO_LEDGER"
+    path: "apps/web/src/lib/capability-model-inference.ts"
+  - id: "route-uses-adapter"
+    type: "symbol_reachable"
+    symbol: "invokeModelInference"
+    entry: "apps/web/src/app/api/agent-capabilities/model-inference/route.ts"
+  - id: "adapter-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/capability-model-inference.test.ts"
+  - id: "route-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/agent-capabilities/model-inference/route.test.ts"
 ---
 
 # Model Inference Agent Capability
