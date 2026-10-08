@@ -7,6 +7,7 @@ import {
   type OpenPullRequestMigration,
   type PullRequestMigrationFile,
 } from '@/lib/migration-safety';
+import { effectiveDeltaFiles } from '@/lib/integration-refresh';
 
 interface GitHubPullRequestFile {
   filename: string;
@@ -96,15 +97,31 @@ export async function inspectPullRequestMigrations(params: {
    * excluded and the check fails closed exactly as before.
    */
   baseRef?: string | null;
+  /**
+   * Set for an integration-refresh PR (integration-refresh.ts): classify what
+   * the head adds on top of this trunk (`deltaBase...head`) rather than the PR
+   * diff, which lists trunk's own already-merged migration history — including
+   * trunk deleting or squashing migrations — as if this PR did it. Mission
+   * migrations are not on trunk, so they stay in the delta and are classified.
+   * If the delta can't be read, the full PR file list is used, as before.
+   */
+  deltaBase?: string | null;
 }): Promise<MigrationSafety> {
-  let completeFiles: GitHubPullRequestFile[];
-  try {
-    completeFiles = (await listAll(
-      params.installationId,
-      `/repos/${params.repoFullName}/pulls/${params.prNumber}/files`,
-    )) as GitHubPullRequestFile[];
-  } catch {
-    return { safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list' };
+  let completeFiles: GitHubPullRequestFile[] | null = null;
+  let usedDelta = false;
+  if (params.deltaBase) {
+    completeFiles = await effectiveDeltaFiles(params.installationId, params.repoFullName, params.deltaBase, params.headSha);
+    usedDelta = completeFiles !== null;
+  }
+  if (!completeFiles) {
+    try {
+      completeFiles = (await listAll(
+        params.installationId,
+        `/repos/${params.repoFullName}/pulls/${params.prNumber}/files`,
+      )) as GitHubPullRequestFile[];
+    } catch {
+      return { safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list' };
+    }
   }
 
   const allMigrationFiles = completeFiles.filter((file) =>
@@ -143,7 +160,7 @@ export async function inspectPullRequestMigrations(params: {
   }
 
   const baseSha = allMigrationFiles.length > 0
-    ? await resolveBaseSha(params.installationId, params.repoFullName, params.prNumber, params.baseRef)
+    ? await resolveBaseSha(params.installationId, params.repoFullName, params.prNumber, usedDelta ? params.deltaBase : params.baseRef)
     : undefined;
   const readOnBase = (path: string) =>
     baseSha

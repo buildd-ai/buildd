@@ -28,6 +28,7 @@ import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { effectiveDeltaFiles, refreshDeltaBase } from '@/lib/integration-refresh';
 import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -131,6 +132,14 @@ async function maybeDispatchReviewer(
     } catch (err) {
       console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
     }
+    // An integration-refresh PR is reviewed on what it adds on top of trunk —
+    // the mission's own changes and the conflict resolution — not on the
+    // already-reviewed trunk history its stale fork point lists (integration-refresh.ts).
+    const deltaBase = refreshDeltaBase(task.context, workspace.gitConfig);
+    if (deltaBase) {
+      const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, pr.head.sha);
+      if (delta) prFiles = delta;
+    }
 
     // Classify migrations first: the schema risk class keys off the verdict
     // (EXPAND passes), not off the mere presence of a schema/migration path.
@@ -141,6 +150,7 @@ async function maybeDispatchReviewer(
       headSha: pr.head.sha,
       files: prFiles,
       baseRef: pr.base?.ref ?? null,
+      ...(deltaBase ? { deltaBase } : {}),
     });
 
     // A migration-number collision this PR owns (see `classifyPullRequestMigrations`)

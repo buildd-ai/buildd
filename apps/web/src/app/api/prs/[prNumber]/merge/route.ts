@@ -30,6 +30,7 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
+import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
 import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
@@ -206,7 +207,7 @@ export async function POST(
     },
     with: {
       task: {
-        columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, context: true },
       },
     },
   });
@@ -607,16 +608,18 @@ export async function POST(
   }
 
   // Perform the merge: the kernel's for a kernel-owned PR, GitHub's directly otherwise.
+  // An integration-refresh PR always lands as a merge commit (integration-refresh.ts).
+  const mergeMethod = resolveMergeMethod(worker.task?.context);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = kernelOwned
       ? await landThroughKernel({
           workspaceId: worker.workspaceId, installationId, repoFullName, prNumber, headSha: liveHeadSha!,
-          door: 'dashboard', actor: `human:${user.id}`, mergeMethod: 'squash',
+          door: 'dashboard', actor: `human:${user.id}`, mergeMethod,
           ...(override && reviewGateReason ? { override: { reason: overrideEscalationReason ?? reviewGateReason } } : {}),
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha!) };
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
   });
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });

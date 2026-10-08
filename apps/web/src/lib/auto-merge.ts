@@ -16,6 +16,7 @@ import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -292,6 +293,15 @@ export async function evaluateAutoMergeSafety(
     return { ok: false, reason: 'malformed PR files response' };
   }
 
+  // An integration-refresh PR is judged on what it adds on top of trunk, not on
+  // the trunk history its stale fork point makes GitHub list (integration-refresh.ts).
+  // Mission-authored schema and migration changes stay in that delta.
+  const deltaBase = await refreshDeltaBaseForTask(opts?.taskId ?? null, opts?.gitConfig ?? null);
+  if (deltaBase) {
+    const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, headSha);
+    if (delta) files = delta;
+  }
+
   if (denyPaths.length > 0) {
     const hits = files.flatMap((file) =>
       denyPaths
@@ -331,6 +341,7 @@ export async function evaluateAutoMergeSafety(
       prNumber,
       headSha,
       files,
+      ...(deltaBase ? { deltaBase } : {}),
     });
     if (!migrationSafety.safe) {
       return { ok: false, reason: migrationSafety.reason };
@@ -815,12 +826,10 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
-  // it IS the merge commit that catches the integration branch up with dev, so
-  // squashing it would drop that ancestry and the same conflict would reappear
-  // on the very next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : 'squash';
+  // An integration-refresh PR IS the merge commit that catches the mission
+  // branch up with dev; squashing it would drop that ancestry and the same
+  // conflict would reappear on the very next refresh (integration-refresh.ts).
+  const mergeMethod = resolveMergeMethod(mergingTask?.context);
   // Every rail passed. For a kernel-owned PR this door is only an adapter: the
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
@@ -994,6 +1003,20 @@ async function recordUnfiledRefreshOutcome(
  * PR" — every gate then applies exactly as it did before Option A′, and a bound
  * merge is refused outright.
  */
+/** The trunk a refresh task's PR is measured against; null for any other task. Never throws. */
+async function refreshDeltaBaseForTask(
+  taskId: string | null,
+  gitConfig: WorkspaceGitConfig | null,
+): Promise<string | null> {
+  if (!taskId) return null;
+  try {
+    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    return refreshDeltaBase(task?.context, gitConfig);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadMissionIntegrationFields(
   taskId: string | null,
 ): Promise<MissionIntegrationFields | null> {
