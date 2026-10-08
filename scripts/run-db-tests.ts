@@ -9,6 +9,13 @@
  * shim (scripts/ci/neon-sql-shim.ts), migrates, then runs this. Locally:
  * scripts/demo/up.sh's stack, or any migrated loopback Postgres behind
  * NEON_LOCAL_FETCH_ENDPOINT (`bun scripts/ci/neon-sql-shim.ts` is the fast one).
+ *
+ * Guard: with RUN_DB_TESTS_DOUBLE_RUN=1 only the files in DOUBLE_RUN_FILES
+ * (workflow-matrix.test.ts, §16 kernel acceptance) run a second time against the same
+ * database, catching state leaks where the second run fails on rows the first left
+ * behind. That test seeds a fresh workspace in beforeAll and does not truncate the
+ * kernel tables, so the second run passes only if its reads stay scoped to that
+ * workspace. Other DB tests are not written to be re-run and run once.
  */
 import { readdirSync } from 'fs';
 import { join } from 'path';
@@ -36,15 +43,27 @@ const files = requested.length
   : readdirSync(join(ROOT, DIR)).filter(f => f.endsWith('.test.ts')).sort().map(f => join(DIR, f));
 if (files.length === 0) fail(`no test files under ${DIR}`);
 
+const doubleRun = process.env.RUN_DB_TESTS_DOUBLE_RUN === '1';
+const DOUBLE_RUN_FILES = new Set(['tests/db/workflow-matrix.test.ts']);
 const failed: string[] = [];
+
 for (const file of files) {
   const rel = file.startsWith('apps/web/') ? file.slice('apps/web/'.length) : file;
-  const r = spawnSync('bun', ['test', '--preload', '../../tests/setup.ts', rel], {
-    cwd: join(ROOT, 'apps/web'),
-    stdio: 'inherit',
-    env: { ...process.env, NODE_ENV: 'test' },
-  });
-  if (r.status !== 0) failed.push(file);
+  const runs = doubleRun && DOUBLE_RUN_FILES.has(rel) ? 2 : 1;
+
+  for (let run = 1; run <= runs; run++) {
+    const label = runs > 1 ? ` (run ${run}/${runs})` : '';
+    const r = spawnSync('bun', ['test', '--preload', '../../tests/setup.ts', rel], {
+      cwd: join(ROOT, 'apps/web'),
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    if (r.status !== 0) {
+      failed.push(`${file}${label}`);
+      break;
+    }
+  }
 }
+
 if (failed.length) fail(`${failed.length}/${files.length} file(s) failed:\n  ${failed.join('\n  ')}`);
-console.log(`[test:db] ${files.length} file(s) passed`);
+console.log(`[test:db] ${files.length} file(s) passed${doubleRun ? ' (workflow-matrix double run)' : ''}`);

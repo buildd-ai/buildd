@@ -231,7 +231,8 @@ const EXCLUDED_END = '<!-- release-candidate:excluded:end -->';
 /**
  * The required checks a candidate must pass, by check-run name. `build` is the
  * one branch protection on main already requires; `release candidate verified`
- * is the aggregate from release-candidate-ci.yml (full API integration at the
+ * is build.yml's aggregate over the candidate's shape check and
+ * `candidate integration / integration` (full API + runner integration at the
  * exact candidate SHA).
  */
 export const REQUIRED_CANDIDATE_CHECKS = ['build', 'release candidate verified', 'Schema Drift / check-prod'];

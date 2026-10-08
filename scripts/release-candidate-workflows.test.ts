@@ -1,6 +1,6 @@
 import { describe, test, expect, setDefaultTimeout } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { promoteChangelog } from './release-candidate';
@@ -18,7 +18,6 @@ setDefaultTimeout(30_000);
 
 const y = (file: string): any => Bun.YAML.parse(readFileSync(file, 'utf8'));
 const RELEASE = '.github/workflows/release.yml';
-const CANDIDATE_CI = '.github/workflows/release-candidate-ci.yml';
 const SYNC_DEV = '.github/workflows/sync-dev.yml';
 const REFRESH = '.github/workflows/release-refresh.yml';
 const BUILD = '.github/workflows/build.yml';
@@ -135,35 +134,51 @@ describe('release-refresh.yml is off under the candidate flow', () => {
   });
 });
 
-describe('release-candidate-ci.yml', () => {
-  const wf = y(CANDIDATE_CI);
+describe('release candidates: one integration job, one aggregate (build.yml)', () => {
+  const wf = y(BUILD);
+  const CANDIDATE_CHECK = 'candidate integration';
 
-  test('runs on every PR into main, so its aggregate can be required without blocking hotfixes', () => {
-    expect(wf.on.pull_request.branches).toEqual(['main']);
-    expect(wf.jobs.identify.if).toBeUndefined();
-    expect(wf.jobs.verified.if).toBe('always()');
-    expect(wf.jobs.verified.name).toBe('release candidate verified');
+  test('exactly one job in any workflow tests a candidate, so two runs never fight over the test machine', () => {
+    const owners: string[] = [];
+    for (const f of readdirSync('.github/workflows').filter((n) => /\.ya?ml$/.test(n))) {
+      for (const [id, job] of Object.entries<any>(y(join('.github/workflows', f)).jobs ?? {})) {
+        const neon = String(job.with?.neon_branch ?? '');
+        if (job.name === CANDIDATE_CHECK || neon.startsWith('ci/candidate-pr-')) owners.push(`${f}:${id}`);
+      }
+    }
+    expect(owners).toEqual(['build.yml:candidate-integration']);
   });
 
-  test('full API integration through the shared reusable workflow, at the exact head SHA', () => {
-    const j = wf.jobs.integration;
+  test('that job is the full API + runner suite at the exact head SHA, keyed on the release/v prefix', () => {
+    const j = wf.jobs['candidate-integration'];
     expect(j.uses).toBe('./.github/workflows/integration.yml');
-    expect(j.with).toMatchObject({ api: true, runner: false, e2e: false, checkout_sha: '${{ needs.identify.outputs.sha }}' });
-    expect(j.if).toBe("needs.identify.outputs.candidate == 'true'");
-    expect(wf.jobs.identify.steps[0].env.HEAD_SHA).toBe('${{ github.event.pull_request.head.sha }}');
+    expect(j.with).toMatchObject({ api: true, runner: true, e2e: false, checkout_sha: '${{ github.event.pull_request.head.sha }}', source: 'release-candidate' });
+    expect(j.if).toContain("startsWith(github.head_ref, 'release/v')");
+  });
+
+  test('the hotfix integration job does not also book the test machine for a candidate', () => {
+    expect(wf.jobs.integration.if).toContain("!startsWith(github.head_ref, 'release/v')");
+  });
+
+  test('`release candidate verified` reads that job, and is reported on every PR into main', () => {
+    const v = wf.jobs['candidate-verified'];
+    expect(v.name).toBe('release candidate verified');
+    expect([...v.needs].sort()).toEqual(['candidate-identify', 'candidate-integration']);
+    expect(v.if).toBe("always() && github.event_name == 'pull_request' && github.base_ref == 'main'");
+    expect(wf.jobs['candidate-identify'].if).toBe("github.event_name == 'pull_request' && github.base_ref == 'main'");
   });
 
   test.each([
-    ['release/v1.2.3', 'o/r', 'true'],
-    ['release/v1.2', 'o/r', 'false'],
-    ['dev', 'o/r', 'false'],
-    ['hotfix/x', 'o/r', 'false'],
-    ['release/v1.2.3', 'fork/r', 'false'],
-  ])('identify %s from %s → candidate=%s', (ref, headRepo, want) => {
-    const r = runScript(step(CANDIDATE_CI, 'identify', (s) => s.id === 'id').run, tmpdir(), {
+    ['release/v1.2.3', 'o/r', 0, 'true'],
+    ['dev', 'o/r', 0, 'false'],
+    ['hotfix/x', 'fork/r', 0, 'false'],
+    ['release/v1.2', 'o/r', 1, undefined],
+    ['release/v1.2.3', 'fork/r', 1, undefined],
+  ])('identify %s from %s → exit %d, candidate=%s', (ref, headRepo, code, want) => {
+    const r = runScript(step(BUILD, 'candidate-identify', (s) => s.id === 'id').run, tmpdir(), {
       HEAD_REF: ref, HEAD_SHA: 'a'.repeat(40), HEAD_REPO: headRepo, REPO: 'o/r',
     });
-    expect(r.status, r.log).toBe(0);
+    expect(r.status, r.log).toBe(code);
     expect(r.outputs.candidate).toBe(want);
   });
 
@@ -173,14 +188,10 @@ describe('release-candidate-ci.yml', () => {
     [{ IDENTIFY: 'success', CANDIDATE: 'true', INTEGRATION: 'failure' }, 1],
     [{ IDENTIFY: 'success', CANDIDATE: 'true', INTEGRATION: 'skipped' }, 1],
     [{ IDENTIFY: 'success', CANDIDATE: 'true', INTEGRATION: 'cancelled' }, 1],
-    [{ IDENTIFY: 'failure', CANDIDATE: '', INTEGRATION: 'skipped' }, 1],
+    [{ IDENTIFY: 'failure', CANDIDATE: '', INTEGRATION: 'success' }, 1],
   ])('verified %o → exit %d', (env, code) => {
-    const run = wf.jobs.verified.steps[0].run as string;
+    const run = step(BUILD, 'candidate-verified', () => true).run as string;
     expect(runScript(run, tmpdir(), { SHA: 'x', ...env }).status).toBe(code);
-  });
-
-  test('Build & Test does not also book the test machine for a candidate', () => {
-    expect(y(BUILD).jobs.integration.if).toContain("!startsWith(github.head_ref, 'release/v')");
   });
 });
 

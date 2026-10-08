@@ -616,6 +616,7 @@ jobs:
     env:
       DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
       NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
+      RUN_DB_TESTS_DOUBLE_RUN: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -736,9 +737,8 @@ jobs:
     # and release_status reports that result for the release PR's head. The job
     # body lives in integration.yml so both callers run the same steps.
     #
-    # Frozen release candidates (release/vX.Y.Z → main) are tested by
-    # release-candidate-ci.yml instead: always the full API suite, at the exact
-    # candidate SHA. Running this too would book the one test machine twice.
+    # Release candidates (release/vX.Y.Z → main) are not hotfixes: they get the
+    # unconditional candidate-integration job below instead, not this one too.
     if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev' && !startsWith(github.head_ref, 'release/v')
     uses: ./.github/workflows/integration.yml
     secrets: inherit
@@ -746,3 +746,129 @@ jobs:
       api: ${{ needs.changes.outputs.api == 'true' }}
       runner: ${{ needs.changes.outputs.runner == 'true' }}
       neon_branch: ci/pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: hotfix-pr
+
+  # The authoritative integration verdict for a release candidate: one full API
+  # + runner run on the candidate's exact head SHA, whatever changed, because a
+  # candidate is the code that ships and post-merge dev runs are advisory and
+  # on other SHAs. Not path-filtered and not "covered by an earlier green".
+  # Check name "candidate integration / integration"; it is not advisory, so
+  # it counts toward the release PR's ciState (pending until it finishes, red if
+  # it fails, is cancelled or the test machine is down). A new push to the
+  # candidate (an amendment) cancels this run and starts one on the new SHA.
+  #
+  # E2E is off: it needs the CI Claude OAuth quota, and a release cannot wait
+  # on that. Hotfix PRs still run it. The candidate branch itself is cut by
+  # release.yml; this job only needs the release/v prefix. It is the ONLY job
+  # that tests a candidate: `release candidate verified` below reads its result
+  # instead of booking the test machine a second time.
+  candidate-integration:
+    name: candidate integration
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v')
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+    with:
+      api: true
+      runner: true
+      e2e: false
+      neon_branch: ci/candidate-pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: release-candidate
+
+  # Is this PR into main a frozen release candidate, and is its head the
+  # release commit release.yml builds? Runs on every PR into main so the
+  # aggregate below always has an answer. A release/v head that is not a
+  # same-repo release/vX.Y.Z, or whose head is not the one release-only commit
+  # for that version (someone pushed on top by hand), fails here instead of
+  # being tested and shipped as if it were the candidate.
+  candidate-identify:
+    name: candidate verification / identify
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      candidate: ${{ steps.id.outputs.candidate }}
+      sha: ${{ steps.id.outputs.sha }}
+    steps:
+      - id: id
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Same prefix candidate-integration keys on, so the two always agree
+          # on what a candidate is.
+          if [[ "$HEAD_REF" != release/v* ]]; then
+            echo "candidate=false" >> "$GITHUB_OUTPUT"
+            echo "Not a release candidate ($HEAD_REF); nothing to verify here."
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::$HEAD_REF comes from $HEAD_REPO. Release candidates are cut in $REPO by the Release workflow only."
+            exit 1
+          fi
+          if [[ ! "$HEAD_REF" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$HEAD_REF is not a release/vX.Y.Z candidate branch."
+            exit 1
+          fi
+          echo "candidate=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Release candidate $HEAD_REF at $HEAD_SHA."
+
+      - uses: actions/checkout@v7
+        if: steps.id.outputs.candidate == 'true'
+        with:
+          ref: ${{ steps.id.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Check the candidate's shape
+        if: steps.id.outputs.candidate == 'true'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          VERSION="${HEAD_REF#release/v}"
+          SUBJECT=$(git log -1 --format=%s HEAD)
+          PKG=$(jq -r .version apps/web/package.json)
+          echo "head subject: $SUBJECT"
+          echo "apps/web/package.json: $PKG"
+          if [ "$SUBJECT" != "chore: bump version to v${VERSION}" ] || [ "$PKG" != "$VERSION" ]; then
+            echo "::error::$HEAD_REF head is not the release commit for v${VERSION}. Re-cut or amend the candidate through the Release workflow instead of pushing to it."
+            exit 1
+          fi
+
+  # The check to require on main (scripts/release-candidate.ts
+  # REQUIRED_CANDIDATE_CHECKS). Reported on every PR into main and never
+  # Skipped there (a Skipped check satisfies branch protection without
+  # running): a hotfix passes as "not a candidate"; a candidate passes only
+  # when its shape checked out AND candidate-integration succeeded at its head.
+  candidate-verified:
+    name: release candidate verified
+    needs: [candidate-identify, candidate-integration]
+    if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - env:
+          CANDIDATE: ${{ needs.candidate-identify.outputs.candidate }}
+          IDENTIFY: ${{ needs.candidate-identify.result }}
+          INTEGRATION: ${{ needs.candidate-integration.result }}
+          SHA: ${{ needs.candidate-identify.outputs.sha }}
+        run: |
+          echo "identify=$IDENTIFY candidate=${CANDIDATE:-?} integration=$INTEGRATION sha=${SHA:-n/a}"
+          if [ "$IDENTIFY" != "success" ]; then
+            echo "::error::Could not identify or validate the PR head as a release candidate."
+            exit 1
+          fi
+          if [ "$CANDIDATE" != "true" ]; then
+            echo "Not a release candidate: nothing to verify."
+            exit 0
+          fi
+          if [ "$INTEGRATION" != "success" ]; then
+            echo "::error::candidate integration did not pass at candidate SHA $SHA (result: $INTEGRATION)."
+            exit 1
+          fi
+          echo "Release candidate verified at $SHA."
