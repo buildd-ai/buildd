@@ -209,7 +209,13 @@ async function startWorkerWithTask(
   }] }));
 
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 200));
+  // Poll for the SDK query to be issued instead of a fixed sleep; a loaded CI
+  // runner can take longer than 200ms to get there.
+  const deadline = Date.now() + 5000;
+  while (!lastQueryOpts && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
   return manager.getWorker(workerId);
 }
 
