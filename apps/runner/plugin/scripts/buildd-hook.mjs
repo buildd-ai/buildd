@@ -9,6 +9,15 @@
 // prompt, response or reasoning ever leaves this machine. The only tool output
 // it reads is the worker id in buildd's own claim_task reply.
 //
+// Usage (Claude Code only, once the session has claimed a task): on Stop and
+// SessionEnd the hook reads the NEW lines of the session's own transcript files
+// (~/.claude/projects/.../<session>.jsonl and <session>/subagents/agent-*.jsonl)
+// and keeps, from each API response record, only its message id, model id, the
+// four token counts, the timestamp and how many tool_use blocks it had. Message
+// text, tool inputs and outputs are never kept or sent. The cumulative counts
+// per claimed task ride on the touch/end request. BUILDD_HOOK_USAGE=0 turns
+// this off.
+//
 // It never breaks the agent loop: every failure (no key, buildd down, non-2xx,
 // bad payload, timeout) is swallowed and the script exits 0. MCP stays the
 // control plane; without this hook buildd still works exactly as before.
@@ -28,7 +37,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -109,7 +118,12 @@ function normalizeClaudeLike(client, p, env) {
     case 'PostToolUse': {
       if (!isBuilddTool(p.tool_name)) return null;
       const workerId = claimedWorkerId(p.tool_input, p.tool_response);
-      return workerId ? { ...base, event: 'bind', workerId } : null;
+      if (!workerId) return null;
+      // A subagent's tool call carries its agent_id (and the parent's session_id):
+      // kept in this machine's session state to know which subagent holds which
+      // claim. Never sent.
+      const agentId = typeof p.agent_id === 'string' && /^[\w-]{1,64}$/.test(p.agent_id) ? p.agent_id : null;
+      return { ...base, event: 'bind', workerId, ...(agentId ? { agentId } : {}) };
     }
     case 'SessionEnd': {
       // Claude: clear | resume | logout | prompt_input_exit | other. Codex: always other.
@@ -297,6 +311,11 @@ function statePath(dir, client, clientSessionId) {
   return join(dir, `${createHash('sha256').update(`${client}:${clientSessionId}`).digest('hex').slice(0, 32)}.json`);
 }
 
+/** This session's local hook state (which claims it holds, and which subagent made each). */
+export function readSessionState(env, client, clientSessionId) {
+  return readState(statePath(stateDir(env), client, clientSessionId));
+}
+
 function readState(file) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; }
 }
@@ -314,7 +333,7 @@ export function shouldSkip(event, state, now = Date.now()) {
 }
 
 /** The exact body POSTed. Built from the normalized event only. */
-export function buildBody(client, n, repo) {
+export function buildBody(client, n, repo, usage = null) {
   return {
     event: n.event,
     client,
@@ -324,7 +343,150 @@ export function buildBody(client, n, repo) {
     ...(typeof n.interactive === 'boolean' ? { interactive: n.interactive } : {}),
     ...(n.event === 'bind' ? { workerId: n.workerId } : {}),
     ...(n.event === 'end' ? { reason: n.reason } : {}),
+    ...(usage && (n.event === 'touch' || n.event === 'end') ? { usage } : {}),
   };
+}
+
+// ── Session usage ────────────────────────────────────────────────────────────
+
+/** At most this much new transcript is read per file per hook run; the rest next time. */
+export const USAGE_READ_CAP = 8 * 1024 * 1024;
+const SEEN_CAP = 5000;
+const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
+
+/** A session's transcript and each of its subagents' (Claude Code's layout). */
+export function sessionTranscriptFiles(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || !transcriptPath.endsWith('.jsonl')) return [];
+  const files = [{ path: transcriptPath, agentId: null }];
+  const dir = join(transcriptPath.slice(0, -'.jsonl'.length), 'subagents');
+  try {
+    for (const f of readdirSync(dir).sort()) {
+      const m = /^agent-([\w-]{1,64})\.jsonl$/.exec(f);
+      if (m) files.push({ path: join(dir, f), agentId: m[1] });
+    }
+  } catch { /* no subagents */ }
+  return files;
+}
+
+/** Complete lines appended since `offset` (capped). Never throws. */
+export function readNewLines(path, offset = 0, cap = USAGE_READ_CAP) {
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const from = size < offset ? 0 : offset; // truncated or replaced: start over
+    const len = Math.min(size - from, cap);
+    if (len <= 0) return { lines: [], offset: from };
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, from);
+    const lastNl = buf.lastIndexOf(10);
+    // One line longer than the cap: skip it rather than stall on it forever.
+    if (lastNl < 0) return { lines: [], offset: len === cap ? from + len : from };
+    return { lines: buf.subarray(0, lastNl).toString('utf8').split('\n'), offset: from + lastNl + 1 };
+  } catch {
+    return { lines: [], offset };
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* ignore */ }
+  }
+}
+
+const count = v => (Number.isInteger(v) && v >= 0 ? v : 0);
+
+/**
+ * The usage of one transcript line, or null. Only these fields are read: the
+ * record type, timestamp, message id and model, the usage counts, and the TYPE
+ * of each content block (to count tool calls). Nothing else leaves this function.
+ */
+export function usageRecord(line) {
+  let r;
+  try { r = JSON.parse(line); } catch { return null; }
+  if (r?.type !== 'assistant') return null;
+  const m = r.message;
+  const u = m?.usage;
+  if (!u || typeof u !== 'object') return null;
+  const rawModel = typeof m.model === 'string' ? m.model : '';
+  if (rawModel === '<synthetic>') return null; // a client-side placeholder, not an API call
+  const written = count(u.cache_creation_input_tokens);
+  const split = u.cache_creation && typeof u.cache_creation === 'object';
+  const w1h = split ? count(u.cache_creation.ephemeral_1h_input_tokens) : 0;
+  const w5m = split ? count(u.cache_creation.ephemeral_5m_input_tokens) : written;
+  const at = Date.parse(r.timestamp);
+  return {
+    id: typeof m.id === 'string' ? m.id : typeof r.requestId === 'string' ? r.requestId : null,
+    model: MODEL_ID_RE.test(rawModel) ? rawModel : 'unknown',
+    input: count(u.input_tokens),
+    cacheRead: count(u.cache_read_input_tokens),
+    // Anything the split does not explain is billed like a 5-minute write.
+    cacheWrite5m: w5m + Math.max(0, written - w1h - w5m),
+    cacheWrite1h: w1h,
+    output: count(u.output_tokens),
+    toolCalls: Array.isArray(m.content) ? m.content.filter(b => b?.type === 'tool_use').length : 0,
+    at: Number.isFinite(at) ? at : null,
+  };
+}
+
+/**
+ * Fold the new transcript lines into the per-claim totals kept in session
+ * state. Attribution: a subagent that claimed a task is that task's for its
+ * whole run; everything else (the session itself, and subagents that claimed
+ * nothing) is counted toward the session's own newest claim, else its first,
+ * and only from the session's first claim on.
+ */
+export function collectUsage(prev, transcriptPath, claims, claimedAt) {
+  const usage = {
+    offsets: { ...(prev?.offsets ?? {}) },
+    seen: [...(prev?.seen ?? [])],
+    perWorker: JSON.parse(JSON.stringify(prev?.perWorker ?? {})),
+  };
+  const entries = Object.entries(claims ?? {});
+  if (entries.length === 0) return { usage, report: [] };
+  const byTime = [...entries].sort((a, b) => (claimedAt?.[a[0]] ?? 0) - (claimedAt?.[b[0]] ?? 0));
+  const own = byTime.filter(([, agent]) => agent === null);
+  const sessionWorker = (own.length ? own[own.length - 1] : byTime[0])[0];
+  const earliest = Math.min(...entries.map(([w]) => claimedAt?.[w] ?? 0));
+  const workerOfAgent = new Map(entries.filter(([, a]) => a).map(([w, a]) => [a, w]));
+  const seen = new Set(usage.seen);
+
+  for (const f of sessionTranscriptFiles(transcriptPath)) {
+    const { lines, offset } = readNewLines(f.path, usage.offsets[f.path] ?? 0);
+    usage.offsets[f.path] = offset;
+    const claimedBySubagent = f.agentId !== null && workerOfAgent.has(f.agentId);
+    const worker = claimedBySubagent ? workerOfAgent.get(f.agentId) : sessionWorker;
+    for (const line of lines) {
+      if (!line) continue;
+      const rec = usageRecord(line);
+      if (!rec) continue;
+      if (!claimedBySubagent && rec.at !== null && rec.at < earliest) continue;
+      const t = (usage.perWorker[worker] ??= { models: {}, toolCalls: 0, agents: [], firstAt: null, lastAt: null });
+      // One API call is written once per content block: its tool calls add up,
+      // its usage is the same on every copy and counts once.
+      t.toolCalls += rec.toolCalls;
+      if (f.agentId && !t.agents.includes(f.agentId)) t.agents.push(f.agentId);
+      if (rec.at !== null) {
+        t.firstAt = t.firstAt === null ? rec.at : Math.min(t.firstAt, rec.at);
+        t.lastAt = t.lastAt === null ? rec.at : Math.max(t.lastAt, rec.at);
+      }
+      const key = rec.id ? `${f.agentId ?? ''}:${rec.id}` : null;
+      if (key && seen.has(key)) continue;
+      if (key) { seen.add(key); usage.seen.push(key); }
+      const b = (t.models[rec.model] ??= { input: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0, requests: 0 });
+      b.input += rec.input; b.cacheRead += rec.cacheRead; b.cacheWrite5m += rec.cacheWrite5m;
+      b.cacheWrite1h += rec.cacheWrite1h; b.output += rec.output; b.requests += 1;
+    }
+  }
+  if (usage.seen.length > SEEN_CAP) usage.seen = usage.seen.slice(-SEEN_CAP);
+
+  const report = Object.entries(usage.perWorker)
+    .filter(([w]) => claims[w] !== undefined)
+    .map(([workerId, t]) => ({
+      workerId,
+      models: Object.entries(t.models).map(([model, b]) => ({ model, ...b })),
+      toolCalls: t.toolCalls,
+      subagents: t.agents.length,
+      ...(t.firstAt !== null ? { firstAt: new Date(t.firstAt).toISOString() } : {}),
+      ...(t.lastAt !== null ? { lastAt: new Date(t.lastAt).toISOString() } : {}),
+    }));
+  return { usage, report };
 }
 
 /** Hook stdout for the client, or '' for none. Only a nudge toward the existing delivery path. */
@@ -387,7 +549,21 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     repo = gitRepo(n.cwd);
   }
 
-  const body = buildBody(client, n, repo);
+  // Usage rides on the session's own touch/end, once it holds a claim.
+  let usageState = state.usage;
+  let usageReport = null;
+  const claimsNow = state.claims && Object.keys(state.claims).length > 0 ? state.claims : null;
+  if (client === 'claude' && env.BUILDD_HOOK_USAGE !== '0' && claimsNow && (n.event === 'touch' || n.event === 'end')) {
+    try {
+      const c = collectUsage(state.usage, payload?.transcript_path, claimsNow, state.claimedAt);
+      usageState = c.usage;
+      if (c.report.length > 0) usageReport = { workers: c.report };
+    } catch (err) {
+      debug('usage read failed', err?.message ?? err);
+    }
+  }
+
+  const body = buildBody(client, n, repo, usageReport);
   let result = null;
   try {
     const res = await fetchImpl(`${auth.server}/api/workers/local-sessions`, {
@@ -401,7 +577,15 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   } catch (err) {
     debug('request failed', err?.message ?? err);
   }
-  writeState(file, { ...state, scope, lastSentAt: now, lastEvent: n.event });
+  // claims: worker id -> the subagent that claimed it (null: the session itself).
+  const claims = n.event === 'bind' ? { ...(state.claims ?? {}), [n.workerId]: n.agentId ?? null } : state.claims;
+  const claimedAt = n.event === 'bind' ? { ...(state.claimedAt ?? {}), [n.workerId]: state.claimedAt?.[n.workerId] ?? now } : state.claimedAt;
+  writeState(file, {
+    ...state, scope, lastSentAt: now, lastEvent: n.event,
+    ...(claims ? { claims } : {}),
+    ...(claimedAt ? { claimedAt } : {}),
+    ...(usageState ? { usage: usageState } : {}),
+  });
   return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result) };
 }
 

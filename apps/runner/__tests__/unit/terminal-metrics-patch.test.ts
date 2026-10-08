@@ -24,7 +24,9 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/terminal-metrics-patch.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalUIConfig } from '../../src/types';
 
 // ─── Mocks (same shape as session-model-cost.test.ts) ────────────────────────
@@ -103,13 +105,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -231,6 +233,12 @@ describe('completion payload carries the metrics built at completion time', () =
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(resetAll);
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   afterEach(() => { manager?.destroy(); });
 
   // The regression: no SDK `result` message means the result handler never set

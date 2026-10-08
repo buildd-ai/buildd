@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.289.1",
+  "version": "0.291.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -32,6 +32,12 @@
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-capability-requirements": "./model-capability-requirements.ts",
     "./dispatch-model-guard": "./dispatch-model-guard.ts",
+    "./model-certification": "./model-certification.ts",
+    "./model-certification-candidates": "./model-certification-candidates.ts",
+    "./model-certification-store": "./model-certification-store.ts",
+    "./model-upgrade-policy": "./model-upgrade-policy.ts",
+    "./model-upgrade-policy-store": "./model-upgrade-policy-store.ts",
+    "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./entitlements": "./entitlements.ts",

@@ -140,6 +140,11 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // How this team's catalog-resolved tiers advance to newly certified models:
+  // { mode: 'latest-compatible' | 'soak' | 'manual', soakHours?, adoptedThrough?,
+  // setBy?, setAt? }. NULL = latest-compatible. A workspace's own value wins.
+  // Read only through packages/core/model-upgrade-policy.ts (readUpgradePolicy).
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
   // team: NULL or a missing key = off. `lessons` records content-free lesson
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
@@ -1008,6 +1013,8 @@ export const workspaces = pgTable('workspaces', {
 
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
@@ -2053,7 +2060,11 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
-  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  /**
+   * Legacy: the single worker a session could hold before multi-claim. Read
+   * (never written) so a session bound before localSessionWorkers existed still
+   * releases its worker; the bindings live in localSessionWorkers now.
+   */
   boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
@@ -2062,6 +2073,19 @@ export const localSessions = pgTable('local_sessions', {
   oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * The interactive workers a local session holds: one row per claim its own
+ * claim_task (or a subagent's) minted. The worker is the primary key, so a
+ * worker belongs to at most one session, ever; a session may hold several.
+ */
+export const localSessionWorkers = pgTable('local_session_workers', {
+  workerId: uuid('worker_id').primaryKey().references(() => workers.id, { onDelete: 'cascade' }),
+  localSessionId: uuid('local_session_id').references(() => localSessions.id, { onDelete: 'cascade' }).notNull(),
+  boundAt: timestamp('bound_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sessionIdx: index('local_session_workers_session_idx').on(t.localSessionId),
 }));
 
 /**

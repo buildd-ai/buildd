@@ -1448,6 +1448,14 @@ export interface ClaimModelEndpoint {
    * clearly rather than guess a wire format.
    */
   openAiBaseUrl?: string;
+  /**
+   * Claude's deferred MCP/tool loading (ToolSearch / `tool_reference`) is
+   * supported through this endpoint: the runner sets ENABLE_TOOL_SEARCH=true
+   * in a Claude run's env. The effective value for this endpoint
+   * (@buildd/core/agent-endpoint `effectiveToolSearch`), not the kind's
+   * default. Absent/false: not set. Never applied to a Codex run.
+   */
+  toolSearch?: boolean;
 }
 
 export type ClaimDiagnosticReason =

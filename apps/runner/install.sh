@@ -11,12 +11,24 @@ NC='\033[0m'
 # installs, e.g. `curl -fsSL buildd.dev/install.sh | bash -s -- --service`).
 # Without it, an interactive terminal is asked at the end; a non-interactive one
 # (no TTY — piped install with no flag) skips the service and says how to add it later.
+#
+# --client: buildd for your own Claude Code / Codex / Cursor sessions only
+# (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --client`). Checks out
+# just what `buildd login` and `buildd install` load, runs no `bun install`,
+# downloads no Chromium and offers no service. Running the installer again
+# without --client upgrades it in place to the full runner.
 WANT_SERVICE=0
+CLIENT_MODE=0
 for arg in "$@"; do
   [ "$arg" = "--service" ] && WANT_SERVICE=1
+  [ "$arg" = "--client" ] && CLIENT_MODE=1
 done
 
-echo -e "${GREEN}Installing buildd runner...${NC}"
+if [ "$CLIENT_MODE" = "1" ]; then
+  echo -e "${GREEN}Installing buildd (client only: login and Claude Code / Codex / Cursor setup, no runner)...${NC}"
+else
+  echo -e "${GREEN}Installing buildd runner...${NC}"
+fi
 
 # Check for bun
 if ! command -v bun &> /dev/null; then
@@ -55,6 +67,71 @@ package.json
 SPARSE
 }
 
+# --- client mode: begin ---
+# What `install.sh --client` checks out: exactly the files `buildd login` and
+# `buildd install` load (they import only runtime built-ins, so no `bun install`),
+# the agent plugin they install, and the launcher's server-only preload.
+# apps/runner/__tests__/unit/install-client-mode.test.ts derives this list from
+# the real import graph and fails when it drifts.
+write_client_sparse_checkout() {
+  cat > .git/info/sparse-checkout << 'CLIENT_SPARSE'
+apps/runner/src/login.ts
+apps/runner/src/agent-plugin-install.ts
+apps/runner/src/buildd-home.ts
+apps/runner/src/claude-json-mcp.ts
+apps/runner/src/secure-file.ts
+apps/runner/plugin/
+scripts/stub-server-only.ts
+CLIENT_SPARSE
+}
+
+# A full runner install already has everything --client provides. Turning it
+# into a client one would delete the runner, so --client leaves it alone.
+client_mode_guard() {
+  local dir="$1"
+  if [ -d "$dir/.git" ] && [ ! -f "$dir/.client-only" ] && [ -f "$dir/apps/runner/src/index.ts" ]; then
+    echo -e "${YELLOW}$dir already has the full buildd runner, which includes everything --client installs.${NC}"
+    echo "Nothing changed. Use it as is: buildd login, then buildd install --global."
+    echo "To update it, run the installer without --client."
+    return 1
+  fi
+  return 0
+}
+
+# print_client_next_steps <login source, or "">
+print_client_next_steps() {
+  local login_source="$1"
+  echo ""
+  echo "Next:"
+  echo '  exec $SHELL              reload your shell so buildd is on your PATH'
+  if [ -z "$login_source" ]; then
+    echo "  buildd login             connect this machine to your buildd account"
+    echo "                           (no browser on this machine? buildd login --device)"
+  fi
+  echo "  buildd install --global  turn buildd on in Claude Code for your workspace folders"
+  echo ""
+  echo "This is the client-only install: there is no runner, so nothing runs buildd tasks on this machine."
+  echo "Update it by running the installer again with --client. To add the runner: curl -fsSL https://buildd.dev/install.sh | bash"
+}
+
+# Log in when there is a terminal to do it on, then say the one thing left.
+finish_client_install() {
+  echo ""
+  echo -e "${GREEN}Installed buildd (client only).${NC}"
+  local login_source
+  login_source="$(buildd_login_source)"
+  if [ -z "$login_source" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+    echo ""
+    "$BIN_DIR/buildd" login < /dev/tty && login_source="$(buildd_login_source)"
+  fi
+  print_client_next_steps "$login_source"
+}
+# --- client mode: end ---
+
+if [ "$CLIENT_MODE" = "1" ] && ! client_mode_guard "$INSTALL_DIR"; then
+  exit 0
+fi
+
 # The plain Bun runtime has no `react-server` condition, so `server-only` throws
 # at module load for anything that transitively imports the DB layer. Bun reads
 # bunfig.toml from the cwd only, so the launcher passes the preload explicitly
@@ -65,8 +142,8 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
 
-  # Update sparse checkout config (in case it changed)
-  write_sparse_checkout
+  # Update sparse checkout config (in case it changed, or the mode did)
+  if [ "$CLIENT_MODE" = "1" ]; then write_client_sparse_checkout; else write_sparse_checkout; fi
 
   # Fetch and apply updates (nuke and re-clone if fetch fails — handles corrupted sparse checkouts)
   if git fetch origin "$BUILDD_REF"; then
@@ -94,7 +171,7 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
   git remote add origin "https://github.com/${BUILDD_REPO}.git"
   git config core.sparseCheckout true
 
-  write_sparse_checkout
+  if [ "$CLIENT_MODE" = "1" ]; then write_client_sparse_checkout; else write_sparse_checkout; fi
 
   # Fetch and checkout: a branch gets a local branch tracking it, a SHA is detached.
   git fetch --depth 1 origin "$BUILDD_REF"
@@ -105,10 +182,18 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
   fi
 fi
 
+# Client mode is marked so the launcher knows there is no runner; a full
+# install over it removes the mark.
+if [ "$CLIENT_MODE" = "1" ]; then
+  touch "$INSTALL_DIR/.client-only"
+else
+  rm -f "$INSTALL_DIR/.client-only"
+fi
+
 # Rewrite root package.json to only reference the sparse-checkout workspaces
 # (the repo's package.json has "apps/*" and "packages/*" which includes workspaces
 # that don't exist in the sparse checkout, causing bun install to hang)
-cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
+[ "$CLIENT_MODE" = "1" ] || cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
 {
   "name": "buildd",
   "private": true,
@@ -133,10 +218,13 @@ for pattern in \
   'history.db' 'history.db-shm' 'history.db-wal' \
   'repos-cache.json' \
   'roles/' 'workers/' 'archive/' \
-  'start-runner.sh'
+  'start-runner.sh' '.client-only'
 do
   grep -qxF "$pattern" "$EXCLUDE_FILE" 2>/dev/null || echo "$pattern" >> "$EXCLUDE_FILE"
 done
+
+# Client mode stops short of the runner: no dependencies, no Chromium.
+if [ "$CLIENT_MODE" != "1" ]; then
 
 # Install dependencies
 cd "$INSTALL_DIR/apps/runner"
@@ -190,6 +278,8 @@ else
   fi
 fi
 
+fi # end runner-only: dependencies + Chromium
+
 # Create bin directory
 mkdir -p "$BIN_DIR"
 
@@ -220,6 +310,16 @@ export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
 # reads bunfig.toml from the cwd only, and `buildd` runs from anywhere.
 BUILDD_PRELOAD="$HOME/.buildd/scripts/stub-server-only.ts"
 
+# Client-only install (`install.sh --client`): login and install work, the
+# runner is not there.
+CLIENT_ONLY=0
+[ -f "$HOME/.buildd/.client-only" ] && CLIENT_ONLY=1
+client_only_runner() {
+  echo "The buildd runner isn't installed: this is the client-only install (buildd login and buildd install for Claude Code, Codex and Cursor)." >&2
+  echo "To add the runner, so this machine can run buildd tasks: curl -fsSL https://buildd.dev/install.sh | bash" >&2
+  exit 3
+}
+
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
   ROOTS=""
@@ -239,6 +339,23 @@ fi
 # Subcommands
 case "${1:-}" in
   help|-h|--help)
+    if [ "$CLIENT_ONLY" = "1" ]; then
+      cat << 'CLIENTUSAGE'
+Usage: buildd <command>   (client-only install: no runner)
+
+  buildd login [--device]    Sign in and save your key to ~/.buildd/config.json
+  buildd logout              Remove the saved key
+  buildd status              Show whether you are signed in
+  buildd install --global    Turn buildd on in Claude Code for your workspace folders,
+                             plus session presence hooks for Claude Code / Codex / Cursor
+  buildd install --here      Turn it on for this folder too
+  buildd install [--global] --status|--uninstall   Inspect or remove those hooks
+  buildd init <workspace-id> Write .mcp.json for this repo
+
+To add the runner (run buildd tasks on this machine): curl -fsSL https://buildd.dev/install.sh | bash
+CLIENTUSAGE
+      exit 0
+    fi
     # Answered by the runner's own usage text (cli-args.ts) without starting it.
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
     ;;
@@ -394,10 +511,13 @@ MCPEOF
     ;;
 
   service)
+    [ "$CLIENT_ONLY" = "1" ] && client_only_runner
     shift
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
 esac
+
+[ "$CLIENT_ONLY" = "1" ] && client_only_runner
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
@@ -469,6 +589,12 @@ print_next_steps() {
   echo "Config is stored in ~/.buildd/config.json"
 }
 # --- next steps: end ---
+
+# Client mode ends here: the rest (zstd, mergiraf, the service) is the runner's.
+if [ "$CLIENT_MODE" = "1" ]; then
+  finish_client_install
+  exit 0
+fi
 
 # Install zstd: apps/runner/src/warm-repo.ts shells out to the real CLI to
 # compress/restore the cloud runner's cache tarball, and its unit tests do the

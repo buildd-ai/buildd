@@ -84,8 +84,11 @@ export async function attachAgentEndpoints(
       w.modelEndpoint = {
         kind: e.kind, baseUrl: e.baseUrl, authToken: e.apiKey, authHeader: e.authHeader, models: e.models,
         ...(e.openAiBaseUrl ? { openAiBaseUrl: e.openAiBaseUrl } : {}),
+        // The winning row's own capability, so a workspace row and the team
+        // row can differ. Meaningless to Codex, so not sent for it.
+        ...(!isCodexTask && e.toolSearch ? { toolSearch: true } : {}),
       };
-      console.log(`[claim] attached ${e.scope} agent model endpoint (${e.kind}) for worker ${cw.id}`);
+      console.log(`[claim] attached ${e.scope} agent model endpoint (${e.kind}) for worker ${cw.id}${isCodexTask ? '' : ` tool_search=${e.toolSearch ? 'on' : 'off'}`}`);
     } catch (err) {
       // Non-fatal, like every credential block: the claim still succeeds.
       console.warn(`[claim] agent endpoint lookup failed for worker ${cw.id}:`, err);
