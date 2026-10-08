@@ -56,7 +56,7 @@
       "name": "@buildd/responder",
       "version": "0.0.0",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.131.0",
+        "@anthropic-ai/sdk": "^0.132.0",
         "@neondatabase/serverless": "^1.0.0",
       },
       "devDependencies": {
@@ -246,7 +246,7 @@
 
     "@anthropic-ai/claude-agent-sdk-win32-x64": ["@anthropic-ai/claude-agent-sdk-win32-x64@0.3.290", "", { "os": "win32", "cpu": "x64" }, "sha512-mXgdB/OaZRAlt4E+cculWgEgmn5wAspzHO63ZfaSOVSuGJVDLBLBnwRDKkjI0cWCwAc17cetmu3TdNap/f0hxA=="],
 
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.131.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-9+PepoU7qVMmM70jSahdnfcMHAvAnzhMOLv2W9WjRLO+OG/MAiBETkwKZqv7KIJ1Cj5h8eZ019bHzZaq+Mbepw=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.132.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-Dg+Rd0effi+4FyNwgEx6JXl9COefsZ3C7BOPSKYIWboQOEIi9HXtu1WBdND0DIgMF7Qt1vuCSjsbs7sjUkzJuQ=="],
 
     "@ast-grep/napi": ["@ast-grep/napi@0.45.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.45.0", "@ast-grep/napi-darwin-x64": "0.45.0", "@ast-grep/napi-linux-arm64-gnu": "0.45.0", "@ast-grep/napi-linux-arm64-musl": "0.45.0", "@ast-grep/napi-linux-x64-gnu": "0.45.0", "@ast-grep/napi-linux-x64-musl": "0.45.0", "@ast-grep/napi-win32-arm64-msvc": "0.45.0", "@ast-grep/napi-win32-ia32-msvc": "0.45.0", "@ast-grep/napi-win32-x64-msvc": "0.45.0" } }, "sha512-5dQqAVZeHfdQsXjH9FCn+A8a1tb+GVa3Asdq6cKP4l7O0KqH/gmWLswvSaPx7twWfpUwHtGpX7L9frPEAqfNng=="],
 
