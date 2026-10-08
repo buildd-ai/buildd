@@ -17,13 +17,14 @@
  * Every handler re-reads the delivery and is idempotent: the outbox delivers
  * at least once.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
+import { tasks, workers } from '@buildd/core/db/schema';
 import { mergePullRequest, type MergePullRequestResult } from '@/lib/github';
 import { classifyMergeFailure } from '@/lib/conflict-retry';
 import { finalizeMissionPrMerge } from '@/lib/mission-pr';
-import { loadMergedPrOwner, runMergedPrWork } from '@/lib/pr-merged-work';
+import { runMergedPrWork } from '@/lib/pr-merged-work';
+import { workerOwnsPr } from '@/lib/repo-scope';
 import type { Command } from './commands';
 import type { EffectHandler, EffectHandlers } from './effects';
 import { applyCommand, loadView, type Exec } from './kernel';
@@ -116,7 +117,13 @@ const emitPrMerged: EffectHandler = async (e) => {
   const d = (await loadView({ deliveryId: e.deliveryId }, dbExec)).delivery;
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
   if (d.state !== 'MERGED') return { outcome: `skipped:state_${d.state}` };
-  const owner = await loadMergedPrOwner(d.repoFullName, d.prNumber);
+  // Scoped to the delivery's workspace: another workspace on the same repo can carry a worker row
+  // with this PR number and url, and the merge must never complete that workspace's task.
+  const owner = await db.query.workers.findFirst({
+    where: and(eq(workers.workspaceId, d.workspaceId), workerOwnsPr(d.repoFullName, d.prNumber)),
+    orderBy: (w, { asc }) => [asc(w.createdAt)],
+    with: { task: true },
+  });
   if (!owner) return { outcome: 'skipped:no_worker' };
   const repo = await workspaceRepo(d.workspaceId);
   const task = owner.task;

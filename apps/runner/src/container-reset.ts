@@ -441,6 +441,11 @@ function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptio
     }
     if (packs === 0) return failWith('no packs kept');
     if (!git(clonePath, ['remote', 'add', '-t', branch, 'origin', cloneUrl]).ok) return failWith('remote add failed');
+    // The fetch below would spawn a detached `maintenance --auto` / `gc --auto`
+    // that repacks under objects/pack while the fsck reads it. Held off until
+    // the seed is verified.
+    git(clonePath, ['config', 'maintenance.auto', 'false']);
+    git(clonePath, ['config', 'gc.auto', '0']);
     const head = `refs/remotes/origin/${branch}`;
     // What the fetch negotiates with. The seed has no refs, and without
     // haves origin sends the whole tree again. The hint is not enough on its
@@ -467,6 +472,8 @@ function seed(clonePath: string, cloneUrl: string, keptDir: string, o: SeedOptio
     if (!git(clonePath, ['rev-parse', '--verify', '-q', head]).ok) return failWith(`origin has no ${branch}`);
     const fsck = git(clonePath, ['fsck', '--connectivity-only', '--no-dangling']);
     if (!fsck.ok) return failWith(`fsck --connectivity-only failed: ${fsck.err}`);
+    git(clonePath, ['config', '--unset', 'maintenance.auto']);
+    git(clonePath, ['config', '--unset', 'gc.auto']);
     git(clonePath, ['symbolic-ref', 'refs/remotes/origin/HEAD', head]);
     if (!git(clonePath, ['checkout', '-q', '-B', branch, '--track', `origin/${branch}`]).ok) return failWith('checkout failed');
     rmSync(keptDir, { recursive: true, force: true });

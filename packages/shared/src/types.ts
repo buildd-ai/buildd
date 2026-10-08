@@ -1733,6 +1733,15 @@ export interface ClaimTasksResponse {
      */
     modelEndpointIgnored?: boolean;
     /**
+     * Cloud claims only: the team's agent model endpoint won for this task but
+     * does not pass deferred tool loading (ToolSearch / `tool_reference`)
+     * through. The container's Claude Code believes it talks to Anthropic (the
+     * dispatcher's egress rewrites the traffic), so the runner sets
+     * ENABLE_TOOL_SEARCH=false. A per-run marker, not a credential; absent
+     * means "leave Claude Code's default".
+     */
+    toolSearchDisabled?: boolean;
+    /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
      * credentials and fetches a task-scoped token from
