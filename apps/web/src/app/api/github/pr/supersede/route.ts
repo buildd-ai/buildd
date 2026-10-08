@@ -12,8 +12,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { workers, tasks } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr } from '@/lib/task-token-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
@@ -79,21 +79,11 @@ export async function POST(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-    // Load task data for taskNamesPr check below
-    if (!resolved.task) {
-      const worker = await db.query.workers.findFirst({
-        where: eq(workers.id, resolved.id),
-        with: { task: true },
-      });
-      if (worker?.task) {
-        resolved.task = worker.task;
-      }
-    }
   } else if (workerId) {
     // workerId supplied directly — still must belong to the caller's team.
     resolved = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true, task: true },
+      with: { workspace: true },
     });
     if (!resolved) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     if (!(await canActOnWorkerPr(account, resolved))) {
@@ -104,13 +94,24 @@ export async function POST(req: NextRequest) {
   }
   const resolvedWorkerId = resolved.id as string;
 
-  // A task token may supersede its own task's PR, or a PR its task names
-  // (similar to agentRunMayActOnPr). This allows "Fix goal criterion" tasks
-  // to record supersession for sibling tasks' orphaned PRs that shipped
-  // elsewhere on the same mission.
-  if (account.taskScope && (resolved.prNumber == null || !taskScopeAllowsWorkerPr(account, resolved, resolved.prNumber))) {
-    if (prNumber == null || !taskNamesPr(resolved.task, prNumber)) {
-      return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR the task names' }, { status: 403 });
+  // A task token may supersede the PR its own run opened, or a PR the CALLER's
+  // task names (a goal-criterion-fix task naming a sibling's orphaned PR). The
+  // naming check reads the caller's task, never the PR owner's: otherwise any
+  // task whose own text mentions its PR would authorize others to act on it.
+  // Either way the target worker must sit in the caller's workspace.
+  if (account.taskScope) {
+    const own = resolved.prNumber != null && taskScopeAllowsWorkerPr(account, resolved, resolved.prNumber);
+    if (!own) {
+      const scope = account.taskScope;
+      const inWorkspace = (resolved.workspaceId ?? resolved.workspace?.id) === scope.workspaceId;
+      const callerTask = inWorkspace && prNumber != null && resolved.prNumber === prNumber
+        ? await db.query.tasks.findFirst({
+            where: and(eq(tasks.id, scope.taskId), eq(tasks.workspaceId, scope.workspaceId)),
+          })
+        : null;
+      if (!callerTask || !taskNamesPr(callerTask, prNumber as number)) {
+        return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR its task names' }, { status: 403 });
+      }
     }
   }
 
