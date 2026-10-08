@@ -9,7 +9,7 @@ mock.module('@/lib/platform-admin', () => ({
     : { response: NextResponse.json({ error: 'Requires a platform admin API key' }, { status: 403 }) },
 }));
 mock.module('@/lib/mcp-oauth', () => ({ discoverOAuthMetadata: async () => ({ authMode: 'oauth' }) }));
-mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => null }));
+mock.module('@/lib/connector-icon', () => ({ resolveConnectorIcon: async () => null, resolveConnectorIconData: async () => null }));
 mock.module('drizzle-orm', () => ({ isNull: (a: any) => ({ op: 'isNull', a }) }));
 mock.module('@buildd/core/db/schema', () => ({ connectorCatalogEntries: { teamId: 'teamId' } }));
 mock.module('@buildd/core/db', () => ({

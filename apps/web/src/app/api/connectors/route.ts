@@ -11,7 +11,8 @@ import { encrypt } from '@buildd/core/secrets';
 import { discoverAndRegister, registrationRefusalBody } from '@/lib/connector-provision';
 import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
-import { resolveConnectorIcon } from '@/lib/connector-icon';
+import { resolveConnectorIconData } from '@/lib/connector-icon';
+import { scheduleStaleIconRefresh } from '@/lib/connector-icon-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
@@ -141,6 +142,10 @@ export async function GET(req: NextRequest) {
       })),
     ];
 
+    // Rows created before icons were resolved (or whose server was down) get
+    // looked up again after the response; never blocks the list.
+    try { scheduleStaleIconRefresh([...rows, ...sharedIn]); } catch { /* best effort */ }
+
     return NextResponse.json({ connectors: result });
   } catch (error) {
     console.error('List connectors error:', error);
@@ -265,9 +270,12 @@ export async function POST(req: NextRequest) {
     let clientId = bodyClientId;
     let encryptedClientSecret: string | undefined;
 
-    // Icon lookup runs alongside discovery; it never fails the create.
+    // Icon lookup runs alongside discovery; it never fails the create. A header
+    // credential lets `initialize` answer with serverInfo.icons; OAuth servers
+    // are re-checked with the bearer once the callback has one.
+    const iconAuth = authMode === 'header' && headerName && headerValue ? { [headerName]: headerValue } : undefined;
     const iconPromise = transport === 'http' && url
-      ? resolveConnectorIcon(url).catch(() => null)
+      ? resolveConnectorIconData(url, { headers: iconAuth }).catch(() => null)
       : Promise.resolve(null);
 
     if (authMode === 'oauth' && url) {
@@ -308,6 +316,7 @@ export async function POST(req: NextRequest) {
       assertionAudience: authMode === 'assertion' ? (bodyAssertionAudience ?? null) : null,
       assertionTokenEndpoint: authMode === 'assertion' ? (bodyAssertionTokenEndpoint ?? null) : null,
       iconUrl: await iconPromise,
+      iconCheckedAt: transport === 'http' && url ? new Date() : null,
     }).returning();
 
     if (authMode === 'header' && headerValue) {

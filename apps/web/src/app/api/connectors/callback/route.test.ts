@@ -67,6 +67,8 @@ const mockCheckBlocked = mock(async (_c: any, _t: string) => null as any);
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/connector-team-auth', () => ({ canManageTeamConnectors: mockCanManage }));
 mock.module('@/lib/connector-access-policy', () => ({ checkConnectorBlocked: mockCheckBlocked }));
+const mockScheduleAuthedIconRefresh = mock((_c: any, _token: string) => {});
+mock.module('@/lib/connector-icon-refresh', () => ({ scheduleAuthedIconRefresh: mockScheduleAuthedIconRefresh }));
 
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
@@ -265,6 +267,9 @@ describe('GET /api/connectors/callback', () => {
 
     // Token exchange was called
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The fresh bearer is used to read the server's own serverInfo.icons.
+    expect(mockScheduleAuthedIconRefresh.mock.calls.at(-1)?.[1]).toBe(fakeAccessToken);
     const [tokenUrl, tokenOpts] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(tokenUrl).toBe('https://auth.example.com/token');
     const body = new URLSearchParams(tokenOpts.body as string);

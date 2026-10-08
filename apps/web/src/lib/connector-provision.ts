@@ -3,7 +3,7 @@ import { connectors, connectorWorkspaces, workspaces } from '@buildd/core/db/sch
 import { and, eq } from 'drizzle-orm';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl, ClientRegistrationRejectedError } from '@/lib/mcp-oauth';
-import { resolveConnectorIcon } from '@/lib/connector-icon';
+import { resolveConnectorIconData } from '@/lib/connector-icon';
 import { normalizeConnectorUrl, catalogEntryForUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 export interface OAuthSetup {
@@ -71,7 +71,8 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
   const setup: OAuthSetup = entry.authMode === 'oauth'
     ? await discoverAndRegister(entry.url, origin)
     : { authMode: 'none', discoveredMetadata: null, clientId: null, encryptedClientSecret: null };
-  const iconUrl = entry.iconUrl || await resolveConnectorIcon(entry.url).catch(() => null);
+  // Stored inline (data: URL), so the dashboard never hotlinks the catalog's icon host.
+  const iconUrl = await resolveConnectorIconData(entry.url, { preferred: entry.iconUrl || null }).catch(() => null);
 
   const [created] = await db.insert(connectors).values({
     teamId,
@@ -84,6 +85,7 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
     clientId: setup.clientId,
     encryptedClientSecret: setup.encryptedClientSecret,
     iconUrl: iconUrl || null,
+    iconCheckedAt: new Date(),
   }).onConflictDoNothing().returning();
   if (created) return created;
   // Lost a race on (teamId, name): the winner's row is the one to use.
