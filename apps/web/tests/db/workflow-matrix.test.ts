@@ -870,6 +870,23 @@ describe('S9–S15', () => {
     expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
   });
 
+  // Per-workspace isolation: a second workspace connected to the same repo can hold a worker row with
+  // the same PR number and url (and, on a reused database, an earlier run's rows do). The merge's
+  // post-merge work must complete THIS delivery's owner task, never the other workspace's.
+  test('S10 (isolation): a same-repo, same-number worker row in another workspace is not the merged PR\'s owner', async () => {
+    const o = await openAndHandOn();
+    const url = `https://github.com/${REPO}/pull/${o.prNumber}`;
+    await q(sql`UPDATE workers SET pr_url = ${url} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    const other = await seedWorkspace();
+    const foreignTask = await seedTask(other.workspaceId, { status: 'in_progress', title: 'feat: foreign owner' });
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url, created_at)
+      VALUES (${other.workspaceId}::uuid, ${foreignTask}::uuid, 'w', 'test', 'feat/other', 'running', ${o.prNumber}, ${url}, now() - interval '1 hour')`);
+    await verdict(o, 'approve');
+    await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect((await taskRow(o.ownerTaskId)).status).toBe('completed');
+    expect((await taskRow(foreignTask)).status).toBe('in_progress');
+  });
+
   test('S10 (doors): an indeterminate merge answer is verified before anything re-calls; nothing landed → APPROVED, and the next door lands it', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
