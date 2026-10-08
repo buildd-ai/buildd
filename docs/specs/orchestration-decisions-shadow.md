@@ -2,13 +2,13 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-03
+last_verified: 2026-10-08
 summary: Creation-manifest decisions MUST stay record-only without a committed promotion; claim hold/start MAY apply a confident Jev START to its three advisory gates only; both MUST fall back to the rule on failure.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
-related: [model-routing-and-tiers, mission-task-lifecycle]
+related: [model-routing-and-tiers, mission-task-lifecycle, live-sibling-conflict-probe]
 keywords: [jev, shadow, gated, applying fraction, cohort, propensity, orchestration_decisions, orchestration_manifest, orchestration_claim, readout, insufficient_n, soft overlap, softOverlaps, partitionOverlapEdges, hold start]
-verified_by: [packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
+verified_by: [apps/web/src/lib/hard-overlap-surfaces.test.ts, packages/core/__tests__/orchestration-decision.test.ts, packages/core/__tests__/orchestration-promotion.test.ts, packages/core/__tests__/orchestration-readout.test.ts, packages/core/__tests__/orchestration-claim-decision.test.ts, packages/core/__tests__/path-overlap-edges.test.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.test.ts, apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts]
 assertions:
   - id: "run-orchestration-decision"
     type: "symbol"
@@ -41,6 +41,14 @@ assertions:
   - id: "soft-overlap-gate-test"
     type: "test_file"
     path: "apps/web/src/app/api/workers/claim/soft-overlap-gate.test.ts"
+  - id: "hard-overlap-surfaces"
+    type: "symbol"
+    name: "overlapIsHard"
+    path: "apps/web/src/lib/hard-overlap-surfaces.ts"
+  - id: "soft-overlap-evidence"
+    type: "symbol"
+    name: "loadSoftOverlapEvidence"
+    path: "packages/core/orchestration-claim-source.ts"
   - id: "manifest-cohort-through-guard"
     type: "symbol_reachable"
     symbol: "resolveApplyingFraction"
@@ -68,7 +76,7 @@ The creation-manifest decision is **shadow-only** as shipped: no promotion is
 recorded, so its applying fraction resolves to zero. See
 `knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
 
-**Claim hold/start is live by owner decision** (tasks 7eb191b9 and d0db21dd),
+**Claim hold/start is live by owner decision** (tasks 7eb191b9, d0db21dd and 1141e62e),
 reversing the earlier "stays evidence-gated" exception: it ships `gated` at a
 conservative starting threshold (`CLAIM_HOLD_MIN_CONFIDENCE`) with every
 eligible deferral in the applying arm, and does not go through the promotion
@@ -79,10 +87,20 @@ every advisory gate to deterministic HOLD.
 **Hard vs soft path overlap**: a stored `dependsOn` edge blocks until the
 upstream completes and merges, and is never re-checked. At creation (and on a
 conflict retry) `partitionOverlapEdges` makes an inferred edge only for a
-same-file overlap, a migration or schema path, or a workspace serialized
-surface. A prefix-only overlap is SOFT: recorded as
-`pathDeclaration.softOverlaps` (the pair, the overlapping paths, the edge
-kind), never an edge, and decided at claim by hold/start (`soft_overlap` gate).
+migration or schema path, or a workspace hard surface (`overlapIsHard`): a
+serialized surface for any overlap, and, for a same-file overlap only, a
+generated file (built-in regenerable or `gitConfig.derivedFiles`) or an
+explicit hotspot (`gitConfig.overlapHotspots`). Every other overlap, same-file
+or prefix-only, is SOFT: recorded as `pathDeclaration.softOverlaps` (the pair,
+the overlapping paths, kind `same_file` or `prefix`), never an edge, and
+decided at claim by hold/start (`soft_overlap` gate). Same-file overlap went
+soft because most task pairs whose merged PRs touched the same file did not
+actually conflict, so a hard hold wasted most of the wait.
+Hardness is judged on the pair's FULL intersection: a pair that shares a file
+and also a serialized directory (`seq-dir/` against `seq-dir/0042.ts`) is
+hard. At most `MAX_SOFT_OVERLAPS_PER_TASK` soft pairs are stored, same-file
+pairs first; an overlap past that budget becomes a hard edge rather than
+running unheld with no evidence (fail closed).
 Migration 0267 moved the pending tasks' pre-split inferred edges into
 `softOverlaps` (kind `legacy_inferred`), reclassified at each claim against the
 current manifests.
@@ -124,10 +142,20 @@ current manifests.
 - An applied START is honoured only for the same claim-time state digest and
   within its TTL; a ledger read error holds.
 - A soft overlap holds only while its holder is in flight. Reclassified at
-  claim (`evaluateSoftOverlaps`): a same-file, migration or serialized overlap
-  is a deterministic hold Jev never sees; a failed holder read holds every
-  soft entry (fail closed); a finished holder or a vanished overlap releases.
-- Creation never stores a prefix-only overlap as a `dependsOn` edge.
+  claim (`evaluateSoftOverlaps`): a migration path or a workspace hard surface
+  is a deterministic hold Jev never sees; a hard-surface check that throws, or
+  a malformed surface config, holds (fail closed); a failed holder read holds
+  every soft entry (fail closed); a finished holder or a vanished overlap
+  releases.
+- For a soft overlap Jev sees the overlap kind (`same_file` or `prefix`), each
+  shared file's conflict history (merged PRs in the last 90 days whose task
+  touched it, and how many needed a conflict retry; `no_history` when none),
+  the holder's stage (`queued`, `just_started`, `working`, `in_review`,
+  `approved`) and the candidate's predicted change size. The overlap kind is
+  part of the state digest. A failed evidence read is a decision error: the
+  decision falls back to the rule's HOLD without calling the model.
+- Creation never stores a prefix-only overlap, or a same-file overlap off the
+  hard surfaces, as a `dependsOn` edge.
 - A force claim past a soft overlap records a `force_soft_overlap` bypass row
   with the holder, the paths and `calibration: human_force`: human feedback,
   never a model label.
@@ -166,10 +194,17 @@ current manifests.
   at or above the threshold THEN the row is applied with `experiment_arm`
   `apply`; below the threshold, or on a provider error, the effective verdict
   is HOLD.
-- AC-1c: GIVEN a new task whose manifest overlaps an in-flight task's only by
-  directory prefix WHEN it is created THEN no `dependsOn` edge is stored and
-  the pair is recorded in `pathDeclaration.softOverlaps`; GIVEN the same file
-  on both sides THEN the edge is stored and listed in `inferredDependsOn`.
+- AC-1c: GIVEN a new task whose manifest overlaps an in-flight task's by
+  directory prefix, or on the same ordinary file, WHEN it is created THEN no
+  `dependsOn` edge is stored and the pair is recorded in
+  `pathDeclaration.softOverlaps` (kind `prefix` or `same_file`); GIVEN a
+  migration path, or the same generated or hotspot file on both sides, THEN
+  the edge is stored and listed in `inferredDependsOn`.
+- AC-1e: GIVEN a same-file soft overlap whose file has no merged-PR conflict
+  history WHEN Jev answers START at or above the threshold THEN the claim
+  proceeds; GIVEN the same file is a migration path THEN the claim holds
+  deterministically and Jev is never asked; GIVEN the evidence read fails THEN
+  the effective verdict is HOLD with status `fallback`.
 - AC-1d: GIVEN a soft overlap with an in-flight holder WHEN no applied START
   exists THEN the claim defers with reason `soft_overlap` naming the holder,
   paths and verdict; WHEN one exists THEN the declared paths are acquired
@@ -210,6 +245,12 @@ current manifests.
 - `packages/core/orchestration-claim-decision.ts`: `CLAIM_HOLD_DECISION`,
   `CLAIM_HOLD_MIN_CONFIDENCE`, `classifyClaimHoldEligibility`,
   `isGatedStartReachable`.
+- `apps/web/src/lib/hard-overlap-surfaces.ts`: `overlapIsHard`,
+  `resolveHardOverlapSurfaces` (serialized, generated, hotspot); hotspot list
+  validated by PATCH `/api/workspaces/[id]` (`gitConfig.overlapHotspots`).
+- `packages/core/orchestration-claim-decision.ts` /
+  `orchestration-claim-source.ts`: `deriveHolderStage`,
+  `summarizeFileConflictHistory`, `loadSoftOverlapEvidence`.
 - `packages/core/path-overlap.ts`: `classifyManifestOverlap`,
   `partitionOverlapEdges`, `readSoftOverlaps`; callers POST /api/tasks and
   `apps/web/src/lib/conflict-retry.ts`.

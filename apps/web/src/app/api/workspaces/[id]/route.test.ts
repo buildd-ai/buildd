@@ -731,6 +731,19 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts a list of gitConfig.overlapHotspots and rejects a malformed or repo-wide one', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    let res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { overlapHotspots: ['apps/web/src/app/api/workers/claim/route.ts'] } } }), { params: mockParams });
+    expect(res.status).toBe(200);
+    for (const value of ['x.ts', [''], ['**'], [3]]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { overlapHotspots: value } } }), { params: mockParams });
+      expect(res.status).toBe(400);
+    }
+  });
+
   // Cloud-runner container class (packages/shared/src/runner-size.ts).
   it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
     for (const value of ['standard', 'large', null]) {

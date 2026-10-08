@@ -208,13 +208,17 @@ export function shouldSerializeByManifest(
 //
 // A stored `dependsOn` edge is a hard rail: the dependent waits until the
 // upstream task is completed AND its PR merged, and nothing re-checks it. That
-// is right for two tasks writing the same file, or anything in a migration
-// namespace. It is wrong for a directory-prefix overlap (`scripts/` against
-// `scripts/x.ts`): honest broad scope queued behind every task under it, which
-// rewarded declaring less. Prefix-only overlap is SOFT: recorded as scheduling
-// evidence (`PathDeclaration.softOverlaps`), decided at claim time by the
-// HOLD/START decision, with live path leases still preventing simultaneous
-// edits.
+// is right for anything in a migration namespace, and for a workspace's hard
+// surfaces (serialized namespaces, generated files, the explicit hotspot list:
+// the caller's `isSerialized`). It is wrong for a directory-prefix overlap
+// (`scripts/` against `scripts/x.ts`): honest broad scope queued behind every
+// task under it, which rewarded declaring less. It is also wrong for most
+// same-file overlaps: of task pairs whose merged PRs touched the same files,
+// only a small minority actually conflicted, so a hard hold wasted most of the
+// wait. Both are SOFT: recorded as scheduling evidence
+// (`PathDeclaration.softOverlaps`, kind `prefix` or `same_file`), decided at
+// claim time by the HOLD/START decision, with live path leases still
+// preventing simultaneous edits.
 
 /**
  * Migration namespaces and the schema source, matched without workspace config
@@ -249,8 +253,12 @@ export interface ManifestOverlap {
   paths: string[];
 }
 
+/**
+ * Only a migration overlap is hard on its own. A same-file overlap is hard only
+ * when its files are a workspace hard surface, which the caller decides.
+ */
 export function isHardOverlapKind(kind: ManifestOverlapKind): boolean {
-  return kind === 'exact_file' || kind === 'migration';
+  return kind === 'migration';
 }
 
 /**
@@ -271,7 +279,11 @@ export function classifyManifestOverlap(
   if (paths.some(isMigrationPath)) return { kind: 'migration', paths };
   const setB = new Set(b.map(stripTrailingSep));
   const exact = [...new Set(a.map(stripTrailingSep))].filter(p => setB.has(p) && isFileShapedPath(p));
-  if (exact.length > 0) return { kind: 'exact_file', paths: exact };
+  // `paths` is ALWAYS the full intersection (prefix + exact): a pair that shares
+  // a file can also share a serialized directory, and the hard-surface check
+  // must see that directory too (`seq-dir/` vs `seq-dir/0042.ts` plus a shared
+  // `src/a.ts` is hard, as it was before same-file overlap went soft).
+  if (exact.length > 0) return { kind: 'exact_file', paths: [...exact, ...paths.filter(p => !exact.includes(p))] };
   return { kind: 'prefix', paths };
 }
 
@@ -279,8 +291,11 @@ export function classifyManifestOverlap(
 export interface SoftOverlapEdge {
   taskId: string;
   paths: string[];
-  /** `prefix` at creation; `legacy_inferred` for an edge minted before this rule (reclassified at claim). */
-  kind: 'prefix' | 'legacy_inferred';
+  /**
+   * `prefix` or `same_file` at creation; `legacy_inferred` for an edge minted
+   * before the hard/soft split (reclassified at claim either way).
+   */
+  kind: 'prefix' | 'same_file' | 'legacy_inferred';
 }
 
 const softStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((p): p is string => typeof p === 'string') : []);
@@ -294,7 +309,8 @@ export function readSoftOverlaps(pathDeclaration: unknown): SoftOverlapEdge[] {
     if (!e || typeof e !== 'object') continue;
     const taskId = (e as { taskId?: unknown }).taskId;
     if (typeof taskId !== 'string' || taskId.length === 0) continue;
-    const kind = (e as { kind?: unknown }).kind === 'legacy_inferred' ? 'legacy_inferred' : 'prefix';
+    const rawKind = (e as { kind?: unknown }).kind;
+    const kind = rawKind === 'legacy_inferred' || rawKind === 'same_file' ? rawKind : 'prefix';
     out.push({ taskId, paths: softStrings((e as { paths?: unknown }).paths), kind });
   }
   return out;
@@ -306,29 +322,44 @@ const MAX_SOFT_OVERLAP_PATHS = 10;
 
 /**
  * Authoring-time split of a new task's manifest overlaps with in-flight tasks:
- * `hard` ids become `dependsOn` edges (same file, migration, or a workspace
- * serialized surface); `soft` pairs are scheduling evidence only. Replaces the
+ * `hard` ids become `dependsOn` edges (a migration path, or a workspace hard
+ * surface per `isSerialized`: serialized namespace, generated file, hotspot);
+ * `soft` pairs (prefix-only or same-file) are scheduling evidence only. Replaces the
  * old "any overlap is an edge" rule (`shouldSerializeByManifest`) in the
  * creation pass and the conflict-retry pass, which must not drift.
  */
 export function partitionOverlapEdges(
   manifest: string[] | null | undefined,
   others: ReadonlyArray<{ id: string; pathManifest: string[] | null | undefined }>,
-  opts: { isSerialized?: (paths: string[]) => boolean; skip?: (id: string) => boolean; maxSoft?: number } = {},
+  opts: {
+    /** Workspace hard surface for these overlapping paths; `kind` lets same-file-only surfaces (generated, hotspot) apply only to a same-file overlap. */
+    isSerialized?: (paths: string[], kind: ManifestOverlapKind) => boolean;
+    skip?: (id: string) => boolean;
+    maxSoft?: number;
+  } = {},
 ): { hard: string[]; soft: SoftOverlapEdge[] } {
   const hard: string[] = [];
   const soft: SoftOverlapEdge[] = [];
   if (!manifest?.length || isAdvisoryManifest(manifest)) return { hard, soft };
   const maxSoft = opts.maxSoft ?? MAX_SOFT_OVERLAPS_PER_TASK;
+  const candidates: SoftOverlapEdge[] = [];
   for (const o of others) {
     if (opts.skip?.(o.id)) continue;
     const overlap = classifyManifestOverlap(manifest, o.pathManifest ?? null);
     if (overlap.kind === 'none') continue;
-    if (isHardOverlapKind(overlap.kind) || opts.isSerialized?.(overlap.paths)) {
+    if (isHardOverlapKind(overlap.kind) || opts.isSerialized?.(overlap.paths, overlap.kind)) {
       if (!hard.includes(o.id)) hard.push(o.id);
-    } else if (soft.length < maxSoft && !soft.some(s => s.taskId === o.id)) {
-      soft.push({ taskId: o.id, paths: overlap.paths.slice(0, MAX_SOFT_OVERLAP_PATHS), kind: 'prefix' });
+    } else if (!candidates.some(s => s.taskId === o.id)) {
+      candidates.push({ taskId: o.id, paths: overlap.paths.slice(0, MAX_SOFT_OVERLAP_PATHS), kind: overlap.kind === 'exact_file' ? 'same_file' : 'prefix' });
     }
+  }
+  // Same-file pairs take the soft budget first (they are the riskier evidence),
+  // then prefix pairs, each in input order. Anything past the budget is HARD:
+  // a pair with no stored evidence would otherwise run unheld (fail closed).
+  const ordered = [...candidates.filter(c => c.kind === 'same_file'), ...candidates.filter(c => c.kind !== 'same_file')];
+  for (const c of ordered) {
+    if (soft.length < maxSoft) soft.push(c);
+    else if (!hard.includes(c.taskId)) hard.push(c.taskId);
   }
   return { hard, soft };
 }

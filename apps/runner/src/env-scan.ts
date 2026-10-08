@@ -18,10 +18,13 @@ export interface ScanConfig {
   repoRoots?: string[];
 }
 
-const DEFAULT_TOOLS = [
+export const DEFAULT_TOOLS = [
   'node', 'bun', 'deno', 'python', 'vercel', 'aws', 'gcloud', 'docker',
   'gh', 'git', 'terraform', 'kubectl', 'psql', 'mysql', 'redis-cli',
   'fly', 'railway', 'supabase', 'wrangler', 'turso',
+  // Structural merge driver (gitConfig.mergiraf, sibling conflict probe): the
+  // runner's reported tools say whether a workspace's opt-in can take effect.
+  'mergiraf',
 ];
 
 const DEFAULT_ENV_KEYS = [
@@ -133,9 +136,10 @@ export function checkBwrapMountIsolationSupport(): boolean {
  */
 export { checkBrowserCapability } from './browser-capability';
 
-function probeTool(name: string, cmd?: string): WorkerTool | null {
+export function probeTool(name: string, cmd?: string): WorkerTool | null {
   try {
-    execSync(`which ${cmd || name}`, { timeout: 2000, stdio: 'pipe' });
+    // POSIX `command -v`, not `which`: `which` is absent from minimal images.
+    execSync(`command -v ${cmd || name}`, { timeout: 2000, stdio: 'pipe', shell: '/bin/sh' });
   } catch {
     return null;
   }

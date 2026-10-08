@@ -233,6 +233,17 @@ export const GATE_SLUGS = {
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
   /**
+   * Live sibling conflict probe (`lib/sibling-conflict-probe.ts`): two live
+   * workers' observed touches share a file, so one runner ran `git merge-tree`
+   * between the two branch heads (mergiraf on the conflicted files when the
+   * workspace enables it). ADVISORY: nothing is blocked. `warned` = a real
+   * conflict, both workers told once per conflicting pair of heads
+   * (`detail.notified`, `detail.debounced`; `detail.suppressed` when the
+   * kernel owns a side); `accepted` = clean, or resolved structurally by
+   * mergiraf. Compared against conflict retries to measure early warning.
+   */
+  SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',
+  /**
    * Keeping a mission's integration branch current with dev
    * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,
    * superseded). `accepted` = GitHub's merges API landed dev cleanly (a merge
