@@ -69,13 +69,16 @@ const mockExhaustMissionBudget = mock(() => Promise.resolve());
 // mockTasksFindFirst, wrapped in an array — so existing `outputRequirement`
 // setups drive both the relational and the select-based reads.
 const selectAllColumns = () => {
+  let fromGateLedger = false;
   const chain: any = {
-    from: () => chain,
+    // The gate ledger's coalescing read (fireRepeatGateEvent) finds no prior
+    // row, so a coalesced advisory is inserted and lands in gateEventInserts.
+    from: (table: any) => { fromGateLedger = !!(table && table.gate && table.surface && table.outcome); return chain; },
     where: () => chain,
     limit: () => chain,
     orderBy: () => chain,
     then: (resolve: any, reject: any) =>
-      mockTasksFindFirst().then((row: any) => (row ? [row] : [])).then(resolve, reject),
+      (fromGateLedger ? Promise.resolve([]) : mockTasksFindFirst().then((row: any) => (row ? [row] : []))).then(resolve, reject),
   };
   return chain;
 };
@@ -15394,7 +15397,8 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       body: { status: 'running', touchedPaths: paths501 },
     });
     await PATCH(req, { params: mockParams });
-    await new Promise(r => setTimeout(r, 0));
+    // One advisory per task: the ledger coalesces on the task key (a read, then the insert).
+    await new Promise(r => setTimeout(r, 20));
 
     // The diagnostic sample is bounded…
     expect(capturedSet?.observedTouches).toBeDefined();
@@ -15731,7 +15735,7 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       },
     });
     await PATCH(req, { params: mockParams });
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 20));
 
     // 499 stored + new-a fills the sample; new-b/new-c are past it and leased anyway.
     const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];

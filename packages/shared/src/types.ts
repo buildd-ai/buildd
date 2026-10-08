@@ -1550,6 +1550,11 @@ export interface ClaimDiagnostics {
     path_overlap?: number;
     /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
     advisory_manifest?: number;
+    /**
+     * Declared scope overlaps an in-flight task's only softly (directory
+     * prefix, or a pre-v2 inferred edge): held unless HOLD/START said START.
+     */
+    soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;
@@ -1950,6 +1955,21 @@ export interface PathDeclaration {
    * to caller-supplied edges. Only these may ever be removed on narrowing.
    */
   inferredDependsOn?: string[];
+  /**
+   * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
+   * migration, serialized surface). Prefix-only overlap is never a dependsOn
+   * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
+   * rows written before the rule; migration 0267 converted the pending ones.
+   */
+  overlapPolicy?: 'v2';
+  /**
+   * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
+   * one's only by directory prefix (or, `legacy_inferred`, an inferred edge
+   * minted before the hard/soft rule, reclassified against current manifests
+   * at claim). Never a dependsOn edge: the claim route defers on it only while
+   * the other task is in flight, and the HOLD/START decision may start it.
+   */
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**

@@ -47,7 +47,8 @@ import { attemptLine } from '@/lib/workflow/projections';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
-import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { REPO_WIDE_SENTINEL, readSoftOverlaps } from '@buildd/core/path-overlap';
+import { buildCoordinationHolds, coordinationGateDetail, coordinationLink, type CoordinationHold, type CoordinationHolder } from '@/lib/explain-coordination';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
 import { browserRunnerOnline } from './visual-audit-runner';
@@ -83,6 +84,10 @@ const GATE_HISTORY_LIMIT = 10;
  * readable without SQL.
  */
 async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
+  return (await loadGateRows(taskId)).map(r => r.entry);
+}
+
+async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryEntry; detail: unknown }>> {
   const rows = await db.query.gateEvents.findMany({
     where: eq(gateEvents.taskId, taskId),
     orderBy: [desc(gateEvents.occurredAt)],
@@ -91,15 +96,46 @@ async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
   });
   return rows.map(r => {
     const detail = r.detail as Record<string, unknown> | null;
+    const holder = coordinationGateDetail(detail);
     return {
-      occurredAt: r.occurredAt.toISOString(),
-      gate: r.gate,
-      outcome: r.outcome as GateHistoryEntry['outcome'],
-      reason: r.reason,
-      consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
-      firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+      entry: {
+        occurredAt: r.occurredAt.toISOString(),
+        gate: r.gate,
+        outcome: r.outcome as GateHistoryEntry['outcome'],
+        reason: r.reason,
+        consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
+        firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+        ...(holder ? { holder } : {}),
+      },
+      detail,
     };
   });
+}
+
+/**
+ * Who holds a pending task, and why (./explain-coordination). One extra read,
+ * only for a pending task that names holders. A failure omits it.
+ */
+async function loadCoordination(
+  task: { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown },
+  gateRows: Array<{ entry: GateHistoryEntry; detail: unknown }>,
+): Promise<CoordinationHold[]> {
+  if (task.status !== 'pending') return [];
+  const gateDetails = gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }));
+  const ids = new Set<string>(task.dependsOn ?? []);
+  for (const e of readSoftOverlaps(task.pathDeclaration)) ids.add(e.taskId);
+  for (const g of gateRows) if (g.entry.holder?.blockingTaskId) ids.add(g.entry.holder.blockingTaskId);
+  ids.delete(task.id);
+  const rows = ids.size > 0
+    ? await db.query.tasks.findMany({
+        where: inArray(tasks.id, [...ids]),
+        columns: { id: true, title: true, status: true, pathManifest: true },
+      })
+    : [];
+  const holders = new Map<string, CoordinationHolder>(
+    (rows as Array<{ id: string; title: string | null; status: string; pathManifest: string[] | null }>).map(r => [r.id, r]),
+  );
+  return buildCoordinationHolds({ task, holders, gateDetails });
 }
 
 /** Cap on how many gated subjects a workspace answer returns. */
@@ -718,10 +754,10 @@ async function viewForTask(taskId: string): Promise<{
 } | null> {
   const task = (await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true },
+    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true, pathDeclaration: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null }) | undefined;
+  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null; pathDeclaration?: unknown }) | undefined;
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
@@ -919,8 +955,14 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const dv = deliveries.get(taskId) ?? null;
   const transition = deliveryTransitionLink(dv ? { ...dv, attemptLine: attemptLine(dv.attempts) } : null, { taskId, workspaceId });
   const hold = task.status === 'pending' ? entitlementHoldLink(task.context, { taskId, workspaceId }) : null;
-  const because = withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold);
-  const gateHistory = await loadGateHistory(taskId);
+  const gateRows = await loadGateRows(taskId);
+  const gateHistory = gateRows.map(r => r.entry);
+  const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
+  const coordLink = coordinationLink(holds, { taskId, workspaceId });
+  const because = withDispatchLink(
+    withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
+    coordLink as Parameters<typeof withDispatchLink>[1],
+  );
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
@@ -932,7 +974,8 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   // The verdict the task page leads with, from the same loader the
   // state-change recompute uses. Read-only: no model call. A failure omits it.
   const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
-  const withAccess = access.length > 0 ? { ...answer, access } : answer;
+  const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
+  const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
   return { scope: 'task', subjects: [verdict ? { ...withAccess, verdict } : withAccess] };
 }
 
