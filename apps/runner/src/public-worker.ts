@@ -83,6 +83,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   subagentTasks: true,
   subagentTasksObservedCount: true,
   worktreePath: true,
+  recoveryRef: true, // a branch@sha or archive path, like worktreePath
   sessionCwd: true,
   worktreeBaseRef: true,
   prBaseRef: true,
