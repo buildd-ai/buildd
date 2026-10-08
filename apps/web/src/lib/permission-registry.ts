@@ -48,7 +48,7 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   assign_team_owner: {
-    description: "Change a member's role, or add a member as owner.",
+    description: 'Make someone an owner, demote or remove an owner, or transfer ownership.',
     defaultRoles: OWNER_ONLY,
     minKeyLevel: null,
   },

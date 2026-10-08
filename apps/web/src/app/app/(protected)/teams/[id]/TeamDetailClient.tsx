@@ -351,7 +351,7 @@ export default function TeamDetailClient({
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
             <div key={member.userId} className="p-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-2">
-              <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="flex items-center gap-3 min-w-0 flex-1 basis-48">
                 {member.image ? (
                   <img
                     src={member.image}
