@@ -10,7 +10,9 @@
  * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
- * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
+ * lib/agent-capabilities/worker-pr.test.ts, or `callerOwnsWorker`, which
+ * applies `taskScopeAllowsWorker` itself and is tested for it in
+ * lib/worker-owner.test.ts), and each exported handler that calls it
  * directly must do so in its own body. The set of opted-in routes is pinned
  * too, so a new one is a reviewed decision rather than a side effect.
  */
@@ -20,7 +22,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|MissionTaskRead|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(|callerOwnsWorker\(/;
 
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',

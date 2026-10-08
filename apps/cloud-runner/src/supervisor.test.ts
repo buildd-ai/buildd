@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, type RunState } from './lifecycle';
+import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, CLOUD_MODEL_AUTH_CONTAINER_ENV, type RunState } from './lifecycle';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type ScheduledDispatchPayload, type SchedulerPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
@@ -82,7 +82,7 @@ function fakeScheduler() {
   return { port, scheduled, cancelled };
 }
 
-function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number; ownerSeat?: SupervisorDeps['ownerSeat'] } = {}) {
+function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response>; now?: () => number; ownerSeat?: SupervisorDeps['ownerSeat']; plannedModelAuth?: SupervisorDeps['plannedModelAuth'] } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const sched = fakeScheduler();
   const fc = fakeContainer({ unattachable: opts.unattachable });
@@ -121,6 +121,7 @@ function harness(opts: { unattachable?: boolean; config?: Partial<SupervisorDeps
     }) as unknown as typeof fetch,
     scheduler: sched.port,
     ...(opts.ownerSeat ? { ownerSeat: opts.ownerSeat } : {}),
+    ...(opts.plannedModelAuth ? { plannedModelAuth: opts.plannedModelAuth } : {}),
     now: opts.now ?? (() => Date.now()),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (m) => logs.push(m),
@@ -181,6 +182,26 @@ describe('dispatch', () => {
     expect(env).toEqual(h.fc.starts[0]!.env);
     expect(env!.BUILDD_API_KEY).toBe('bldt_test_task_token');
     expect(env!.BUILDD_EXECUTOR).toBe('cloud');
+  });
+
+  // docs/specs/real-and-virtual-cost.md: the container holds only a
+  // placeholder key, so the run's model route is handed to the runner as a
+  // hint, and the runner reports the matching cost basis.
+  test('the container is told the model route its egress will take', async () => {
+    const h = harness({ plannedModelAuth: async () => 'owner_seat' });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(h.fc.starts[0]!.env[CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBe('owner_seat');
+    expect(h.fc.execEnvs[0]![CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBe('owner_seat');
+  });
+
+  test('no route known (or the lookup fails) means no hint, and the run still starts', async () => {
+    for (const plannedModelAuth of [async () => null, async () => { throw new Error('lookup failed'); }]) {
+      const h = harness({ plannedModelAuth });
+      h.sup.dispatch();
+      await h.until(() => h.state.status === 'running');
+      expect(h.fc.starts[0]!.env[CLOUD_MODEL_AUTH_CONTAINER_ENV]).toBeUndefined();
+    }
   });
 
   test('a failed mint starts no container', async () => {

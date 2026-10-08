@@ -37,6 +37,8 @@ import {
   githubTokenRequest,
   lookupGithubGrant,
   modelEndpointRequest,
+  needsServerModelEndpoint,
+  plannedModelAuth,
   parseGithubGrant,
   parseServerModelEndpoint,
   type GithubGrant,
@@ -183,6 +185,11 @@ export class WorkerAgent extends Agent<Env, RunState> {
       },
       // Only with the seat secret on the Worker (owner-seat.ts); otherwise runs start as before.
       ...(ownerSeatEnabled(env) ? { ownerSeat: this.ownerSeatRun } : {}),
+      // The route its egress will take, so the runner reports the matching
+      // cost basis. Without the seat every route is metered: no lookup.
+      plannedModelAuth: async () => ownerSeatEnabled(env)
+        ? plannedModelAuth(env, needsServerModelEndpoint(env) ? await this.modelEndpoints.get() : null)
+        : 'metered',
       mintTaskToken: () => this.mintTaskToken(),
       // One-shot alarms only (Agents SDK schedule, backed by the Durable
       // Object alarm), for task.scheduled. The callback is runScheduledDispatch.

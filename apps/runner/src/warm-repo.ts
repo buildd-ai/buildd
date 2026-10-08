@@ -43,6 +43,7 @@ import {
 } from './phase-lines';
 import { fetchOriginWithRetry } from './git-clone';
 import { isReusedContainer } from './container-reset';
+import { depsWorkSettled, setDepsPrelude } from './deps-gate';
 
 export const WARM_ENV_FLAG = 'BUILDD_WARM_REPO';
 /**
@@ -212,6 +213,8 @@ export interface SnapshotTransport {
    * stderr, for the log.
    */
   pipeTo(path: string, command: string, args: string[]): { status: number; bytes: number; ok: boolean; detail: string };
+  /** pipeTo without blocking the event loop (the deferred cache restore); pipeTo is used when absent. */
+  pipeToAsync?(path: string, command: string, args: string[]): Promise<{ status: number; bytes: number; ok: boolean; detail: string }>;
 }
 
 function headerArgs(headers?: Record<string, string>): string[] {
@@ -231,6 +234,18 @@ function splitStatus(out: string): { status: number; text: string } {
 
 export function curlTransport(baseUrl: string): SnapshotTransport {
   const base = baseUrl.replace(/\/+$/, '');
+  // POSIX sh: a pipeline's status is its last command's. curl's own
+  // status line goes to stderr (`%{stderr}`), so stdout is the body only.
+  const pipeArgs = (path: string, command: string, args: string[]) => {
+    const script = 'curl -s --max-time "$1" -o - -w "%{stderr}\\nBUILDD_HTTP %{http_code} %{size_download}\\n" "$2" | { shift 2; exec "$@"; }';
+    return ['-c', script, 'sh', String(TRANSFER_TIMEOUT_S), `${base}${path}`, command, ...args];
+  };
+  const pipeResult = (err: string, exit: number | null) => {
+    const m = /BUILDD_HTTP (\d+) (\d+)/.exec(err);
+    const status = m ? Number(m[1]) : 0;
+    const detail = err.replace(/\n?BUILDD_HTTP \d+ \d+\n?/, '\n').trim().slice(-2000);
+    return { status, bytes: status === 200 && m ? Number(m[2]) : 0, ok: exit === 0, detail };
+  };
   const curl = (args: string[], input?: string | Uint8Array) => {
     const r = spawnSync('curl', ['-s', ...args], { encoding: 'utf-8', input, maxBuffer: 16 * 1024 * 1024 });
     return r.status === null ? '' : r.stdout ?? '';
@@ -266,17 +281,20 @@ export function curlTransport(baseUrl: string): SnapshotTransport {
       return { status, body: parseJson(text) };
     },
     pipeTo(path, command, args) {
-      // POSIX sh: a pipeline's status is its last command's. curl's own
-      // status line goes to stderr (`%{stderr}`), so stdout is the body only.
-      const script = 'curl -s --max-time "$1" -o - -w "%{stderr}\\nBUILDD_HTTP %{http_code} %{size_download}\\n" "$2" | { shift 2; exec "$@"; }';
-      const r = spawnSync('sh', ['-c', script, 'sh', String(TRANSFER_TIMEOUT_S), `${base}${path}`, command, ...args], {
+      const r = spawnSync('sh', pipeArgs(path, command, args), {
         encoding: 'utf-8', stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 16 * 1024 * 1024, timeout: TRANSFER_TIMEOUT_S * 1000,
       });
-      const err = r.stderr ?? '';
-      const m = /BUILDD_HTTP (\d+) (\d+)/.exec(err);
-      const status = m ? Number(m[1]) : 0;
-      const detail = err.replace(/\n?BUILDD_HTTP \d+ \d+\n?/, '\n').trim().slice(-2000);
-      return { status, bytes: status === 200 && m ? Number(m[2]) : 0, ok: r.status === 0, detail };
+      return pipeResult(r.stderr ?? '', r.status);
+    },
+    pipeToAsync(path, command, args) {
+      return new Promise((resolve) => {
+        const child = spawn('sh', pipeArgs(path, command, args), { stdio: ['ignore', 'ignore', 'pipe'] });
+        let err = '';
+        child.stderr!.on('data', (d: Buffer) => { err = (err + d.toString('utf-8')).slice(-16_000); });
+        const timer = setTimeout(() => child.kill('SIGKILL'), TRANSFER_TIMEOUT_S * 1000);
+        child.on('error', (e) => { clearTimeout(timer); resolve({ status: 0, bytes: 0, ok: false, detail: e.message }); });
+        child.on('close', (code) => { clearTimeout(timer); resolve(pipeResult(err, code)); });
+      });
     },
     remove(path, headers) {
       const { status } = splitStatus(curl(['--max-time', String(CONTROL_TIMEOUT_S), '-X', 'DELETE', ...headerArgs(headers), '-w', '\n%{http_code}', `${base}${path}`]));
@@ -490,6 +508,15 @@ export interface WarmRepoDeps {
    * against its store index).
    */
   reusedContainer?: boolean;
+  /**
+   * Restore the dependency cache in the background instead of before the
+   * clone is handed over (cloud --once runs; deps-gate.ts). The promise goes
+   * to `onDeferredCache`: the install waits for it, the agent does not.
+   */
+  deferCache?: boolean;
+  onDeferredCache?(restore: Promise<void>): void;
+  /** What refresh waits for before measuring the cache: every background deps job (depsWorkSettled when absent). */
+  awaitDeps?(): Promise<void>;
   /**
    * A lease container (container reuse, BUILDD_WARM_UPLOAD_DEFER=1): the
    * run records the upload it is due instead of making it (defer).
@@ -857,13 +884,20 @@ export class WarmRepoSession {
       return this.fallback('restore_failed');
     }
 
+    let cacheInBackground = false;
     if (this.d.reusedContainer && dirHasEntries(this.d.cacheDir)) {
       this.d.log('[warm] reused container: keeping the dependency cache on disk, not restoring the snapshot\'s');
+    } else if (this.d.deferCache && manifest.cacheBytes > 0) {
+      // Started now, so the extract overlaps the fetch below and the checkout
+      // after it; the cache sizes are taken when it ends (applyCacheStats).
+      cacheInBackground = true;
+      const restore = this.restoreCacheAsync(manifest).then(() => this.applyCacheStats());
+      this.d.onDeferredCache?.(restore);
     } else {
       this.restoreCache(manifest);
     }
-    const restoredCacheBytes = dirSizeBytes(this.d.cacheDir);
-    const restoredPnpmStore = existsSync(pnpmStoreDir(this.d.cacheDir));
+    const restoredCacheBytes = cacheInBackground ? 0 : dirSizeBytes(this.d.cacheDir);
+    const restoredPnpmStore = cacheInBackground ? false : existsSync(pnpmStoreDir(this.d.cacheDir));
 
     emitPhase('fetch_start', this.d.lineOpts);
     const before = objectBytes(clonePath);
@@ -883,9 +917,25 @@ export class WarmRepoSession {
     const ageMs = Math.max(0, this.d.now() - manifest.createdAt);
     this.metric('snapshot_age_ms', ageMs);
     this.result = { source: 'warm', ageMs, fetchBytes, restoredCacheBytes, restoredPnpmStore, manifest };
+    if (this.cacheStats) this.applyCacheStats();
     emitRepoSource('warm', undefined, this.d.lineOpts);
     this.d.log(`[warm] restored generation ${manifest.generation} (${ageMs} ms old, fetched ${fetchBytes} bytes)`);
     return true;
+  }
+
+  /** Sizes of the cache a background restore left, for the refresh decision. */
+  private cacheStats: { bytes: number; pnpmStore: boolean } | null = null;
+
+  /**
+   * Record what a background cache restore left on disk, into the result once
+   * it exists (the restore can end before or after restore() returns).
+   */
+  private applyCacheStats(): void {
+    this.cacheStats ??= { bytes: dirSizeBytes(this.d.cacheDir), pnpmStore: existsSync(pnpmStoreDir(this.d.cacheDir)) };
+    if (this.result?.source === 'warm') {
+      this.result.restoredCacheBytes = this.cacheStats.bytes;
+      this.result.restoredPnpmStore = this.cacheStats.pnpmStore;
+    }
   }
 
   private useZstd(): boolean {
@@ -903,10 +953,8 @@ export class WarmRepoSession {
     emitPhase('restore_cache_start', this.d.lineOpts);
     try {
       mkdirSync(this.d.cacheDir, { recursive: true });
-      const [command, args] = this.useZstd()
-        ? ['sh', ['-c', 'zstd -d -c -f -q | tar -xf - -C "$1" --no-same-owner', 'sh', this.d.cacheDir]] as const
-        : ['tar', ['-xf', '-', '-C', this.d.cacheDir, '--no-same-owner']] as const;
-      const r = this.d.transport.pipeTo(`/warm/${manifest.generation}/cache`, command, [...args]);
+      const [command, args] = this.cacheExtractCommand();
+      const r = this.d.transport.pipeTo(`/warm/${manifest.generation}/cache`, command, args);
       if (r.status !== 200) throw new Error(`cache download answered ${r.status || 'nothing'}`);
       if (!r.ok) throw new Error(`cache extract failed${r.detail ? `: ${r.detail.slice(0, 300)}` : ''}`);
       this.metric('cache_bytes', r.bytes);
@@ -917,9 +965,41 @@ export class WarmRepoSession {
     }
   }
 
-  /** Best effort; never throws. Call once, after the run's outcome is known. */
+  /** restoreCache, without blocking the event loop. Never rejects. */
+  private async restoreCacheAsync(manifest: WarmManifest): Promise<void> {
+    emitPhase('restore_cache_start', this.d.lineOpts);
+    try {
+      mkdirSync(this.d.cacheDir, { recursive: true });
+      const [command, args] = this.cacheExtractCommand();
+      const path = `/warm/${manifest.generation}/cache`;
+      const r = this.d.transport.pipeToAsync
+        ? await this.d.transport.pipeToAsync(path, command, args)
+        : this.d.transport.pipeTo(path, command, args);
+      if (r.status !== 200) throw new Error(`cache download answered ${r.status || 'nothing'}`);
+      if (!r.ok) throw new Error(`cache extract failed${r.detail ? `: ${r.detail.slice(0, 300)}` : ''}`);
+      this.metric('cache_bytes', r.bytes);
+    } catch (err) {
+      this.d.log(`[warm] bun cache not restored: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      emitPhase('restore_cache_end', this.d.lineOpts);
+    }
+  }
+
+  private cacheExtractCommand(): [string, string[]] {
+    return this.useZstd()
+      ? ['sh', ['-c', 'zstd -d -c -f -q | tar -xf - -C "$1" --no-same-owner', 'sh', this.d.cacheDir]]
+      : ['tar', ['-xf', '-', '-C', this.d.cacheDir, '--no-same-owner']];
+  }
+
+  /**
+   * Best effort; never throws. Call once, after the run's outcome is known.
+   * Waits first for any deps work still running behind the session (the
+   * cache restore, the install): the snapshot must capture the cache the
+   * install finished with, not one half extracted or half filled.
+   */
   async refresh(end: RunEnd): Promise<void> {
     try {
+      await (this.d.awaitDeps ?? depsWorkSettled)();
       if (this.d.deferUpload) this.defer(end);
       else await this.refreshOrThrow(end);
     } catch (err) {
@@ -1134,8 +1214,13 @@ export class WarmRepoSession {
 }
 
 /** The session the --once CLI wiring uses. */
-export function createWarmRepoSession(env: Record<string, string | undefined>, tmpDir: string): WarmRepoSession {
+export function createWarmRepoSession(
+  env: Record<string, string | undefined>,
+  tmpDir: string,
+  opts: { deferCache?: boolean } = {},
+): WarmRepoSession {
   const session = new WarmRepoSession({
+    ...(opts.deferCache ? { deferCache: true, onDeferredCache: setDepsPrelude } : {}),
     reusedContainer: isReusedContainer(env),
     deferUpload: env[WARM_UPLOAD_DEFER_ENV] === '1',
     transport: curlTransport(env[SNAPSHOT_URL_ENV] ?? ''),

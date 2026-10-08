@@ -46,8 +46,9 @@ import {
  *     `reusedContainer.uploadSkipped` (this run took over a container whose upload was then not needed),
  *     `durationsMs.leaseWait` (the dispatch waited for a lease in its tail) and the `run_end` phase.
  *     `prepMs` no longer adds the repo steps a second time: they run inside dispatch-to-claim.
+ * 14: adds `depsOverlap` (deps restore + install in the background behind a Bash gate) and its phases.
  */
-export const RUN_REPORT_VERSION = 13;
+export const RUN_REPORT_VERSION = 14;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -80,6 +81,9 @@ export const RUN_PHASES = [
   'restore_cache_start', 'restore_cache_end',
   'restore_reuse_start', 'restore_reuse_end',
   'worktree_start', 'worktree_end',
+  // Deps in the background (deps-gate.ts): when the agent session started, when
+  // the deps work finished, when the agent first ran a command that needs it.
+  'session_start', 'deps_ready', 'first_gated_tool',
   'run_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
@@ -109,6 +113,8 @@ export const RUN_METRICS = [
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
   'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
   'restore_reuse_bytes', 'reuse_fetch_skipped',
+  // deps-gate.ts: total time deps-needing commands were held, and how many were. Last wins.
+  'gate_wait_ms', 'gate_holds',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -841,6 +847,16 @@ export interface RunReport {
    * only; the token itself is never in a report.
    */
   modelAuth: ModelAuth | null;
+  /**
+   * The deps work (cache restore + install) ran behind the agent session
+   * instead of before it (apps/runner/src/deps-gate.ts). `sessionStartAt`:
+   * the agent session began; `depsReadyAt`: the install settled;
+   * `firstGatedToolAt`: the agent first ran a command that needs deps;
+   * `gateWaitMs`: total time such commands were held. `hiddenMs`: deps work
+   * after the session start the agent did not wait for. Null when the run
+   * did not overlap (a host runner, a declared env.yaml, an older image).
+   */
+  depsOverlap: DepsOverlap | null;
   runnerSize: {
     size: RunnerSize;
     source: RunnerSizeSource | null;
@@ -848,6 +864,35 @@ export interface RunReport {
     weight: number;
     runnerSeconds: number | null;
     weightedRunnerSeconds: number | null;
+  };
+}
+
+export interface DepsOverlap {
+  sessionStartAt: number | null;
+  depsReadyAt: number;
+  firstGatedToolAt: number | null;
+  gateWaitMs: number;
+  gateHolds: number;
+  hiddenMs: number | null;
+}
+
+/** Null unless the runner printed `deps_ready`: that phase only exists when the deps ran in the background. */
+export function depsOverlapSection(
+  phase: (p: RunPhase) => number | null,
+  metric: (m: RunMetric) => number | null,
+): DepsOverlap | null {
+  const depsReadyAt = phase('deps_ready');
+  if (depsReadyAt === null) return null;
+  const sessionStartAt = phase('session_start');
+  const gateWaitMs = metric('gate_wait_ms') ?? 0;
+  const behindSession = span(sessionStartAt, depsReadyAt);
+  return {
+    sessionStartAt,
+    depsReadyAt,
+    firstGatedToolAt: phase('first_gated_tool'),
+    gateWaitMs,
+    gateHolds: metric('gate_holds') ?? 0,
+    hiddenMs: sessionStartAt === null ? null : Math.max(0, (behindSession ?? 0) - gateWaitMs),
   };
 }
 
@@ -1057,6 +1102,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     }),
     reusedContainer: reusedContainerSection(input.reusedContainer, durationsMs),
     modelAuth: input.modelAuth === 'owner_seat' || input.modelAuth === 'metered' ? input.modelAuth : null,
+    depsOverlap: depsOverlapSection(phase, metric),
     runnerSize: runnerSizeSection(input, timestamps),
   };
 }

@@ -104,7 +104,6 @@ interface Worker {
   instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
-  account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
     terminalReason?: string | null;
@@ -148,7 +147,7 @@ interface Props {
    * GitHub yet) is never shown as "Needs input" just because the worker
    * stopped on a question (workflow-state-kernel §17.5, S36).
    */
-  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null } | null;
+  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null; state: string } | null;
 }
 
 // Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent

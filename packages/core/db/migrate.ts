@@ -8,8 +8,14 @@ import { applyNeonLocalOverride } from './neon-local';
 import { dirname, join } from 'path';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { findBaselineMillis, planMigrations, type JournalLike } from './migrate-plan';
-import { backfillTrackingRows } from './migrate-backfill';
+import {
+  executionOrder,
+  findBaselineMillis,
+  planMigrations,
+  type JournalLike,
+  type MigrationFile,
+} from './migrate-plan';
+import { backfillTrackingRows, ciCloneApplyAbsentEnabled, CI_CLONE_APPLY_ABSENT_ENV } from './migrate-backfill';
 import { withMigrationLock } from './migrate-lock';
 import {
   ensureTrackingTable,
@@ -51,6 +57,14 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
   const { toRun, toBackfill } = planMigrations(migrations, rows, { baselineMillis });
 
   let backfilled = 0;
+  let toApply: MigrationFile[] = [];
+  const applyAbsent = ciCloneApplyAbsentEnabled(process.env);
+  if (applyAbsent) {
+    console.log(
+      `${CI_CLONE_APPLY_ABSENT_ENV}=1 (CI prod clone): an untracked migration below the high-water ` +
+        `mark whose DDL is wholly absent will be executed instead of refused`
+    );
+  }
   if (toBackfill.length > 0) {
     console.log(
       `${toBackfill.length} untracked migration(s) predate the high-water mark — ` +
@@ -65,10 +79,12 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
       toBackfill,
       shape,
       allowUnverified: process.env.MIGRATION_BACKFILL_ALLOW_UNVERIFIED === '1',
+      applyAbsent,
       log: (message) => console.log(message),
       record: (migration) => recordApplied(session, migration),
     });
     backfilled = result.recorded;
+    toApply = result.toApply;
     if (result.unverified > 0) {
       console.log(
         `  ${result.unverified} migration(s) were recorded WITHOUT DDL evidence via ` +
@@ -77,7 +93,8 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
     }
   }
 
-  for (const migration of toRun) {
+  const toExecute = executionOrder(migrations, toRun, toApply);
+  for (const migration of toExecute) {
     for (const stmt of migration.sql) {
       await session.execute(sql.raw(stmt));
     }
@@ -90,7 +107,11 @@ async function applyMigrations(session: MigrateSession): Promise<void> {
     console.log(`Applied: ${migration.folderMillis} (${migration.sql.length} statement(s))`);
   }
 
-  console.log(`Migrations complete! (${toRun.length} applied, ${backfilled} backfilled)`);
+  console.log(
+    `Migrations complete! (${toExecute.length} applied` +
+      (toApply.length > 0 ? `, ${toApply.length} of them below the mark on a CI clone` : '') +
+      `, ${backfilled} backfilled)`
+  );
 }
 
 async function main() {

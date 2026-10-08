@@ -187,7 +187,8 @@ const SAFE: Record<string, string[]> = {
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],
-  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha'],
+  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha',
+    'cost_basis'], // fixed vocabulary (packages/core/cost-basis.ts COST_BASES)
   worker_action_events: ['action'],
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
   // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies
