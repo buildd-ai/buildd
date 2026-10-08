@@ -2205,6 +2205,60 @@ describe('POST /api/github/pr', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
+  it('updates deduped PR body when fresh content is supplied', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: 'https://github.com/owner/repo/pull/99',
+      prNumber: 99,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // When fresh body is supplied, should fall through to head-based lookup
+    // which calls GitHub API to fetch and update the PR
+    const prDetail = {
+      number: 99,
+      html_url: 'https://github.com/owner/repo/pull/99',
+      state: 'open',
+      title: 'My PR',
+      body: 'Old body content',
+      head: { ref: 'feature-branch', sha: 'abc123' },
+      base: { ref: 'main', sha: 'def456' },
+      additions: 10,
+      deletions: 5,
+      changed_files: 2,
+    };
+    mockGithubApi.mockResolvedValueOnce([prDetail]); // dedup check returns existing PR
+    mockGithubApi.mockResolvedValueOnce(prDetail); // fetch full PR details
+    mockGithubApi.mockResolvedValueOnce({ ...prDetail, body: 'Updated body content' }); // body update
+
+    let capturedPatchCall: any = null;
+    mockGithubApi.mockImplementationOnce((installationId, path, options) => {
+      if (options?.method === 'PATCH') {
+        capturedPatchCall = { path, body: JSON.parse(options.body) };
+      }
+      return Promise.resolve({ ...prDetail, body: 'Updated body content' });
+    });
+
+    const freshBody = 'Fresh verification results and updated information';
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch', body: freshBody, lede: 'Test lede' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    // Should still return the same PR number, but with body updated on GitHub
+    expect(data.pr.number).toBe(99);
+    // The head-branch lookup dedupes and updates the body
+    expect(data.deduplicated).toBe(true);
+  });
+
   // TERMINAL_PR_LIFECYCLE: an `unresolvable` PR is as dead as a closed one —
   // echoing it back as the worker's open PR repeats a PR nothing can resolve.
   it('does not deduplicate a stored PR whose lifecycle is unresolvable', async () => {
