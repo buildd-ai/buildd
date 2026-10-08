@@ -41,6 +41,8 @@ export interface MissionBaseGuardTask {
   taskClass?: string | null;
   missionId?: string | null;
   context?: unknown;
+  /** `tasks.dependsOn` — verifies a stacked-phase `context.baseBranch` declaration. */
+  dependsOn?: string[] | null;
 }
 
 export interface MissionBaseRefusal {
@@ -89,6 +91,7 @@ export function buildMissionBaseGuard(args: {
     contextBaseBranch: typeof rawContextBase === 'string' ? rawContextBase : undefined,
     head: args.head ?? null,
     mission,
+    dependsOn: task?.dependsOn ?? null,
   });
   const enforced = !!integrationBase && !isMissionPrOwner && !isStackedPhase;
 

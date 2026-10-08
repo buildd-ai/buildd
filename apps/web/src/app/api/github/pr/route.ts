@@ -3,9 +3,9 @@ import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
-import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
+import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
-import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
+import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
@@ -15,6 +15,7 @@ import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@/lib/mission-integration-branch';
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
+import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-prose';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
@@ -36,6 +37,7 @@ import {
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { recordPrFact } from '@buildd/core/pr-facts';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
@@ -44,6 +46,9 @@ import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/depend
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
+import { kernelLandingView, landThroughKernel, openKernelDelivery, type KernelLanding } from '@/lib/workflow/seam';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -61,6 +66,7 @@ import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAt
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { findStackedReleaseForBase } from '@/lib/early-release-stacking';
 
 
 /**
@@ -125,6 +131,21 @@ async function requestIntegrationBranchReview(params: {
       available: roles,
     });
     if (!picked.role) return;
+
+    // The workflow kernel owns the review loop of a PR whose first review is
+    // dispatched from now on: it queues round 1 when the owner attempt ends.
+    const kernel = await openKernelDelivery({
+      workspaceId: params.workspace.id,
+      ownerTaskId: params.task.id,
+      repoFullName: params.repoFullName,
+      prNumber: params.prNumber,
+      installationId: params.installationId,
+      source: 'create_pr',
+    }).catch((err) => {
+      console.error(`[create_pr] workflow kernel could not open a delivery for PR #${params.prNumber}; legacy review dispatch:`, err);
+      return { owned: false };
+    });
+    if (kernel.owned) return;
 
     const reviewerTask = await createReviewerTask({
       workspaceId: params.workspace.id,
@@ -327,6 +348,25 @@ export async function POST(req: NextRequest) {
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
     const isStackedPhase = missionBaseGuard.isStackedPhase;
+
+    // §6.10 tier 1 (S31): a workspace that opts in has the body and title it is
+    // about to open scanned with CI's own prose rule, and a body CI would fail
+    // is refused here with the reason instead of after a red check. Only a PR
+    // buildd opens: an adopted one already exists, and CI will scan it anyway.
+    if (!existingPrUrl) {
+      const preflight = (worker.workspace?.gitConfig as WorkspaceGitConfig | null)?.preflight;
+      if (preflight?.prProseScan) {
+        const composed = composeBodyWithLede(effectiveLede, prBody, { derived: ledeIsDerived });
+        const scan = scanPrProse({ title: String(title), body: composed });
+        if (scan.findings.length > 0) {
+          return NextResponse.json({
+            error: `PR not opened: ${describeProseFindings(scan.findings)}`,
+            code: 'preflight_failed',
+            preflight: { check: 'no_prod_data_prose', findings: scan.findings },
+          }, { status: 400 });
+        }
+      }
+    }
 
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
@@ -1061,6 +1101,13 @@ export async function POST(req: NextRequest) {
 
     // Create the PR via GitHub API
     const effectiveBase = prBase.base ?? 'main';
+    // Early release's stacking mechanics (docs/design/early-release.md): a
+    // `start_stacked` dependent's PR targets its upstream's own branch, not a
+    // merge candidate yet, so it opens as a draft regardless of what the
+    // caller asked for — the upstream might still change before it merges.
+    // The webhook un-drafts it once the upstream actually lands
+    // (`undraftStackedDependents`, called from the merge handler).
+    const earlyReleaseStacked = await findStackedReleaseForBase(worker.taskId, effectiveBase);
     let prData: any;
     try {
       prData = await githubApi(
@@ -1074,7 +1121,7 @@ export async function POST(req: NextRequest) {
             body: effectivePrBody,
             head,
             base: effectiveBase,
-            draft: draft || false,
+            draft: draft || earlyReleaseStacked || false,
           }),
         }
       );
@@ -1306,12 +1353,16 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const requestBody = await req.json();
-    const { workerId, prNumber, body: newPrBody } = requestBody;
+    const { workerId, prNumber, body: newPrBody, draft: draftUpdate } = requestBody;
     // Presence of `body` switches this call from closing the PR to rewriting
     // its body — the two things this route's only caller set ever needed
     // from a bare PATCH. See update_pr in mcp-tools.ts.
     const isBodyUpdate = newPrBody !== undefined;
-    const capability = isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
+    // `draft: false` marks a draft PR ready for review (GraphQL only; the REST
+    // PATCH cannot flip it). `draft: true` is not supported.
+    const isReadyUpdate = !isBodyUpdate && draftUpdate === false;
+    const capability = isReadyUpdate ? 'pr.mark_ready' as const
+      : isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -1361,6 +1412,24 @@ export async function PATCH(req: NextRequest) {
     }
 
     void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
+    if (isReadyUpdate) {
+      const current = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls/${prNumber}`,
+      );
+      if (current.draft && current.node_id) {
+        await githubGraphQL(
+          repo.installation.installationId,
+          'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { number isDraft } } }',
+          { id: current.node_id },
+        );
+      }
+      return NextResponse.json({
+        ok: true,
+        pr: { number: current.number, url: current.html_url, state: current.state, title: current.title, draft: false },
+      });
+    }
+
     const prData = await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${prNumber}`,
@@ -1489,6 +1558,41 @@ function mergePrLandingResponse(
   }
 }
 
+/**
+ * `merge_pr`'s answer for a kernel-owned PR (T15/T16). A stale caller gets 409
+ * with the delivery as it stands now (§7.2, S20); a refresh or conflict repair
+ * the refusal is owed was already queued by the kernel.
+ */
+function mergePrKernelResponse(k: KernelLanding, pr: { prNumber: number; prUrl: string | null }): NextResponse {
+  const prRef = { number: pr.prNumber, url: pr.prUrl };
+  if (k.merged) {
+    return NextResponse.json({ ok: true, merged: true, message: k.message, pr: { ...prRef, mergeCommitSha: k.mergeCommitSha } });
+  }
+  const status = k.outcome === 'stale' || k.outcome === 'rejected' || k.outcome === 'conflict' || k.outcome === 'refused' || k.outcome === 'not_merged' ? 409 : 202;
+  const hint = k.outcome === 'stale'
+    ? 'Read the PR again (get_pr) and decide on what it is now.'
+    : k.outcome === 'behind'
+      ? 'The branch is being updated from base; it lands once CI is green on the new head. Do not wait for it.'
+      : k.outcome === 'landing'
+        ? 'The merge result is being verified; get_pr shows the outcome.'
+        : k.outcome === 'conflict'
+          ? 'A conflict fix owns the next step.'
+          : 'Report completion and let the owner decide.';
+  return NextResponse.json({
+    ok: false,
+    merged: false,
+    error: k.message,
+    message: k.message,
+    ...(k.outcome === 'stale' ? { stale: true } : {}),
+    ...(k.outcome === 'behind' ? { branchUpdated: true } : {}),
+    ...(k.outcome === 'conflict' ? { conflictRetryDispatched: true } : {}),
+    kernel: { outcome: k.outcome, reason: k.reason },
+    current: k.current,
+    hint,
+    pr: prRef,
+  }, { status });
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -1503,6 +1607,8 @@ export async function PUT(req: NextRequest) {
   try {
     const body = await req.json();
     const { workerId, prNumber, mergeMethod = 'squash', workspaceId } = body;
+    // The workflow-kernel delivery version the caller read (§7.2): stale → 409 with the current view.
+    const expectedVersion: number | undefined = typeof body.version === 'number' && Number.isInteger(body.version) ? body.version : undefined;
 
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
@@ -1582,6 +1688,24 @@ export async function PUT(req: NextRequest) {
     if (!repo || !repo.installation) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
+
+    // A kernel-owned PR (workflow-state-kernel §14 Slice C): the kernel merges it
+    // and owns the post-merge work; this door keeps its policy and rails. A
+    // caller acting on a stale view is told so, with the current one, before
+    // any rail acts (S20).
+    const kernelView = await kernelLandingView(worker.workspaceId, repo.fullName, prNumber);
+    if (kernelView && expectedVersion !== undefined && kernelView.current.version !== expectedVersion) {
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        error: `PR #${prNumber} changed since version ${expectedVersion} (now ${kernelView.current.version}); nothing was merged`,
+        stale: true,
+        reason: 'version_moved',
+        current: kernelView.current,
+        hint: 'Read the PR again (get_pr) and decide on what it is now.',
+      }, { status: 409 });
+    }
+    const kernelOwned = !!kernelView;
 
     // Idempotent: already-merged PR returns success with existing metadata rather
     // than attempting a re-merge (which would fail with 405 "not mergeable").
@@ -1718,13 +1842,12 @@ export async function PUT(req: NextRequest) {
           releaseConfig: workspace.releaseConfig ?? null,
           gitConfig: workspace.gitConfig ?? null,
           mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+          ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         });
         if (landingMode === 'enforce') {
-          if (outcome.kind === 'merged') {
-            await db
-              .update(workers)
-              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+          // A kernel-owned PR's merge is recorded by the kernel's post-merge effects.
+          if (outcome.kind === 'merged' && !kernelOwned) {
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
           }
           return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
         }
@@ -1836,6 +1959,18 @@ export async function PUT(req: NextRequest) {
           // The bot rebases its own branch; an update-branch commit from us
           // would stop it doing so for good.
           recordMergeGate('rejected', dependencyBotPushRefusal(prNumber), { tier: policy.tier }, GATE_SLUGS.DEPENDENCY_BOT_PR);
+        } else if (isBehindBaseRefusal(safety.reason) && kernelOwned) {
+          // A kernel-owned PR's refresh is the kernel's (`refresh_branch`, via
+          // T12 `behind` or T16 when its own merge call is refused as behind):
+          // a push from this door would be a second authority, read as a
+          // foreign push (spec §14). Nothing is pushed here.
+          recordMergeGate('deferred', `${safety.reason} — the workflow kernel owns this PR's branch refresh`, { tier: policy.tier, kernelOwned: true });
+          return NextResponse.json({
+            error: `${safety.reason} — the workflow kernel owns this PR's branch refresh; merge_pr does not push to it`,
+            tier: policy.tier,
+            kernelOwned: true,
+            hint: 'The kernel refreshes the branch when it lands this PR. Read it again later (get_pr) instead of retrying now.',
+          }, { status: 409 });
         } else if (isBehindBaseRefusal(safety.reason)) {
           // Same door as every other refresh (lib/base-refresh.ts): the per-PR
           // lease, failure classification and, opted in, the semantic check
@@ -1956,20 +2091,39 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
 
-    const slotted = await mergeInSurfaceSlot(surfaceOrder, () => mergePullRequest(
-      repo.installation.installationId,
-      repo.fullName,
-      prNumber,
-      mergeMethod as 'merge' | 'squash' | 'rebase',
-      headSha,
-    ));
+    const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
+      const kernel = kernelOwned
+        ? await landThroughKernel({
+            workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha,
+            door: force ? 'merge_pr_force' : 'merge_pr', actor: `agent:${worker.id ?? 'unknown'}`,
+            mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+            ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+          })
+        : null;
+      return kernel ? { kernel } : { legacy: await mergePullRequest(
+        repo.installation.installationId,
+        repo.fullName,
+        prNumber,
+        mergeMethod as 'merge' | 'squash' | 'rebase',
+        headSha,
+      ) };
+    });
     if ('refused' in slotted) {
       return NextResponse.json({
         error: `merge deferred: ${slotted.refused}`,
         hint: 'Another PR on the same serialized surface is merging right now; this one is re-evaluated when it closes.',
       }, { status: 409 });
     }
-    const result = slotted.result;
+    if (slotted.result.kernel) {
+      const k = slotted.result.kernel;
+      void recordCapabilityDecision({
+        capability: 'pr.merge', decision: k.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
+        reasonCode: k.merged ? null : `kernel_${k.outcome}`, sideEffect: k.merged ? { prNumber, merged: true } : null,
+      });
+      return mergePrKernelResponse(k, { prNumber, prUrl: worker.prUrl ?? null });
+    }
+    const result = slotted.result.legacy;
     void recordCapabilityDecision({
       capability: 'pr.merge', decision: result.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
       workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
@@ -1977,10 +2131,8 @@ export async function PUT(req: NextRequest) {
     });
 
     if (result.merged) {
-      await db
-        .update(workers)
-        .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-        .where(eq(workers.id, worker.id));
+      // Through the fact funnel (terminal wins); Slice C moves this door to T16.
+      await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
       await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
       // The merge made a live reviewer and any open fix obsolete. The
       // pull_request.closed webhook fires the same event; the CAS keeps it to
@@ -2014,10 +2166,7 @@ export async function PUT(req: NextRequest) {
           // Merged externally during the race window — stamp DB if not yet set and
           // return idempotent success so the caller can distinguish this from a real failure.
           if (!worker.mergedAt) {
-            await db
-              .update(workers)
-              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-              .where(eq(workers.id, worker.id));
+            await recordPrFact({ workerId: worker.id }, { kind: 'merged', mergedAt: new Date() });
           }
           return NextResponse.json({
             ok: true,
@@ -2288,23 +2437,23 @@ export async function GET(req: NextRequest) {
       pending: reviewStates.filter(s => s === 'PENDING').length,
     };
 
-    // Determine canonical state — GitHub is authoritative for merge detection;
-    // DB fills the gap when prLifecycleStatus='merged' but mergedAt raced to null.
-    const githubMerged = pr.merged === true;
-    const githubClosed = pr.state === 'closed';
-    const dbMerged = !!(worker.mergedAt || worker.prLifecycleStatus === 'merged');
-    let canonicalState: 'open' | 'merged' | 'closed_unmerged';
-    if (githubMerged || (dbMerged && githubClosed)) {
-      canonicalState = 'merged';
-    } else if (githubClosed) {
-      canonicalState = 'closed_unmerged';
-    } else {
-      canonicalState = 'open';
-    }
-
-    const dbMergedAt = worker.mergedAt
-      ? (worker.mergedAt instanceof Date ? worker.mergedAt.toISOString() : String(worker.mergedAt))
-      : null;
+    // Canonical state: GitHub is authoritative for open versus closed; the
+    // record fills a merge GitHub reported as a plain close. For a
+    // kernel-owned PR the record is the delivery (Slice F, §13.10), never the
+    // worker columns; a legacy PR keeps the fact cache.
+    const kernelView = worker.taskId
+      ? (await getDeliveryViewsForTasks([worker.taskId])).get(worker.taskId)
+      : undefined;
+    const record = prRecord({
+      delivery: kernelView && kernelView.prNumber === prNumber ? kernelView : null,
+      mergedAt: worker.mergedAt,
+      prLifecycleStatus: worker.prLifecycleStatus,
+      supersededByPrNumber: worker.supersededByPrNumber,
+      supersededByPrUrl: worker.supersededByPrUrl,
+      supersededReason: worker.supersededReason,
+    });
+    const canonicalState = canonicalPrState({ githubMerged: pr.merged === true, githubClosed: pr.state === 'closed' }, record.merged);
+    const dbMergedAt = record.mergedAt;
 
     // Per-file breakdown so a Drizzle snapshot can't read as the diff size.
     // `additions`/`deletions`/`changedFiles` below are the reviewable figures;
@@ -2357,9 +2506,9 @@ export async function GET(req: NextRequest) {
         // Supersession edge (task fcaf83d5) — only meaningful on a closed,
         // unmerged PR; recordPrSupersession verified this against GitHub at
         // write time, so it is trusted here without a second round-trip.
-        supersededByPrNumber: canonicalState === 'closed_unmerged' ? (worker.supersededByPrNumber ?? null) : null,
-        supersededByPrUrl: canonicalState === 'closed_unmerged' ? (worker.supersededByPrUrl ?? null) : null,
-        supersededReason: canonicalState === 'closed_unmerged' ? (worker.supersededReason ?? null) : null,
+        supersededByPrNumber: canonicalState === 'closed_unmerged' ? (record.supersededBy?.prNumber ?? null) : null,
+        supersededByPrUrl: canonicalState === 'closed_unmerged' ? (record.supersededBy?.url ?? null) : null,
+        supersededReason: canonicalState === 'closed_unmerged' ? (record.supersededBy?.reason ?? null) : null,
       },
       checks: ciSummary,
       reviews: reviewSummary,

@@ -115,6 +115,13 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
+// These routes consume only the pure early-release settings slots.
+const earlyReleaseConfig = await import('@/lib/early-release-mode');
+mock.module('@/modules', () => ({
+  resolveEarlyReleaseMode: earlyReleaseConfig.resolveEarlyReleaseMode,
+  validateEarlyReleaseConfig: earlyReleaseConfig.validateEarlyReleaseConfig,
+}));
+
 const policyInit = await import('./policy-init/route');
 const config = await import('./config/route');
 const settings = await import('./settings/route');

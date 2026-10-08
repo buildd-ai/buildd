@@ -362,7 +362,7 @@ run tells you nothing until you re-run that file alone.
 
 Prefer not stubbing a module that has its own unit test — inject the dependency
 instead (pass it in, or accept an override in an options bag, as
-`reconcileWorkerPrState` does with `opts.githubApi`).
+`importWorkerPrFacts` does with `opts.githubApi`).
 
 When you must stub, return the module's **whole** surface so the stub is harmless
 if it ever does leak:

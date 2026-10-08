@@ -338,6 +338,15 @@ export class BuilddClient {
      * session's deliverables (charged) or about the request (exempt).
      */
     refusal?: { status: number; method: string; endpoint: string; gate?: string; hint?: string };
+    /**
+     * S30 (workflow-state-kernel.md §6.6): a hand-off failure after work — the
+     * output gate refused the completion, or the session ended with an unmet
+     * output requirement. The work is not on GitHub; that is not the same as
+     * the work having failed. Sent with `status: 'failed'`, beside the local
+     * head and commit count the worktree had. An older server ignores them.
+     */
+    outcome?: 'unproven';
+    localHeadSha?: string | null;
     // Deliberate resume of a terminal worker (sendMessage follow-up). The server
     // reactivates a completed/failed/error worker ONLY when this is true — the
     // periodic keepalive sync sends an identical status:'running' payload and
@@ -348,6 +357,9 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // A conflict retry the runner finished with no agent (merge-drivers.ts finishDerivedMerge).
+    derivedMergeFinish?: import('@buildd/shared').DerivedMergeFinishReport;
+    summarySource?: 'agent' | 'fallback';
     // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
     subagentSpans?: Array<{
       taskId: string;

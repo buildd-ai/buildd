@@ -1,6 +1,6 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
@@ -31,7 +31,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -135,6 +135,8 @@ import {
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
+import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
+import { preflightHookEntries } from './preflight-guard';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -1944,7 +1946,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -2079,6 +2081,7 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.toolSearchDisabled) worker.toolSearchDisabled = true;
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
     }
@@ -2193,6 +2196,8 @@ export class WorkerManager {
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
     let startBlock: string | undefined;
+    /** A conflict retry whose base merged cleanly once derived files were regenerated. */
+    let derivedMerge: { result: DerivedMergeResult; baseRef: string } | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -2289,6 +2294,7 @@ export class WorkerManager {
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
               worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
+              if (merged.status === 'merged') derivedMerge = { result: merged, baseRef: worker.prBaseRef };
               if (merged.status === 'merged' || merged.status === 'conflicts') {
                 this.addMilestone(worker, {
                   type: 'status',
@@ -2323,6 +2329,23 @@ export class WorkerManager {
             appendErrorTraces: [{
               pattern: described.pattern,
               excerpt: described.excerpt,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+        }
+        // Stale-base warning: the ref this worktree is cut from has drifted
+        // far behind the default branch. Previously console.warn-only (docs/
+        // design/mission-delivery-arc.md P5) — surfaced the same way as the
+        // fallback warning above so it is visible on the dashboard and to
+        // get_error_traces, not just in runner logs nobody tails.
+        if (setupResult.staleBase) {
+          const { ref, defaultBranch: staleDefault, commitsBehind } = setupResult.staleBase;
+          const label = `Base "${ref}" is ${commitsBehind} commits behind origin/${staleDefault} — risk of merge conflicts or CI failures from unrelated upstream changes`;
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'worktree_stale_base',
+              excerpt: `${label}. Consider: git fetch origin && git rebase origin/${staleDefault}.`,
               source: 'git-operations',
             }],
           }).catch(() => {});
@@ -2461,6 +2484,10 @@ export class WorkerManager {
           break;
         }
         storeSaveWorker(worker);
+      }
+      // After the branch is persisted: the completion's PR lookup reads it.
+      if (derivedMerge && await this.finishDerivedMergeWithoutAgent(worker, fullTask, sessionCwd, derivedMerge.result, derivedMerge.baseRef)) {
+        return;
       }
       await this.startSession(worker, sessionCwd, fullTask);
     };
@@ -2824,9 +2851,18 @@ export class WorkerManager {
     worker.completedAt = Date.now();
 
     const failSpans = buildSubagentSpans(worker.subagentTasks);
+    // S30 (workflow-state-kernel.md §6.6): the output gate refused a session
+    // that ran — its work is not on GitHub, which is not the work failing.
+    const handOff = isHandOffRefusal(refusal)
+      ? handOffUnproven(
+        await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+        worker.commits.length,
+      )
+      : null;
     await this.buildd.updateWorker(worker.id, {
       status: 'failed',
       error: refusal.message,
+      ...(handOff ?? {}),
       serverRefused: true,
       refusal: {
         status: refusal.status,
@@ -3516,6 +3552,7 @@ export class WorkerManager {
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
         teamEndpointWithheld: worker.modelEndpointIgnored,
+        toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
@@ -4477,6 +4514,14 @@ export class WorkerManager {
                 hooks: [this.hookFactory.createLoopVerificationHook(worker, () => this.runLoopVerification(worker, task, cwd))],
               }]
             : []),
+          // Workspace preflight (workflow-state-kernel.md §6.10, S31): the cheap
+          // checks CI would fail on run before a push or create_pr; a failure
+          // denies that call with the output as the agent's next instruction.
+          // Off unless gitConfig.preflight.commands lists any. Codex has no seam.
+          ...preflightHookEntries({
+            gitConfig, isCodexTask, cwd,
+            milestone: (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }),
+          }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
@@ -4950,6 +4995,11 @@ export class WorkerManager {
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: errMsg,
+          // S30: an unmet output requirement after work is a hand-off failure, not a failed attempt.
+          ...handOffUnproven(
+            await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef),
+            worker.commits.length,
+          ),
           milestones: worker.milestones,
           resultMeta: {
             closingTurnOutcome: isClosingTurn
@@ -5658,6 +5708,76 @@ export class WorkerManager {
         return this.startSession(worker, cwd, task);
       }
     }
+  }
+
+  /**
+   * A conflict retry whose only conflicts were derived files is already merged
+   * and regenerated by the time we get here. Verify it, push it and complete
+   * the worker, so no agent session is spent on it. True when the worker is
+   * finished (or was stopped meanwhile); false means start the agent as
+   * before, with the merge note saying what the runner tried.
+   *
+   * Loop tasks are left to the agent: their completion carries loop evidence.
+   */
+  private async finishDerivedMergeWithoutAgent(
+    worker: LocalWorker,
+    task: BuilddTask,
+    cwd: string,
+    merge: DerivedMergeResult,
+    baseRef: string,
+  ): Promise<boolean> {
+    if (!worker.branch || task.loopConfig) return false;
+    worker.currentAction = 'Verifying and pushing the base merge...';
+    this.emit({ type: 'worker_update', worker });
+
+    const finish = await finishDerivedMerge(cwd, worker.branch, {
+      verificationCommand: derivedMergeVerificationCommand(task.context),
+    });
+    // Aborted while verifying: the abort path already reported it.
+    if (worker.status === 'error' || worker.status === 'done') return true;
+    if (finish.status !== 'pushed') {
+      console.warn(`[Worker ${worker.id}] Derived-file merge not finished by the runner (${finish.status}) — starting the agent`);
+      worker.derivedMergeNote = (worker.derivedMergeNote ?? '') + formatDerivedFinishFallback(finish);
+      this.addMilestone(worker, {
+        type: 'status',
+        label: finish.status === 'verify_failed' ? 'Verification failed after the base merge; handing to the agent' : 'Push failed after the base merge; handing to the agent',
+        ts: Date.now(),
+      });
+      return false;
+    }
+
+    const summary = formatDerivedMergeSummary(merge, baseRef, finish);
+    this.addMilestone(worker, { type: 'status', label: 'Base merge pushed by the runner; no agent needed', ts: Date.now() });
+    try {
+      // A 409 {abort} means the row is already terminal on the server: done either way.
+      await this.buildd.updateWorker(worker.id, {
+        status: 'completed',
+        summary,
+        // Runner-authored but deliberate and factual, not a captured aside.
+        summarySource: 'agent',
+        milestones: worker.milestones,
+        ...(finish.headSha ? { lastCommitSha: finish.headSha } : {}),
+        derivedMergeFinish: {
+          baseRef,
+          regenerated: merge.regenerated,
+          verification: finish.verification,
+          ...(finish.headSha ? { headSha: finish.headSha } : {}),
+        },
+      });
+    } catch (err) {
+      // The merge is pushed; the agent only has to confirm it and complete.
+      console.warn(`[Worker ${worker.id}] Completion after the runner's base merge was refused — starting the agent: ${err instanceof Error ? err.message : String(err)}`);
+      worker.derivedMergeNote = (worker.derivedMergeNote ?? '') +
+        `\n\nThe runner already pushed this merge, but its completion was refused: ${err instanceof Error ? err.message : String(err)}. Check the PR and complete the task.`;
+      return false;
+    }
+    worker.status = 'done';
+    worker.currentAction = 'Completed by the runner (no agent)';
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+    return true;
   }
 
   /**

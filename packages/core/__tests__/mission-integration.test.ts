@@ -199,34 +199,58 @@ describe('isPrLegalForMissionTask', () => {
 
 describe('isStackedPhaseBase', () => {
   const HEAD = 'buildd/deadbeef-do-thing';
-  const PREDECESSOR = 'buildd/predecessor00-earlier-thing';
+  const PREDECESSOR_ID = '9f8e7d6c-1111-2222-3333-444444444444';
+  const PREDECESSOR = `buildd/${PREDECESSOR_ID.slice(0, 8)}-earlier-thing`;
+  const DEPENDS_ON = [PREDECESSOR_ID];
 
-  it('is true for a genuine predecessor branch declaration', () => {
+  it('is true for a genuine predecessor branch declaration named in dependsOn', () => {
     expect(
-      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: OPTED_IN }),
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON }),
+    ).toBe(true);
+  });
+
+  // ── early release's stacking mechanics reuse this unchanged ──────────────
+  //
+  // A `start_stacked` early-release decision (docs/design/early-release.md,
+  // "Stacking mechanics") writes the upstream task's own branch name into the
+  // dependent's `context.baseBranch` — the exact same shape a plan-step
+  // predecessor declaration produces, because the dependent already names the
+  // upstream in its own `dependsOn` (that's why a `dependency_releases` row
+  // exists for the pair at all). No change to this predicate was needed for
+  // early release; this test documents and guards that reuse.
+  it('is true for an early-release start_stacked base (dependent already depends on the upstream)', () => {
+    const upstreamId = 'ab12cd34-5555-6666-7777-888899990000';
+    const upstreamBranch = `buildd/${upstreamId.slice(0, 8)}-upstream-thing`;
+    expect(
+      isStackedPhaseBase({
+        contextBaseBranch: upstreamBranch,
+        head: HEAD,
+        mission: OPTED_IN,
+        dependsOn: [upstreamId],
+      }),
     ).toBe(true);
   });
 
   it('is false when context.baseBranch is unset', () => {
-    expect(isStackedPhaseBase({ contextBaseBranch: undefined, head: HEAD, mission: OPTED_IN })).toBe(false);
-    expect(isStackedPhaseBase({ contextBaseBranch: null, head: HEAD, mission: OPTED_IN })).toBe(false);
+    expect(isStackedPhaseBase({ contextBaseBranch: undefined, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON })).toBe(false);
+    expect(isStackedPhaseBase({ contextBaseBranch: null, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON })).toBe(false);
   });
 
   it('is false when context.baseBranch is the Option A′ default (equals the integration branch)', () => {
     expect(
-      isStackedPhaseBase({ contextBaseBranch: OPTED_IN.workingBranch, head: HEAD, mission: OPTED_IN }),
+      isStackedPhaseBase({ contextBaseBranch: OPTED_IN.workingBranch, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON }),
     ).toBe(false);
   });
 
   it('is false when context.baseBranch is the recovery-task current-head marker', () => {
     expect(
-      isStackedPhaseBase({ contextBaseBranch: HEAD, head: HEAD, mission: OPTED_IN }),
+      isStackedPhaseBase({ contextBaseBranch: HEAD, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON }),
     ).toBe(false);
   });
 
   it('is false when the mission has no integration base — nothing to stack against', () => {
     expect(
-      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: null }),
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: null, dependsOn: DEPENDS_ON }),
     ).toBe(false);
   });
 
@@ -239,7 +263,7 @@ describe('isStackedPhaseBase', () => {
     // reviewed, CI-green commits.
     const strayWorkerBranch = 'mission/checkout-arc-w1a2b3c4';
     expect(
-      isStackedPhaseBase({ contextBaseBranch: strayWorkerBranch, head: HEAD, mission: OPTED_IN }),
+      isStackedPhaseBase({ contextBaseBranch: strayWorkerBranch, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON }),
     ).toBe(false);
   });
 
@@ -249,6 +273,40 @@ describe('isStackedPhaseBase', () => {
         contextBaseBranch: 'mission/other-thing-99887766',
         head: HEAD,
         mission: OPTED_IN,
+        dependsOn: DEPENDS_ON,
+      }),
+    ).toBe(false);
+  });
+
+  // ── the tightening this file closes ───────────────────────────────────
+  //
+  // Before this, ANY non-empty context.baseBranch that wasn't the
+  // integration branch or the task's own head was accepted as a stacked
+  // declaration — with no check that it actually named a task this one
+  // depends on. A baseBranch pointing at an unrelated branch (copied
+  // forward by a retry/resume path, or simply stale) fell through
+  // unenforced instead of being routed to the mission's integration branch.
+
+  it('is false when no dependsOn is supplied at all', () => {
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: OPTED_IN }),
+    ).toBe(false);
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: OPTED_IN, dependsOn: [] }),
+    ).toBe(false);
+  });
+
+  it('is false for a baseBranch naming an unrelated branch with no dependsOn edge', () => {
+    // Looks exactly like a real stacked predecessor branch, but this task
+    // never declared a dependency on the task it names.
+    const unrelatedId = 'aaaaaaaa-0000-0000-0000-000000000000';
+    const unrelatedBranch = `buildd/${unrelatedId.slice(0, 8)}-some-other-task`;
+    expect(
+      isStackedPhaseBase({
+        contextBaseBranch: unrelatedBranch,
+        head: HEAD,
+        mission: OPTED_IN,
+        dependsOn: DEPENDS_ON, // names PREDECESSOR_ID, not unrelatedId
       }),
     ).toBe(false);
   });
@@ -314,6 +372,7 @@ describe('resolveTaskPrBase', () => {
         title: 'Phase 2',
         taskClass: 'work',
         context: { baseBranch: 'buildd/99999999-phase-1' },
+        dependsOn: ['99999999-0000-0000-0000-000000000000'],
       },
       head: 'buildd/abc12345-phase-2',
       fallbacks: TRUNK_FALLBACKS,
@@ -321,6 +380,31 @@ describe('resolveTaskPrBase', () => {
     expect(got.base).toBe('buildd/99999999-phase-1');
     expect(got.source).toBe('stacked_phase');
     expect(got.enforced).toBe(false);
+  });
+
+  it('does not exempt a baseBranch that looks like a stacked phase but names no dependsOn edge', () => {
+    // The tightening this file closes: an unverified baseBranch must fall
+    // through to the mission's real integration branch, enforced — not be
+    // handed back as an unenforced "stacked phase".
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: {
+        title: 'Phase 2',
+        taskClass: 'work',
+        context: { baseBranch: 'buildd/99999999-phase-1' },
+        // No dependsOn at all — the declaration this task's own schema
+        // allows (planning.ts: baseBranch and dependsOn are "usually", not
+        // always, paired) was never made.
+      },
+      head: 'buildd/abc12345-phase-2',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got).toEqual({
+      base: OPTED_IN.workingBranch,
+      source: 'mission_integration',
+      integrationBase: OPTED_IN.workingBranch,
+      enforced: true,
+    });
   });
 
   it('falls back to trunk for a task with no mission', () => {

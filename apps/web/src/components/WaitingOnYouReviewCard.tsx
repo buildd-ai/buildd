@@ -72,6 +72,31 @@ type CardState =
  * server decides delta-vs-full from the stored verdict, so the button never
  * needs to know which one it triggers.
  */
+function reviewCardVerdict(item: ActionQueueItem) {
+  const hasRecommendation = Boolean(item.recommendation);
+  // An open escalation note exists but carries no structured recommendation —
+  // still dispatchable off its free-text reason. A kernel-owned delivery the
+  // reviewer escalated arrives here with hasEscalationNote set by
+  // buildActionQueue (item.reviewerEscalated). Excluded once retries are
+  // exhausted for a conflict (deadZoneExhausted), which has its own dedicated
+  // CTA set further down and is never itself a reviewer note.
+  const canDispatchFix = !hasRecommendation && Boolean(item.hasEscalationNote) && !item.deadZoneExhausted;
+  const canApply = hasRecommendation || canDispatchFix;
+  const isApproved = !canApply && Boolean(item.verdictSummary);
+  const noVerdict = !canApply && !item.verdictSummary;
+  return { hasRecommendation, canDispatchFix, canApply, isApproved, noVerdict };
+}
+
+/** The Merge-override confirm line: it must agree with the verdict the card shows above it. */
+export function overrideConfirmCopy(item: ActionQueueItem): string {
+  const v = reviewCardVerdict(item);
+  if (v.hasRecommendation) return 'Merge despite escalation?';
+  if (item.reviewerEscalated && v.canDispatchFix) return "Merge past the reviewer's escalation?";
+  if (v.canDispatchFix) return 'Merge despite the reported defect?';
+  if (v.isApproved) return 'Merge this approved PR?';
+  return 'Merge without a reviewer verdict?';
+}
+
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [state, setState] = useState<CardState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
@@ -98,15 +123,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   }, [item.missionMergeBlockedReason]);
 
   const missionMergeBlocked = Boolean(item.missionMergeBlockedReason);
-  const hasRecommendation = Boolean(item.recommendation);
-  // An open escalation note exists but carries no structured recommendation —
-  // still dispatchable off its free-text reason. Excluded once retries are
-  // exhausted for a conflict (deadZoneExhausted), which has its own dedicated
-  // CTA set further down and is never itself a reviewer note.
-  const canDispatchFix = !hasRecommendation && Boolean(item.hasEscalationNote) && !item.deadZoneExhausted;
-  const canApply = hasRecommendation || canDispatchFix;
-  const isApproved = !canApply && Boolean(item.verdictSummary);
-  const noVerdict = !canApply && !item.verdictSummary;
+  const { hasRecommendation, canApply, isApproved, noVerdict } = reviewCardVerdict(item);
   // A terminal verdict exists (approve or escalate — both reach this card) AND
   // the PR's head has moved past the SHA it was made against: there is new
   // work the verdict never saw. Re-review then means a DELTA review against
@@ -436,13 +453,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           {state === 'confirming_override' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
               <span className="text-meta text-text-secondary min-w-0">
-                {hasRecommendation
-                  ? 'Merge despite escalation?'
-                  : canDispatchFix
-                    ? 'Merge despite the reported defect?'
-                    : isApproved
-                      ? 'Merge this approved PR?'
-                      : 'Merge without a reviewer verdict?'}
+                {overrideConfirmCopy(item)}
               </span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button

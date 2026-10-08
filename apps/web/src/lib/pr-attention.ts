@@ -15,6 +15,8 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { policyValue } from '@/lib/policy-overrides';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { kernelInboxMembership } from '@/lib/action-queue';
 import { resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string };
@@ -208,6 +210,10 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  // S36: a kernel-owned delivery is in the inbox iff the kernel says a person
+  // owns the next move; notes, tier and review leases only decide legacy PRs.
+  const deliveryViews = await getDeliveryViewsForTasks(openPrWorkers.flatMap(w => (w.taskId ? [w.taskId] : [])));
+
   // ── Landing handoff ───────────────────────────────────────────────────────
   // landPr records `needs_human` (deny_path, size cap, ...) on the task. That is
   // a condition only a person can resolve, whatever the reviewer notes say, so
@@ -242,6 +248,9 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
     const taskTitle = (w.task as any)?.title ?? '';
     if (taskTitle.startsWith('[smoke-test')) return false;
     if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+
+    const kernelView = w.taskId ? deliveryViews.get(w.taskId) : undefined;
+    if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
 
     // Exclude items currently under an active agent-review lease
     if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;

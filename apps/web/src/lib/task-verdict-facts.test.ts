@@ -51,6 +51,16 @@ describe('buildVerdictInput', () => {
     expect(deriveTaskVerdict(buildVerdictInput(facts({ workers: [{ ...PR, prLifecycleStatus: 'merged', mergedAt: new Date() }] })))!.state).toBe('shipped');
   });
 
+  it('a kernel-owned PR reads the delivery state, not the worker columns (§17.5)', () => {
+    const merged = buildVerdictInput(facts({ deliveryPrState: 'merged' }));
+    expect(merged.pr).toMatchObject({ lifecycle: 'merged', merged: true });
+    expect(deriveTaskVerdict(merged)!.state).toBe('shipped');
+    const green = buildVerdictInput(facts({ deliveryPrState: 'ci_passed' }));
+    expect(green.pr).toMatchObject({ lifecycle: 'ci_green', merged: false });
+    // No delivery: the columns as before.
+    expect(buildVerdictInput(facts({ deliveryPrState: null })).pr).toMatchObject({ lifecycle: 'ci_failed', merged: false });
+  });
+
   it('a live worker reads in progress', () => {
     const v = deriveTaskVerdict(buildVerdictInput(facts({ task: { status: 'in_progress', result: null }, workers: [{ id: 'w2', status: 'running' }] })))!;
     expect(v.state).toBe('in_progress');

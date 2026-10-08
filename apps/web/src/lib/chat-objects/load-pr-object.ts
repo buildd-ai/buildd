@@ -11,11 +11,20 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, isNotNull, like } from 'drizzle-orm';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import type { PrObjectView } from '@/components/chat/objects/object-views';
-import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { resolvePrDisplayState, type PrDisplayState } from '@/lib/pr-presentation';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
 
-/** The PR's display state: `derivePrDisplayState`, projected onto the chat object's vocabulary. Pure. */
-export function prStateOf(prLifecycleStatus: string | null | undefined, mergedAt: unknown): PrObjectView['state'] {
-  const state = derivePrDisplayState(prLifecycleStatus, mergedAt);
+/**
+ * The PR's display state, projected onto the chat object's vocabulary. Pure.
+ * A kernel-owned PR reads its delivery (`resolvePrDisplayState`), never the
+ * worker's fact-cache columns (§17.5).
+ */
+export function prStateOf(
+  prLifecycleStatus: string | null | undefined,
+  mergedAt: unknown,
+  delivery?: { prState: PrDisplayState | null } | null,
+): PrObjectView['state'] {
+  const state = resolvePrDisplayState({ delivery, prLifecycleStatus, mergedAt });
   switch (state) {
     case 'unresolvable': return 'closed';
     case 'awaiting_ci': return 'open';
@@ -79,6 +88,7 @@ async function prViewFromWorker(id: string, w: PrWorkerRow, userId: string): Pro
   });
   if (!task) return null;
   if (!(await verifyWorkspaceAccess(userId, task.workspaceId))) return null;
+  const delivery = (await getOwnerDeliveryDisplays([task.id])).get(task.id) ?? null;
 
   return {
     kind: 'pr',
@@ -87,7 +97,7 @@ async function prViewFromWorker(id: string, w: PrWorkerRow, userId: string): Pro
     number: w.prNumber,
     url: w.prUrl ?? null,
     title: task.title,
-    state: prStateOf(w.prLifecycleStatus, w.mergedAt),
+    state: prStateOf(w.prLifecycleStatus, w.mergedAt, delivery),
     linesAdded: w.linesAdded ?? null,
     linesRemoved: w.linesRemoved ?? null,
     mergedAt: epoch(w.mergedAt),

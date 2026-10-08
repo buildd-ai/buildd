@@ -47,6 +47,7 @@ const LABEL: Record<string, string> = {
   'pr.adopt': 'Record PR',
   'pr.close': 'Close PR',
   'pr.update_body': 'Update PR body',
+  'pr.mark_ready': 'Mark PR ready',
   'pr.merge': 'Merge PR',
 };
 
