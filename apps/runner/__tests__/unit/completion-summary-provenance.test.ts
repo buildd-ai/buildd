@@ -175,7 +175,13 @@ async function runSession(
   const task = { ...makeTask(), ...overrides };
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the completion update rather than a fixed sleep: a loaded CI
+  // shard can take well over 300ms to finish the session.
+  const deadline = Date.now() + 5000;
+  while (!completionCall() && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 25));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
 /** An assistant turn with a single text block — no tool use, nothing that reads as complete_task. */
