@@ -1201,7 +1201,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: under loaded CI the catch block can land late.
+      for (let i = 0; i < 50 && manager.getWorker('w-abort-msg')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-abort-msg');
       // The catch block distinguishes abort errors by checking for "aborted" in message
