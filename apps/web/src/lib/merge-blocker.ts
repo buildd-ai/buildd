@@ -68,7 +68,7 @@ export function describeMergeBlocker(item: ActionQueueItem): MergeBlockerView | 
       state: 'Conflict fix stalled',
       reason: item.remediationStalled,
       action: { kind: 'view_task', label: 'Run fix', taskId: item.conflictRetryTaskId },
-      details: [reason, ...details],
+      details,
     };
   }
   if (item.chip === 'RESOLVING') {

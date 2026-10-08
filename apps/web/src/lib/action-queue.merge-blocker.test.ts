@@ -168,7 +168,8 @@ describe('S37 — stalled live conflict fix', () => {
     expect(view.state).toBe('Conflict fix stalled');
     expect(view.reason).toBe('the conflict fix has waited 42m with no runner claim');
     expect(view.action).toEqual({ kind: 'view_task', label: 'Run fix', taskId: 'retry-2' });
-    expect(view.details[0]).toBe('Migration 0235 collides with another change');
+    expect(view.details.some((d) => d === view.reason)).toBe(false);
+    expect(view.details[0]).toBe('Automatic fix attempt 1');
   });
   it('a live fix that has not stalled keeps "Resolving merge conflict"', () => {
     const view = describeMergeBlocker(card({ conflictRetryTaskId: 'retry-2', remediationStalled: null }))!;
