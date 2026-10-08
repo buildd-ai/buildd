@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test';
-import { scheduleHandoffScopeReconcile } from './pr-scope-handoff-reconcile';
+import { scheduleHandoffScopeReconcile } from './pr-scope-reconcile-trigger';
 
 const linked = async () => ({ fullName: 'org/repo', installationId: 42 });
 

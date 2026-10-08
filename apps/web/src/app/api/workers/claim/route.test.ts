@@ -5661,7 +5661,7 @@ describe('path-overlap claim guard', () => {
   // The live shape (PR #3983): a trunk → mission refresh PR whose task manifest
   // grew to every trunk file its merge touched. It changes nothing on trunk, so
   // a trunk-bound task on one of those files is not waiting on it
-  // (./open-pr-landing-base).
+  // (./open-pr-target-base).
   describe('open PR into a different landing base', () => {
     const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
     const trunkTask = () => ({

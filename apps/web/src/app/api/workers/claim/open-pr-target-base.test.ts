@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { findBlockingPr } from '@buildd/core/path-overlap';
-import { candidateLandingBase, partitionOpenPrsByLandingBase } from './open-pr-landing-base';
+import { candidateLandingBase, partitionOpenPrsByLandingBase } from './open-pr-target-base';
 
 const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
 
