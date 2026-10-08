@@ -19,6 +19,7 @@ export type CapabilityName =
   | 'github.repo_grant'
   | 'github.scout_capture_grant'
   | 'model.endpoint'
+  | 'model.inference'
   | 'task_token.mint'
   | 'runner.size'
   | 'pr.create'
