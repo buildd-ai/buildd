@@ -290,7 +290,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     tools.push({
       name: "send_worker_message",
       description: surface === 'groups'
-        ? 'Message an active sibling task in your workspace; sender is the current worker. Delivered at its next turn. Terminal recipient: delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
+        ? 'Message an active sibling task in your workspace (sender: you). Delivered at its next turn. Terminal recipient: delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
         : `Send a structured message to another active task worker in the same workspace.
 
 Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).

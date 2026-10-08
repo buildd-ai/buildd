@@ -212,6 +212,8 @@ describe('throttle and output', () => {
 
     it('run(): Stop with a waiting message prints the block decision', async () => {
       const dir = mkdtempSync(join(tmpdir(), 'buildd-hook-stop-'));
+      // A folder whose .mcp.json names buildd is in scope (see 'workspace scope').
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp' } } }));
       try {
         const fetchImpl = (async () => Response.json({ ok: true, pendingInstructions: true, taskId: 'abcdef12-0000' })) as any;
         const env = { BUILDD_API_KEY: 'bld_x', BUILDD_SERVER: 'https://b.test', BUILDD_HOME: dir } as any;

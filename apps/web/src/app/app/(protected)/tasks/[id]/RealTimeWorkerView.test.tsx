@@ -213,10 +213,10 @@ describe('RealTimeWorkerView — running', () => {
     expect(html).not.toContain('worker-touched');
   });
 
-  test('top to bottom: Now strip and phase rail, then results, then the log', () => {
+  test('top to bottom: Now strip and evidence rail, then results, then the log', () => {
     const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
     const now = html.indexOf('data-testid="worker-now-strip"');
-    const rail = html.indexOf('data-testid="worker-step-rail"');
+    const rail = html.indexOf('data-testid="run-evidence-rail"');
     const stats = html.indexOf('data-testid="worker-stats"');
     const log = html.indexOf('data-testid="worker-activity-log"');
     expect(now).toBeGreaterThanOrEqual(0);

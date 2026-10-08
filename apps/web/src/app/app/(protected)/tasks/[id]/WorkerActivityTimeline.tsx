@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import { buildTape, countToolCalls } from './task-activity';
-import { buildMilestoneLog, type LogEntry } from './milestone-log';
+import { buildMilestoneLog, isNarrationMilestone, type LogEntry } from './milestone-log';
 
 // `label` is optional on purpose: workspaces with dataClass 'sensitive' have their
 // milestone labels stripped server-side (apps/web/src/app/api/workers/[id]/route.ts),
@@ -103,10 +103,11 @@ export function ActivityTape({
         // A marker and its time, not the reported percent (a stream of them,
         // 40 70 30 90, is noise) and not the label: a label wide enough to read
         // ran over the neighbouring markers, and the Now strip names the latest.
+        // Narration ("Now I'll…") gets no hover text, as it gets no log row.
         return (
           <div
             key={`${f.pos}-${i}`}
-            title={f.label || undefined}
+            title={f.label && !isNarrationMilestone(f.label) ? f.label : undefined}
             className="absolute top-0 font-mono text-[11px] whitespace-nowrap"
             style={{ left: `${f.pos * 100}%`, transform: flip ? 'translateX(-100%)' : undefined }}
           >
