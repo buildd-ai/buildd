@@ -1,12 +1,20 @@
 name: Integration
 
-# The integration + E2E job, callable from more than one trigger:
-#   - build.yml `integration`: PRs into main whose head is not dev (hotfixes).
+# The integration + E2E job, callable from more than one trigger. Each caller
+# passes `source`, and every run writes an evidence block (source, tested SHA,
+# check name, result) to its job summary:
+#   - build.yml `integration`: hotfix PRs into main. source=hotfix-pr.
 #     Check name "integration / integration".
-#   - post-merge-integration.yml: every push to dev, API tests only, advisory.
-#     Check name "post-merge integration / integration". The release gate
+#   - build.yml `candidate-integration`: release candidate PRs
+#     (release/vX.Y.Z → main), full API + runner tests on the exact candidate
+#     head SHA. source=release-candidate. Check name
+#     "candidate integration / integration"; it counts toward the release PR's
+#     ciState, unlike the advisory post-merge check.
+#   - post-merge-integration.yml: dev pushes with unverified server changes,
+#     advisory. source=post-merge-dev (or manual). Check name
+#     "post-merge integration / integration". The release gate
 #     (apps/web/src/lib/release/dispatch.ts) excludes that prefix from ciState.
-# Neither check is required on main (only `build` is).
+# Only `build` is required on main.
 
 on:
   workflow_call:
@@ -28,9 +36,17 @@ on:
         type: string
         required: true
       checkout_sha:
-        description: Exact commit to test on the test machine (empty = branch head)
+        description: Exact commit to test (empty = the PR head SHA, else the event SHA)
         type: string
         default: ''
+      source:
+        description: Which caller this evidence is for (hotfix-pr, release-candidate, post-merge-dev, manual)
+        type: string
+        default: hotfix-pr
+    outputs:
+      tested_sha:
+        description: The commit the tests ran against
+        value: ${{ jobs.integration.outputs.tested_sha }}
 
 jobs:
   integration:
@@ -44,6 +60,8 @@ jobs:
     concurrency:
       group: integration-test-machine
       cancel-in-progress: false
+    outputs:
+      tested_sha: ${{ steps.target.outputs.sha }}
 
     # Test-machine coordinates. Repo variables, not literals: this repo is public.
     # Unset TEST_HOST/TEST_CONTAINER makes the sync step skip loudly (see below).
@@ -53,7 +71,31 @@ jobs:
       TEST_CONTAINER: ${{ vars.TEST_MACHINE_CONTAINER }}
 
     steps:
+      # Resolved once and used for both checkouts: the tests, migrations and
+      # fixtures run from this job's checkout, the server from the test
+      # machine's. Both must be the same commit, and it must be the one the
+      # check-run is reported on. A PR event's own SHA is the merge ref, not
+      # the head, so the PR head SHA is the default there.
+      - name: Resolve the commit under test
+        id: target
+        env:
+          REQUESTED: ${{ inputs.checkout_sha || github.event.pull_request.head.sha || github.sha }}
+          SOURCE: ${{ inputs.source }}
+        run: |
+          if ! [[ "$REQUESTED" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::checkout_sha must be a full 40-char commit SHA, got '$REQUESTED'. Testing a branch name would report a verdict for whatever it points at by then."
+            exit 1
+          fi
+          if [ "${{ inputs.api }}" != "true" ] && [ "${{ inputs.e2e }}" != "true" ]; then
+            echo "::error::Called with api=false and e2e=false: nothing would run, and the job would report green. Refusing."
+            exit 1
+          fi
+          echo "sha=$REQUESTED" >> "$GITHUB_OUTPUT"
+          echo "::notice::integration source=$SOURCE sha=$REQUESTED"
+
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.target.outputs.sha }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -164,10 +206,10 @@ jobs:
       - name: Sync code and build on test machine
         id: sync
         env:
-          # Empty on the PR path (the branch head is what's under test). Set on
-          # the post-merge path: dev may have moved on by the time this job
-          # leaves the queue, and the result is reported against this SHA.
-          CHECKOUT_SHA: ${{ inputs.checkout_sha }}
+          # Always an exact SHA (see "Resolve the commit under test"): the branch
+          # may have moved on by the time this job leaves the queue, and the
+          # result is reported against this SHA.
+          CHECKOUT_SHA: ${{ steps.target.outputs.sha }}
         run: |
           # Print what we resolved before using it. A gate that reports only
           # pass/fail cannot distinguish "healthy" from "never ran".
@@ -181,17 +223,22 @@ jobs:
             exit 1
           fi
           echo "INTEGRATION_MODE=full host=$TEST_HOST container=$TEST_CONTAINER user=$TEST_USER"
-          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           rc=1
           for attempt in 1 2 3 4 5; do
             echo "Attempt $attempt/5: syncing and building on test machine..."
+            # By SHA, not branch: a branch tip can move (or the branch can be
+            # deleted) between the event and this job. The HEAD check fails the
+            # run if what was checked out is not the commit being reported on.
             if tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
               docker exec $TEST_CONTAINER bash -c "
                 set -e
                 export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
                 (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
-                git clone --depth 1 --branch $BRANCH https://github.com/${{ github.repository }}.git /tmp/buildd-ci
-                if [ -n '$CHECKOUT_SHA' ]; then git -C /tmp/buildd-ci fetch --depth 1 origin $CHECKOUT_SHA && git -C /tmp/buildd-ci checkout -q FETCH_HEAD; fi
+                git init -q /tmp/buildd-ci
+                git -C /tmp/buildd-ci remote add origin https://github.com/${{ github.repository }}.git
+                git -C /tmp/buildd-ci fetch --depth 1 origin $CHECKOUT_SHA
+                git -C /tmp/buildd-ci checkout -q FETCH_HEAD
+                test \\\$(git -C /tmp/buildd-ci rev-parse HEAD) = $CHECKOUT_SHA || { echo 'SHA mismatch: test machine HEAD is not $CHECKOUT_SHA'; exit 1; }
                 cd /tmp/buildd-ci && bun install 2>&1 | tail -3
                 cd apps/web && DATABASE_URL=postgresql://x:x@localhost/x AUTH_SECRET=build-secret bun run build:only 2>&1 | tail -50
                 test -d .next || { echo 'Build failed: .next directory missing'; exit 1; }
@@ -480,6 +527,7 @@ jobs:
           TEST_MACHINE_HOST: ${{ vars.TEST_MACHINE_HOST }}
 
       - name: Integration tests
+        id: api_tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.api
         # One `bun test` process per file, and each must report at least one
         # passing test. These files call process.exit(0) to "skip" (missing key,
@@ -527,12 +575,19 @@ jobs:
           RUNNER: ${{ inputs.runner }}
 
       - name: E2E tests
+        id: e2e_tests
         if: steps.sync.outputs.machine_online != 'false' && inputs.e2e
         run: |
           set +e
           bun test tests/e2e/server-worker-flow.test.ts
           code=$?
           if [ $code -eq 75 ]; then
+            # A release candidate's verdict is the evidence the release ships
+            # on, so there a skip is a failure; elsewhere it stays a warning.
+            if [ "$SOURCE" = "release-candidate" ]; then
+              echo "::error::E2E did not run — CI Claude OAuth quota exhausted (exit 75). A release candidate cannot pass on a skipped suite; re-run when quota recovers."
+              exit 1
+            fi
             echo "::warning::E2E skipped — CI Claude OAuth quota exhausted (exit 75, EX_TEMPFAIL)"
             exit 0
           fi
@@ -550,6 +605,7 @@ jobs:
           #   runner only → run all (worker tests need API too)
           #   both        → run all
           E2E_SCOPE: ${{ inputs.runner && 'all' || 'api' }}
+          SOURCE: ${{ inputs.source }}
 
       - name: Dump SDK binary state on failure
         if: failure()
@@ -606,3 +662,43 @@ jobs:
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+
+      # The verdict, stated where a human or release_status reader can see it:
+      # which caller, which commit, which check, what actually ran. "skipped"
+      # here means a step did not run, and the job is never green for it — the
+      # machine-offline paths above exit 1.
+      - name: Record integration evidence
+        if: always()
+        env:
+          SOURCE: ${{ inputs.source }}
+          TESTED_SHA: ${{ steps.target.outputs.sha }}
+          MODE: ${{ steps.sync.outputs.machine_online == 'true' && 'full' || 'not run (test machine unavailable)' }}
+          SYNC: ${{ steps.sync.outcome }}
+          API_TESTS: ${{ inputs.api && (steps.api_tests.outcome || 'not reached') || 'not requested' }}
+          RUNNER: ${{ inputs.runner }}
+          E2E_TESTS: ${{ inputs.e2e && (steps.e2e_tests.outcome || 'not reached') || 'not requested' }}
+          VERDICT: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          # The check-run name each caller produces ("<caller job> / integration").
+          case "$SOURCE" in
+            release-candidate) CHECK="candidate integration / integration" ;;
+            post-merge-dev|manual) CHECK="post-merge integration / integration" ;;
+            *) CHECK="integration / integration" ;;
+          esac
+          {
+            echo "### Integration evidence"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Source | $SOURCE |"
+            echo "| Tested SHA | \`${TESTED_SHA:-unresolved}\` |"
+            echo "| Check | $CHECK ([run]($RUN_URL)) |"
+            echo "| Mode | $MODE |"
+            echo "| Build on test machine | ${SYNC:-not reached} |"
+            echo "| API integration tests | $API_TESTS |"
+            echo "| Preview runner | $RUNNER |"
+            echo "| E2E | $E2E_TESTS |"
+            echo "| Verdict | $VERDICT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::integration evidence: check='$CHECK' source=$SOURCE sha=${TESTED_SHA:-unresolved} verdict=$VERDICT api=$API_TESTS e2e=$E2E_TESTS"

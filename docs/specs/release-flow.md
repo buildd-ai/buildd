@@ -96,6 +96,19 @@ and URL.
   i.e. on the release PR head, and never gate a release; `release_status`
   reports them separately as `postMergeIntegration`, and the health watcher
   does not file CI-failing tasks for them.
+- Post-merge integration MUST be incremental against evidence, not against
+  `prodBranch`: a dev push is tested when server, runner or job-definition
+  code changed since the newest dev ancestor whose integration run actually
+  passed (`scripts/ci/post-merge-coverage.ts`). A run that failed, was
+  cancelled or was skipped is never that base, a push dev has already moved
+  past defers to the newer run, and missing evidence means test. A skipped
+  post-merge run is reported as `skipped`, never `passing`.
+- A release candidate PR (`release/vX.Y.Z` → `prodBranch`) MUST get its own
+  full API + runner integration run on its exact head SHA (check
+  `candidate integration / integration`, from `build.yml`). It is not
+  advisory: it counts toward `ciState`, and only a `success` conclusion counts
+  as passing (skipped, neutral and cancelled are failing). A green from any
+  other SHA, including the dev SHA it was cut from, is not evidence for it.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a properly configured `workflow_dispatch` workspace WHEN

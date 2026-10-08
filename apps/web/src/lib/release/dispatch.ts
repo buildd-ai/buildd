@@ -102,7 +102,13 @@ export function classifyCheckRuns(allRuns: CheckRun[]): {
   const runs = allRuns.filter((r) => !isPostMergeIntegrationCheck(r.name));
   if (runs.length === 0) return { ciState: 'unknown', failingChecks: [] };
   if (runs.some((r) => r.status !== 'completed')) return { ciState: 'pending', failingChecks: [] };
-  const failing = runs.filter((r) => r.conclusion && !['success', 'neutral', 'skipped'].includes(r.conclusion));
+  // The candidate integration check is evidence, so only a real success
+  // counts for it: a skipped or neutral candidate run tested nothing.
+  const ok = (r: CheckRun) =>
+    r.name.toLowerCase() === CANDIDATE_INTEGRATION_CHECK_NAME
+      ? r.conclusion === 'success'
+      : !r.conclusion || ['success', 'neutral', 'skipped'].includes(r.conclusion);
+  const failing = runs.filter((r) => !ok(r));
   return {
     ciState: failing.length > 0 ? 'failing' : 'passing',
     failingChecks: failing.map((r) => r.name),
@@ -120,9 +126,20 @@ export function isPostMergeIntegrationCheck(name: string): boolean {
   return name.toLowerCase().startsWith(POST_MERGE_INTEGRATION_CHECK_PREFIX);
 }
 
+// The authoritative integration run for a release candidate PR
+// (release/vX.Y.Z → main), from build.yml `candidate-integration`: full API +
+// runner tests on the candidate's exact head SHA. Unlike the post-merge check
+// it is NOT advisory: classifyCheckRuns counts it toward ciState, so the
+// release PR is pending until it finishes and failing if it fails, is
+// cancelled or could not reach the test machine.
+export const CANDIDATE_INTEGRATION_CHECK_NAME = 'candidate integration / integration';
+
 export interface PostMergeIntegrationSummary {
   // not_run: no post-merge run exists for this SHA (not yet triggered, or the
-  // workflow is absent). skipped: it ran and found no API change to test.
+  // workflow is absent). skipped: it ran and did not test this SHA, either
+  // because no server code changed since a dev ancestor whose run passed, or
+  // because dev had already moved past it (the newer run covers it). Either
+  // way it is not a verdict on this SHA, so it is never reported as passing.
   // cancelled: superseded on a shared concurrency group before it tested
   // anything — neither coverage nor a failure; re-dispatch the workflow on dev
   // (workflow_dispatch) to get a verdict for this head.

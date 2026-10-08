@@ -735,10 +735,40 @@ jobs:
     # the API integration tests on every push to dev (advisory, never required),
     # and release_status reports that result for the release PR's head. The job
     # body lives in integration.yml so both callers run the same steps.
-    if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev'
+    #
+    # Release candidates (release/vX.Y.Z → main) are not hotfixes: they get the
+    # unconditional candidate-integration job below instead, not this one too.
+    if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev' && !startsWith(github.head_ref, 'release/v')
     uses: ./.github/workflows/integration.yml
     secrets: inherit
     with:
       api: ${{ needs.changes.outputs.api == 'true' }}
       runner: ${{ needs.changes.outputs.runner == 'true' }}
       neon_branch: ci/pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: hotfix-pr
+
+  # The authoritative integration verdict for a release candidate: one full API
+  # + runner run on the candidate's exact head SHA, whatever changed, because a
+  # candidate is the code that ships and post-merge dev runs are advisory and
+  # on other SHAs. Not path-filtered and not "covered by an earlier green".
+  # Check name "candidate integration / integration"; it is not advisory, so
+  # it counts toward the release PR's ciState (pending until it finishes, red if
+  # it fails, is cancelled or the test machine is down). A new push to the
+  # candidate (an amendment) cancels this run and starts one on the new SHA.
+  #
+  # E2E is off: it needs the CI Claude OAuth quota, and a release cannot wait
+  # on that. Hotfix PRs still run it. The candidate branch itself is cut by
+  # release.yml (separate change); this job only needs the release/v prefix.
+  candidate-integration:
+    name: candidate integration
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v')
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+    with:
+      api: true
+      runner: true
+      e2e: false
+      neon_branch: ci/candidate-pr-${{ github.event.pull_request.number }}
+      checkout_sha: ${{ github.event.pull_request.head.sha }}
+      source: release-candidate
