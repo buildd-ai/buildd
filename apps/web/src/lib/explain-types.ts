@@ -78,7 +78,9 @@ export type CausalLinkSource =
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
   | 'tasks.roleSlug + workerHeartbeats.environment + workspaces.gitConfig.executor'
   | 'task_dispatch_outbox.status'
-  | 'tasks.context.entitlementBlock';
+  | 'tasks.context.entitlementBlock'
+  | 'tasks.pathDeclaration.softOverlaps + gate_events'
+  | 'gate_events.detail';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -135,6 +137,8 @@ export interface GateHistoryEntry {
   reason: string;
   consecutiveDeferrals: number | null;
   firstDeferredAt: string | null;
+  /** Who held the task and on what, when the row recorded it (coordination gates). */
+  holder?: import('./explain-coordination').CoordinationGateDetail;
 }
 
 export interface ExplainSubject {
@@ -194,6 +198,12 @@ export interface ExplainAnswer {
    * absent when the task has none. Read the text with `read_evidence`.
    */
   evidenceObjects?: InlineEvidenceObject[];
+  /**
+   * A pending task held by coordination: each holder with the edge kind
+   * (declared / inferred dependency, soft overlap, path lease, open PR), the
+   * overlapping paths and the hold/start verdict. Task scope only.
+   */
+  coordination?: { holds: import('./explain-coordination').CoordinationHold[] };
   /**
    * For a task subject: what its runs were given and refused (repo access,
    * buildd tokens, PR actions), oldest first, repeats folded. Absent when

@@ -27,7 +27,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { isAdvisoryManifest, isDownstreamOf, shouldSerializeByManifest } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
@@ -886,13 +887,15 @@ export async function dispatchConflictRetry(
     return { dispatched: false, exhausted: true };
   }
 
-  // Auto-compute dependsOn for path-overlap serialization — same rule as POST /api/tasks.
-  // Uses shouldSerializeByManifest(), so a repo-wide sentinel ('**') on either side
-  // produces NO stored edge: the sentinel is advisory-only at claim time
-  // (findBlockingPr + the path_claims backstop both skip it), and a hard dependsOn
-  // edge blocks until the upstream task is completed AND its PR merged. Keeping this
-  // identical to the tasks route is deliberate — the two paths must not drift.
+  // Path-overlap serialization — same rule as POST /api/tasks (partitionOverlapEdges):
+  // only a same-file, migration or serialized-surface overlap becomes a stored
+  // dependsOn edge (which blocks until the upstream is completed AND merged);
+  // a prefix-only overlap is soft evidence on pathDeclaration.softOverlaps,
+  // decided at claim time. A repo-wide sentinel ('**') on either side produces
+  // nothing. Keeping this identical to the tasks route is deliberate — the two
+  // paths must not drift.
   const resolvedDependsOn: string[] = [];
+  let softOverlaps: SoftOverlapEdge[] = [];
   if (
     retryTask.pathManifest &&
     retryTask.pathManifest.length > 0 &&
@@ -912,19 +915,28 @@ export async function dispatchConflictRetry(
     const dependsOnById = new Map<string, readonly string[] | null | undefined>(
       inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
     );
-    for (const t of inFlightTasks) {
-      // This attempt must run before its own PR can merge. Depending on that
-      // PR's task (or another attempt on it) makes the repair unclaimable.
-      if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) continue;
-      // t is already waiting (directly or transitively) on the task this repair
-      // exists to unblock — a new edge repair→t would make the repair wait on
-      // something that is itself waiting on the repair's own subject, a
-      // structural deadlock rather than real serialization.
-      if (isDownstreamOf(t.id, taskId, dependsOnById)) continue;
-      if (shouldSerializeByManifest(retryTask.pathManifest, t.pathManifest as string[] | null)) {
-        resolvedDependsOn.push(t.id);
-      }
-    }
+    const byId = new Map(inFlightTasks.map(t => [t.id, t]));
+    const gitConfig = workspace.gitConfig ?? null;
+    const split = partitionOverlapEdges(
+      retryTask.pathManifest,
+      inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
+      {
+        skip: (id) => {
+          const t = byId.get(id)!;
+          // This attempt must run before its own PR can merge. Depending on that
+          // PR's task (or another attempt on it) makes the repair unclaimable.
+          if (t.id === taskId || t.subjectPrNumber === prNumber || t.conflictRetryPrNumber === prNumber) return true;
+          // t is already waiting (directly or transitively) on the task this repair
+          // exists to unblock — an edge (hard or soft) repair→t would make the
+          // repair wait on something that is itself waiting on the repair's own
+          // subject, a structural deadlock rather than real serialization.
+          return isDownstreamOf(t.id, taskId, dependsOnById);
+        },
+        isSerialized: (paths) => overlapTouchesSerializedSurface(paths, gitConfig),
+      },
+    );
+    resolvedDependsOn.push(...split.hard);
+    softOverlaps = split.soft;
   }
 
   // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
@@ -954,6 +966,18 @@ export async function dispatchConflictRetry(
       subjectDedupeScope: 'active',
       pathManifest: retryTask.pathManifest,
       ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
+      // Provenance for the inferred edges (all of this attempt's are inferred)
+      // and the soft evidence the claim route decides on.
+      ...(retryTask.pathManifest && retryTask.pathManifest.length > 0 ? {
+        pathDeclaration: {
+          declared: retryTask.pathManifest,
+          source: 'creation' as const,
+          snapshotAt: new Date().toISOString(),
+          ...(resolvedDependsOn.length > 0 ? { inferredDependsOn: [...resolvedDependsOn] } : {}),
+          overlapPolicy: 'v2' as const,
+          ...(softOverlaps.length > 0 ? { softOverlaps } : {}),
+        },
+      } : {}),
     })
     .onConflictDoNothing()
     .returning();

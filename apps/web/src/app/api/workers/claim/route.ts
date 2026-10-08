@@ -124,8 +124,11 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
+  touchesSerializedSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
+import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
+import { loadSoftOverlapHolders } from './soft-overlap-store';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -1145,6 +1148,7 @@ export async function POST(req: NextRequest) {
     subject_dead: 0,
     path_overlap: 0,
     advisory_manifest: 0,
+    soft_overlap: 0,
     mission_budget: 0,
     mission_concurrent: 0,
     mission_paced: 0,
@@ -1379,6 +1383,20 @@ export async function POST(req: NextRequest) {
     }));
   }
 
+  // Soft overlap holders (./soft-overlap-gate). Read only when a candidate
+  // carries `pathDeclaration.softOverlaps`; null = the read failed, and every
+  // soft entry then holds as unknown state (fail closed).
+  let softHolders: Map<string, SoftHolderRow> | null = new Map();
+  const softHolderIds = softOverlapHolderIds(filteredTasks as Array<{ id: string; pathDeclaration?: unknown }>);
+  if (softHolderIds.size > 0) {
+    try {
+      softHolders = await loadSoftOverlapHolders([...softHolderIds]);
+    } catch (err) {
+      softHolders = null;
+      console.warn('[claim] soft overlap holder read failed (holding every soft overlap):', err);
+    }
+  }
+
   // ── Mission-level gates (pacing, concurrency, budget) ─────────────────────────
   // Batch-fetch mission rows and active worker counts for all tasks that reference
   // a mission. Used by three claim-loop guards:
@@ -1489,9 +1507,9 @@ export async function POST(req: NextRequest) {
   // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
   // deterministic rail (no I/O); the decisions run after the response. The
-  // gated START path is unreachable as shipped (shadow definition, zero
-  // applying fraction), so `holdStartGated` is false and the loop below never
-  // awaits anything new.
+  // gated START path is live (task 7eb191b9): an advisory deferral looks up an
+  // applied Jev START for its exact state, one indexed ledger read, and holds
+  // on any miss or error. `CLAIM_HOLD_APPLYING_FRACTION = 0` turns it off.
   const holdStart = new ClaimHoldCollector();
   const holdStartGated = gatedStartReachable();
   // Every hold/start call in the loop is non-throwing: the collector methods,
@@ -1532,8 +1550,9 @@ export async function POST(req: NextRequest) {
   // (the default when unset) plans beside the legacy walk and records both. 'apply' claims in
   // plan order: every gate in the loop still runs on each pick, and a pick
   // that is refused or loses its race is dropped and the rest re-planned.
-  // Never for an explicit taskId claim (which includes every force claim), and
-  // never 'apply' while a gated START is reachable — that path keeps its walk.
+  // Never for an explicit taskId claim (which includes every force claim). A
+  // gated START (now live) is just another gate on each pick: it can only
+  // relax an advisory deferral the pick reaches, so 'apply' keeps its order.
   const plannerConfigs = new Map<string, ReturnType<typeof resolveClaimPlannerConfig>>();
   const plannerModeOf = (t: { workspaceId: string }): ClaimPlannerMode => {
     if (taskId) return 'off';
@@ -1542,7 +1561,7 @@ export async function POST(req: NextRequest) {
       cfg = resolveClaimPlannerConfig((t as any).workspace?.gitConfig);
       plannerConfigs.set(t.workspaceId, cfg);
     }
-    return cfg.mode === 'apply' && holdStartGated ? 'record' : cfg.mode;
+    return cfg.mode;
   };
   // A candidate a pre-filter already refuses (connector, role env) is not
   // planned: it would only hold a slot it can never take. It still walks the
@@ -1609,6 +1628,9 @@ export async function POST(req: NextRequest) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
     let gatedStartPaths: string[] | null = null;
+    // Soft overlaps a force claim went past: recorded with its outcome as
+    // calibration data (human force, not a model label).
+    const softOverlapForced: Array<Record<string, unknown>> = [];
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1700,8 +1722,8 @@ export async function POST(req: NextRequest) {
       // PR) and PRs stacked on them never block it — see splitOwnOpenPrs.
       const filterOpenPrTasks = splitOwnOpenPrs(task, openPrTasks).others;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
-      // Shadow-only by default: note the deferral (no I/O). A gated START
-      // (unreachable as shipped) relaxes ONLY this layer; layer 2 and every
+      // Note the deferral (no I/O). An applied gated START for this exact
+      // state relaxes ONLY this layer; layer 2 and every
       // later gate still run, and the paths are acquired exclusively below.
       const holdCtx = blocking && !forced ? holdStartContext(task, forced) : null;
       const holdNote = holdCtx ? holdStart.noteOpenPrOverlap(holdCtx, taskManifest, filterOpenPrTasks, activePathClaimsByWorkspace.get(task.workspaceId)) : null;
@@ -1773,6 +1795,54 @@ export async function POST(req: NextRequest) {
           if (blockedByActiveClaim) continue;
         }
       }
+
+      // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
+      // scope overlaps this one's only by directory prefix, or a pre-v2
+      // inferred edge. Never a dependsOn edge. A same-file / migration /
+      // serialized / unknown-state entry holds deterministically; a prefix-only
+      // one holds unless an applied Jev START exists for this exact state, and
+      // the START's declared paths are then acquired exclusively before the
+      // claim (a live lease wins). Forced: bypassed and recorded.
+      const softVerdicts = softHolderIds.size > 0
+        ? evaluateSoftOverlaps(task as any, softHolders, {
+            isSerialized: (paths) => touchesSerializedSurface(paths, (task as any).workspace?.gitConfig ?? null),
+          })
+        : [];
+      let softHeld = false;
+      for (const v of softVerdicts) {
+        // The rule's verdict: deterministic for a hard overlap, HOLD for a
+        // prefix-only one until an applied Jev START says otherwise.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        if (v.kind === 'advisory' && !forced) {
+          const holdCtx = holdStartContext(task, forced);
+          const note = holdCtx
+            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+            : null;
+          verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
+        }
+        if (verdict === 'START') {
+          console.log(`[claim] gated_start: task ${task.id} past soft overlap with ${v.holderTaskId}; acquiring its paths`);
+          gatedStartPaths = concreteManifest;
+          continue;
+        }
+        const detail = {
+          holderTaskId: v.holderTaskId,
+          paths: v.paths.slice(0, 10),
+          verdict,
+          overlapKind: v.kind === 'deterministic' ? v.overlapKind : 'prefix',
+        };
+        if (forced) {
+          softOverlapForced.push(detail);
+          bypassOrDefer('soft_overlap', detail);
+          continue;
+        }
+        console.log(`[claim] soft_overlap_held: task ${task.id} deferred behind ${v.holderTaskId} (${verdict})`);
+        bypassOrDefer('soft_overlap', detail);
+        noteDeferralWaiter(task.workspaceId, task.id, v.holderTaskId, v.paths);
+        softHeld = true;
+        break;
+      }
+      if (softHeld) continue;
     }
 
     // ── Mission-level gates ──────────────────────────────────────────────────────
@@ -1894,7 +1964,7 @@ export async function POST(req: NextRequest) {
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
             : undefined;
-          // Shadow-only by default (see layer 1 above). A gated START relaxes
+          // Noted like layer 1 above. An applied gated START relaxes
           // only this serialization; there are no declared paths to acquire,
           // and observed touches are leased by the exclusive primitive later.
           const holdCtx = blockingPeer ? holdStartContext(task, forced) : null;
@@ -2702,6 +2772,24 @@ export async function POST(req: NextRequest) {
         callerOrigin: gateCallerOrigin({ apiAccount: account }),
         detail: { bypassed: [...forceBypassed], accountId: account.id, userId: interactiveSession?.userId ?? null },
       });
+      // A force past a soft overlap is calibration data for the HOLD/START
+      // decision: a human START, labelled later by the same outcome join
+      // (clean, collision, conflict task) as a model START, never counted as
+      // a model answer. One row per holder it went past.
+      for (const s of softOverlapForced) {
+        fireGateEvent({
+          gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+          surface: 'POST /api/workers/claim',
+          outcome: 'bypassed',
+          reason: 'force_soft_overlap',
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          missionId: (task as any).missionId ?? null,
+          workerId: worker.id,
+          callerOrigin: gateCallerOrigin({ apiAccount: account }),
+          detail: { ...s, calibration: 'human_force', startedAt: now.toISOString() },
+        });
+      }
     }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
   }

@@ -878,14 +878,13 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
   });
 
-  it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {
+  it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      // Exact directory prefix — pathsOverlap does literal prefix matching, not glob expansion
       pathManifest: ['apps/web/src/lib'],
       missionId: 'mission-1',
     });
-    // Sibling declares a file inside that directory — prefix overlap fires
+    // Sibling declares a file inside that directory — prefix overlap only
     mockTaskFindMany.mockResolvedValue([
       { id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
     ]);
@@ -893,7 +892,22 @@ describe('dispatchConflictRetry', () => {
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({
+      overlapPolicy: 'v2',
+      softOverlaps: [{ taskId: 'sibling-task-id', kind: 'prefix' }],
+    });
+  });
+
+  it('populates dependsOn when a sibling task declares the same file', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
+    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['sibling-task-id']);
+    expect(capturedInsertValues.pathDeclaration).toMatchObject({ inferredDependsOn: ['sibling-task-id'], overlapPolicy: 'v2' });
   });
 
   it('does not populate dependsOn when no sibling tasks overlap', async () => {
@@ -982,7 +996,7 @@ describe('dispatchConflictRetry', () => {
   it('conflict retry with a concrete manifest ignores wildcard siblings but keeps real overlaps', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,
-      pathManifest: ['apps/web/src/lib'],
+      pathManifest: ['apps/web/src/lib/foo.ts'],
       missionId: 'mission-1',
     });
     mockTaskFindMany.mockResolvedValue([
@@ -997,7 +1011,7 @@ describe('dispatchConflictRetry', () => {
   });
 
   it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
-    const pathManifest = ['apps/web/src/lib'];
+    const pathManifest = ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts', 'apps/web/src/lib/baz.ts'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
       { id: 'task-id', pathManifest, dependsOn: [] },
