@@ -18,7 +18,7 @@
  *  - `send` — park as `waiting_input`, same as always, tagged with the gate's
  *    disposition (`gateTagged`): a `hold` parks without a notification until
  *    its deadline (apps/web/src/lib/question-hold.ts); an `ask` is what admits
- *    it to Needs You (packages/core/needs-you-admission.ts).
+ *    it to Needs You (packages/core/needs-you.ts).
  * Any failure sends the question unchanged.
  */
 import { deriveQuestionBrief } from '@buildd/core/question-brief';

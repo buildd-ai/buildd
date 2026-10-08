@@ -31,7 +31,7 @@
 export type AttentionDisposition = 'ask' | 'hold' | 'recovered';
 
 /** Who stamped a park's disposition. */
-export type DispositionBy = 'gate' | 'server_recheck' | 'permission';
+export type DispositionBy = 'gate' | 'server_recheck' | 'permission' | 'backfill';
 
 const DISPOSITIONS: ReadonlySet<string> = new Set<AttentionDisposition>(['ask', 'hold', 'recovered']);
 

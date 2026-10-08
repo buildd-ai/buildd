@@ -2838,7 +2838,7 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
-  // Needs You admission (lib/park-disposition.ts, @buildd/core/needs-you-admission):
+  // Needs You admission (lib/park-disposition.ts, @buildd/core/needs-you):
   // no park is stored without a human-attention disposition, and only an
   // admitted one notifies.
   describe('park disposition', () => {

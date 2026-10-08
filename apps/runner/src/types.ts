@@ -29,7 +29,7 @@ export interface WaitingFor {
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
   /**
-   * The question gate's human-attention disposition (packages/core/needs-you-admission.ts):
+   * The question gate's human-attention disposition (packages/core/needs-you.ts):
    * `ask`, `hold` (Jev held it), or `recovered` (a repair task owns it). Absent when no gate
    * reply exists — the server then re-checks the park itself.
    */

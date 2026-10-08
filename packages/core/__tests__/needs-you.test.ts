@@ -4,7 +4,7 @@ import {
   admitsToNeedsYou,
   noteQuestionNeedsDisposition,
   parkedDispositionOf,
-} from '../needs-you-admission';
+} from '../needs-you';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 

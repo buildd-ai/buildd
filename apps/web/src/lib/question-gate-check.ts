@@ -54,7 +54,7 @@ import {
 } from '@buildd/core/question-gate-decision';
 import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf, type BriefedQuestion } from '@buildd/core/question-brief';
 import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RecoverableBlocker, type RepairTaskSpec } from '@buildd/core/human-attention';
-import type { AttentionDisposition, DispositionBy } from '@buildd/core/needs-you-admission';
+import type { AttentionDisposition, DispositionBy } from '@buildd/core/needs-you';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -206,7 +206,7 @@ async function recoverBlocker(
 
 /**
  * The human-attention disposition stamped on a park (see
- * `@buildd/core/needs-you-admission`). `gateOutcome` is the question gate's
+ * `@buildd/core/needs-you`). `gateOutcome` is the question gate's
  * own outcome when the gate produced it; `rail` the hard rail that forced an
  * `ask`; `repairTaskId` the repair task that owns a `recovered` one.
  */
@@ -216,6 +216,8 @@ export interface ParkDisposition {
   gateOutcome?: QuestionGateOutcome;
   rail?: HardRailKind;
   repairTaskId?: string;
+  /** A recovered one only: what to tell the agent instead of a person's answer. Never stored. */
+  reason?: string;
 }
 
 /**
@@ -240,7 +242,12 @@ export async function recheckParkedQuestion(
     const rail = railFor(scope, question);
     if (rail) return { disposition: 'ask', dispositionBy: by, gateOutcome: 'hard_rail', rail };
     const recovered = await recoverBlocker(scope, question, { fileRepair: deps.fileRepair, record: deps.record ?? defaultRecord }, started, now);
-    if (recovered) return { disposition: 'recovered', dispositionBy: by, gateOutcome: 'recovered', repairTaskId: recovered.repair.id };
+    if (recovered) {
+      return {
+        disposition: 'recovered', dispositionBy: by, gateOutcome: 'recovered', repairTaskId: recovered.repair.id,
+        reason: recoveredAnswerText(recovered.blocker, { repairTaskId: recovered.repair.id, reused: recovered.repair.reused, recommended: recommendedOf(question)?.label }),
+      };
+    }
   } catch {
     // Fail open: a person is asked.
   }

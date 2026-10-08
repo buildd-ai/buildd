@@ -297,7 +297,8 @@ describe('recheckParkedQuestion: a park that arrived without a gate disposition'
       fileRepair: async (input) => { filed.push(input); return { id: REPAIR, reused: false }; },
       record: async (r) => { recs.push(r); return null; },
     });
-    expect(out).toEqual({ disposition: 'recovered', dispositionBy: 'server_recheck', gateOutcome: 'recovered', repairTaskId: REPAIR });
+    expect(out).toMatchObject({ disposition: 'recovered', dispositionBy: 'server_recheck', gateOutcome: 'recovered', repairTaskId: REPAIR });
+    expect(out.reason).toContain('abcdef12');
     expect(filed[0].spec.signature).toBe('recoverable-blocker:migration_order:m-1');
     expect(recs[0]).toMatchObject({ reason: 'recovered:migration_order', applied: true });
   });

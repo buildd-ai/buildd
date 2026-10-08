@@ -1,6 +1,6 @@
 /**
  * Server-side Needs You admission for a parked worker (design:
- * packages/core/needs-you-admission.ts). The worker PATCH route calls
+ * packages/core/needs-you.ts). The worker PATCH route calls
  * `disposeParkedWaitingFor` on every incoming `waitingFor` before writing it,
  * so no park is stored without a human-attention disposition:
  *
@@ -22,7 +22,7 @@
 import type { HardRailKind, QuestionGateOutcome } from '@buildd/core/question-gate';
 import type { BriefedQuestion } from '@buildd/core/question-brief';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { admitsToNeedsYou } from '@buildd/core/needs-you-admission';
+import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import { resolveHold, withoutHold, type HoldResolution } from './question-hold';
 import { recheckParkedQuestion, type ParkDisposition, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
 
