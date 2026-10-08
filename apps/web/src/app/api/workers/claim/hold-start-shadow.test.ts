@@ -11,6 +11,8 @@ import {
   runClaimHoldShadow,
   scheduleClaimHoldShadow,
   settleClaimHoldShadow,
+  softOverlapStartVerdict,
+  CLAIM_HOLD_MAX_NOTES,
   type ClaimHoldDeps,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
@@ -152,10 +154,15 @@ describe('ClaimHoldCollector.noteOpenPrOverlap: deterministic rails', () => {
     expect(c.noteOpenPrOverlap(ctx({ forced: true }), ['apps/web/src/widget.ts'], [pr()], new Map())).toBeNull();
   });
 
-  it('caps the candidates per claim', () => {
+  it('caps the notes per claim at a bound larger than the per-run decision cap', () => {
     const c = new ClaimHoldCollector();
-    for (let i = 0; i < 8; i++) c.noteOpenPrOverlap(ctx({ taskId: `t-${i}` }), ['apps/web/src/widget.ts'], [pr()], new Map());
-    expect(c.candidates).toHaveLength(5);
+    for (let i = 0; i < CLAIM_HOLD_MAX_NOTES + 10; i++) c.noteOpenPrOverlap(ctx({ taskId: `t-${i}` }), ['apps/web/src/widget.ts'], [pr()], new Map());
+    expect(c.candidates).toHaveLength(CLAIM_HOLD_MAX_NOTES);
+  });
+
+  it('an open-PR note carries an uncertain risk tier until its current diff is known', () => {
+    const note = new ClaimHoldCollector().noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    expect(note?.candidate.risk).toMatchObject({ tier: 'uncertain', route: 'ask_model' });
   });
 });
 
@@ -186,6 +193,47 @@ describe('ClaimHoldCollector.noteSoftOverlap: prefix-only declared overlap', () 
     const c = new ClaimHoldCollector();
     expect(() => c.noteSoftOverlap(null as any, ['scripts/'], holder(), new Map())).not.toThrow();
     expect(c.skipped.error).toBe(1);
+  });
+
+  it('a note that throws is assessed as unknown state: a hard hold', () => {
+    const a = new ClaimHoldCollector().assessSoftOverlap(null as any, ['scripts/'], holder(), new Map());
+    expect(a.note).toBeNull();
+    expect(a.risk).toMatchObject({ tier: 'hard', route: 'deterministic_hold' });
+  });
+
+  it('a directory-only overlap is decided in code: a START, never sent to the model', async () => {
+    const c = new ClaimHoldCollector();
+    const a = c.assessSoftOverlap(ctx(), ['scripts/'], holder(), new Map());
+    expect(a.risk).toMatchObject({ tier: 'low', route: 'deterministic_start' });
+    expect(c.candidates).toHaveLength(0);
+    let lookups = 0;
+    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => { lookups++; return false; } })).toBe('rule_start');
+    // Also with the Jev path rolled back: the rule start does not depend on it.
+    expect(await softOverlapStartVerdict(a.note, false)).toBe('rule_start');
+    expect(lookups).toBe(0);
+  });
+
+  it('a holder that never started is no effective overlap, even on the same file', async () => {
+    const c = new ClaimHoldCollector();
+    const a = c.assessSoftOverlap(ctx(), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'same_file', workerStatus: null }), new Map());
+    expect(a.risk).toMatchObject({ tier: 'no_effective_overlap', route: 'deterministic_start', reasons: ['holder_not_started'] });
+    expect(await softOverlapStartVerdict(a.note, true)).toBe('rule_start');
+  });
+
+  it('a live lease still wins over a directory-only overlap: hard, held', async () => {
+    const a = new ClaimHoldCollector().assessSoftOverlap(ctx(), ['scripts/'], holder(), new Map([[HOLDER, ['scripts/run-unit-tests.ts']]]));
+    expect(a.risk).toMatchObject({ tier: 'hard', route: 'deterministic_hold' });
+    expect(await softOverlapStartVerdict(a.note, true)).toBe('HOLD');
+  });
+
+  it('a same-file overlap goes to the model: START only with an applied Jev answer', async () => {
+    const c = new ClaimHoldCollector();
+    const a = c.assessSoftOverlap(ctx(), ['scripts/run-unit-tests.ts'], holder({ overlapPaths: ['scripts/run-unit-tests.ts'], overlapKind: 'same_file' }), new Map());
+    expect(a.risk.route).toBe('ask_model');
+    expect(c.candidates).toHaveLength(1);
+    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => true })).toBe('START');
+    expect(await softOverlapStartVerdict(a.note, true, { findAppliedStart: async () => false })).toBe('HOLD');
+    expect(await softOverlapStartVerdict(a.note, false, { findAppliedStart: async () => true })).toBe('HOLD');
   });
 
   it('a same-file overlap is asked, carrying the same_file kind into the candidate and its digest', () => {
@@ -263,6 +311,29 @@ describe('runClaimHoldShadow: same-file soft overlap', () => {
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.counts().calls).toBe(0);
     expect(h.rows[0]).toMatchObject({ status: 'fallback', effective: 'HOLD', applied: false });
+  });
+
+  it('measured high-conflict history holds in code: rule_decided row, no model call', async () => {
+    const c = sameFileNote();
+    const h = harness({
+      loadEvidence: async () => ({
+        conflictHistory: { summary: 'high', maxRate: 0.7, files: [{ path: 'apps/web/src/lib/x.ts', mergedPrs: 10, conflicted: 7, rate: 0.7 }] },
+        predictedChange: null,
+      }),
+    });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.counts().calls).toBe(0);
+    expect(h.rows[0]).toMatchObject({ status: 'fallback', reason: 'rule_decided', effective: 'HOLD', applied: false });
+  });
+
+  it('the model is handed the risk tier as tier and reasons', async () => {
+    const c = sameFileNote();
+    let seen: any = null;
+    const h = harness({
+      loadEvidence: async () => ({ conflictHistory: null, predictedChange: null }),
+    }, decisionDeps({ call: (async (args: any) => { seen = args.state; return { ok: true, answers: { action: { choice: 'HOLD', confidence: 0.9, distribution: {} } }, model: JEV_MODEL, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 1, attempts: 1 }; }) as any }));
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(seen.risk).toEqual({ tier: 'uncertain', reasons: ['same_file', 'history_missing'] });
   });
 
   it('open-PR overlaps do not read same-file evidence', async () => {
@@ -617,5 +688,30 @@ describe('gated START', () => {
     it('never throws: a failed release is reported, the reaper is the backstop', async () => {
       expect(await releaseGatedStartPaths(input, { releaseRows: async () => { throw new Error('db'); } })).toBe('error');
     });
+  });
+});
+
+describe('runClaimHoldShadow: decision opportunities are not starved', () => {
+  const notesFor = (n: number) => {
+    const c = new ClaimHoldCollector();
+    for (let i = 0; i < n; i++) {
+      c.noteOpenPrOverlap(ctx({ taskId: `t-${i}`, taskCreatedAt: new Date(Date.parse('2026-09-30T00:00:00.000Z') + (n - i) * 60_000).toISOString() }), ['apps/web/src/widget.ts'], [pr()], new Map());
+    }
+    return c.candidates;
+  };
+
+  it('at most five decisions run per call, longest-waiting first', async () => {
+    const h = harness({}, decisionDeps({ label: 'HOLD' }));
+    await runClaimHoldShadow(notesFor(8), h.deps);
+    expect(h.rows).toHaveLength(5);
+    // t-7 was created first (waited longest), t-3 is the fifth.
+    expect(h.rows.map(r => r.taskId)).toEqual(['t-7', 't-6', 't-5', 't-4', 't-3']);
+  });
+
+  it('a note skipped as recently asked does not use a slot: the ones behind it are asked', async () => {
+    const asked = new Set(['t-7', 't-6', 't-5', 't-4', 't-3']);
+    const h = harness({ hasRecent: async (k) => asked.has(k.taskId) }, decisionDeps({ label: 'HOLD' }));
+    await runClaimHoldShadow(notesFor(8), h.deps);
+    expect(h.rows.map(r => r.taskId)).toEqual(['t-2', 't-1', 't-0']);
   });
 });

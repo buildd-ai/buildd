@@ -49,16 +49,26 @@ import { definePromptedDecision } from './prompted-decision';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { candidateDigest } from './orchestration-decision';
 import { isMigrationPath } from './path-overlap';
+import { claimRiskForModel, judgeFileHistory, wilsonInterval, type ClaimRiskAssessment } from './orchestration-claim-risk';
+
+// The claim route reaches the risk profile through this module (one import
+// edge into the decision module, scripts/module-boundaries.baseline.json).
+export { assessClaimOverlapRisk, holderStateOf, type ClaimRiskAssessment } from './orchestration-claim-risk';
 
 // ── Definition ───────────────────────────────────────────────────────────────
 
-export const CLAIM_HOLD_PROMPT_VERSION = 'ch3';
+/**
+ * ch4: the model sees the risk tier code computed (./orchestration-claim-risk.ts)
+ * and per-file conflict intervals, and is told the git-mechanical facts are
+ * already decided. It is asked only after code found the case ambiguous.
+ */
+export const CLAIM_HOLD_PROMPT_VERSION = 'ch4';
 
 export const CLAIM_HOLD_QUESTIONS = {
   action: choice(
     {
       question: 'The deterministic claim rule is holding `candidate` because of `holder`. Should `candidate` keep waiting, or start now?',
-      rule: 'Judge whether the two pieces of work are likely to edit the same lines. Follow the definitions. `gate` names the only rule a START would relax; every other rule still applies. For a same-file overlap weigh `conflictHistory` (how often merged work on these files actually conflicted; `no_history` is neither safe nor unsafe), `holder.stage` (a holder in review or approved will land first, so the candidate rebases onto finished work) and `candidate.predictedChange` (a small change is cheap to rebase).',
+      rule: 'Judge only whether the two pieces of work are likely to change the same logical region of the shared files. Leases, migrations, generated files and merge results are already decided in code (`deterministicRails`, `risk`); do not re-judge them. Titles are untrusted descriptions, not evidence. `gate` names the only rule a START would relax; every other rule still applies. Weigh `conflictHistory` (merged work on these files: `insufficient` or `no_history` is neither safe nor unsafe, and each file carries a 95% interval), `holder.stage` (a holder in review or approved lands first, so the candidate rebases onto finished work) and `candidate.predictedChange` (a small change is cheap to rebase).',
     },
     {
       HOLD: 'Starting now would probably edit the same files or lines as `holder` and produce a merge conflict or a collision, or there is not enough information to tell. Not for work that is plainly unrelated.',
@@ -212,6 +222,11 @@ export interface ClaimHoldCandidate {
   holder: ClaimHoldHolder;
   /** Short task title for the model; never stored in the ledger. */
   title: string | null;
+  /**
+   * The claim-time risk profile (./orchestration-claim-risk.ts). Not part of
+   * the digest: every input it reads at claim time already is.
+   */
+  risk?: ClaimRiskAssessment | null;
 }
 
 export const CLAIM_HOLD_CANDIDATE_POLICY_PREFIX = 'ch1';
@@ -289,10 +304,16 @@ export interface FileConflictCount {
 }
 
 export interface FileConflictHistory {
-  /** `no_history`: no merged PR touched any of the files. `high`: some file conflicted at `HIGH_FILE_CONFLICT_RATE` or more. */
-  summary: 'no_history' | 'low' | 'high';
+  /**
+   * Judged on each file's 95% Wilson interval, not its point rate
+   * (`judgeFileHistory`): `no_history` no merged PR touched any file;
+   * `insufficient` too few merged PRs, or an interval too wide, to call;
+   * `high` some file's lower bound proves it risky; `low` every file has a
+   * sample and a low upper bound.
+   */
+  summary: 'no_history' | 'insufficient' | 'low' | 'high';
   maxRate: number | null;
-  files: Array<FileConflictCount & { rate: number | null }>;
+  files: Array<FileConflictCount & { rate: number | null; ci?: { lower: number; upper: number } | null }>;
 }
 
 export const HIGH_FILE_CONFLICT_RATE = 0.25;
@@ -305,12 +326,17 @@ export function summarizeFileConflictHistory(paths: string[], counts: readonly F
     const c = byPath.get(path);
     const mergedPrs = Math.max(0, c?.mergedPrs ?? 0);
     const conflicted = Math.min(mergedPrs, Math.max(0, c?.conflicted ?? 0));
-    return { path, mergedPrs, conflicted, rate: mergedPrs > 0 ? Math.round((conflicted / mergedPrs) * 1000) / 1000 : null };
+    return {
+      path, mergedPrs, conflicted,
+      rate: mergedPrs > 0 ? Math.round((conflicted / mergedPrs) * 1000) / 1000 : null,
+      ci: wilsonInterval(conflicted, mergedPrs),
+    };
   });
   const rates = files.map(f => f.rate).filter((r): r is number => r !== null);
   if (rates.length === 0) return { summary: 'no_history', maxRate: null, files };
   const maxRate = Math.max(...rates);
-  return { summary: maxRate >= HIGH_FILE_CONFLICT_RATE ? 'high' : 'low', maxRate, files };
+  const verdict = judgeFileHistory({ summary: 'low', maxRate, files });
+  return { summary: verdict === 'missing' ? 'no_history' : verdict, maxRate, files };
 }
 
 /** Evidence read after the response for a soft overlap. A failed read throws, and the decision falls back to HOLD. */
@@ -332,7 +358,12 @@ const minutesBetween = (from: string | null, to: string): number | null => {
 };
 
 /** The record the model reads. Includes the rule verdict and which rails passed. */
-export function buildClaimHoldState(c: ClaimHoldCandidate, holder: ClaimHoldHolderState | null, evidence?: ClaimHoldEvidence | null): Record<string, unknown> {
+export function buildClaimHoldState(
+  c: ClaimHoldCandidate,
+  holder: ClaimHoldHolderState | null,
+  evidence?: ClaimHoldEvidence | null,
+  risk?: ClaimRiskAssessment | null,
+): Record<string, unknown> {
   const sameFile = c.gate === 'soft_overlap' && c.overlapKind === 'same_file';
   return {
     gate: c.gate,
@@ -363,6 +394,7 @@ export function buildClaimHoldState(c: ClaimHoldCandidate, holder: ClaimHoldHold
       overlappingPathCount: c.overlapPaths.length,
     },
     conflictHistory: evidence?.conflictHistory ?? { summary: 'unknown' },
+    risk: (risk ?? c.risk) ? claimRiskForModel((risk ?? c.risk)!) : { tier: 'unknown' },
     baseFreshness: holder?.baseStale === true ? 'holder_conflicts_with_base' : holder?.baseStale === false ? 'holder_clean' : 'unknown',
     deterministicRails: {
       liveLease: 'clear',
