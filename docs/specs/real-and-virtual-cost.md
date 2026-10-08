@@ -111,17 +111,28 @@ event endpoint refuses unknown fields, and the plugin installs from the
 repository's default branch, so the hook MUST NOT send a basis until the
 server that accepts `usage.costBasis` is serving production. the hook reports usage it
 reads from the session's transcript, and the transcript does not record which
-credential served it. The hook therefore reports a basis only when its
-environment determines one, and `unknown` otherwise:
-- real: `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or another
-  cloud-provider switch is set; `ANTHROPIC_AUTH_TOKEN` or an apiKeyHelper is
-  configured; `ANTHROPIC_BASE_URL` points away from Anthropic; or
-  `ANTHROPIC_API_KEY` is set **and** approved for use in the client's own
-  config.
-- virtual: the client config shows a subscription login and none of the above
-  holds.
-- An `ANTHROPIC_API_KEY` that is set but not approved is not evidence of real
-  usage, because the client does not use it.
+credential served it. The hook (`costBasisFor`) walks Claude Code's own
+authentication precedence and stops at the first credential the client would
+use:
+1. real: managed settings require a gateway sign-in (`forceLoginMethod:
+   "gateway"` or `forceLoginGatewayUrl`).
+2. real: `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or
+   `CLAUDE_CODE_USE_FOUNDRY` is set.
+3. real: `ANTHROPIC_AUTH_TOKEN` is set.
+4. `ANTHROPIC_API_KEY` is set: real in a non-interactive (`-p`, SDK) session,
+   or when the client config records the key as approved; skipped when it
+   records it as declined; unknown when it records neither.
+5. real: an apiKeyHelper is configured in user, project or managed settings.
+6. virtual: `CLAUDE_CODE_OAUTH_TOKEN` is set.
+7. real: `ANTHROPIC_PROFILE`, or both federation variables, are set; unknown
+   when only an active profile file exists, because ranking it against the
+   login needs the file's contents.
+8. real: the client config holds a stored Console API key; virtual: it holds a
+   subscription login.
+9. otherwise unknown.
+A virtual result whose `ANTHROPIC_BASE_URL` points away from Anthropic is
+reported as unknown: the hook cannot tell how that endpoint charges. Any error
+reading config is unknown.
 - The hook sends the basis as `usage.costBasis` (`real`, `virtual` or
   `unknown`, never `mixed`) on `touch` and `end`. A hook build
   that predates this field sends none, and the server records `unknown`.
@@ -141,9 +152,10 @@ environment determines one, and `unknown` otherwise:
 - AC-5: GIVEN a report with `costUsd: 0` and token usage WHEN the server prices
   the tokens THEN `costUsd` holds the estimate, `resultMeta.costEstimated` is
   true, and `cost_basis` is the reported basis.
-- AC-6: GIVEN an interactive session whose environment sets `ANTHROPIC_API_KEY`
-  that the client config has not approved, and that is logged in to a
-  subscription, WHEN the hook reports usage THEN the basis is `virtual`.
+- AC-6: GIVEN an interactive session logged in to a subscription whose
+  environment sets `ANTHROPIC_API_KEY` that the client config records as
+  declined WHEN the hook reports usage THEN the basis is `virtual`; GIVEN the
+  config records no answer for that key THEN it is `unknown`.
 - AC-7: GIVEN a hook build that sends `usage` without a basis WHEN the server
   applies it THEN `cost_basis` is `unknown`.
 - AC-8: GIVEN a report whose `costBasis` is not one of the four values WHEN the
