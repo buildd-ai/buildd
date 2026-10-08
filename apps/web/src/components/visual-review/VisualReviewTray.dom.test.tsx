@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
+const { screensToReview } = await import('@/lib/visual-review-model');
 const { default: VisualReviewTray } = await import('./VisualReviewTray');
 const { default: VisualReviewAsk } = await import('./VisualReviewAsk');
 
@@ -69,11 +70,11 @@ describe('VisualReviewTray with shots', () => {
     const onReview = mock((_k: string | null) => {});
     render(<VisualReviewTray model={model} onReview={onReview} />);
     const btn = q('visual-review-review-button')!;
-    // The same count the Line and the Ask use: unsure screens awaiting you (fix checks wait in the deck).
-    expect(model.summary.awaitingHuman).toBeGreaterThan(0);
+    // The deck's own count (screensToReview), the one the Line and the Ask use
+    // too: a fix check waits on you as much as an unsure shot does.
     expect(model.summary.fixChecks).toBeGreaterThan(0);
-    expect(model.summary.unreviewed).not.toBe(model.summary.awaitingHuman);
-    expect(btn.textContent).toContain(`Review ${model.summary.awaitingHuman}`);
+    expect(screensToReview(model)).toBe(model.summary.awaitingHuman + model.summary.fixChecks);
+    expect(btn.textContent).toContain(`Review ${screensToReview(model)}`);
     act(() => btn.click());
     expect(onReview).toHaveBeenLastCalledWith(model.queue[0]);
     const thumb = qa('visual-review-thumb')[2];
@@ -83,7 +84,7 @@ describe('VisualReviewTray with shots', () => {
 
   it('with nothing awaiting you the button offers the screens, not a review count', () => {
     const done = buildVisualReviewFixtureModel('reviewed');
-    expect(done.summary.awaitingHuman).toBe(0);
+    expect(screensToReview(done)).toBe(0);
     render(<VisualReviewTray model={done} onReview={() => {}} />);
     expect(q('visual-review-review-button')!.textContent).toBe(`All ${done.cells.length} screens`);
   });

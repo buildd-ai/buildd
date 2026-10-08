@@ -13,7 +13,6 @@
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
   - Worker runner: `apps/runner/src/workers.ts` (`WorkerManager`)
-- **Codebase graph**: the `codebase-memory` MCP is indexed for this repo, but it is mounted per task — only when the session's system prompt carries a `## Codebase graph (codebase-memory)` block (Codex: a `# Codebase graph` section in its generated instructions). When it does, use it for structural questions (who calls/depends on X, architecture orientation) over grep; if its tools are deferred, load them via `ToolSearch`. No such block, or no `mcp__codebase-memory__*` tools and no `ToolSearch`, means the graph is withheld for this task (experiment arm, role opt-out, Codex, or the mount was unavailable) — that is expected, not a fault: navigate with Read/Grep/Glob and do not file a `[friction]` task for it.
 
 ## Architecture
 
@@ -199,6 +198,12 @@ file is neither collected nor listed there as a deliberate exclusion — add new
 test directories to the roots, not to the exclusion list, unless something else
 genuinely runs them.
 
+**Both `bun run test` and `cd apps/web && bun run build:only` run for several minutes
+(roughly 4-6 and 5-8 minutes respectively) — longer than many shell tools' default command
+timeout.** Running either without an explicit extended timeout gets it killed mid-run
+(SIGTERM / exit 143) before any result, which looks like a hang but isn't — set a timeout
+that covers the full run instead.
+
 **On failure:** `bun run test` ends with a digest of every failing file and test name, and writes full per-file output to `.test-report.log` (gitignored). Grep that log instead of re-running the suite:
 ```bash
 grep -A30 -F 'apps/web/src/lib/foo.test.ts' .test-report.log
@@ -233,7 +238,8 @@ chromium` — just never type the literal word `sudo` in a Bash command, it's bl
 by the harness safety policy even though the underlying escalation works. This also means
 root `bun run build` fails in a sandbox (it runs `db:migrate` first) — use `cd apps/web &&
 bun run build:only` (same command CI's `Build` step uses) to verify compilation with no DB
-and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
+and no extra flags. A local build or `next dev` rewrites `apps/web/next-env.d.ts`; never commit
+that (pre-commit refuses it, `scripts/next-env-canonical.test.ts` pins it). See `docs/testing.md` → "Worker Sandbox Constraints".
 Workers get screenshots by dispatching the Visual QA workflow (`gh workflow run visual-qa.yml
 --ref <branch> -f routes=… -f viewport=mobile`), not from a local DB. See `/visual-review`.
 Workspaces with Vercel previews can audit the preview instead (`gitConfig.visualQa.pageSource`
@@ -269,7 +275,7 @@ This repo (`apps/web`) serves the dashboard and API at `buildd.dev`.
 
 Some workflows exist as GitHub Actions only and must NOT be registered as routable agent roles:
 
-- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration `0064_remove_visual_qa_role.sql` removes it.
+- **Visual QA** (`.github/workflows/visual-qa.yml`): Playwright screenshot capture + Claude judgment on release PRs. CI-only by design (PR #1029). Any `visual-qa` row in `workspace_skills` is stray — migration 0064 removed it (now part of `packages/core/drizzle/0000_baseline.sql`).
 
 ## Skills
 
@@ -294,7 +300,7 @@ locally does not fail the suite for everyone else.
 - **Visual review**: `.claude/skills/visual-review/` — Phone- and desktop-width screenshots before calling UI work done: `scripts/qa/shoot.sh` locally (needs a DATABASE_URL), or dispatch `visual-qa.yml` on your branch and download the `qa-screenshots` artifact (workers, no DB). Also the preview recipe for workspaces with Vercel previews, and its two auth-wall failure modes.
 - **Workspace onboarding**: `.claude/skills/workspace-onboarding/` — Make any repo buildd-ready: readiness report, owner-approved scaffold PR, guided first spec, first mission. One-time and owner-facing; also served as the `buildd://workspace/onboarding` MCP resource. Never commits to the default branch, never requires Vercel.
 - **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
-- **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner, KB and CBM. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
+- **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner and KB. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
 
 ## Specs & Docs Layout
 

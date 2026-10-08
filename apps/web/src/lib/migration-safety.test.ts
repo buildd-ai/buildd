@@ -8,7 +8,9 @@ import {
   isGeneratedMigrationPath,
 } from './migration-safety';
 
-const drizzleDir = join(import.meta.dir, '../../../../packages/core/drizzle');
+// Real historical migrations, kept as fixtures: the originals were squashed into
+// packages/core/drizzle/0000_baseline.sql and now live only in git history.
+const drizzleDir = join(import.meta.dir, '__fixtures__/migration-safety');
 const migration = (name: string) => readFileSync(join(drizzleDir, name), 'utf8');
 
 describe('classifyMigrationSql', () => {

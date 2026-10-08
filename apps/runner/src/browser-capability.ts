@@ -486,6 +486,12 @@ export function applyBrowserCapability<T extends Pick<WorkerEnvironment, 'envKey
 export async function rescanBrowserCapability(
   getEnv: () => WorkerEnvironment | undefined,
 ): Promise<WorkerEnvironment | undefined> {
+  const { selectBrowserProvider, getBrowserProviderProbe } = await import('./browser-provider');
+  const provider = selectBrowserProvider();
+  if (!provider || provider.name === 'cloudflare') {
+    const env = getEnv();
+    return env ? applyBrowserCapability(env, provider?.name === 'cloudflare' && getBrowserProviderProbe()?.ok === true) : env;
+  }
   const d = await refreshBrowserCapability();
   const env = getEnv();
   return env ? applyBrowserCapability(env, d.available) : env;

@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync, utimesSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   parseManifest,
   autoDetectManifest,
@@ -8,6 +11,8 @@ import {
   runEnvVerify,
   runProvisionGate,
   clearProvisionGateCache,
+  staleLockPathFromError,
+  clearStaleGitLock,
   MANIFEST_PATH,
   type EnvManifest,
   type FsProbe,
@@ -131,6 +136,55 @@ describe('planSteps', () => {
 
   it('produces no steps for an empty manifest', () => {
     expect(planSteps({})).toEqual([]);
+  });
+});
+
+// ─── staleLockPathFromError / clearStaleGitLock ──────────────────────────────
+
+describe('staleLockPathFromError', () => {
+  it('extracts the lock path from a config-lock error, appending .lock', () => {
+    expect(staleLockPathFromError('error: could not lock config file /repo/.git/config: File exists'))
+      .toBe('/repo/.git/config.lock');
+  });
+
+  it('extracts the lock path from an index-lock error as-is', () => {
+    expect(staleLockPathFromError(`Unable to create '/repo/.git/index.lock': File exists.`))
+      .toBe('/repo/.git/index.lock');
+  });
+
+  it('returns null for an unrelated error', () => {
+    expect(staleLockPathFromError('fatal: not a git repository')).toBeNull();
+  });
+});
+
+describe('clearStaleGitLock', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'env-verify-clearlock-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('removes a lock old enough with no live holder', () => {
+    const lockPath = join(dir, 'config.lock');
+    writeFileSync(lockPath, '');
+    utimesSync(lockPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    expect(clearStaleGitLock(lockPath)).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('leaves a fresh lock alone — it could be a write genuinely in flight', () => {
+    const lockPath = join(dir, 'config.lock');
+    writeFileSync(lockPath, '');
+    expect(clearStaleGitLock(lockPath)).toBe(false);
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it('is a no-op when the lock is already gone', () => {
+    expect(clearStaleGitLock(join(dir, 'nonexistent.lock'))).toBe(false);
   });
 });
 
@@ -272,6 +326,114 @@ describe('executeSteps', () => {
     expect(install.status).toBe('skip');
     expect(install.message).toContain('handled by runner');
     expect(readiness.status).toBe('ok');
+  });
+
+  describe('stale git lock recovery (provision phase)', () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'env-verify-lock-'));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('recovers a provision step that fails on a stale .git/config.lock, and removes it', async () => {
+      const lockPath = join(dir, 'config.lock');
+      writeFileSync(lockPath, '');
+      utimesSync(lockPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+
+      let calls = 0;
+      const runner: CommandRunner = () => {
+        calls += 1;
+        return calls === 1
+          ? { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` }
+          : { code: 0, stdout: '', stderr: '' };
+      };
+
+      const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now });
+
+      expect(calls).toBe(2);
+      expect(r.status).toBe('ok');
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    // A young lock is usually not abandoned — it is another worker's `git config`
+    // mid-rewrite of the same shared .git/config (every worktree of a clone
+    // writes there). That is contention, not a stale lock: wait for it, never
+    // delete it.
+    it('waits out a lock held by a concurrent writer, without removing it', async () => {
+      const lockPath = join(dir, 'config.lock');
+      writeFileSync(lockPath, ''); // fresh mtime — a write genuinely in flight
+
+      let calls = 0;
+      const runner: CommandRunner = () => {
+        calls += 1;
+        return calls < 3
+          ? { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` }
+          : { code: 0, stdout: '', stderr: '' };
+      };
+      const waits: number[] = [];
+      const sleep = async (ms: number) => { waits.push(ms); };
+
+      const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now, sleep });
+
+      expect(r.status).toBe('ok');
+      expect(calls).toBe(3);
+      expect(waits.length).toBe(2);
+      expect(existsSync(lockPath)).toBe(true); // never ours to delete
+    });
+
+    it('gives up after bounded retries and reports the real failure when the lock never frees', async () => {
+      const lockPath = join(dir, 'config.lock');
+      writeFileSync(lockPath, '');
+
+      let calls = 0;
+      const runner: CommandRunner = () => {
+        calls += 1;
+        return { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` };
+      };
+      const sleep = async () => {};
+
+      const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now, sleep });
+
+      expect(r.status).toBe('fail');
+      expect(r.message).toContain('could not lock config file');
+      expect(calls).toBeGreaterThan(1);
+      expect(calls).toBeLessThanOrEqual(6);
+      expect(existsSync(lockPath)).toBe(true);
+    });
+
+    it('does not touch an unrelated provision failure', async () => {
+      const runner: CommandRunner = () => ({ code: 1, stdout: '', stderr: 'command not found: git' });
+      const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now });
+      expect(r.status).toBe('fail');
+      expect(r.message).toContain('command not found');
+    });
+
+    it('does not apply lock recovery outside the provision phase', async () => {
+      const lockPath = join(dir, 'config.lock');
+      writeFileSync(lockPath, '');
+      utimesSync(lockPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+
+      let calls = 0;
+      const runner: CommandRunner = () => {
+        calls += 1;
+        return { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` };
+      };
+
+      const steps = planSteps({ install: { command: 'git config core.hooksPath .githooks' } });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now });
+
+      expect(calls).toBe(1);
+      expect(r.status).toBe('fail');
+      expect(existsSync(lockPath)).toBe(true); // untouched — recovery is provision-only
+    });
   });
 });
 

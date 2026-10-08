@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { evidenceObjects, workers } from '@buildd/core/db/schema';
 import type { EvidenceKind, EvidenceLookupResponse } from '@buildd/shared';
 import { and, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
@@ -18,7 +18,9 @@ const TASK_LIMIT = 50;
 //   worker opened it, including their retry chains.
 // GET /api/evidence?workspaceId=&evidenceId=
 //   One object's pointer, so a caller holding only an evidence id can find
-//   the task to read it through (GET /api/tasks/:id/evidence).
+//   the task to read it through (GET /api/tasks/:id/evidence), or, for a
+//   runner-hosted Scout run's command log, the run
+//   (GET /api/quality-scout/runs/:id/evidence).
 //
 // Listing only; text is read through the task route, which checks lineage.
 // A scoped token needs analytics:read and, if restricted, workspaceId among its
@@ -28,7 +30,8 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token lists evidence only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -39,7 +42,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'workspaceId (a full UUID) is required' }, { status: 400 });
   }
   const allowed = apiAccount
-    ? await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+    ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
     : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
   if (!allowed) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 
@@ -60,7 +63,8 @@ export async function GET(req: NextRequest) {
     }
     auditEvidenceRead({ surface: 'GET /api/evidence', op: 'list', workspaceId, taskId: row.taskId, evidenceIds: [row.id], actor });
     const body: EvidenceLookupResponse = {
-      workspaceId, prNumber: row.prNumber ?? null, taskIds: [row.taskId], objects: [toEvidenceObjectSummary(row)],
+      // A Scout run's object has no task: `objects[0].scoutRunId` names the run to read it through.
+      workspaceId, prNumber: row.prNumber ?? null, taskIds: row.taskId ? [row.taskId] : [], objects: [toEvidenceObjectSummary(row)],
     };
     return NextResponse.json(body);
   }
@@ -93,7 +97,7 @@ export async function GET(req: NextRequest) {
   const ids = new Set(taskIds);
   const objects = rows
     .filter(r => r.workspaceId === workspaceId
-      && (r.prNumber === prNumber || ids.has(r.taskId) || ids.has(r.rootTaskId))
+      && (r.prNumber === prNumber || (!!r.taskId && ids.has(r.taskId)) || (!!r.rootTaskId && ids.has(r.rootTaskId)))
       && (!kind || r.kind === kind))
     .map(toEvidenceObjectSummary);
 

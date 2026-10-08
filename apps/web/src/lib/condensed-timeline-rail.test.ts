@@ -401,7 +401,7 @@ describe('buildRail — surviving section labels (D8)', () => {
     );
 
     const labels = (model.rows.filter(r => r.kind === 'label') as Array<{ text: string }>).map(l => l.text);
-    expect(labels).toEqual(['waiting on you', 'running']);
+    expect(labels).toEqual(['needs input', 'running']);
   });
 
   it('renders the waitingOnYou/running block above ticked history, not below it (D8-3)', () => {

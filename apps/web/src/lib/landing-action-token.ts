@@ -42,6 +42,8 @@ export interface LandingActionPayload {
   action: LandingAction;
   /** The page reason (see `PageReason`); bounds which alternatives the page may offer. */
   reason: string;
+  /** The PR's owning task the page was raised for: where "open the PR's task" goes. Absent on older links. */
+  taskId?: string;
   /** Epoch ms. */
   exp: number;
   nonce: string;
@@ -77,6 +79,7 @@ function isPayload(v: unknown): v is LandingActionPayload {
     typeof p.headSha === 'string' &&
     typeof p.reason === 'string' &&
     typeof p.exp === 'number' &&
+    (p.taskId === undefined || typeof p.taskId === 'string') &&
     typeof p.nonce === 'string' &&
     p.nonce.length > 0 &&
     typeof p.action === 'string' &&

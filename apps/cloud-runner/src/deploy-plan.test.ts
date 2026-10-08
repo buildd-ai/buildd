@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { SNAPSHOT_BUCKET, deployNames, renderWranglerConfig, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
+import { SNAPSHOT_BUCKET, containerClasses, deployNames, renderWranglerConfig, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
 
 const URL_ = 'https://buildd-cloud-runner.example.workers.dev';
 const DISPATCH = `${URL_}/dispatch`;
@@ -63,6 +63,20 @@ describe('deploy names', () => {
     expect({ ...b, name: a.name, r2_buckets: a.r2_buckets, vars: { ...b.vars, RUNNER_GROUP: a.vars.RUNNER_GROUP } }).toEqual(a);
   });
 
+  it('both container classes, each with its own instance type and ceiling, survive a custom-named render', () => {
+    const want = [
+      { className: 'WorkerAgent', instanceType: 'standard-1', maxInstances: expect.any(Number) },
+      { className: 'WorkerAgentLarge', instanceType: 'standard-3', maxInstances: expect.any(Number) },
+    ];
+    expect(containerClasses(base())).toEqual(want);
+    expect(containerClasses(renderWranglerConfig(base(), deployNames('agent-runtime-spike')))).toEqual(want);
+  });
+
+  it('refuses to render a config that lost a container class', () => {
+    const oneClass = base().replace('"WorkerAgentLarge"', '"SomethingElse"');
+    expect(() => renderWranglerConfig(oneClass, deployNames('agent-runtime-spike'))).toThrow(/WorkerAgentLarge/);
+  });
+
   it('fails loudly if wrangler.jsonc no longer has the fields it rewrites', () => {
     expect(() => renderWranglerConfig('{ "main": "src/index.ts" }', deployNames('agent-runtime-spike'))).toThrow();
   });
@@ -91,6 +105,21 @@ describe('planDeploy: first deploy', () => {
 
   it('refuses a runner key that is not a bld_ key', () => {
     expect(planDeploy(inputs({ runnerApiKey: 'sk-ant-nope' })).ok).toBe(false);
+  });
+});
+
+describe('planDeploy: --secrets-only', () => {
+  it('leaves the code alone (no bucket, no wrangler deploy), so no local Cloudflare token is needed', () => {
+    const p = planDeploy(inputs({ skipWorkerDeploy: true, rotate: true, workerSecretNames: ['DISPATCH_TOKEN', 'BUILDD_API_KEY', 'BUILDD_SERVER'] }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(kinds(p.steps)).not.toContain('wrangler_deploy');
+    expect(kinds(p.steps)).not.toContain('ensure_snapshot_bucket');
+    expect(kinds(p.steps)).toContain('put:DISPATCH_TOKEN');
+  });
+
+  it('refuses a Worker that was never deployed', () => {
+    expect(planDeploy(inputs({ skipWorkerDeploy: true, workerSecretNames: null })).ok).toBe(false);
   });
 });
 
@@ -215,6 +244,16 @@ describe('describePlan (--dry-run output)', () => {
     expect(text).not.toContain('bld_runner_key');
   });
 
+  it('the deploy line names both container classes with their instance types and max_instances', () => {
+    const classes = [
+      { className: 'WorkerAgent', instanceType: 'standard-1', maxInstances: 10 },
+      { className: 'WorkerAgentLarge', instanceType: 'standard-3', maxInstances: 4 },
+    ];
+    const deployLine = describePlan(planDeploy(inputs()), deployNames(), classes).find(l => l.startsWith('wrangler deploy'))!;
+    expect(deployLine).toContain('WorkerAgent standard-1 max 10');
+    expect(deployLine).toContain('WorkerAgentLarge standard-3 max 4');
+  });
+
   it('prints the error for a refused plan', () => {
     expect(describePlan(planDeploy(inputs({ runnerApiKey: undefined })))[0]).toStartWith('error:');
   });
@@ -313,5 +352,62 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
   it('empty strings count as not supplied', () => {
     const p = planDeploy(inputs({ ...deployed, modelProxy: { url: '', key: '', authHeader: '' } }));
     expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
+  });
+});
+
+it('retains the Browser Rendering binding when rendering a custom deployment', () => {
+  const base = require('fs').readFileSync(require('path').join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+  const config = JSON.parse(renderWranglerConfig(base, deployNames('browser-test')).replace(/^\s*\/\/.*$/gm, ''));
+  expect(config.browser).toEqual({ binding: 'BROWSER' });
+});
+
+describe('owner seat (--owner-seat)', () => {
+  const TOKEN = 'sk-ant-oat01-owner-seat-secret';
+  const deployed = { workerSecretNames: ['BUILDD_SERVER', 'BUILDD_API_KEY', 'DISPATCH_TOKEN'], workspace: { id: 'ws-1', name: 'demo', webhookConfig: { url: DISPATCH, enabled: true, hasToken: true, events: [...DISPATCH_EVENTS] } } };
+
+  it('is off by default: no secret is put, nothing mentioned', () => {
+    const p = planDeploy(inputs(deployed));
+    expect(p.ok && kinds(p.steps)).not.toContain('put:CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('puts the token as a Worker secret, and the plan output never shows it', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token: TOKEN } }));
+    if (!p.ok) throw new Error(p.error);
+    const put = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'CLAUDE_CODE_OAUTH_TOKEN');
+    expect(put).toMatchObject({ value: TOKEN });
+    const text = describePlan(p).join('\n');
+    expect(text).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(text).not.toContain(TOKEN);
+    expect(text).toMatch(/one owner, one token per Worker/i);
+  });
+
+  it('is the only step that carries the token: no webhook config, no other secret', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token: TOKEN } }));
+    if (!p.ok) throw new Error(p.error);
+    const others = p.steps.filter((s) => !(s.kind === 'put_secret' && s.name === 'CLAUDE_CODE_OAUTH_TOKEN'));
+    expect(JSON.stringify(others)).not.toContain(TOKEN);
+  });
+
+  it('requested with no token and none on the Worker is an error that says where to get it', () => {
+    const p = planDeploy(inputs({ ...deployed, ownerSeat: { requested: true } }));
+    expect(p.ok).toBe(false);
+    expect(!p.ok && p.error).toContain('claude setup-token');
+  });
+
+  it('requested with no token keeps the one already on the Worker', () => {
+    const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'CLAUDE_CODE_OAUTH_TOKEN'], ownerSeat: { requested: true } }));
+    expect(p.ok && kinds(p.steps)).not.toContain('put:CLAUDE_CODE_OAUTH_TOKEN');
+    expect(p.ok).toBe(true);
+  });
+
+  it('rejects a value that is not a setup-token', () => {
+    for (const token of ['hello world', 'bld_runner_key', 'sk-ant-oat01-with space']) {
+      expect(planDeploy(inputs({ ...deployed, ownerSeat: { requested: true, token } })).ok).toBe(false);
+    }
+  });
+
+  it('a Worker that already has a seat says so, and how to turn it off', () => {
+    const p = planDeploy(inputs({ ...deployed, workerSecretNames: [...deployed.workerSecretNames, 'CLAUDE_CODE_OAUTH_TOKEN'] }));
+    expect(p.ok && p.notes.join(' ')).toContain('wrangler secret delete CLAUDE_CODE_OAUTH_TOKEN');
   });
 });

@@ -707,3 +707,134 @@ describe('decisionCall with a team decision model', () => {
   });
 
 });
+
+// ── buildd's platform decision key (billing) ─────────────────────────────────
+
+describe('platform decision key (plan includes decision calls)', () => {
+  const PLATFORM_KEY = 'sk-or-platform';
+
+  beforeEach(() => {
+    process.env.BUILDD_PLATFORM_DECISION_KEY = PLATFORM_KEY;
+    delete process.env.BUILDD_PLATFORM_DECISION_MODEL;
+    delete process.env.BILLING_ENFORCED;
+    secretRows = [];
+  });
+  afterEach(() => {
+    delete process.env.BUILDD_PLATFORM_DECISION_KEY;
+    delete process.env.BUILDD_PLATFORM_DECISION_MODEL;
+    delete process.env.BILLING_ENFORCED;
+  });
+
+  function seenAuth() {
+    const seen: { url: string; auth: string | null; body: any }[] = [];
+    const fetcher = mock(async (url: string, init?: RequestInit) => {
+      seen.push({ url, auth: new Headers(init?.headers).get('authorization'), body: JSON.parse(init!.body as string) });
+      return url === DECISIONS_URL ? jsonResponse(OK_BODY) : chatCompletion();
+    });
+    return { seen, fetcher };
+  }
+
+  it('billing off: a keyless team keeps today\'s behaviour (no call), even on a paid plan', async () => {
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBeNull();
+    const { fetcher } = seenAuth();
+    const res = await decisionCall(params({ fetcher }));
+    expect(!res.ok && res.error.kind).toBe('missing_key');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('billing on, plan includes decisions, no team key: the platform key answers', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBe(PLATFORM_KEY);
+    const { seen, fetcher } = seenAuth();
+    const res = await decisionCall(params({ fetcher }));
+    expect(res.ok).toBe(true);
+    expect(seen[0]).toMatchObject({ url: DECISIONS_URL, auth: `Bearer ${PLATFORM_KEY}` });
+    expect(seen[0].body.model).toBe(DEFAULT_DECISION_MODEL);
+  });
+
+  it('billing on, team plan: the platform key answers too', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'team', paidSeats: 5 };
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBe(PLATFORM_KEY);
+  });
+
+  it('a team\'s own key always outranks the platform key', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    secretRows = [secretRow({ encryptedValue: 'enc:sk-or-team' })];
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBe('sk-or-team');
+    const { seen, fetcher } = seenAuth();
+    expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
+    expect(seen[0].auth).toBe('Bearer sk-or-team');
+  });
+
+  it('a team\'s own key keeps the team\'s own decision model', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro', decisionModel: { endpoint: 'chat', model: 'qwen/qwen3-8b', via: 'openrouter' } };
+    secretRows = [secretRow({ encryptedValue: 'enc:sk-or-team' })];
+    const { seen, fetcher } = seenAuth();
+    expect((await decisionCall(params({ fetcher, questions: NOUL }))).ok).toBe(true);
+    expect(seen[0]).toMatchObject({ auth: 'Bearer sk-or-team', body: { model: 'qwen/qwen3-8b' } });
+  });
+
+  it('billing on, free plan without a key: still no call (bring your own key)', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'free' };
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBeNull();
+    const { fetcher } = seenAuth();
+    const res = await decisionCall(params({ fetcher }));
+    expect(!res.ok && res.error.kind).toBe('missing_key');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('chat is never routed to the platform key', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    const access = await resolveDecisionAccess({ capability: 'chat', teamId: 'team-1' });
+    expect(access).toEqual({ ok: false, error: { kind: 'missing_key' } });
+  });
+
+  it('no platform key configured: nothing to fall back to', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    delete process.env.BUILDD_PLATFORM_DECISION_KEY;
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBeNull();
+  });
+
+  it('a failed plan lookup never spends the platform key', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = null;
+    expect(await resolveDecisionKey({ teamId: 'team-1' })).toBeNull();
+  });
+
+  it('the platform key always runs the platform model, not a team\'s custom model', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro', decisionModel: { endpoint: 'chat', model: 'some/expensive-model', via: 'openrouter' } };
+    const { seen, fetcher } = seenAuth();
+    expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
+    expect(seen[0]).toMatchObject({ url: DECISIONS_URL, auth: `Bearer ${PLATFORM_KEY}`, body: { model: DEFAULT_DECISION_MODEL } });
+  });
+
+  it('BUILDD_PLATFORM_DECISION_MODEL picks an open-weight chat model on OpenRouter', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    process.env.BUILDD_PLATFORM_DECISION_MODEL = 'qwen/qwen3-8b';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro' };
+    const { seen, fetcher } = seenAuth();
+    expect((await decisionCall(params({ fetcher, questions: NOUL }))).ok).toBe(true);
+    expect(seen[0]).toMatchObject({
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      auth: `Bearer ${PLATFORM_KEY}`,
+      body: { model: 'qwen/qwen3-8b' },
+    });
+  });
+
+  it('a gateway decision model with no gateway falls back to the platform key', async () => {
+    process.env.BILLING_ENFORCED = '1';
+    teamRow = { inferenceFeatureModes: null, plan: 'pro', decisionModel: { endpoint: 'chat', model: 'qwen3-8b', via: 'litellm' } };
+    const { seen, fetcher } = seenAuth();
+    expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
+    expect(seen[0].auth).toBe(`Bearer ${PLATFORM_KEY}`);
+  });
+});

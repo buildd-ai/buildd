@@ -98,8 +98,8 @@ describe('makeCatalogServabilityCheck — unknown models fail closed', () => {
   });
 
   it('treats a same-day sibling of the newest recorded model as recognized', () => {
-    const catalog = [newestKnown, entry('claude-sonnet-5-5', T0 + 60)];
-    expect(makeCatalogServabilityCheck(catalog, '2.1.280')('claude-sonnet-5-5')).toBe(true);
+    const catalog = [newestKnown, entry('claude-haiku-5-5', T0 + 60)];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.280')('claude-haiku-5-5')).toBe(true);
   });
 
   it('still applies the recorded floor to a known model', () => {
@@ -162,5 +162,25 @@ describe('checkModelClientCapability — prototype keys', () => {
   it('treats an Object.prototype key as having no recorded floor', () => {
     expect(checkModelClientCapability('constructor', '2.1.0')).toEqual({ ok: true });
     expect(checkModelClientCapability('toString', '2.1.0')).toEqual({ ok: true });
+  });
+});
+
+describe('claude-sonnet-5-5 floor', () => {
+  it('refuses a runner immediately below the first supporting CLI release', () => {
+    expect(checkModelClientCapability('claude-sonnet-5-5', '2.1.283')).toEqual({
+      ok: false, requiredVersion: '2.1.284',
+    });
+  });
+
+  it('allows runners at or above the floor', () => {
+    for (const version of ['2.1.284', '2.1.290']) {
+      expect(checkModelClientCapability('claude-sonnet-5-5', version)).toEqual({ ok: true });
+    }
+  });
+
+  it('applies the floor when selecting a catalog model', () => {
+    const catalog = [{ id: 'claude-sonnet-5-5', canonicalId: null, created: 1_790_000_000 }];
+    expect(makeCatalogServabilityCheck(catalog, '2.1.283')('claude-sonnet-5-5')).toBe(false);
+    expect(makeCatalogServabilityCheck(catalog, '2.1.284')('claude-sonnet-5-5')).toBe(true);
   });
 });

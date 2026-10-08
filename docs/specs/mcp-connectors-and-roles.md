@@ -24,6 +24,23 @@ assertions:
     type: "symbol"
     name: "refreshMcpConnectorCredential"
     path: "apps/web/src/lib/mcp-connector-refresh.ts"
+  - id: "connector-catalog"
+    type: "symbol"
+    name: "CONNECTOR_CATALOG"
+    path: "apps/web/src/lib/connector-catalog.ts"
+  - id: "resolve-connector-icon"
+    type: "symbol"
+    name: "resolveConnectorIcon"
+    path: "apps/web/src/lib/connector-icon.ts"
+  - id: "merge-catalog"
+    type: "symbol"
+    name: "mergeCatalog"
+    path: "apps/web/src/lib/connector-catalog-merge.ts"
+  - id: "set-catalog-policy"
+    type: "route"
+    method: "PUT"
+    path: "/api/connectors/catalog/policy"
+    file: "apps/web/src/app/api/connectors/catalog/policy/route.ts"
 ---
 # MCP Connectors & Roles (unified model)
 
@@ -381,6 +398,100 @@ create (or reuse) a team `connectors` row and add its id to the role's
 
 **Out of scope**: auto-running DCR for registry entries whose AS is unknown until
 the user connects.
+
+---
+
+## 5b. Built-in catalog + connector icons
+
+**Capability statement**: Settings → MCP connectors → Add connection MUST open
+on a built-in catalog of remote MCP servers; picking one MUST create an
+ordinary team `connectors` row through the same `POST /api/connectors` path a
+custom URL uses. Every http connector SHOULD carry a display icon.
+
+**Invariants**:
+- The catalog is static code (`CONNECTOR_CATALOG`), not a table. An entry is a
+  preset (name, url, expected authMode, icon), never a second connector store.
+- An entry is listed only if its URL completes `discoverOAuthMetadata` (+ DCR)
+  or serves anonymously; servers that fail discovery stay out.
+- Creation stays team-admin only (`manage_connectors`, §6); the catalog does
+  not widen who can add a connector.
+- `connectors.iconUrl` is resolved best-effort at create time — catalog icon,
+  then MCP `serverInfo.icons` from an anonymous `initialize`, then the site's
+  `<link rel=icon>` on the server origin and its apex domain, then
+  `/favicon.ico`. Resolution never fails a create; NULL renders a letter avatar.
+- `POST /api/connectors` rejects a non-http(s) url with `400 invalid_url`, and
+  a discovery throw with `422 discovery_failed` + `message`, never a bare 500.
+
+**Acceptance criteria**:
+- AC-1: WHEN an admin picks a catalog entry THEN the create body carries the
+  entry's url and an OAuth entry goes straight to the connect redirect.
+- AC-2: GIVEN the team already has a connector at a catalog url WHEN the
+  catalog opens THEN that entry shows "Added" and is disabled.
+- AC-3: WHEN a custom url's MCP server returns `serverInfo.icons` THEN the
+  created connector's `iconUrl` is that icon.
+- AC-4: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
+  and the modal shows its message.
+
+**Code surface**:
+- Catalog: `apps/web/src/lib/connector-catalog.ts`, `apps/web/src/lib/connector-catalog-merge.ts`,
+  `apps/web/src/lib/connector-catalog-store.ts`, `apps/web/src/lib/connector-catalog-input.ts`
+- Provisioning: `apps/web/src/lib/connector-provision.ts`
+- Data model: `packages/core/db/schema.ts` → `connectorCatalogEntries`, `connectorCatalogTeamPolicies`
+- Icon resolver: `apps/web/src/lib/connector-icon.ts`
+- UI: `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx`,
+  `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.tsx`,
+  `apps/web/src/components/ConnectorIcon.tsx`
+- Route: `apps/web/src/app/api/connectors/route.ts`, `apps/web/src/app/api/connectors/catalog/route.ts`,
+  `apps/web/src/app/api/connectors/catalog/policy/route.ts`, `apps/web/src/app/api/admin/connector-catalog/route.ts`
+
+**Verified by**:
+- `apps/web/src/lib/connector-catalog.test.ts`
+- `apps/web/src/lib/connector-icon.test.ts`
+- `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.dom.test.tsx`
+- `apps/web/src/app/api/connectors/route.test.ts`
+- `apps/web/src/lib/connector-catalog-merge.test.ts`, `apps/web/src/lib/connector-provision.test.ts`,
+  `apps/web/src/lib/connector-catalog-input.test.ts`
+- `apps/web/src/app/api/connectors/catalog/route.test.ts`, `apps/web/src/app/api/connectors/catalog/policy/route.test.ts`,
+  `apps/web/src/app/api/admin/connector-catalog/route.test.ts`
+- `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.dom.test.tsx`
+- `apps/web/tests/db/connector-catalog.test.ts` (partial unique indexes, real Postgres)
+
+**Catalog layers (DB, team policy, preinstall)**:
+- The catalog a team sees = built-in presets (code) < platform rows
+  (`connector_catalog_entries.team_id IS NULL`) < that team's rows, merged by
+  slug in `mergeCatalog` (`apps/web/src/lib/connector-catalog-merge.ts`). A
+  platform row with a built-in's slug overrides it; `enabled=false` withdraws
+  it for everyone. Assertion-mode rows are never offered.
+- Platform rows are written only through `/api/admin/connector-catalog`
+  (platform-admin API key, `lib/platform-admin.ts`). Team rows and team
+  policies are written only by a team member holding `manage_connectors`,
+  through `/api/connectors/catalog`, and are always scoped to the caller's
+  active team.
+- Every catalog write MUST pass `verifyCatalogServer`: https only, and an oauth
+  entry must complete discovery (an anonymous server is stored as `none`).
+- `connector_catalog_team_policies` (team, slug) → `blocked` | `available`
+  (default, no row) | `preinstalled`. Members never receive blocked entries.
+  `preinstalled` creates (or reuses, by URL then name) the team connector and
+  enables it in every team workspace BEFORE the policy is recorded; a new
+  workspace gets the team's preinstalled connectors at creation, best effort.
+  Changing a policy never deletes a connector. Roles still opt in via
+  `connectorRefs` (§2): preinstalled means mounted for the workspace, not
+  granted to every role.
+- Policy states are the coarse admin layer under per-role opt-in and the
+  agent access-request flow (task `d5a27699`, design pending): blocked =
+  forbidden, available = needs a person, preinstalled = already on.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/connectors/catalog` | Team member | merged catalog + policy (+`canManage`) |
+| `POST` | `/api/connectors/catalog` | Team admin | add a team-private entry |
+| `PATCH`/`DELETE` | `/api/connectors/catalog/[id]` | Team admin | edit/remove own team's entry |
+| `PUT` | `/api/connectors/catalog/policy` | Team admin | set blocked/available/preinstalled |
+| `GET`/`POST` | `/api/admin/connector-catalog` | Platform admin key | list/add platform entries |
+| `PATCH`/`DELETE` | `/api/admin/connector-catalog/[id]` | Platform admin key | edit/withdraw platform entries |
+
+**Out of scope**: managing platform rows from the dashboard (API key only for
+now); the agent access-request flow (task `d5a27699`).
 
 ---
 

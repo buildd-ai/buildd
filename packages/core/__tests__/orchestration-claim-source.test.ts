@@ -11,6 +11,8 @@ const fake = {
   selects: [] as { table: string; where: any }[],
   rowsByTable: {} as Record<string, any[]>,
   throwOnSelect: false,
+  executes: [] as any[],
+  executeRows: [] as any[],
 };
 const nameOf = (table: any) => table?.[Symbol.for('drizzle:Name')];
 
@@ -33,7 +35,16 @@ function selectChain() {
   return chain;
 }
 
-mock.module('../db/client', () => ({ db: { select: () => selectChain() } }));
+mock.module('../db/client', () => ({
+  db: {
+    select: () => selectChain(),
+    execute: async (q: any) => {
+      fake.executes.push(q);
+      if (fake.throwOnSelect) throw new Error('db down');
+      return { rows: fake.executeRows };
+    },
+  },
+}));
 
 const loadOutcomeCalls: any[] = [];
 mock.module('../orchestration-ledger-source', () => ({
@@ -61,6 +72,8 @@ beforeEach(() => {
   fake.selects = [];
   fake.rowsByTable = {};
   fake.throwOnSelect = false;
+  fake.executes = [];
+  fake.executeRows = [];
   loadOutcomeCalls.length = 0;
 });
 
@@ -140,7 +153,26 @@ describe('reads never throw into the claim path', () => {
     fake.rowsByTable.workers = [{ status: 'completed', updatedAt: new Date('2026-09-30T11:00:00Z'), prLifecycleStatus: 'conflict', prNumber: 7 }];
     fake.rowsByTable.tasks = [{ title: 'Holder' }];
     const s = await src.loadClaimHolderState({ workspaceId: WS, taskId: HOLDER, prNumber: 7 });
-    expect(s).toEqual({ title: 'Holder', workerStatus: 'completed', lastActivityAt: '2026-09-30T11:00:00.000Z', prLifecycle: 'conflict', baseStale: true });
+    expect(s).toEqual({ title: 'Holder', workerStatus: 'completed', lastActivityAt: '2026-09-30T11:00:00.000Z', prLifecycle: 'conflict', baseStale: true, stage: 'in_review' });
+  });
+
+  it('loadClaimHolderState reads an approving review on the holder PR as the approved stage', async () => {
+    fake.rowsByTable.workers = [{ status: 'completed', updatedAt: new Date('2026-09-30T11:00:00Z'), prLifecycleStatus: 'ci_green', prNumber: 7 }];
+    fake.rowsByTable.tasks = [{ title: 'Holder' }];
+    fake.rowsByTable.review_feedback = [{ state: 'approved' }];
+    const s = await src.loadClaimHolderState({ workspaceId: WS, taskId: HOLDER, prNumber: null });
+    expect(s?.stage).toBe('approved');
+    const review = fake.selects.find(x => x.table === 'review_feedback');
+    const r = render(review!.where);
+    expect(r.sql).toContain('"review_feedback"."workspace_id" = $1');
+    expect(r.params).toContain(7);
+  });
+
+  it('loadClaimHolderState: a holder that never started is queued, with no review read', async () => {
+    fake.rowsByTable.tasks = [{ title: 'Holder' }];
+    const s = await src.loadClaimHolderState({ workspaceId: WS, taskId: HOLDER, prNumber: null });
+    expect(s?.stage).toBe('queued');
+    expect(fake.selects.some(x => x.table === 'review_feedback')).toBe(false);
   });
 
   it('loadClaimHolderState with no holder task returns null without reading', async () => {
@@ -172,5 +204,34 @@ describe('loadClaimHoldReadoutInput', () => {
     expect(input.decisions).toEqual([]);
     expect(fake.selects).toHaveLength(1);
     expect(loadOutcomeCalls).toHaveLength(0);
+  });
+});
+
+describe('loadSoftOverlapEvidence: same-file history and predicted size', () => {
+  it('reads per-file merged-PR and conflict-retry counts, workspace-scoped, and the latest expected size', async () => {
+    fake.executeRows = [{ path: 'a.ts', merged_prs: 4, conflicted: 1 }];
+    fake.rowsByTable.orchestration_manifest_predictions = [{ expectedSize: { files: 3, minutes: 20, source: 'neighbours', k: 3, n: 3 } }];
+    const ev = await src.loadSoftOverlapEvidence({ workspaceId: WS, taskId: TASK, paths: ['a.ts', 'b.ts'] });
+    expect(ev.conflictHistory?.files).toEqual([
+      { path: 'a.ts', mergedPrs: 4, conflicted: 1, rate: 0.25 },
+      { path: 'b.ts', mergedPrs: 0, conflicted: 0, rate: null },
+    ]);
+    expect(ev.predictedChange).toEqual({ files: 3, minutes: 20, source: 'neighbours' });
+    const q = render(fake.executes[0]);
+    expect(q.sql).toContain('orchestration_touch_labels');
+    expect(q.sql).toContain('conflict_retry_pr_number');
+    expect(q.sql).toContain('merged_at is not null');
+    expect(q.params).toContain(WS);
+  });
+
+  it('no paths: no read, no history', async () => {
+    const ev = await src.loadSoftOverlapEvidence({ workspaceId: WS, taskId: TASK, paths: [] });
+    expect(ev.conflictHistory).toBeNull();
+    expect(fake.executes).toHaveLength(0);
+  });
+
+  it('THROWS on a DB error, so the decision falls back to HOLD', async () => {
+    fake.throwOnSelect = true;
+    await expect(src.loadSoftOverlapEvidence({ workspaceId: WS, taskId: TASK, paths: ['a.ts'] })).rejects.toThrow('db down');
   });
 });

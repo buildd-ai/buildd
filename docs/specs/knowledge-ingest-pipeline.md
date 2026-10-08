@@ -6,7 +6,7 @@ last_verified: 2026-10-02
 summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 domain: knowledge
 surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts]
-related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, codebase-memory-graph]
+related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers]
 keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
 verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []

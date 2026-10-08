@@ -15,7 +15,8 @@
  * milestone the agent reported. The runner slot an agent held is derived from
  * start/end overlap (`assignSlots`), since no column records it.
  */
-import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES, type VisualReviewModel } from '@buildd/shared';
+import { screensToReview } from './visual-review-model';
 import { assignSlots, occupiedSlots } from '@/components/fleet/slot-lanes-layout';
 import { groupTasksByPhase } from './flight-strip-nav';
 import {
@@ -29,9 +30,11 @@ import {
 } from './mission-pulse';
 import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-presentation';
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
+import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReading, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -178,6 +181,17 @@ export interface BoardTask {
   roleColor: string | null;
   phaseKey: string;
   status: BoardStatus;
+  /**
+   * The kernel's sentence for a kernel-owned delivery (§17.5): its headline
+   * and evidence. The strip drawer says this instead of generic copy.
+   */
+  kernelReason?: string | null;
+  /**
+   * The delivery's canonical reading when the kernel decided this row's
+   * status (`deliveryReading`): the tile, the strip drawer's pill, the band's
+   * Needs-you count and chat's AT WORK row all say its label. Null otherwise.
+   */
+  delivery?: DeliveryReading | null;
   /** Runner (display name) of the live worker (the fix attempt's, while fixing), else the last one. */
   runner: string | null;
   /** 0-based slot on that runner, derived from overlap. */
@@ -220,6 +234,8 @@ export interface BoardTask {
   taskMode: string | null;
   workerStatus: string | null;
   backend: 'claude' | 'codex' | null;
+  /** `classifyTaskFailure` over the mission's rows; null unless the task failed. */
+  failureKind: TaskFailureKind | null;
 }
 
 export interface BoardPhase {
@@ -465,6 +481,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
     backend: str(t.backend),
+    delivery: (t.delivery as DeliveryDisplay | null | undefined) ?? null,
     worker: w0
       ? {
           status: w0.status,
@@ -489,8 +506,39 @@ const isLiveWorker = (w: BoardWorkerInput | null | undefined) => !!w && LIVE.has
  * The Board's state for one deliverable row, refining the feed's
  * (`deriveFeedTaskState`). `depsLanded` answers "is anything still holding it".
  */
+/**
+ * The Board's status per canonical delivery tone (`deliveryReading`). The
+ * tile's words are the reading's label; the status only places the row. A
+ * person's move reads `review`, never `waiting` (the Board's `waiting` and its
+ * Ask/Reply are an agent's question), and still counts in Needs you through
+ * `BoardTask.delivery`. Nothing but a FAILED delivery is `failed` or in the
+ * strip's error bucket: a stalled conflict fix or a CI fix in flight is
+ * recoverable work the platform owns (S35, S36).
+ */
+const BOARD_STATUS_FOR_DELIVERY_TONE: Record<DeliveryTone, BoardStatus> = {
+  needs: 'review', live: 'running', stalled: 'running', landed: 'merged', closed: 'done', failed: 'failed',
+};
+
+/** A kernel-owned delivery's tile state (§17.5). Null for `working` (the owner's own attempt is the reading). */
+export function boardStatusForDelivery(d: DeliveryReadingInput): BoardStatus | null {
+  const r = deliveryReading(d);
+  return r ? BOARD_STATUS_FOR_DELIVERY_TONE[r.tone] : null;
+}
+
+/** The delivery reading that decides this row, or null when the row keeps its own projection. */
+export function boardDeliveryReading(row: DeliverableRow<BoardTaskInput>): DeliveryReading | null {
+  const { task } = row;
+  if (!task.delivery || task.status === 'cancelled') return null;
+  // A worker's own question stays a question (§13.2 dev. 3).
+  const feed = deriveFeedTaskState(row);
+  const asked = feed.needsYou === 'input' || feed.needsYou === 'question' || feed.needsYou === 'decision';
+  return asked ? null : deliveryReading(task.delivery);
+}
+
 export function deriveBoardStatus(row: DeliverableRow<BoardTaskInput>, depsLanded: boolean): BoardStatus {
   const { task } = row;
+  const kernel = boardDeliveryReading(row);
+  if (kernel) return BOARD_STATUS_FOR_DELIVERY_TONE[kernel.tone];
   const feed = deriveFeedTaskState(row);
   const pr = deriveFeedPrState(task.worker);
   const openAttempt = [...row.attempts].reverse().find(a => !TERMINAL.has(a.status) && a.taskClass !== 'work');
@@ -574,8 +622,32 @@ function criterionRow(
 
 const TICKER_MAX = 6;
 
-export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
-  const { now } = input;
+/**
+ * The mission's countable cells: every deliverable row but the cancelled
+ * ones, each with its state, its on-strip edges and its level and component
+ * from the shared adjacency. This is the one projection every task strip
+ * reads — the Board (and its Landed strip) and the list/Home card
+ * (`buildMissionListCard`) — so task identity, order and lane cannot fork
+ * between surfaces.
+ */
+export interface BoardCells {
+  tasks: Record<string, BoardTask>;
+  phases: BoardPhase[];
+  /** Folded deliverable rows, cancelled ones excluded, in pulse order. */
+  cellRows: DeliverableRow<BoardTaskInput>[];
+  /** Raw task id (an attempt, a re-creation) → the cell that carries it. */
+  rowIdFor: Map<string, string>;
+  /** Cancelled rows: no cell. */
+  skipped: Set<string>;
+  labelOf: Map<string, { scope: string | null; label: string }>;
+}
+
+/** `s` as one sentence: a period added only when it does not already end in . ! or ?. */
+const sentence = (s: string) => (/[.!?]$/.test(s.trimEnd()) ? s.trimEnd() : `${s.trimEnd()}.`);
+
+export function buildBoardCells(
+  input: Pick<MissionBoardInput, 'tasks' | 'roles' | 'runnerHeartbeats' | 'externalDeps'>,
+): BoardCells {
   const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
   const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
   const allById = new Map(input.tasks.map(t => [t.id, t]));
@@ -628,7 +700,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
     const own = t.workers[0] ?? null;
     const role = t.roleSlug ? roles.get(t.roleSlug) : undefined;
     const kind = deriveWorkKind({ kind: t.kind ?? null, roleSlug: t.roleSlug ?? null });
-    const prState = deriveFeedPrState(t.worker);
+    const prState = deriveFeedPrState(t.worker, t.delivery);
     tasks[t.id] = {
       id: t.id,
       title: t.title,
@@ -639,6 +711,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       roleColor: role?.color ?? null,
       phaseKey: phaseKeyOf(t),
       status,
+      kernelReason: t.delivery && t.delivery.stage !== 'working'
+        ? sentence(t.delivery.detail ? `${t.delivery.headline}: ${t.delivery.detail}` : t.delivery.headline)
+        : null,
+      delivery: boardDeliveryReading(r),
       runner: activeWorker ? displayOf(activeWorker)?.name ?? null : null,
       slot: null,
       workerId: activeWorker?.id ?? null,
@@ -665,6 +741,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       taskMode: t.mode ?? null,
       workerStatus: own?.status ?? null,
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
+      failureKind: classifyTaskFailure(t, input.tasks),
     };
   }
 
@@ -682,6 +759,15 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       total: ids.length,
     };
   });
+
+  return { tasks, phases, cellRows, rowIdFor, skipped, labelOf };
+}
+
+export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
+  const { now } = input;
+  const roles = new Map((input.roles ?? []).map(r => [r.slug, r]));
+  const displayOf = (w: BoardWorkerInput) => resolveRunnerDisplay(w, input.runnerHeartbeats);
+  const { tasks, phases, cellRows: rows, rowIdFor, skipped, labelOf } = buildBoardCells(input);
 
   const all = Object.values(tasks);
   const landedN = all.filter(t => BOARD_LANDED.has(t.status)).length;
@@ -808,8 +894,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   );
 
   // Side rail.
-  const needsYou = all.filter(t => t.status === 'waiting').map(t => t.id);
-  const inReview = all.filter(t => t.status === 'review' || t.status === 'ci_failed' || t.status === 'fixing').map(t => t.id);
+  // Needs you: an agent's question, or a delivery whose next move is a
+  // person's (the same reading Home's Needs You admits, S36).
+  const needsYou = all.filter(t => t.status === 'waiting' || t.delivery?.needsYou).map(t => t.id);
+  const inReview = all.filter(t => !t.delivery?.needsYou && (t.status === 'review' || t.status === 'ci_failed' || t.status === 'fixing')).map(t => t.id);
   const upNext = rows.map(r => r.task.id).filter(id => BOARD_QUEUED.has(tasks[id].status));
 
   // Ticker: newest first.
@@ -937,15 +1025,18 @@ export function concurrencyBins(bars: readonly Pick<MissionLaneBar, 'start' | 'e
 }
 
 /**
- * The band's Needs-you number: the waiting tasks, plus the screens the visual
- * audit wants a human to judge (docs/design/visual-qa-human-review.md, "Where
+ * The band's Needs-you number: the waiting tasks, plus the screens waiting in
+ * the review deck (`screensToReview`, the deck's own count) (docs/design/visual-qa-human-review.md, "Where
  * it shows"), plus one for an open round-cap question. The auditor's own
  * question parks its worker, so it is already a waiting task and not added.
  */
 export function boardNeedsYouCount(
   model: Pick<MissionBoardModel, 'needsYou'>,
-  visual: { summary: { awaitingHuman: number }; needsYou?: { reason: string } | null } | null | undefined,
+  visual: (Pick<VisualReviewModel, 'cells'> & { needsYou?: { reason: string } | null }) | null | undefined,
 ): number {
   if (!visual) return model.needsYou.length;
-  return model.needsYou.length + visual.summary.awaitingHuman + (visual.needsYou?.reason === 'round_cap' ? 1 : 0);
+  // A round-cap decision is about the issue screens the deck already counts;
+  // it adds one only when no screen is in the deck to carry it.
+  const screens = screensToReview(visual);
+  return model.needsYou.length + Math.max(screens, visual.needsYou?.reason === 'round_cap' ? 1 : 0);
 }

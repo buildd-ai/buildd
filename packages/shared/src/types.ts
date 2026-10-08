@@ -206,6 +206,26 @@ export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
 export type TeamPlan = 'free' | 'pro' | 'team';
 
+// Billing routes (apps/web/src/app/api/teams/[id]/billing/*). Plan changes land
+// only through the Stripe webhook; these routes hand the owner a Stripe URL.
+export type PaidTeamPlan = Exclude<TeamPlan, 'free'>;
+
+/** POST /api/teams/[id]/billing/checkout. `seats` is Team only; never below 5 or current members + invites. */
+export interface BillingCheckoutRequest {
+  plan: PaidTeamPlan;
+  seats?: number;
+}
+
+/** POST /api/teams/[id]/billing/seats — the Team plan's new total seat count. */
+export interface BillingSeatsRequest {
+  seats: number;
+}
+
+/** checkout and portal answer with the Stripe page to send the owner to. */
+export interface BillingRedirectResponse {
+  url: string;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -684,7 +704,11 @@ export interface TaskEvidence {
   capturedAt: string;
 }
 
-export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed';
+/**
+ * `fix_check_still_red`: a CI-fix attempt reported success while the check it
+ * was sent to fix was still red (or not yet green) on the PR head.
+ */
+export type TaskMismatchKind = 'pushed_without_diff' | 'success_with_red_check' | 'last_command_failed' | 'fix_check_still_red';
 
 /** One claim the task made that its own record contradicts. */
 export interface TaskMismatch {
@@ -842,6 +866,8 @@ export interface Worker {
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
   costUsd: number;
+  /** How costUsd and the tokens were charged (docs/specs/real-and-virtual-cost.md). NULL = no usage. */
+  costBasis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
   turns: number;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -1142,6 +1168,17 @@ export interface McpServerInfo {
 }
 
 export interface WorkerEnvironment {
+  /** Latest real launch/CDP round trip; configuration alone is not capability. */
+  browserProvider?: {
+    provider: 'local' | 'cloudflare';
+    ok: boolean;
+    checkedAt: string;
+    code?: string;
+    detail?: string;
+    handle?: string;
+    browserVersion?: string;
+    latencyMs?: number;
+  };
   tools: WorkerTool[];
   envKeys: string[];
   mcp: string[] | McpServerInfo[];
@@ -1171,6 +1208,13 @@ export interface WorkerEnvironment {
    * server then derives it from the heartbeat URL.
    */
   fleet?: RunnerFleetIdentity;
+  /**
+   * Quality Scout host advert (apps/runner/src/scout-host.ts): the repos this
+   * runner can host Scout probes for and which ports. Present only when the
+   * runner can sandbox a probe command (bwrap) or the operator set
+   * BUILDD_SCOUT_UNSANDBOXED=1; absent with BUILDD_SCOUT_HOST=0.
+   */
+  scoutHost?: { repos: string[]; command?: boolean; capture?: boolean; appBoot?: boolean };
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1354,8 +1398,7 @@ export interface ClaimTasksInput {
   claimAcrossAccessible?: boolean;
   /**
    * Protocol features this runner build implements, so the server does not send
-   * a payload field an older runner would silently ignore. See
-   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   * a payload field an older runner would silently ignore.
    */
   runnerFeatures?: string[];
   /**
@@ -1407,6 +1450,14 @@ export interface ClaimModelEndpoint {
    * clearly rather than guess a wire format.
    */
   openAiBaseUrl?: string;
+  /**
+   * Claude's deferred MCP/tool loading (ToolSearch / `tool_reference`) is
+   * supported through this endpoint: the runner sets ENABLE_TOOL_SEARCH=true
+   * in a Claude run's env. The effective value for this endpoint
+   * (@buildd/core/agent-endpoint `effectiveToolSearch`), not the kind's
+   * default. Absent/false: not set. Never applied to a Codex run.
+   */
+  toolSearch?: boolean;
 }
 
 export type ClaimDiagnosticReason =
@@ -1501,6 +1552,11 @@ export interface ClaimDiagnostics {
     path_overlap?: number;
     /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
     advisory_manifest?: number;
+    /**
+     * Declared scope overlaps an in-flight task's only softly (directory
+     * prefix, or a pre-v2 inferred edge): held unless HOLD/START said START.
+     */
+    soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;
@@ -1515,6 +1571,12 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -1538,6 +1600,20 @@ export interface ClaimDiagnostics {
      * degraded or fail at provisioning. See claim/role-env-injection.ts.
      */
     role_env_unsatisfied?: number;
+    /**
+     * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
+     * the team is at its plan's parallel managed-run limit. Not an error; the
+     * task stays pending and starts when a managed run ends.
+     * See packages/shared/src/entitlements.ts.
+     */
+    managed_concurrency?: number;
+    /** Same, for the plan's monthly managed runner-hours allowance. */
+    managed_runner_hours?: number;
+    /**
+     * A cloud claim held because the team's monthly hosted runner allowance
+     * (counted hours) is used. Only when an allowance is set.
+     */
+    hosted_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1614,12 +1690,6 @@ export interface ClaimTasksResponse {
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
     /**
-     * Set when the task is enrolled in a running `cbm_access` experiment.
-     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
-     * no mount, no steering, every CBM tool denied.
-     */
-    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
-    /**
      * Set when the team runs a `question_gate` experiment and the runner sent
      * the `question_gate` feature. The runner then routes AskUserQuestion
      * through POST /api/workers/[id]/question-check before parking.
@@ -1664,6 +1734,15 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Cloud claims only: the team's agent model endpoint won for this task but
+     * does not pass deferred tool loading (ToolSearch / `tool_reference`)
+     * through. The container's Claude Code believes it talks to Anthropic (the
+     * dispatcher's egress rewrites the traffic), so the runner sets
+     * ENABLE_TOOL_SEARCH=false. A per-run marker, not a credential; absent
+     * means "leave Claude Code's default".
+     */
+    toolSearchDisabled?: boolean;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
@@ -1887,6 +1966,22 @@ export interface PathDeclaration {
    * to caller-supplied edges. Only these may ever be removed on narrowing.
    */
   inferredDependsOn?: string[];
+  /**
+   * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
+   * migration, serialized surface). Prefix-only overlap is never a dependsOn
+   * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
+   * rows written before the rule; migration 0267 converted the pending ones.
+   */
+  overlapPolicy?: 'v2';
+  /**
+   * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
+   * one's by directory prefix or on the same ordinary file (`same_file`; a
+   * generated, hotspot or migration file stays a hard edge), or, `legacy_inferred`, an inferred edge
+   * minted before the hard/soft rule, reclassified against current manifests
+   * at claim). Never a dependsOn edge: the claim route defers on it only while
+   * the other task is in flight, and the HOLD/START decision may start it.
+   */
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'same_file' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -1907,6 +2002,141 @@ export interface PathDeclaration {
    * manifest so the claim route holds the task until the holder releases.
    */
   collision?: PathCollisionRecord;
+  /**
+   * The last authoritative working-set reconciliation this task's runner ran
+   * (lib/working-set-sync.ts): the proof a ship checkpoint rests on. Bounded —
+   * the set itself lives in `path_claims`, never here.
+   */
+  workingSet?: WorkingSetRecord;
+  /**
+   * Written when the task's worker ended with its PR still open: the leases it
+   * held were promoted into the effective manifest so the open-PR overlap
+   * surface (claim route layer 1) covers the PR's actual changed files, not
+   * what the author declared. Merge or close releases it with the PR.
+   */
+  prHandoff?: PrHandoffRecord;
+}
+
+// ── Authoritative working set (path-claim-ownership.md) ─────────────────────
+//
+// The runner tracks the task-owned file set from git (branch-owned diff from
+// the PR base plus uncommitted changes) and sends only what changed since the
+// server's last ACK. `path_claims` rows are the authoritative current set;
+// `workers.observedTouches` is a bounded diagnostic sample and is never what
+// coordination is decided on.
+
+/** Chunk bound for one delta: no PATCH carries more paths than this per side. */
+export const WORKING_SET_CHUNK = 500;
+
+export type WorkingSetCheckpoint = 'pre_push' | 'completion';
+
+/** Runner → server, on `PATCH /api/workers/[id]`. */
+export interface WorkingSetDelta {
+  /** Runner-local generation of the set this delta was computed from; monotonic per worker session. */
+  generation: number;
+  /** Paths now in the task-owned set the server has not acknowledged for this session. */
+  add: string[];
+  /** Paths the server acknowledged earlier that have left the set (reverted / no longer differ from base). */
+  remove: string[];
+  /** After this delta is applied, every path in the current set has been offered. */
+  complete: boolean;
+  /** Set when this delta is the full reconciliation before a ship. */
+  checkpoint?: WorkingSetCheckpoint;
+  /** Ask for the server's current held paths for this task (a restart seeds its local state from them). */
+  includeHeld?: boolean;
+}
+
+/** Server → runner, on the same PATCH response as `workingSetAck`. */
+export interface WorkingSetAck {
+  generation: number;
+  /** Paths newly leased by this delta. */
+  acquired: string[];
+  /** Paths of `add` another live task holds, with the holder. Not leased. */
+  blocked: PathCollisionNotice[];
+  /** Paths of `remove` whose lease this delta gave back. */
+  released: string[];
+  /** Active leases this task holds after the delta. */
+  heldCount: number;
+  /** Only with `includeHeld`; capped at WORKING_SET_HELD_CAP. */
+  heldPaths?: string[];
+  /** Whether the server could apply the delta at all (a closed task leases nothing). */
+  applied: boolean;
+  /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
+  coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/**
+ * Server → runner, on the PATCH response: run `git merge-tree` between this
+ * worker's HEAD and a live sibling's pushed branch (sibling-conflict-probe).
+ */
+export interface SiblingProbeRequest {
+  probeId: string;
+  /** The sibling's branch on `origin`. */
+  otherBranch: string;
+  /** Files both workers touched; a conflict outside them still counts. */
+  sharedFiles: string[];
+  /** Workspace `gitConfig.mergiraf`: try mergiraf on each conflicted file before calling it real. */
+  mergiraf: boolean;
+}
+
+/** One conflicted file, with its conflict regions (line ranges in the merged result). */
+export interface SiblingProbeConflict {
+  path: string;
+  hunks: Array<{ startLine: number; endLine: number }>;
+}
+
+/** Runner → server, on the next PATCH: what the merge-tree found. */
+export interface SiblingProbeResult {
+  probeId: string;
+  outcome: 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+  conflicts?: SiblingProbeConflict[];
+  /** Files mergiraf merged cleanly (counted out of `conflicts`). */
+  resolvedByMergiraf?: string[];
+  error?: string;
+  headSha?: string | null;
+  otherSha?: string | null;
+}
+
+/** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
+export const WORKING_SET_HELD_CAP = 5000;
+
+/** Bounded proof kept on `tasks.path_declaration.workingSet`. */
+export interface WorkingSetRecord {
+  generation: number;
+  coverage: WorkingSetAck['coverage'];
+  heldCount: number;
+  blockedCount: number;
+  /** First few blocked paths with their holders, for explain/UI. */
+  blockedSample: Array<{ path: string; blockingTaskId: string }>;
+  checkpoint: WorkingSetCheckpoint | null;
+  workerId: string | null;
+  at: string;
+}
+
+/**
+ * Runner → server: the outcome of a ship checkpoint the runner could not
+ * prove, reported on the next sync that reaches the server. The server records
+ * it on the gate ledger as `coverage_unknown_at_ship`.
+ */
+export interface ShipCheckpointReport {
+  source: WorkingSetCheckpoint;
+  result: 'unknown';
+  /** Why coverage could not be established. */
+  cause: 'timeout' | 'error' | 'sweep_incomplete' | 'server_rejected';
+  /** Whether the ship was refused (enforce mode) or let through advisory. */
+  refused: boolean;
+  attempts: number;
+  at: number;
+}
+
+export interface PrHandoffRecord {
+  at: string;
+  workerId: string | null;
+  prNumber: number | null;
+  /** How many lease paths were promoted into the effective manifest. */
+  promoted: number;
+  /** The manifest was the repo-wide sentinel or absent and is now concrete. */
+  replacedSentinel: boolean;
 }
 
 /** Enforce-mode path claims: why a task was deferred at a checkpoint. */
@@ -2070,6 +2300,21 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 // keeps the legacy rule (an empty `availableSkills` list claims anything).
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
 
+// Role slugs a person never picks for a task they write. buildd files these
+// tasks itself: a visual review is a mission command (POST
+// /api/missions/[id]/surface-audit), and a hand-written visual-auditor task
+// would miss its dependencies, routes and evidence contract.
+export const SYSTEM_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+export function isSystemRoleSlug(slug: string | null | undefined): boolean {
+  return !!slug && SYSTEM_ROLE_SLUGS.includes(slug);
+}
+
+/** The roles a generic task picker offers a person: everything but the system roles. */
+export function humanPickableRoles<T extends { slug: string }>(roles: readonly T[]): T[] {
+  return roles.filter(r => !isSystemRoleSlug(r.slug));
+}
+
 // ============================================================================
 // VISUAL REVIEW (docs/design/visual-qa-human-review.md)
 // ============================================================================
@@ -2168,6 +2413,23 @@ export interface VisualReviewCaptureGap {
   expectedRef: string;
   auditTaskId: string | null;
   round: number;
+}
+
+/**
+ * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
+ * (route, viewport and state) a different cell — another variant key —
+ * captured after the merge: a later round often re-shoots only the routes it
+ * fixed with no title collision, so the recapture lands in a sibling cell
+ * instead of this one's history. Hidden from `cells`/`queue`/the summary
+ * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ */
+export interface VisualReviewResolvedElsewhere {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The cell key whose current shot, captured after the merge, resolves this one. */
+  resolvedBy: string;
 }
 
 /** One audit screenshot, as every surface renders it. */
@@ -2394,6 +2656,8 @@ export interface VisualReviewModel {
   superseded?: VisualReviewSupersededShot[];
   /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
   captureGaps?: VisualReviewCaptureGap[];
+  /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
+  resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   generatedAt: string;
 }
 
@@ -2736,6 +3000,16 @@ export interface InitiativeKPIState {
 }
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
 
+/**
+ * Runner capability: this runner matches buildd actions on the group tools
+ * (`mcp__buildd__buildd_<group>`), not only the legacy one-tool name. The MCP
+ * route serves a `?worker=` session the group tools only when the worker's
+ * runner advertised this on its heartbeat; any other runner keeps the legacy
+ * tool. Not `mcp:`-prefixed: the claim route reserves that prefix for the MCP
+ * servers a runner has.
+ */
+export const CAPABILITY_MCP_GROUP_TOOLS = 'buildd-mcp:group-tools';
+
 // ============================================================================
 // WORKER FAILURE ANALYTICS
 // ============================================================================
@@ -2998,6 +3272,38 @@ export interface GateAnalytics {
   gates: GateRow[];
   /** How many gates ranked out of `gates`. Zero means the list is exhaustive. */
   truncatedGates: number;
+  /**
+   * Path-coordination events (`path_claim` / `path_declaration`) sorted into
+   * the signals a sentinel must keep apart: history truncation and healthy
+   * contention are not an outage. See packages/core/path-coordination-signal.ts.
+   */
+  pathCoordination: PathCoordinationSummary;
+}
+
+export type PathCoordinationSignal =
+  /** The bounded observed-touch sample hit its cap. Advisory: coverage is unaffected. */
+  | 'observation_truncated'
+  /** A live holder blocked a claim. Healthy coordination, not an incident. */
+  | 'claim_blocked'
+  /** A circular wait was detected. A conflict to resolve, tracked on its own. */
+  | 'deadlock_detected'
+  /** Timeout, network, 5xx or DB failure reaching the coordinator. Real degradation. */
+  | 'coordination_unavailable'
+  /** A ship checkpoint could not prove coverage, so the ship was refused (or, advisory, let through). */
+  | 'coverage_unknown_at_ship';
+
+export type PathCoordinationSeverity = 'advisory' | 'healthy' | 'conflict' | 'degraded' | 'critical';
+
+export interface PathCoordinationSummary {
+  counts: Record<PathCoordinationSignal, number>;
+  /** Path events in the window the classifier could not place. */
+  unclassified: number;
+  /** True only on `coordination_unavailable` or `coverage_unknown_at_ship` events. */
+  incident: boolean;
+  /** Highest severity present, or null with no path events. */
+  severity: PathCoordinationSeverity | null;
+  /** One line a sentinel can quote. */
+  verdict: string;
 }
 
 /** One full knowledge-ingest job no runner has taken (GET /api/health/failures `stalledIngest`). */
@@ -3081,7 +3387,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
+export type ExperimentKind = 'model_routing' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -3202,6 +3508,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }
@@ -3324,9 +3634,12 @@ export type EvidenceKind = 'command_output' | 'test_report' | 'ci_job_log' | 'tr
 export interface EvidenceObjectSummary {
   id: string;
   workspaceId: string;
-  taskId: string;
-  rootTaskId: string;
-  workerId: string;
+  /** Null exactly when the object belongs to a Scout run (`scoutRunId`) instead of a task run. */
+  taskId: string | null;
+  rootTaskId: string | null;
+  workerId: string | null;
+  /** The runner-hosted Quality Scout run that wrote it; null for task-run evidence. */
+  scoutRunId: string | null;
   prNumber: number | null;
   kind: EvidenceKind;
   bytes: number;
@@ -3374,6 +3687,41 @@ export interface EvidenceLookupResponse {
   objects: EvidenceObjectSummary[];
 }
 
+/** GET /api/quality-scout/runs/:id/evidence */
+export interface ScoutRunEvidenceListResponse {
+  scoutRunId: string;
+  workspaceId: string;
+  objects: EvidenceObjectSummary[];
+}
+
+/** GET /api/quality-scout/runs/:id/evidence?evidenceId=… */
+export interface ScoutRunEvidenceReadResponse extends EvidenceReadResult {
+  scoutRunId: string;
+  workspaceId: string;
+  object: EvidenceObjectSummary;
+}
+
+/**
+ * POST /api/quality-scout/runs/:id/evidence — a lease-holding runner asks for
+ * a presigned PUT for one command log. The runner gets a URL bound to one key
+ * and one byte length, never a backend credential; it cites the object in a
+ * probe result as `{ kind: 'evidence', ref: 'evidence:<evidenceId>' }` after
+ * confirming the upload (POST …/evidence/:evidenceId/confirm).
+ */
+export interface ScoutRunEvidenceUploadRequest {
+  leaseId: string;
+  kind: 'command_output' | 'test_report';
+  seq: number;
+  sizeBytes: number;
+}
+
+export interface ScoutRunEvidenceUploadResponse {
+  uploadUrl: string;
+  evidenceId: string;
+  contentLength: number;
+  expiresIn: number;
+}
+
 /** Aggregate coordination telemetry; no worker, user or cost details. */
 export interface CoordinationMetricFilters {
   window: '24h' | '7d' | '30d';
@@ -3410,9 +3758,53 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
 }
+/** n / p50 / p90 over a set of durations, in milliseconds; null quantiles when n = 0. */
+export interface DurationSummary {
+  n: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+}
+/**
+ * Early-release rollout measure (knowledge-base: buildd/design/early-release.md
+ * "Failure modes & the measure"), read off `dependency_releases` rows and the
+ * `early_release` gate ledger. Served as `earlyRelease` on
+ * `GET /api/stats/coordination` (or alone with `?metric=earlyRelease`).
+ */
+export interface EarlyReleaseStats extends CoordinationMetricFilters {
+  /** Each workspace's resolved `gitConfig.earlyRelease.mode`, so zero releases can be told apart from "never opted in". */
+  modes: Array<{ workspaceId: string; mode: 'off' | 'rule_only' | 'rule_and_jev' }>;
+  /** Release decisions made in the window, by decision. */
+  decisions: { start_now: number; start_stacked: number; wait: number };
+  /**
+   * Of the dependents released (start_now / start_stacked) in the window, how
+   * many the reconciler later had to refresh or escalate, or whose release was
+   * revoked or whose task was cancelled. A dependent counts once in `reworked`
+   * even if several apply; the per-cause counts may overlap.
+   */
+  rework: {
+    released: number;
+    reworked: number;
+    rate: number | null;
+    refreshed: number;
+    escalated: number;
+    cancelled: number;
+  };
+  /**
+   * Upstream PR raised → dependent's own PR merged, over dependents whose PR
+   * merged in the window. `released` = dependents with a start_now/start_stacked
+   * release; `notOptedIn` = dependents in workspaces whose mode is 'off' and that
+   * were never released (today's merge-gated path). Opted-in dependents held at
+   * `wait` are in neither cohort.
+   */
+  chainDuration: { released: DurationSummary; notOptedIn: DurationSummary };
+  /** Release decision (≈ upstream PR raised) → dependent's first claim, for dependents released in the window. */
+  raisedToClaimed: DurationSummary;
+  coverage: { note: string };
+}
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+  earlyRelease?: EarlyReleaseStats;
 }
 /**
  * Aggregate counts over the orchestration decision ledger
@@ -3498,6 +3890,243 @@ export interface WorkspaceOnboardingConfig {
   lastSeenPolicyInitAt?: string;
 }
 
+/**
+ * `gitConfig.qualityScout`: what an owner declares so Quality Scout can probe
+ * the workspace safely. Only what the repo cannot tell us; everything else is
+ * projected from the readiness report. Stored as typed but untrusted: read it
+ * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
+ */
+export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
+  /** Overrides the detected test command as Scout's verification command. */
+  verificationCommand?: string;
+  /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */
+  testEnvironment?: { baseUrl?: string; ephemeral?: boolean; description?: string };
+  /**
+   * Critical journeys. API `path` is relative to the test environment (or the
+   * app booted in the sandbox); absolute URLs are refused. `mutates` defaults to
+   * true for a CLI journey and to "not GET/HEAD/OPTIONS" for an API journey.
+   * `paths` (exact, `dir/` prefix or glob) scopes a journey to the code it
+   * exercises: Scout uses it for changes there and not for unrelated ones;
+   * unscoped journeys are shared across changes in turn.
+   */
+  journeys?: Array<
+    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string; paths?: string[] }
+    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string; paths?: string[] }
+  >;
+  /** UI route patterns worth looking at, e.g. `/`, `/items/:id`. */
+  uiRoutes?: string[];
+  /** Command that seeds fixtures. Always treated as mutating. */
+  fixtureSetup?: { command: string };
+  constraints?: {
+    /** Default `ephemeral-only`. `never` = read-only probes only. */
+    allowWrites?: 'never' | 'ephemeral-only';
+    /** A probe command containing any of these substrings is never run. */
+    forbiddenPatterns?: string[];
+  };
+  /**
+   * Follow-up thresholds (`propose` mode). Read only through
+   * `resolveScoutActionPolicy` (apps/web/src/lib/quality-scout-actions.ts);
+   * an out-of-range value falls back to the default rather than being clamped.
+   */
+  policy?: {
+    /** critical/high/medium file only at or above this confidence. Default 0.7. */
+    minConfidence?: number;
+    /** A medium finding files once seen `count` times, the last within `windowDays`. Default 2 in 7. */
+    mediumRecurrence?: { count?: number; windowDays?: number };
+  };
+  /**
+   * When runs start on their own. Read only through `resolveScoutTriggerConfig`
+   * (apps/web/src/lib/quality-scout-trigger.ts). A manual run is always allowed
+   * unless the mode is `off`.
+   */
+  triggers?: {
+    /** Run when a mission's integration branch becomes a candidate. Default true. */
+    missionCandidate?: boolean;
+    /** Optional periodic run on the default branch. Absent: never periodic. */
+    periodicHours?: number;
+  };
+  /**
+   * Where probes may run. `auto` (default): probes only a runner can host
+   * (command, capture, app-boot) go to a runner of the team that advertised a
+   * Scout host for this repo in the last 15 minutes; the run waits for it, and
+   * whatever no runner reports ends `unsupported`. `server`: server ports only,
+   * nothing waits.
+   */
+  host?: 'auto' | 'server';
+  /** Per-run bounds. `runnerMaxDurationMs` bounds a runner's execution of a parked run (default 20 min, max 60). */
+  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number; runnerMaxDurationMs?: number };
+}
+
+// ── Quality Scout runner host API (/api/quality-scout/runs/*) ──────────────
+//
+// A runner hosts the probes of a parked (`awaiting_host`) Scout run that only
+// a runner can run. Wire shapes only: the probe, profile and result payloads
+// are the core Quality Scout types (packages/core/quality-scout/types.ts,
+// verification-check.ts), carried here structurally because this package
+// depends on nothing.
+
+/** What the runner can host right now. A probe goes only to a runner whose ports serve its need. */
+export interface ScoutHostPortsAdvert {
+  command: boolean;
+  capture: boolean;
+  /** A launch-tested local browser. Not used to route anything yet (preview capture is a later slice). */
+  browser: boolean;
+  /** Can boot the app for `app-boot` API journeys. Optional; absent is false. */
+  appBoot?: boolean;
+}
+
+/**
+ * A capture credential minted for one claimed Scout run: a GitHub App
+ * installation token scoped to the run's one repository with Actions write
+ * (dispatch the workflow, read its runs and artifacts) and nothing else.
+ * `expiresAt` is the earlier of the token's own expiry and the lease's.
+ */
+export interface ScoutCaptureGrant {
+  token: string;
+  expiresAt: string;
+  /** `owner/name`: the only repository the token reaches. */
+  repository: string;
+  /** Always `sandbox` in this slice: a preview page source gets no grant. */
+  pageSource: 'sandbox';
+}
+
+export type ScoutCaptureUnavailableReason =
+  | 'page_source_not_sandbox'
+  | 'no_linked_repo'
+  | 'installation_suspended'
+  | 'permissions_unavailable'
+  | 'mint_failed';
+
+/** POST /api/quality-scout/runs/claim */
+export interface ScoutRunClaimRequest {
+  /** `owner/name` of the clones this runner can check a SHA out of. */
+  repos: string[];
+  ports: ScoutHostPortsAdvert;
+  /** Self-reported runner id, for diagnostics only. The lease is bound to the API key, not to this. */
+  runnerId?: string;
+}
+
+/** The run a runner claimed: the core `ScoutRun` without its server-side parking state. */
+export interface ScoutHostedRun {
+  id: string;
+  workspaceId: string;
+  missionId: string | null;
+  trigger: string;
+  mode: string;
+  status: 'awaiting_host';
+  candidate: { ref: string; sha: string };
+  prior: { runId: string; sha: string } | null;
+  budget: { maxProbes: number; maxCostUsd: number | null; maxCaptureProbes?: number };
+  policyVersion: string;
+  startedAt: string;
+  completedAt: null;
+  error: null;
+}
+
+/**
+ * The lease a claim grants. Every later call for this run must send `leaseId`
+ * with the same API key; past `expiresAt` the run is someone else's to claim.
+ */
+export interface ScoutRunLease {
+  leaseId: string;
+  expiresAt: string;
+  /** Wall-clock bound for executing this run's probes. */
+  runnerMaxDurationMs: number;
+  /** The run is finalized at this time whatever the runner has reported. */
+  hostDeadline: string;
+}
+
+export type ScoutRunClaimResponse =
+  | {
+      run: ScoutHostedRun;
+      /** The runner-assigned probes still waiting for a result: frozen core `ScoutProbeRecord`s. */
+      probes: Array<Record<string, unknown> & { candidateId: string; host: 'runner' }>;
+      /** The capability profile the server planned against (core `ScoutCapabilityProfile`). Judge against this, never a local one. */
+      profile: Record<string, unknown>;
+      lease: ScoutRunLease;
+      /** `owner/name` of the run's workspace repo: which of the offered clones to check the SHA out of. */
+      repo?: string;
+      /** Parked runs of these workspaces that the pre-claim sweep finalized. */
+      expired?: string[];
+      /**
+       * Only when a claimed probe is a surface probe: the run-scoped GitHub
+       * token its capture dispatches `visual-qa.yml` with. Held in the runner
+       * process for the capture port; never written to disk, never in a
+       * probe's env. Revoke it when the run ends.
+       */
+      capture?: ScoutCaptureGrant;
+      /** A surface probe was claimed but no capture token could be handed out: why. The probe runs without a capture port (`unsupported`). */
+      captureUnavailable?: ScoutCaptureUnavailableReason;
+    }
+  | {
+      run: null;
+      /** `disabled`: the fleet kill switch is on. `none`: nothing this runner can host is waiting. */
+      reason: 'disabled' | 'none';
+      expired?: string[];
+    };
+
+/**
+ * One runner-hosted probe's substrate result (core `VerificationResult` shape).
+ * The server derives `signature` as `verificationSignature([checkId, ...signatureParts])`
+ * and the recurrence key as `checkId`; it caps `severity` at the probe's risk and
+ * `confidence` below the filing threshold. Send the core result as-is: its
+ * `signatureParts` are what count.
+ */
+export interface ScoutHostedProbeResult {
+  candidateId: string;
+  result: {
+    checkId: string;
+    verdict: 'pass' | 'fail' | 'inconclusive' | 'unsupported';
+    severity?: 'critical' | 'high' | 'medium' | 'low' | null;
+    confidence?: number | null;
+    observed?: string | null;
+    evidenceRefs?: Array<{ kind: string; ref: string }>;
+    reason?: string | null;
+    evidenceShortfall?: Array<{ key: string; need: 'complete' | 'partial'; have: 'complete' | 'partial' | 'absent' }>;
+    /** Executor dedupe parts (at most 20 strings, each clipped to 120 chars). Absent: none. */
+    signatureParts?: string[];
+    /** @deprecated Ignored: the server derives the signature from `checkId` and `signatureParts`. */
+    signature?: string;
+    /** @deprecated Ignored: the recurrence key is the check id. */
+    recurrenceKey?: string;
+    subject?: { kind: string; ref: string };
+    provenance?: { executor?: string; ranAt?: string };
+  };
+  reproducibility?: 'deterministic' | 'intermittent' | 'unknown';
+}
+
+/** POST /api/quality-scout/runs/[id]/probes */
+export interface ScoutProbeResultsRequest {
+  leaseId: string;
+  results: ScoutHostedProbeResult[];
+}
+
+export interface ScoutProbeResultsResponse {
+  accepted: string[];
+  /** Runner probes of this run still waiting for a result. */
+  remaining: number;
+  /** True when this call delivered the last result and the server finalized the run. */
+  finalized: boolean;
+  /** The finalized run's status (`completed`, or `failed` if finalize itself failed). */
+  runStatus?: 'completed' | 'failed';
+}
+
+/** POST /api/quality-scout/runs/[id]/release: the checkout cannot serve the run's SHA. */
+export interface ScoutRunReleaseRequest {
+  leaseId: string;
+  reason: string;
+}
+
+export interface ScoutRunReleaseResponse {
+  released: true;
+}
+
 export interface WorkspaceReadinessItem {
   id: WorkspaceReadinessItemId;
   label: string;
@@ -3525,66 +4154,69 @@ export interface WorkspaceReadinessReport {
   truncated: boolean;
 }
 
-// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
-// One row per stable systemic-failure pattern (`failure_incidents`), written by
-// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
-// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
-// events stay where they already live (workers / worker_terminal_records /
-// gate_events); an incident only carries bounded refs back to them.
-
-/** Ordered: low < medium < high < critical. */
-export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
-
-export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
-
-/** The deterministic rule that raised an incident. Renaming one forks its history. */
-export type FailureIncidentRule =
-  | 'retry_fork'
-  | 'lineage_multi_pr'
-  | 'repeated_failure'
-  | 'stranded_gate'
-  | 'path_overlap_stall'
-  | 'provider_attribution_mismatch'
-  | 'failure_rate_spike'
-  | 'output_unmet_boundary';
-
-/** A pointer at an existing row — never a copy of it. */
-export interface FailureIncidentEvidenceRef {
-  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
-  /** Row id, or the PR number as a string for `kind: 'pr'`. */
-  id: string;
-  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
-  at: string;
-  note?: string;
+/** One benchmark set's scores in a prompt eval run. Never carries prompt text. */
+export interface PromptEvalResultSummary {
+  benchmarkSet: string;
+  promptId: string;
+  promptSource: 'private' | 'public default';
+  /** Row version; null for a public default. */
+  promptRowVersion: number | null;
+  /** First 12 hex of the sha256 of the text scored. */
+  promptHash: string;
+  promptVersion: string;
+  /**
+   * The model that scored it, or for `no_eval_set` the model that serves it in
+   * production (nothing was called). Null for a dry run.
+   */
+  model: string | null;
+  /** `no_eval_set`: no benchmark set or no labelled cases; every score is null. `no_cases` is the older name. */
+  status: 'scored' | 'dry_run' | 'no_eval_set' | 'no_cases';
+  cases: number;
+  accuracy: number | null;
+  baselineAccuracy: number | null;
+  coverageAt90: number | null;
+  accuracyAt90: number | null;
+  errors: number;
+  notRun: number;
+  costUsd: number | null;
 }
 
-/** Bounded (newest kept) sets of what the incident touched. */
-export interface FailureIncidentAffectedRefs {
-  taskIds: string[];
-  workerIds: string[];
-  prNumbers: number[];
+/** One run in `GET /api/admin/prompt-evals`. */
+export interface PromptEvalRunSummary {
+  id: string;
+  teamId: string | null;
+  /** `cron`: a run from the retired weekly schedule. */
+  trigger: 'push' | 'cron' | 'manual';
+  status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
+  promptsRef: string | null;
+  evalModel: string | null;
+  /** The model the team's live decisions use. */
+  prodModel: string | null;
+  modelMismatch: boolean;
+  /** Set only when a per-run override scored on another model than production: the scores do not predict production behaviour. */
+  modelMismatchNote?: string;
+  dryRun: boolean;
+  loadedPrompts: number | null;
+  costUsd: number | null;
+  problems: string[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  results: PromptEvalResultSummary[];
 }
 
-export interface FailureIncident {
-  id: string;
-  workspaceId: string | null;
-  signature: string;
-  detectorVersion: string;
-  rule: FailureIncidentRule;
-  reasonCode: string;
-  title: string;
-  severity: FailureIncidentSeverity;
-  status: FailureIncidentStatus;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  occurrenceCount: number;
-  recurrenceCount: number;
-  affectedRefs: FailureIncidentAffectedRefs;
-  evidenceRefs: FailureIncidentEvidenceRef[];
-  impact: Record<string, number>;
-  lastAlertedAt: string | null;
-  lastAlertSeverity: FailureIncidentSeverity | null;
-  linkedFixTaskId: string | null;
-  acknowledgedAt: string | null;
-  resolvedAt: string | null;
+/**
+ * A file the workspace regenerates rather than merges (`gitConfig.derivedFiles`).
+ *
+ * Runners register a merge driver for `glob` in their own clone (never the
+ * repo): on a conflict it takes one side whole, then `regenerate` runs from the
+ * repo root once the merge has no other conflicts. Lockfiles, generated indexes.
+ * Never a migration chain: renumbering reorders schema changes.
+ */
+export interface DerivedFileRule {
+  /** A gitattributes pattern, e.g. `bun.lock` or `docs/specs/INDEX.md`. */
+  glob: string;
+  /** Shell command run from the repo root, e.g. `bun install`. */
+  regenerate: string;
+  /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
+  strategy?: 'ours' | 'theirs';
 }

@@ -16,6 +16,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  accounts: { id: 'id' },
   specDiscrepancies: {
     workspaceId: 'workspace_id',
     direction: 'direction',
@@ -112,5 +113,28 @@ describe('GET /api/discrepancies', () => {
     selectRows = [];
     const res = await GET(req('?workspaceId=ws-1'));
     expect(res.status).toBe(200);
+  });
+});
+
+// A per-task token lists discrepancies only in its own task's workspace.
+describe('GET /api/discrepancies — per-task token', () => {
+  beforeEach(() => {
+    reset();
+    currentUser = null;
+    apiAccountRow = { id: 'acct-1', level: 'worker', scopes: null, workspaceIds: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  });
+
+  it('lists its own workspace', async () => {
+    selectRows = [{ id: 'd1', specPath: 'docs/x.md', assertionId: 'a1', direction: 'code_ahead', status: 'open' }];
+    const res = await GET(req('?workspaceId=ws-1'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).discrepancies).toEqual(selectRows);
+  });
+
+  it('404s another workspace the minting account can reach', async () => {
+    selectRows = [{ id: 'd2' }];
+    const res = await GET(req('?workspaceId=ws-2'));
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain('d2');
   });
 });

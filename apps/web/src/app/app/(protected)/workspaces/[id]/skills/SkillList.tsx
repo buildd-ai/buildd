@@ -86,8 +86,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
   if (skills.length === 0) {
     return (
       <div className="text-center py-12 text-text-muted">
-        <p className="text-lg mb-2">No roles</p>
-        <p className="text-sm mb-3">A role sets an agent&apos;s model, tools, and who it can delegate to.</p>
+        <p className="text-lg mb-3">No roles</p>
         <a
           href="https://docs.buildd.dev/docs/features/skills"
           target="_blank"

@@ -106,7 +106,7 @@ export async function attachSkillBundles(
 /**
  * Resolve a role row by slug: workspace override > team default (§C.2
  * precedence), falling back to the legacy account-level row when no team
- * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle/CBM)
+ * scope resolves anything. Shared by `attachRoleConfig` (persona/bundle)
  * and `attachRoleEnvSecrets` (role-env-injection.ts) so the precedence rule
  * lives in exactly one place — a second, divergent copy is how the two ends
  * up disagreeing about which role a task actually runs under.
@@ -182,8 +182,6 @@ function attachClaudeAiArtifacts(
  * - `roleConfig` — the packaged bundle (skills, .mcp.json, env mapping) — needs
  *   a presigned download URL, so it is attached only when storage is configured
  *   AND the row carries both a key and a hash.
- *
- * The CBM opt-out is likewise a property of the row, not the bundle.
  */
 export async function attachRoleConfig(
   claimedWorkers: ClaimTasksResponse['workers'],
@@ -240,14 +238,6 @@ export async function attachRoleConfig(
         background: role.background ?? false,
         maxTurns: role.maxTurns ?? null,
       };
-    }
-
-    // CBM escape hatch: a role opts out of CBM enforcement by setting
-    // mcpServers['codebase-memory'] = false in its skill record (DB).
-    // Checked independently of configStorageKey so opt-out works without R2.
-    const roleMcpServers = role?.mcpServers as Record<string, unknown> | null | undefined;
-    if (roleMcpServers?.['codebase-memory'] === false) {
-      (cw as any).cbmDisabled = true;
     }
   }
 }

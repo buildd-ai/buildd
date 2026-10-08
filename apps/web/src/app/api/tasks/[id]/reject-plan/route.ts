@@ -4,7 +4,7 @@ import { tasks, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import type { SpecDocFixContext } from '@/lib/approve-plan';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsMissionTask } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isUuid } from '@/lib/uuid';
@@ -23,7 +23,9 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token decides a plan only as an orchestration run (admin
+  // level), and only a planning task on its own task's mission, never its own.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -36,6 +38,14 @@ export async function POST(
     });
 
     if (!task) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
+    // taskScopeAllowsMissionTask admits a sibling task for an orchestration
+    // (admin) token only; its own task is refused here.
+    if (apiAccount?.taskScope && (
+      task.id === apiAccount.taskScope.taskId
+      || !(await taskScopeAllowsMissionTask(apiAccount, task))
+    )) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 

@@ -71,15 +71,12 @@ describe('drizzle migration journal', () => {
   });
 
   it('has no orphan .sql file that the journal never references', () => {
-    // Grandfathered: a custom-migration stub whose every line is commented out,
-    // so it is inert. Left on disk rather than deleted because removing history
-    // buys nothing; named here so a NEW orphan still fails this test.
-    const KNOWN_INERT_ORPHANS = new Set(['0024_numerous_firebird.sql']);
-
+    // The one grandfathered orphan (an inert, fully commented-out stub) went
+    // away with the migration squash, so there are no exceptions left.
     const referenced = new Set(journal().entries.map(e => `${e.tag}.sql`));
     const orphans = fs.readdirSync(DRIZZLE_DIR)
       .filter(f => f.endsWith('.sql'))
-      .filter(f => !referenced.has(f) && !KNOWN_INERT_ORPHANS.has(f));
+      .filter(f => !referenced.has(f));
 
     // An orphan is the other half of the same mistake: DDL that exists but is
     // never applied, so the schema silently diverges from the migration history.

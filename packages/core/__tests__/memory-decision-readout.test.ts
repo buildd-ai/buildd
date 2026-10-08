@@ -27,6 +27,32 @@ describe('computeMemoryDecisionReadout', () => {
     expect(s.coverage['0.8']).toBeCloseTo(2 / 3);
   });
 
+  it('live relevance reads apart from the shadow, and grades its demotions on the later use label', () => {
+    const rows = [
+      row({ decision: 'relevance', taskId: 't1', memoryId: 'a', verdict: 'true', confidence: 0.9, rule: 'shown' }),
+      row({ decision: 'relevance', mode: 'live', taskId: 't2', memoryId: 'a', verdict: 'false', confidence: 0.9, rule: 'shown', applied: true }),
+      row({ decision: 'relevance', mode: 'live', taskId: 't2', memoryId: 'b', verdict: 'false', confidence: 0.95, rule: 'shown', applied: true }),
+      row({ decision: 'relevance', mode: 'live', taskId: 't2', memoryId: 'c', verdict: 'true', confidence: 0.9, rule: 'shown' }),
+      row({ decision: 'relevance', mode: 'live', taskId: 't2', memoryId: 'd', verdict: 'false', confidence: 0.99, rule: 'mandatory' }),
+    ];
+    const outcomes = [
+      { taskId: 't1', memoryId: 'a', outcome: 'used' as const },
+      { taskId: 't2', memoryId: 'a', outcome: 'used' as const },
+      { taskId: 't2', memoryId: 'b', outcome: 'ignored' as const },
+      { taskId: 't2', memoryId: 'c', outcome: 'used' as const },
+    ];
+    const out = computeMemoryDecisionReadout(rows, outcomes);
+    expect(out.map(s => s.decision)).toEqual(['relevance', 'relevance:live']);
+    const shadow = out[0];
+    expect(shadow.rows).toBe(1);
+    const live = out[1];
+    expect(live).toMatchObject({ rows: 4, applied: 2 });
+    // A demoted hit the agent then used is a demotion Jev got wrong.
+    expect(live.ledger!.demotedUsed).toEqual({ used: 1, graded: 2, rate: 0.5 });
+    expect(live.ledger!.keptUsed).toEqual({ used: 1, graded: 1, rate: 1 });
+    expect(formatMemoryDecisionReadout(out)).toContain('## relevance:live');
+  });
+
   it('keep and type split the memory use rate by verdict', () => {
     const rows = [
       row({ decision: 'keep', memoryId: 'a', verdict: 'false', confidence: 0.9, rule: 'keep', applied: true }),

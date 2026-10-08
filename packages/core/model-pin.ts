@@ -62,3 +62,20 @@ export function isAcceptableModelPin(value: unknown): value is string {
   if (MODEL_SHORTHANDS.has(v)) return true;
   return /^(anthropic\/)?claude-[a-z0-9][a-z0-9.\-]*(\[1m\])?$/i.test(v);
 }
+
+/**
+ * The tier a shorthand pin names (`opus` → premium, `sonnet` → standard,
+ * `haiku` → budget), or null for an exact model id.
+ *
+ * A shorthand is a tier request, not a pin of a model: it resolves through the
+ * model policy like any tier, so the policy (and the team's registry) decides
+ * which `opus` that is. Only an exact id is the escape hatch that bypasses
+ * tier resolution.
+ */
+export function shorthandPinTier(pin: string | null | undefined): Tier | null {
+  const v = pin?.trim();
+  if (v === 'opus') return 'premium';
+  if (v === 'sonnet') return 'standard';
+  if (v === 'haiku') return 'budget';
+  return null;
+}

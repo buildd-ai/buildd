@@ -21,6 +21,7 @@
  * Operations (paths on SNAPSHOT_HOST; anything else is 404):
  *
  *   GET  /warm                     latest committed manifest, or 404
+ *   GET  /warm/limits              {maxBytes}: the cap this run's uploads are held to
  *   GET  /warm/<gen>/repo|cache    one part of a generation
  *   POST /warm/begin               take the refresh lock; 201 {generation} or 409
  *   PUT  /warm/<gen>/repo|cache    upload a part (lock holder only, content-length required)
@@ -115,7 +116,20 @@ export interface SnapshotScope {
   workspaceId: string;
   /** The worker the agent is running; park bundles need it. */
   workerId?: string;
+  /**
+   * The workspace's warm snapshot cap (gitConfig.warmSnapshot.maxBytes), as
+   * buildd resolved and bounded it with the GitHub grant. Absent: the
+   * Worker's own default (WARM_MAX_BUNDLE_BYTES) applies.
+   */
+  maxBytes?: number;
 }
+
+/**
+ * No warm part is ever accepted past this, whatever the scope says. Mirrors
+ * WARM_SNAPSHOT_MAX_BYTES_CEILING (apps/web/src/lib/warm-snapshot-cap.ts)
+ * and WARM_MAX_UPLOAD_BYTES (apps/runner/src/warm-repo.ts).
+ */
+export const WARM_HARD_MAX_BYTES = 8 * 1024 ** 3;
 
 export type WarmPart = 'repo' | 'cache';
 
@@ -156,6 +170,7 @@ export function formatGeneration(n: number): string {
 
 export type SnapshotRoute =
   | { op: 'warm_latest' }
+  | { op: 'warm_limits' }
   | { op: 'warm_begin' }
   | { op: 'warm_get'; generation: string; part: WarmPart }
   | { op: 'warm_put'; generation: string; part: WarmPart }
@@ -179,6 +194,7 @@ export function parseSnapshotRoute(method: string, pathname: string): SnapshotRo
   }
   if (pathname === '/warm') return m === 'GET' ? { op: 'warm_latest' } : null;
   if (pathname === '/warm/begin') return m === 'POST' ? { op: 'warm_begin' } : null;
+  if (pathname === '/warm/limits') return m === 'GET' ? { op: 'warm_limits' } : null;
   const part = /^\/warm\/(\d{16})\/(repo|cache)$/.exec(pathname);
   if (part) {
     const generation = part[1]!;
@@ -437,7 +453,10 @@ export async function handleSnapshotRequest(
   if (!scope || !SCOPE_ID_RE.test(scope.workspaceId)) return json({ error: 'unavailable' }, 503);
   const ws = scope.workspaceId;
   if (isPark && (!scope.workerId || !SCOPE_ID_RE.test(scope.workerId))) return json({ error: 'unavailable' }, 503);
-  const maxPart = opts.maxPartBytes ?? MAX_SNAPSHOT_BYTES;
+  const scoped = scope.maxBytes;
+  const maxPart = typeof scoped === 'number' && Number.isSafeInteger(scoped) && scoped > 0
+    ? Math.min(scoped, WARM_HARD_MAX_BYTES)
+    : opts.maxPartBytes ?? MAX_SNAPSHOT_BYTES;
 
   switch (route.op) {
     case 'park_put': {
@@ -458,6 +477,9 @@ export async function handleSnapshotRequest(
       await store.deletePark(ws, scope.workerId!);
       return json({ ok: true });
     }
+    case 'warm_limits':
+      // What the runner measures against before it bundles or tars anything.
+      return json({ maxBytes: maxPart });
     case 'warm_latest': {
       const m = await store.latest(ws);
       return m ? json(m) : json({ error: 'no_snapshot' }, 404);

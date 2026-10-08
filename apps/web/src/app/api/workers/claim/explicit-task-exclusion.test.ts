@@ -59,6 +59,7 @@ import {
   diagnoseExplicitTaskExclusion,
   evaluateForcedGates,
   explicitTaskScope,
+  explicitExclusionGateEvent,
   stampLastClaimAttempt,
   type ExplicitTaskProbe,
 } from './explicit-task-exclusion';
@@ -365,8 +366,77 @@ describe('stampLastClaimAttempt', () => {
     expect(updateCalls).toHaveLength(0);
   });
 
+  it('stamps the exact exclusion beside the coarse reason', async () => {
+    await stampLastClaimAttempt({
+      taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', now: NOW,
+      exclusion: { code: 'workspace_cap', detail: 'cap' },
+    });
+    const q = render(updateCalls[0].set.context);
+    const stamped = JSON.parse(q.params.find((p): p is string => typeof p === 'string' && p.includes('lastClaimAttempt'))!);
+    expect(stamped).toMatchObject({
+      lastClaimAttemptReason: 'no_pending_tasks',
+      lastClaimAttemptExclusion: { code: 'workspace_cap', detail: 'cap' },
+    });
+  });
+
   it('never throws, even when the write fails', async () => {
     const failing = stampLastClaimAttempt({ taskId: 'task-1', workspaceIds: ['ws-a'], reason: 'x', now: NOW, deferrals: { mission_paced: 1 } });
     await expect(failing).resolves.toBeUndefined();
   });
+});
+
+// A runner's wake claim names its task. When a WHERE gate drops it, the runner
+// gets `no_pending_tasks` and — before this — nothing was written to the gate
+// ledger, so the task's gate history was empty and `explain` could only read
+// the pending reviewer as a self-resolving wait (PR #3678: refused by the
+// workspace cap on every wake for hours, with an idle runner).
+describe('explicitExclusionGateEvent', () => {
+  it('records a gate refusal as a claim_loop_deferral on the task, reason = the exclusion code', () => {
+    const event = explicitExclusionGateEvent({
+      taskId: 'task-1',
+      exclusion: { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' },
+      workspaceId: 'ws-a',
+    });
+    expect(event).toMatchObject({
+      gate: 'claim_loop_deferral',
+      outcome: 'deferred',
+      reason: 'workspace_cap',
+      taskId: 'task-1',
+      workspaceId: 'ws-a',
+      detail: { explicitClaim: true, detail: 'The workspace is at its concurrent-task cap.' },
+    });
+  });
+
+  it('records nothing when the task was not claimable at all (gone, done, running, changed)', () => {
+    for (const code of ['not_found', 'not_pending', 'already_claimed', 'active_worker', 'state_changed'] as const) {
+      expect(explicitExclusionGateEvent({ taskId: 'task-1', exclusion: { code, detail: '' }, workspaceId: null })).toBeNull();
+    }
+  });
+});
+
+
+describe('browser role claim diagnostics', () => {
+  it('names the missing browser capability for a refused visual auditor', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'visual-auditor', gates: { role: false } }), NOW);
+    expect(result.code).toBe('role_mismatch');
+    expect(result.detail).toContain('browser capability');
+    expect(result.detail).toContain('provider');
+  });
+  it('retains the skill explanation for non-browser roles', () => {
+    const result = classifyExplicitTaskExclusion(probe({ roleSlug: 'builder', gates: { role: false } }), NOW);
+    expect(result.detail).toContain('skill match');
+    expect(result.detail).not.toContain('browser capability');
+  });
+});
+
+
+it('records a failed browser probe within the same scoped write with a minute throttle', async () => {
+  updateCalls = [];
+  selectThrows = false;
+  await stampLastClaimAttempt({ taskId: 'task-a', workspaceIds: ['ws-a'], reason: 'no_pending_tasks', exclusion: { code: 'role_mismatch', detail: 'missing browser capability' }, browserProvider: { provider: 'cloudflare', ok: false, checkedAt: NOW.toISOString(), code: 'provider_missing' }, now: NOW });
+  const context = render(updateCalls[0].set.context);
+  expect(context.sql).toContain('lastBrowserRefusal');
+  expect(context.sql).toContain('CASE WHEN');
+  expect(context.params.join(' ')).toContain('provider_missing');
+  expect(render(updateCalls[0].where!).params).toEqual(['task-a', 'ws-a']);
 });

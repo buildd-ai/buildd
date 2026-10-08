@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { missions, decisionRecords } from '@buildd/core/db/schema';
+import { and, eq, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
-import { emitDecisionLabel, strandLabelLine } from '@/lib/strand-choice-decision';
+import { emitDecisionLabel, strandLabelLine, STRAND_CHOICE_CAPABILITY } from '@/lib/strand-choice-decision';
+
+import { labelDecisionOutcome } from '@buildd/core/decision-outcomes';
 
 const LABELS = new Set(['continue-on-runner', 'wait-for-local']);
 const ORDERS = new Set(['runner-first', 'local-first']);
@@ -65,6 +67,36 @@ export async function POST(
       order: order as 'runner-first' | 'local-first',
       quietMs,
     }));
+
+    // Record the human choice as an outcome on the most recent decision record for this mission
+    try {
+      const mostRecentDecision = await db.query.decisionRecords.findFirst({
+        where: and(
+          eq(decisionRecords.missionId, id),
+          eq(decisionRecords.teamId, mission.teamId),
+          eq(decisionRecords.capability, STRAND_CHOICE_CAPABILITY),
+        ),
+        orderBy: desc(decisionRecords.createdAt),
+      });
+
+      if (mostRecentDecision?.missionId === id && mostRecentDecision.teamId === mission.teamId
+        && mostRecentDecision.capability === STRAND_CHOICE_CAPABILITY) {
+        // Observational: order can bias a tap, so this is never model ground truth.
+        const outcome = await labelDecisionOutcome({
+          decisionRecordId: mostRecentDecision.id,
+          teamId: mostRecentDecision.teamId,
+          capability: STRAND_CHOICE_CAPABILITY,
+          source: 'human',
+          label: 'human_choice',
+          metadata: { button: label, order },
+          observedAt: new Date(),
+        });
+        if (!outcome.ok) console.warn('[decision-label] outcome not recorded:', outcome.error);
+      }
+    } catch (error) {
+      console.warn('[decision-label] outcome recording failed (non-fatal):', error);
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error('Record strand choice error:', error);

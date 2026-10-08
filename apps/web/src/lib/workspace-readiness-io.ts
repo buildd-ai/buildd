@@ -13,6 +13,7 @@ import { eq } from 'drizzle-orm';
 import { computeReadiness } from '@buildd/core/workspace-readiness';
 import type { DeploymentSignal, ReadinessInput, ReadinessReport } from '@buildd/core/workspace-readiness';
 import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect';
+import { discoverScoutCapabilities, type ScoutCapabilityProfile } from '@buildd/core/scout-capabilities';
 import type { WorkspaceReadinessReport } from '@buildd/shared';
 import { githubApi } from '@/lib/github';
 
@@ -183,4 +184,13 @@ export async function computeWorkspaceReadiness(workspace: ReadinessWorkspace): 
   const report: ReadinessReport = computeReadiness(await gatherReadinessInput(workspace));
   // Compile-time check that core's report and the shared wire type stay one shape.
   return report satisfies WorkspaceReadinessReport;
+}
+
+/**
+ * Quality Scout's view of the same report: recomputed exactly as above, then
+ * projected with the workspace's `gitConfig.qualityScout` declarations.
+ */
+export async function computeWorkspaceScoutCapabilities(workspace: ReadinessWorkspace): Promise<ScoutCapabilityProfile> {
+  const readiness = computeReadiness(await gatherReadinessInput(workspace));
+  return discoverScoutCapabilities({ readiness, extension: workspace.gitConfig?.qualityScout });
 }

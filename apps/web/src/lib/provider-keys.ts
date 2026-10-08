@@ -15,7 +15,6 @@ import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4, verifyProviderKey } from '@buildd/core/inference-keys';
 import { isInferenceKeyPolicy, policyAllowsOwnKey, type InferenceKeyPolicy } from '@buildd/core/inference-key-policy';
 import {
-  CHAT_PROVIDERS,
   type ChatProvider,
   type ListProviderKeysResponse,
   type MaskedProviderKey,
@@ -23,14 +22,9 @@ import {
   type ProviderKeySummary,
 } from '@buildd/shared';
 
-type Source = MaskedProviderKey['source'];
+import { PERSONAL_KEY_PROVIDERS, PROVIDER_KEY_CAPABILITIES, providerKeyCapability } from '@builddai/ai-kit/models/provider-keys';
 
-/** Purposes that already serve a provider's calls, canonical first. */
-const SOURCES: Record<ChatProvider, Source[]> = {
-  anthropic: ['inference_key', 'anthropic_api_key'],
-  openai: ['inference_key'],
-  openrouter: ['inference_key', 'decision_key'],
-};
+type Source = MaskedProviderKey['source'];
 
 interface KeyRow {
   id: string;
@@ -46,10 +40,12 @@ interface KeyRow {
 }
 
 function rowProvider(r: KeyRow): ChatProvider | null {
-  if (r.purpose === 'anthropic_api_key') return 'anthropic';
-  if (r.purpose === 'decision_key') return 'openrouter';
-  const label = (r.label ?? '').toLowerCase();
-  return (CHAT_PROVIDERS as readonly string[]).includes(label) ? (label as ChatProvider) : null;
+  const provider = PERSONAL_KEY_PROVIDERS.find(p =>
+    r.purpose === 'inference_key'
+      ? (r.label ?? '').toLowerCase() === p
+      : providerKeyCapability(p)!.purposes.includes(r.purpose),
+  );
+  return provider ?? null;
 }
 
 function toMasked(r: KeyRow, provider: ChatProvider, scope: 'user' | 'team'): MaskedProviderKey {
@@ -72,7 +68,7 @@ async function loadRows(teamId: string): Promise<KeyRow[]> {
   return (await db.query.secrets.findMany({
     where: and(
       eq(secrets.teamId, teamId),
-      inArray(secrets.purpose, ['inference_key', 'anthropic_api_key', 'decision_key']),
+      inArray(secrets.purpose, [...new Set(PERSONAL_KEY_PROVIDERS.flatMap(p => providerKeyCapability(p)!.purposes))] as Source[]),
       isNull(secrets.workspaceId),
     ),
     columns: {
@@ -84,7 +80,7 @@ async function loadRows(teamId: string): Promise<KeyRow[]> {
 
 /** Team card key: the row the resolver would pick at team scope for this provider. */
 function pickTeamRow(rows: KeyRow[], provider: ChatProvider): KeyRow | null {
-  const order = SOURCES[provider];
+  const order = providerKeyCapability(provider)!.purposes;
   return rows
     .filter(r => r.userId == null && rowProvider(r) === provider && order.includes(r.purpose as Source))
     .sort((a, b) =>
@@ -117,7 +113,7 @@ export async function listProviderKeys(
   canManageTeamKeys: boolean,
 ): Promise<ListProviderKeysResponse> {
   const [rows, settings] = await Promise.all([loadRows(teamId), loadTeamKeySettings(teamId)]);
-  const providers: ProviderKeySummary[] = CHAT_PROVIDERS.map(provider => {
+  const providers: ProviderKeySummary[] = PERSONAL_KEY_PROVIDERS.map(provider => {
     const team = pickTeamRow(rows, provider);
     const mine = rows.find(r => r.userId === userId && r.purpose === 'inference_key' && rowProvider(r) === provider);
     const others = new Set(
@@ -125,12 +121,13 @@ export async function listProviderKeys(
     );
     return {
       provider,
+      capability: providerKeyCapability(provider)!,
       team: team ? toMasked(team, provider, 'team') : null,
       mine: mine ? toMasked(mine, provider, 'user') : null,
       membersWithOwnKey: canManageTeamKeys ? others.size : null,
     };
   });
-  return { teamId, canManageTeamKeys, providers, ...settings };
+  return { teamId, canManageTeamKeys, providers, capabilities: PROVIDER_KEY_CAPABILITIES, ...settings };
 }
 
 /** Trim, and strip one pair of wrapping quotes (pasted keys often carry them). */
@@ -144,8 +141,9 @@ export function sanitizeProviderKey(raw: string): string {
 
 /** A reason this value can't be a key for this provider, or null. */
 export function providerKeyProblem(provider: ChatProvider, value: string): string | null {
-  if (value.length < 20 || /\s/.test(value)) return 'That doesn\'t look like an API key.';
-  if (provider === 'anthropic' && value.startsWith('sk-ant-oat')) {
+  const validation = providerKeyCapability(provider)!.validation;
+  if (value.length < validation.minLength || (!validation.allowWhitespace && /\s/.test(value))) return 'That doesn\'t look like an API key.';
+  if (providerKeyCapability(provider)?.rejectedPrefixes.some(prefix => value.startsWith(prefix))) {
     return 'That is a Claude subscription token. Chat needs an Anthropic API key (sk-ant-api…).';
   }
   return null;

@@ -13,13 +13,14 @@
  * Read-only. Returns no secret: `auth.*.mapped` only says whether
  * gitConfig.envMapping names the env var.
  *
- * Auth: the API key of the account that owns the worker.
+ * Auth: the API key of the account that owns the worker, or a per-task token
+ * for that worker's own task.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isUuid } from '@/lib/uuid';
 import { githubApi } from '@/lib/github';
 import { resolvePageSource } from '@/lib/visual-qa-page-source';
@@ -31,7 +32,7 @@ const notFound = () => NextResponse.json({ error: 'Worker not found' }, { status
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey, req);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await params;
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     where: eq(workers.id, id),
     columns: { id: true, accountId: true, workspaceId: true, taskId: true },
   });
-  if (!worker || worker.accountId !== account.id) return notFound();
+  if (!worker || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) return notFound();
 
   // The capture ref follows the mission's PR base (docs/design/visual-qa-auditor.md,
   // "Page source"), so the worker's mission's integration fields are needed.

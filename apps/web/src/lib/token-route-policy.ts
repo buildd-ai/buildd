@@ -8,11 +8,15 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/tasks\/[^/]+\/(approve-plan|reject-plan)$/.test(path)) return 'tasks:admin';
   if (/^\/api\/workers\/[^/]+\/instruct$/.test(path)) return 'workers:admin';
   if (/^\/api\/workspaces\/[^/]+\/memory(?:\/|$)/.test(path) && method === 'DELETE') return 'knowledge:admin';
-  if (/^\/api\/(stats|health|cbm)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
+  if (/^\/api\/(stats|health)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
   if (/^\/api\/releases(\/|$)/.test(path)) return 'releases';
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
   if (/^\/api\/runner\/credential-(lease|refresh)$/.test(path)) return 'secrets';
   if (/^\/api\/runner(\/|$)/.test(path) || /\/codex-credential\//.test(path)) return 'workers:write';
+  // Reading a Scout run's command logs is the read_evidence capability, not the runner's.
+  if (read && /^\/api\/quality-scout\/runs\/[^/]+\/evidence$/.test(path)) return 'analytics:read';
+  // A runner hosting Quality Scout probes: the same capability as any runner job.
+  if (/^\/api\/quality-scout\/runs(\/|$)/.test(path)) return 'workers:write';
   if (/^\/api\/knowledge(\/|$)/.test(path)) return read ? 'tasks:read' : 'knowledge:write';
   if (/^\/api\/workspaces\/[^/]+\/(skills|backends)(\/|$)/.test(path) || path === '/api/roles') return read ? 'tasks:read' : 'skills:admin';
   if (/^\/api\/workspaces\/[^/]+\/schedules(\/|$)/.test(path)) return read ? 'tasks:read' : 'schedules:write';
@@ -58,16 +62,19 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (queryWorkspaces?.some(id => !token.workspaceIds!.includes(id))) return false;
     // Only accept filters the endpoint actually applies. A decorative query
     // parameter must never turn a team-wide response into scoped authorization.
-    if (/^\/api\/(stats|health|cbm|decisions)(\/|$)/.test(url.pathname)) {
+    if (/^\/api\/(stats|health|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
-        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'],
+        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'],
         '/api/decisions': ['workspaceId', 'workspace'], '/api/decisions/readout': ['workspaceId', 'workspace'],
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;
     }
-    const unfilteredCollections = ['/api/workers/active', '/api/artifacts', '/api/workspaces', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
+    const unfilteredCollections = ['/api/workers/active', '/api/artifacts', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
     if (unfilteredCollections.includes(url.pathname)) return false;
+    // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
+    // so name-to-id resolution works; creating one would escape the restriction.
+    if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
     const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }
@@ -103,13 +110,19 @@ export function adminCapabilityForRoute(pathname: string, method: string): Token
  * exact check. A scoped token must reach the route and hold an explicit admin
  * capability: `capability` when given, else the route's admin-tier scope. The
  * stored level of a scoped token is never consulted.
+ *
+ * Never true for a per-task token (`taskScope` set), whatever its level: an
+ * orchestration task's admin-level token is confined to its own task's
+ * mission, which no route's generic admin gate checks. A route that lets one
+ * through checks `isOrchestrationTaskToken` and that confinement itself.
  */
 export function hasTokenRouteAdminAccess(
-  token: (ScopedToken & { level: string }) | null | undefined,
+  token: (ScopedToken & { level: string; taskScope?: unknown }) | null | undefined,
   request: RouteRequest,
   capability?: TokenScope,
 ): boolean {
   if (!token) return false;
+  if (token.taskScope) return false;
   if (token.scopes == null) return token.level === 'admin';
   if (!canAccessTokenRoute(token, request)) return false;
   const required = capability ?? adminCapabilityForRoute(new URL(request.url).pathname, request.method);

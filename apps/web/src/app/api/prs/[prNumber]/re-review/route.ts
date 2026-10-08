@@ -31,6 +31,8 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { resolveReReviewPlan } from '@/lib/pr-re-review';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { requestReview as requestKernelReview } from '@/lib/workflow/seam';
+import { workspaceRepo } from '@/lib/workflow/github-facts';
 
 export async function POST(
   req: NextRequest,
@@ -81,6 +83,34 @@ export async function POST(
     return NextResponse.json({ error: 'No task found for this PR' }, { status: 404 });
   }
   const originalTask = worker.task;
+
+  // A PR the workflow kernel owns: the request is T5 (ReviewRequested) on the
+  // live head, never on the runner-reported lastCommitSha. A person asking from
+  // the dashboard may force a re-review of a head that already has a verdict.
+  const kernelRepo = await workspaceRepo(worker.workspaceId).catch(() => null);
+  if (kernelRepo) {
+    const kernel = await requestKernelReview({
+      workspaceId: worker.workspaceId, repoFullName: kernelRepo.repoFullName, prNumber,
+      installationId: kernelRepo.installationId, forced: true, actor: `human:${user.id}`,
+    }).catch((err) => {
+      console.error(`[re-review] workflow kernel review request failed for PR #${prNumber}:`, err);
+      return null;
+    });
+    if (kernel?.handled) {
+      const r = kernel.result;
+      if (r.result === 'applied') {
+        await supersedeAncestorEscalations(db, originalTask.id, prNumber);
+        return NextResponse.json({ ok: true, dispatched: true, kernel: true });
+      }
+      if (r.result === 'rejected' && r.reason === 'review_in_flight') {
+        return NextResponse.json({ ok: true, alreadyRequested: true, kernel: true });
+      }
+      return NextResponse.json(
+        { error: `Review not requested: ${r.reason}`, code: r.reason, current: r.current, kernel: true },
+        { status: 409 },
+      );
+    }
+  }
 
   const headSha = worker.lastCommitSha;
   if (!headSha) {
@@ -210,7 +240,7 @@ export async function POST(
       repoFullName,
       prNumber,
       entry: {
-        kind: 'reviewing',
+        kind: 'review_queued',
         detail: plan.kind === 'delta'
           ? `manual · since \`${plan.priorVerdict.headSha.slice(0, 7)}\``
           : 'manual',
