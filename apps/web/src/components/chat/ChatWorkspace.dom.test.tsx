@@ -432,7 +432,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
     expect(q('[data-testid="mission-context-status"]')?.textContent).toBe('Needs you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
-    expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? input/);
+    expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? you/);
     expect(q('[data-testid="mission-context-flag"]')).not.toBeNull();
   });
 

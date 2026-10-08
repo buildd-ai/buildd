@@ -21,9 +21,19 @@ import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
 import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
 import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
+import type { ApprovedMergeRule } from '@/lib/workflow/delivery-view';
+import { approvedNeedsPerson } from '@/lib/merge-policy-approved';
+import type { EffectHandlers } from '@/lib/workflow/effects';
+import { reviewEffectHandlers } from '@/lib/workflow/review-effects';
+import { withCiRetryEffects } from '@/lib/workflow/ci-retry-effects';
+import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
+import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
+import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
+import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import { releaseSubscribers } from '@/lib/release/subscribers';
+import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
@@ -40,6 +50,7 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...reviewSubscribers,
   // pr.merged: the release record is kicked off before the ledger write.
   ...releaseSubscribers,
+  ...earlyReleaseSubscribers,
   // Before notifications: on a completion the chat post was kicked off first.
   ...chatSubscribers,
   ...notificationSubscribers,
@@ -71,6 +82,35 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The approved-merge slot (lib/workflow/delivery-view.ts): the reviews
+ * module's merge policy says whether an APPROVED delivery waits on a person
+ * (needs you) or the landing path merges it (merging).
+ */
+export const APPROVED_MERGE_RULE: ApprovedMergeRule = approvedNeedsPerson;
+
+/**
+ * The workflow kernel's effect handlers (lib/workflow/effects.ts). The kernel
+ * (core) decides and records the effect; the reviews module carries out the
+ * review-loop ones (reviewer and fix tasks, GitHub reviews, escalations), the
+ * CI family's (CI fix tasks bound to their ledger row, CI exhaustion), the
+ * conflict/migration families' (mechanical refresh and renumber first, an
+ * agent conflict fix only on a refusal, conflict exhaustion), the trunk
+ * breaker's (one trunk-fix task per incident, cancelling the per-PR CI fix
+ * tasks a trunk incident skipped), landing and
+ * post-merge work (merge call, verify, post-merge events, mission-PR
+ * finalize), and a closed PR's resolution (supersession scan, the edge's
+ * projection, mission wake). Each effect kind has exactly one handler.
+ *
+ * Built on first use, not at load: the handler modules reach back into this
+ * file through core-emit (post-merge work emits events), so composing them at
+ * load time works or throws depending on which module a process imports first.
+ */
+let workflowEffectHandlersMemo: EffectHandlers | null = null;
+export function workflowEffectHandlers(): EffectHandlers {
+  return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
+}
 
 /**
  * The question gate's recover slot (lib/question-gate-check.ts): a recoverable

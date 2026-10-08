@@ -103,10 +103,20 @@ describe('boundedObservedSample', () => {
 
   it('the advisory is tagged observation_truncated, never degraded enforcement', () => {
     fireObservationTruncated({ id: 'w1', workspaceId: 'ws-1', taskId: 'task-1' }, boundedObservedSample(null, Array(501).fill(0).map((_, i) => `p${i}`)));
-    expect(gateEvents).toHaveLength(1);
-    expect(gateEvents[0].outcome).toBe('warned');
-    expect(gateEvents[0].detail.signal).toBe('observation_truncated');
-    expect(gateEvents[0].reason).not.toMatch(/degraded/);
+    expect(repeatEvents).toHaveLength(1);
+    expect(repeatEvents[0].outcome).toBe('warned');
+    expect(repeatEvents[0].detail.signal).toBe('observation_truncated');
+    expect(repeatEvents[0].reason).not.toMatch(/degraded/);
+  });
+
+  it('collapses to one advisory per TASK: every worker (retries, resumes) coalesces onto the task key', () => {
+    const sample = boundedObservedSample(null, Array(501).fill(0).map((_, i) => `p${i}`));
+    fireObservationTruncated({ id: 'w1', workspaceId: 'ws-1', taskId: 'task-1' }, sample);
+    fireObservationTruncated({ id: 'w2', workspaceId: 'ws-1', taskId: 'task-1' }, sample);
+    expect(gateEvents).toHaveLength(0);
+    expect(repeatEvents.map(e => e.opts.key)).toEqual([{ taskId: 'task-1' }, { taskId: 'task-1' }]);
+    // Long enough to outlive any one task: one row, a count, never a row per claim.
+    expect(repeatEvents[0].opts.windowMs).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 * 1000);
   });
 });
 

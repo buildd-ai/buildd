@@ -21,6 +21,15 @@ mock.module('@/lib/visual-review-load', () => ({
   loadVisualReview: mockLoadVisualReview,
 }));
 
+// Slice F: the drawer's PR card reads a kernel-owned PR from its delivery.
+const mockGetDeliveryViewsForTasks = mock(async (_ids: string[]): Promise<Map<string, any>> => new Map());
+mock.module('@/lib/workflow/delivery-view', () => ({
+  getDeliveryViewsForTasks: mockGetDeliveryViewsForTasks,
+  getOwnerDeliveryDisplays: async () => new Map(),
+  kernelReplacedFailedTaskIds: async () => new Set(),
+  replacedFailedTaskIds: () => new Set(),
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -314,6 +323,14 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.worker?.linesAdded).toBe(120);
     expect(data.worker?.linesRemoved).toBe(8);
     expect(data.worker?.mergedAt).toBeNull();
+    // Legacy PR: no delivery, so the card reads the fact cache.
+    expect(data.worker?.prState).toBeNull();
+
+    // Slice F: the same task, kernel-owned. The card's state is the delivery's,
+    // whatever the column says.
+    mockGetDeliveryViewsForTasks.mockResolvedValueOnce(new Map([['00000000-0000-4000-8000-00000000000c', { prNumber: 1263, prState: 'conflict' }]]));
+    const kernel = await (await callGET('00000000-0000-4000-8000-00000000000c')).json();
+    expect(kernel.worker?.prState).toBe('conflict');
   });
 
   it('returns the task backend and null failover for a normal claude task', async () => {

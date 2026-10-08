@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
-import { accounts, localSessions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { accounts, localSessions, localSessionWorkers, tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { and, eq, gt, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   INTERACTIVE_WORKER_RUNNER,
   LIVE_WORKER_STATUSES,
@@ -10,6 +10,8 @@ import {
   type LocalSessionEventResult,
 } from '@buildd/shared';
 import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
+import { priceSessionUsage } from '@buildd/core/model-prices';
+import type { LocalSessionUsage } from '@buildd/shared';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -26,13 +28,15 @@ import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/int
  *     server itself marked interactive: `workers.runner = 'mcp'`, which the
  *     claim route writes only after verifying the signed MCP session marker
  *     (lib/interactive-session.ts). The hook can name a worker; it cannot make
- *     one, and it cannot make a runner's worker look interactive. One worker is
- *     bound to at most one presence, ever (unique index), and only to a
+ *     one, and it cannot make a runner's worker look interactive. A presence
+ *     may hold several (a session's subagents each claim their own task), but
+ *     one worker is bound to at most one presence, ever (primary key on
+ *     local_session_workers.worker_id), and only to a
  *     presence of the account that claimed it, or of the person that account's
  *     team belongs to (a presence token, lib/presence-token.ts): their claim
  *     may have used any of their teams' keys or OAuth. When the claim recorded
  *     who made it, only that person.
- *  3. Ending a session never completes anything. A bound worker is detached
+ *  3. Ending a session never completes anything. Each bound worker is detached
  *     through the same exactly-once primitive "Release slot" uses
  *     (lib/interactive-detach.ts): a terminal task keeps its status and PR, an
  *     open task goes back to pending.
@@ -74,7 +78,8 @@ const ownerOf = (p: LocalSessionPrincipal): PresenceOwner => (isLocalSessionPers
 /** The presence row fields the handler reads. */
 export interface PresenceRow {
   id: string;
-  boundWorkerId: string | null;
+  /** Every worker this presence holds (live or not), oldest bind first. */
+  workerIds: string[];
   endedAt: Date | null;
 }
 
@@ -115,15 +120,82 @@ export interface LocalSessionStore {
   touchBoundWorker(workerId: string, accountId: string | null, now: Date): Promise<boolean>;
   findWorker(workerId: string): Promise<BindableWorker | null>;
   /**
-   * CAS: bind when the presence is open and holds no OTHER live worker.
-   * Returns false when another presence already holds this worker (unique) or
-   * this presence still holds a different live one.
+   * Add a worker to an open presence. Returns false when the presence has
+   * ended or another presence already holds this worker.
    */
   bind(presenceId: string, workerId: string, workspaceId: string, now: Date): Promise<boolean>;
   /** CAS on `ended_at IS NULL`. Returns the row it ended, or null if already ended. */
   end(presenceId: string, reason: string, now: Date): Promise<PresenceRow | null>;
+  /**
+   * Raise a held worker's usage to the session's cumulative totals (never
+   * lowers them, so replays and reordering are harmless). Only an interactive
+   * worker that is live, or ended within USAGE_GRACE_MS (the last report of a
+   * session that just called complete_task). True if written.
+   */
+  recordUsage(u: WorkerUsageWrite): Promise<boolean>;
   /** Whether the worker has an instruction queued that no consumer picked up. */
   workerState(workerId: string): Promise<{ taskId: string | null; pendingInstructions: boolean; live: boolean } | null>;
+}
+
+/** What one held worker's usage report writes. */
+export interface WorkerUsageWrite {
+  workerId: string;
+  allInInputTokens: number;
+  outputTokens: number;
+  requests: number;
+  /** Null when any model was unpriced: nothing is written to cost. */
+  costUsd: number | null;
+  /** Per-model usage for priced sessions; null when unpriced (see priceSessionUsage). */
+  modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }> | null;
+  totalUsage: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number };
+  /** Effort and provenance, kept under resultMeta.localSessionUsage. */
+  effort: {
+    source: 'local-session';
+    requests: number;
+    toolCalls: number;
+    subagents: number;
+    firstAt: string | null;
+    lastAt: string | null;
+    costUnknown: boolean;
+    unpricedModels: string[];
+    models: LocalSessionUsage['workers'][number]['models'];
+  };
+  now: Date;
+}
+
+/** A session's last usage report may land just after its task completed. */
+export const USAGE_GRACE_MS = 10 * 60 * 1000;
+
+/** Price one held worker's cumulative usage into the write the store applies. */
+export function usageWrite(w: LocalSessionUsage['workers'][number], now: Date): WorkerUsageWrite {
+  const priced = priceSessionUsage(w.models);
+  const costUnknown = priced.costUsd === null;
+  return {
+    workerId: w.workerId,
+    allInInputTokens: priced.allInInputTokens,
+    outputTokens: priced.outputTokens,
+    requests: priced.requests,
+    costUsd: priced.costUsd,
+    modelUsage: costUnknown ? null : Object.fromEntries(Object.entries(priced.modelUsage).map(([m, u]) => [m, { ...u, costUSD: u.costUSD ?? 0 }])),
+    totalUsage: {
+      inputTokens: priced.allInInputTokens,
+      outputTokens: priced.outputTokens,
+      cacheReadInputTokens: priced.cacheReadInputTokens,
+      cacheCreationInputTokens: priced.cacheCreationInputTokens,
+    },
+    effort: {
+      source: 'local-session',
+      requests: priced.requests,
+      toolCalls: w.toolCalls,
+      subagents: w.subagents,
+      firstAt: w.firstAt ?? null,
+      lastAt: w.lastAt ?? null,
+      costUnknown,
+      unpricedModels: priced.unpricedModels,
+      models: w.models,
+    },
+    now,
+  };
 }
 
 export interface LocalSessionDeps {
@@ -189,8 +261,29 @@ export async function handleLocalSessionEvent(
     });
   };
 
-  const boundState = async (presence: PresenceRow) =>
-    presence.boundWorkerId ? store.workerState(presence.boundWorkerId) : null;
+  // Usage only ever reaches a worker this very presence holds: the hook names
+  // workers, but bind already decided which of them are this session's.
+  const recordHeldUsage = async (presence: PresenceRow) => {
+    for (const w of event.usage?.workers ?? []) {
+      if (!presence.workerIds.includes(w.workerId)) continue;
+      try {
+        await store.recordUsage(usageWrite(w, now));
+      } catch (err) {
+        console.warn('[local-session] usage write failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  };
+
+  // Across every held worker: a pending instruction on any of them is flagged
+  // (naming that task), else the most recently bound live task is reported.
+  const boundState = async (presence: PresenceRow) => {
+    if (presence.workerIds.length === 0) return null;
+    const states = (await Promise.all(presence.workerIds.map(id => store.workerState(id)))).filter(s => s !== null);
+    const pending = states.find(s => s.pendingInstructions);
+    if (pending) return pending;
+    const live = states.filter(s => s.live);
+    return live[live.length - 1] ?? null;
+  };
 
   switch (event.event) {
     case 'start': {
@@ -205,9 +298,10 @@ export async function handleLocalSessionEvent(
         presence = await ensurePresence();
         return result('started', presence, await boundState(presence));
       }
+      await recordHeldUsage(presence);
       const wrote = await store.touchPresence(presence.id, now);
-      if (presence.boundWorkerId) {
-        await store.touchBoundWorker(presence.boundWorkerId, isLocalSessionPerson(principal) ? null : principal.id, now);
+      for (const workerId of presence.workerIds) {
+        await store.touchBoundWorker(workerId, isLocalSessionPerson(principal) ? null : principal.id, now);
       }
       return result(wrote ? 'touched' : 'coalesced', presence, await boundState(presence));
     }
@@ -227,30 +321,37 @@ export async function handleLocalSessionEvent(
       }
       let presence = await store.find(owner, event.client, hash);
       if (!presence || presence.endedAt) presence = await ensurePresence();
-      if (presence.boundWorkerId === workerId) {
+      if (presence.workerIds.includes(workerId)) {
         return result('already_bound', presence, await store.workerState(workerId));
       }
       const won = await store.bind(presence.id, workerId, worker.workspaceId, now);
       if (!won) {
-        throw new LocalSessionError(409, 'bound_elsewhere', 'That worker is bound to another session, or this session still holds a live one');
+        throw new LocalSessionError(409, 'bound_elsewhere', 'That worker is bound to another session');
       }
-      const bound = { ...presence, boundWorkerId: workerId };
+      const bound = { ...presence, workerIds: [...presence.workerIds, workerId] };
       return result('bound', bound, await store.workerState(workerId));
     }
 
     case 'end': {
       const presence = await store.find(owner, event.client, hash);
       if (!presence) return result('unknown_session', null);
+      // The last usage lands before the release, while the worker is still live.
+      await recordHeldUsage(presence);
       const ended = await store.end(presence.id, event.reason ?? 'other', now);
       // Already ended: the release (if any) happened on the first end. Exactly once.
       if (!ended) return result('already_ended', presence);
-      if (!ended.boundWorkerId) return result('ended', ended);
+      if (ended.workerIds.length === 0) return result('ended', ended);
       // `clear` keeps the conversation's process (and its MCP connection, which
-      // made the claim and keeps it alive) running under a new session id.
+      // made the claims and keeps them alive) running under a new session id.
       if (event.reason === 'clear') return result('ended_kept_claim', ended);
+      // Each worker through the exactly-once primitive: a finished one is a no-op.
       const detach = deps.detach ?? defaultDetach;
-      const r = await detach(ended.boundWorkerId, `local ${event.client} session ended`);
-      return result(r.detached ? 'ended_released' : 'ended', ended);
+      let released = 0;
+      for (const workerId of ended.workerIds) {
+        const r = await detach(workerId, `local ${event.client} session ended`);
+        if (r.detached) released++;
+      }
+      return result(released > 0 ? 'ended_released' : 'ended', ended);
     }
   }
 }
@@ -296,6 +397,21 @@ export async function resolveWorkspaceForRepo(principal: LocalSessionPrincipal, 
 
 const throttleCutoff = (now: Date) => new Date(now.getTime() - LOCAL_SESSION_TOUCH_THROTTLE_MS);
 
+/**
+ * Usage writes reach only an interactive worker that is live, or that ended
+ * after `graceCutoff` (the report that follows complete_task).
+ */
+export function usageWriteWhere(workerId: string, graceCutoff: Date): SQL {
+  return and(
+    eq(workers.id, workerId),
+    eq(workers.runner, INTERACTIVE_WORKER_RUNNER),
+    or(
+      inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+      gt(workers.completedAt, graceCutoff),
+    ),
+  )!;
+}
+
 /** Presence write coalescing: only an open row not written this minute. */
 export function presenceTouchWhere(id: string, now: Date): SQL {
   return and(eq(localSessions.id, id), isNull(localSessions.endedAt), lt(localSessions.lastSeenAt, throttleCutoff(now)))!;
@@ -316,24 +432,54 @@ export function boundWorkerTouchWhere(workerId: string, accountId: string | null
   )!;
 }
 
-/** Bind CAS: open presence, holding nothing or only a worker that is no longer live. */
-export function bindWhere(presenceId: string, workerId: string): SQL {
-  return and(
-    eq(localSessions.id, presenceId),
-    isNull(localSessions.endedAt),
-    or(
-      isNull(localSessions.boundWorkerId),
-      eq(localSessions.boundWorkerId, workerId),
-      sql`NOT EXISTS (
-        SELECT 1 FROM ${workers} w_bound
-        WHERE w_bound.id = ${localSessions.boundWorkerId}
-        AND w_bound.status IN (${sql.join(LIVE_WORKER_STATUSES.map(s => sql`${s}`), sql`, `)})
-      )`,
-    ),
-  )!;
+/**
+ * Bind: one row per (worker, presence), only into an open presence. The worker
+ * is the primary key, so another presence's worker is never taken (DO NOTHING
+ * returns no row). A presence bound before multi-claim keeps its worker through
+ * the legacy `bound_worker_id` column, so that one is guarded too.
+ */
+export function bindInsertSql(presenceId: string, workerId: string, now: Date): SQL {
+  return sql`
+    INSERT INTO ${localSessionWorkers} ("worker_id", "local_session_id", "bound_at")
+    SELECT ${workerId}::uuid, ls.id, ${now.toISOString()}::timestamptz
+    FROM ${localSessions} ls
+    WHERE ls.id = ${presenceId}::uuid AND ls."ended_at" IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ${localSessions} legacy
+        WHERE legacy."bound_worker_id" = ${workerId}::uuid AND legacy.id <> ls.id
+      )
+    ON CONFLICT ("worker_id") DO NOTHING
+    RETURNING "worker_id"`;
 }
 
-const presenceColumns = { id: localSessions.id, boundWorkerId: localSessions.boundWorkerId, endedAt: localSessions.endedAt };
+/**
+ * Every worker a presence holds: its local_session_workers rows plus, for a
+ * session bound before multi-claim, the legacy single `bound_worker_id`.
+ */
+const presenceColumns = {
+  id: localSessions.id,
+  endedAt: localSessions.endedAt,
+  workerIds: sql<string[]>`ARRAY(
+    SELECT held.w_id FROM (
+      SELECT lsw."worker_id" AS w_id, lsw."bound_at" AS at FROM ${localSessionWorkers} lsw WHERE lsw."local_session_id" = ${localSessions.id}
+      UNION
+      SELECT ${localSessions.boundWorkerId}, ${localSessions.boundAt} WHERE ${localSessions.boundWorkerId} IS NOT NULL
+    ) held ORDER BY held.at NULLS FIRST
+  )`.as('worker_ids'),
+};
+
+/** The driver hands a uuid[] back as an array, or as Postgres' text form on some paths. */
+function toIdArray(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === 'string') return v.replace(/^\{|\}$/g, '').split(',').filter(Boolean);
+  return [];
+}
+
+const toPresence = (r: { id: string; endedAt: Date | null; workerIds: unknown }): PresenceRow => ({
+  id: r.id,
+  endedAt: r.endedAt,
+  workerIds: toIdArray(r.workerIds),
+});
 
 function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; cause?: { code?: string }; message?: string };
@@ -370,7 +516,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
         },
       })
       .returning(presenceColumns);
-    return row;
+    return toPresence(row);
   },
   async find(owner, clientKind, clientSessionHash) {
     const [row] = await db
@@ -382,7 +528,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
         eq(localSessions.clientSessionHash, clientSessionHash),
       ))
       .limit(1);
-    return row ?? null;
+    return row ? toPresence(row) : null;
   },
   async touchPresence(id, now) {
     const rows = await db.update(localSessions).set({ lastSeenAt: now }).where(presenceTouchWhere(id, now)).returning({ id: localSessions.id });
@@ -420,17 +566,18 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     return { ...rest, ownerTeamId: rest.ownerTeamId ?? null, claimUserId: typeof claimUser === 'string' ? claimUser : null };
   },
   async bind(presenceId, workerId, workspaceId, now) {
+    let won: boolean;
     try {
-      const rows = await db
-        .update(localSessions)
-        .set({ boundWorkerId: workerId, boundAt: now, workspaceId, lastSeenAt: now })
-        .where(bindWhere(presenceId, workerId))
-        .returning({ id: localSessions.id });
-      return rows.length > 0;
+      const r = await db.execute(bindInsertSql(presenceId, workerId, now));
+      won = ((r as { rows?: unknown[] }).rows ?? []).length > 0;
     } catch (err) {
       if (isUniqueViolation(err)) return false;
       throw err;
     }
+    // The presence follows the workspace of its newest claim (a session in a
+    // folder outside any workspace gets one from what it claimed).
+    if (won) await db.update(localSessions).set({ workspaceId, lastSeenAt: now }).where(eq(localSessions.id, presenceId));
+    return won;
   },
   async end(presenceId, reason, now) {
     const [row] = await db
@@ -438,7 +585,27 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
       .set({ endedAt: now, endReason: reason, lastSeenAt: now })
       .where(and(eq(localSessions.id, presenceId), isNull(localSessions.endedAt)))
       .returning(presenceColumns);
-    return row ?? null;
+    return row ? toPresence(row) : null;
+  },
+  async recordUsage(u) {
+    const graceCutoff = new Date(u.now.getTime() - USAGE_GRACE_MS);
+    const meta = {
+      ...(u.modelUsage ? { modelUsage: u.modelUsage } : {}),
+      totalUsage: u.totalUsage,
+      localSessionUsage: u.effort,
+    };
+    const rows = await db
+      .update(workers)
+      .set({
+        inputTokens: sql`GREATEST(${workers.inputTokens}, ${u.allInInputTokens})`,
+        outputTokens: sql`GREATEST(${workers.outputTokens}, ${u.outputTokens})`,
+        turns: sql`GREATEST(${workers.turns}, ${u.requests})`,
+        ...(u.costUsd !== null ? { costUsd: sql`GREATEST(${workers.costUsd}, ${u.costUsd.toFixed(6)}::numeric)` } : {}),
+        resultMeta: sql`COALESCE(${workers.resultMeta}, '{}'::jsonb) || ${JSON.stringify(meta)}::jsonb`,
+      })
+      .where(usageWriteWhere(u.workerId, graceCutoff))
+      .returning({ id: workers.id });
+    return rows.length > 0;
   },
   async workerState(workerId) {
     const w = await db.query.workers.findFirst({

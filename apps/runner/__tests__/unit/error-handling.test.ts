@@ -440,7 +440,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-sdk-abort')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-sdk-abort');
       expect(worker?.status).toBe('error');
@@ -630,7 +633,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-auth-fail')?.currentAction !== 'Auth failed'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-auth-fail');
       expect(worker?.status).toBe('error');
@@ -1201,7 +1207,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than a fixed sleep: a loaded CI runner can take >200ms
+      for (let i = 0; i < 50 && manager.getWorker('w-abort-msg')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-abort-msg');
       // The catch block distinguishes abort errors by checking for "aborted" in message

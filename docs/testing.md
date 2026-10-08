@@ -127,7 +127,7 @@ shells out to `zstd` to compress/restore the cloud runner's cache tarball, and i
 the real binary (no mock) to exercise that path, so a sandbox without it fails only those
 assertions while the rest of the file passes. `apps/runner/install.sh` now provisions `zstd`
 on fresh installs the same best-effort way it provisions other tooling (`apt-get`/`brew`, never
-fatal to the rest of the install) — an older sandbox that predates that change, or one on a
+fatal to the rest of the install; without root or passwordless escalation it unpacks the `.deb` into `~/.local/bin` using a user-owned apt state dir) — install.sh only runs at install time, so an older sandbox that predates that change, or one on a
 platform neither package manager covers, can still be missing it. Confirm with `command -v zstd`;
 if it's absent, this is a known sandbox-provisioning gap, not a product bug — production code
 (`zstdAvailable()` in `warm-repo.ts`) already falls back to a plain, uncompressed tarball when
@@ -362,7 +362,7 @@ run tells you nothing until you re-run that file alone.
 
 Prefer not stubbing a module that has its own unit test — inject the dependency
 instead (pass it in, or accept an override in an options bag, as
-`reconcileWorkerPrState` does with `opts.githubApi`).
+`importWorkerPrFacts` does with `opts.githubApi`).
 
 When you must stub, return the module's **whole** surface so the stub is harmless
 if it ever does leak:

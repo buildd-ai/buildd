@@ -26,8 +26,13 @@ describe('install.sh mergiraf provisioning', () => {
     expect(installSh).toContain('sha256sum -c');
   });
 
-  it('is platform-gated to x86_64 (other arches fail gracefully)', () => {
-    expect(installSh).toMatch(/uname -m.*x86_64/);
+  it('provisions Linux x86_64 and aarch64 (the Coder runner is aarch64); other arches fail gracefully', () => {
+    const fn = installSh.match(/mergiraf_provision\s*\(\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(fn).toMatch(/case "\$\(uname -m\)" in/);
+    expect(fn).toMatch(/x86_64\)\s*MERGIRAF_TARGET="x86_64-unknown-linux-gnu"/);
+    expect(fn).toMatch(/aarch64\|arm64\)\s*MERGIRAF_TARGET="aarch64-unknown-linux-gnu"/);
+    expect(fn).toMatch(/\*\)\s*return 1/);
+    expect(fn).toContain('mergiraf_${MERGIRAF_TARGET}.tar.gz');
   });
 
   it('never reaches a download for a check that already passes (idempotent)', () => {
@@ -41,7 +46,9 @@ describe('install.sh mergiraf provisioning', () => {
   it('has a pinned version and SHA256 for reproducibility', () => {
     const fn = installSh.match(/mergiraf_provision\s*\(\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
     expect(fn).toMatch(/MERGIRAF_VERSION="0\.20\.0"/);
+    // Upstream v0.20.0 asset checksums, verified against the downloaded files.
     expect(fn).toMatch(/MERGIRAF_SHA256="4341127da8d1da29eced669fbacc1e5d6e530115098de0b82cc9dc551a1acf37"/);
+    expect(fn).toMatch(/MERGIRAF_SHA256="1bb78ef3612f3eb92bdfb803131259a3d6761b93d00d4bdba905edebf913e96b"/);
   });
 
   it('cleans up temporary files on success and failure', () => {

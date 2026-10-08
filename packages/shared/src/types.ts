@@ -1448,6 +1448,14 @@ export interface ClaimModelEndpoint {
    * clearly rather than guess a wire format.
    */
   openAiBaseUrl?: string;
+  /**
+   * Claude's deferred MCP/tool loading (ToolSearch / `tool_reference`) is
+   * supported through this endpoint: the runner sets ENABLE_TOOL_SEARCH=true
+   * in a Claude run's env. The effective value for this endpoint
+   * (@buildd/core/agent-endpoint `effectiveToolSearch`), not the kind's
+   * default. Absent/false: not set. Never applied to a Codex run.
+   */
+  toolSearch?: boolean;
 }
 
 export type ClaimDiagnosticReason =
@@ -1542,6 +1550,11 @@ export interface ClaimDiagnostics {
     path_overlap?: number;
     /** Scope-undeclared ('**') task held behind a sibling in the same mission. */
     advisory_manifest?: number;
+    /**
+     * Declared scope overlaps an in-flight task's only softly (directory
+     * prefix, or a pre-v2 inferred edge): held unless HOLD/START said START.
+     */
+    soft_overlap?: number;
     mission_budget?: number;
     mission_concurrent?: number;
     mission_paced?: number;
@@ -1556,6 +1569,12 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /**
+     * Workflow-kernel review fix skipped at claim: its target was resolved
+     * while it queued (approved, merged, head moved, round superseded), or the
+     * live revalidation could not run and the claim was rolled back.
+     */
+    fix_not_needed?: number;
     /**
      * Claim planner in `apply` mode ordered this task behind a picked, in-flight
      * or open-PR node it would collide with. Replaces the per-poll
@@ -1936,6 +1955,21 @@ export interface PathDeclaration {
    * to caller-supplied edges. Only these may ever be removed on narrowing.
    */
   inferredDependsOn?: string[];
+  /**
+   * `v2`: `inferredDependsOn` holds only HARD inferred edges (same file,
+   * migration, serialized surface). Prefix-only overlap is never a dependsOn
+   * edge; it is recorded in `softOverlaps` and decided at claim time. Absent on
+   * rows written before the rule; migration 0267 converted the pending ones.
+   */
+  overlapPolicy?: 'v2';
+  /**
+   * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
+   * one's only by directory prefix (or, `legacy_inferred`, an inferred edge
+   * minted before the hard/soft rule, reclassified against current manifests
+   * at claim). Never a dependsOn edge: the claim route defers on it only while
+   * the other task is in flight, and the HOLD/START decision may start it.
+   */
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -2922,6 +2956,16 @@ export interface InitiativeKPIState {
 }
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
 
+/**
+ * Runner capability: this runner matches buildd actions on the group tools
+ * (`mcp__buildd__buildd_<group>`), not only the legacy one-tool name. The MCP
+ * route serves a `?worker=` session the group tools only when the worker's
+ * runner advertised this on its heartbeat; any other runner keeps the legacy
+ * tool. Not `mcp:`-prefixed: the claim route reserves that prefix for the MCP
+ * servers a runner has.
+ */
+export const CAPABILITY_MCP_GROUP_TOOLS = 'buildd-mcp:group-tools';
+
 // ============================================================================
 // WORKER FAILURE ANALYTICS
 // ============================================================================
@@ -3670,9 +3714,53 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
 }
+/** n / p50 / p90 over a set of durations, in milliseconds; null quantiles when n = 0. */
+export interface DurationSummary {
+  n: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+}
+/**
+ * Early-release rollout measure (knowledge-base: buildd/design/early-release.md
+ * "Failure modes & the measure"), read off `dependency_releases` rows and the
+ * `early_release` gate ledger. Served as `earlyRelease` on
+ * `GET /api/stats/coordination` (or alone with `?metric=earlyRelease`).
+ */
+export interface EarlyReleaseStats extends CoordinationMetricFilters {
+  /** Each workspace's resolved `gitConfig.earlyRelease.mode`, so zero releases can be told apart from "never opted in". */
+  modes: Array<{ workspaceId: string; mode: 'off' | 'rule_only' | 'rule_and_jev' }>;
+  /** Release decisions made in the window, by decision. */
+  decisions: { start_now: number; start_stacked: number; wait: number };
+  /**
+   * Of the dependents released (start_now / start_stacked) in the window, how
+   * many the reconciler later had to refresh or escalate, or whose release was
+   * revoked or whose task was cancelled. A dependent counts once in `reworked`
+   * even if several apply; the per-cause counts may overlap.
+   */
+  rework: {
+    released: number;
+    reworked: number;
+    rate: number | null;
+    refreshed: number;
+    escalated: number;
+    cancelled: number;
+  };
+  /**
+   * Upstream PR raised → dependent's own PR merged, over dependents whose PR
+   * merged in the window. `released` = dependents with a start_now/start_stacked
+   * release; `notOptedIn` = dependents in workspaces whose mode is 'off' and that
+   * were never released (today's merge-gated path). Opted-in dependents held at
+   * `wait` are in neither cohort.
+   */
+  chainDuration: { released: DurationSummary; notOptedIn: DurationSummary };
+  /** Release decision (≈ upstream PR raised) → dependent's first claim, for dependents released in the window. */
+  raisedToClaimed: DurationSummary;
+  coverage: { note: string };
+}
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+  earlyRelease?: EarlyReleaseStats;
 }
 /**
  * Aggregate counts over the orchestration decision ledger

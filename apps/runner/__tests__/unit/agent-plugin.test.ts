@@ -16,6 +16,7 @@ import {
   isWorkspaceRepo,
   WORKSPACE_REFRESH_MS,
   resolveAuth,
+  readSessionState,
 } from '../../plugin/scripts/buildd-hook.mjs';
 import {
   claudeLikeHookEntries,
@@ -247,6 +248,26 @@ describe('workspace scope', () => {
       .toMatchObject({ event: 'end', reason: 'exit' });
   });
 
+  it('a subagent claim binds to the same session, and which subagent claimed which task stays on this machine', async () => {
+    workspaceCheckout(dir, 'acme/widget', ['acme/widget']);
+    const fetchImpl = server([]);
+    await run({ client: 'claude', stdin: ev('SessionStart'), env: env(), fetchImpl });
+    const claim = (w: string) => [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${w}\n**Task:** x` }];
+    const W1 = '11111111-2222-4333-8444-000000000001';
+    const W2 = '11111111-2222-4333-8444-000000000002';
+    const parent = await run({ client: 'claude', env: env(), fetchImpl, stdin: ev('PostToolUse', {
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W1),
+    }) });
+    // Claude Code tags a subagent's tool call with agent_id / agent_type and the parent's session_id.
+    const sub = await run({ client: 'claude', env: env(), fetchImpl, stdin: ev('PostToolUse', {
+      agent_id: 'a0123456789abcdef', agent_type: 'general-purpose',
+      tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W2),
+    }) });
+    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1 });
+    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2 });
+    expect(readSessionState({ BUILDD_HOME: dir }, 'claude', 'scope-1').claims).toEqual({ [W1]: null, [W2]: 'a0123456789abcdef' });
+  });
+
   it('fails closed: no list and buildd unreachable means nothing is sent', async () => {
     Bun.spawnSync(['git', 'init', '-q', dir]);
     Bun.spawnSync(['git', '-C', dir, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git']);
@@ -330,6 +351,124 @@ describe('presence token', () => {
     expect(urls).toEqual(['https://b.test/api/workers/local-sessions/workspaces', 'https://b.test/api/workers/local-sessions']);
     expect(auth).toBe(`Bearer ${TOKEN}`);
     expect(readWorkspaceCache({ BUILDD_HOME: dir }, TOKEN)?.repos).toEqual(['acme/widget']);
+  });
+});
+
+describe('session usage', () => {
+  // Synthetic transcript lines in the shape Claude Code writes: one record per
+  // content block, so a message id can repeat with the same usage. Content is
+  // filled with text that must never reach the request body.
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'buildd-usage-')); workspaceCheckout(dir); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const SECRET = 'TOP-SECRET-CONTENT';
+  const rec = (o: { id: string; model?: string; at: string; input?: number; read?: number; w5m?: number; w1h?: number; out?: number; blocks?: string[]; agentId?: string }) => JSON.stringify({
+    type: 'assistant', timestamp: o.at, requestId: `req_${o.id}`, isSidechain: !!o.agentId, ...(o.agentId ? { agentId: o.agentId } : {}),
+    message: {
+      id: o.id, model: o.model ?? 'claude-sonnet-5', role: 'assistant',
+      content: (o.blocks ?? ['text']).map(t => t === 'tool_use' ? { type: 'tool_use', name: 'Bash', input: { command: SECRET } } : { type: 'text', text: SECRET }),
+      usage: {
+        input_tokens: o.input ?? 2, cache_read_input_tokens: o.read ?? 0, output_tokens: o.out ?? 10,
+        cache_creation_input_tokens: (o.w5m ?? 0) + (o.w1h ?? 0),
+        cache_creation: { ephemeral_5m_input_tokens: o.w5m ?? 0, ephemeral_1h_input_tokens: o.w1h ?? 0 },
+      },
+    },
+  });
+  const user = (at: string) => JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: SECRET } });
+  const W1 = '11111111-2222-4333-8444-0000000000a1';
+  const W2 = '11111111-2222-4333-8444-0000000000a2';
+  const env = () => ({ BUILDD_API_KEY: 'bld_test', BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_HOME: dir });
+  const transcript = () => join(dir, 'sess.jsonl');
+  const subagentFile = (agentId: string) => join(dir, 'sess', 'subagents', `agent-${agentId}.jsonl`);
+  const write = (path: string, lines: string[]) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, lines.map(l => l + '\n').join(''), { flag: 'a' }); };
+  const ev = (hook_event_name: string, extra: object = {}) => JSON.stringify({ session_id: 'u-1', cwd: dir, transcript_path: transcript(), hook_event_name, ...extra });
+  const claimText = (w: string) => [{ type: 'text', text: `Claimed 1 task(s):\n\n**Worker ID:** ${w}\n**Task:** x` }];
+  let bodies: any[];
+  const fetchImpl = (async (url: string, init: any) => {
+    if (url.endsWith('/local-sessions')) bodies.push(JSON.parse(init.body));
+    return Response.json({ ok: true });
+  }) as any;
+  beforeEach(() => { bodies = []; });
+  const claim = async (w: string, agentId?: string, now = Date.parse('2026-10-07T12:00:00Z')) => run({
+    client: 'claude', env: env(), fetchImpl, now,
+    stdin: ev('PostToolUse', { ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}), tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claimText(w) }),
+  });
+  const stop = (now: number) => run({ client: 'claude', env: env(), fetchImpl, now, stdin: ev('Stop') });
+
+  it('reads only usage numbers, dedupes repeated message records, and counts usage from the claim on', async () => {
+    write(transcript(), [
+      rec({ id: 'msg_before', at: '2026-10-07T11:59:00Z', input: 999, out: 999 }), // before the claim: not this task's
+      user('2026-10-07T12:00:30Z'),
+      rec({ id: 'msg_a', at: '2026-10-07T12:01:00Z', input: 3, read: 1000, w5m: 200, out: 40, blocks: ['text'] }),
+      rec({ id: 'msg_a', at: '2026-10-07T12:01:00Z', input: 3, read: 1000, w5m: 200, out: 40, blocks: ['tool_use'] }),
+      rec({ id: 'msg_b', at: '2026-10-07T12:02:00Z', input: 1, read: 1200, w1h: 50, out: 20, blocks: ['tool_use'] }),
+      '{not json',
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const body = bodies.at(-1);
+    expect(body.event).toBe('touch');
+    expect(body.usage.workers).toEqual([{
+      workerId: W1,
+      models: [{ model: 'claude-sonnet-5', input: 4, cacheRead: 2200, cacheWrite5m: 200, cacheWrite1h: 50, output: 60, requests: 2 }],
+      toolCalls: 2, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
+    }]);
+    expect(JSON.stringify(bodies)).not.toContain(SECRET);
+  });
+
+  it('sends cumulative totals, reading only new bytes since the last report', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', out: 10 })]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    write(transcript(), [rec({ id: 'm2', at: '2026-10-07T12:05:00Z', out: 5 })]);
+    await stop(Date.parse('2026-10-07T12:06:00Z'));
+    const last = bodies.at(-1).usage.workers[0];
+    expect(last.models[0]).toMatchObject({ output: 15, requests: 2 });
+    // A replayed Stop with nothing new resends the same totals (the server only ever raises them).
+    await stop(Date.parse('2026-10-07T12:08:00Z'));
+    expect(bodies.at(-1).usage.workers[0].models[0]).toMatchObject({ output: 15, requests: 2 });
+  });
+
+  it("a subagent's usage goes to the task that subagent claimed; the parent's to the session's own claim", async () => {
+    write(transcript(), [rec({ id: 'p1', at: '2026-10-07T12:01:00Z', out: 7 })]);
+    write(subagentFile('aSub1'), [rec({ id: 's1', at: '2026-10-07T11:59:30Z', out: 100, agentId: 'aSub1', blocks: ['tool_use'] })]);
+    write(subagentFile('aIdle'), [rec({ id: 'i1', at: '2026-10-07T12:01:30Z', out: 1, agentId: 'aIdle' })]);
+    await claim(W1);
+    await claim(W2, 'aSub1');
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const byWorker = Object.fromEntries(bodies.at(-1).usage.workers.map((w: any) => [w.workerId, w]));
+    // The subagent's whole run is its task's, even the call before its claim landed.
+    expect(byWorker[W2].models[0]).toMatchObject({ output: 100, requests: 1 });
+    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, subagents: 1 });
+    // A subagent that claimed nothing counts toward the session's own claim.
+    expect(byWorker[W1].models[0]).toMatchObject({ output: 8, requests: 2 });
+    expect(byWorker[W1].subagents).toBe(1);
+  });
+
+  it('nothing is read or sent without a claim, on start, or with BUILDD_HOOK_USAGE=0', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z' })]);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    expect(bodies.at(-1).usage).toBeUndefined();
+    await claim(W1);
+    await run({ client: 'claude', env: { ...env(), BUILDD_HOOK_USAGE: '0' }, fetchImpl, now: Date.parse('2026-10-07T12:09:00Z'), stdin: ev('Stop') });
+    expect(bodies.at(-1).usage).toBeUndefined();
+  });
+
+  it('end carries the final usage in the same request', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', out: 3 })]);
+    await claim(W1);
+    await run({ client: 'claude', env: env(), fetchImpl, now: Date.parse('2026-10-07T12:02:00Z'), stdin: ev('SessionEnd', { reason: 'prompt_input_exit' }) });
+    expect(bodies.at(-1)).toMatchObject({ event: 'end', reason: 'exit', usage: { workers: [{ workerId: W1 }] } });
+  });
+
+  it('a model id the contract would refuse is reported as unknown, and synthetic local records are skipped', async () => {
+    write(transcript(), [
+      rec({ id: 'm1', at: '2026-10-07T12:01:00Z', model: 'weird model id; drop table', out: 4 }),
+      rec({ id: 'm2', at: '2026-10-07T12:01:10Z', model: '<synthetic>', out: 0, input: 0 }),
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    expect(bodies.at(-1).usage.workers[0].models).toEqual([expect.objectContaining({ model: 'unknown', output: 4, requests: 1 })]);
   });
 });
 
@@ -665,6 +804,122 @@ describe('installer', () => {
     expect(out).toMatch(/every session\s+key/);
     expect(out).not.toContain('~/other');
     expect(out).not.toContain('bld_x');
+  });
+
+  /**
+   * Two teams on one machine: the login key reaches team A's workspaces only;
+   * the person's presence token reaches A and B (the scope route, with ids).
+   */
+  const PT = 'bldp_eyJ0IjoieCIsInUiOiJ5In0.sig';
+  const loginTwoTeams = (keyRepos: string[], personRepos: Array<[repo: string, team: string]>) => {
+    mkdirSync(join(home, '.buildd'), { recursive: true });
+    writeFileSync(join(home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_test', presenceToken: PT, builddServer: 'https://b.test' }));
+    const id = (r: string) => `ws-${r.replace('/', '-')}`;
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string, init: any) => {
+      urls.push(url);
+      const auth = init?.headers?.Authorization;
+      if (url.endsWith('/api/workers/local-sessions/workspaces')) {
+        if (auth !== `Bearer ${PT}`) return new Response('{}', { status: 401 });
+        return Response.json({ workspaces: personRepos.map(([r, teamId]) => ({ id: id(r), repo: r, teamId })) });
+      }
+      if (auth !== 'Bearer bld_test') return new Response('{}', { status: 401 });
+      return Response.json({ workspaces: keyRepos.map(r => ({ id: id(r), repo: `https://github.com/${r}` })) });
+    }) as any;
+    return { fetchImpl, urls, env: { BUILDD_HOME: join(home, '.buildd') } as Record<string, string | undefined> };
+  };
+  const oauthTo = (r: string) => ({ type: 'http', url: `https://b.test/api/mcp-oauth/ws-${r.replace('/', '-')}` });
+  const keyEntry = { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer bld_test' } };
+
+  it("--global covers every team the person is in: another team's workspace folders sign in with OAuth, never with the login key", async () => {
+    const a = join(home, 'code', 'widget');
+    const b = join(home, 'code', 'api');
+    checkout(a, 'acme/widget');
+    checkout(b, 'beta/api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {}, [b]: {} } }));
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[a].mcpServers.buildd).toEqual(keyEntry);
+    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(JSON.stringify(cfg.projects[b])).not.toContain('bld_');
+    const out = r.lines.join('\n');
+    expect(out).toContain('registered for your workspace folders only (2)');
+    expect(out).toMatch(/~\/code\/api\s+beta\/api\s+OAuth: your login key's team can't reach it/);
+    expect(out).toMatch(/~\/code\/widget\s+acme\/widget\n/);
+    expect(out).not.toContain('Run buildd login again');
+    expect(out).toContain('your workspace repos (2): acme/widget, beta/api');
+    expect(l.urls.sort()).toEqual(['https://b.test/api/workers/local-sessions/workspaces', 'https://b.test/api/workspaces']);
+  });
+
+  it("repairs a key entry whose team can't reach the folder's workspace, also where it shadows the folder's own .mcp.json", async () => {
+    const b = join(home, 'code', 'api');
+    const c = join(home, 'code', 'web');
+    const d = join(home, 'code', 'docs');
+    checkout(b, 'beta/api');
+    checkout(c, 'beta/web');
+    checkout(d, 'beta/docs');
+    const own = JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp', headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' } } } });
+    writeFileSync(join(c, '.mcp.json'), own);
+    writeFileSync(join(d, '.mcp.json'), own);
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: {
+      [b]: { mcpServers: { buildd: keyEntry } },
+      [c]: { allowedTools: ['Bash'], mcpServers: { buildd: keyEntry, mine: { command: 'y' } } },
+      [d]: {},
+    } }));
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b'], ['beta/web', 'team-b'], ['beta/docs', 'team-b']]);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    // The shadowing local entry is replaced; the folder's other servers and settings stay.
+    expect(cfg.projects[c]).toEqual({ allowedTools: ['Bash'], mcpServers: { buildd: oauthTo('beta/web'), mine: { command: 'y' } } });
+    // A folder that relies on its own .mcp.json, with nothing shadowing it, is left alone.
+    expect(cfg.projects[d]).toEqual({});
+    const out = r.lines.join('\n');
+    expect(out).toContain("Switched 2 folders from a key whose team can't reach their workspace to OAuth: ~/code/api, ~/code/web");
+    expect(out).toMatch(/~\/code\/docs\s+beta\/docs\s+\(its own \.mcp\.json\)/);
+  });
+
+  it("--here in another team's workspace folder signs in with OAuth instead of using the login key", async () => {
+    const b = join(home, 'code', 'api');
+    checkout(b, 'beta/api');
+    const l = loginTwoTeams(['acme/widget'], [['acme/widget', 'team-a'], ['beta/api', 'team-b']]);
+    const r = await runCli(['--here'], { home, cwd: b, ...l });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[b].mcpServers.buildd).toEqual(oauthTo('beta/api'));
+    expect(r.lines.join('\n')).toContain("signing in with OAuth: your login key's team can't reach this workspace");
+  });
+
+  it("--status --global flags a key entry whose team can't reach the folder's workspace, from the cached lists, without the network", async () => {
+    const a = join(home, 'code', 'widget');
+    const b = join(home, 'code', 'api');
+    checkout(a, 'acme/widget');
+    checkout(b, 'beta/api');
+    mkdirSync(join(home, '.buildd'), { recursive: true });
+    writeFileSync(join(home, '.buildd', 'config.json'), JSON.stringify({ apiKey: 'bld_test', presenceToken: PT }));
+    const env = { BUILDD_HOME: join(home, '.buildd') };
+    writeWorkspaceCache(env, 'bld_test', ['acme/widget']);
+    writeWorkspaceCache(env, PT, ['acme/widget', 'beta/api']);
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: { mcpServers: { buildd: keyEntry } }, [b]: { mcpServers: { buildd: keyEntry } } } }));
+    const offline = (async () => { throw new Error('status must not call the network'); }) as any;
+    const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env });
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/api\s+key  its team can't reach beta\/api: run buildd install --global to switch it to OAuth/);
+    expect(out).toMatch(/~\/code\/widget\s+key\n/);
+    expect(out).not.toContain('bld_test');
+  });
+
+  it("without a presence token only the login key's team is covered, and install says how to include the rest", async () => {
+    const a = join(home, 'code', 'widget');
+    checkout(a, 'acme/widget');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [a]: {} } }));
+    const l = login(['acme/widget']);
+    const r = await runCli(['--global', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    expect(r.lines.join('\n')).toContain("Only your login key's team is included. Run buildd login again to include every team you're in.");
+    expect(l.urls).toEqual(['https://b.test/api/workspaces']);
   });
 
   it('changes nothing when not logged in or when the workspace list cannot be loaded', async () => {

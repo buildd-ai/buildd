@@ -140,6 +140,11 @@ export const teams = pgTable('teams', {
   // Admin policy: a new conversation starts at min(person's last tier, the
   // default tier above) — reset down to it, never up. Off = the person's last tier.
   chatCapNewSessionTier: boolean('chat_cap_new_session_tier').notNull().default(false),
+  // How this team's catalog-resolved tiers advance to newly certified models:
+  // { mode: 'latest-compatible' | 'soak' | 'manual', soakHours?, adoptedThrough?,
+  // setBy?, setAt? }. NULL = latest-compatible. A workspace's own value wins.
+  // Read only through packages/core/model-upgrade-policy.ts (readUpgradePolicy).
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   // Chat session retros (experiment, apps/web/src/lib/chat-retro/). Opt-in per
   // team: NULL or a missing key = off. `lessons` records content-free lesson
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
@@ -320,6 +325,29 @@ export const accountWorkspaces = pgTable('account_workspaces', {
 //   - 'direct': every task PR merges into the default branch on its own.
 export type BranchStrategy = 'mission-branch' | 'direct';
 
+/**
+ * Cheap checks run before CI (docs/specs/workflow-state-kernel.md §6.10, S31).
+ * Advisory for the workflow kernel: a runner or server without them is no less
+ * safe, only noisier. Every field is off when absent.
+ */
+export interface WorkspacePreflightConfig {
+  /** create_pr refuses a title/body that CI's No Production Data prose scan would reject (counts, UUIDs). */
+  prProseScan?: boolean;
+  /**
+   * Shell commands the runner runs in the worktree before a push or create_pr
+   * (e.g. `bun run no-prod-data:check`). A failure denies that call with the
+   * output as the agent's next instruction; the attempt stays open.
+   */
+  commands?: string[];
+  /**
+   * CI check or workflow names (case-insensitive substrings) whose failure a
+   * preflight should have caught. A kernel CI failure naming one is tagged
+   * `preflight_miss` so the miss rate is measurable. Absent: the built-in
+   * production-data check name.
+   */
+  ciChecks?: string[];
+}
+
 // Git workflow configuration type
 export interface WorkspaceGitConfig {
   // Branching
@@ -470,6 +498,9 @@ export interface WorkspaceGitConfig {
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
   pathClaimEnforcement?: 'advisory' | 'enforce' | null;
 
+  // Policy checks before PR creation and push (docs/specs/workflow-state-kernel.md
+  // §6.10, S31). All off by default; advisory for the workflow kernel.
+  preflight?: WorkspacePreflightConfig | null;
   // Files a runner regenerates instead of merging (see DerivedFileRule). Absent
   // or empty: runners register no merge driver and conflicts go to the agent.
   derivedFiles?: DerivedFileRule[];
@@ -578,6 +609,18 @@ export interface WorkspaceGitConfig {
   // Paths are derived by init scan (re-scan to refresh); never hand-typed. Reviewer sees class intent, not raw globs.
   policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
 
+  // Early release of dependent tasks before their upstream's PR merges
+  // (knowledge-base: buildd/design/early-release.md). Absent / 'off' = no
+  // early release — today's merge-gated behaviour. 'rule_only' runs just the
+  // Layer 1 deterministic override (early-release-rules.ts) on the upstream
+  // PR's diff and never calls the decision model. 'rule_and_jev' runs the
+  // full `buildd.early_release` kind (early-release-decision.ts), asking Jev
+  // when no rule fires. Read only through resolveEarlyReleaseMode() in
+  // apps/web/src/lib/early-release-mode.ts; PATCH /api/workspaces/[id] rejects
+  // any other value, and GET /api/workspaces/[id]/settings reports the resolved
+  // mode. Clear with `earlyRelease: null`.
+  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' } | null;
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
@@ -590,6 +633,21 @@ export interface WorkspaceGitConfig {
   // exactly pre-mission behaviour: every question reaches a person unchanged,
   // with no pushback and no decide/hold.
   jevQuestionGate?: boolean;
+
+  // Workflow state kernel (docs/specs/workflow-state-kernel.md §14). Absent /
+  // true = ON: a PR delivery opened from then on is owned by the kernel (review
+  // rounds, fix loop, delivery proof). Set to false, the emergency kill switch,
+  // to hand every kernel delivery of this workspace back to the legacy paths
+  // (sticky per delivery) and open no new ones.
+  workflowKernel?: boolean;
+
+  // Trunk circuit breaker (docs/specs/workflow-state-kernel.md §6.10). Absent =
+  // ON with the base-red rule: a kernel PR whose failing checks also fail on
+  // its base branch's own head joins one trunk incident instead of filing a
+  // per-PR CI retry. `{ minDeliveries, windowMinutes }` also opens an incident
+  // when that many deliveries hit one signature inside the window (opt-in).
+  // `false` turns the breaker off.
+  trunkBreaker?: false | { minDeliveries?: number; windowMinutes?: number };
 
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
@@ -1008,6 +1066,8 @@ export const workspaces = pgTable('workspaces', {
 
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
+  // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
+  modelUpgradePolicy: jsonb('model_upgrade_policy').$type<import('../model-upgrade-policy').ModelUpgradePolicy | null>(),
   configStatus: text('config_status').default('unconfigured').notNull().$type<'unconfigured' | 'admin_confirmed'>(),
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
@@ -1120,6 +1180,27 @@ export const missions = pgTable('missions', {
   // symmetrically, a mission nothing else ever touches again ages out forever
   // with no re-entry. Null = never attempted.
   prSweepLastCheckedAt: timestamp('pr_sweep_last_checked_at', { withTimezone: true }),
+  // Keeping the integration branch current with dev (docs/design/mission-delivery-arc.md
+  // P5, superseded): the trunk SHA last confirmed merged into (or already an
+  // ancestor of) `workingBranch`. A refresh compares this against trunk's live
+  // head and skips the GitHub call entirely when they already match — the
+  // idempotency half of debouncing a burst of dev merges. Null means never
+  // refreshed (or opted in after the column existed).
+  branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // Single-flight lease for the refresh itself: a claim sets this to now() +
+  // the lease window, and a second caller racing the same mission (the
+  // concurrency half of debouncing a burst) only proceeds once it is null or
+  // in the past. Always cleared at the end of the attempt that set it.
+  branchRefreshLeaseUntil: timestamp('branch_refresh_lease_until', { withTimezone: true }),
+  /** Ownership token prevents expired callers from changing a successor's refresh. */
+  branchRefreshLeaseToken: text('branch_refresh_lease_token'),
+  // The open conflict-resolution task dispatched after a 409 merging dev into
+  // this mission's integration branch — at most one at a time (mirrors
+  // conflict-retry's one-live-retry-per-PR rule). Non-null and non-terminal
+  // means "stop refreshing this mission until that task finishes"; the next
+  // refresh attempt self-heals the column to null once it observes the task
+  // reached a terminal status.
+  branchRefreshConflictTaskId: uuid('branch_refresh_conflict_task_id'),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -1355,6 +1436,12 @@ export const tasks = pgTable('tasks', {
   // on the same headSha; only one fix task per (workspace, PR, headSha).
   reviewerRetryPrNumber: integer('reviewer_retry_pr_number'),
   reviewerRetryHeadSha: text('reviewer_retry_head_sha'),
+  // Workflow kernel attempt linkage (docs/specs/workflow-state-kernel.md §5.6):
+  // the delivery this task is an attempt of, and its role in it. NULL = not a
+  // kernel delivery's attempt (legacy, or not PR work). No FK: the delivery row
+  // references tasks (owner_task_id), and a delivery is never deleted on its own.
+  deliveryId: uuid('delivery_id'),
+  deliveryRole: text('delivery_role').$type<'owner' | 'fix' | 'ci_fix' | 'conflict_fix' | 'review'>(),
   // Task category for visual grouping
   category: text('category').$type<'bug' | 'feature' | 'refactor' | 'chore' | 'docs' | 'test' | 'infra' | 'design' | 'review' | 'research'>(),
   // How `category` was decided, once the decision model has looked at the task
@@ -1518,6 +1605,7 @@ export const tasks = pgTable('tasks', {
   // CI retries carry the same subject anchor, so `category` scopes it to reviews;
   // `creation_source = 'webhook'` + a parent scopes it to createReviewerTask rows,
   // so a human/API filing auto-classified as 'review' never collides with it.
+  deliveryIdx: index('tasks_delivery_idx').on(t.deliveryId).where(sql`${t.deliveryId} IS NOT NULL`),
   onePendingReviewPerHeadIdx: uniqueIndex('tasks_one_pending_review_per_head_unique')
     .on(t.workspaceId, t.subjectPrNumber, t.subjectHeadSha)
     .where(sql`${t.category} = 'review' AND ${t.status} = 'pending' AND ${t.creationSource} = 'webhook' AND ${t.parentTaskId} IS NOT NULL AND ${t.subjectPrNumber} IS NOT NULL AND ${t.subjectHeadSha} IS NOT NULL`),
@@ -1622,6 +1710,35 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   activeClaimIdx: uniqueIndex('task_subject_claims_active_unique')
     .on(t.workspaceId, t.keyType, t.keyHash)
     .where(sql`${t.state} = 'active'`),
+}));
+
+// Early-release ledger — docs/design/early-release.md "Data model". One row per
+// decision to release (or hold) a dependent task before its upstream's PR has
+// merged. Append-only: a reconciler revoking a release stamps revokedAt /
+// revokedReason on the existing row rather than deleting it, so the decision
+// history stays auditable. Every row written here also fires the
+// `early_release` gate event.
+export const dependencyReleases = pgTable('dependency_releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  dependentTaskId: uuid('dependent_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  upstreamTaskId: uuid('upstream_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The upstream PR the decision was made against.
+  upstreamPrNumber: integer('upstream_pr_number').notNull(),
+  // start_now: dependent may claim off trunk. start_stacked: claim off the
+  // upstream's branch (baseBranch). wait: keep the dependsOn gate closed.
+  decision: text('decision').notNull().$type<'start_now' | 'wait' | 'start_stacked'>(),
+  // Who decided: a deterministic rule, the decision model, or the fallback when
+  // the model was unavailable or unsure.
+  source: text('source').notNull().$type<'rule' | 'model' | 'fallback'>(),
+  // Stable machine-readable reason, e.g. which rule matched.
+  reasonCode: text('reason_code').notNull(),
+  // Branch the dependent was released onto; set for start_stacked.
+  baseBranch: text('base_branch'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+}, (t) => ({
+  dependentUpstreamIdx: index('dependency_releases_dependent_upstream_idx').on(t.dependentTaskId, t.upstreamTaskId),
 }));
 
 // The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the
@@ -2053,7 +2170,11 @@ export const localSessions = pgTable('local_sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
-  /** The interactive worker this session's own claim_task minted. One session per worker, ever. */
+  /**
+   * Legacy: the single worker a session could hold before multi-claim. Read
+   * (never written) so a session bound before localSessionWorkers existed still
+   * releases its worker; the bindings live in localSessionWorkers now.
+   */
   boundWorkerId: uuid('bound_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   boundAt: timestamp('bound_at', { withTimezone: true }),
 }, (t) => ({
@@ -2062,6 +2183,19 @@ export const localSessions = pgTable('local_sessions', {
   oneOwner: check('local_sessions_one_owner', sql`num_nonnulls(${t.accountId}, ${t.userId}) = 1`),
   boundWorkerIdx: uniqueIndex('local_sessions_bound_worker_idx').on(t.boundWorkerId),
   workspaceSeenIdx: index('local_sessions_workspace_seen_idx').on(t.workspaceId, t.lastSeenAt),
+}));
+
+/**
+ * The interactive workers a local session holds: one row per claim its own
+ * claim_task (or a subagent's) minted. The worker is the primary key, so a
+ * worker belongs to at most one session, ever; a session may hold several.
+ */
+export const localSessionWorkers = pgTable('local_session_workers', {
+  workerId: uuid('worker_id').primaryKey().references(() => workers.id, { onDelete: 'cascade' }),
+  localSessionId: uuid('local_session_id').references(() => localSessions.id, { onDelete: 'cascade' }).notNull(),
+  boundAt: timestamp('bound_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  sessionIdx: index('local_session_workers_session_idx').on(t.localSessionId),
 }));
 
 /**
@@ -4770,6 +4904,229 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
 }));
 
 export type TaskDispatchOutboxRow = typeof taskDispatchOutbox.$inferSelect;
+
+// ── Workflow state kernel (docs/specs/workflow-state-kernel.md §5) ──────────
+// Only apps/web/src/lib/workflow/ reads or writes these tables
+// (packages/core/__tests__/workflow-write-sites.test.ts). Every state change is
+// one version-CAS statement written by apps/web/src/lib/workflow/kernel.ts.
+
+// §5.1 — one row per deliverable that is meant to reach GitHub as a PR.
+export const workflowDeliveries = pgTable('workflow_deliveries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  ownerTaskId: uuid('owner_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Null until PrBound. The repo is part of the PR key: a PR number alone
+  // collides across two repos of one workspace.
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  baseRef: text('base_ref'),
+  // DeliveryState (apps/web/src/lib/workflow/types.ts); state_reason carries
+  // repair_kind / escalation reason / close_cause.
+  state: text('state').notNull(),
+  stateReason: text('state_reason'),
+  // CAS counter (§7): every applied transition increments it.
+  version: bigint('version', { mode: 'number' }).default(0).notNull(),
+  // The GitHub head the delivery acts on. Set only by HeadObserved-class
+  // transitions from a live read, never from a runner-reported local SHA.
+  currentHeadSha: text('current_head_sha'),
+  currentRound: integer('current_round').default(0).notNull(),
+  maxRounds: integer('max_rounds').default(3).notNull(),
+  // The attempt (FIXING/REPAIRING: a workflow_attempts id) whose end the
+  // delivery is waiting on. Owner attempts are the owner task itself.
+  boundAttemptId: uuid('bound_attempt_id'),
+  resumeState: text('resume_state'),
+  trunkIncidentId: uuid('trunk_incident_id'),
+  // Heads covered by a standing review approval: the head a verdict (or a
+  // human) approved plus carry-forward equivalents. Exact-head binding.
+  approvedHeads: text('approved_heads').array().default(sql`'{}'::text[]`).notNull(),
+  // 'verdict' | 'human' | 'composition' | 'policy' — what the standing approval
+  // rests on. 'policy' (no review required) is never a verdict at the head.
+  approvalBasis: text('approval_basis'),
+  // Heads covered ONLY by a verified composition attestation (a release or
+  // integration PR assembled from already-reviewed constituents). Kept apart
+  // from approved_heads so no reader mistakes it for a verdict at that head.
+  compositionHeads: text('composition_heads').array().default(sql`'{}'::text[]`).notNull(),
+  ci: text('ci'),
+  ciHeadSha: text('ci_head_sha'),
+  mergeable: text('mergeable'),
+  mergeableHeadSha: text('mergeable_head_sha'),
+  // GitHub's values, never receipt time.
+  mergedAt: timestamp('merged_at', { withTimezone: true }),
+  mergeCommitSha: text('merge_commit_sha'),
+  supersededByPr: integer('superseded_by_pr'),
+  supersededByUrl: text('superseded_by_url'),
+  supersededReason: text('superseded_reason'),
+  recordedBy: text('recorded_by'),
+  // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
+  // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
+  // released to legacy finishes there even if the switch is turned on again,
+  // so no delivery ever has two authorities.
+  authority: text('authority').default('kernel').notNull().$type<'kernel' | 'legacy'>(),
+  releasedAt: timestamp('released_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  lastTransitionAt: timestamp('last_transition_at', { withTimezone: true }),
+}, (t) => ({
+  ownerUnique: uniqueIndex('workflow_deliveries_owner_unique').on(t.workspaceId, t.ownerTaskId),
+  prUnique: uniqueIndex('workflow_deliveries_pr_unique').on(t.workspaceId, t.repoFullName, t.prNumber).where(sql`${t.prNumber} IS NOT NULL`),
+  stateIdx: index('workflow_deliveries_state_idx').on(t.workspaceId, t.state),
+}));
+
+export type WorkflowDeliveryRow = typeof workflowDeliveries.$inferSelect;
+
+// §5.2 — a verdict is a property of (PR, head SHA, round); head_sha is set at
+// dispatch and never edited.
+export const workflowReviewRounds = pgTable('workflow_review_rounds', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  round: integer('round').notNull(),
+  headSha: text('head_sha').notNull(),
+  kind: text('kind').notNull().$type<'full' | 'delta'>(),
+  priorRound: integer('prior_round'),
+  // Delta scope: for a composition with a novel delta, only these paths are new.
+  scope: jsonb('scope').$type<Record<string, unknown>>(),
+  reviewerTaskId: uuid('reviewer_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  status: text('status').default('queued').notNull().$type<'queued' | 'reviewing' | 'decided' | 'failed' | 'superseded'>(),
+  verdict: text('verdict').$type<'approve' | 'request_changes' | 'escalate'>(),
+  effectiveVerdict: text('effective_verdict').$type<'approve' | 'request_changes' | 'escalate'>(),
+  confidence: real('confidence'),
+  failureCount: integer('failure_count').default(0).notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  roundUnique: uniqueIndex('workflow_review_rounds_round_unique').on(t.deliveryId, t.round),
+  // Single flight: one open round per (delivery, head, kind).
+  openPerHead: uniqueIndex('workflow_review_rounds_open_per_head').on(t.deliveryId, t.headSha, t.kind).where(sql`${t.status} IN ('queued', 'reviewing')`),
+}));
+
+export type WorkflowReviewRoundRow = typeof workflowReviewRounds.$inferSelect;
+
+// §5.3 — append-only observations. A duplicate fact_key is a no-op that
+// returns the first application's result. payload holds normalised fields the
+// reducer read, never a raw webhook body.
+export const workflowFacts = pgTable('workflow_facts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }),
+  repoFullName: text('repo_full_name'),
+  prNumber: integer('pr_number'),
+  kind: text('kind').notNull(),
+  factKey: text('fact_key').notNull(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).defaultNow().notNull(),
+  source: text('source').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  appliedTransitionId: uuid('applied_transition_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  factKeyUnique: uniqueIndex('workflow_facts_fact_key_unique').on(t.workspaceId, t.factKey),
+  deliveryIdx: index('workflow_facts_delivery_idx').on(t.deliveryId, t.observedAt),
+  prIdx: index('workflow_facts_pr_idx').on(t.workspaceId, t.repoFullName, t.prNumber),
+}));
+
+export type WorkflowFactRow = typeof workflowFacts.$inferSelect;
+
+// §5.4 — append-only transition log; the one source for the PR activity
+// comment, mission notes and explain's because[] chain.
+export const workflowTransitions = pgTable('workflow_transitions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  fromVersion: bigint('from_version', { mode: 'number' }).notNull(),
+  toVersion: bigint('to_version', { mode: 'number' }).notNull(),
+  fromState: text('from_state'),
+  toState: text('to_state').notNull(),
+  command: text('command').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  actor: text('actor').notNull(),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().default({}).notNull(),
+  bypass: jsonb('bypass').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  idempotencyUnique: uniqueIndex('workflow_transitions_idempotency_unique').on(t.deliveryId, t.idempotencyKey),
+  versionUnique: uniqueIndex('workflow_transitions_version_unique').on(t.deliveryId, t.toVersion),
+}));
+
+export type WorkflowTransitionRow = typeof workflowTransitions.$inferSelect;
+
+// §5.5 — transactional outbox: inserted by the statement that applied the
+// transition, drained at least once by apps/web/src/lib/workflow/effects.ts.
+export const workflowEffects = pgTable('workflow_effects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  transitionId: uuid('transition_id').references(() => workflowTransitions.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'done' | 'failed' | 'dead'>(),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  lastError: text('last_error'),
+  outcome: text('outcome'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  dedupeUnique: uniqueIndex('workflow_effects_dedupe_unique').on(t.dedupeKey),
+  dueIdx: index('workflow_effects_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
+  deliveryIdx: index('workflow_effects_delivery_idx').on(t.deliveryId, t.createdAt),
+}));
+
+export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// §5.7 — one retry ledger per family; the only source for "attempt N of M".
+// Allocation is consumption: the row is inserted by the dispatching statement.
+export const workflowAttempts = pgTable('workflow_attempts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  family: text('family').notNull().$type<'review_fix' | 'ci' | 'conflict' | 'migration' | 'trunk'>(),
+  attemptNo: integer('attempt_no').notNull(),
+  mode: text('mode').notNull().$type<'mechanical' | 'agent'>(),
+  boundHeadSha: text('bound_head_sha'),
+  triggerFactId: uuid('trigger_fact_id'),
+  triggerReason: text('trigger_reason'),
+  // No FK, like tasks.delivery_id (§5.6): allocation is consumption, so the
+  // dispatching statement writes the attempt row naming its task id BEFORE the
+  // dispatch_fix effect inserts that task (and re-inserts it under the same id
+  // after a crash). A tasks FK rejects every such allocation.
+  taskId: uuid('task_id'),
+  trigger: text('trigger').default('automatic').notNull().$type<'automatic' | 'human'>(),
+  reportedShas: text('reported_shas').array().default(sql`'{}'::text[]`).notNull(),
+  pushedHeadSha: text('pushed_head_sha'),
+  status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'ended' | 'skipped' | 'cancelled'>(),
+  outcome: text('outcome').$type<'delivered' | 'unproven' | 'failed' | 'noop'>(),
+  maxAttempts: integer('max_attempts').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+}, (t) => ({
+  attemptUnique: uniqueIndex('workflow_attempts_no_unique').on(t.deliveryId, t.family, t.mode, t.attemptNo),
+  taskIdx: index('workflow_attempts_task_idx').on(t.taskId),
+}));
+
+export type WorkflowAttemptRow = typeof workflowAttempts.$inferSelect;
+
+// §5.8 — one incident per trunk-red signature; per-PR CI retries are not
+// dispatched while it is open.
+export const trunkIncidents = pgTable('trunk_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  signature: text('signature').notNull(),
+  status: text('status').default('open').notNull().$type<'open' | 'fixing' | 'resolved'>(),
+  openedByFact: uuid('opened_by_fact'),
+  trunkFixTaskId: uuid('trunk_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // Bounded by the circuit-breaker cap.
+  affectedDeliveries: jsonb('affected_deliveries').$type<string[]>().default([]).notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  openSignatureUnique: uniqueIndex('trunk_incidents_open_signature_unique').on(t.workspaceId, t.repoFullName, t.baseRef, t.signature).where(sql`${t.status} <> 'resolved'`),
+}));
+
+export type TrunkIncidentRow = typeof trunkIncidents.$inferSelect;
 
 // Releases — one row per deployment/release event for a workspace.
 export const releases = pgTable('releases', {

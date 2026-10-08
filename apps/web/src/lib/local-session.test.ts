@@ -24,7 +24,8 @@ const {
   hashClientSessionId,
   presenceTouchWhere,
   boundWorkerTouchWhere,
-  bindWhere,
+  bindInsertSql,
+  usageWriteWhere,
   LocalSessionError,
 } = await import('./local-session');
 type Store = import('./local-session').LocalSessionStore;
@@ -34,17 +35,29 @@ const LIVE = new Set(['idle', 'running', 'starting', 'waiting_input']);
 const NOW = new Date('2026-10-07T12:00:00Z');
 const later = (ms: number) => new Date(NOW.getTime() + ms);
 
-interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; boundWorkerId: string | null; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string }
+interface Presence { id: string; accountId: string | null; userId: string | null; kind: string; hash: string; endedAt: Date | null; lastSeenAt: Date; workspaceId: string | null; endReason?: string }
 interface Worker { id: string; accountId: string; runner: string; status: string; taskId: string | null; workspaceId: string; updatedAt: Date; pendingInstructions: string | null; ownerTeamId?: string | null; claimUserId?: string | null }
 
 let presences: Presence[];
+/** local_session_workers: worker id -> presence id (primary key on the worker). */
+let bindings: Map<string, string>;
 let workers: Map<string, Worker>;
 let workerInserts: number;
 let seatWrites: number;
 let presenceWrites: number;
 let workerTouches: number;
 let detachCalls: Array<{ workerId: string; reason: string }>;
+type UsageWrite = Parameters<Store['recordUsage']>[0];
+let usageWrites: UsageWrite[];
+/** Interleaving of usage writes and detaches, to pin "usage lands before release". */
+let usageOrder: string[];
 let taskStatus: Map<string, string>;
+
+const row = (p: Presence) => ({
+  id: p.id,
+  endedAt: p.endedAt,
+  workerIds: [...bindings].filter(([, pid]) => pid === p.id).map(([wid]) => wid),
+});
 
 function memoryStore(): Store {
   let seq = 0;
@@ -54,18 +67,18 @@ function memoryStore(): Store {
       const same = (x: Presence) => ('userId' in i.owner ? x.userId === i.owner.userId : x.accountId === i.owner.accountId);
       let p = presences.find(x => same(x) && x.kind === i.clientKind && x.hash === i.clientSessionHash);
       if (!p) {
-        p = { id: `p${++seq}`, accountId: 'accountId' in i.owner ? i.owner.accountId : null, userId: 'userId' in i.owner ? i.owner.userId : null, kind: i.clientKind, hash: i.clientSessionHash, boundWorkerId: null, endedAt: null, lastSeenAt: i.now, workspaceId: i.workspaceId };
+        p = { id: `p${++seq}`, accountId: 'accountId' in i.owner ? i.owner.accountId : null, userId: 'userId' in i.owner ? i.owner.userId : null, kind: i.clientKind, hash: i.clientSessionHash, endedAt: null, lastSeenAt: i.now, workspaceId: i.workspaceId };
         presences.push(p);
       } else {
         p.lastSeenAt = i.now; p.endedAt = null;
         if (i.workspaceId) p.workspaceId = i.workspaceId;
       }
-      return { id: p.id, boundWorkerId: p.boundWorkerId, endedAt: p.endedAt };
+      return row(p);
     },
     async find(owner, kind, hash) {
       const same = (x: Presence) => ('userId' in owner ? x.userId === owner.userId : x.accountId === owner.accountId);
       const p = presences.find(x => same(x) && x.kind === kind && x.hash === hash);
-      return p ? { id: p.id, boundWorkerId: p.boundWorkerId, endedAt: p.endedAt } : null;
+      return p ? row(p) : null;
     },
     async touchPresence(id, now) {
       const p = presences.find(x => x.id === id)!;
@@ -87,18 +100,21 @@ function memoryStore(): Store {
     async bind(presenceId, workerId, workspaceId) {
       const p = presences.find(x => x.id === presenceId)!;
       if (p.endedAt) return false;
-      // Unique index on bound_worker_id.
-      if (presences.some(x => x.id !== presenceId && x.boundWorkerId === workerId)) return false;
-      const current = p.boundWorkerId ? workers.get(p.boundWorkerId) : null;
-      if (p.boundWorkerId && p.boundWorkerId !== workerId && current && LIVE.has(current.status)) return false;
-      p.boundWorkerId = workerId; p.workspaceId = workspaceId; presenceWrites++;
+      // Primary key on local_session_workers.worker_id: one presence per worker, ever.
+      const holder = bindings.get(workerId);
+      if (holder && holder !== presenceId) return false;
+      bindings.set(workerId, presenceId); p.workspaceId = workspaceId; presenceWrites++;
       return true;
     },
     async end(presenceId, reason, now) {
       const p = presences.find(x => x.id === presenceId)!;
       if (p.endedAt) return null;
       p.endedAt = now; p.endReason = reason; presenceWrites++;
-      return { id: p.id, boundWorkerId: p.boundWorkerId, endedAt: p.endedAt };
+      return row(p);
+    },
+    async recordUsage(u) {
+      usageWrites.push(u); usageOrder.push('usage');
+      return true;
     },
     async workerState(id) {
       const w = workers.get(id);
@@ -112,6 +128,7 @@ function memoryStore(): Store {
 /** Mirrors detachInteractiveWorker's contract: CAS out of the live set; never rewrites a terminal task. */
 async function detach(workerId: string, reason: string) {
   detachCalls.push({ workerId, reason });
+  usageOrder.push('detach');
   const w = workers.get(workerId);
   if (!w || w.runner !== 'mcp' || !LIVE.has(w.status)) return { detached: false };
   const ts = w.taskId ? taskStatus.get(w.taskId) : undefined;
@@ -139,6 +156,7 @@ function claimWorker(id = 'w-1', over: Partial<Worker> = {}) {
 
 beforeEach(() => {
   presences = [];
+  bindings = new Map();
   workers = new Map();
   taskStatus = new Map();
   workerInserts = 0;
@@ -146,6 +164,8 @@ beforeEach(() => {
   presenceWrites = 0;
   workerTouches = 0;
   detachCalls = [];
+  usageWrites = [];
+  usageOrder = [];
   store = memoryStore();
 });
 
@@ -206,7 +226,7 @@ describe('bind', () => {
     const ok = await run({ event: 'bind', workerId: id });
     expect(ok.outcome).toBe('bound');
     expect(ok.taskId).toBe(`t-${id}`);
-    expect(presences[0].boundWorkerId).toBe(id);
+    expect(bindings.get(id)).toBe(presences[0].id);
     expect(workerInserts).toBe(before);
     // Replay is a no-op.
     expect((await run({ event: 'bind', workerId: id })).outcome).toBe('already_bound');
@@ -222,7 +242,7 @@ describe('bind', () => {
       expect(err).toBeInstanceOf(LocalSessionError);
       expect(err.code).toBe('not_interactive');
     }
-    expect(presences.every(p => p.boundWorkerId === null)).toBe(true);
+    expect(bindings.size).toBe(0);
   });
 
   it("refuses another account's worker with the same answer as an unknown id", async () => {
@@ -245,15 +265,18 @@ describe('bind', () => {
     expect(workers.get(id)!.updatedAt).toEqual(NOW);
   });
 
-  it('can rebind to a new claim once the previous bound worker ended', async () => {
+  it('one session holds several claims at once (subagents each claiming a task)', async () => {
     const a = 'aaaaaaaa-0000-4000-8000-00000000000a';
     const b = 'bbbbbbbb-0000-4000-8000-00000000000b';
     claimWorker(a);
-    await run({ event: 'bind', workerId: a });
     claimWorker(b);
-    expect((await run({ event: 'bind', workerId: b }).catch(e => e)).code).toBe('bound_elsewhere');
-    workers.get(a)!.status = 'completed';
+    expect((await run({ event: 'bind', workerId: a })).outcome).toBe('bound');
     expect((await run({ event: 'bind', workerId: b })).outcome).toBe('bound');
+    expect(bindings.get(a)).toBe(presences[0].id);
+    expect(bindings.get(b)).toBe(presences[0].id);
+    expect((await run({ event: 'bind', workerId: a })).outcome).toBe('already_bound');
+    // Another session still cannot take either.
+    expect((await run({ event: 'bind', workerId: b, clientSessionId: 'sess-B' }).catch(e => e)).code).toBe('bound_elsewhere');
   });
 
   it('refuses a worker that already ended', async () => {
@@ -279,6 +302,27 @@ describe('touch of a bound worker', () => {
     expect(workerTouches).toBe(1);
     expect(workers.get(id)!.updatedAt).toEqual(later(200_000));
     expect(workers.get(other)!.updatedAt).toEqual(NOW);
+  });
+
+  it('keeps every worker the session holds alive', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id, { updatedAt: later(-120_000) });
+    claimWorker(other, { updatedAt: later(-120_000) });
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    await run({ event: 'touch' }, ACCOUNT, later(61_000));
+    expect(workerTouches).toBe(2);
+  });
+
+  it('flags a pending instruction on any held worker, and names that task', async () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    claimWorker(id);
+    claimWorker(other, { pendingInstructions: 'look at the failing test' });
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    const res = await run({ event: 'touch' }, ACCOUNT, later(120_000));
+    expect(res.pendingInstructions).toBe(true);
+    expect(res.taskId).toBe(`t-${other}`);
   });
 
   it('reports a pending instruction as a flag only, never its text', async () => {
@@ -370,6 +414,45 @@ describe('end', () => {
     expect(seatWrites).toBe(1);
   });
 
+  it('exit releases every task the session holds, each exactly once, and a replay changes nothing', async () => {
+    const other = '44444444-4444-4444-8444-444444444444';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    expect((await run({ event: 'end', reason: 'exit' })).outcome).toBe('ended_released');
+    expect(taskStatus.get(`t-${id}`)).toBe('pending');
+    expect(taskStatus.get(`t-${other}`)).toBe('pending');
+    expect(seatWrites).toBe(2);
+    expect((await run({ event: 'end', reason: 'exit' })).outcome).toBe('already_ended');
+    expect(seatWrites).toBe(2);
+    expect(detachCalls.map(c => c.workerId).sort()).toEqual([id, other].sort());
+  });
+
+  it('exit with one finished and one open task: the finished one stays finished, the open one goes back', async () => {
+    const other = '55555555-5555-4555-8555-555555555555';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    workers.get(id)!.status = 'completed';
+    taskStatus.set(`t-${id}`, 'completed');
+    await run({ event: 'end', reason: 'exit' });
+    expect(taskStatus.get(`t-${id}`)).toBe('completed');
+    expect(taskStatus.get(`t-${other}`)).toBe('pending');
+    expect(seatWrites).toBe(1);
+  });
+
+  it('clear keeps every claim', async () => {
+    const other = '66666666-6666-4666-8666-666666666666';
+    claimWorker(id);
+    claimWorker(other);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'bind', workerId: other });
+    expect((await run({ event: 'end', reason: 'clear' })).outcome).toBe('ended_kept_claim');
+    expect(detachCalls).toHaveLength(0);
+  });
+
   it('a completed task with a late end stays completed and releases exactly once', async () => {
     claimWorker(id);
     await run({ event: 'bind', workerId: id });
@@ -414,6 +497,52 @@ describe('end', () => {
   });
 });
 
+describe('usage', () => {
+  const id = '77777777-7777-4777-8777-777777777777';
+  const model = (over = {}) => ({ model: 'claude-sonnet-5', input: 100, cacheRead: 10_000, cacheWrite5m: 1000, cacheWrite1h: 0, output: 500, requests: 4, ...over });
+  const usage = (workerId: string, models = [model()]) => ({ workers: [{ workerId, models, toolCalls: 7, subagents: 0, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:04:00.000Z' }] });
+
+  it('a touch carrying usage records priced totals on the worker the session holds', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    const res = await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(30_000));
+    expect(res.ok).toBe(true);
+    expect(usageWrites).toHaveLength(1);
+    const w = usageWrites[0];
+    expect(w.workerId).toBe(id);
+    expect(w.allInInputTokens).toBe(11_100);
+    expect(w.outputTokens).toBe(500);
+    expect(w.requests).toBe(4);
+    // sonnet-5: $2 in, $0.2 cache read, $2.5 5m write, $10 out, per 1M.
+    expect(w.costUsd).toBeCloseTo((100 * 2 + 10_000 * 0.2 + 1000 * 2.5 + 500 * 10) / 1e6, 9);
+    expect(w.effort).toMatchObject({ toolCalls: 7, subagents: 0, requests: 4, costUnknown: false });
+  });
+
+  it('an unpriced model leaves the cost unknown, never written as a number', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'touch', usage: usage(id, [model(), model({ model: 'other-vendor/unknown-model' })]) }, ACCOUNT, later(30_000));
+    expect(usageWrites[0].costUsd).toBeNull();
+    expect(usageWrites[0].modelUsage).toBeNull();
+    expect(usageWrites[0].effort).toMatchObject({ costUnknown: true, unpricedModels: ['other-vendor/unknown-model'] });
+  });
+
+  it("usage for a worker the session does not hold is ignored, even the account's own", async () => {
+    claimWorker(id);
+    await run({ event: 'start' });
+    await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(30_000));
+    expect(usageWrites).toHaveLength(0);
+  });
+
+  it('end records the last usage before releasing the worker', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'end', reason: 'exit', usage: usage(id) });
+    expect(usageWrites).toHaveLength(1);
+    expect(usageOrder).toEqual(['usage', 'detach']);
+  });
+});
+
 describe('contract', () => {
   it('rejects unknown fields so no content can ride along', () => {
     for (const extra of [{ prompt: 'hi' }, { transcript: '...' }, { last_assistant_message: 'x' }]) {
@@ -430,6 +559,37 @@ describe('contract', () => {
     expect(parseLocalSessionEvent({ event: 'end', client: 'claude', clientSessionId: 's', reason: 'kill' }).ok).toBe(false);
     const ok = parseLocalSessionEvent({ event: 'end', client: 'codex', clientSessionId: 's' });
     expect(ok.ok && ok.event.reason).toBe('other');
+  });
+
+  describe('usage', () => {
+    const W = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const model = { model: 'claude-sonnet-5', input: 10, cacheRead: 2000, cacheWrite5m: 300, cacheWrite1h: 0, output: 50, requests: 2 };
+    const worker = { workerId: W, models: [model], toolCalls: 3, subagents: 1, firstAt: '2026-10-07T12:00:00.000Z', lastAt: '2026-10-07T12:05:00.000Z' };
+    const ev = (usage: unknown, event = 'touch') => parseLocalSessionEvent({ event, client: 'claude', clientSessionId: 's', usage });
+
+    it('rides on touch and end only, numbers and model ids only', () => {
+      const r = ev({ workers: [worker] });
+      expect(r.ok && r.event.usage?.workers[0]).toEqual(worker);
+      expect(ev({ workers: [worker] }, 'end').ok).toBe(true);
+      expect(ev({ workers: [worker] }, 'start').ok).toBe(false);
+      expect(parseLocalSessionEvent({ event: 'bind', client: 'claude', clientSessionId: 's', workerId: W, usage: { workers: [worker] } }).ok).toBe(false);
+    });
+
+    it('refuses any field it does not know, at every level, so no content can ride along', () => {
+      expect(ev({ workers: [worker], note: 'x' }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, summary: 'did a thing' }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, text: 'hello' }] }] }).ok).toBe(false);
+    });
+
+    it('validates shapes and bounds', () => {
+      expect(ev({ workers: [{ ...worker, workerId: 'nope' }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, output: -1 }] }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, output: 1.5 }] }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, models: [{ ...model, model: 'has spaces and; stuff' }] }] }).ok).toBe(false);
+      expect(ev({ workers: Array.from({ length: 21 }, () => worker) }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, firstAt: 'yesterday' }] }).ok).toBe(false);
+      expect(ev({ workers: [] }).ok).toBe(true);
+    });
   });
 
   it('normalizes repos and strips credentials', () => {
@@ -463,6 +623,17 @@ describe('SQL', () => {
     expect(q.params).toContain(new Date(NOW.getTime() - 60_000).toISOString());
   });
 
+  it('a usage write reaches only an interactive worker that is live or ended within the grace window', () => {
+    const cutoff = new Date(NOW.getTime() - 10 * 60_000);
+    const q = render(usageWriteWhere('w1', cutoff));
+    expect(q.sql).toContain('"workers"."id" =');
+    expect(q.sql).toContain('"workers"."runner" =');
+    expect(q.sql).toContain('"workers"."status" in');
+    expect(q.sql).toContain('"workers"."completed_at" >');
+    expect(q.params).toContain('mcp');
+    expect(q.params).toContain(cutoff.toISOString());
+  });
+
   it("a person's bound worker touch drops only the account guard: still interactive, live and a minute stale", () => {
     const q = render(boundWorkerTouchWhere('w1', null, NOW));
     expect(q.sql).not.toContain('"workers"."account_id"');
@@ -471,11 +642,13 @@ describe('SQL', () => {
     expect(q.sql).toContain('"workers"."updated_at" <');
   });
 
-  it('bind CAS requires an open presence holding no other live worker', () => {
-    const q = render(bindWhere('p1', 'w1'));
-    expect(q.sql).toContain('"local_sessions"."ended_at" is null');
-    expect(q.sql).toContain('"local_sessions"."bound_worker_id" is null');
-    expect(q.sql).toMatch(/NOT EXISTS/);
-    expect(q.params).toContain('waiting_input');
+  it('bind inserts one row per worker, only into an open presence, never stealing another presence\'s worker', () => {
+    const q = render(bindInsertSql('p1', 'w1', NOW));
+    expect(q.sql).toMatch(/INSERT INTO "local_session_workers"/);
+    expect(q.sql).toMatch(/"ended_at" IS NULL/);
+    expect(q.sql).toMatch(/ON CONFLICT \("worker_id"\) DO NOTHING/);
+    // A session bound before multi-claim keeps its worker: the legacy column still guards it.
+    expect(q.sql).toMatch(/"bound_worker_id" = /);
+    expect(q.params).toEqual(expect.arrayContaining(['p1', 'w1']));
   });
 });

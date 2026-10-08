@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
-import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
+import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
@@ -278,7 +278,9 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
-  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+  // CAPABILITY_MCP_GROUP_TOOLS: this build matches buildd actions on the group
+  // tools, so the MCP server may serve its worker sessions those.
+  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex', CAPABILITY_MCP_GROUP_TOOLS])];
 
   // A plain `codex login` on this machine (~/.codex/auth.json, no CODEX_HOME
   // set) is local Codex auth too: advertise it under the same key the claim

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildToolBreakdown, type ToolBreakdownInput } from './tool-usage-breakdown';
+import { BUILDD_TOOL, buildToolBreakdown, foldBuilddActionTools, type ToolBreakdownInput } from './tool-usage-breakdown';
 import { computeUsageStats, type UsageWorkerRow } from './usage-stats';
 
 function tool(name: string, calls: number, total: number) {
@@ -67,6 +67,48 @@ describe('buildToolBreakdown', () => {
     expect(buildd.children.map(c => [c.label, c.calls])).toEqual([['update_progress', 20], ['claim_task', 16]]);
     expect(buildd.children[0].share).toBeCloseTo(20 / 36);
     expect(buildd.childCoverage).toEqual({ covered: 36, of: 40 });
+  });
+
+  it('folds the group tools into the buildd row with the legacy name, so history stays continuous', () => {
+    const total = 200;
+    const rows = buildToolBreakdown(input({
+      tools: [
+        tool('Bash', 120, total),
+        tool('mcp__buildd__buildd_work', 30, total),
+        tool('Read', 25, total),
+        tool('mcp__buildd__buildd', 10, total),
+        tool('mcp__buildd__buildd_analytics', 5, total),
+        tool('mcp__buildd__recall', 4, total),
+      ],
+    }));
+    expect(rows.map(r => [r.name, r.calls])).toEqual([
+      ['Bash', 120], [BUILDD_TOOL, 45], ['Read', 25], ['mcp__buildd__recall', 4],
+    ]);
+    const buildd = rows[1];
+    expect(buildd.label).toBe('buildd');
+    expect(buildd.share).toBeCloseTo(45 / 200);
+    // The actions breakdown covers every buildd tool's calls.
+    expect(buildd.children.map(c => c.label)).toEqual(['update_progress', 'claim_task']);
+    expect(buildd.childCoverage).toEqual({ covered: 36, of: 45 });
+  });
+
+  it('a folded row can move up past a tool it now outnumbers; tasks report a floor', () => {
+    const folded = foldBuilddActionTools([
+      { name: 'Read', calls: 30, share: 0.3, tasks: 4, exactCalls: 30, exactTasks: 4 },
+      { name: 'mcp__buildd__buildd_work', calls: 20, share: 0.2, tasks: 3, exactCalls: 20, exactTasks: 2 },
+      { name: 'mcp__buildd__buildd_tasks', calls: 15, share: 0.15, tasks: 2, exactCalls: 15, exactTasks: 2 },
+    ]);
+    expect(folded.map(t => [t.name, t.calls, t.tasks, t.exactCalls, t.exactTasks])).toEqual([
+      [BUILDD_TOOL, 35, 3, 35, 2], ['Read', 30, 4, 30, 4],
+    ]);
+  });
+
+  it('buildd_memory is not an action tool and keeps its own row', () => {
+    const folded = foldBuilddActionTools([
+      { name: 'mcp__buildd__buildd_memory', calls: 3, share: 0.5, tasks: 1, exactCalls: 3, exactTasks: 1 },
+      { name: 'mcp__buildd__buildd_work', calls: 3, share: 0.5, tasks: 1, exactCalls: 3, exactTasks: 1 },
+    ]);
+    expect(folded.map(t => t.name)).toEqual(['mcp__buildd__buildd_memory', BUILDD_TOOL]);
   });
 
   it('expands Read and Edit into repo areas', () => {

@@ -1,5 +1,7 @@
 'use client';
 
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { deliveryReading, type DeliveryDisplay, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import InteractiveSessions from './InteractiveSessions';
@@ -27,6 +29,8 @@ export interface GridTask {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  /** The kernel's reading when this task owns a kernel-owned delivery (§17.5); null = legacy. */
+  delivery?: DeliveryDisplay | null;
   summary: string | null;
   hasArtifact: boolean;
   filesChanged: number | null;
@@ -75,11 +79,13 @@ export function gridTaskPrProps(task: GridTask): {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus: string | null;
+  delivery: DeliveryDisplay | null;
 } {
   return {
     prUrl: task.prUrl,
     prNumber: task.prNumber,
     prLifecycleStatus: task.prLifecycleStatus ?? null,
+    delivery: task.delivery ?? null,
   };
 }
 
@@ -219,6 +225,11 @@ interface MissionGroup {
 
 // ─── Stage derivation from GridTask (no new column needed) ───────────────────
 
+/** The histogram's bucket per canonical delivery tone (`deliveryReading`): only FAILED is failed. */
+const GRID_BUCKET_FOR_DELIVERY_TONE: Record<DeliveryTone, keyof StageCounts> = {
+  needs: 'REVIEW', live: 'REVIEW', stalled: 'BLOCKED', landed: 'DONE', closed: 'DONE', failed: 'FAILED',
+};
+
 /**
  * Histogram bucket for a row, or `null` for a row that belongs in no bucket.
  * Cancelled work is deliberately stopped: counting it as QUEUED (the old
@@ -226,11 +237,16 @@ interface MissionGroup {
  */
 export function deriveGridTaskStage(task: GridTask): keyof StageCounts | null {
   if (task.status === 'cancelled') return null;
+  // A kernel-owned delivery buckets by its own stage, the one the card's chip
+  // shows (§17.5), never by the fact-cache columns.
+  const workerLive = task.workerStatus === 'running' || task.workerStatus === 'starting' ||
+    task.workerStatus === 'idle' || task.workerStatus === 'waiting_input';
+  const kernel = task.delivery && !workerLive ? deliveryReading(task.delivery) : null;
+  if (kernel) return GRID_BUCKET_FOR_DELIVERY_TONE[kernel.tone];
   if (task.status === 'failed') return 'FAILED';
-  if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
-      task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
+  if (workerLive) return 'RUNNING';
   if (task.status === 'completed') {
-    const merged = task.prLifecycleStatus === 'merged';
+    const merged = derivePrDisplayState(task.prLifecycleStatus, null) === 'merged';
     if (task.prUrl && !merged) return 'REVIEW';
     return 'DONE';
   }
@@ -308,6 +324,7 @@ interface TaskGridProps {
   initiativeMissionIds?: string[];
   /** Local interactive sessions (presence). Never counted as agents. */
   localSessions?: LocalSessionView[];
+  teamName?: string | null;
 }
 
 /**
@@ -331,7 +348,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [] }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds, localSessions = [], teamName }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -596,36 +613,48 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
 
   if (rootTasks.length === 0 && !missionFilter) {
     return (
-      <div className="h-full flex flex-col pt-20 md:pt-8">
-      <InteractiveSessions sessions={localSessions} />
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="max-w-md text-center">
-          <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <NewWorkLink
-              kind="mission"
-              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
-            >
-              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              New Mission
-            </NewWorkLink>
-            <NewWorkLink
-              kind="task"
-              testId="activity-empty-new-task"
-              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
-            >
-              New task
-            </NewWorkLink>
+      <div className="h-full flex flex-col">
+        <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-4">
+          <div className="flex items-baseline justify-between mb-6">
+            <div className="min-w-0">
+              <div className="section-label hidden text-text-muted md:block">
+                Activity{teamName ? ` · ${teamName}` : ''}
+              </div>
+              <h1 className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+                No activity
+              </h1>
+            </div>
           </div>
         </div>
-      </div>
+        <InteractiveSessions sessions={localSessions} />
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <NewWorkLink
+                kind="mission"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Mission
+              </NewWorkLink>
+              <NewWorkLink
+                kind="task"
+                testId="activity-empty-new-task"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 border border-border-default text-text-primary rounded-md hover:bg-surface-3"
+              >
+                New task
+              </NewWorkLink>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

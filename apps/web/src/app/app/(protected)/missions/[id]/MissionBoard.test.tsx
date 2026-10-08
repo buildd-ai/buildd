@@ -14,7 +14,9 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: MissionBoard } = await import('./MissionBoard');
 const { boardFixture } = await import('@/lib/mission-board.fixtures');
 const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
+const { cellStanding, describeVisualPhase, screensToReview } = await import('@/lib/visual-review-model');
 const { CanvasContext } = await import('@/components/chat/canvas-context');
+const { missionTaskStripFixture } = await import('@/app/app/dev/fixtures/mission-task-strip-fixtures');
 
 const render = (moment: Parameters<typeof boardFixture>[0], extra: Record<string, unknown> = {}) =>
   renderToStaticMarkup(<MissionBoard model={boardFixture(moment)} missionId="mission-1" {...extra} />);
@@ -353,11 +355,31 @@ describe('MissionBoard — visual review (docs/design/visual-qa-human-review.md)
     const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
     const html = render('running', { visual });
     const cell = html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '';
-    expect(text(cell)).toContain(String(visual.summary.awaitingHuman));
-    expect(text(html)).toContain(`${visual.summary.awaitingHuman} ${visual.summary.awaitingHuman === 1 ? 'screen' : 'screens'} to review`);
+    const n = screensToReview(visual);
+    expect(text(cell)).toContain(String(n));
+    expect(text(html)).toContain(`${n} ${n === 1 ? 'screen' : 'screens'} to review`);
     expect(html).toContain('data-testid="visual-review-ask"');
     // Before the columns, beside the other asks.
     expect(html.indexOf('data-testid="visual-review-ask"')).toBeLessThan(html.indexOf('data-testid="mission-board-columns"'));
+  });
+
+  // Regression (surface audit, mission-board-visual): the band said "1 screen
+  // to review" and the Ask "Review 1", then the deck opened on "2 TO REVIEW".
+  // The board counted unsure shots; the deck counts every cell waiting on a
+  // person (an unsure shot and a merged fix's new screenshot). One count now.
+  it('Needs you, its caption and the Ask button count what the deck counts', () => {
+    const visual = visualAs('guide', 'needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    const deck = visual.cells.filter(c => cellStanding(c) === 'to_review').length;
+    expect(deck).toBe(2);
+    expect(screensToReview(visual)).toBe(deck);
+    const html = render('running', { visual });
+    const cell = html.split('data-testid="needs-you-cell"')[1]?.split('</div>')[0] ?? '';
+    expect(text(cell)).toContain(String(deck));
+    expect(text(html)).toContain(`${deck} screens to review`);
+    const ask = html.split('data-testid="visual-review-ask-review"')[1]?.split('</button>')[0] ?? '';
+    expect(text(ask)).toContain(`Review ${deck}`);
+    // The Screens row's label too.
+    expect(describeVisualPhase(visual).label).toBe(`${deck} to review`);
   });
 
   it('a question the auditor\'s worker asks is the board\'s own ask: not a second card', () => {
@@ -515,5 +537,26 @@ describe('MissionBoard — Steer', () => {
       </CanvasContext.Provider>,
     );
     expect(html).not.toContain('steer-trigger');
+  });
+});
+
+// Regression (surface audit, mission-task-strip&variant=states): the failed,
+// PR-less tile had a red bar and an empty second row. Only colour said it
+// failed, while the strip drawer said "FAILED".
+describe('MissionBoard — a failed tile says so in words', () => {
+  const html = renderToStaticMarkup(<MissionBoard model={missionTaskStripFixture('states').model} missionId="mission-1" />);
+  const tiles = html.split('data-testid="board-tile"').slice(1).map(t => t.split('data-testid="board-tile"')[0]);
+  const failed = tiles.find(t => t.startsWith(' data-status="failed"')) ?? '';
+
+  it('the failed, PR-less tile carries the word "Failed"', () => {
+    expect(failed).not.toBe('');
+    expect(failed).toContain('data-testid="board-tile-failed"');
+    expect(failed).toContain('>Failed<');
+  });
+
+  it('no tile renders an empty board-tile-body row', () => {
+    for (const m of html.matchAll(/data-testid="board-tile-body"[^>]*>([\s\S]*?)<\/div>/g)) {
+      expect(m[1].replace(/<span class="flex-1"><\/span>/g, '').trim()).not.toBe('');
+    }
   });
 });

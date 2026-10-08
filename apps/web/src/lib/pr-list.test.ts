@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildPrListWhere, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, waitingReason, type PrListRow } from './pr-list';
+import { buildPrListWhere, kernelPrStatuses, needsAttention, parsePrListState, prSignals, rankPrs, shapePrRows, waitingReason, type KernelPr, type PrListRow } from './pr-list';
 
 /** WHERE clauses rendered through PgDialect, so their shape is observable. */
 const dialect = new PgDialect();
@@ -51,9 +51,9 @@ describe('buildPrListWhere', () => {
     expect(render({ workspaceIds: ws, state: 'attention' })).toEqual(render({ workspaceIds: ws, state: 'open' }));
   });
 
-  it('conflict and ci_failed narrow to that one status', () => {
-    expect(render({ workspaceIds: ws, state: 'conflict' }).params).toContain('conflict');
-    expect(render({ workspaceIds: ws, state: 'ci_failed' }).params).toContain('ci_failed');
+  it('conflict and ci_failed read every open PR: the state is decided after the collapse (a kernel PR by its delivery)', () => {
+    expect(render({ workspaceIds: ws, state: 'conflict' })).toEqual(render({ workspaceIds: ws, state: 'open' }));
+    expect(render({ workspaceIds: ws, state: 'ci_failed' })).toEqual(render({ workspaceIds: ws, state: 'open' }));
   });
 
   it('merged: merged within the window, never closed ones', () => {
@@ -119,6 +119,49 @@ describe('shapePrRows', () => {
       row({ prUrl: 'u2', status: 'merged', mergedAt: new Date('2026-09-22T00:00:00Z') }),
     ], 'merged');
     expect(out.map(r => r.prUrl)).toEqual(['u2', 'u1']);
+  });
+});
+
+describe('Slice F: a kernel-owned PR says what its delivery says', () => {
+  const kernel = (taskId: string, k: KernelPr) => new Map<string, KernelPr>([[taskId, k]]);
+
+  it('the delivery wins over every worker column of the PR', () => {
+    // Columns say merged; the delivery is open and red on its head.
+    const rows = [row({ workerId: 'a', status: 'merged', mergedAt: new Date('2026-09-22T00:00:00Z') }), row({ workerId: 'b', status: 'ci_green' })];
+    const k = kernel('t', { prNumber: 1, status: 'ci_failed', mergedAt: null });
+    expect(shapePrRows(rows, 'merged', k)).toEqual([]);
+    expect(shapePrRows(rows, 'ci_failed', k).map(r => r.status)).toEqual(['ci_failed']);
+    expect(shapePrRows(rows, 'open', k).map(r => r.workerIds.sort())).toEqual([['a', 'b']]);
+  });
+
+  it('a merged delivery is merged at its own instant, even with no worker stamp', () => {
+    const k = kernel('t', { prNumber: 1, status: 'merged', mergedAt: new Date('2026-10-01T00:00:00Z') });
+    const out = shapePrRows([row({ status: 'ci_green' })], 'merged', k);
+    expect(out.map(r => [r.status, r.mergedAt?.toISOString()])).toEqual([['merged', '2026-10-01T00:00:00.000Z']]);
+    expect(shapePrRows([row({ status: 'ci_green' })], 'open', k)).toEqual([]);
+  });
+
+  it('a closed delivery is never listed', () => {
+    const k = kernel('t', { prNumber: 1, status: 'closed', mergedAt: null });
+    for (const s of ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const) expect(shapePrRows([row({ status: 'conflict' })], s, k)).toEqual([]);
+  });
+
+  it('a delivery for another PR of the same task does not speak for this one', () => {
+    const k = kernel('t', { prNumber: 2, status: 'merged', mergedAt: new Date() });
+    expect(shapePrRows([row({ status: 'conflict' })], 'conflict', k).map(r => r.status)).toEqual(['conflict']);
+  });
+
+  it('kernelPrStatuses maps owner and attempt task ids to the delivery, in list words', () => {
+    const m = kernelPrStatuses(new Map([
+      ['own', { prNumber: 5, prState: 'ci_passed', mergedAt: null }],
+      ['fix', { prNumber: 5, prState: 'awaiting_ci', mergedAt: null }],
+      ['done', { prNumber: 6, prState: 'merged', mergedAt: '2026-10-01T00:00:00.000Z' }],
+      ['none', { prNumber: null, prState: null, mergedAt: null }],
+    ]));
+    expect(m.get('own')).toEqual({ prNumber: 5, status: 'ci_green', mergedAt: null });
+    expect(m.get('fix')?.status).toBe('pr_open');
+    expect(m.get('done')?.mergedAt?.toISOString()).toBe('2026-10-01T00:00:00.000Z');
+    expect(m.has('none')).toBe(false);
   });
 });
 

@@ -50,11 +50,14 @@ export default function InteractiveSessions({ sessions, now = Date.now() }: { se
                   {ago(s.endedAt ?? s.lastSeenAt, now)}
                 </span>
               </div>
-              {s.task && (
+              {(s.tasks.length > 0 || s.task) && (
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <Link href={`/app/tasks/${s.task.id}`} className="text-[13px] text-text-primary truncate hover:underline">
-                    {s.task.title}
-                  </Link>
+                  {/* Every task the session holds (its subagents each claim one), oldest first. */}
+                  {(s.tasks.length > 0 ? s.tasks : [s.task!]).map(t => (
+                    <Link key={t.id} href={`/app/tasks/${t.id}`} className="text-[13px] text-text-primary truncate hover:underline">
+                      {t.title}
+                    </Link>
+                  ))}
                   {s.workerLive && (
                     <span className="text-[12px] text-text-muted">
                       Runs on your machine. Buildd can release its slot, not close it.

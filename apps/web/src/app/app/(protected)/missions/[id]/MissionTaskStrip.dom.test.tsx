@@ -99,12 +99,15 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="task-action-zone"]')?.getAttribute('data-actions')).toBe('claim_hint run_now');
   });
 
-  it('the action column is capped, so a long refusal wraps instead of starving the title column', async () => {
+  it('the drawer is one column: the title takes the full width and the actions sit below it', async () => {
     await mount(missionTaskStripFixture('mid-open'));
-    // An `auto` track grows to the refusal's max-content width and squeezes
-    // the `minmax(0,1fr)` title column to nothing (the title then breaks per letter).
-    expect(drawer().className).toContain('md:grid-cols-[minmax(0,1fr)_fit-content(60%)]');
-    expect(drawer().className).not.toMatch(/grid-cols-\[[^\]]*auto\)?\]/);
+    // A side column for the actions squeezed the title to a word or two per
+    // line in the band's half-width Landed cell (and an `auto` track once
+    // starved it to nothing), so there is no column split at any width.
+    expect(drawer().className).not.toMatch(/grid-cols/);
+    const title = drawer().querySelector('[aria-live="polite"]')!;
+    const open = drawer().querySelector('[data-testid="landed-strip-drawer-open"]')!;
+    expect(title.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('selects the last task when everything landed', async () => {
@@ -192,15 +195,38 @@ describe('Landed strip', () => {
     expect(failedTick.className).toContain('text-status-error');
     expect(failedTick.className).not.toContain('text-accent-text');
 
-    // The genuinely-open cell (ready, index 1) still reads accent, never error.
+    // The genuinely-open cell (ready, index 1) reads neutral, never error.
     const openTick = ticks()[1];
     expect(openTick.dataset.tone).toBe('open');
-    expect(openTick.className).toContain('text-accent-text');
+    expect(openTick.className).toContain('text-text-secondary');
+    expect(openTick.className).not.toContain('text-status-error');
 
     // 02 is open, 03 is held (blocked on 02), 04 is failed: the header must
     // name the failed one apart from "open" instead of folding it in.
     const jump = container.querySelector<HTMLElement>('[data-testid="landed-strip-open-jump"]')!;
     expect(jump.textContent).toBe('1 open · 1 failed · 1 held ›');
+  });
+
+  it('selecting a held task keeps its held state (gray, never mustard) while raw status stays blocked', async () => {
+    const spec = {
+      tasks: ['01', '02', '03', '04', '05', '06', '07', '08'],
+      edges: { '06': ['05'], '07': ['06'], '08': ['07'] },
+      states: { '01': 'landed', '02': 'failed', '03': 'failed', '04': 'failed' } as const,
+    };
+    const model = dagBoard(spec);
+    await mount({ model, executor: 'runner' });
+    const cell = cells().find(c => c.dataset.taskRef === dagId(spec, '08'))!;
+    await click(cell);
+    expect(cell.getAttribute('aria-pressed')).toBe('true');
+    expect(cell.className).toContain('outline-text-primary'); // selection ring only
+    expect(cell.className).toContain('fleet-hatch'); // fill still the held texture
+    expect(cell.className).not.toContain('border-accent');
+    expect(cell.className).not.toContain('border-status-error');
+    const d = drawer();
+    expect(d.className).toContain('border-[var(--fleet-border-mid)]');
+    expect(d.className).not.toContain('border-accent');
+    expect(model.tasks[dagId(spec, '08')].status).toBe('blocked');
+    expect(container.querySelector('[data-testid="landed-strip-open-jump"]')!.textContent).toBe('1 open · 3 failed · 3 held ›');
   });
 
   it('AC-7: ready, blocked and queued cells carry three different fills', async () => {

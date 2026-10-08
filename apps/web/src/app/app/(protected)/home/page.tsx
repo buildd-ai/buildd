@@ -1,4 +1,5 @@
 import { isOpenAsk } from '@/lib/open-ask';
+import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
@@ -16,6 +17,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
+import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
@@ -24,7 +27,9 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import { isActionableChip, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
+import { isActionableChip, kernelInboxMembership, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -53,6 +58,7 @@ import type { BlockingTask } from '@/lib/mission-card-view';
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import {
+  failedDeliverableTaskIds,
   summarizeMissionForCard,
   type MissionCardRow,
   type MissionCardSummary,
@@ -151,6 +157,8 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
+  let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -324,6 +332,7 @@ export default async function HomePage({
         ]);
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
+        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -505,11 +514,13 @@ export default async function HomePage({
           };
         });
 
-        // Read-through PR state refresh: catch missed merge webhooks before
-        // querying openPrWorkers (Waiting on You) and the fleet ticker.
-        await refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
+        // Read-through PR fact import: catch missed merge webhooks. Enqueued
+        // after the response, never written during the render (spec
+        // workflow-state-kernel §11): this render shows what is stored, the
+        // next one shows what the import found.
+        after(() => refreshStaleWorkersForWorkspaces(wsIds).catch(err =>
           console.error('[home] pr-state-refresh failed (non-fatal):', err),
-        );
+        ));
 
         // 30-day recency window for the resolved-escalations group below.
         const activityWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -571,11 +582,14 @@ export default async function HomePage({
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
 
+          // S35: one DeliveryView load for every failed deliverable, so a
+          // failed attempt the kernel already replaced does not read FAILED.
+          const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
           const nowMs = Date.now();
           const summaries = new Map<string, MissionCardSummary>();
           for (const m of allMissions) {
             summaries.set(m.id, summarizeMissionForCard(m as MissionCardRow, {
-              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0,
+              now: nowMs, liveWorkers: liveWorkerCounts.get(m.id) ?? 0, deliveryViews: missionDeliveryViews,
             }));
           }
           missions = allMissions.map(m => ({
@@ -612,7 +626,7 @@ export default async function HomePage({
                 .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime())[0];
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
-            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
+            const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap, deliveryViews: missionDeliveryViews });
             const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
@@ -1114,6 +1128,8 @@ export default async function HomePage({
             // The newest conflict retry per PR, live or not: its failure context
             // names the conflict in one line (describeConflictReason).
             const conflictReasonMap = new Map<string, string>();
+            // S37: live conflict fixes that stalled, with why.
+            const conflictStalledMap = new Map<string, string>();
             const openPrNumbers = [...new Set(
               openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
             )];
@@ -1124,7 +1140,7 @@ export default async function HomePage({
                   sql`${tasks.creationSource} = 'conflict'`,
                   inArray(tasks.conflictRetryPrNumber, openPrNumbers),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true, createdAt: true, claimedAt: true },
                 orderBy: [desc(tasks.createdAt)],
               });
               for (const t of conflictRetryTasks) {
@@ -1139,6 +1155,11 @@ export default async function HomePage({
                 if (conflictRetryMap.has(key)) continue;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
                 conflictRetryMap.set(key, { taskId: t.id, iteration });
+                // S37: a live fix that stalled is still the canonical remediation
+                // (the card stays RESOLVING and its CTA repairs it), but it must
+                // say so instead of reading as work in progress forever.
+                const liveness = classifyConflictFix({ status: t.status, createdAt: t.createdAt, claimedAt: t.claimedAt, lastRecoveryAt: (ctx.conflictRecovery as { at?: string } | undefined)?.at ?? null });
+                if (liveness.stalled && liveness.reason) conflictStalledMap.set(key, liveness.reason);
               }
             }
             // ───────────────────────────────────────────────────────────────────
@@ -1303,11 +1324,17 @@ export default async function HomePage({
                 };
               });
 
+            // Kernel-owned deliveries decide membership themselves (S36).
+            const inboxDeliveryViews = await getDeliveryViewsForTasks(
+              openPrWorkers.flatMap(w => (w.taskId ? [w.taskId] : [])),
+            );
             escalationInbox = openPrWorkers
               .filter(w => {
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
+                const kernelView = w.taskId ? inboxDeliveryViews.get(w.taskId) : undefined;
+                if (kernelView && kernelView.owner !== 'landing') return kernelInboxMembership(kernelView, false);
                 // Include if a conflict retry is live (renders as RESOLVING)
                 if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
                 // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
@@ -1392,7 +1419,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
-                    : (gate?.reason ?? null),
+                    : (gate?.reason ?? (w.taskId ? inboxDeliveryViews.get(w.taskId)?.detail ?? inboxDeliveryViews.get(w.taskId)?.headline : null) ?? null),
                   // Dead-zone (conflict retries exhausted) has its own dedicated
                   // CTA set below and is never sourced from a reviewer note —
                   // keep it out of the fix-dispatch branch even if a stale
@@ -1408,6 +1435,7 @@ export default async function HomePage({
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                   conflictAutoResolve: isAutoResolveMergeConflictsEnabled(ws?.gitConfig),
                   conflictReason: w.prNumber != null ? conflictReasonMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
+                  remediationStalled: w.prNumber != null ? conflictStalledMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
                   // Read from persisted columns only (I-9): the sweep owns all
                   // GitHub resolution, this layer only judges how old that
                   // resolution is.
@@ -1913,7 +1941,13 @@ export default async function HomePage({
         const snoozedSubjectKeys = new Set(activeSnoozes.map((s) => s.subjectKey));
 
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
-        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys });
+        // Kernel-owned deliveries project the kernel's owner of the next move
+        // (workflow-state-kernel §17.5); every other task keeps today's chip.
+        const deliveryViews = await getDeliveryViewsForTasks([
+          ...escalationInbox.map((e) => e.taskId),
+          ...waitingOnYou.flatMap((w) => (w.kind === 'failed' && w.taskId ? [w.taskId] : [])),
+        ]);
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys, deliveryViews });
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
@@ -2111,6 +2145,11 @@ export default async function HomePage({
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {modelUpgradeTeamId && (
+        <div className="mx-auto max-w-[1320px]">
+          <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
       <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />

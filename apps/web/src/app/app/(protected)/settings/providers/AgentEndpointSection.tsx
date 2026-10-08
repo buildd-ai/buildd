@@ -37,6 +37,10 @@ export interface MaskedAgentEndpointView {
   models: Record<string, string>;
   /** Every model buildd asks for and the name sent (absent from an older server). */
   mapping?: Array<{ model: string; tiers: string[]; sent: string }>;
+  /** Claude deferred tool loading through this endpoint, effective (absent from an older server). */
+  toolSearch?: boolean;
+  /** Set explicitly rather than the kind's default. */
+  toolSearchExplicit?: boolean;
   last4: string;
   gatewayMissing: boolean;
   health: 'healthy' | 'revoked' | 'unknown';
@@ -52,6 +56,17 @@ const KIND_LABEL: Record<Kind, string> = {
   gateway: 'LiteLLM gateway',
   openrouter: 'OpenRouter',
   'anthropic-compatible': 'Anthropic-compatible URL',
+};
+
+/** Deferred tool loading when nothing is set: OpenRouter supports it, the others may not. */
+export function toolSearchDefault(kind: Kind): boolean {
+  return kind === 'openrouter';
+}
+
+const TOOL_SEARCH_HINT: Record<Kind, string> = {
+  gateway: 'Loads MCP tools on demand to cut input tokens. Your gateway must pass Anthropic ToolSearch / tool_reference through, or tool runs fail.',
+  openrouter: 'Loads MCP tools on demand to cut input tokens. On by default: OpenRouter supports Anthropic ToolSearch / tool_reference.',
+  'anthropic-compatible': 'Loads MCP tools on demand to cut input tokens. The endpoint must support Anthropic ToolSearch / tool_reference, or tool runs fail.',
 };
 
 async function errorText(res: Response): Promise<string> {
@@ -234,6 +249,17 @@ function RouteDetail({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   return detail ? <p className="font-mono text-text-secondary break-all" data-testid="agent-endpoint-detail">{detail}</p> : null;
 }
 
+/** Whether Claude runs through this endpoint load tools on demand. */
+function ToolSearchLine({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
+  if (e.toolSearch === undefined) return null;
+  const why = e.toolSearchExplicit ? '' : ' (default)';
+  return (
+    <p className="text-meta text-text-muted" data-testid="agent-endpoint-tool-search">
+      Deferred tool loading: {e.toolSearch ? 'on' : 'off'}{why}
+    </p>
+  );
+}
+
 /** One summary line; the full model table opens under it. */
 function MappingDisclosure({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   if (e.kind === 'openrouter' || !e.mapping || e.mapping.length === 0) return null;
@@ -310,6 +336,7 @@ function TeamRoute({ endpoint: e, teamId, canManage, workspaces, copies, onEdit,
           onClose={() => setEditingScope(false)} onChanged={onChanged} />
       )}
       {h.detail && <p className="text-text-secondary">{h.detail}</p>}
+      <ToolSearchLine endpoint={e} />
       <MappingDisclosure endpoint={e} />
       {canManage && <RouteButtons busy={busy} msg={msg} onEdit={onEdit} onVerify={verify} onRemove={remove} />}
     </div>
@@ -339,6 +366,7 @@ function OverrideRoute({ endpoint: e, teamId, canManage, onEdit, onChanged }: {
       ) : (
         <>
           <RouteDetail endpoint={e} />
+          <ToolSearchLine endpoint={e} />
           <MappingDisclosure endpoint={e} />
         </>
       )}
@@ -372,6 +400,8 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
   const [apiKey, setApiKey] = useState('');
   const [authHeader, setAuthHeader] = useState<'authorization' | 'x-api-key'>(initial?.authHeader ?? 'authorization');
   const [aliases, setAliases] = useState(aliasLines(initial?.models ?? {}));
+  // Deferred tool loading: null = the kind's default, else the explicit choice.
+  const [toolSearchSet, setToolSearchSet] = useState<boolean | null>(initial?.toolSearchExplicit ? initial.toolSearch ?? null : null);
   // The rows' mapping when the endpoint listed its models; null = typed aliases.
   const [listMapping, setListMapping] = useState<Record<string, string> | null>(null);
   const [manual, setManual] = useState(false);
@@ -396,6 +426,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
     setBaseUrl(e?.kind === 'anthropic-compatible' ? e.baseUrl : '');
     setAuthHeader(e?.authHeader ?? 'authorization');
     setAliases(aliasLines(e?.models ?? {}));
+    setToolSearchSet(e?.toolSearchExplicit ? e.toolSearch ?? null : null);
     setListMapping(null);
     setManual(false);
     setApiKey('');
@@ -449,6 +480,10 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
         if (choice === 'anthropic-compatible') Object.assign(body, { baseUrl: baseUrl.trim(), authHeader });
         if (needsKey && apiKey.trim()) body.apiKey = apiKey.trim();
         if (choice !== 'openrouter' && Object.keys(models).length > 0) body.models = models;
+        // Sent only when it changes what is saved (the server keeps the saved
+        // value for the same kind); only a non-default choice is stored.
+        const savedSet = current?.kind === choice && current.toolSearchExplicit ? current.toolSearch ?? null : null;
+        if (toolSearchSet !== savedSet) body.capabilities = toolSearchSet === null ? null : { toolSearch: toolSearchSet };
         const res = await fetch(`/api/teams/${teamId}/agent-endpoint`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -529,6 +564,18 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
           <input id="agent-endpoint-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={current && current.kind === choice && current.last4 ? `Saved key …${current.last4}, leave blank to keep` : 'sk-…'} className={INPUT} />
           <p className="text-text-muted">Tested on save. Encrypted, write-only.</p>
         </div>
+      )}
+      {choice !== 'anthropic' && (
+        <label className="flex items-start gap-2 cursor-pointer" data-testid="agent-endpoint-tool-search-field">
+          <input type="checkbox" className="control-check appearance-none mt-0.5" disabled={busy}
+            data-testid="agent-endpoint-tool-search-toggle"
+            checked={toolSearchSet ?? toolSearchDefault(choice)}
+            onChange={(ev) => setToolSearchSet(ev.target.checked === toolSearchDefault(choice) ? null : ev.target.checked)} />
+          <span>
+            <span className="block text-text-primary">Enable Claude deferred MCP/tool loading (ToolSearch)</span>
+            <span className="block text-text-muted">{TOOL_SEARCH_HINT[choice]}</span>
+          </span>
+        </label>
       )}
       {(choice === 'gateway' || choice === 'anthropic-compatible') && (
         <EndpointModelMap teamId={teamId} workspaceId={scope} request={modelsRequest} disabled={busy} onMapping={setListMapping} />
