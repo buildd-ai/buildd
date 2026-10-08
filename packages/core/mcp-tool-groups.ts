@@ -58,6 +58,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_path_claim_stats: 'workers',
   get_decision_stats: 'workers',
   list_connectors: 'workers',
+  resolve_capability: 'workers',
   list_runners: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
@@ -229,7 +230,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connector health', actions: ['list_connectors'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -269,10 +270,10 @@ export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[])
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {
-  manage_missions: 'list, create, edit, arm, delete missions; link tasks; criteria',
+  manage_missions: 'list, create, edit, arm, delete; link tasks; criteria',
   manage_initiatives: 'initiatives: containers above missions',
   link_tracker: 'link a mission to a Linear project or issue',
-  get_visual_review: "per-screen visual QA and shots; workspaceId alone: missions awaiting review",
+  get_visual_review: 'per-screen visual QA; workspaceId alone: missions awaiting review',
   list_discrepancies: 'spec vs code discrepancy rows',
   get_discrepancy: 'one discrepancy with its evidence',
   adjudicate_discrepancy: 'accept a discrepancy or flip its direction',
@@ -296,7 +297,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_manifest_coverage: 'coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
-  list_connectors: 'mounted connectors and their health',
+  list_connectors: 'connector health',
+  resolve_capability: 'who serves a need',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
@@ -308,9 +310,9 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   request_pr_review: 'dispatch PR review',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
-  release_status: 'what a release would ship and whether CI is green',
+  release_status: 'what a release would ship; CI green?',
   list_schedules: 'schedules with last run and errors',
-  trace_schedule: 'find the schedule behind a task or notification',
+  trace_schedule: 'the schedule behind a task or notification',
   create_schedule: 'create a schedule',
   update_schedule: 'edit a schedule',
   pause_schedules: 'pause or resume schedules in bulk',
@@ -333,13 +335,13 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_secrets: 'encrypted MCP credential secrets',
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
-  claim_task: 'claim your assignment, the next, or a named pending task',
+  claim_task: 'claim your assignment, the next, or a named task',
   update_progress: 'report progress; returns messages for you',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
   emit_event: 'record a milestone event',
   query_events: "a worker's events",
-  create_artifact: 'save an artifact (report, analysis, link...)',
+  create_artifact: 'save an artifact (report, analysis, link)',
   upload_artifact: 'get an upload URL for a file artifact',
   get_page_source: 'sandbox or preview URL for visual audit',
   deploy: 'Operator deploy with a credential you never see',
@@ -355,6 +357,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  resolve_capability: '{capability?, …}',
   register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
@@ -527,7 +530,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
-    param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
+    param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
