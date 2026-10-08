@@ -83,6 +83,7 @@ import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
 import { COMPLETION_POLICIES } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
 import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
@@ -2439,6 +2440,9 @@ export async function PATCH(
     : null;
   const isUnrecognizedModel = isModelIdRejected ||
     ((status === 'failed' || status === 'error') && isUnrecognizedModelError(error));
+  if (isUnrecognizedModel && !isModelIdRejected && error) {
+    void reportWorkerModelIncident(worker.taskId, error);
+  }
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,

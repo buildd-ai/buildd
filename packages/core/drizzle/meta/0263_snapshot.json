@@ -1,5 +1,5 @@
 {
-  "id": "0f51a4bb-bf11-4846-b8d1-7b504aa3892f",
+  "id": "01dc54fc-11c6-422b-9e6b-745639775937",
   "prevId": "178436f9-befe-42a2-8519-bad9303e955a",
   "version": "7",
   "dialect": "postgresql",
@@ -7808,6 +7808,81 @@
           "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.local_session_workers": {
+      "name": "local_session_workers",
+      "schema": "",
+      "columns": {
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "local_session_id": {
+          "name": "local_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bound_at": {
+          "name": "bound_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "local_session_workers_session_idx": {
+          "name": "local_session_workers_session_idx",
+          "columns": [
+            {
+              "expression": "local_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "local_session_workers_worker_id_workers_id_fk": {
+          "name": "local_session_workers_worker_id_workers_id_fk",
+          "tableFrom": "local_session_workers",
+          "tableTo": "workers",
+          "columnsFrom": [
+            "worker_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_session_workers_local_session_id_local_sessions_id_fk": {
+          "name": "local_session_workers_local_session_id_local_sessions_id_fk",
+          "tableFrom": "local_session_workers",
+          "tableTo": "local_sessions",
+          "columnsFrom": [
+            "local_session_id"
           ],
           "columnsTo": [
             "id"
@@ -16281,128 +16356,6 @@
           "tableTo": "accounts",
           "columnsFrom": [
             "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_pull_requests": {
-      "name": "task_pull_requests",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "worker_id": {
-          "name": "worker_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pr_url": {
-          "name": "pr_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pr_number": {
-          "name": "pr_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_pull_requests_task_url_idx": {
-          "name": "task_pull_requests_task_url_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "pr_url",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_pull_requests_pr_url_idx": {
-          "name": "task_pull_requests_pr_url_idx",
-          "columns": [
-            {
-              "expression": "pr_url",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_pull_requests_task_id_tasks_id_fk": {
-          "name": "task_pull_requests_task_id_tasks_id_fk",
-          "tableFrom": "task_pull_requests",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_pull_requests_worker_id_workers_id_fk": {
-          "name": "task_pull_requests_worker_id_workers_id_fk",
-          "tableFrom": "task_pull_requests",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "worker_id"
           ],
           "columnsTo": [
             "id"

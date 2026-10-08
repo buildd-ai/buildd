@@ -440,6 +440,21 @@ describe('HealthClient — Trend', () => {
     expect(section).toContain('update_progress');
   });
 
+  it('counts the group tools and the legacy buildd tool as one buildd row', () => {
+    const byTool = [
+      { name: 'Bash', calls: 30, share: 0.3, tasks: 3, exactCalls: 30, exactTasks: 3 },
+      { name: 'mcp__buildd__buildd_work', calls: 25, share: 0.25, tasks: 2, exactCalls: 25, exactTasks: 2 },
+      { name: 'mcp__buildd__buildd', calls: 20, share: 0.2, tasks: 3, exactCalls: 20, exactTasks: 3 },
+      { name: 'mcp__buildd__buildd_prs', calls: 5, share: 0.05, tasks: 1, exactCalls: 5, exactTasks: 1 },
+    ];
+    const html = render({ consumption: consumption({ tools: { ...consumption().tools, byTool } }) });
+    const section = html.slice(html.indexOf('data-testid="health-section-consumption"'), html.indexOf('data-testid="consumption-by-model"'));
+    expect(section.match(/data-testid="tool-breakdown-row"/g)?.length).toBe(2);
+    expect(section).toContain('title="mcp__buildd__buildd"');
+    expect(section).not.toContain('title="mcp__buildd__buildd_work"');
+    expect(section).toContain('50');
+  });
+
   it('offers no expander when the top rows already list every tool', () => {
     const html = render({ consumption: consumption() });
     expect(html).not.toContain('data-testid="consumption-all-tools"');

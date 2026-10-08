@@ -5,7 +5,9 @@
 // of these events and POSTs it to /api/workers/local-sessions. That is the
 // whole wire format: four typed events, no free text. It carries no
 // transcript, prompt, response, reasoning or secret, and the server rejects
-// any field it does not know.
+// any field it does not know. `touch` and `end` may carry `usage`: token counts
+// per model and effort counts per claimed worker, read by the hook from the
+// session's own local transcript (numbers and model ids only).
 //
 // Presence is not a worker. A `start` creates a presence row that holds no
 // concurrency seat and no task. A `bind` attaches that presence to the worker
@@ -43,6 +45,44 @@ export interface LocalSessionEvent {
   workerId?: string;
   /** end: why. */
   reason?: LocalSessionEndReason;
+  /** touch / end: cumulative usage per worker this session claimed. */
+  usage?: LocalSessionUsage;
+}
+
+/** One model's usage: four disjoint token buckets, as the API reports them. */
+export interface LocalSessionModelUsage {
+  model: string;
+  /** Uncached input (`input_tokens`). */
+  input: number;
+  /** `cache_read_input_tokens`. */
+  cacheRead: number;
+  /** `cache_creation_input_tokens` with the 5-minute TTL. */
+  cacheWrite5m: number;
+  /** `cache_creation_input_tokens` with the 1-hour TTL. */
+  cacheWrite1h: number;
+  output: number;
+  /** API calls (distinct messages). */
+  requests: number;
+}
+
+/**
+ * Cumulative totals for one claimed worker since the session claimed it.
+ * Replays are harmless: the server only ever raises stored totals.
+ */
+export interface LocalSessionWorkerUsage {
+  workerId: string;
+  models: LocalSessionModelUsage[];
+  /** tool_use blocks the session (and its subagents) issued for this task. */
+  toolCalls: number;
+  /** Subagents whose usage is counted here. */
+  subagents: number;
+  /** ISO timestamps of the first and last counted API call. */
+  firstAt?: string;
+  lastAt?: string;
+}
+
+export interface LocalSessionUsage {
+  workers: LocalSessionWorkerUsage[];
 }
 
 /** What the event endpoint answers. Hooks only read `pendingInstructions`. */
@@ -71,7 +111,53 @@ export const LOCAL_SESSION_TOUCH_THROTTLE_MS = 60_000;
 const MAX_ID = 200;
 const MAX_VERSION = 64;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason']);
+const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage']);
+const USAGE_KEYS = new Set(['workers']);
+const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'subagents', 'firstAt', 'lastAt']);
+const MODEL_USAGE_KEYS = new Set(['model', 'input', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'requests']);
+const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
+const MAX_USAGE_WORKERS = 20;
+const MAX_USAGE_MODELS = 12;
+const MAX_COUNT = 1e13;
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_COUNT;
+const onlyKeys = (o: Record<string, unknown>, allowed: Set<string>) => Object.keys(o).every(k => allowed.has(k));
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** Strict: every level refuses unknown keys, so only counts and model ids can ride. */
+function parseUsage(v: unknown): LocalSessionUsage | string {
+  if (!isObject(v) || !onlyKeys(v, USAGE_KEYS) || !Array.isArray(v.workers)) return 'usage must be { workers: [...] }';
+  if (v.workers.length > MAX_USAGE_WORKERS) return `usage.workers holds at most ${MAX_USAGE_WORKERS} entries`;
+  const workers: LocalSessionWorkerUsage[] = [];
+  for (const w of v.workers) {
+    if (!isObject(w) || !onlyKeys(w, WORKER_USAGE_KEYS)) return 'usage.workers[] has an unknown field';
+    if (typeof w.workerId !== 'string' || !UUID_RE.test(w.workerId)) return 'usage.workers[].workerId must be a full UUID';
+    if (!Array.isArray(w.models) || w.models.length > MAX_USAGE_MODELS) return `usage.workers[].models must be an array of at most ${MAX_USAGE_MODELS}`;
+    if (!isCount(w.toolCalls) || !isCount(w.subagents)) return 'usage.workers[].toolCalls and subagents must be non-negative integers';
+    for (const t of [w.firstAt, w.lastAt]) {
+      if (t !== undefined && (typeof t !== 'string' || !ISO_RE.test(t))) return 'usage.workers[].firstAt/lastAt must be ISO timestamps';
+    }
+    const models: LocalSessionModelUsage[] = [];
+    for (const m of w.models) {
+      if (!isObject(m) || !onlyKeys(m, MODEL_USAGE_KEYS)) return 'usage.workers[].models[] has an unknown field';
+      if (typeof m.model !== 'string' || !MODEL_ID_RE.test(m.model)) return 'usage.workers[].models[].model must be a model id';
+      for (const k of ['input', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'requests'] as const) {
+        if (!isCount(m[k])) return `usage.workers[].models[].${k} must be a non-negative integer`;
+      }
+      models.push({
+        model: m.model, input: m.input as number, cacheRead: m.cacheRead as number, cacheWrite5m: m.cacheWrite5m as number,
+        cacheWrite1h: m.cacheWrite1h as number, output: m.output as number, requests: m.requests as number,
+      });
+    }
+    workers.push({
+      workerId: w.workerId.toLowerCase(), models, toolCalls: w.toolCalls, subagents: w.subagents,
+      ...(w.firstAt !== undefined ? { firstAt: w.firstAt as string } : {}),
+      ...(w.lastAt !== undefined ? { lastAt: w.lastAt as string } : {}),
+    });
+  }
+  return { workers };
+}
 
 /**
  * Normalize a git remote (https, ssh, scp-like) to `owner/name`, dropping any
@@ -134,6 +220,13 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
       return { ok: false, error: `reason must be one of ${LOCAL_SESSION_END_REASONS.join('|')}` };
     }
   }
+  let usage: LocalSessionUsage | undefined;
+  if (b.usage !== undefined) {
+    if (b.event !== 'touch' && b.event !== 'end') return { ok: false, error: 'usage is only accepted on touch and end' };
+    const parsed = parseUsage(b.usage);
+    if (typeof parsed === 'string') return { ok: false, error: parsed };
+    usage = parsed;
+  }
   const repo = b.repo === undefined ? undefined : normalizeRepoSlug(b.repo as string) ?? undefined;
   return {
     ok: true,
@@ -146,6 +239,7 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
       ...(b.interactive !== undefined ? { interactive: b.interactive as boolean } : {}),
       ...(b.event === 'bind' ? { workerId: (b.workerId as string).toLowerCase() } : {}),
       ...(b.event === 'end' ? { reason: (b.reason as LocalSessionEndReason | undefined) ?? 'other' } : {}),
+      ...(usage ? { usage } : {}),
     },
   };
 }

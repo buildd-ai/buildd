@@ -16,6 +16,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
+import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
@@ -151,6 +153,8 @@ export default async function HomePage({
   let hasAgentCredential: boolean | null = null;
   // Hosted runner allowance at 80% / used; null below that or without one.
   let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
+  let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -324,6 +328,7 @@ export default async function HomePage({
         ]);
         hasAgentCredential = agentKey;
         hostedRunnerBanner = hostedBanner;
+        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -2111,6 +2116,11 @@ export default async function HomePage({
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {modelUpgradeTeamId && (
+        <div className="mx-auto max-w-[1320px]">
+          <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
       <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />

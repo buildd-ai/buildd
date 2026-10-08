@@ -9,7 +9,7 @@ import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointApplie
  * docs/design/agent-model-endpoint.md §6).
  *
  *   GET    → { endpoints: MaskedAgentEndpoint[] }                     any member
- *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId?, appliesTo? }
+ *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId?, appliesTo?, capabilities? }
  *          → { endpoint }                                             owner/admin; one real call first
  *   PATCH  { appliesTo: string[] | null, consolidate?: boolean }
  *          → { endpoint, copies }                                     owner/admin; no key, no call out
@@ -17,7 +17,9 @@ import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointApplie
  *
  * A blank apiKey keeps the saved key, for the same kind and URL at that scope
  * only (else 400). `appliesTo` (team row only): the workspace ids it applies
- * to, null for all; a PUT without it keeps the saved list. PATCH changes only
+ * to, null for all; a PUT without it keeps the saved list. `capabilities`
+ * ({ toolSearch?: boolean }, null = the kind's defaults): a PUT without it
+ * keeps the saved value for the same kind. PATCH changes only
  * that list, and with `consolidate` deletes selected workspaces' own copies
  * that route exactly like the team row. Session only. The key never leaves the server. Verify an existing row with
  * POST /api/secrets/[id]/verify.

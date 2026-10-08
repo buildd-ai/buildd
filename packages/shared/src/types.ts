@@ -1448,6 +1448,14 @@ export interface ClaimModelEndpoint {
    * clearly rather than guess a wire format.
    */
   openAiBaseUrl?: string;
+  /**
+   * Claude's deferred MCP/tool loading (ToolSearch / `tool_reference`) is
+   * supported through this endpoint: the runner sets ENABLE_TOOL_SEARCH=true
+   * in a Claude run's env. The effective value for this endpoint
+   * (@buildd/core/agent-endpoint `effectiveToolSearch`), not the kind's
+   * default. Absent/false: not set. Never applied to a Codex run.
+   */
+  toolSearch?: boolean;
 }
 
 export type ClaimDiagnosticReason =
@@ -2921,6 +2929,16 @@ export interface InitiativeKPIState {
   }>;
 }
 export const CAPABILITY_SANDBOX_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
+
+/**
+ * Runner capability: this runner matches buildd actions on the group tools
+ * (`mcp__buildd__buildd_<group>`), not only the legacy one-tool name. The MCP
+ * route serves a `?worker=` session the group tools only when the worker's
+ * runner advertised this on its heartbeat; any other runner keeps the legacy
+ * tool. Not `mcp:`-prefixed: the claim route reserves that prefix for the MCP
+ * servers a runner has.
+ */
+export const CAPABILITY_MCP_GROUP_TOOLS = 'buildd-mcp:group-tools';
 
 // ============================================================================
 // WORKER FAILURE ANALYTICS

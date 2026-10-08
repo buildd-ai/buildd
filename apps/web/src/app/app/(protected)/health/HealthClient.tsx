@@ -25,7 +25,7 @@ import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
 import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
 import { usageDrilldownHref } from '@/lib/usage-drilldown';
-import { buildToolBreakdown } from '@/lib/tool-usage-breakdown';
+import { buildToolBreakdown, foldBuilddActionTools } from '@/lib/tool-usage-breakdown';
 import ToolBreakdownList from './_components/ToolBreakdownList';
 import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
@@ -1346,8 +1346,10 @@ function ConsumptionSection({
   now: number;
 }) {
   const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
-  const topTools = tools.byTool.slice(0, CONSUMPTION_TOP_TOOLS);
-  const toolGroups = groupToolsByServer(tools.byTool);
+  // Group tools and the legacy buildd tool are one row, so history stays continuous.
+  const byTool = foldBuilddActionTools(tools.byTool);
+  const topTools = byTool.slice(0, CONSUMPTION_TOP_TOOLS);
+  const toolGroups = groupToolsByServer(byTool);
   const breakdownFor = (list: typeof tools.byTool) => buildToolBreakdown({
     tools: list,
     // Each source may be absent (older rows, a failed read): that row stays plain.
@@ -1430,10 +1432,10 @@ function ConsumptionSection({
             {/* Every tool, not just the head: anything below the top rows —
                 the graph, recall, ToolSearch — was invisible before. Same
                 task-keyed counts and coverage as the rows above. */}
-            {tools.byTool.length > topTools.length && (
+            {byTool.length > topTools.length && (
               <details data-testid="consumption-all-tools" className="pt-1 group">
                 <summary className="text-xs text-primary cursor-pointer select-none list-none">
-                  <span className="group-open:hidden">Show all {tools.byTool.length} tools</span>
+                  <span className="group-open:hidden">Show all {byTool.length} tools</span>
                   <span className="hidden group-open:inline">Hide the full list</span>
                 </summary>
                 <div className="mt-3 space-y-3">

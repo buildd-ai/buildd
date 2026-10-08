@@ -18,6 +18,7 @@
  * `buildParamsDescription` and is served on demand by the `help` action.
  */
 import { allActions, buildParamsDescription, type BuilddAction } from './mcp-tools';
+import { BUILDD_MCP_TOOL_GROUPS } from '@buildd/shared';
 
 /** Chat's tool groups. `notifications` has chat-native tools only. */
 export const CHAT_AREAS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
@@ -114,7 +115,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   suggest_schedule_update: 'work',
 };
 
-export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
+/** Declared in @buildd/shared so tool-name matching needs no action registry. */
+export const MCP_TOOL_GROUPS = BUILDD_MCP_TOOL_GROUPS;
 export type McpToolGroup = (typeof MCP_TOOL_GROUPS)[number];
 
 const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
