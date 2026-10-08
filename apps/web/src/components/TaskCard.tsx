@@ -413,12 +413,12 @@ export function TaskCard({
   // Tiers 1–4, sparkline optional.
   if (density === 'row') {
     return (
-      <div className="relative group flex items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
+      <div className="relative group flex flex-col md:flex-row md:items-start gap-3 px-3 py-2.5 min-w-0 border-b border-border-default last:border-b-0 bg-surface-1 hover:bg-surface-3 transition-colors" data-testid="task-card" data-status={displayStatus}>
         {/* Link overlay */}
         <Link href={href} className="absolute inset-0 z-0" aria-label={title} />
 
         {/* T2 — chain strip (left, stacked) */}
-        <div className="shrink-0 pt-0.5 pointer-events-none">
+        <div className="shrink-0 pt-0.5 pointer-events-none md:order-1">
           {chain && chain.total > 1 ? (
             <ChainStrip chain={chain} />
           ) : (
@@ -428,7 +428,7 @@ export function TaskCard({
         </div>
 
         {/* Center — identity + secondary */}
-        <div className="flex-1 min-w-0 pointer-events-none">
+        <div className="flex-1 min-w-0 pointer-events-none md:order-2">
           {/* T1 — title (with optional type badge) */}
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
             <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
@@ -462,10 +462,15 @@ export function TaskCard({
             />
           )}
 
+          {/* Below md: stage chip on its own row after the content */}
+          <div className="md:hidden flex items-center gap-2 mt-1 flex-wrap">
+            <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
+            {displayStatus === 'running' && <span className="pointer-events-auto"><SteerButton taskId={id} /></span>}
+          </div>
         </div>
 
-        {/* Right — health + provenance */}
-        <div className="shrink-0 flex flex-col items-end gap-1 pointer-events-none">
+        {/* Right — health + provenance (desktop only) */}
+        <div className="shrink-0 hidden md:flex flex-col items-end gap-1 pointer-events-none md:order-3">
           <div className="flex items-center gap-2">
             <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} label={stageLabel} />
             {displayStatus === 'running' && <span className="pointer-events-auto"><SteerButton taskId={id} /></span>}
@@ -510,6 +515,50 @@ export function TaskCard({
               onClick={(e) => e.stopPropagation()}
               aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
               className="relative z-10 pointer-events-auto font-mono text-[11px] md:text-[10px] text-accent-text hover:underline max-md:after:absolute max-md:after:-inset-x-3 max-md:after:-top-1 max-md:after:-bottom-2.5 max-md:after:content-['']"
+            >
+              {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
+            </a>
+          )}
+        </div>
+
+        {/* Below md: health stats below the chip */}
+        <div className="md:hidden w-full flex flex-col items-start gap-1 pointer-events-none px-0 text-[11px]">
+          {/* T3 — elapsed */}
+          <span className={`font-mono text-[11px] tabular-nums ${tierColor}`}>
+            {timestampLabel}
+            {stale && <span className="ml-1 text-status-warning">!</span>}
+          </span>
+
+          {/* T3 — sparkline + attempt */}
+          <div className="flex items-end gap-2 flex-wrap">
+            {intensity && intensity.sparkline.length > 0 && (
+              <Sparkline data={intensity.sparkline} tier={intensity.tier} />
+            )}
+            {showAttempt && (
+              <span className="font-mono text-[11px] text-text-muted tabular-nums">
+                {attemptCurrent}/{attemptTotal}
+              </span>
+            )}
+            {mismatchCount > 0 && (
+              <span
+                data-testid="task-mismatch-chip"
+                title="The summary and the recorded result disagree"
+                className="font-mono text-[11px] text-status-warning"
+              >
+                ⚠ mismatch
+              </span>
+            )}
+          </div>
+
+          {/* T4 — PR link */}
+          {prUrl && (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              aria-label={prNumber ? `Open PR #${prNumber}` : 'Open PR'}
+              className="relative z-10 pointer-events-auto font-mono text-[11px] text-accent-text hover:underline after:absolute after:-inset-x-3 after:-top-1 after:-bottom-2.5 after:content-['']"
             >
               {chipShowsPr || !prNumber ? 'PR ↗' : `PR #${prNumber}↗`}
             </a>
