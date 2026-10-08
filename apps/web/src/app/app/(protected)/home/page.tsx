@@ -14,7 +14,8 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
+import { readGithubAccessBlock } from '@/lib/github-repo-access';
+import { getUserTeamRole, holdsInWorkspace, resolveActiveTeamScope } from '@/lib/team-access';
 import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
 import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
@@ -1661,7 +1662,7 @@ export default async function HomePage({
               isNull(tasks.parentTaskId),
               gte(tasks.updatedAt, new Date(Date.now() - 7 * 86_400_000)),
             ),
-            columns: { id: true, title: true, status: true, backend: true, missionId: true },
+            columns: { id: true, title: true, status: true, backend: true, missionId: true, workspaceId: true, context: true },
             with: {
               mission: { columns: { id: true, title: true } },
               workers: {
@@ -1673,6 +1674,16 @@ export default async function HomePage({
             orderBy: desc(tasks.updatedAt),
             limit: 5,
           });
+          // Tasks waiting on GitHub access go only to whoever can fix the
+          // workspace's connection — not to every member, once per task.
+          const accessWaitingWsIds = [...new Set(failedTaskRows
+            .filter((t) => readGithubAccessBlock(t.context) && t.workspaceId)
+            .map((t) => t.workspaceId as string))];
+          const githubAccessFixableWorkspaceIds = new Set(
+            (await Promise.all(accessWaitingWsIds.map(async (wsId) =>
+              (await holdsInWorkspace(user.id, wsId, 'manage_workspace_settings').catch(() => false)) ? wsId : null,
+            ))).filter((v): v is string => !!v),
+          );
           waitingOnYou.push(...buildFailedTaskItems(failedTaskRows.map((t) => ({
             taskId: t.id,
             title: t.title,
@@ -1681,7 +1692,9 @@ export default async function HomePage({
             workerError: (t.workers as Array<{ error: string | null }> | undefined)?.[0]?.error ?? null,
             missionId: t.missionId,
             missionTitle: (t.mission as { title?: string } | null)?.title ?? null,
-          }))));
+            workspaceId: t.workspaceId,
+            context: t.context,
+          })), { githubAccessFixableWorkspaceIds }));
 
           // 2. Unanswered worker questions (waiting_input with waitingFor set)
           const waitingInputWorkers = await db.query.workers.findMany({

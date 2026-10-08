@@ -1485,3 +1485,44 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
     expect(buildActionQueue(items, [])).toHaveLength(1);
   });
 });
+
+describe('buildFailedTaskItems — tasks waiting on GitHub access', () => {
+  const block = (over: Record<string, unknown> = {}) => ({
+    githubAccessBlock: { reason: 'repo_not_selected', operation: 'pr.create', repo: 'acme/web', workerId: 'w', head: 'b', at: '2026-10-08T00:00:00Z', resumedAt: null, ...over },
+  });
+  const waiting = (id: string, ws = 'ws-1', ctx: unknown = block()): FailedTaskCandidate => ({
+    taskId: id,
+    title: `Task ${id}`,
+    status: 'failed',
+    backend: 'claude',
+    // Whatever the agent wrote — the stamp, not the text, is what counts.
+    workerError: 'github_repo_access_required: could not open PR',
+    missionId: null,
+    missionTitle: null,
+    workspaceId: ws,
+    context: ctx,
+  });
+
+  it('one card per workspace for the admin who can fix it, however many tasks wait', () => {
+    const items = buildFailedTaskItems([waiting('t-1'), waiting('t-2'), waiting('t-3')], { githubAccessFixableWorkspaceIds: new Set(['ws-1']) });
+    expect(items).toHaveLength(1);
+    expect(items[0].failureMessage).toContain('acme/web');
+    expect(items[0].failureMessage).toContain('3 tasks are waiting');
+    expect(items[0].fixHref).toBe('/app/workspaces/ws-1/config#github-access');
+    expect(items[0].fixLabel).toBe('Fix GitHub access');
+  });
+
+  it('is not shown to people who cannot fix the workspace connection', () => {
+    expect(buildFailedTaskItems([waiting('t-1')])).toEqual([]);
+    expect(buildFailedTaskItems([waiting('t-1')], { githubAccessFixableWorkspaceIds: new Set(['ws-other']) })).toEqual([]);
+  });
+
+  it('a resumed task drops out', () => {
+    expect(buildFailedTaskItems([waiting('t-1', 'ws-1', block({ resumedAt: '2026-10-08T01:00:00Z' }))], { githubAccessFixableWorkspaceIds: new Set(['ws-1']) })).toEqual([]);
+  });
+
+  it('separate workspaces get separate cards', () => {
+    const items = buildFailedTaskItems([waiting('t-1', 'ws-1'), waiting('t-2', 'ws-2')], { githubAccessFixableWorkspaceIds: new Set(['ws-1', 'ws-2']) });
+    expect(items.map(i => i.fixHref)).toEqual(['/app/workspaces/ws-1/config#github-access', '/app/workspaces/ws-2/config#github-access']);
+  });
+});

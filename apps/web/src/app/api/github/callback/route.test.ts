@@ -60,6 +60,11 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaces: 'workspaces',
 }));
 
+const mockSyncInstallationRepos = mock(async (_i: { id: string; installationId: number }) => ({ synced: 1, linked: 0, linkedWorkspaceIds: [] as string[] }));
+mock.module('@/lib/github-repo-link', () => ({ syncInstallationRepos: mockSyncInstallationRepos }));
+const mockResumeAfterInstallationChange = mock(async (_installationId: number) => [] as string[]);
+mock.module('@/lib/github-repo-access-store', () => ({ resumeAfterInstallationChange: mockResumeAfterInstallationChange }));
+
 // --- Mock global fetch ---
 
 const originalFetch = globalThis.fetch;
@@ -151,6 +156,26 @@ describe('GET /api/github/callback', () => {
     process.env.GITHUB_APP_ID = originalEnv.GITHUB_APP_ID;
     process.env.GITHUB_APP_PRIVATE_KEY = originalEnv.GITHUB_APP_PRIVATE_KEY;
     process.env.GITHUB_APP_PRIVATE_KEY_BASE64 = originalEnv.GITHUB_APP_PRIVATE_KEY_BASE64;
+  });
+
+  it('syncs repos and resumes waiting tasks after an install or repo-access update, on every callback', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'test@test.com' } });
+    mockSyncInstallationRepos.mockClear();
+    mockResumeAfterInstallationChange.mockClear();
+    await GET(createRequest({ installation_id: '77777', setup_action: 'update' }));
+    mockInstallationsFindFirst.mockImplementation(() => ({ id: 'inst-db-new', installedByUserId: null }));
+    await GET(createRequest({ installation_id: '77777', setup_action: 'update' }));
+    expect(mockSyncInstallationRepos).toHaveBeenCalledTimes(2);
+    expect(mockSyncInstallationRepos.mock.calls[0]?.[0]).toEqual({ id: 'inst-db-new', installationId: 77777 });
+    expect(mockResumeAfterInstallationChange).toHaveBeenCalledWith(77777);
+  });
+
+  it('still redirects when the post-install sync fails (Check connection is the fallback)', async () => {
+    mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'test@test.com' } });
+    mockSyncInstallationRepos.mockImplementationOnce(async () => { throw new Error('GitHub down'); });
+    const response = await GET(createRequest({ installation_id: '77777' }));
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toContain('github_connected=true');
   });
 
   it('redirects to signin when not authenticated', async () => {
