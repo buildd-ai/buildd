@@ -310,3 +310,13 @@ describe('buildUsageDrilldownView — fine-grained breakdowns', () => {
     expect(v.searchShapes.codeSearchCalls).toBe(0);
   });
 });
+
+describe('formatUsd', () => {
+  it('prints zero as $0.00 so it lines up with the other cost cells', async () => {
+    const { formatUsd } = await import('./usage-drilldown');
+    expect(formatUsd(0)).toBe('$0.00');
+    expect(formatUsd(6.17)).toBe('$6.17');
+    // A sub-dollar per-task median keeps its third decimal: $0.399 is a real reading.
+    expect(formatUsd(0.399)).toBe('$0.399');
+  });
+});

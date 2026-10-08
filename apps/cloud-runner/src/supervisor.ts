@@ -27,6 +27,7 @@ import {
   appendTail,
   assertRunnerConfig,
   buildContainerEnv,
+  CLOUD_MODEL_AUTH_CONTAINER_ENV,
   EXIT_PARKED,
   EXIT_NOT_ATTACHABLE,
   IMAGE_ENV,
@@ -162,6 +163,12 @@ export interface SupervisorDeps {
    * deployer set the seat secret. Absent: runs start exactly as before.
    */
   ownerSeat?: OwnerSeatPort;
+  /**
+   * The model route this run's egress plans to take, handed to the container
+   * as CLOUD_MODEL_AUTH_CONTAINER_ENV so the runner reports the matching cost
+   * basis (docs/specs/real-and-virtual-cost.md). Absent or null: no hint.
+   */
+  plannedModelAuth?(): Promise<ModelAuth | null>;
   /** Lease agents: a one-shot that calls expireWarmContainer() at `at` (epoch ms). */
   scheduleWarmExpiry?(at: number): Promise<void>;
   fetch: typeof fetch;
@@ -525,6 +532,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+        ...(await this.modelAuthEnv()),
       };
       await this.d.installEgress();
       const proc = await c.exec(attachOrphanCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe', env });
@@ -609,6 +617,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+        ...(await this.modelAuthEnv()),
       };
       // The interception belonged to the agent before the restart; the park
       // upload goes through the snapshot route, so this agent installs its own.
@@ -675,6 +684,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelEnv,
+        ...(await this.modelAuthEnv()),
         // A lease keeps the container: its run leaves the warm upload for the lease's end.
         ...(this.d.config.lease && this.d.config.WARM_REPOS === '1' ? { [WARM_UPLOAD_DEFER_ENV]: '1' } : {}),
       };
@@ -1042,6 +1052,18 @@ export class TaskSupervisor {
     } catch (err) {
       this.d.log(`[cloud-runner] task ${this.d.taskId}: crash report failed: ${describe(err)}`);
       return 'error';
+    }
+  }
+
+  /** The planned model route as container env; empty when unknown. Never fails a run. */
+  private async modelAuthEnv(): Promise<Record<string, string>> {
+    if (!this.d.plannedModelAuth) return {};
+    try {
+      const auth = await this.d.plannedModelAuth();
+      return auth ? { [CLOUD_MODEL_AUTH_CONTAINER_ENV]: auth } : {};
+    } catch (err) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: planning the model route failed: ${describe(err)}; the runner gets no cost-basis hint`);
+      return {};
     }
   }
 
