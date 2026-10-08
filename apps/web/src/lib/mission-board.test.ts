@@ -442,3 +442,29 @@ describe('buildMissionBoard: the visual review (docs/design/visual-qa-human-revi
     expect(boardNeedsYouCount(m, buildVisualReviewFixtureModel('needs_you', { needsYou: 'question' }))).toBe(0);
   });
 });
+
+// Regression (surface audit, delivery-states cell 05): the drawer read "...
+// confirm the new boundary.." because kernelReason always appended a period.
+describe('buildMissionBoard: the kernel reason is one sentence', () => {
+  const withDelivery = (detail: string | null) => board([task('d', {
+    status: 'in_progress',
+    workers: [worker({ status: 'completed', prNumber: 7, prUrl: 'https://example.invalid/pr/7' })],
+    delivery: {
+      ownerTaskId: 'd', state: 'ESCALATED', stage: 'review', owner: 'human', needsYou: true,
+      headline: 'The reviewer escalated this PR', detail,
+      prNumber: 7, prState: null, attemptLine: null, cta: null,
+    } as unknown as BoardTaskInput['delivery'],
+  })]).tasks.d.kernelReason;
+
+  it('a detail that already ends in a period gets no second one', () => {
+    expect(withDelivery('A person should confirm the new boundary.')).toBe('The reviewer escalated this PR: A person should confirm the new boundary.');
+  });
+  it('a detail ending in ! or ? keeps its own punctuation', () => {
+    expect(withDelivery('Is this right?')).toBe('The reviewer escalated this PR: Is this right?');
+    expect(withDelivery('Check it!')).toBe('The reviewer escalated this PR: Check it!');
+  });
+  it('a bare detail, or none, still ends in one period', () => {
+    expect(withDelivery('confirm the boundary')).toBe('The reviewer escalated this PR: confirm the boundary.');
+    expect(withDelivery(null)).toBe('The reviewer escalated this PR.');
+  });
+});
