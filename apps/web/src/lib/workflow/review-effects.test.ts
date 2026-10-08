@@ -344,3 +344,24 @@ test('every effect the fix-loop reducer can emit has a handler (none retries for
     expect((reviewEffectHandlers as Record<string, unknown>)[k]).toBeUndefined();
   }
 });
+
+describe('notify policy_human (T28 notification admission)', () => {
+  const payload = { event: 'policy_human', reason: 'drops column a.b', headSha: 'H1', destructive: true };
+  const notified = async () => (await import('@/lib/notify')).notifyTeamOf as unknown as ReturnType<typeof mock>;
+
+  test('admits exactly when the delivery is ESCALATED at the finding\'s head', async () => {
+    view = { delivery: D({ state: 'ESCALATED', stateReason: 'policy_human' }) as any, rounds: [], attempts: [] };
+    const n = await notified(); n.mockClear();
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'ok' });
+    expect(n).toHaveBeenCalledTimes(1);
+  });
+
+  test('a head that moved, or a human who already resolved it, is never announced', async () => {
+    const n = await notified(); n.mockClear();
+    view = { delivery: D({ state: 'ESCALATED', stateReason: 'policy_human', currentHeadSha: 'H2' }) as any, rounds: [], attempts: [] };
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'skipped:state_moved' });
+    view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [], attempts: [] };
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'skipped:state_moved' });
+    expect(n).not.toHaveBeenCalled();
+  });
+});
