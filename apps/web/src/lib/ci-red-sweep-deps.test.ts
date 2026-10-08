@@ -29,26 +29,26 @@ describe('ciRedFloorWhere', () => {
 describe('checksFromSuites', () => {
   it('same workflow: newest suite determines verdict', () => {
     const r = checksFromSuites([
-      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 } },
-      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
-      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
+      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
     ]);
     expect(r).toEqual({ lifecycle: 'ci_green', redSinceMs: null });
   });
 
   it('different workflows: failure in one is not masked by pass in another', () => {
     const r = checksFromSuites([
-      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
-      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 2 } },
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:59:00Z', app: { id: 2 }, workflow_run: { id: 2 } },
     ]);
     expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:00:00Z') });
   });
 
   it('red since the newest failed suite completed (same workflow)', () => {
     const r = checksFromSuites([
-      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 } },
-      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 } },
-      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 } },
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:59:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:00:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
+      { status: 'completed', conclusion: 'timed_out', updated_at: '2026-10-02T11:30:00Z', app: { id: 1 }, workflow_run: { id: 1 } },
     ]);
     expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:59:00Z') });
   });
@@ -67,5 +67,24 @@ describe('checksFromSuites', () => {
   it('green and absent', () => {
     expect(checksFromSuites([{ status: 'completed', conclusion: 'success' }]).lifecycle).toBe('ci_green');
     expect(checksFromSuites(null).lifecycle).toBeNull();
+  });
+
+  // Regression: both suites report the same GitHub Actions app (15368), but are
+  // from different workflows (different workflow_run.id). They must not be
+  // collapsed, so a failure in one workflow is not masked by a pass in another.
+  it('same app.id, different workflows: failure not masked (GitHub Actions)', () => {
+    const r = checksFromSuites([
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 15368 }, workflow_run: { id: 100 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:05:00Z', app: { id: 15368 }, workflow_run: { id: 101 } },
+    ]);
+    expect(r).toEqual({ lifecycle: 'ci_failed', redSinceMs: Date.parse('2026-10-02T11:00:00Z') });
+  });
+
+  it('same app.id, same workflow: newest suite determines verdict', () => {
+    const r = checksFromSuites([
+      { status: 'completed', conclusion: 'failure', updated_at: '2026-10-02T11:00:00Z', app: { id: 15368 }, workflow_run: { id: 100 } },
+      { status: 'completed', conclusion: 'success', updated_at: '2026-10-02T11:05:00Z', app: { id: 15368 }, workflow_run: { id: 100 } },
+    ]);
+    expect(r).toEqual({ lifecycle: 'ci_green', redSinceMs: null });
   });
 });
