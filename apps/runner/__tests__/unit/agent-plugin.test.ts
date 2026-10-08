@@ -408,6 +408,8 @@ describe('session usage', () => {
     await stop(Date.parse('2026-10-07T12:03:00Z'));
     const body = bodies.at(-1);
     expect(body.event).toBe('touch');
+    // How it was charged rides along as one word (hook-cost-basis.test.ts).
+    expect(['real', 'virtual', 'unknown']).toContain(body.usage.costBasis);
     expect(body.usage.workers).toEqual([{
       workerId: W1,
       models: [{ model: 'claude-sonnet-5', input: 4, cacheRead: 2200, cacheWrite5m: 200, cacheWrite1h: 50, output: 60, requests: 2 }],

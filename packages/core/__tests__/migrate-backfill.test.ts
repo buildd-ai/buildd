@@ -340,6 +340,9 @@ describe('assertion coverage over the real migration corpus', () => {
     // one beside the bump, as the pre-squash version of this test did.
     //  - 0267_soft_overlap_legacy_edges: data fix (pending tasks' legacy
     //    inferred path-overlap edges move to soft evidence); idempotent UPDATE.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(1);
+    //  - 0272_task_schedules_workspace_nullable: lone ALTER COLUMN ... DROP NOT
+    //    NULL, realigning fresh DBs with released ones; the shape has no
+    //    nullability to check it against.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(2);
   });
 });

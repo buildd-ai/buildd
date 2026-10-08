@@ -135,6 +135,7 @@ is, from numbers the client already wrote locally, and MUST never move content.
 - A message written once per content block is counted once (deduped by message id); its tool calls are added up across the copies.
 - Attribution: a subagent that claimed a task is that task's for its whole run (the hook knows which subagent claimed what from its PostToolUse `agent_id`). Everything else, the session's own calls and subagents that claimed nothing, goes to the session's newest own claim, else its first claim, and only from the session's first claim on.
 - `usage` carries cumulative totals per worker (per model: the four buckets and a request count; plus tool calls, subagents, first/last timestamp) on the session's own `touch`/`end`, so `end` lands its last report before the release, in one request.
+- `usage.costBasis` (`real`, `virtual` or `unknown`) says how the session's usage was charged, classified by the hook from its own environment and client config (`costBasisFor`); absent from an older hook, which the server records as `unknown`. See `real-and-virtual-cost.md`.
 - The server writes only to a worker this presence holds, that is interactive and live or ended within 10 minutes (the report after `complete_task`). It raises, never lowers: `inputTokens` (all-in), `outputTokens`, `turns` (requests), `costUsd`, and `resultMeta.modelUsage`/`totalUsage`/`localSessionUsage`, so replays and reordering are harmless.
 - Pricing is server-side and strict (`priceSessionUsage`): the live catalog, else the static table for a recognisably Anthropic model id; a 5-minute cache write at the table's write rate, a 1-hour write at 2x input. A model with no known price makes the cost unknown: no cost and no `modelUsage` are written, `localSessionUsage.costUnknown` is true and the model is listed in `unpricedModels`. It is never priced as some other model.
 
@@ -143,7 +144,7 @@ is, from numbers the client already wrote locally, and MUST never move content.
 - AC-10: WHEN `usage` names a worker this presence does not hold THEN nothing is written.
 - AC-11: GIVEN a model with no known price WHEN usage is recorded THEN no cost is written and it is flagged unknown.
 
-**Code surface**: `usageRecord`, `collectUsage` (`apps/runner/plugin/scripts/buildd-hook.mjs`), `usageWrite`, `usageWriteWhere` (`apps/web/src/lib/local-session.ts`), `priceSessionUsage` (`packages/core/model-prices.ts`).
+**Code surface**: `usageRecord`, `collectUsage`, `costBasisFor` (`apps/runner/plugin/scripts/buildd-hook.mjs`), `usageWrite`, `usageWriteWhere` (`apps/web/src/lib/local-session.ts`), `priceSessionUsage` (`packages/core/model-prices.ts`).
 
 ## Reporting and steering
 

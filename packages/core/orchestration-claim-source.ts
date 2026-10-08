@@ -10,11 +10,11 @@
  *  - `findAppliedStart` is the gated-START lookup; the claim route calls it
  *    only when `isGatedStartReachable()` is true, which it is not as shipped.
  */
-import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from './db/client';
-import { orchestrationDecisions, tasks, workers } from './db/schema';
-import { CLAIM_HOLD_DECISION } from './orchestration-claim-decision';
-import type { ClaimHoldHolderState } from './orchestration-claim-decision';
+import { orchestrationDecisions, orchestrationManifestPredictions, reviewFeedback, tasks, workers } from './db/schema';
+import { CLAIM_HOLD_DECISION, deriveHolderStage, summarizeFileConflictHistory } from './orchestration-claim-decision';
+import type { ClaimHoldEvidence, ClaimHoldHolderState, FileConflictCount } from './orchestration-claim-decision';
 import type { ClaimDecisionForReadout, ClaimHoldReadoutInput, TaskStartForReadout } from './orchestration-claim-readout';
 import { labelDecisionOutcomes } from './orchestration-outcomes';
 
@@ -120,21 +120,99 @@ export async function loadClaimHolderState(opts: { workspaceId: string; taskId: 
     db.select({
       status: workers.status,
       updatedAt: workers.updatedAt,
+      startedAt: workers.startedAt,
       prLifecycleStatus: workers.prLifecycleStatus,
       prNumber: workers.prNumber,
     }).from(workers).where(holderWorkersWhere(scope)).orderBy(desc(workers.updatedAt)).limit(5),
     db.select({ title: tasks.title }).from(tasks).where(holderTaskWhere(scope)).limit(1),
   ]);
-  const rows = workerRows as Array<{ status: string; updatedAt: Date | null; prLifecycleStatus: string | null; prNumber: number | null }>;
+  const rows = workerRows as Array<{ status: string; updatedAt: Date | null; startedAt?: Date | null; prLifecycleStatus: string | null; prNumber: number | null }>;
   const w = (opts.prNumber !== null ? rows.find(r => r.prNumber === opts.prNumber) : undefined) ?? rows[0];
   const lifecycle = w?.prLifecycleStatus ?? null;
+  const prNumber = w?.prNumber ?? null;
+  // Approved = the newest top-level review on the holder's PR approves it.
+  let approved = false;
+  if (prNumber !== null) {
+    const reviews = await db.select({ state: reviewFeedback.state })
+      .from(reviewFeedback)
+      .where(holderReviewWhere({ workspaceId: opts.workspaceId, prNumber }))
+      .orderBy(desc(reviewFeedback.submittedAt))
+      .limit(1);
+    approved = (reviews as Array<{ state: string | null }>)[0]?.state === 'approved';
+  }
   return {
     title: (taskRows as Array<{ title: string | null }>)[0]?.title ?? null,
     workerStatus: w?.status ?? null,
     lastActivityAt: w?.updatedAt ? new Date(w.updatedAt).toISOString() : null,
     prLifecycle: lifecycle,
     baseStale: lifecycle === null ? null : lifecycle === 'conflict' || lifecycle === 'unresolvable',
+    stage: deriveHolderStage({
+      workerStatus: w?.status ?? null,
+      startedAt: w?.startedAt ? new Date(w.startedAt).toISOString() : null,
+      prNumber,
+      prLifecycle: lifecycle,
+      approved,
+      now: new Date().toISOString(),
+    }),
   };
+}
+
+export function holderReviewWhere(opts: { workspaceId: string; prNumber: number }) {
+  return and(
+    eq(reviewFeedback.workspaceId, opts.workspaceId),
+    eq(reviewFeedback.prNumber, opts.prNumber),
+    eq(reviewFeedback.kind, 'review'),
+    inArray(reviewFeedback.state, ['approved', 'changes_requested']),
+  );
+}
+
+/** How far back merged-PR history counts toward a file's conflict rate. */
+export const FILE_CONFLICT_HISTORY_DAYS = 90;
+
+/**
+ * Per-file history for a same-file soft overlap: of the merged PRs whose task
+ * touched each file (orchestration_touch_labels joined to a merged worker),
+ * how many needed a conflict retry (a task with `conflict_retry_pr_number` on
+ * that PR). Plus the candidate's latest recorded expected size. THROWS on a
+ * DB error: the decision then falls back to the rule's HOLD.
+ */
+export async function loadSoftOverlapEvidence(opts: { workspaceId: string; taskId: string; paths: string[] }): Promise<ClaimHoldEvidence> {
+  const paths = [...new Set(opts.paths.filter(p => typeof p === 'string' && p.length > 0))].slice(0, 20);
+  const since = new Date(Date.now() - FILE_CONFLICT_HISTORY_DAYS * 86_400_000);
+  const [countRows, sizeRows] = await Promise.all([
+    paths.length === 0 ? Promise.resolve(null) : db.execute(fileConflictCountsSql({ workspaceId: opts.workspaceId, paths, since })),
+    db.select({ expectedSize: orchestrationManifestPredictions.expectedSize })
+      .from(orchestrationManifestPredictions)
+      .where(eq(orchestrationManifestPredictions.taskId, opts.taskId))
+      .orderBy(desc(orchestrationManifestPredictions.createdAt))
+      .limit(1),
+  ]);
+  const raw = countRows === null ? [] : (Array.isArray(countRows) ? countRows : (countRows as { rows?: unknown[] }).rows ?? []);
+  const counts: FileConflictCount[] = (raw as Array<{ path: string; merged_prs: number | string; conflicted: number | string }>)
+    .map(r => ({ path: r.path, mergedPrs: Number(r.merged_prs) || 0, conflicted: Number(r.conflicted) || 0 }));
+  const size = (sizeRows as Array<{ expectedSize: { files: number; minutes: number; source: string } | null }>)[0]?.expectedSize ?? null;
+  return {
+    conflictHistory: paths.length === 0 ? null : summarizeFileConflictHistory(paths, counts),
+    predictedChange: size ? { files: size.files, minutes: size.minutes, source: size.source } : null,
+  };
+}
+
+export function fileConflictCountsSql(opts: { workspaceId: string; paths: string[]; since: Date }) {
+  return sql`
+    SELECT p.path AS path,
+      COUNT(DISTINCT l.pr_number)::int AS merged_prs,
+      COUNT(DISTINCT l.pr_number) FILTER (WHERE EXISTS (
+        SELECT 1 FROM tasks r
+        WHERE r.workspace_id = l.workspace_id AND r.conflict_retry_pr_number = l.pr_number
+      ))::int AS conflicted
+    FROM orchestration_touch_labels l
+    CROSS JOIN LATERAL jsonb_array_elements_text(l.touched_paths) AS p(path)
+    JOIN workers w ON w.id = l.worker_id AND w.merged_at IS NOT NULL
+    WHERE l.workspace_id = ${opts.workspaceId}
+      AND l.pr_number IS NOT NULL
+      AND l.recorded_at >= ${opts.since.toISOString()}
+      AND p.path IN (SELECT jsonb_array_elements_text(${JSON.stringify(opts.paths)}::jsonb))
+    GROUP BY p.path`;
 }
 
 /**

@@ -423,50 +423,6 @@ describe('API Authentication', () => {
   });
 
   // =================================================================
-  // 6. Local-UI Auth Redirect
-  // =================================================================
-
-  describe('Runner Auth — /api/auth/runner', () => {
-    test('GET redirects to /api/auth/cli with client=runner', async () => {
-      const { status, headers } = await fetchNoRedirect(
-        '/api/auth/runner?callback=http://localhost:8766/callback'
-      );
-
-      // Should redirect
-      expect(status).toBeGreaterThanOrEqual(300);
-      expect(status).toBeLessThan(400);
-
-      const location = headers.get('location');
-      expect(location).toBeTruthy();
-      expect(location).toContain('/api/auth/cli');
-      expect(location).toContain('client=runner');
-    }, 15_000);
-
-    test('GET forwards query params to cli route', async () => {
-      const { status, headers } = await fetchNoRedirect(
-        '/api/auth/runner?callback=http://localhost:8766/callback&level=worker'
-      );
-
-      const location = headers.get('location');
-      expect(location).toBeTruthy();
-      expect(location).toContain('callback=');
-      expect(location).toContain('level=worker');
-      expect(location).toContain('client=runner');
-    }, 15_000);
-
-    test('GET preserves custom client param if already set', async () => {
-      const { status, headers } = await fetchNoRedirect(
-        '/api/auth/runner?callback=http://localhost:8766/callback&client=custom'
-      );
-
-      const location = headers.get('location');
-      expect(location).toBeTruthy();
-      // Should keep client=custom since the route only sets client if not already present
-      expect(location).toContain('client=custom');
-    }, 15_000);
-  });
-
-  // =================================================================
   // 7. Worker Claim Auth
   // =================================================================
 

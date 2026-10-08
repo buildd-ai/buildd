@@ -125,7 +125,8 @@ import {
   gatedStartReachable,
   releaseGatedStartPaths,
   scheduleClaimHoldShadow,
-  touchesSerializedSurface,
+  softOverlapStartVerdict,
+  touchesHardOverlapSurface,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
 import { evaluateSoftOverlaps, softOverlapHolderIds, type SoftHolderRow } from './soft-overlap-gate';
@@ -1663,6 +1664,10 @@ export async function POST(req: NextRequest) {
     // Soft overlaps a force claim went past: recorded with its outcome as
     // calibration data (human force, not a model label).
     const softOverlapForced: Array<Record<string, unknown>> = [];
+    // Soft overlaps a START went past (rule or Jev): recorded once the claim
+    // wins, so the outcome join can grade a started pair and the dashboard can
+    // say who decided.
+    const softOverlapStarted: Array<Record<string, unknown>> = [];
     // Captured before any provider-toggle/budget-failover flip below can mutate
     // (task as any).backend, so the Codex single-flight check further down tests
     // what this task WAS ASSIGNED, not what it may have just been flipped to.
@@ -1829,39 +1834,55 @@ export async function POST(req: NextRequest) {
       }
 
       // Soft overlap (./soft-overlap-gate): an in-flight task whose declared
-      // scope overlaps this one's only by directory prefix, or a pre-v2
-      // inferred edge. Never a dependsOn edge. A same-file / migration /
-      // serialized / unknown-state entry holds deterministically; a prefix-only
-      // one holds unless an applied Jev START exists for this exact state, and
-      // the START's declared paths are then acquired exclusively before the
-      // claim (a live lease wins). Forced: bypassed and recorded.
+      // scope overlaps this one's on the same file or by directory prefix, or a
+      // pre-v2 inferred edge. Never a dependsOn edge. A migration / hard-surface
+      // (serialized, generated, hotspot) / unknown-state entry holds
+      // deterministically. The rest is tiered (orchestration-claim-risk): a
+      // holder that never started, or a directory-only overlap, starts in code
+      // (`rule_start`); a same-file one holds unless an applied Jev START
+      // exists for this exact state. Either START's declared paths are then
+      // acquired exclusively before the claim (a live lease wins). Forced:
+      // bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
-            isSerialized: (paths) => touchesSerializedSurface(paths, (task as any).workspace?.gitConfig ?? null),
+            isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
       let softHeld = false;
       for (const v of softVerdicts) {
         // The rule's verdict: deterministic for a hard overlap, HOLD for a
-        // prefix-only one until an applied Jev START says otherwise.
-        let verdict: 'deterministic_hold' | 'HOLD' | 'START' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        // same-file or prefix one until an applied Jev START says otherwise.
+        let verdict: 'deterministic_hold' | 'HOLD' | 'START' | 'rule_start' = v.kind === 'deterministic' ? 'deterministic_hold' : 'HOLD';
+        let risk: { tier: string; rationale: string; reasons: string[]; reevaluateOn: string[] } | null =
+          v.kind === 'deterministic' ? { tier: 'hard', rationale: `Held: ${v.overlapKind.replace('_', ' ')} overlap.`, reasons: [v.overlapKind], reevaluateOn: ['holder_terminal'] } : null;
         if (v.kind === 'advisory' && !forced) {
           const holdCtx = holdStartContext(task, forced);
-          const note = holdCtx
-            ? holdStart.noteSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
+          const assessed = holdCtx
+            ? holdStart.assessSoftOverlap(holdCtx, taskManifest, { taskId: v.holderTaskId, overlapPaths: v.paths, overlapKind: v.overlapKind, workerStatus: v.workerStatus }, activePathClaimsByWorkspace.get(task.workspaceId))
             : null;
-          verdict = holdStartGated && note && await gatedStartApplies(note) ? 'START' : 'HOLD';
+          if (assessed) risk = assessed.risk;
+          verdict = await softOverlapStartVerdict(assessed?.note ?? null, holdStartGated);
         }
-        if (verdict === 'START') {
-          console.log(`[claim] gated_start: task ${task.id} past soft overlap with ${v.holderTaskId}; acquiring its paths`);
+        if (verdict === 'START' || verdict === 'rule_start') {
+          console.log(`[claim] ${verdict === 'rule_start' ? 'rule_start' : 'gated_start'}: task ${task.id} past soft overlap with ${v.holderTaskId} (${risk?.tier ?? 'unknown'}); acquiring its paths`);
           gatedStartPaths = concreteManifest;
+          softOverlapStarted.push({
+            holderTaskId: v.holderTaskId,
+            paths: v.paths.slice(0, 10),
+            overlapKind: v.overlapKind,
+            decidedBy: verdict === 'rule_start' ? 'rule' : 'jev',
+            riskTier: risk?.tier ?? null,
+            reasons: risk?.reasons.slice(0, 4) ?? [],
+          });
           continue;
         }
         const detail = {
           holderTaskId: v.holderTaskId,
           paths: v.paths.slice(0, 10),
           verdict,
-          overlapKind: v.kind === 'deterministic' ? v.overlapKind : 'prefix',
+          overlapKind: v.overlapKind,
+          // The tier and why, for explain/the dashboard; what would change it.
+          ...(risk ? { riskTier: risk.tier, rationale: risk.rationale, reevaluateOn: risk.reevaluateOn } : {}),
         };
         if (forced) {
           softOverlapForced.push(detail);
@@ -2731,11 +2752,16 @@ export async function POST(req: NextRequest) {
     // neon-http, db.batch runs as one non-interactive transaction, so the lock
     // is held exactly for this insert's duration and is safe without
     // db.transaction()'s interactive-session requirement.
+    // The authenticated OAuth session user, never the client-relayed session
+    // marker: an OAuth session acts as its team's shared account, so this is
+    // what PATCH /api/workers/[id] matches to let only the claimer act as the
+    // worker (lib/worker-owner.ts). NULL for a bld_ key.
+    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
-        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status, claimed_by_user_id)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle', ${claimedByUserId}::uuid
         WHERE EXISTS (
           SELECT 1 FROM ${tasks} t_claim
           WHERE t_claim.id = ${task.id}
@@ -2822,6 +2848,22 @@ export async function POST(req: NextRequest) {
       branch,
       task: task as any,
     });
+    // A START past a soft overlap (rule or Jev): one accepted row per holder,
+    // the started half of the HOLD/START evaluation set.
+    for (const s of softOverlapStarted) {
+      fireGateEvent({
+        gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+        surface: 'POST /api/workers/claim',
+        outcome: 'accepted',
+        reason: 'soft_overlap_start',
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+        missionId: (task as any).missionId ?? null,
+        workerId: worker.id,
+        callerOrigin: gateCallerOrigin({ apiAccount: account }),
+        detail: { ...s, startedAt: now.toISOString() },
+      });
+    }
     if (forced) {
       fireGateEvent({
         gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
