@@ -45,6 +45,7 @@
     "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
+    "./cost-basis": "./cost-basis.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
