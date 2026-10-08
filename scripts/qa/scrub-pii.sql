@@ -264,6 +264,8 @@ DELETE FROM task_area_prediction_events;
 -- collection error text.
 DELETE FROM post_session_findings;
 DELETE FROM post_session_runs;
+-- Failure Pattern Sentinel incidents: titles and refs name tasks, PRs and repos.
+DELETE FROM failure_incidents;
 -- Orchestration decision ledger: touch labels carry file paths.
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;

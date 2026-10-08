@@ -198,7 +198,8 @@
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
-      "packages/core/runner-health.ts": "health-quality"
+      "packages/core/runner-health.ts": "health-quality",
+      "apps/web/src/lib/failure-pattern-sentinel-trigger.ts": "health-quality"
     },
     "apps/web/src/app/api/workers/active/route.ts": {
       "apps/web/src/lib/deploy-identity.ts": "releases",
@@ -513,7 +514,8 @@
       "packages/core/orchestration-claim-decision.ts": "jev-decisions",
       "packages/core/orchestration-overlap-decision.ts": "jev-decisions",
       "packages/core/question-gate-decision.ts": "jev-decisions",
-      "packages/core/task-size-bucket-decision.ts": "jev-decisions"
+      "packages/core/task-size-bucket-decision.ts": "jev-decisions",
+      "packages/core/decision-kind-failure-incident-triage.ts": "jev-decisions"
     },
     "packages/core/scripts/backfill-evict-orphans.ts": {
       "packages/core/knowledge-store/ingest-filter.ts": "knowledge",
