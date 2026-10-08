@@ -373,6 +373,15 @@ mock.module('@/lib/task-dependencies', () => ({
   requirePlanApprovalEnabled: () => false,
   shouldAutoApprovePlan: () => true,
 }));
+
+// Early release's stacking mechanics: un-draft any dependent stacked on this
+// task's branch once it merges. The module's own tests cover the lookup and
+// GitHub call; here only whether the webhook fires it, and with what task id.
+const mockUndraftStackedDependents = mock((_upstreamTaskId: string) => Promise.resolve());
+mock.module('@/lib/early-release-stacking', () => ({
+  undraftStackedDependents: mockUndraftStackedDependents,
+  findStackedReleaseForBase: mock(() => Promise.resolve(false)),
+}));
 const mockWakeMissionAfterResponse = mock((_id: string, _reason: string) => {});
 mock.module('@/lib/mission-wake', () => ({
   wakeMission: mock(() => Promise.resolve({ woken: false, reason: 'not_found' })),
@@ -778,6 +787,7 @@ function resetAll() {
   mockSettleSurfaceIntentsOnClose.mockClear();
   mockResolveCompletedTask.mockClear();
   mockCheckDependsOnResolved.mockClear();
+  mockUndraftStackedDependents.mockClear();
   mockWakeMissionAfterResponse.mockClear();
   mockVerifyWebhookSignature.mockReset();
   mockGithubApi.mockReset();
@@ -6041,6 +6051,28 @@ describe('pull_request merged — effects that belong to the merge, not the tran
 
     expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(true);
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
+  });
+
+  // Early release's stacking mechanics (docs/design/early-release.md): once
+  // this task's PR merges, any dependent that was released `start_stacked`
+  // against its branch needs its own PR un-drafted. GitHub's own
+  // retarget-on-branch-delete moves the base later — nothing else to trigger.
+  it('un-drafts early-release stacked dependents once the upstream merges', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockUndraftStackedDependents).toHaveBeenCalledWith('t-task');
+  });
+
+  it('does not un-draft dependents when the PR closed without merging', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker());
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({
+      pull_request: { merged: false, head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
+    })));
+
+    expect(mockUndraftStackedDependents).not.toHaveBeenCalled();
   });
 
   // ── Merge completes the task through resolveCompletedTask (S1) ───────────
