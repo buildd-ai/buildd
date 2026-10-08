@@ -75,7 +75,6 @@ import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
-import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-trigger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -4355,10 +4354,6 @@ export async function PATCH(
       shipped: workerHasPR,
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
-    // Bounded, deferred — never waits on and never fails this response. See
-    // failure-pattern-sweep.ts for why duplicate coverage with the 30-minute
-    // cron backstop is safe (the incident store's own upsert is idempotent).
-    scheduleFailurePatternSentinel(worker.workspaceId);
   }
 
   // A conflict retry the runner finished itself (derived files only, no agent).
