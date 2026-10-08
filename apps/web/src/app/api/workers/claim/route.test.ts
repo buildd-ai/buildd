@@ -9315,6 +9315,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       // The decision runs after the response; nothing is on the ledger yet.
       findAppliedStart: async () => false,
       loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
+      loadEvidence: async () => ({ conflictHistory: { summary: 'no_history', maxRate: null, files: [] }, predictedChange: null }),
       decisionDeps: {
         resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
         call: (async () => ({
@@ -9626,7 +9627,7 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
     });
   });
 
-  describe('soft overlap (prefix-only declared overlap, never a dependsOn edge)', () => {
+  describe('soft overlap (same-file or prefix declared overlap, never a dependsOn edge)', () => {
     const acquired: any[] = [];
     const soft = (entries: any[], pathManifest: string[] = ['apps/web/src/lib/']) => task({
       pathManifest,
@@ -9684,9 +9685,26 @@ describe('hold/start at claim (§5b): decided after the response, applied on the
       expect(on.rows).toHaveLength(0);
     });
 
-    it('a legacy inferred edge on the same file holds deterministically: Jev is never asked', async () => {
+    it('a same-file overlap with no applied START holds, and Jev is asked with the same_file kind', async () => {
+      mockFireDeferralEvent.mockClear();
+      const on = await claimWith(withStart(false), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({ candidatePolicyVersion: 'ch1.soft_overlap', taskId: 'task-1' });
+      const ledger = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).find((e: any) => e.reason === 'soft_overlap');
+      expect(ledger.detail).toMatchObject({ holderTaskId: 'holder-1', verdict: 'HOLD', overlapKind: 'same_file' });
+    });
+
+    it('a same-file overlap with no conflict history and an applied Jev START runs (legacy edges too)', async () => {
       softHoldersTest.rows = new Map([['holder-1', holderRow({ status: 'pending', workerStatus: null })]]);
       const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'legacy_inferred' }], ['apps/web/src/lib/widget.ts'])] }));
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('a same-file overlap on a migration path holds deterministically: Jev is never asked', async () => {
+      softHoldersTest.rows = new Map([['holder-1', holderRow({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })]]);
+      const on = await claimWith(withStart(true), () => arm({ tasks: [soft([{ taskId: 'holder-1', paths: [], kind: 'same_file' }], ['packages/core/drizzle/0300_x.sql'])] }));
       expect(on.body.workers).toHaveLength(0);
       expect(on.rows).toHaveLength(0);
       expect(acquired).toHaveLength(0);

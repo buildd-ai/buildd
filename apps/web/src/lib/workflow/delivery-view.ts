@@ -150,6 +150,31 @@ export async function kernelReplacedFailedTaskIds(failedTaskIds: string[], exec:
 export { replacedFailedTaskIds };
 
 /**
+ * The state of each kernel-owned delivery a task owns, for a caller outside
+ * the kernel that must not act on a PR the kernel is driving (the live sibling
+ * conflict probe, lib/sibling-conflict-probe-store.ts). A delivery released to
+ * legacy (`authority` not `kernel`) is not returned. A SELECT, like the rest
+ * of this file.
+ *
+ * Throws on a read failure, unlike the display loaders above: the caller
+ * decides how to fail (the probe treats an unreadable state as kernel-owned).
+ */
+export async function kernelOwnedDeliveryStates(
+  taskIds: string[],
+  exec: Exec = dbExec,
+): Promise<Array<{ ownerTaskId: string; state: string }>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const res = await exec(sql`-- workflow:kernel_owned_states
+SELECT d.owner_task_id AS "ownerTaskId", d.state AS state
+FROM workflow_deliveries d
+WHERE d.authority = 'kernel'
+  AND d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)`);
+  return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; state: unknown }>).flatMap(r =>
+    typeof r.ownerTaskId === 'string' && typeof r.state === 'string' ? [{ ownerTaskId: r.ownerTaskId, state: r.state }] : []);
+}
+
+/**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given
  * task that OWNS a kernel-owned delivery. The one load a list surface makes;
  * every chip, tile and badge it draws for those rows projects from it. Never

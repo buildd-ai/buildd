@@ -71,6 +71,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { siblingProbeHeartbeat } from '@/lib/sibling-conflict-probe-store';
 import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -907,6 +908,10 @@ export async function PATCH(
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
+    // Live sibling conflict probe (lib/sibling-conflict-probe.ts): results of
+    // the merge-tree probes this runner was handed, and whether it can run them.
+    siblingProbeResults,
+    siblingProbe: supportsSiblingProbe,
   } = body;
   let status = reportedStatus;
   let error = reportedError;
@@ -4995,6 +5000,19 @@ export async function PATCH(
 
   const allInstructions = [pendingInstructions, noteInstructions].filter(Boolean).join('') || undefined;
 
+  // Live sibling conflict probe: apply results, mark the workspace due on new
+  // touches, hand this runner its probes. Never throws.
+  const siblingProbes = worker.workspaceId
+    ? await siblingProbeHeartbeat({
+        workerId: id,
+        workspaceId: worker.workspaceId,
+        results: siblingProbeResults,
+        supportsProbe: supportsSiblingProbe === true,
+        touchesMoved: reportedTouches.length > 0,
+        terminal: isTerminalStatus,
+      })
+    : [];
+
   // Return worker with any pending instructions, worker-to-worker messages, and output warnings
   return jsonResponse({
     ...updated,
@@ -5007,6 +5025,7 @@ export async function PATCH(
     // The working-set ACK: what this delta leased, released or found held,
     // and whether coverage is complete for its generation.
     ...(workingSetAck ? { workingSetAck } : {}),
+    ...(siblingProbes.length > 0 ? { siblingProbes } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 

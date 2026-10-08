@@ -529,6 +529,35 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.blockedByCount).toBe(1);
   });
 
+  it("a surface audit's count leaves out a dependency unlinked from its mission", async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: '00000000-0000-4000-8000-0000000000a1',
+      title: '[surface audit] Mobile nav',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: 'm-1',
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['member-1', 'unlinked-1', 'moved-1'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockDepTasksFindMany.mockResolvedValue([
+      { id: 'member-1', status: 'in_progress', missionId: 'm-1', workers: [] },
+      { id: 'unlinked-1', status: 'in_progress', missionId: null, workers: [] },
+      { id: 'moved-1', status: 'pending', missionId: 'm-2', workers: [] },
+    ]);
+
+    const res = await callGET('00000000-0000-4000-8000-0000000000a1');
+    expect(res.status).toBe(200);
+    expect((await res.json()).blockedByCount).toBe(1);
+  });
+
   it('returns blockedByCount=1 when a dep is completed but its PR is open and unmerged', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({

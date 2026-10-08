@@ -822,6 +822,12 @@ mock.module('@/lib/chat/mission-events', () => ({
   postQuestionEvent: mock(async (...args: unknown[]) => { fanout.push(['postQuestionEvent', ...args]); }),
 }));
 
+const siblingProbeCalls: any[] = [];
+let siblingProbeReply: any[] = [];
+mock.module('@/lib/sibling-conflict-probe-store', () => ({
+  siblingProbeHeartbeat: async (input: any) => { siblingProbeCalls.push(input); return siblingProbeReply; },
+}));
+
 import { GET, PATCH } from './route';
 import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -1929,6 +1935,33 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(req, { params: mockParams });
 
       expect(mockRecordOrchestrationTouchLabel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('live sibling conflict probe wiring', () => {
+    it('passes results, support and moved touches through, and returns the probes to run', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        pendingInstructions: null, milestones: [], observedTouches: ['apps/web/a.ts'],
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running' }]) })) })),
+      });
+      siblingProbeCalls.length = 0;
+      siblingProbeReply = [{ probeId: 'p1', otherBranch: 'buildd/x', sharedFiles: ['a.ts'], mergiraf: false }];
+      const results = [{ probeId: 'p0', outcome: 'clean' }];
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { touchedPaths: ['apps/web/c.ts'], siblingProbe: true, siblingProbeResults: results },
+      }), { params: mockParams });
+
+      expect(siblingProbeCalls).toHaveLength(1);
+      expect(siblingProbeCalls[0]).toMatchObject({ results, supportsProbe: true, touchesMoved: true, terminal: false });
+      expect((await res.json()).siblingProbes).toEqual(siblingProbeReply);
+      siblingProbeReply = [];
     });
   });
 

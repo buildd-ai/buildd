@@ -507,6 +507,11 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
+  // overlap with an in-flight task is a deterministic hold, never a claim-time
+  // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
+  // only migrations, generated files and serialized surfaces are hard.
+  overlapHotspots?: string[] | null;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
