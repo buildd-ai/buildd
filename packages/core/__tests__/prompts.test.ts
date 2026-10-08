@@ -41,8 +41,18 @@ describe('resolvePrompt', () => {
 
   it('returns the active body when a row is installed', () => {
     installPrompts([row('test.greeting', 1, 'override text')]);
-    expect(resolvePromptEntry('test.greeting', 'public text')).toEqual({ body: 'override text', source: 'active', version: 1 });
+    expect(resolvePromptEntry('test.greeting', 'public text')).toEqual({
+      body: 'override text', source: 'active', version: 1, contentHash: promptContentHash('override text'),
+    });
     expect(promptFallbackCounts()['test.greeting']).toBeUndefined();
+  });
+
+  it('carries the active row hash as a fingerprint, and none for the default or a rejected row', () => {
+    expect(resolvePromptEntry('test.greeting', 'public text').contentHash).toBeNull();
+    installPrompts([row('test.greeting', 3, '   ')]);
+    expect(resolvePromptEntry('test.greeting', 'public text')).toEqual({ body: 'public text', source: 'default', version: null, contentHash: null });
+    installPrompts([row('test.greeting', 4, 'v4 text')]);
+    expect(resolvePromptEntry('test.greeting', 'public text').contentHash).toBe(promptContentHash('v4 text'));
   });
 
   it('follows a version switch', () => {

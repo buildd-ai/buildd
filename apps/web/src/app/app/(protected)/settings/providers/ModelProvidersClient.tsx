@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { CHAT_PROVIDER_INFO, chatKeySummary, type KeyPolicy, type ProviderKeysView } from '@/lib/provider-keys-client';
+import { CHAT_PROVIDER_INFO, chatKeysInUse, type KeyPolicy, type ProviderKeysView } from '@/lib/provider-keys-client';
 import { listProviderKeys, removeProviderKey, setProviderKey, testProviderKey } from '@/lib/provider-keys-api';
 import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { useSearchParams } from 'next/navigation';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
-import GatewayAndDecisionModel from './GatewayAndDecisionModel';
+import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
 
 export interface ChatAvailabilityProp {
@@ -21,6 +21,10 @@ export interface ChatAvailabilityProp {
  * Settings → Connections → Model providers. The one place a team's provider
  * keys live: status, scope, last check, Test / Replace / Remove, and whose key
  * server-side AI spends. Keys never come back beyond last4.
+ *
+ * Every provider gets the same card and the same controls; any one, two or
+ * three may be set. OpenRouter carries a "recommended" hint and an extra
+ * Connect button, neither of which changes what the card does.
  */
 export default function ModelProvidersClient({ teamId, isAdmin, availability, workspaces = [] }: {
   teamId: string;
@@ -31,6 +35,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
 }) {
   const [view, setView] = useState<ProviderKeysView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the gateway changes: the sections that route through it reload.
+  const [gatewayRev, setGatewayRev] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -44,7 +50,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
   useEffect(() => { void load(); }, [load]);
 
   const canManage = view ? view.canManageTeamKeys : isAdmin;
-  const status = view ? chatStatusCopy(availability, chatKeySummary(view), canManage, view.keyPolicy) : null;
+  const status = view ? chatStatusCopy(availability, chatKeysInUse(view), canManage, view.keyPolicy) : null;
   const showOwnCount = view?.keyPolicy !== 'team';
   const flow = providerFlowMessage(useSearchParams());
   const openRouterUnset = !!view && !view.providers.find((p) => p.provider === 'openrouter')?.team;
@@ -92,6 +98,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
               />
             );
           })}
+          <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setGatewayRev((r) => r + 1)} />
         </div>
         {!canManage && <p className="text-xs text-text-muted mt-2.5">Only a team owner or admin can change team keys.</p>}
       </section>
@@ -100,9 +107,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
         <KeyPolicyControl teamId={teamId} policy={view.keyPolicy} canManage={canManage} onChanged={load} />
       )}
 
-      <GatewayAndDecisionModel teamId={teamId} canManage={canManage} />
+      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={gatewayRev} />
 
-      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} />
+      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} rev={gatewayRev} />
 
     </div>
   );

@@ -1,1 +1,0 @@
-ALTER TABLE "missions" ADD COLUMN "heartbeat_breaker_tripped_at" timestamp with time zone;

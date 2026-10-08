@@ -66,6 +66,15 @@
   --cat-design: #f59b4e;
   --cat-research: #c77bb5;
 
+  /* Insights uses four semantic groups: success, cool in-flight work,
+     needs input, and failure. Detailed in-flight stages share one hue. */
+  --flow-running: var(--status-info);
+  --flow-waiting: var(--status-warning);
+  --flow-review: var(--status-info);
+  --flow-merged: var(--status-info);
+  --flow-released: var(--status-success);
+  --flow-lost: var(--status-error);
+
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
 
@@ -125,6 +134,13 @@
   --cat-infra: #d96e12;
   --cat-design: #d96e12;
   --cat-research: #b24c9c;
+
+  --flow-running: var(--status-info);
+  --flow-waiting: var(--status-warning);
+  --flow-review: var(--status-info);
+  --flow-merged: var(--status-info);
+  --flow-released: var(--status-success);
+  --flow-lost: var(--status-error);
 
   --chrome-bg: rgba(247, 244, 240, 0.92);
   --chrome-sidebar: #f7f4f0;

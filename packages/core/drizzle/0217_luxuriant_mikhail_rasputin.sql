@@ -1,1 +1,0 @@
-ALTER TABLE "teams" ADD COLUMN "enabled_decision_shadows" text[];

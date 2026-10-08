@@ -14,7 +14,7 @@ const EARLIER = 'fixture-task-earlier';
 
 const obj = (n: number, over: Partial<EvidenceObjectSummary>): EvidenceObjectSummary => ({
   id: `fixture-evidence-${n}`, workspaceId: 'ws-fixture', taskId: TASK, rootTaskId: TASK,
-  workerId: 'worker-fixture', prNumber: null, kind: 'command_output', bytes: 48 * 1024, uploadState: 'stored',
+  workerId: 'worker-fixture', scoutRunId: null, prNumber: null, kind: 'command_output', bytes: 48 * 1024, uploadState: 'stored',
   indexState: 'indexed', createdAt: '2026-09-30T14:02:00.000Z', expiresAt: null, ...over,
 });
 

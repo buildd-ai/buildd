@@ -57,3 +57,36 @@ export function missionTaskHref({ missionId, taskId, from, initiativeId, mode }:
   const hash = mode === 'focus' ? `#${missionTaskAnchorId(enc(taskId))}` : '';
   return `/app/missions/${enc(missionId)}${query}${hash}`;
 }
+
+// ─── The navigation contract ────────────────────────────────────────────────
+
+/**
+ * Whether pointing at a task should be a real navigation (a link the user can
+ * open in a new tab, which may leave this page) or an in-page anchor onto
+ * something already rendered here (the mission Board's own Landed-strip cell
+ * and its tethered drawer). Both are legitimate; what is never legitimate is
+ * a navigation-shaped label on an affordance that does not navigate — "Open"
+ * promises the reader they will land somewhere, and an anchor never does.
+ *
+ * Callers own the `inPageAnchor` test (e.g. "is this task already drawn in
+ * the strip on this render"); this function owns only the one rule that
+ * follows from the answer — so a future surface (a retry CTA, a
+ * switch-backend action) asks this instead of inventing its own label.
+ */
+export type TaskAffordanceMode =
+  | { kind: 'navigate'; label: string }
+  | { kind: 'anchor'; label: string };
+
+/**
+ * Rephrase a navigation label ("Open the failed task", "View the open task")
+ * for the anchor case. Idempotent on a label that already reads "Jump to …".
+ */
+export function jumpToLabel(label: string): string {
+  if (/^Jump to\b/i.test(label)) return label;
+  const rephrased = label.replace(/^(Open|View)\b/, 'Jump to');
+  return rephrased === label ? `Jump to: ${label}` : rephrased;
+}
+
+export function taskAffordanceMode(label: string, opts: { inPageAnchor: boolean }): TaskAffordanceMode {
+  return opts.inPageAnchor ? { kind: 'anchor', label: jumpToLabel(label) } : { kind: 'navigate', label };
+}

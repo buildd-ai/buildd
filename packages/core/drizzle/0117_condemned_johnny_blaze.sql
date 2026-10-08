@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "pr_opened_base_sha" text;

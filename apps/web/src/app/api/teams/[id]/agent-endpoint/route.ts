@@ -2,19 +2,26 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
-import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setTeamAgentEndpoint } from '@/lib/agent-endpoint-settings';
+import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointAppliesTo, setTeamAgentEndpoint } from '@/lib/agent-endpoint-settings';
 
 /**
  * The team's agent model endpoint (@buildd/core/agent-endpoint,
  * docs/design/agent-model-endpoint.md §6).
  *
  *   GET    → { endpoints: MaskedAgentEndpoint[] }                     any member
- *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId? }
+ *   PUT    { kind, baseUrl?, apiKey?, authHeader?, models?, agentBaseUrl?, workspaceId?, appliesTo?, capabilities? }
  *          → { endpoint }                                             owner/admin; one real call first
+ *   PATCH  { appliesTo: string[] | null, consolidate?: boolean }
+ *          → { endpoint, copies }                                     owner/admin; no key, no call out
  *   DELETE ?workspaceId= (omit for the team-wide row) → { deleted }   owner/admin
  *
  * A blank apiKey keeps the saved key, for the same kind and URL at that scope
- * only (else 400). Session only. The key never leaves the server. Verify an existing row with
+ * only (else 400). `appliesTo` (team row only): the workspace ids it applies
+ * to, null for all; a PUT without it keeps the saved list. `capabilities`
+ * ({ toolSearch?: boolean }, null = the kind's defaults): a PUT without it
+ * keeps the saved value for the same kind. PATCH changes only
+ * that list, and with `consolidate` deletes selected workspaces' own copies
+ * that route exactly like the team row. Session only. The key never leaves the server. Verify an existing row with
  * POST /api/secrets/[id]/verify.
  */
 
@@ -56,6 +63,24 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   } catch (error) {
     console.error('[agent-endpoint] write failed:', error);
     return NextResponse.json({ error: 'Failed to save the agent endpoint' }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!isUuid(id)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+  const denied = await caller(req, id, true);
+  if (denied) return denied;
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  try {
+    const r = await setAgentEndpointAppliesTo({ teamId: id, appliesTo: body.appliesTo, consolidate: body.consolidate });
+    return r.ok
+      ? NextResponse.json({ endpoint: r.endpoint, copies: r.copies })
+      : NextResponse.json({ error: r.error }, { status: r.status });
+  } catch (error) {
+    console.error('[agent-endpoint] scope write failed:', error);
+    return NextResponse.json({ error: 'Failed to change where the agent endpoint applies' }, { status: 500 });
   }
 }
 

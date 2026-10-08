@@ -3,7 +3,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 /**
  * Coverage note — why this file exists.
  *
- * `route.test.ts` never mentions skillBundles, roleConfig or cbmDisabled: the
+ * `route.test.ts` never mentions skillBundles or roleConfig: the
  * server-side resolution had no test anywhere in the repo (the runner tests
  * consume the wire fields but never exercise the claim-side lookup). Two
  * mutations proved it — inverting the account-level fallback filter, and
@@ -374,20 +374,6 @@ describe('attachRoleConfig', () => {
     expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
   });
 
-  // The CBM opt-out is deliberately checked outside the configStorageKey branch
-  // so a role can disable codebase-memory without being packaged to R2.
-  it('sets cbmDisabled from the role record even with no packaged config', async () => {
-    mockSelectRows.mockResolvedValue([
-      roleRow({ configStorageKey: null, configHash: null, mcpServers: { 'codebase-memory': false } }),
-    ]);
-    const workers = [worker('t1')];
-
-    await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
-
-    expect(workers[0].roleConfig).toBeUndefined();
-    expect(workers[0].cbmDisabled).toBe(true);
-  });
-
   // claude.ai artifact access: off unless the role or the task opts in.
   describe('claudeAiArtifacts', () => {
     const builderTask = (id: string, context?: Record<string, unknown>) =>
@@ -425,35 +411,15 @@ describe('attachRoleConfig', () => {
     });
   });
 
-  it('leaves cbmDisabled unset when codebase-memory is not opted out', async () => {
-    mockSelectRows.mockResolvedValue([roleRow({ mcpServers: { 'codebase-memory': true } })]);
+  // The codebase-memory graph was removed, so a role row still carrying the
+  // old `mcpServers['codebase-memory'] = false` opt-out must attach nothing.
+  it('ignores a leftover codebase-memory opt-out on the role row', async () => {
+    mockSelectRows.mockResolvedValue([roleRow({ mcpServers: { 'codebase-memory': false } })]);
     const workers = [worker('t1')];
 
     await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
 
-    expect(workers[0].cbmDisabled).toBeUndefined();
-  });
-
-  // The opt-out is an explicit `=== false`, not "anything but true": CBM stays
-  // ON by default. A role with no mcpServers, an empty map, or no role row at
-  // all must not disable it — otherwise the default silently inverts.
-  it('leaves cbmDisabled unset by default (no mcpServers, empty map, or no role)', async () => {
-    for (const mcpServers of [null, undefined, {}, { other: false }]) {
-      mockSelectRows.mockResolvedValue([roleRow({ mcpServers })]);
-      const workers = [worker('t1')];
-
-      await attachRoleConfig(workers, [task('t1', { roleSlug: 'builder', workspace: { teamId: 'team-1' } })], 'acct-1');
-
-      expect(workers[0].cbmDisabled).toBeUndefined();
-    }
-
-    mockSelectRows.mockResolvedValue([]);
-    mockSkillsFindFirst.mockResolvedValue(null);
-    const noRole = [worker('t9')];
-
-    await attachRoleConfig(noRole, [task('t9', { roleSlug: 'ghost', workspace: { teamId: 'team-1' } })], 'acct-1');
-
-    expect(noRole[0].cbmDisabled).toBeUndefined();
+    expect((workers[0] as any).cbmDisabled).toBeUndefined();
   });
 
   it('skips a task with no roleSlug', async () => {
@@ -474,7 +440,7 @@ describe('attachRoleConfig', () => {
 
     expect(workers[0].roleConfig).toBeUndefined();
     expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
-    // The lookup still runs: the persona and the CBM opt-out are properties of
+    // The lookup still runs: the persona is a property of
     // the role row, not of the bundle, and an unconfigured R2 must not cost the
     // agent its persona.
     expect(mockSelectRows).toHaveBeenCalled();

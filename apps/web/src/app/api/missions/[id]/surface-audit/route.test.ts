@@ -21,9 +21,22 @@ mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: () => Promise.r
 mock.module('@/lib/open-workspaces', () => ({ workspaceOpenToCaller: () => Promise.resolve(openToCaller) }));
 const request = mock((_id: string) => Promise.resolve(result));
 mock.module('@/lib/mission-surface-audit', () => ({ requestMissionSurfaceAudit: request }));
+let previewResult: any = null;
+const preview = mock((_id: string) => Promise.resolve(previewResult));
+mock.module('@/lib/mission-surface-audit-preview', () => ({ previewMissionSurfaceAudit: preview }));
 
-const { POST } = await import('./route');
+const { GET, POST } = await import('./route');
 const call = (id = ID) => POST(new NextRequest(`http://localhost/api/missions/${id}/surface-audit`, { method: 'POST' }), { params: Promise.resolve({ id }) });
+const read = (id = ID) => GET(new NextRequest(`http://localhost/api/missions/${id}/surface-audit`), { params: Promise.resolve({ id }) });
+
+const PREVIEW = {
+  existing: null,
+  routes: ['/app/missions/:id'],
+  viewports: ['mobile', 'desktop'],
+  capture: { branch: 'mission', ref: 'buildd/mission-x', pageSource: 'sandbox' },
+  browserRunnerOnline: false,
+  executorLocal: false,
+};
 
 beforeEach(() => {
   missionRow = { id: ID, teamId: 'team-1', workspaceId: 'ws-1' };
@@ -32,6 +45,8 @@ beforeEach(() => {
   openToCaller = false;
   result = { ok: true, created: true, taskId: 't-1', status: 'pending' };
   request.mockClear();
+  previewResult = { ok: true, preview: PREVIEW };
+  preview.mockClear();
 });
 
 describe('POST /api/missions/[id]/surface-audit', () => {
@@ -75,5 +90,31 @@ describe('POST /api/missions/[id]/surface-audit', () => {
     const res = await call();
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain('already closed');
+  });
+});
+
+describe('GET /api/missions/[id]/surface-audit (the Visual review sheet)', () => {
+  it('returns what a request would do, and files nothing', async () => {
+    const res = await read();
+    expect(res.status).toBe(200);
+    expect((await res.json()).preview).toEqual(PREVIEW);
+    expect(preview).toHaveBeenCalledWith(ID);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('applies the same access rules as the request', async () => {
+    currentUser = null;
+    expect((await read()).status).toBe(401);
+    currentUser = { id: 'u-1' };
+    missionRow = { ...missionRow, teamId: 'other' };
+    expect((await read()).status).toBe(404);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('409s a closed mission', async () => {
+    previewResult = { ok: false, reason: 'mission_closed' };
+    const res = await read();
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('mission_closed');
   });
 });

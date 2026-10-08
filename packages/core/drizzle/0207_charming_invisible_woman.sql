@@ -1,1 +1,0 @@
-ALTER TABLE "teams" ADD COLUMN "decision_model" jsonb;

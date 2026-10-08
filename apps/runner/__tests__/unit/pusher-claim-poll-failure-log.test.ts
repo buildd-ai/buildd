@@ -44,7 +44,6 @@ function makeManager(claimPendingTasks: () => Promise<any[]>, claimAndStart: (ta
     claimPendingTasks,
     claimAndStart,
     getProbedWorkers: () => new Set<string>(),
-    resolveRepoPath: () => null,
   };
   const config: any = {
     pusherKey: undefined,
@@ -132,6 +131,43 @@ describe('task-assignment claim failure logging', () => {
     expect(race[0].method).toBe('log');
     expect(race[0].args.every(a => typeof a === 'string')).toBe(true);
     expect(String(race[0].args[0]).split('\n')).toHaveLength(1);
+  });
+
+  // The server names the gate that dropped a named task. A gate refusal is
+  // not a lost race: "already claimed or no longer pending" is what the
+  // runner printed for hours while the workspace cap refused a green PR's
+  // reviewer on every wake, which sent every reader looking for another claimer.
+  test('a gate refusal names the gate instead of reporting a lost race', async () => {
+    const err = Object.assign(lostRace(), {
+      claimTaskExclusionCode: 'workspace_cap',
+      claimTaskExclusionDetail: 'The workspace is at its concurrent-task cap.',
+    });
+    const manager = makeManager(async () => [], async () => { throw err; });
+    const cap = captureConsole();
+    try {
+      await manager.handleTaskAssignment({ task: task as any });
+    } finally {
+      cap.restore();
+    }
+    const text = cap.lines.map(l => l.args.map(String).join(' ')).join('\n');
+    expect(text).not.toMatch(/claim race/i);
+    const refusal = cap.lines.filter(l => /workspace_cap/.test(String(l.args[0])));
+    expect(refusal).toHaveLength(1);
+    expect(String(refusal[0].args[0])).toContain('task-1');
+    expect(String(refusal[0].args[0])).toContain('concurrent-task cap');
+    expect(refusal[0].args.every(a => typeof a === 'string')).toBe(true);
+  });
+
+  test('an exclusion that means the task is gone or taken is still a lost race', async () => {
+    const err = Object.assign(lostRace(), { claimTaskExclusionCode: 'not_pending' });
+    const manager = makeManager(async () => [], async () => { throw err; });
+    const cap = captureConsole();
+    try {
+      await manager.handleTaskAssignment({ task: task as any });
+    } finally {
+      cap.restore();
+    }
+    expect(cap.lines.filter(l => /claim race/i.test(String(l.args[0])))).toHaveLength(1);
   });
 
   test('a server rejection for any other reason is still an error', async () => {

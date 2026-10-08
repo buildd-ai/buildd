@@ -12,9 +12,10 @@ import { missionTone, type Tone } from './objects/parts';
 import { missionAskRows, missionInsight, missionScopeLabel, missionSheetState, segments } from './mission-sheet';
 
 const BADGE: Record<Tone, string> = {
-  ok: 'border-[var(--mood-landed)] text-[var(--mood-landed)]',
-  attention: 'border-[var(--mood-needs)] text-[var(--mood-needs)]',
-  bad: 'border-[var(--mood-needs)] text-[var(--mood-needs)]',
+  ok: 'border-status-success text-status-success',
+  attention: 'border-status-warning text-status-warning',
+  bad: 'border-status-error text-status-error',
+  neutral: 'border-border-strong text-text-primary',
   live: 'border-[var(--chat-rule-strong)] text-[var(--chat-text)]',
   idle: 'border-[var(--chat-rule)] text-[var(--chat-muted)]',
 };

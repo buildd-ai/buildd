@@ -1,0 +1,16 @@
+{
+  "name": "buildd",
+  "version": "1.0.0",
+  "description": "buildd MCP server, session workflow skill, and presence hooks for Claude Code. Hooks send typed lifecycle events only, never prompts or transcripts.",
+  "author": { "name": "buildd", "url": "https://buildd.dev" },
+  "homepage": "https://buildd.dev",
+  "repository": "https://github.com/buildd-ai/buildd",
+  "license": "MIT",
+  "mcpServers": {
+    "buildd": {
+      "type": "http",
+      "url": "https://buildd.dev/api/mcp",
+      "headers": { "Authorization": "Bearer ${BUILDD_API_KEY}" }
+    }
+  }
+}

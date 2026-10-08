@@ -31,11 +31,11 @@ const facts: StrandChoiceFacts = {
 const okDecide = (choice: string, confidence: number) => async () => ({
   ok: true as const,
   answers: { pick: { choice, confidence } },
-  model: 'jev-test',
+  model: 'typesafe/jev-1.13',
   latencyMs: 12,
   usage: { inputTokens: 100, outputTokens: 0, costUsd: 0.00001 },
 });
-const allowed = async () => ({ ok: true as const, apiKey: 'k', model: 'jev-test' });
+const allowed = async () => ({ ok: true as const, apiKey: 'k', model: 'typesafe/jev-1.13' });
 
 describe('strand choice: structured facts only', () => {
   it('state carries numbers, slugs and flags — never a title, description or diff', () => {
@@ -158,4 +158,50 @@ describe('the owner’s tap is recorded as a label', () => {
       site: 'mission_strand', mission: '11111111', label: 'continue-on-runner', order: 'runner-first', quietMinutes: 130,
     });
   });
+});
+
+describe('decision ledger recording', () => {
+  for (const [choice, confidence, applied] of [
+    ['wait-for-local', 0.92, true],
+    ['wait-for-local', 0.85, true],
+    ['wait-for-local', 0.80, false],
+    ['continue-on-runner', 0.99, false],
+  ] as const) {
+    it(`records ${choice} at ${confidence}`, async () => {
+      const rows: any[] = [];
+      await adviseStrandChoice(facts, {
+        resolveAccess: allowed as any, decide: okDecide(choice, confidence) as any,
+        cache: new Map(), log: () => {},
+        recordDecision: async row => { rows.push(row); return null; },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        capability: 'mission_strand_choice', missionId: facts.missionId,
+        promptVersion: 'ms1', confidence, ruleAnswer: 'runner-first',
+        applied, status: applied ? 'applied' : 'suggested',
+      });
+    });
+  }
+  for (const reason of ['missing_key', 'timeout', 'sensitive', 'non_jev', 'throw']) {
+    it(`records fallback for ${reason}`, async () => {
+      const rows: any[] = [];
+      const result = await adviseStrandChoice({ ...facts, dataClass: reason === 'sensitive' ? 'sensitive' : null }, {
+        resolveAccess: (async () => reason === 'missing_key'
+          ? { ok: false, error: { kind: 'missing_key' } } : await allowed()) as any,
+        decide: (async () => {
+          if (reason === 'throw') throw new Error('test failure');
+          return reason === 'timeout' ? { ok: false, error: { kind: 'timeout' }, latencyMs: 3000 }
+            : { ...await okDecide('wait-for-local', 0.99)(), model: reason === 'non_jev' ? 'other-model' : 'typesafe/jev-1.13' };
+        }) as any,
+        cache: new Map(), log: () => {},
+        recordDecision: async row => { rows.push(row); return null; },
+      });
+      expect(result).toBeNull();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        promptVersion: 'ms1', ruleAnswer: 'runner-first', appliedAnswer: 'runner-first',
+        applied: false, status: 'fallback',
+      });
+    });
+  }
 });

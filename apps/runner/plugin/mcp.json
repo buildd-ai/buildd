@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "buildd": {
+      "type": "streamable-http",
+      "url": "https://buildd.dev/api/mcp",
+      "headers": { "Authorization": "Bearer ${BUILDD_API_KEY}" }
+    }
+  }
+}

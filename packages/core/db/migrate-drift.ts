@@ -92,18 +92,22 @@ export interface DriftClassification {
  * dropped columns never reach it — and without this parse, ~70% of snapshot
  * columns have no traceable creator and would land in `unexplained`.
  */
+/** Unquoted words that open a table-constraint line inside a CREATE TABLE body. */
+const TABLE_BODY_KEYWORDS = new Set(['CONSTRAINT', 'PRIMARY', 'UNIQUE', 'CHECK', 'FOREIGN', 'EXCLUDE', 'LIKE']);
+
 export function createTableColumns(statement: string): string[] {
-  // A line state machine rather than an anchored regex: several hand-written
-  // migrations (e.g. 0061_knowledge_graph.sql) contain multiple CREATE TABLEs
+  // A line state machine rather than an anchored regex: some hand-written
+  // migrations contain multiple CREATE TABLEs
   // with no `--> statement-breakpoint` between them, so the whole file arrives
   // here as one "statement" that does not begin with CREATE TABLE. Anchoring
-  // silently returned nothing for those — 16 of the snapshot's columns had no
-  // traceable creator because of it.
+  // silently returned nothing for those.
   const columns: string[] = [];
   let table: string | null = null;
 
   for (const line of statement.split('\n')) {
-    const open = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_]+)"?\s*\(/i.exec(line);
+    const open = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"?public"?\.)?"?([A-Za-z0-9_]+)"?\s*\(/i.exec(
+      line
+    );
     if (open) {
       table = open[1]!;
       continue;
@@ -113,8 +117,13 @@ export function createTableColumns(statement: string): string[] {
       table = null;
       continue;
     }
-    const column = /^\s*"([A-Za-z0-9_]+)"\s+\S/.exec(line);
-    if (column) columns.push(`${table}.${column[1]}`);
+    // drizzle-kit quotes every column; pg_dump (the squashed baseline) quotes
+    // only reserved words, and lists table constraints in the same body.
+    const column = /^\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z_][A-Za-z0-9_]*))\s+\S/.exec(line);
+    if (!column) continue;
+    const name = column[1] ?? column[2]!;
+    if (column[2] && TABLE_BODY_KEYWORDS.has(name.toUpperCase())) continue;
+    columns.push(`${table}.${name}`);
   }
 
   return columns;
@@ -142,7 +151,7 @@ function addedBy(sources: readonly MigrationSource[]): Map<string, MigrationSour
     // so every missions.* column is really created by objectives' CREATE TABLE;
     // without this the whole table reads as "no migration creates it".
     for (const statement of src.statements) {
-      const renamed = /ALTER\s+TABLE\s+"?([A-Za-z0-9_]+)"?\s+RENAME\s+TO\s+"?([A-Za-z0-9_]+)"?/i.exec(
+      const renamed = /ALTER\s+TABLE\s+(?:ONLY\s+)?(?:"?public"?\.)?"?([A-Za-z0-9_]+)"?\s+RENAME\s+TO\s+"?([A-Za-z0-9_]+)"?/i.exec(
         statement
       );
       if (!renamed) continue;

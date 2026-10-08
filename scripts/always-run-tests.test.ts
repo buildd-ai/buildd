@@ -81,7 +81,7 @@ describe('always-run test manifest', () => {
   });
 });
 
-describe('affected-tests.sh honours the manifest', () => {
+describe('affected-tests honours the manifest', () => {
   test('a new cron route selects the cron instrumentation invariant', () => {
     const selection = runAffected(['apps/web/src/app/api/cron/some-new-sweep/route.ts']);
     expect(selection).not.toBe('SKIP');
@@ -104,8 +104,7 @@ describe('affected-tests.sh honours the manifest', () => {
   });
 
   test('ALL still short-circuits — the manifest must not turn a full run into a list', () => {
-    const many = Array.from({ length: 25 }, (_, i) => `apps/web/src/lib/f${i}.ts`);
-    expect(runAffected(many)).toBe('ALL');
+    expect(runAffected(['bun.lock'])).toBe('ALL');
   });
 
   test('an empty diff is still SKIP — no changes means nothing to guard', () => {

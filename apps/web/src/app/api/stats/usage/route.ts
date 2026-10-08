@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import {
@@ -15,7 +15,6 @@ import {
   type GroupDimension,
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
-import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import {
   ACTION_EVENTS_CAPTURED_SINCE,
   ACTION_EVENTS_ROW_LIMIT,
@@ -23,7 +22,6 @@ import {
   fetchActionEvents,
 } from '@/lib/action-events';
 import { buildActionBreakdownPanel, type ActionBreakdownPanel } from '@/lib/usage-drilldown';
-import type { CbmToolsBlock } from '@/lib/usage-breakdowns';
 
 const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none', 'executor'];
 
@@ -52,21 +50,20 @@ const EXECUTOR_LABELS: Record<string, string> = {
  * actually reach for. Read every tool number against `tools.coverage`: exact
  * histograms only exist for workers that ran after the histogram shipped.
  *
- * Four finer breakdowns, each on its OWN population (never one ratio across
+ * Three finer breakdowns, each on its OWN population (never one ratio across
  * two of them):
  *   bashBuckets / searchShapes — what the Bash calls were for, over tasks with
  *     an exact histogram only (`tools.coverage.histogram`).
  *   buildActions — per-action buildd MCP calls from worker_action_events, over
  *     workers in the window; recorded since `capturedSince`, no backfill.
- *   cbmTools — per-tool codebase-graph calls over CBM-enabled COMPLETED worker
- *     sessions (session-keyed, the index-adoption population).
- * `buildActions` / `cbmTools` are null when their read failed or found nothing.
+ * `buildActions` is null when its read failed or found nothing.
  */
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = apiKey ? await authenticateApiKey(apiKey, req) : null;
+  // A per-task token reads usage only for its own task's workspace.
+  const apiAccount = apiKey ? await authenticateTaskScopedCaller(apiKey, req) : null;
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -92,12 +89,17 @@ export async function GET(req: NextRequest) {
   // Both auth types resolve to the same team scope, so an API key can't read a
   // team it isn't on even when it passes an explicit ?workspace=.
   const teamIds = await resolveAccountTeamIds(user, apiAccount ?? null);
-  const scopedWorkspaces = teamIds.length > 0
+  const teamWorkspaces = teamIds.length > 0
     ? await db.query.workspaces.findMany({
         where: inArray(workspaces.teamId, teamIds),
         columns: { id: true, name: true },
       })
     : [];
+  // A task token's team is narrowed to its task's workspace before anything
+  // reads it: totals, groups and workspace labels never cover the rest.
+  const scopedWorkspaces = apiAccount
+    ? teamWorkspaces.filter(w => taskScopeAllowsWorkspace(apiAccount, w.id))
+    : teamWorkspaces;
   const allowedIds = scopedWorkspaces.map(w => w.id);
 
   if (workspaceParam && !allowedIds.includes(workspaceParam)) {
@@ -108,11 +110,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(emptyResponse(windowParam, windowStart, groupBy));
   }
 
-  const [usageRows, buildActions, cbmTools] = await Promise.all([
+  const [usageRows, buildActions] = await Promise.all([
     fetchUsageRows({ workspaceIds, windowStart }),
     // Each guarded on its own: a failure costs that breakdown, not the response.
     readBuildActions(workspaceIds, windowStart).catch(() => null),
-    readCbmTools(workspaceIds, windowParam, windowStart).catch(() => null),
   ]);
   const stats = computeUsageStats(usageRows, groupBy);
   const labels = await groupLabels(stats.groups.map(g => g.key), groupBy, workspaceIds, scopedWorkspaces);
@@ -135,7 +136,6 @@ export async function GET(req: NextRequest) {
     ...stats,
     groups: stats.groups.map(g => ({ ...g, label: labels[g.key] ?? g.key })),
     buildActions,
-    cbmTools,
   });
 }
 
@@ -151,11 +151,6 @@ async function readBuildActions(workspaceIds: string[], windowStart: Date): Prom
     capturedSince: ACTION_EVENTS_CAPTURED_SINCE,
     rowLimit: ACTION_EVENTS_ROW_LIMIT,
   });
-}
-
-async function readCbmTools(workspaceIds: string[], window: string, windowStart: Date): Promise<CbmToolsBlock | null> {
-  const cbm = await fetchCbmSummary({ workspaceIds, window, windowStart });
-  return cbm && cbm.activeCount > 0 ? cbm.tools : null;
 }
 
 /**
@@ -208,6 +203,5 @@ function emptyResponse(window: string, windowStart: Date, groupBy: GroupDimensio
     ...stats,
     groups: [] as unknown[],
     buildActions: null,
-    cbmTools: null,
   };
 }

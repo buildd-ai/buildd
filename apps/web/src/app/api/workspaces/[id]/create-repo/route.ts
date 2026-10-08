@@ -78,7 +78,7 @@ export async function POST(
     if (!isGitHubAppConfigured()) {
       return NextResponse.json({
         error: 'GitHub App is not configured on this server',
-        hint: 'Use `gh repo create` from the CLI instead, then update the workspace with manage_workspaces action=update repoUrl=<url>',
+        hint: 'Create the repository on GitHub (for example with `gh repo create`), then link it under Link a repository in the workspace settings.',
       }, { status: 422 });
     }
 
@@ -94,7 +94,7 @@ export async function POST(
       if (!installation) {
         return NextResponse.json({
           error: 'No GitHub installation linked to this workspace',
-          hint: 'Use `gh repo create` from the CLI instead, then update the workspace with manage_workspaces action=update repoUrl=<url>',
+          hint: 'Create the repository on GitHub (for example with `gh repo create`), then link it under Link a repository in the workspace settings.',
         }, { status: 422 });
       }
 
@@ -129,7 +129,7 @@ export async function POST(
       // Administration: write on the user account — separate from contents/PR scopes.
       return NextResponse.json({
         error: message,
-        hint: 'Creating a repository requires the GitHub App to have the Administration: write permission. Update the App permissions at github.com/settings/apps and have org admins re-accept, or use `gh repo create` from the CLI and then link it with manage_workspaces action=update repoUrl=<url>.',
+        hint: 'Creating a repository requires the GitHub App to have the Administration: write permission. Update the App permissions at github.com/settings/apps and have org admins re-accept, or create it on GitHub (for example with `gh repo create`) and link it under Link a repository in the workspace settings.',
       }, { status: 403 });
     }
     return NextResponse.json({ error: message }, { status: 500 });

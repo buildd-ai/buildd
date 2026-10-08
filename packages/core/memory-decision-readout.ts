@@ -8,6 +8,10 @@
  *   the same task. The rule showed every hit, so its precision is the used
  *   share of all graded hits; Jev's is the used share of the hits it called
  *   relevant, and its recall is how many used hits it would have kept.
+ *   Live verdicts (claim_context, where a confident "not relevant" demotes
+ *   the hit) read as their own group, `relevance:live`: demotedUsed is the
+ *   used share of the hits it actually demoted (lower is better; each used
+ *   one is a demotion it got wrong), keptUsed the same for the rest.
  * - keep, type: the memory's use rate across every task it was shown to,
  *   split by Jev's verdict (flagged vs not, overridden vs not).
  * - update, use, promote, chat tier, directive scope: verdict mix, applied
@@ -23,6 +27,8 @@ export interface ReadoutDecisionRow {
   rule: string | null;
   applied: boolean;
   error: string | null;
+  /** Absent on rows read before mode was selected: treated as the decision's default. */
+  mode?: 'live' | 'shadow' | string | null;
 }
 
 export interface ReadoutOutcome {
@@ -56,6 +62,7 @@ function agrees(r: ReadoutDecisionRow): boolean | null {
   if (r.verdict === null) return null;
   if (r.decision === 'type') return r.verdict === r.rule;
   // The rule showed the hit (said "relevant"); Jev agrees on 'true'.
+  if (r.decision === 'relevance' && r.rule === 'mandatory') return null;
   if (r.decision === 'relevance') return r.rule === 'shown' ? r.verdict === 'true' : r.verdict === 'false';
   // Today every learn lands (rule: keep); Jev agrees on 'true'.
   if (r.decision === 'keep') return r.verdict === 'true';
@@ -75,7 +82,10 @@ export function computeMemoryDecisionReadout(rows: ReadoutDecisionRow[], outcome
   }
 
   const groups = new Map<string, ReadoutDecisionRow[]>();
-  for (const r of rows) groups.set(r.decision, [...(groups.get(r.decision) ?? []), r]);
+  // Relevance is shadow on most paths and live on claim_context: two policies,
+  // read apart so one does not dilute the other.
+  const groupOf = (r: ReadoutDecisionRow) => (r.decision === 'relevance' && r.mode === 'live' ? 'relevance:live' : r.decision);
+  for (const r of rows) groups.set(groupOf(r), [...(groups.get(groupOf(r)) ?? []), r]);
 
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([decision, rs]) => {
     const answered = rs.filter(r => r.verdict !== null);
@@ -101,7 +111,22 @@ export function computeMemoryDecisionReadout(rows: ReadoutDecisionRow[], outcome
       coverage,
     };
 
-    if (decision === 'relevance') {
+    if (decision === 'relevance:live') {
+      let demotedUsed = 0; let demotedGraded = 0; let keptUsed = 0; let keptGraded = 0;
+      for (const r of answered) {
+        if (!r.taskId || !r.memoryId) continue;
+        const o = byTaskMemory.get(`${r.taskId}|${r.memoryId}`);
+        if (!o) continue;
+        if (r.applied) {
+          demotedGraded++;
+          if (o === 'used') demotedUsed++;
+        } else if (r.rule !== 'mandatory') {
+          keptGraded++;
+          if (o === 'used') keptUsed++;
+        }
+      }
+      summary.ledger = { demotedUsed: rate(demotedUsed, demotedGraded), keptUsed: rate(keptUsed, keptGraded) };
+    } else if (decision === 'relevance') {
       let ruleUsed = 0; let ruleGraded = 0; let jevUsed = 0; let jevKept = 0; let usedKeptByJev = 0;
       for (const r of answered) {
         if (!r.taskId || !r.memoryId) continue;

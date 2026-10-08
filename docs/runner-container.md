@@ -40,8 +40,8 @@ checks the exit codes with `--network none`.
 | Claude Code | the native binary inside `@anthropic-ai/claude-agent-sdk-linux-x64`, pinned by `bun.lock` through the SDK version. This is the binary the runner spawns (`sdk-binary-path.ts`). No separate `@anthropic-ai/claude-code` install: a second copy would not be the one that runs. It is also linked as `/usr/local/bin/claude`. |
 | Runner + `@buildd/core`, `@buildd/shared`, `@builddai/ai-kit` | baked in at build time, `bun install --frozen-lockfile --production --filter @buildd/runner` |
 
-The image leaves out tests, migrations, the web app, Playwright browsers and
-the codebase-memory binary. Tasks that need `browser` or CBM will not find them.
+The image leaves out tests, migrations, the web app and Playwright browsers.
+Tasks that need `browser` will not find them.
 
 **User.** The image runs as the base image's `bun` user (uid 1000), not root.
 Claude Code refuses bypass-permissions mode as root unless `IS_SANDBOX=1` is
@@ -85,7 +85,10 @@ bracket the warm-repo restore, the `git fetch` after it, and the upload of a
 new snapshot generation (see Warm repos below). Alongside them:
 `BUILDD_METRIC=<name> <integer>` (`clone_bytes`, `restore_bytes`,
 `fetch_bytes`, `cache_bytes`, `snapshot_age_ms`, `warm_upload_bytes`,
-`warm_repo_bytes`), one `BUILDD_REPO_SOURCE=warm` or
+`warm_repo_bytes`; and from the resource sampler, re-printed as the extremes
+move: `mem_peak_bytes`, `mem_limit_bytes`, `disk_free_min_bytes`,
+`disk_total_bytes`, which buildd reads to pick the workspace's container
+size), one `BUILDD_REPO_SOURCE=warm` or
 `BUILDD_REPO_SOURCE=clone <reason>` line (`disabled`, `no_snapshot`,
 `unavailable`, `disk`, `restore_failed`), and `BUILDD_WARM_UPLOAD=skipped
 too_large` when a warm upload was due but the repo was over the cap (below).
@@ -123,9 +126,21 @@ Big repos. Before bundling, the runner measures the clone's object store
 `BUILDD_WARM_UPLOAD=skipped too_large`, takes no lock, and the workspace
 clones every time. Under the cap, nothing is staged on disk or held whole in
 memory: `git bundle create -` (one pack thread, bounded window memory) and
-`tar -cf -` stream straight into an R2 multipart upload through the snapshot
-route, 32 MiB per part, and a stream that outgrows the cap is cut off and the
-upload aborted (also `too_large`).
+`tar -cf - | zstd -c` stream straight into an R2 multipart upload through the
+snapshot route, 32 MiB per part, and a stream that outgrows the cap is cut off
+and the upload aborted (also `too_large`). The restore streams too (download
+into `zstd -d -f | tar -x`, timed by `restore_cache_start`/`_end`), and a
+plain tarball from an older snapshot still restores.
+
+The cap is per workspace: `gitConfig.warmSnapshot.maxBytes`, bounded at 8 GiB
+by buildd and delivered to the Worker with the GitHub grant; the runner reads
+it from `GET /warm/limits` and falls back to `BUILDD_WARM_MAX_BUNDLE_BYTES`.
+It applies to the compressed size. The pnpm store is left out of the cache
+tarball when the cache on disk is over six times the cap, or when it still
+compresses past the cap (the cache is then sent again without it); either way
+the runner prints `BUILDD_CACHE_SKIPPED=pnpm-store <bytes> <cap>` (or `cache`
+when the whole tarball is dropped), which lands in the run report as
+`repo.cacheSkipped`.
 
 ### Clone shape and GitHub throttling
 
@@ -200,7 +215,7 @@ Everything else stays in the runner process.
 | `BUILDD_ONCE_MAX_WAIT_MS` | no | no | no | Maximum continuous wait for user input before the worker is aborted (exit 1). Default 6h. |
 | `BUILDD_WORKSPACE_ISOLATION_ROOT` | no | no | no | Where the task repo is cloned. Default `<BUILDD_HOME>/once-workspaces`. |
 | `BUILDD_WARM_REPO`, `BUILDD_SNAPSHOT_URL` | no | no | no | Warm repos (above). Set together by the `WorkerAgent` only when its `WARM_REPOS` var is `1`; the URL is the egress-intercepted pseudo-host `https://buildd-snapshots.invalid`. With them the isolated clone is tried before any local checkout. Unset: the runner clones as before. |
-| `BUILDD_WARM_MAX_BUNDLE_BYTES` | no | no | no | Largest warm bundle or cache tarball uploaded (default 1 GiB); over it the upload is skipped (`BUILDD_WARM_UPLOAD=skipped too_large`). Set by the `WorkerAgent` from its `WARM_MAX_BUNDLE_BYTES` var. |
+| `BUILDD_WARM_MAX_BUNDLE_BYTES` | no | no | no | Largest warm bundle or (compressed) cache tarball uploaded when the Worker gives no per-workspace cap on `GET /warm/limits` (default 1 GiB); over it the upload is skipped (`BUILDD_WARM_UPLOAD=skipped too_large`). Set by the `WorkerAgent` from its `WARM_MAX_BUNDLE_BYTES` var. |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER` | no | no | no | Same meaning as on a long-lived runner. Pusher only carries mid-run instructions and answers. The 10s sync covers them without it. |
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never

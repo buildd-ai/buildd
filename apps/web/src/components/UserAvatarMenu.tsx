@@ -12,9 +12,10 @@ interface UserAvatarMenuProps {
   direction?: 'up' | 'down';
   /** On a settings page: no tab owns those, so the avatar shows "you are here". */
   active?: boolean;
+  neutral?: boolean;
 }
 
-export default function UserAvatarMenu({ userInitial, direction = 'up', active = false }: UserAvatarMenuProps) {
+export default function UserAvatarMenu({ userInitial, direction = 'up', active = false, neutral = false }: UserAvatarMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -37,7 +38,7 @@ export default function UserAvatarMenu({ userInitial, direction = 'up', active =
         aria-controls={open ? panelId : undefined}
         aria-current={active ? 'page' : undefined}
         // 'down' is the mobile header: a 44px tap target. 'up' is the desktop rail.
-        className={`${direction === 'up' ? 'w-8 h-8 mt-2' : 'w-11 h-11'} bg-accent-soft flex items-center justify-center text-xs font-semibold text-accent-text border cursor-pointer hover:border-border-strong transition-colors ${
+        className={`${direction === 'up' ? 'w-8 h-8 mt-2' : 'w-11 h-11'} ${neutral ? 'bg-surface-2 text-text-primary' : 'bg-accent-soft text-accent-text'} flex items-center justify-center text-xs font-semibold border cursor-pointer hover:border-border-strong transition-colors ${
           active ? 'border-accent border-2' : 'border-border-default'
         }`}
       >

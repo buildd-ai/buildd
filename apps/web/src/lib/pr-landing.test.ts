@@ -4,6 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
 // rails against it: a row that merges did so because every rail passed.
 
+// Workflow kernel landing (lib/workflow/landing.ts; real-SQL cases in
+// apps/web/tests/db/workflow-matrix.test.ts S10/S15/S20). Default: no kernel
+// delivery, so every legacy merge case below runs unchanged.
+const mockLandThroughKernel = mock(async (..._a: any[]): Promise<any> => null);
+const mockKernelLandingView = mock(async (..._a: any[]): Promise<any> => null);
+mock.module('@/lib/workflow/landing', () => ({
+  landThroughKernel: mockLandThroughKernel,
+  kernelLandingView: mockKernelLandingView,
+  staleLandingVersion: async () => null,
+}));
 mock.module('@/lib/notify', () => ({ notifyTeamOf: async () => {} }));
 mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }));
 
@@ -21,6 +31,8 @@ type Gh = {
   failPr?: boolean;
   failCompare?: boolean;
   headRef?: string;
+  /** Other PRs a verdict may name: number → { state, merged }. */
+  siblings?: Record<number, { state: string; merged: boolean }>;
 };
 let gh: Gh;
 const freshGh = (): Gh => ({
@@ -40,6 +52,12 @@ const mockGithubApi = mock(async (_installationId: number, path: string): Promis
   if (/\/commits\/[^/]+\/check-runs$/.test(path)) return { check_runs: gh.checkRuns };
   if (/\/pulls\/42\/files/.test(path)) {
     return gh.prFiles.map((filename) => ({ filename, additions: 5, deletions: 1 }));
+  }
+  const sibling = /\/pulls\/(\d+)$/.exec(path);
+  if (sibling && sibling[1] !== '42') {
+    const s = gh.siblings?.[Number(sibling[1])];
+    if (!s) throw new Error('not found');
+    return { state: s.state, merged: s.merged };
   }
   if (/\/pulls\/42$/.test(path)) {
     if (gh.failPr) throw new Error('boom');
@@ -179,6 +197,7 @@ mock.module('@/lib/pr-landing-marker', () => ({
   readLandingMarker: async (_t: string, pr: number) => (markerStore && markerStore.prNumber === pr ? markerStore : null),
   writeLandingMarker: mockWriteMarker,
   clearLandingMarker: mockClearMarker,
+  claimReviewRevalidation: async () => true,
 }));
 
 // Surface merge ordering: pass-through unless a test below drives it.
@@ -200,10 +219,13 @@ import {
   evaluateTreadmillBound,
   resolveLandingMode,
   outcomeOwner,
+  summarizeChecks,
   approvedGreenAt,
   latestCheckCompletion,
   TREADMILL_MAX_BASE_COMMITS,
   TREADMILL_MAX_REFRESHES,
+  TREADMILL_EXHAUSTED_MAX_BASE_COMMITS,
+  refreshCycleCount,
   type LandPrInput,
   type LandPrDeps,
   type LandingOutcome,
@@ -221,12 +243,20 @@ const mockEscalate = mock(async (..._a: any[]) => {});
 const mockLiveRetry = mock(async (..._a: any[]): Promise<string | null> => null);
 const NOW = Date.parse('2030-01-01T01:00:00.000Z');
 const mockReadApprovedAt = mock(async (..._a: any[]): Promise<number | null> => null);
+// One fresh review per head and basis; tests flip it to model a second pass.
+const claimed = new Set<string>();
+const mockClaimRevalidation = mock(async (_taskId: string, key: string) => {
+  if (claimed.has(key)) return false;
+  claimed.add(key);
+  return true;
+});
 
 const deps = (): LandPrDeps => ({
   dispatchFix: mockDispatchFix,
   escalateConflictExhaustion: mockEscalate,
   findLiveReviewerRetry: mockLiveRetry,
   readApprovedAt: mockReadApprovedAt,
+  claimReviewRevalidation: mockClaimRevalidation,
   now: () => NOW,
 });
 
@@ -275,6 +305,8 @@ beforeEach(() => {
   mockDispatchFix.mockImplementation(async () => ({ taskId: 'fix-task-1' }));
   mockLiveRetry.mockImplementation(async () => null);
   mockReadApprovedAt.mockImplementation(async () => null);
+  mockClaimRevalidation.mockClear();
+  claimed.clear();
 });
 
 // ── Pure pieces ────────────────────────────────────────────────────────────────
@@ -327,6 +359,102 @@ describe('resolveLandingMode', () => {
     expect(resolveLandingMode({ landing: { mode: 'off' } } as any)).toBe('off');
     expect(resolveLandingMode({ landing: { mode: 'enforce' } } as any)).toBe('enforce');
     expect(resolveLandingMode({ landing: { mode: 'turbo' } } as any)).toBe('shadow');
+  });
+});
+
+// ── Kernel-owned PR (workflow-state-kernel.md §14 Slice C) ────────────────────
+
+describe('landPr — kernel-owned PR (T15/T16)', () => {
+  const k = (o: Record<string, unknown>) => ({ merged: false, reason: 'x', message: 'm', mergeCommitSha: null, current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null, ...o });
+  const kernelDeps = (answer: Record<string, unknown>) => {
+    const calls: any[] = [];
+    return { calls, d: { ...deps(), landThroughKernel: async (i: any) => { calls.push(i); return k(answer) as any; } } };
+  };
+
+  it('every rail runs as before, then the kernel merges: no direct GitHub merge, no mission finalize here', async () => {
+    const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M1' });
+    const out = await land({ door: 'merge_pr', mergeMethod: 'rebase', actor: { kind: 'agent', workerId: 'w-1' }, expectedVersion: 3 }, d);
+    expect(out).toEqual({ kind: 'merged', sha: 'M1' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(calls).toEqual([expect.objectContaining({
+      workspaceId: 'ws-1', installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head1',
+      door: 'land_pr:merge_pr', actor: 'agent:w-1', mergeMethod: 'rebase', expectedVersion: 3,
+    })]);
+    expect(calls[0].override).toBeUndefined();
+    expect(landingEvents()[0].detail.landingOutcome).toBe('merged');
+  });
+
+  it("a person's verdict override reaches the kernel as a recorded override", async () => {
+    const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+    await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { verdict: true } } }, d);
+    expect(calls[0]).toMatchObject({ actor: 'human:u-1', override: { reason: expect.any(String) } });
+  });
+
+  it('a refresh the kernel queued is updating_branch; a conflict is the kernel\'s fix; a refusal goes to a person; anything else waits', async () => {
+    expect(await land({}, kernelDeps({ outcome: 'behind' }).d)).toEqual({ kind: 'updating_branch', newHeadSha: 'head1' });
+    expect(await land({}, kernelDeps({ outcome: 'conflict', message: 'conflict' }).d)).toMatchObject({ kind: 'needs_fix', fix: 'conflict' });
+    expect(await land({}, kernelDeps({ outcome: 'refused', message: 'Required status check' }).d)).toMatchObject({ kind: 'needs_human', cause: 'merge_failed', reason: 'Required status check' });
+    for (const outcome of ['landing', 'stale', 'rejected', 'not_merged']) {
+      expect(await land({}, kernelDeps({ outcome }).d)).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
+    }
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  // Task 57e1d5b8 (incident #2574): on a kernel PR the legacy reviewer-row gate does not
+  // decide. A composition- or human-approved delivery has no reviewer row at all.
+  describe('the review gate is the delivery, not the legacy reviewer row', () => {
+    const view = (state: string, head = 'head1') => async () => ({ deliveryId: 'd1', current: { state, version: 3, head, round: 1 } });
+
+    it('an APPROVED delivery lands through T15 even when the legacy row blocks or is missing', async () => {
+      verdict = 'changes_requested';
+      reviewStatus = null;
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M1' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view('APPROVED') });
+      expect(out).toEqual({ kind: 'merged', sha: 'M1' });
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+      expect(mockReadPrReviewStatus).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      expect(mockDispatchFix).not.toHaveBeenCalled();
+    });
+
+    it.each(['AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED', 'FIXING', 'LANDING'])('a delivery in %s waits for the kernel: no merge call, no re-review, no refresh', async (state) => {
+      verdict = 'approved';
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view(state) });
+      expect(out).toMatchObject({ kind: 'waiting_ci', headSha: 'head1' });
+      expect(calls).toHaveLength(0);
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+      expect(mockDispatchFix).not.toHaveBeenCalled();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('a head the kernel has not observed yet waits', async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({}, { ...d, kernelLandingView: view('APPROVED', 'older') });
+      expect(out).toMatchObject({ kind: 'waiting_ci' });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("a person's verdict override from a review state still reaches T15, which records it", async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { verdict: true } } }, { ...d, kernelLandingView: view('ESCALATED') });
+      expect(out).toMatchObject({ kind: 'merged' });
+      expect(calls[0]).toMatchObject({ override: { reason: expect.any(String) } });
+      expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    });
+
+    it('a PR with no kernel delivery still runs the legacy review gate', async () => {
+      verdict = 'changes_requested';
+      const out = await land({}, { ...deps(), kernelLandingView: async () => null, landThroughKernel: async () => null });
+      expect(mockGuardReviewVerdict).toHaveBeenCalledTimes(1);
+      expect(out.kind).not.toBe('merged');
+    });
+  });
+
+  it('a PR the kernel does not own merges directly, as before', async () => {
+    const out = await land({}, { ...deps(), landThroughKernel: async () => null });
+    expect(out).toEqual({ kind: 'merged', sha: 'head1' });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -573,6 +701,120 @@ describe('landPr — review verdict', () => {
   });
 });
 
+// ── Stale blocking verdicts ────────────────────────────────────────────────────
+
+describe('landPr — a blocking verdict is revalidated before it can strand a PR', () => {
+  const escalatedAt = (reviewHeadSha: string | null, escalationReason: string, kind: 'escalated' | 'changes_requested' = 'escalated') => {
+    mockGuardReviewVerdict.mockImplementationOnce(async () => ({
+      blocks: true, kind, state: kind, reviewTaskId: 'review-3', reviewHeadSha,
+      reason: kind === 'escalated' ? 'the reviewer escalated this PR to a human' : 'changes requested', clearedBy: 'a human decides',
+    }));
+    reviewStatus = {
+      state: kind, verdict: kind === 'escalated' ? 'escalate' : 'request-changes', confidence: 0.9, merged: false,
+      reviewHeadSha, reviewEquivalentHeadShas: [], escalationReason, feedback: null, summary: null,
+    };
+  };
+
+  // Replay of PR #3571: escalated over a migration-number collision; the author
+  // then pushed a regenerated, non-colliding migration and the old verdict stayed attached.
+  it('replay #3571: an escalation given on an earlier head gets a fresh review of the live head, never a merge', async () => {
+    escalatedAt('head0', 'migration number collision: 0240_a.sql collides with an open PR\'s 0240_b.sql');
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'fix-task-1' });
+    expect((out as any).reason).toContain('given on head0 and the head is now head1');
+    expect((out as any).reason).toContain('Next: a fresh review of head1 was requested');
+    expect(mockDispatchFix.mock.calls[0]![0]).toMatchObject({ kind: 're_review', headSha: 'head1', prNumber: 42 });
+    expect(mockClaimRevalidation).toHaveBeenCalledWith('task-1', 'head1:head_moved');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(landingEvents()[0].detail).toMatchObject({ staleVerdict: 'head_moved', fixDispatched: true });
+  });
+
+  // Replay of PR #3502: escalated because PR #3499 was open and colliding; #3499 has since merged.
+  it('replay #3502: an escalation on the live head citing a sibling PR that has since merged gets a fresh review', async () => {
+    escalatedAt('head1', 'Migration collides with open PR #3499 (0239_x.sql); one of them must renumber.');
+    gh.siblings = { 3499: { state: 'closed', merged: true } };
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'fix-task-1' });
+    expect((out as any).reason).toContain('PR #3499 is now merged');
+    expect(mockClaimRevalidation).toHaveBeenCalledWith('task-1', 'head1:external_state');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('the same escalation while the sibling PR is still open stands: a person decides, no review is sent', async () => {
+    escalatedAt('head1', 'Migration collides with open PR #3499 (0239_x.sql); one of them must renumber.');
+    gh.siblings = { 3499: { state: 'open', merged: false } };
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'blocking_verdict' });
+    expect((out as any).reason).toContain('Next:');
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable sibling PR is not proof the verdict is stale', async () => {
+    escalatedAt('head1', 'conflicts with PR #3499');
+    gh.siblings = {};
+    expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'blocking_verdict' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+  });
+
+  it('a genuine finding on the live head with nothing mutable in it stays a human decision', async () => {
+    escalatedAt('head1', 'The new endpoint skips the workspace ownership check before reading secrets.');
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'blocking_verdict' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+    expect(mockClaimRevalidation).not.toHaveBeenCalled();
+  });
+
+  it('a verdict that blocks again after its one fresh review goes to a person, not round again', async () => {
+    escalatedAt('head1', 'Migration collides with open PR #3499.');
+    gh.siblings = { 3499: { state: 'closed', merged: true } };
+    await land();
+    escalatedAt('head1', 'Migration collides with open PR #3499.');
+    const second = await land();
+    expect(second).toMatchObject({ kind: 'needs_human', cause: 'blocking_verdict' });
+    expect((second as any).reason).toContain('fresh review was already requested');
+    expect(mockDispatchFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('a request-changes on an earlier head with no retry alive also gets a fresh review', async () => {
+    escalatedAt('head0', 'Add a test for the empty case.', 'changes_requested');
+    expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'fix-task-1' });
+  });
+
+  it('red CI still wins over a stale verdict: no review, a CI fix', async () => {
+    // The verdict gate is never reached, so it is driven by `verdict`, not a queued mock.
+    verdict = 'escalated';
+    reviewStatus = { state: 'escalated', verdict: 'escalate', merged: false, reviewHeadSha: 'head0', escalationReason: 'migration number collision' };
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('shadow observes the stale verdict without claiming or dispatching', async () => {
+    escalatedAt('head0', 'migration number collision');
+    const out = await land({ mode: 'shadow' });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+    expect(mockClaimRevalidation).not.toHaveBeenCalled();
+  });
+});
+
+describe('refreshCycleCount', () => {
+  const at = (minsAgo: number) => new Date(NOW - minsAgo * 60_000).toISOString();
+  it('counts the refreshes of the cycle that produced this head', () => {
+    expect(refreshCycleCount(marker({ refreshCount: 2, updatedAt: at(1) }) as any, 'head1', NOW)).toBe(2);
+  });
+  it('is zero with no marker or for a head the platform did not produce', () => {
+    expect(refreshCycleCount(null, 'head1', NOW)).toBe(0);
+    expect(refreshCycleCount(marker({ pendingHeadSha: 'other', refreshCount: 3 }) as any, 'head1', NOW)).toBe(0);
+  });
+  it('a spent cycle stays spent until it cools down, then resets', () => {
+    expect(refreshCycleCount(marker({ refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: at(59) }) as any, 'head1', NOW)).toBe(TREADMILL_MAX_REFRESHES);
+    expect(refreshCycleCount(marker({ refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: at(60) }) as any, 'head1', NOW)).toBe(0);
+    // An unstamped spent marker cannot prove it cooled down.
+    expect(refreshCycleCount(marker({ refreshCount: TREADMILL_MAX_REFRESHES }) as any, 'head1', NOW)).toBe(TREADMILL_MAX_REFRESHES);
+  });
+});
+
 describe('landPr — tier', () => {
   it('human tier stays in the human queue (no page cause)', async () => {
     const out = await land({ policy: humanTier });
@@ -681,6 +923,13 @@ describe('landPr — safety rails', () => {
     expect(mockDispatchConflictRetry.mock.calls[0]![0].behindOnly).toBeFalsy();
   });
 
+  it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
+    gh.mergeableState = 'dirty';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'updating_branch' });
+  });
+
   it('branch protection is a human decision', async () => {
     gh.mergeableState = 'blocked';
     expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'branch_protection' });
@@ -707,6 +956,85 @@ describe('landPr — safety rails', () => {
     );
     expect(out.kind).toBe('merged');
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Convergence holes seen live (PR shapes, not hypotheticals) ─────────────────
+
+describe('landPr — a ready PR is never stranded waiting on a person who is not needed', () => {
+  // The sweep wires no dispatchFix: what it gets is landPr's own default.
+  const sweepDeps = (send: LandPrDeps['dispatchStaleApprovalReReview']): LandPrDeps => {
+    const { dispatchFix: _omit, ...rest } = deps();
+    return { ...rest, dispatchStaleApprovalReReview: send };
+  };
+
+  it('#3654 shape: green, mergeable, never reviewed — the workspace reviewer is requested, once', async () => {
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    const send = mock(async (_i: any): Promise<any> => ({ outcome: 'dispatched', reviewTaskId: 'review-new', plan: 'full' }));
+    const out = await land({ policy: agentReview, door: 'sweep', eventHeadSha: 'head1' }, sweepDeps(send));
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'review-new' });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ prNumber: 42, headSha: 'head1', firstReview: true, policy: agentReview });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+
+    // The next sweep sees the queued reviewer and waits — no second request.
+    verdict = 'in_flight';
+    reviewStatus = { state: 'queued', verdict: null, confidence: null, merged: false };
+    const again = await land({ policy: agentReview, door: 'sweep' }, sweepDeps(send));
+    expect(again.kind).toBe('waiting_ci');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('a never-reviewed PR with red CI is not sent to review', async () => {
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    const send = mock(async (_i: any): Promise<any> => ({ outcome: 'dispatched', reviewTaskId: 'r', plan: 'full' }));
+    const out = await land({ policy: agentReview, door: 'sweep' }, sweepDeps(send));
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('#3502 shape: escalated earlier, CI green, now DIRTY — one conflict repair keyed to the live base', async () => {
+    verdict = 'escalated';
+    reviewStatus = { state: 'escalated', verdict: 'escalate', confidence: 0.5, merged: false };
+    gh.mergeableState = 'dirty';
+    gh.baseTip = 'base-now';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'conflict-task-9' }));
+    const out = await land({ policy: agentReview, door: 'sweep' });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-9' });
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(mockDispatchConflictRetry.mock.calls[0]![0]).toMatchObject({ prNumber: 42, headSha: 'head1', baseSha: 'base-now' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('#3673 shape: approved, DIRTY and red — the conflict is repaired first, and it never merges', async () => {
+    gh.mergeableState = 'dirty';
+    gh.checkRuns = [{ name: 'Visual QA', status: 'completed', conclusion: 'failure' }];
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'conflict-task-3' }));
+    const out = await land({ policy: agentReview, door: 'sweep' });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-3' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(landingEvents().at(-1)!.detail).toMatchObject({ alsoRefused: 'ci' });
+  });
+
+  it('a dirty PR on a deny path gets its repair, and the deny path still blocks the merge', async () => {
+    gh.mergeableState = 'dirty';
+    gh.prFiles = ['secrets/key.ts'];
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['secrets/'] } };
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'c' }));
+    expect(await land({ policy })).toMatchObject({ kind: 'needs_fix', fix: 'conflict' });
+    gh.mergeableState = 'clean';
+    expect(await land({ policy })).toMatchObject({ kind: 'needs_human', cause: 'deny_path' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a repair already in flight is reported as the owner, not filed twice', async () => {
+    gh.mergeableState = 'dirty';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false, inFlightTaskId: 'live-fix' }));
+    expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'live-fix' });
   });
 });
 
@@ -778,13 +1106,59 @@ describe('landPr — behind base is work with an owner', () => {
     expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
   });
 
-  it('the refresh after R losses is needs_human(refresh_exhausted), with no further push', async () => {
-    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES });
-    gh.baseMovement = { ahead_by: TREADMILL_MAX_BASE_COMMITS + 1, files: [] };
+  // Replay of PR #3582: approved, CI green, mergeable, and parked for good as
+  // needs_human(refresh_exhausted) after the base moved three times. A busy base
+  // in unrelated files is not a reason a clean PR cannot land.
+  it('replay #3582: a spent cycle on a busy base in unrelated files lands the refreshed head', async () => {
+    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW - 5 * 60_000).toISOString() });
+    gh.baseMovement = { ahead_by: TREADMILL_MAX_BASE_COMMITS + 4, files: ['packages/other/x.ts', 'docs/y.md'] };
     const out = await land();
-    expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+    expect(out).toEqual({ kind: 'merged', sha: 'head1' });
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    const merged = landingEvents().find((e: any) => e.detail.landingOutcome === 'merged');
+    expect(merged.detail).toMatchObject({ freshnessRule: 'spent_cycle', timeToLandMs: 20 * 60_000 });
+  });
+
+  it('a spent cycle where the base keeps changing the same files is refresh_unsafe, says what happens next, and pushes nothing', async () => {
+    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW - 5 * 60_000).toISOString() });
+    gh.baseMovement = { ahead_by: 2, files: ['apps/web/src/a.ts'] };
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_unsafe' });
+    expect((out as any).reason).toContain('Next: landing starts a new refresh cycle');
     expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a spent cycle on a migration-touching base is unsafe, not merely busy', async () => {
+    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW).toISOString() });
+    gh.baseMovement = { ahead_by: 1, files: ['packages/core/drizzle/0241_x.sql'] };
+    expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'refresh_unsafe' });
+  });
+
+  it('a spent cycle whose gap is past the wider bound is refresh_exhausted with a next step, and pushes nothing', async () => {
+    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW).toISOString() });
+    gh.baseMovement = { ahead_by: TREADMILL_EXHAUSTED_MAX_BASE_COMMITS + 1, files: ['x/o.ts'] };
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+    expect((out as any).reason).toContain('Next:');
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a spent cycle that has cooled down starts a new one: refreshes again, CAS against the stored count', async () => {
+    markerStore = marker({ pendingHeadSha: 'head1', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW - 61 * 60_000).toISOString() });
+    gh.baseMovement = { ahead_by: TREADMILL_EXHAUSTED_MAX_BASE_COMMITS + 1, files: ['x/o.ts'] };
+    const out = await land();
+    expect(out).toEqual({ kind: 'updating_branch', newHeadSha: 'head2' });
+    expect(mockWriteMarker.mock.calls[0]![2]).toBe(TREADMILL_MAX_REFRESHES);
+    expect(markerStore).toMatchObject({ refreshCount: 1, pendingHeadSha: 'head2', firstApprovedGreenAt: '2030-01-01T00:40:00.000Z' });
+  });
+
+  it('a push nobody in landing made starts a new cycle even after a spent one', async () => {
+    markerStore = marker({ pendingHeadSha: 'refreshed-earlier', refreshCount: TREADMILL_MAX_REFRESHES, updatedAt: new Date(NOW).toISOString() });
+    gh.baseMovement = { ahead_by: 1, files: ['x/o.ts'] };
+    expect(await land()).toEqual({ kind: 'updating_branch', newHeadSha: 'head2' });
+    expect(markerStore.refreshCount).toBe(1);
   });
 
   it('a lost marker race still reports the refresh as in flight', async () => {
@@ -875,6 +1249,15 @@ describe('landPr — behind base is work with an owner', () => {
 // ── Merge API races ────────────────────────────────────────────────────────────
 
 describe('landPr — merge call failures', () => {
+  it('"head branch is out of date" (strict branch protection) is a behind-base refresh, not merge_failed', async () => {
+    mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Head branch is out of date. Update the branch first.' }));
+    mockDispatchConflictRetry.mockImplementation(async () => {
+      gh.head = 'head2';
+      return { dispatched: true, branchUpdated: true };
+    });
+    expect(await land()).toEqual({ kind: 'updating_branch', newHeadSha: 'head2' });
+  });
+
   it('"base modified" is a behind-base refresh', async () => {
     mockMergePullRequest.mockImplementation(async () => ({ merged: false, message: 'Base branch was modified. Review and try the merge again.' }));
     mockDispatchConflictRetry.mockImplementation(async () => {
@@ -1089,6 +1472,17 @@ describe('outcomeOwner', () => {
   });
 });
 
+describe('summarizeChecks', () => {
+  const run = (status: string, conclusion: string | null) => ({ name: 'c', status, conclusion });
+  it('is red on any failure, pending on anything unfinished, green only when every run passed', () => {
+    expect(summarizeChecks(undefined)).toBeNull();
+    expect(summarizeChecks([])).toBeNull();
+    expect(summarizeChecks([run('completed', 'success'), run('in_progress', null)])).toBe('pending');
+    expect(summarizeChecks([run('completed', 'failure'), run('in_progress', null)])).toBe('red');
+    expect(summarizeChecks([run('completed', 'success'), run('completed', 'skipped')])).toBe('green');
+  });
+});
+
 describe('landPr — alert hook', () => {
   const alertMock = mock(async (_i: any) => {});
   beforeEach(() => alertMock.mockClear());
@@ -1106,6 +1500,16 @@ describe('landPr — alert hook', () => {
       taskId: 'task-1',
       outcome: out,
     });
+  });
+
+  it('hands the live check state and the outcome reason, so a page never claims green on a running head', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }];
+    const out = await land({}, { ...deps(), alert: alertMock });
+    expect(out.kind).toBe('waiting_ci');
+    const sent = alertMock.mock.calls[0]![0];
+    expect(sent.checks).toBe('pending');
+    expect(typeof sent.outcomeReason).toBe('string');
+    expect(sent.outcomeReason.length).toBeGreaterThan(0);
   });
 
   it('does not page from shadow or off', async () => {

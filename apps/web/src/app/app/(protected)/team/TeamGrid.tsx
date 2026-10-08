@@ -199,10 +199,10 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
   return (
     <div>
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-0 mb-6">
         <div className="flex items-center gap-3">
           <h1 className="hidden md:block text-xl md:text-3xl font-bold text-text-primary">The Team</h1>
-          {totalActiveWorkerCount > 0 ? (
+          {totalActiveWorkerCount > 0 && (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-status-success/10 text-status-success">
               <span className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
               {totalActiveWorkerCount} running
@@ -210,12 +210,6 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
                 <span className="text-text-muted ml-0.5">&middot; {idleRoles.length} idle</span>
               )}
             </span>
-          ) : (
-            totalRoles > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium bg-surface-3 text-text-muted">
-                Idle
-              </span>
-            )
           )}
         </div>
         {/* New Role — creates a team-level role by default */}
@@ -234,7 +228,7 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
       {totalRoles === 0 ? (
         <div className="border border-dashed border-border-default p-8 text-center">
           <p className="text-[15px] text-text-secondary mb-3">
-            No roles. A role sets an agent's model, tools and who it can delegate to.
+            No roles.
           </p>
           {(teamId || firstWsId) && (
             <Link
@@ -263,13 +257,11 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-[13px] font-semibold text-text-muted">Idle</span>
-                {unattributedWorkerCount > 0 ? (
+                {unattributedWorkerCount > 0 && (
                   <span className="text-[12px] text-text-muted">
                     {unattributedWorkerCount} worker{unattributedWorkerCount !== 1 ? 's' : ''} running without role attribution
                   </span>
-                ) : totalActiveWorkerCount === 0 ? (
-                  <span className="text-[12px] text-text-muted">No active tasks</span>
-                ) : null}
+                )}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {idleRoles.map((role) => (

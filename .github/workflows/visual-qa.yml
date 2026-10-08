@@ -244,11 +244,15 @@ jobs:
             echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to scrub without it"
             exit 1
           fi
+          # This checkout's text columns: the scrub overwrites any other text
+          # column the clone has (prod ahead of a lagging branch). Schema
+          # names only, from this repo's own Drizzle snapshot.
+          KNOWN=$(bun scripts/qa/known-columns.ts)
           # The scrub is one transaction, so a failure leaves the clone untouched.
           # psql reports the line where the failing statement ends; name that
           # statement from our own file (never from row data) so the next
           # breakage is self-diagnosing.
-          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-pii.sql 2> scrub.err; then
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -f scripts/qa/scrub-pii.sql 2> scrub.err; then
             cat scrub.err >&2
             line=$(grep -oE 'scrub-pii\.sql:[0-9]+' scrub.err | head -1 | cut -d: -f2)
             stmt=""

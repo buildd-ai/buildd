@@ -46,7 +46,7 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       modelTierRegistry: { findFirst: mockRegistryFindFirst },
     },

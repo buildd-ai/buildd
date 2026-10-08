@@ -7,7 +7,9 @@
  * Run: bun test apps/runner/__tests__/unit/reconcile.test.ts
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, mock , afterAll } from 'bun:test';
+import { tmpdir } from 'os';
+import { initTestWorkspace, getTestWorkspace, cleanupTestWorkspace } from '../test-workspace';
 import type { LocalWorker, LocalUIConfig } from '../../src/types';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -55,13 +57,13 @@ mock.module('../../src/buildd', () => ({
 
 mock.module('../../src/workspace', () => ({
   createWorkspaceResolver: () => ({
-    resolve: () => '/tmp/test-workspace',
+    resolve: () => getTestWorkspace(),
     debugResolve: () => ({}),
     listLocalDirectories: () => [],
     getPathOverrides: () => ({}),
     setPathOverride: () => {},
     scanGitRepos: () => [],
-    getProjectRoots: () => ['/tmp'],
+    getProjectRoots: () => [tmpdir()],
   }),
 }));
 
@@ -181,7 +183,7 @@ describe('purgeCompleted', () => {
   // purgeCompleted drops the worker record; a session still in the map is the
   // last handle on its `claude` subprocess. Deleting the map entry alone (the
   // old behaviour) orphaned that process. The session is REAPED, not torn
-  // down: startSession's finally only cleans up (credential/config/CBM dirs)
+  // down: startSession's finally only cleans up (credential/config dirs)
   // while the entry is still there, and deletes it itself.
   test('reaps the session of every purged worker, leaving the entry for its finally', () => {
     const manager = new WorkerManager(testConfig);
@@ -204,7 +206,15 @@ describe('purgeCompleted', () => {
 });
 
 describe('reconcileLocalWorkers', () => {
+  afterAll(() => {
+
+    cleanupTestWorkspace();
+
+  });
+
   beforeEach(() => {
+
+    initTestWorkspace();
     mockUpdateWorker.mockClear();
     mockGetWorkerRemote.mockReset();
     mockGetWorkerRemote.mockResolvedValue(null); // restore module-level default

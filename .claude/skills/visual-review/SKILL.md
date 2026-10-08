@@ -40,6 +40,25 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
 - Shots are full-height and 3x on mobile, so they're large. Downscale before
   reading them on macOS: `sips -Z 1800 /tmp/qa/screenshots/*.png`.
 
+## Local service recipe (local or cloud browser)
+
+A cloud visual-auditor connects to its task's remote browser through runner-provided
+loopback endpoints. Run the same capture helper; do not install Chromium or copy a
+Cloudflare credential into the container. `BUILDD_BROWSER_PROVIDER` and the connection
+endpoints are supplied by the runner only after its browser probe succeeds.
+
+With a synthetic/local `DATABASE_URL` available (see `scripts/demo/`), start
+`scripts/qa/serve-local.sh` in the background. It binds the app to `0.0.0.0`, waits
+for `/api/version`, and writes `${QA_OUTPUT:-/tmp/qa}/service.json` only when ready.
+For a cloud provider it also registers that port with the task's private browser
+relay; the returned `browserUrl` remains the loopback origin. Pass that URL as
+`QA_BASE_URL` to `scripts/qa/capture.ts`, using `QA_NO_LOGIN=1` with dev auth.
+Stop the service process after capturing. No public port is exposed.
+
+Copy `browser` from each entry in `captures.json` into artifact `metadata.qa.browser`.
+A `providerError` is a capture failure with no valid screenshot, never a visual
+finding or an `ok` verdict. Report the named failure rather than swapping providers.
+
 ## Worker recipe (no DB)
 
 `.github/workflows/visual-qa.yml` stands the app up in CI on a copy-on-write Neon
@@ -233,3 +252,10 @@ neither.
   enforces that for direct dependencies.
 - **Vercel previews have two auth walls.** See "Preview recipe" below. For buildd
   itself there are no per-PR previews, so use the dispatch.
+- **This recipe (local Chromium, `visual-qa.yml`) has no dependency on the
+  provider-backed browser work** (`docs/specs/visual-qa-browser-providers.md`,
+  a Cloudflare-backed browser provider layered on top of this path). That spec's
+  own "current state" section lists this workflow as reused unchanged, and its
+  "out of scope" section says so explicitly. A failed task in that work (or its
+  mission) is not evidence this recipe is broken — verify it directly with a
+  fresh dispatch before treating a mission's visual-audit capability as regressed.

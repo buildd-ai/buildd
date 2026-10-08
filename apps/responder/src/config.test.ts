@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig, MISSING_NOTIFY_MESSAGE } from './config';
-import { TIER_DEFAULTS } from '../../../packages/core/model-tier-defaults';
+import { DEFAULT_MODEL_POLICY } from '../../../packages/ai-kit/src/policy/defaults';
 import { DEFAULT_ROLE_REGRESSION } from './detectors/role-regression';
 
 const MINIMAL = {
@@ -49,7 +49,7 @@ describe('loadConfig', () => {
 
   test('the narrative model defaults to the premium tier, not a pinned ID', () => {
     // A literal here goes stale silently when the tier moves a generation.
-    expect(loadConfig(MINIMAL).narrativeModel).toBe(TIER_DEFAULTS.premium.model);
+    expect(loadConfig(MINIMAL).narrativeModel).toBe(DEFAULT_MODEL_POLICY.tiers.premium.model);
   });
 
   test('the narrative model can be overridden', () => {

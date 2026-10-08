@@ -1,1 +1,0 @@
-ALTER TABLE "workers" ADD COLUMN "degraded_connectors" jsonb;

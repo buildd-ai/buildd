@@ -8,6 +8,7 @@ import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
+import { isPresenceToken } from './presence-token';
 
 /**
  * Cache API key hash → account record.
@@ -120,11 +121,14 @@ async function authenticateOauthJwt(jwt: string) {
 /**
  * A cached account record written before a column that auth decisions read
  * existed lacks that field, and reading it as "absent" would refuse a runner
- * the DB now allows (credential custody reads `hostRunner`). Such a record is
+ * the DB now allows (credential custody reads `hostRunner`, the claim's
+ * entitlement gate reads `managedRunner`). Such a record is
  * treated as a miss and re-fetched.
  */
 function isCurrentShape(account: CachedAccount): boolean {
-  return typeof (account as { hostRunner?: unknown }).hostRunner === 'boolean';
+  const a = account as { hostRunner?: unknown; managedRunner?: unknown };
+  // managedRunner: a managed key read from a stale record would skip its plan's limits.
+  return typeof a.hostRunner === 'boolean' && typeof a.managedRunner === 'boolean';
 }
 
 /**
@@ -146,6 +150,9 @@ async function resolveApiKey(apiKey: string | null) {
   // A per-task token is never an account key. Only the routes that opt in
   // through lib/task-token-auth.ts accept one, confined to its own task.
   if (isTaskToken(apiKey)) return null;
+  // Nor is a person's presence token: only the presence routes accept one
+  // (lib/presence-token.ts).
+  if (isPresenceToken(apiKey)) return null;
 
   // OAuth bearer path — verify the JWT before any DB work.
   if (tokensModule.looksLikeJwt(apiKey)) {

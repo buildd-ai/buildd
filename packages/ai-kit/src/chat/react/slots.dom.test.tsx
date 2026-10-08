@@ -83,9 +83,9 @@ describe('ApprovalCard slots (0.8.0)', () => {
     await render(h(kit.ApprovalCard, { part: draftPart(), onRespond() {}, headline: 'Invoices', eyebrow: 'New mission', meta: 'billing-web' }));
     const head = $('.kit-card-head')!;
     expect(kids(head)).toEqual(['span.kit-eyebrow', 'span.kit-card-tag', 'span.kit-card-meta']);
-    expect(head.textContent).toBe('Needs your OKNew missionbilling-web');
+    expect(head.textContent).toBe('Approval neededNew missionbilling-web');
     expect($('.kit-card-title')!.textContent).toBe('Invoices');
-    expect($('section')!.getAttribute('aria-label')).toBe('Needs your OK: Invoices');
+    expect($('section')!.getAttribute('aria-label')).toBe('Approval needed: Invoices');
   });
 
   it('body and details: the app renders the draft; details replace the raw fields', async () => {

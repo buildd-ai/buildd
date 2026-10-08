@@ -89,6 +89,14 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
 }));
 
+// The workflow kernel's seam (lazily imported by the route). Null round = legacy reviewer.
+const mockIsKernelReviewRound = mock(async (_task: unknown): Promise<boolean> => false);
+const mockAttemptEnded = mock(async (_p: any): Promise<any> => ({ handled: true }));
+mock.module('@/lib/workflow/seam', () => ({
+  isKernelReviewRound: mockIsKernelReviewRound,
+  attemptEnded: mockAttemptEnded,
+}));
+
 import { POST } from './route';
 
 function makeRequest(workerId = REVIEWER_WORKER_ID) {
@@ -113,6 +121,10 @@ describe('POST /api/workers/[id]/interrupt', () => {
     mockReleaseAndNotify.mockResolvedValue(undefined);
     workersUpdateChain = makeUpdateChain();
     tasksUpdateChain = makeUpdateChain();
+    mockIsKernelReviewRound.mockReset();
+    mockIsKernelReviewRound.mockResolvedValue(false);
+    mockAttemptEnded.mockReset();
+    mockAttemptEnded.mockResolvedValue({ handled: true });
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -321,5 +333,83 @@ describe('POST /api/workers/[id]/interrupt', () => {
     expect(mockResolveCompletedTask).not.toHaveBeenCalled();
     expect(mockTriggerEvent).not.toHaveBeenCalled();
     expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+  });
+
+  // Final kernel audit (task 708a55c0): the interrupt failed a kernel round's
+  // reviewer directly and filed a legacy reviewer_escalated note, sending the
+  // kernel nothing, so the round stayed `reviewing`. A kernel round now ends
+  // through the seam (T27, reason human_takeover) and no legacy note is written.
+  describe('a kernel review round', () => {
+    function liveKernelReviewer() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkersFindFirst.mockResolvedValue({ id: REVIEWER_WORKER_ID, workspaceId: 'ws-1', taskId: 't-rev-1', status: 'running' });
+      mockTasksFindFirst
+        .mockResolvedValueOnce({
+          id: 't-rev-1', category: 'review', workspaceId: 'ws-1', deliveryId: 'd-1', deliveryRole: 'review',
+          context: { reviewerFor: 't-original', prNumber: 42, workflowRoundId: 'r-1' },
+        })
+        .mockResolvedValueOnce({ id: 't-original', missionId: 'mission-1' });
+    }
+
+    function stubWrites() {
+      const insertValues = mock(() => Promise.resolve());
+      const db = (async () => (await import('@buildd/core/db')).db)();
+      return db.then((d) => {
+        (d.update as any) = (table: any) => {
+          if (table === 'workers_table') return makeReturningUpdateChain([{ id: REVIEWER_WORKER_ID }]);
+          return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+        };
+        (d.insert as any) = () => ({ values: insertValues });
+        return insertValues;
+      });
+    }
+
+    it('ends the round through the seam (human_takeover) and writes no legacy note', async () => {
+      liveKernelReviewer();
+      mockIsKernelReviewRound.mockResolvedValue(true);
+      const insertValues = await stubWrites();
+
+      const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(mockIsKernelReviewRound).toHaveBeenCalledTimes(1);
+      expect(mockAttemptEnded).toHaveBeenCalledTimes(1);
+      expect(mockAttemptEnded.mock.calls[0]![0]).toMatchObject({
+        task: { id: 't-rev-1', workspaceId: 'ws-1', deliveryId: 'd-1', deliveryRole: 'review' },
+        workerId: REVIEWER_WORKER_ID,
+        status: 'failed',
+        reviewFailure: 'human_takeover',
+        source: 'human:interrupt',
+      });
+      expect(insertValues).not.toHaveBeenCalled();
+      // The execution-state writes (worker + task terminal, claims released) still happen.
+      expect(mockReleaseAndNotify).toHaveBeenCalledWith('t-rev-1', 'abandoned');
+    });
+
+    it('a legacy reviewer keeps the reviewer_escalated note and never calls the seam\'s attemptEnded', async () => {
+      liveKernelReviewer();
+      mockIsKernelReviewRound.mockResolvedValue(false);
+      const insertValues = await stubWrites();
+
+      const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(mockAttemptEnded).not.toHaveBeenCalled();
+      expect(insertValues).toHaveBeenCalledTimes(1);
+      expect((insertValues.mock.calls[0] as any[])[0]).toMatchObject({ type: 'reviewer_escalated', missionId: 'mission-1', taskId: 't-original' });
+    });
+
+    it('an ownership read error falls back to the legacy note', async () => {
+      liveKernelReviewer();
+      mockIsKernelReviewRound.mockRejectedValue(new Error('db down'));
+      const insertValues = await stubWrites();
+
+      const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(mockAttemptEnded).not.toHaveBeenCalled();
+      expect(insertValues).toHaveBeenCalledTimes(1);
+    });
   });
 });

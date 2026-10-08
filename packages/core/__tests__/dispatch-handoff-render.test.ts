@@ -8,6 +8,8 @@ import {
   ackHandoffSql,
   ackMergedSql,
   applyReceiptsSql,
+  claimCustodySql,
+  parseAppliedReceipts,
   fallBackToInAppSql,
   selectForRepublishSql,
   selectOrphanCandidatesSql,
@@ -59,6 +61,17 @@ describe('ack statements', () => {
   });
 });
 
+describe('claimCustodySql', () => {
+  test('binds the id and only takes a published, unacked, pending row of a dispatch or shadow workspace that was not taken back', () => {
+    const { sql, params } = render(claimCustodySql(A));
+    expect(params).toEqual([A]);
+    expect(sql).toContain("o.status = 'pending' AND o.handed_off_at IS NULL AND o.published_at IS NOT NULL");
+    expect(sql).toContain("w.dispatch_transport IN ('dispatch', 'shadow')");
+    expect(sql).toContain("dispatchFallbackAt");
+    expect(sql).toContain("CASE WHEN w.dispatch_transport = 'dispatch' THEN 'handed_off' ELSE o.status END");
+  });
+});
+
 describe('applyReceiptsSql', () => {
   test('one statement over jsonb_to_recordset; malformed receipts never reach SQL', () => {
     const { sql, params } = render(applyReceiptsSql([
@@ -71,6 +84,20 @@ describe('applyReceiptsSql', () => {
     expect(JSON.parse(String(params[0])).map((r: { id: string }) => r.id)).toEqual([A]);
     expect(sql).toContain('jsonb_to_recordset');
     expect(sql).toContain("o.status = 'handed_off' AND o.transport = 'dispatch'");
+  });
+
+  test('returns the rows this batch moved to failed, with workspace and error, for the alert', () => {
+    const { sql } = render(applyReceiptsSql([{ id: A, attempt: 2, event: 'failed', why: 'http_500', at: AT }]));
+    expect(sql).toContain('RETURNING o.id, o.workspace_id, o.status, o.last_error');
+    expect(sql).toContain("FILTER (WHERE u.status = 'failed')");
+    expect(sql).toContain('AS failed');
+  });
+
+  test('parseAppliedReceipts: count plus failed rows, jsonb as text or array', () => {
+    expect(parseAppliedReceipts(undefined)).toEqual({ applied: 0, failed: [] });
+    expect(parseAppliedReceipts({ n: '2', failed: `[{"id":"${A}","workspaceId":"${B}","error":"http_500"}]` }))
+      .toEqual({ applied: 2, failed: [{ id: A, workspaceId: B, error: 'http_500' }] });
+    expect(parseAppliedReceipts({ n: 1, failed: [{ id: A, workspaceId: B, error: null }] }).failed).toEqual([{ id: A, workspaceId: B, error: null }]);
   });
 
   test('a long error is truncated before it is bound', () => {

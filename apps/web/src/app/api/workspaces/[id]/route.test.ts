@@ -40,7 +40,7 @@ mock.module('@/lib/github-installation-access', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: {
         findFirst: mockGithubReposFindFirst,
@@ -64,7 +64,7 @@ mock.module('drizzle-orm', () => ({
   ),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   workspaces: { id: 'id', teamId: 'teamId' },
   githubRepos: { fullName: 'fullName' },
   workers: { prNumber: 'prNumber', prUrl: 'prUrl' },
@@ -690,6 +690,103 @@ describe('PATCH /api/workspaces/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe("gitConfig.executor must be 'cloud', 'host', 'any' or null");
+    }
+  });
+
+  // Files runners regenerate instead of merging (packages/shared/src/derived-files.ts).
+  it('accepts well-formed gitConfig.derivedFiles and null to clear', async () => {
+    for (const value of [[{ glob: '/bun.lock', regenerate: 'bun install' }], [{ glob: 'x.lock', regenerate: 'y', strategy: 'ours' }], [], null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, derivedFiles: value });
+    }
+  });
+
+  it('rejects a derivedFiles rule the runner would drop (repo-wide, migration chain, malformed)', async () => {
+    for (const value of [
+      [{ glob: '**', regenerate: 'x' }],
+      [{ glob: 'packages/core/drizzle/meta/_journal.json', regenerate: 'bun db:generate' }],
+      [{ glob: 'bun.lock' }],
+      [{ glob: 'bun.lock', regenerate: 'bun install', strategy: 'union' }],
+      'bun.lock',
+      { glob: 'bun.lock', regenerate: 'bun install' },
+    ]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/^gitConfig\.derivedFiles/);
+    }
+  });
+
+  it('rejects a non-boolean gitConfig.mergiraf', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { mergiraf: 'yes' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
+  // Cloud-runner container class (packages/shared/src/runner-size.ts).
+  it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
+    for (const value of ['standard', 'large', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSize: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, runnerSize: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.runnerSize value (returns 400)', async () => {
+    for (const value of ['Large', 'xl', 'standard-3', true, 2, '']) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSize: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("gitConfig.runnerSize must be 'standard', 'large' or null");
+    }
+  });
+
+  it('gitConfig.runnerSizeDerived can only be cleared, never written', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } });
+    const forged = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } } });
+    expect((await PATCH(forged, { params: mockParams })).status).toBe(400);
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } });
+    const clear = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSizeDerived: null } } });
+    expect((await PATCH(clear, { params: mockParams })).status).toBe(200);
+    expect(capturedUpdates.gitConfig).toMatchObject({ runnerSizeDerived: null });
+  });
+
+  // Early release is a workspace opt-in (knowledge-base: buildd/design/early-release.md).
+  it('accepts every gitConfig.earlyRelease mode and null to clear', async () => {
+    for (const value of [{ mode: 'off' }, { mode: 'rule_only' }, { mode: 'rule_and_jev' }, null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, earlyRelease: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.earlyRelease shape or mode (returns 400)', async () => {
+    for (const value of ['rule_only', true, { mode: 'on' }, { mode: 'rule_only', extra: 1 }]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/earlyRelease/);
     }
   });
 

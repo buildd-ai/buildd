@@ -35,8 +35,9 @@ export const SCOUT_PROBE_SELECTION_KIND = 'buildd.scout_probe_selection' as cons
 export const SCOUT_PROBE_DECISIONS = ['run', 'defer', 'unsupported'] as const;
 export type ScoutProbeDecision = (typeof SCOUT_PROBE_DECISIONS)[number];
 
-export const SCOUT_PROBE_KINDS = ['route_smoke', 'api_contract', 'visual', 'spec_invariant', 'regression', 'security_boundary'] as const;
-export type ScoutProbeKind = (typeof SCOUT_PROBE_KINDS)[number];
+// Defined with the other probe contract types so the runner can reach them without this kind.
+import { SCOUT_PROBE_KINDS, type ScoutProbeKind } from './quality-scout/types';
+export { SCOUT_PROBE_KINDS, type ScoutProbeKind };
 
 export const SCOUT_OUTCOME_SOURCE = 'scout_probe_result' as const;
 export const SCOUT_OUTCOME_LABELS = ['defect_found', 'no_defect'] as const;
@@ -132,10 +133,14 @@ export const scoutProbeSelectionObjective: DecisionObjective = {
   },
 };
 
-/** Shadow: Scout is advisory in v1, so the model's pick is recorded and the fallback runs. */
+/**
+ * Live: the model only picks among optional probes (required probes are a rule
+ * and never ask it), so it is bounded by the probe set and budget. Rollback is
+ * this one line: `mode: 'shadow'` records the pick and applies the fallback.
+ */
 export const SCOUT_PROBE_SELECTION_BINDING: BuilddDecisionKindBinding = {
   capability: 'scout_probe_selection',
-  mode: 'shadow',
+  mode: 'live',
   readout: { objective: scoutProbeSelectionObjective },
 };
 

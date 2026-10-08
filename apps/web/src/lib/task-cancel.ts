@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { workers } from '@buildd/core/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -68,6 +68,9 @@ export async function applyTaskReopenSideEffects(task: TaskRef, reason: string):
  *  4. TASK_UPDATED on the workspace channel.
  *  5. The supersession reconciler's `cancelled` event: open retries of this
  *     task (CI/review/conflict attempts) go with it (`cancel_supersedes_retry`).
+ *  6. Detach an interactive (claim_task) worker. The abort push in step 1
+ *     reaches only runner-held sessions; a local one would otherwise keep its
+ *     seat (lib/interactive-detach.ts).
  *
  * Each step is independent and failures are logged, never thrown, so one broken
  * side effect cannot stop the others or fail the caller's already-committed write.
@@ -99,12 +102,44 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
     emitTaskUpdated({ ...task, status: 'cancelled' }),
     import('@/lib/supersession').then(({ reconcileSubjectEvent }) =>
       reconcileSubjectEvent({ kind: 'cancelled', workspaceId, taskId: id, door: 'applyTaskCancelSideEffects' })),
+    import('@/lib/interactive-detach').then(({ detachInteractiveWorkersOfEndedTasks }) =>
+      detachInteractiveWorkersOfEndedTasks({ taskId: id, graceMs: 0 })),
+    kernelAttemptEnded(id, workspaceId),
   ]);
 
-  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession'];
+  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession', 'interactive detach', 'workflow AttemptEnded'];
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.error(`[task-cancel] ${labels[i]} failed for ${id}:`, r.reason);
     }
+  });
+}
+
+/**
+ * A cancelled attempt of a workflow-kernel delivery tells the kernel it ended
+ * (docs/specs/workflow-state-kernel.md §18.1). The runner's terminal PATCH
+ * reaches T4 only if the worker is alive to send it; a dead or detached one
+ * never does, which would leave the ledger row `running` and the delivery
+ * bound to it. A second report of the same end is a no-op in the ledger.
+ */
+async function kernelAttemptEnded(taskId: string, workspaceId: string): Promise<void> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, deliveryId: true, deliveryRole: true, context: true },
+  });
+  if (!task?.deliveryId) return;
+  const worker = await db.query.workers.findFirst({
+    where: eq(workers.taskId, taskId),
+    columns: { id: true, commitCount: true },
+    orderBy: [desc(workers.createdAt)],
+  });
+  const { attemptEnded } = await import('@/lib/workflow/seam');
+  await attemptEnded({
+    task: { id: task.id, workspaceId, deliveryId: task.deliveryId, deliveryRole: task.deliveryRole ?? null, context: task.context },
+    workerId: worker?.id ?? `cancel:${taskId}`,
+    status: 'lost',
+    localHeadSha: null,
+    commitCount: worker?.commitCount ?? 0,
+    source: 'cancel',
   });
 }

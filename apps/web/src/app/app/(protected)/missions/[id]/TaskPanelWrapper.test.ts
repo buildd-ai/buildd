@@ -150,3 +150,18 @@ describe('isValidTaskId — shared task-link guard', () => {
     expect(isValidTaskId('c6a00c1a-161a-40fb-b13c-dee1670fea99')).toBe(true);
   });
 });
+
+describe('TaskPanelWrapper — the sheet pulse draws the strip order', () => {
+  it('an upstream filed after its dependent still draws first (the mission page order)', () => {
+    const UP = '0a1b2c3d-2222-4222-8333-444455556666';
+    search = `task=${TASK}`;
+    const html = wrapper({
+      feedTasks: [
+        { id: TASK, title: 'Dependent', status: 'pending', taskClass: 'work', createdAt: '2026-01-01T00:00:00Z', dependsOn: [UP] },
+        { id: UP, title: 'Upstream', status: 'in_progress', taskClass: 'work', createdAt: '2026-01-02T00:00:00Z' },
+      ],
+    });
+    const ids = [...html.matchAll(/data-testid="mission-pulse-segment" data-task-id="([^"]+)"/g)].map(m => m[1]);
+    expect(ids).toEqual([UP, TASK]);
+  });
+});

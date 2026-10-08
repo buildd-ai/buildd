@@ -51,7 +51,7 @@ describe('mission header — all tasks merged, mission PR open', () => {
   it('states waiting on you and offers merge as the primary action', () => {
     const { html } = render(missionPrOpen);
 
-    expect(html).toContain('Waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Mission PR #4242 ready to merge.');
     expect(html).toContain('data-testid="mission-primary-action"');
     expect(html).toContain('https://example.invalid/pr/4242');
   });
@@ -72,7 +72,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     const { view, html } = render({ ...missionPrOpen, activeAgents: 1 });
 
     expect(view.kind).toBe('running');
-    expect(html).toContain('Running (1 agent). Waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Running (1 agent). Mission PR #4242 ready to merge.');
     expect(html).toContain('data-testid="mission-primary-action"');
   });
 
@@ -144,6 +144,26 @@ describe('the why, with its hard ref linked', () => {
     expect(html).toContain('Wire the route');
     expect(html).toContain('#9001');
     expect(html).toContain('https://example.invalid/pr/9001');
+  });
+
+  it('a hard ref with only a task id is a real link to that task\'s own page, never a drawer trigger', () => {
+    const view = deriveMissionStateView(base);
+    const because = [{
+      order: 1,
+      claim: 'a task failed:',
+      derivedFrom: 'tasks.status + tasks.result.errorType' as const,
+      refs: { taskId: '00000000-0000-4000-8000-00000000000a' },
+    }];
+    const html = renderToStaticMarkup(
+      <MissionSituationBlock missionId="m-1" situation={view.situation} because={because} />,
+    );
+
+    expect(html).toContain('task 00000000');
+    expect(html).toContain('href="/app/tasks/00000000-0000-4000-8000-00000000000a?from=mission&amp;missionId=m-1"');
+    // No `data-task-id`: TaskPanelWrapper's capture handler only intercepts
+    // that attribute to open the mission's own task drawer/sheet in-place —
+    // a short id must navigate for real instead.
+    expect(html).not.toContain('data-task-id');
   });
 });
 

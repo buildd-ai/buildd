@@ -111,29 +111,24 @@ describe('buildMcpServerEntries', () => {
 });
 
 describe('reserved worker MCP surface', () => {
-  test('Analyst mount advertises the analytics and lifecycle tools', async () => {
+  test('the worker URL names only workspace and worker; the server picks the surface', () => {
+    const url = new URL(buildWorkerMcpUrl('https://buildd.dev', 'test-workspace', 'test-worker'));
+    expect(url.searchParams.get('workspace')).toBe('test-workspace');
+    expect(url.searchParams.get('worker')).toBe('test-worker');
+    expect(url.searchParams.has('tools')).toBe(false);
+  });
+
+  test('a session from this runner gets the group tools, and the Analyst tools resolve on them', async () => {
     const { mcpToolSurfaceFor, listMcpTools } = await import('../../../web/src/app/api/mcp/tools');
     const { DEFAULT_ROLES } = await import('../../../web/src/lib/default-roles');
     const analyst = DEFAULT_ROLES.find(role => role.slug === 'analyst')!;
-    const configuredUrl = new URL((analyst.mcpServers.buildd as { url: string }).url);
-    const url = new URL(buildWorkerMcpUrl(configuredUrl.origin, 'test-workspace', 'test-worker', analyst.slug));
-    const surface = mcpToolSurfaceFor({ toolsParam: url.searchParams.get('tools'), workerParam: url.searchParams.get('worker') });
-    expect(url.searchParams.get('workspace')).toBe('test-workspace');
-    expect(url.searchParams.get('worker')).toBe('test-worker');
+    const url = new URL(buildWorkerMcpUrl('https://buildd.dev', 'test-workspace', 'test-worker'));
+    // env-scan.test.ts asserts this runner advertises CAPABILITY_MCP_GROUP_TOOLS.
+    const surface = mcpToolSurfaceFor({ workerParam: url.searchParams.get('worker'), runnerSupportsGroupTools: true });
+    expect(surface).toBe('groups');
     const names = listMcpTools({ accountLevel: 'worker', isSensitive: false, surface }).map(tool => tool.name);
-    expect(names).toContain('buildd_analytics');
-    expect(names).toContain('buildd_work');
-    for (const tool of analyst.allowedTools.filter(tool => tool.startsWith('mcp__buildd__'))) {
+    for (const tool of analyst.allowedTools.filter(t => t.startsWith('mcp__buildd__buildd_'))) {
       expect(names).toContain(tool.replace('mcp__buildd__', ''));
     }
-  });
-
-  test('other role sessions retain legacy and grouped skill agents opt in', () => {
-    for (const role of ['builder', 'organizer', undefined]) {
-      expect(new URL(buildWorkerMcpUrl('https://buildd.dev', 'workspace', 'worker', role)).searchParams.has('tools')).toBe(false);
-    }
-    expect(new URL(buildWorkerMcpUrl('https://buildd.dev', 'workspace', 'worker', 'organizer', {
-      analyst: { tools: ['mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work'] },
-    })).searchParams.get('tools')).toBe('groups');
   });
 });

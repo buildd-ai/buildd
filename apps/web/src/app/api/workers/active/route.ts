@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { workers, workerHeartbeats, workspaces } from '@buildd/core/db/schema';
 import { eq, gt, inArray, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { listOpenWorkspaces, isOpenWithinTeams } from '@/lib/open-workspaces';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -38,6 +38,9 @@ const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
  * `browserRunnerOnline` for it: `browserRunnerOnline` over heartbeats resolved
  * by the claim rule (`loadBrowserRunnerHeartbeats`), the visual review's own
  * answer; null when the lookup failed.
+ *
+ * A per-task token sees only runners that reach its own task's workspace,
+ * with that workspace as their only listed one, and never a `viewerToken`.
  */
 
 async function authenticateRequest(req: NextRequest) {
@@ -46,7 +49,7 @@ async function authenticateRequest(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey, req);
+    const account = await authenticateTaskScopedCaller(apiKey, req);
     if (account) return { type: 'api' as const, account };
   }
 
@@ -84,7 +87,7 @@ async function getWorkspaceIdsAndNames(
         : Promise.resolve([]),
       listOpenWorkspaces([auth.account.teamId], CALLER_WS_COLUMNS),
     ]);
-    rows = [...linkedWs, ...openWs] as CallerWorkspace[];
+    rows = ([...linkedWs, ...openWs] as CallerWorkspace[]).filter(w => taskScopeAllowsWorkspace(auth.account, w.id));
   } else {
     const teamWsIds = await getUserWorkspaceIds(auth.user.id);
     rows = teamWsIds.length > 0
@@ -200,7 +203,8 @@ export async function GET(req: NextRequest) {
 
         return {
           localUiUrl: hb.localUiUrl,
-          viewerToken: hb.viewerToken,
+          // The runner UI's proxy credential: never handed to a per-task token.
+          viewerToken: auth.type === 'api' && auth.account.taskScope ? null : hb.viewerToken,
           accountId: hb.accountId,
           accountName: hb.account?.name || 'Unknown',
           maxConcurrent,
@@ -249,7 +253,7 @@ export async function GET(req: NextRequest) {
     if (askedWorkspaceId) {
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, askedWorkspaceId),
-        columns: { id: true, teamId: true, accessMode: true },
+        columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
       });
       const { loadBrowserRunnerHeartbeats } = await import('@/lib/runner-heartbeats');
       const hbs = ws ? await loadBrowserRunnerHeartbeats(ws, now) : null;

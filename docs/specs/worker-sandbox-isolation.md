@@ -2,13 +2,13 @@
 title: Worker Sandbox Isolation
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-10-07
 summary: An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 domain: runners
-surfaces: [apps/runner/src/bwrap-mount-allowlist.ts, apps/runner/src/workers.ts, apps/runner/src/env-scan.ts, apps/runner/src/cbm-enforcement.ts]
-related: [credential-isolation, codex-backend-spec, codebase-memory-graph, runner-liveness]
+surfaces: [apps/runner/src/bwrap-mount-allowlist.ts, apps/runner/src/workers.ts, apps/runner/src/env-scan.ts]
+related: [credential-isolation, codex-backend-spec, runner-liveness]
 keywords: [bwrap, bubblewrap, BUILDD_DISABLE_SANDBOX, BUILDD_SANDBOX_MOUNT_ALLOWLIST, BUILDD_MOUNT_ALLOWLIST_EXTRA, sandbox_mount_gap, bwrap_namespace_denied, unprivileged_userns_clone, tmpfs, mount allowlist]
-verified_by: [apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts, apps/runner/__tests__/unit/backends/codex-sandbox-bwrap.test.ts, apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
+verified_by: [apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts, apps/runner/__tests__/unit/backends/codex-sandbox-bwrap.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -61,13 +61,13 @@ Two facts a reader must carry into the rest of this document:
    (`apps/runner/src/bwrap-mount-allowlist.ts:45-47`). A runner that sets nothing
    runs agents with no outer namespace at all. This is phase 1 of the rollout in
    `docs/design/worker-mount-isolation.md` §5; phases 2-3 have not shipped.
-2. **The kernel-level denial probes have never passed.** The only tests that
-   assert an agent *cannot* reach a path outside the table live in
-   `apps/runner/src/__tests__/mount-isolation.e2e.ts`, whose recorded verdict is
-   BLOCKED (host denied unprivileged namespace creation) and which `bun test`
-   does not discover — `scripts/run-unit-tests.ts:42` globs `**/*.test.{ts,tsx}`
-   and that file is `.e2e.ts`. Everything asserted in CI is about the argv the
-   runner *builds*, not about what the kernel then enforces. See
+2. **The kernel-level denial probes run in CI.** The tests that assert an
+   agent *cannot* reach a path outside the table live in
+   `apps/runner/src/__tests__/mount-isolation.e2e.ts`, which `bun test` does not
+   discover (it is `.e2e.ts`); the `Sandbox isolation probe (bwrap)` job in
+   `.github/workflows/build.yml` runs it and fails on a `skipped` banner. Until
+   the capability probe bound `/lib` and `/lib64`, that job skipped on every
+   run (the loader was missing, so exec failed ENOENT). See
    **Verification gaps**.
 
 ---
@@ -106,14 +106,10 @@ as one.
   after its ro parent, so argv order is load-bearing and MUST NOT be sorted.
 - **WS-6**: `/proc`, `/dev`, a `/dev/shm` tmpfs, a `/tmp` tmpfs and a read-only
   `/sys` are emitted after the `--dir` list and before every bind (line 128).
-  Because `/tmp` is a fresh tmpfs, sibling workers' `claude-cfg-*` dirs and
-  `/tmp/cbm-*` caches are invisible even though they share a host `/tmp`.
-- **WS-7**: When Codebase Memory is enforced for the task, the CBM binary is
-  mounted ro at `CBM_BINARY_PATH` (`/opt/buildd/bin/codebase-memory-mcp`) and the
-  per-worker cache dir `/tmp/cbm-<workerId>` rw (lines 115-116). The cache dir
-  MUST be created by the caller before the argv is built —
-  `workers.ts:2324-2328` `mkdirSync`s it — because an absent path is dropped by
-  WS-9 and a dropped cache dir means a CBM binary that cannot write.
+  Because `/tmp` is a fresh tmpfs, sibling workers' `claude-cfg-*` dirs are
+  invisible even though they share a host `/tmp`.
+- **WS-7**: Retired. It covered the code-graph binary and cache mounts, which
+  were removed with the code graph itself.
 - **WS-8**: Neither the runner's own source tree, `~/.buildd`, sibling worktrees
   under `<repoPath>/.buildd-worktrees`, nor any other worker's credential dir
   appears in the table. This is the same denied set as
@@ -131,9 +127,7 @@ as one.
   `--die-with-parent --new-session --unshare-user --unshare-pid --uid 0 --gid 0
   --tmpfs /` in that order, and `--tmpfs /tmp` precedes every `--bind` /
   `--ro-bind` pair.
-- AC-4: GIVEN a config with `cbmBinaryPath` and `cbmCacheDir` WHEN the argv is
-  built THEN the binary is `--ro-bind` and the cache dir is `--bind`; GIVEN both
-  are absent THEN the string `codebase-memory-mcp` does not occur in the argv.
+- AC-4: Retired with WS-7.
 - AC-5: GIVEN `worktreePath = <repo>/.buildd-worktrees/task` WHEN the argv is
   built THEN `<repo>/.buildd-worktrees` appears only as a `--dir` (an empty
   directory in the tmpfs root) and never as a bind — sibling worktrees are not
@@ -306,8 +300,7 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
   NOT be fatal and MUST NOT silently become a mount.
 - **WS-24**: The mode defaults to `ro` when omitted. Only a trailing `:ro` /
   `:rw` is read as a mode, so absolute paths containing colons survive parsing.
-- **WS-25**: Extra mounts are appended after the base table and before the CBM
-  mounts (line 114), so by WS-10 an extra entry naming a path already in the
+- **WS-25**: Extra mounts are appended after the base table, so by WS-10 an extra entry naming a path already in the
   table replaces that path's mode. Widening a system bind to `rw` this way is
   possible and unguarded — see **Verification gaps**.
 
@@ -326,8 +319,7 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 - Table + argv builder: `apps/runner/src/bwrap-mount-allowlist.ts` —
   `SYSTEM_RO_BINDS` (34-43), `isMountAllowlistEnabled()` (45-47),
   `parseExtraMounts()` (49-74), `parentDirs()` (76-84),
-  `buildWorkerBwrapArgv()` (86-133), `createBwrapSpawn()` (135-159),
-  `CBM_BINARY_PATH` (14)
+  `buildWorkerBwrapArgv()` (86-133), `createBwrapSpawn()` (135-159)
 - Call site + lifecycle: `apps/runner/src/workers.ts` — `isBwrapSupported()`
   (105-123), boot probe (518-521), heartbeat report (677-678), SDK sandbox +
   env-scrub forcing (2271-2283), argv assembly (2396-2410),
@@ -339,8 +331,6 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
   (54-91), capability advertisement (286-290); operator check:
   `apps/runner/src/doctor.ts` — `checkBwrap()` (304-319)
 - Detection patterns: `apps/runner/src/error-trace-scanner.ts` (47-57)
-- CBM mount inputs: `apps/runner/src/cbm-enforcement.ts` —
-  `buildCbmActivation()` (68-81)
 - Application-layer complement: `apps/runner/src/read-jail.ts` —
   `buildReadJailDeniedPrefixes()` (24-33)
 - Codex interaction: `apps/runner/src/backends/codex-backend.ts` —
@@ -373,8 +363,6 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 - **Landlock LSM** as a replacement or complement.
 - **Per-workspace mount tables from the dashboard.** Mount configuration is
   operator-scoped env only.
-- **CBM tool policy** (`CBM_BLOCKED_TOOLS`, indexing behaviour) — only the two
-  CBM mounts are in scope here.
 
 ---
 
@@ -383,16 +371,15 @@ comma-separated `<absolute-path>[:ro|:rw]` entries, parsed by
 Unguarded claims and known drift. Each is a real hole, listed so a regression in
 it is recognisable rather than discovered.
 
-1. **No CI test proves any denial.** Every invariant in §1 is verified as *argv
-   text* (snapshot in
-   `apps/runner/__tests__/unit/__snapshots__/bwrap-mount-allowlist.test.ts.snap`).
-   The only tests that spawn a real namespace and assert a blocked path —
-   sibling worktree, runner coordination key, the non-active backend's
-   credential dir — are in `apps/runner/src/__tests__/mount-isolation.e2e.ts`,
-   which is not matched by the `**/*.test.{ts,tsx}` discovery glob and whose
-   last recorded run was BLOCKED on a host that denies namespace creation
-   (13 of 24 checks skipped). WS-8 in particular is asserted by absence from a
-   snapshot, not by a failed read.
+1. **FIXED** — **No CI test proved any denial.** The namespace tests in
+   `apps/runner/src/__tests__/mount-isolation.e2e.ts` (sibling worktree, runner
+   coordination key, the non-active backend's credential dir) were collected by
+   no glob, and once a CI job ran them they skipped every time: the capability
+   probe bound only `/usr`, so on a merged-usr host the ELF loader was missing
+   and exec failed ENOENT, which read as "namespaces denied". The probe now
+   binds the loader dirs and the CI job fails on a skip. The same job runs the
+   Quality Scout probe sandbox suite (`scout-sandbox.e2e.ts`). WS-8 is still
+   asserted by absence from a snapshot, not by a failed read.
 2. **FIXED** — The wrapper is never exercised for Codex, but the code pretends otherwise.**
    `buildWorkerBwrapArgv()` has a full Codex branch (WS-4) with its own snapshot
    test, yet `workers.ts:2420` gates the wrapper on `!isCodexTask`. No production
@@ -453,5 +440,5 @@ it is recognisable rather than discovered.
    line and a milestone.
 9. **WS-9's warning path is asserted only indirectly.** The unit tests exercise
    `pathExists` returning false for one file; no test asserts the warning text
-   or that a dropped *required* mount (for example the CBM cache dir) is what
+   or that a dropped *required* mount (for example a credential dir) is what
    later produces `sandbox_mount_gap`.
