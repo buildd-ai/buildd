@@ -1653,7 +1653,7 @@ export interface AssertionConnectorEntry {
 export interface DegradedConnector {
   id: string;
   name: string;
-  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  failureMode: 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
   detail?: string;
 }
 

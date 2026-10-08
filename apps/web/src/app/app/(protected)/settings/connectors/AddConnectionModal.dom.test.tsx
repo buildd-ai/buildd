@@ -78,6 +78,17 @@ describe('AddConnectionModal catalog', () => {
     await unmount();
   });
 
+  // Vercel only admits MCP clients it has reviewed (live-probed); the tile says
+  // so up front instead of failing after a click with no explanation.
+  it('flags the built-in Vercel entry as needing provider approval', async () => {
+    stubFetch(() => new Response('{}'));
+    const { el, unmount } = await mount();
+    expect(q(el, 'connector-catalog-vercel')!.textContent).toContain('Needs approval');
+    expect(q(el, 'connector-catalog-vercel-client-support')!.textContent).toContain('Vercel');
+    expect(q(el, 'connector-catalog-axiom-client-support')).toBeNull();
+    await unmount();
+  });
+
   it('falls back to the built-ins when the catalog request fails', async () => {
     stubFetch(() => new Response('{}'), () => new Response('boom', { status: 500 }));
     const { el, unmount } = await mount();

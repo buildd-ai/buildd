@@ -58,7 +58,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-10-07
   /api/mcp MUST serve the buildd_<group> action tools (legacy buildd only to runners predating them), recall and learn over stateless Streamable HTTP, Bearer-authenticate every call and gate actions by privilege.
-- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
+- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-10-08
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
 ### missions (3)
