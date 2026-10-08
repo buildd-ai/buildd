@@ -82,7 +82,8 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
             <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-accent-text md:min-h-0">All activity</Link>
           </nav>
         )}
-        <h1 className="text-heading font-bold text-text-primary">Activity</h1>
+        {/* The mobile header already reads "Activity · Team"; show the h1 from md up only. */}
+        <h1 className="sr-only md:not-sr-only text-heading font-bold text-text-primary">Activity</h1>
         {initiativeTitle && <p className="mt-1 text-meta text-text-muted">Initiative: {initiativeTitle} · <Link href="/app/tasks" className="text-accent-text">clear</Link></p>}
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">

@@ -23,6 +23,12 @@ describe('ActivityView: Now', () => {
     expect(html).toMatch(/data-testid="activity-counts"[^>]*>\d+ deliver(y|ies) in motion · \d+ agents? working/);
   });
 
+  it('keeps the h1 for screen readers but hides it visually at phone width, where the header already says Activity', () => {
+    const h1 = html.match(/<h1[^>]*>/)?.[0] ?? '';
+    expect(h1).toContain('sr-only');
+    expect(h1).toContain('md:not-sr-only');
+  });
+
   it('the latest task is one tap away', () => {
     expect(tag(html, 'activity-latest')).toMatch(/href="\/app\/tasks\/[^"]+"/);
   });
