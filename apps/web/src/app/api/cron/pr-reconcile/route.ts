@@ -41,6 +41,11 @@
 //                       the guarantee.
 //                       It also re-drives behind PRs whose branch refresh was
 //                       deferred outside landing enforce (lib/refresh-redrive.ts).
+//                       It also reconciles early-release decisions
+//                       (dependency_releases) against the upstream PR's
+//                       current state — new overlapping commits, a close
+//                       without merging, or a request-changes round whose fix
+//                       overlaps the dependent (lib/early-release-reconciler.ts).
 //   (no scope)          daily — the above plus sweepDeadZonePrs(), which spawns
 //                       conflict-resolution tasks. That one creates work, so it
 //                       stays on the slower cadence.
@@ -75,6 +80,7 @@ import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
 import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
+import { reconcileEarlyReleases, type ReconcileEarlyReleasesResult } from '@/lib/early-release-reconciler';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
@@ -110,7 +116,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -168,6 +174,12 @@ export async function GET(req: NextRequest) {
       // a suggestion (lib/pr-supersession-detect.ts). Backfill for webhook
       // misses and PRs closed before the webhook door existed. Isolated.
       sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Re-checks every non-revoked early-release decision against the
+      // upstream PR's current state (lib/early-release-reconciler.ts).
+      // Isolated — a reconciler failure must not discard the rest of the sweep.
+      reconcileEarlyReleases().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
       // The workflow kernel's outbox floor drain (docs/specs/workflow-state-kernel.md
@@ -259,6 +271,11 @@ export async function GET(req: NextRequest) {
         `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped}`,
       );
     }
+    if ('error' in earlyRelease) {
+      console.error('[EarlyReleaseReconciler] error:', earlyRelease.error);
+    } else {
+      logEarlyRelease(earlyRelease);
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
@@ -271,13 +288,15 @@ export async function GET(req: NextRequest) {
     const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
     const ciRedErrors = 'error' in ciRed ? 1 : ciRed.errors;
     const closedPrErrors = 'error' in closedPrs ? 1 : 0;
+    const earlyReleaseErrors = 'error' in earlyRelease ? 1 : earlyRelease.errors;
     report({
       processed:
         reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
         + ('error' in branchRefresh ? 0 : branchRefresh.scanned)
         + ('error' in landing ? 0 : landing.processed)
         + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven)
-        + ('error' in ciRed ? 0 : ciRed.processed),
+        + ('error' in ciRed ? 0 : ciRed.processed)
+        + ('error' in earlyRelease ? 0 : earlyRelease.processed),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
@@ -290,12 +309,13 @@ export async function GET(req: NextRequest) {
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
-        + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued),
+        + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
+        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors
+        + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
         + ('error' in kernelFloor ? 1 : kernelFloor.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor },
     });
 
     return NextResponse.json({
@@ -315,8 +335,15 @@ export async function GET(req: NextRequest) {
       kernelOutbox,
       trunk,
       kernelFloor,
+      earlyRelease,
     });
   });
+}
+
+function logEarlyRelease(r: ReconcileEarlyReleasesResult): void {
+  console.log(
+    `[EarlyReleaseReconciler] enumerated=${r.enumerated} processed=${r.processed} refreshed=${r.refreshed} escalated=${r.escalated} ignored=${r.ignored} skipped=${r.skipped} errors=${r.errors}`,
+  );
 }
 
 function logRefreshRedrive(r: RefreshRedriveResult): void {
