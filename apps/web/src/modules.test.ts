@@ -63,6 +63,7 @@ describe('composition root', () => {
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
     ]);
     expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch']);
+    expect(byEvent('task.left_mission')).toEqual(['visual-qa:surface-audit-detach']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',

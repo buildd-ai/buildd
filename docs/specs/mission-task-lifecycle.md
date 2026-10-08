@@ -1735,6 +1735,17 @@ Manifests-are-the-enforcement contract above).
   UI-scoped — the audit reviews the mission's whole shipped surface, and a
   backend-only task can still change what renders.
 - Mission has `autoSurfaceAudit = false` → no-op entirely.
+- **Membership, not a frozen list**: the audit waits on the mission's tasks as
+  they are now. A task unlinked or moved out of the mission
+  (`PATCH /api/tasks/[id]` `missionId`, which `manage_missions unlink_task`
+  calls) has its edge dropped from the old mission's pending audits
+  (`detachTaskFromMissionSurfaceAudits`), and extending the audit rewrites its
+  `dependsOn` to current members. The claim gate ignores an audit's dependency
+  that is not in the audit's mission (`outsideSurfaceAuditMission` in
+  `dependenciesSatisfied`), so an edge left by an earlier unlink never blocks
+  it, and the mission page and task summary leave it out of the "waiting on"
+  count (`dependencyHoldsTask`). Every other task waits on every dependency it
+  names.
 
 **Checklist** (reused from the Weekly mobile UI audit, scoped to the paths
 declared by the mission's own builder tasks instead of the whole app): 390pt/320pt
@@ -1773,6 +1784,16 @@ mission's merged work *actually changed*, via `evaluateSurfaceAuditGate`:
   and the engine never waives. The same PATCH carrying `status: completed`
   is refused with 409 `surface_audit_missing` unless a waiver is supplied or
   already recorded. Archiving is not gated.
+- **Dashboard waiver** (`MissionSurfaceAuditWaiver`): the mission page offers
+  **Waive visual audit** on the Settings sheet's Visual review card and in the
+  drawer of a not-yet-started audit task, whenever the mission has an audit, is
+  blocked on a missing one, or carries a waiver. It asks for the reason in a
+  sheet and sends `surfaceAuditWaiver` alone through the same PATCH (no status
+  change), so the reason, the person and the time are recorded the same way and
+  an agent or task token is refused there. A recorded waiver shows its reason,
+  who set it and when, in place of the action. On a `mission-branch` mission
+  the audit drawer also says CI Visual QA can't capture a mission branch and
+  links the tracking PR.
 - **Decision sheet** (`MissionDecisionSheet`): the exits it renders follow the
   blocker the server reports, so no button leads to a refusal. A missing audit
   shows exactly two actions, **Run visual audit** and **Waive with reason**; the
@@ -1839,6 +1860,14 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   nothing.
 - AC-38: GIVEN the suggestion call fails, times out or is not confident THEN
   both actions render live with nothing pre-selected.
+- AC-38a: GIVEN a mission's pending `[surface audit]` WHEN one of its
+  dependencies is unlinked or moved to another mission THEN that edge leaves the
+  audit's `dependsOn`, and a dependency not in the audit's mission never blocks
+  its claim, while an ordinary task keeps waiting on a dependency in another
+  mission.
+- AC-38b: GIVEN the mission page WHEN a person waives the visual audit with a
+  reason of at least 10 characters THEN the reason and the person are recorded
+  on the mission; a task token's waiver is refused and records nothing.
 
 **Code surface**:
 - `apps/web/src/lib/mission-surface-audit-gate.ts` — `evaluateSurfaceAuditGate()`
@@ -1850,4 +1879,9 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
 - `apps/web/src/app/api/missions/[id]/surface-audit/route.ts` and
   `.../surface-audit/advice/route.ts`
 - `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
+- `apps/web/src/lib/mission-surface-audit-membership.ts` —
+  `detachTaskFromMissionSurfaceAudits()`, `missionMemberIds()`
+- `apps/web/src/app/api/workers/claim/deps-gate.ts` — `outsideSurfaceAuditMission()`
+- `apps/web/src/app/app/(protected)/missions/[id]/MissionSurfaceAuditWaiver.tsx` —
+  the dashboard waiver
 - `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)

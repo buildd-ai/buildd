@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate } from './deps-gate';
+import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate, outsideSurfaceAuditMission } from './deps-gate';
 import { sql } from 'drizzle-orm';
 import {
   DEP_SATISFYING_STATUSES as CONTRACT_STATUSES,
@@ -120,7 +120,17 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
       ...CONTRACT_STATUSES,
       DEP_UNBLOCKING_PR_LIFECYCLE,
       ...EARLY_RELEASE_SATISFYING_DECISIONS,
+      '[surface audit] %',
     ]);
+  });
+
+  it("lets a surface audit ignore a dependency outside its mission, correlated to the dependent's mission", () => {
+    // Behaviour is pinned on real Postgres (tests/db/surface-audit-membership.test.ts);
+    // this pins the shape: the arm is AND NOT'd per dependency, scoped to audit
+    // titles, and compares the dependency's mission to the outer (dependent) row's.
+    const text = renderGate();
+    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $6');
+    expect(text).toContain('t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id"');
   });
 
   it('applies the open-PR guard ONLY to completed deps', () => {
@@ -183,7 +193,7 @@ describe('dependencySatisfied() — early-release arm (dependency_releases)', ()
 
   it('binds exactly the early-release decisions to the IN (...) list', () => {
     expect(renderGate()).toMatch(/dr\.decision IN \(\$4, \$5\)/);
-    expect(renderParams().slice(3)).toEqual([...EARLY_RELEASE_SATISFYING_DECISIONS]);
+    expect(renderParams().slice(3, 5)).toEqual([...EARLY_RELEASE_SATISFYING_DECISIONS]);
   });
 
   it('excludes a revoked release row', () => {
@@ -222,5 +232,17 @@ describe('dependencySatisfied(depId): the per-dependency predicate', () => {
   it('is the same predicate the whole-array gate applies to each element', () => {
     const one = dialect.sqlToQuery(dependencySatisfied(sql`dep_id::uuid`)).sql;
     expect(renderGate()).toContain(one.replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim());
+  });
+});
+
+describe('outsideSurfaceAuditMission(): rendered', () => {
+  it("is scoped to a surface audit in a mission, and compares the dependency's mission to the dependent's", () => {
+    const q = dialect.sqlToQuery(outsideSurfaceAuditMission(sql`dep_id::uuid`));
+    const text = q.sql.replace(/\s+/g, ' ').trim();
+    expect(text).toBe(
+      '( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $1 AND NOT EXISTS ( '
+      + 'SELECT 1 FROM "tasks" t3 WHERE t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id" ) )',
+    );
+    expect(q.params).toEqual(['[surface audit] %']);
   });
 });
