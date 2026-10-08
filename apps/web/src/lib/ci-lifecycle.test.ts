@@ -31,9 +31,22 @@ describe('ciLifecycleFromSuites', () => {
     expect(ciLifecycleFromSuites([suite('queued', null, 0)])).toBeNull();
   });
 
-  // A workflow file that fails to parse fails before any job exists.
-  it('a completed suite counts whatever its run count', () => {
-    expect(ciLifecycleFromSuites([suite('completed', 'failure', 0), suite('completed', 'success', 5)])).toBe('ci_failed');
+  // A workflow file that fails to parse fails before any job exists. But a
+  // newer passing suite supersedes an older failing one: when a PR body is
+  // edited, a new workflow run is triggered, creating a new suite. The old
+  // suite's failure should not override the new suite's pass.
+  it('old failing suite + new passing suite: newer passing suite wins', () => {
+    expect(ciLifecycleFromSuites([
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:00:00Z' },
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:02:00Z' },
+    ])).toBe('ci_green');
+  });
+
+  it('old passing suite + new failing suite: newer failing suite loses', () => {
+    expect(ciLifecycleFromSuites([
+      { status: 'completed', conclusion: 'success', latest_check_runs_count: 5, updated_at: '2026-01-01T00:00:00Z' },
+      { status: 'completed', conclusion: 'failure', latest_check_runs_count: 0, updated_at: '2026-01-01T00:02:00Z' },
+    ])).toBe('ci_failed');
   });
 
   it('a real suite still running is running, even beside a failure', () => {

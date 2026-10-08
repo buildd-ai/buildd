@@ -71,8 +71,17 @@ export function checksFromSuites(
   const lifecycle = ciLifecycleFromSuites(suites);
   let redSinceMs: number | null = null;
   if (lifecycle === 'ci_failed') {
-    for (const s of suites ?? []) {
-      if (s.status !== 'completed' || ['success', 'skipped', 'neutral'].includes(s.conclusion ?? '')) continue;
+    // Only consider the newest completed suites (same dedup as ciLifecycleFromSuites)
+    const all = suites ?? [];
+    const completed = all.filter(s => s.status === 'completed');
+    let completedToJudge = completed;
+    const timestampedCompleted = completed.filter(s => s.updated_at);
+    if (timestampedCompleted.length > 0) {
+      const maxTime = Math.max(...timestampedCompleted.map(s => Date.parse(s.updated_at!)));
+      completedToJudge = completed.filter(s => !s.updated_at || Date.parse(s.updated_at) === maxTime);
+    }
+    for (const s of completedToJudge) {
+      if (['success', 'skipped', 'neutral'].includes(s.conclusion ?? '')) continue;
       const at = s.updated_at ? Date.parse(s.updated_at) : NaN;
       if (!Number.isNaN(at) && (redSinceMs === null || at > redSinceMs)) redSinceMs = at;
     }
