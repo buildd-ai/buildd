@@ -27,11 +27,9 @@ import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
-import { refreshMissionBranchesForTrunkMerge } from '@/lib/mission-branch-refresh';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
-import { scheduleEarlyReleaseDispatch } from '@/lib/early-release-dispatch-trigger';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { readPrReviewStatus } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -881,24 +879,13 @@ async function handlePullRequestEvent(event: {
     // itself (gitConfig.earlyRelease.mode), so the DB read below is the only
     // cost for a workspace that has not opted in.
     if (!pr.draft && event.installation && (action === 'opened' || action === 'ready_for_review') && openWorker?.taskId) {
-      const earlyReleaseWorkspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, openWorker.workspaceId),
-        columns: { teamId: true, gitConfig: true },
+      await emit({
+        type: 'pr.review_ready',
+        installationId: event.installation.id,
+        repoFullName: repository.full_name,
+        pr: { number: pr.number, headRef: pr.head.ref, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
+        worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId },
       });
-      if (earlyReleaseWorkspace) {
-        scheduleEarlyReleaseDispatch({
-          workspaceId: openWorker.workspaceId,
-          teamId: earlyReleaseWorkspace.teamId,
-          gitConfig: earlyReleaseWorkspace.gitConfig,
-          upstreamTaskId: openWorker.taskId,
-          upstreamPrNumber: pr.number,
-          upstreamBranch: pr.head.ref,
-          repoFullName: repository.full_name,
-          installationId: event.installation.id,
-          upstreamAdditions: pr.additions ?? null,
-          upstreamDeletions: pr.deletions ?? null,
-        });
-      }
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -984,26 +971,6 @@ async function handlePullRequestEvent(event: {
     ).catch(e =>
       console.error(`[webhook] dark-check detection failed for ${repository.full_name}:`, e),
     );
-  }
-
-  // Keep every active mission's integration branch current with dev
-  // (docs/design/mission-delivery-arc.md P5, superseded): any PR merging
-  // into this workspace's trunk is the trigger. Scoped to trunk inside the
-  // helper — a merge into some other branch of the same repo is a no-op.
-  // Best-effort, after the response: the hourly sweep
-  // (sweepMissionBranchRefresh) is the backstop for a lost delivery.
-  if (pr.merged && event.installation && pr.base?.ref) {
-    const refreshRepo = repository.full_name;
-    const refreshBase = pr.base.ref;
-    const refresh = () =>
-      refreshMissionBranchesForTrunkMerge({ repoFullName: refreshRepo, baseRef: refreshBase }).catch(e =>
-        console.error(`[webhook] mission branch refresh failed for ${refreshRepo}@${refreshBase}:`, e),
-      );
-    try {
-      after(refresh);
-    } catch {
-      await refresh();
-    }
   }
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)

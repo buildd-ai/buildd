@@ -32,7 +32,6 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
 import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
-import { undraftStackedDependents } from '@/lib/early-release-stacking';
 
 export interface MergedPrTask {
   id: string;
@@ -150,16 +149,6 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // task was already completed, because checkDependsOnResolved gates on mergedAt.
   checkDependsOnResolved(task.id).catch((e) =>
     console.error(`[pr-merged] checkDependsOnResolved failed for task ${task.id}:`, e),
-  );
-
-  // Early release's stacking mechanics: a dependent released `start_stacked`
-  // against this task's branch opened its PR as a draft (create_pr, via
-  // findStackedReleaseForBase) because the upstream might still change.
-  // Now that it's merged, un-draft it — GitHub's own retarget-on-delete
-  // moves its base once the branch itself is deleted, so there's nothing
-  // else to do here.
-  undraftStackedDependents(task.id).catch((e) =>
-    console.error(`[pr-merged] undraftStackedDependents failed for task ${task.id}:`, e),
   );
 
   // Every merged PR: the missions module advances a loop waiting on this merge
