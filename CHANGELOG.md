@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `update_pr` with `draft: false` marks a draft PR ready for review
+- `record_pr_supersession` can act on PRs a task names (#3754)
+- Coordination: path overlap no longer mints `dependsOn`; Jev HOLD/START decides prefix-only overlap
+
+### Fixed
+
+- A task with other open PRs stays in progress when one of them merges (#3952)
+- Role-env-gapped tasks no longer fill the claim candidate window (#3708)
+
 ## [0.276.1] - 2026-10-05
 
 ### Added
