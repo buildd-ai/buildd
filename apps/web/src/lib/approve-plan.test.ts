@@ -710,6 +710,17 @@ describe('approvePlan — the planner\'s declared kind reaches the row', () => {
     expect(insertedValues[0].classifiedBy).toBe('organizer');
   });
 
+  it('normalizes a category value the organizer wrote as kind', async () => {
+    // Regression: the organizer filed steps with kind='feature' / 'test' (category
+    // values). Stored verbatim, they crashed the model router at claim time.
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', kind: 'feature' },
+      { ref: 'b', title: 'Cover it', kind: 'test' },
+      { ref: 'c', title: 'Write the guide', kind: 'docs' },
+    ] as any);
+    expect(insertedValues.map(v => v.kind)).toEqual(['engineering', 'engineering', 'writing']);
+  });
+
   it('leaves kind unset when the step declares none', async () => {
     await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Add columns' }] as any);
     expect(insertedValues[0].kind).toBeUndefined();

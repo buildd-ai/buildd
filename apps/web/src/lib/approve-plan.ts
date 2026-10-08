@@ -6,6 +6,7 @@ import { after } from 'next/server';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
+import { normalizeTaskKind } from '@buildd/core/model-router';
 import type { PathDeclaration, PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
@@ -363,7 +364,10 @@ export async function approvePlan(
         // the floor — the row it routes and draws stayed NULL. A classified
         // coordination step still wins: that intent is read off the platform's
         // own dedupe classifier, not guessed.
-        ...(step.kind && !intentInfo ? { kind: step.kind, classifiedBy: 'organizer' as const } : {}),
+        // Normalized: a planner that writes a category ('feature', 'test')
+        // where a kind belongs must not store it verbatim — the model router
+        // indexes its matrix by this column at claim time.
+        ...(step.kind && !intentInfo ? { kind: normalizeTaskKind(step.kind) ?? 'engineering', classifiedBy: 'organizer' as const } : {}),
         ...(intentInfo ? {
           kind: 'coordination' as const,
           subjectAnchor: {
