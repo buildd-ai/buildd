@@ -30,7 +30,9 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import {
+    ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
@@ -82,6 +84,10 @@ export default function DevFixturesPage() {
     }, []);
 
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
+
+    if (state === ACTIVITY_DELIVERY_FIXTURE_STATE) {
+        return <ActivityDeliveryFixture />;
+    }
 
     if (state === MISSION_BOARD_VISUAL_FIXTURE_STATE) {
         return (

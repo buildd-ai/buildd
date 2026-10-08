@@ -264,6 +264,18 @@ describe('projectMissionDelivery', () => {
     expect(m.executing).toBe(true);
   });
 
+  it('a live reviewer is the audit running: never Building, never Repairing, still an agent', () => {
+    const owner = task({ id: 'p3', title: 'Export email', status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_green' }] });
+    const review = task({ id: 'rv', title: '[reviewer #1] Export email', status: 'in_progress', taskClass: 'attempt', parentTaskId: 'p3', workers: [{ status: 'running' }] });
+    const m = projectMissionDelivery(mission({ tasks: [owner, review] }));
+    expect(m.tasks[0].delivery.kind).toBe('audit');
+    expect(m.executing).toBe(true);
+    const fix = task({ id: 'f3', title: '[builder · after review #1] Export email', status: 'completed', taskClass: 'attempt', parentTaskId: 'p3', workers: [{ status: 'completed' }] });
+    const after = projectMissionDelivery(mission({ tasks: [owner, fix, review] }));
+    expect(after.tasks[0].delivery.kind).toBe('audit');
+    expect(after.repairRounds).toBe(1);
+  });
+
   it('a pending task blocked by an unlanded sibling waits on it by name', () => {
     const a = task({ id: 'a', title: 'Writer', status: 'assigned', workers: [{ status: 'running' }] });
     const b = task({ id: 'b', title: 'Settings UI', dependsOn: ['a'] });
