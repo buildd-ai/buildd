@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
+import { PORTFOLIO_SORTS } from '@/lib/mission-portfolio';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
 
 const NOW = Date.UTC(2026, 9, 8, 12);
@@ -138,10 +139,15 @@ describe('MissionGrid portfolio', () => {
 
   it('has search, sort, status filters with counts, and a workspace filter', () => {
     expect(html).toContain('data-testid="portfolio-search"');
-    const sort = html.slice(html.indexOf('data-testid="portfolio-sort"'), html.indexOf('</select>'));
-    for (const label of ['>Attention<', '>Recent<', '>Closest<', '>Priority<']) expect(sort).toContain(label);
-    // Full meaning survives as the option's title.
-    for (const title of ['Needs attention', 'Recently advanced', 'Closest to landing']) expect(sort).toContain(`title="${title}`);
+    // The brand Select: the trigger shows the short label; the list opens on demand.
+    const sort = html.match(/<button[^>]*data-testid="portfolio-sort"[^>]*>[\s\S]*?<\/button>/)![0];
+    expect(sort).toContain('role="combobox"');
+    expect(sort).toContain('aria-label="Sort"');
+    expect(sort).toContain('data-value="attention"');
+    expect(sort).toContain('>Attention<');
+    expect(PORTFOLIO_SORTS.map(s => s.label)).toEqual(['Attention', 'Recent', 'Closest', 'Priority']);
+    // Full meaning survives as each option's description line.
+    for (const title of ['Needs attention', 'Recently advanced', 'Closest to landing']) expect(PORTFOLIO_SORTS.map(s => s.title)).toContain(title);
     const filter = (k: string) => html.match(new RegExp(`data-filter="${k}"[^>]*>[^<]*<span[^>]*>(\\d+)</span>`))?.[1];
     expect(filter('all')).toBe('11');
     expect(filter('executing')).toBe('1');
@@ -151,8 +157,10 @@ describe('MissionGrid portfolio', () => {
   });
 
   it('phone-width tools: sort select is not width-capped, chip row has a scroll fade', () => {
-    const select = html.match(/<select[^>]*data-testid="portfolio-sort"[^>]*>/)![0];
-    expect(select).not.toContain('max-w-');
+    expect(html).not.toMatch(/<(select|datalist)\b/);
+    // The wrapper div right before the sort trigger carries no width cap.
+    const before = html.slice(0, html.indexOf('data-testid="portfolio-sort"'));
+    expect(before.slice(before.lastIndexOf('<div'))).not.toContain('max-w-');
     expect(html).toContain('data-testid="portfolio-filters-fade"');
     const fade = html.match(/<div[^>]*data-testid="portfolio-filters-fade"[^>]*>/)![0];
     expect(fade).toContain('pointer-events-none');
