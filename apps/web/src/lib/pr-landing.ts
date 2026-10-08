@@ -73,6 +73,7 @@ import {
 } from '@/lib/escalation-revalidation';
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
+import { resolveMergeMethod } from '@/lib/integration-refresh';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -938,8 +939,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : (input.mergeMethod ?? 'squash');
+  const mergeMethod = resolveMergeMethod(mergingTask?.context, input.mergeMethod);
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.

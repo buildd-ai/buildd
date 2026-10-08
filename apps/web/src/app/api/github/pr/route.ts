@@ -6,6 +6,7 @@ import { isIntegrationPermissionError, missingPermissions as missingRepoPermissi
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { integrationRefreshOf, resolveMergeMethod } from '@/lib/integration-refresh';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
@@ -1655,6 +1656,27 @@ function mergePrKernelResponse(k: KernelLanding, pr: { prNumber: number; prUrl: 
   }, { status });
 }
 
+/**
+ * The context of the task that owns PR `prNumber` in this workspace — for a
+ * door whose caller may not be that task (merge_pr from another run, or with
+ * no workerId). Null when no task owns it or the read fails.
+ */
+async function prOwnerTaskContext(workspaceId: string, prNumber: number): Promise<unknown> {
+  try {
+    const owners = await db.query.workers.findMany({
+      where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber), isNotNull(workers.taskId)),
+      columns: { taskId: true },
+    });
+    for (const owner of owners) {
+      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, owner.taskId!), columns: { context: true } });
+      if (integrationRefreshOf(task?.context)) return task!.context;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -1715,6 +1737,12 @@ export async function PUT(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
+    // An integration-refresh PR lands as a merge commit whatever the caller
+    // asked for (integration-refresh.ts); any other PR keeps the request.
+    const effectiveMergeMethod = resolveMergeMethod(
+      integrationRefreshOf(worker.task?.context) ? worker.task.context : await prOwnerTaskContext(worker.workspaceId, prNumber),
+      mergeMethod as 'merge' | 'squash' | 'rebase',
+    );
 
     // Every merge-policy decision on this handler goes through here, so a new
     // refusal arm cannot be added without a ledger row. `mergePolicyTier` is
@@ -1904,7 +1932,7 @@ export async function PUT(req: NextRequest) {
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
           releaseConfig: workspace.releaseConfig ?? null,
           gitConfig: workspace.gitConfig ?? null,
-          mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+          mergeMethod: effectiveMergeMethod,
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         });
         if (landingMode === 'enforce') {
@@ -2159,7 +2187,7 @@ export async function PUT(req: NextRequest) {
         ? await landThroughKernel({
             workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha,
             door: force ? 'merge_pr_force' : 'merge_pr', actor: `agent:${worker.id ?? 'unknown'}`,
-            mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+            mergeMethod: effectiveMergeMethod,
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           })
         : null;
@@ -2167,7 +2195,7 @@ export async function PUT(req: NextRequest) {
         repo.installation.installationId,
         repo.fullName,
         prNumber,
-        mergeMethod as 'merge' | 'squash' | 'rebase',
+        effectiveMergeMethod,
         headSha,
       ) };
     });
