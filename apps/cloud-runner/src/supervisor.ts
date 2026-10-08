@@ -63,6 +63,7 @@ import {
   isEgressEvent,
   parseMetricLine,
   parsePhaseLine,
+  parseWorktreeModeLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
   parseCacheSkippedLine,
@@ -142,6 +143,8 @@ export interface SupervisorDeps {
   waitUntil(promise: Promise<unknown>): void;
   /** Egress credential injection (WorkerAgent.installEgressHandlers). A failure fails the run before start. */
   installEgress(): Promise<void>;
+  /** Revokes browser access on every outcome, including a warm lease. */
+  closeBrowser?(): Promise<import('./run-report').BrowserRunUsage | undefined>;
   /**
    * Mint this run's per-task token (WorkerAgent.mintTaskToken). The container
    * gets only this token; the runner key in `config` stays with the agent.
@@ -692,6 +695,7 @@ export class TaskSupervisor {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     // A lease keeps the container of a run that ended done or failed for the
     // next task of its workspace (container-lease.ts); everything else stops.
+    const browser = await this.d.closeBrowser?.();
     const keepWarm = !!this.d.config.lease && keepsContainerWarm(r.outcome) && this.d.container.running;
     if (!keepWarm) await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
@@ -705,6 +709,7 @@ export class TaskSupervisor {
       : restartedBeforeClaim ? this.scheduleDeferredRetry('agent_restart') : null;
     const state = this.d.getState();
     const report = assembleRunReport({
+      browser,
       taskId: this.d.taskId,
       attempt: state.attempt,
       workerId: state.workerId,
@@ -892,6 +897,8 @@ export class TaskSupervisor {
         this.patch({ claimDeferredReason });
         return;
       }
+      const worktreeMode = parseWorktreeModeLine(line);
+      if (worktreeMode) { this.patchTimings({ worktreeMode }); return; }
       const phase = parsePhaseLine(line);
       if (phase) {
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);

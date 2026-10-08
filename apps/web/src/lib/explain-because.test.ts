@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, deliveryTransitionLink, dispatchWakeLink, withDispatchLink, entitlementHoldLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -400,5 +400,23 @@ describe('deliveryTransitionLink (§17.5: because[] from the newest kernel trans
     ], deliveryTransitionLink(d, {}));
     expect(chain.map(c => c.derivedFrom)).toEqual(['tasks.dependsOn', 'DeliveryView.lastTransition', 'tasks.dependsOn']);
     expect(chain.map(c => c.order)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('entitlementHoldLink (explain for a task held by a plan limit)', () => {
+  const subject = { taskId: 'task-1', workspaceId: 'ws-1' };
+
+  it('a hosted runner hold reads "hosted runner allowance used" with the numbers and the way out', () => {
+    const l = entitlementHoldLink({ entitlementBlock: { kind: 'hosted_runner', used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' } }, subject)!;
+    expect(l.claim).toContain('Hosted runner allowance used: 50 of 50');
+    expect(l.claim).toContain('2026-11-01T00:00:00.000Z');
+    expect(l.claim).toContain('runner of your own');
+    expect(l.derivedFrom).toBe('tasks.context.entitlementBlock');
+    expect(l.refs).toEqual({ taskId: 'task-1', workspaceId: 'ws-1' });
+  });
+
+  it('no hold, no link', () => {
+    expect(entitlementHoldLink({}, subject)).toBeNull();
+    expect(entitlementHoldLink(null, subject)).toBeNull();
   });
 });

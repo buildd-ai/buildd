@@ -690,6 +690,20 @@ export async function POST(
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
 
+        if (dispatchResult.conflictFalsePositive) {
+          // GitHub's conflict flag was stale: the base merged in cleanly.
+          // Nothing for an agent to do; the updated head needs its own CI.
+          return NextResponse.json(
+            {
+              error: dispatchResult.branchUpdated
+                ? `PR #${prNumber} was flagged as conflicting, but it merges cleanly with its base. The branch was updated; merge once CI passes on the new head.`
+                : `PR #${prNumber} was flagged as conflicting, but it already contains its base. Retry the merge.`,
+              conflictFalsePositive: true,
+              branchUpdated: !!dispatchResult.branchUpdated,
+            },
+            { status: 409 },
+          );
+        }
         if (dispatchResult.dispatched) {
           return NextResponse.json(
             {

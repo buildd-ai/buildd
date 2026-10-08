@@ -1,9 +1,11 @@
 /**
  * Liveness of an open conflict-fix task (workflow-state-kernel S37): is it
- * stalled, why, and what recovery it is owed. Pure and dependency-free, so
+ * stalled, why, and what recovery it is owed. Pure (no I/O), so
  * both the recovery path (conflict-retry.ts) and the read models (Home, the
  * kernel's DeliveryView) apply the same rule.
  */
+import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
+
 /** A pending conflict fix no runner claimed within this window is stalled (same bound CI retries use). */
 export const STALE_PENDING_CONFLICT_FIX_MS = 30 * 60 * 1000;
 /** A claimed conflict fix whose worker has not reported within this window is stalled. */
@@ -23,7 +25,7 @@ export interface ConflictFixLiveness {
 }
 
 const ms = (v: Date | string | null | undefined): number | null => (v == null ? null : new Date(v).getTime());
-const ENDED_WORKER = new Set(['failed', 'error', 'completed', 'superseded', 'done']);
+const ENDED_WORKER = new Set<string>(TERMINAL_WORKER_STATUSES);
 
 /**
  * Pure: is an open conflict-fix task stalled, why, and what recovery it is

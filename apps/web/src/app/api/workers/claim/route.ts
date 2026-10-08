@@ -8,6 +8,7 @@ import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
+import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -39,6 +40,7 @@ import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
 import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import { getModelCertifications } from '@buildd/core/model-certification-store';
 import {
   checkDispatchModel, guardDispatchModel, describeDispatchModelRejection, tierForModelId,
   DISPATCH_MODEL_REJECTED_PATTERN,
@@ -351,6 +353,8 @@ export async function POST(req: NextRequest) {
             reason: payload.diagnostics.reason,
             ...(deferrals ? { deferrals } : {}),
             ...(exclusion ? { exclusion } : {}),
+            browserProvider: body.environment?.browserProvider,
+            runnerGroup: body.environment?.fleet?.group,
             now: new Date(),
           });
         })
@@ -1159,6 +1163,7 @@ export async function POST(req: NextRequest) {
     ordered_behind: 0,
     managed_concurrency: 0,
     managed_runner_hours: 0,
+    hosted_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1230,6 +1235,8 @@ export async function POST(req: NextRequest) {
   // Managed runs this batch started, per team: not yet visible to the
   // entitlement's live-worker count.
   const managedClaimedByTeam = new Map<string, number>();
+  // Hosted runner allowance per team, read once per request (cloud claims only).
+  const hostedAllowanceByTeam = new Map<string, Awaited<ReturnType<typeof checkHostedRunnerAllowance>>>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1945,6 +1952,29 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Hosted runner allowance (teams.hostedRunnerHours, counted hours this
+    // month): cloud claims only, and only when the team has one. A host
+    // runner may still take the task. Same queued-not-failed treatment as the
+    // managed entitlement above; the hourly sweep wakes it once the month
+    // resets or the allowance grows. Running tasks are never touched.
+    if (cloudExecutor) {
+      const hostedTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (hostedTeamId) {
+        if (!hostedAllowanceByTeam.has(hostedTeamId)) {
+          hostedAllowanceByTeam.set(hostedTeamId, await checkHostedRunnerAllowance(hostedTeamId, { now }).catch((err) => {
+            console.error(`[claim] hosted runner allowance check failed for team ${hostedTeamId}:`, err);
+            return null;
+          }));
+        }
+        const block = hostedAllowanceByTeam.get(hostedTeamId) ?? null;
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
     // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
@@ -2005,7 +2035,11 @@ export async function POST(req: NextRequest) {
     }
     // Walls recorded against Claude in the pause log (e.g. a team running on a
     // managed Claude credential rather than this account's own session).
-    const pauses = await teamPauses(taskTeamId);
+    // An interactive session is exempt for the same reason as the account flag
+    // above: the wall was hit by a runner's seat, and the session runs the task
+    // on its own credentials. Without this, a task whose runner just died on a
+    // session limit could not be claimed (even with force) until the reset.
+    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
     if (pauses.has('claude')) claudePoolBlocked = true;
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
@@ -2209,12 +2243,16 @@ export async function POST(req: NextRequest) {
     const modelRejections: Omit<DispatchModelRejection, 'fallback'>[] = [];
     const runnerCliVersion = body.environment?.claudeCliVersion;
     const dispatchCatalog = await getCachedOpenRouterCatalog();
+    // Central certification (model-certification.ts): floors learned by the
+    // probe, so a model certified after this build shipped is served and gated
+    // like one in the static table. Empty on any failure: the static table only.
+    const certifications = await getModelCertifications();
     // A challenger or treatment the runner cannot launch is not served; the
     // incumbent is. Same fallback accounting as a CLI-floor miss, plus a record
     // of the id so a bad arm cannot go on silently losing its draws.
     const clientCanServe = (source: DispatchModelSource) => (m: string): boolean => {
-      if (!checkModelClientCapability(m, runnerCliVersion).ok) return false;
-      const verdict = checkDispatchModel(m, dispatchCatalog);
+      if (!checkModelClientCapability(m, runnerCliVersion, certifications).ok) return false;
+      const verdict = checkDispatchModel(m, dispatchCatalog, certifications);
       if (!verdict.ok) modelRejections.push({ rejected: m, reason: verdict.reason, source });
       return verdict.ok;
     };
@@ -2297,7 +2335,7 @@ export async function POST(req: NextRequest) {
     // rejected id and where it came from.
     {
       let fallbacks = tierEntryModel ? [tierEntryModel] : [];
-      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog).ok) {
+      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog, certifications).ok) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
@@ -2309,6 +2347,7 @@ export async function POST(req: NextRequest) {
         tier: guardTier,
         fallbacks,
         catalog: dispatchCatalog,
+        certifications,
       });
       if (guarded.rejection) {
         modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
@@ -2340,7 +2379,7 @@ export async function POST(req: NextRequest) {
     // version A.B.C or newer is required") is otherwise deterministic and
     // identical on every retry, burning a full worker session each time. See
     // packages/core/model-capability-requirements.ts.
-    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion);
+    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion, certifications);
     if (!capabilityCheck.ok) {
       deferTask(task, 'runner_capability', {
         model: resolvedModel,

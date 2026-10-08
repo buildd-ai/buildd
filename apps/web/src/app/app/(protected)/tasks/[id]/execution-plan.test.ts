@@ -11,6 +11,7 @@ import {
   attemptsNotInPrHistory,
   partitionChildTasks,
   selectExecutionPlan,
+  isMeaningfulPlan,
 } from './execution-plan';
 
 const work = (id: string, over: Record<string, unknown> = {}) => ({
@@ -98,5 +99,16 @@ describe('descriptionDuplicatesSummary', () => {
     expect(descriptionDuplicatesSummary(null, summary)).toBe(false);
     expect(descriptionDuplicatesSummary(summary, undefined)).toBe(false);
     expect(descriptionDuplicatesSummary('', '')).toBe(false);
+  });
+});
+
+describe('isMeaningfulPlan', () => {
+  it('one phase is never a plan: neither this task alone nor some other task alone', () => {
+    expect(isMeaningfulPlan([{ id: 'this' }])).toBe(false);
+    expect(isMeaningfulPlan([{ id: 'friction-report' }])).toBe(false);
+    expect(isMeaningfulPlan([])).toBe(false);
+  });
+  it('two or more phases are', () => {
+    expect(isMeaningfulPlan([{ id: 'parent' }, { id: 'this' }])).toBe(true);
   });
 });

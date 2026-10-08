@@ -57,6 +57,8 @@ import {
   type VerificationResult,
 } from '@buildd/core/verification-check';
 import type {
+  ScoutCaptureGrant,
+  ScoutCaptureUnavailableReason,
   ScoutHostPortsAdvert,
   ScoutHostedRun,
   ScoutProbeResultsResponse,
@@ -133,6 +135,12 @@ export interface ScoutRunnerHostStore {
   finalize(run: ScoutRun, probes: readonly ScoutProbeRecord[]): Promise<ScoutRunOutcome>;
   /** Clear the lease (back to `awaiting_host`, claimable), only for its holder. */
   release(q: { runId: string; holder: string; now: Date; reason: string }): Promise<boolean>;
+  /**
+   * Which of `ids` are evidence objects of this run (scout_run_id = runId) whose
+   * upload has not failed. A result may cite only those as `evidence:<id>`.
+   * A store without it keeps no `evidence:` ref (fail closed).
+   */
+  ownedEvidenceIds?(runId: string, ids: readonly string[]): Promise<Set<string>>;
 }
 
 // ── Callers ─────────────────────────────────────────────────────────────────
@@ -142,6 +150,12 @@ export interface ScoutHostCaller {
   teamId: string;
   /** Workspaces the key may claim in (canClaim links, open team workspaces, token workspace list). */
   accessibleWorkspaceIds: ReadonlySet<string>;
+  /**
+   * The key is flagged a trusted host runner (`accounts.hostRunner`). Only
+   * such a key is handed a run whose probes need a credential (capture): any
+   * other key's `ports.capture` is ignored, so it gets command-only runs.
+   */
+  hostRunner: boolean;
 }
 
 export const scoutLeaseHolder = (accountId: string, leaseId: string) => `${accountId}:${leaseId}`;
@@ -314,6 +328,21 @@ export interface ScoutClaimInput {
   /** The fleet kill switch (`QUALITY_SCOUT_DISABLED`). */
   disabled: boolean;
   newLeaseId(): string;
+  /**
+   * Mint the run-scoped capture credential for a claimed run with a surface
+   * probe (lib/quality-scout-capture-grant.ts). Called only after the lease
+   * is won, only for a trusted host-runner key. Absent: no grant, ever.
+   */
+  mintCaptureGrant?(q: { run: ScoutRun; repo: string; leaseExpiresAt: Date }): Promise<ScoutCaptureMint>;
+}
+
+export type ScoutCaptureMint =
+  | { ok: true; grant: ScoutCaptureGrant }
+  | { ok: false; reason: ScoutCaptureUnavailableReason };
+
+/** Claimed probes that need a capture port. */
+export function captureProbesOf(probes: readonly ScoutProbeRecord[], profile: ScoutCapabilityProfile): ScoutProbeRecord[] {
+  return probes.filter((p) => scoutHostNeed(p.executor, profile) === 'capture');
 }
 
 /**
@@ -337,6 +366,8 @@ export async function claimScoutRunForRunner(input: ScoutClaimInput, store: Scou
 
   const repoSet = new Set(input.repos.slice(0, MAX_SCOUT_HOST_REPOS).map((r) => r.toLowerCase()));
   const needs = scoutAdvertNeeds(input.ports);
+  // A capture probe comes with a GitHub token: only a trusted host-runner key is handed one.
+  if (!input.caller.hostRunner) needs.delete('capture');
   if (needs.size === 0) return { run: null, reason: 'none', ...tail };
 
   const candidates = await store.listClaimable({ teamId: input.caller.teamId, workspaceIds, now: input.now, limit: SCOUT_CLAIM_CANDIDATES });
@@ -355,6 +386,9 @@ export async function claimScoutRunForRunner(input: ScoutClaimInput, store: Scou
       leaseExpiresAt,
     });
     if (!claimed) continue;
+    const capture = captureProbesOf(c.probes, parking.profile).length > 0
+      ? await captureGrantFor(input, claimed, c.repo, leaseExpiresAt)
+      : {};
     return {
       run: hostedRunOf(claimed),
       probes: c.probes.map((p) => ({ ...p })) as unknown as Extract<ScoutRunClaimResponse, { run: ScoutHostedRun }>['probes'],
@@ -366,10 +400,39 @@ export async function claimScoutRunForRunner(input: ScoutClaimInput, store: Scou
         hostDeadline: parking.hostDeadline,
       },
       repo: c.repo,
+      ...capture,
       ...tail,
     };
   }
   return { run: null, reason: 'none', ...tail };
+}
+
+/**
+ * The capture credential for a claimed run, or why there is none. Its
+ * expiry is clipped to the lease: past the lease the run is not this
+ * runner's, and neither is the token. A mint that throws is `mint_failed`;
+ * the run stays claimed and its surface probe runs with no capture port
+ * (`unsupported`), never a weaker check.
+ */
+async function captureGrantFor(
+  input: ScoutClaimInput,
+  run: ScoutRun,
+  repo: string,
+  leaseExpiresAt: Date,
+): Promise<{ capture: ScoutCaptureGrant } | { captureUnavailable: ScoutCaptureUnavailableReason }> {
+  if (!input.caller.hostRunner || !input.mintCaptureGrant) return { captureUnavailable: 'mint_failed' };
+  let minted: ScoutCaptureMint;
+  try {
+    minted = await input.mintCaptureGrant({ run, repo, leaseExpiresAt });
+  } catch (err) {
+    console.warn('[quality-scout] capture grant mint failed:', err instanceof Error ? err.message.slice(0, 160) : 'unknown error');
+    return { captureUnavailable: 'mint_failed' };
+  }
+  if (!minted.ok) return { captureUnavailable: minted.reason };
+  if (minted.grant.repository.toLowerCase() !== repo.toLowerCase()) return { captureUnavailable: 'mint_failed' };
+  const expiresAt = Math.min(Date.parse(minted.grant.expiresAt), leaseExpiresAt.getTime());
+  if (!(expiresAt > input.now.getTime())) return { captureUnavailable: 'mint_failed' };
+  return { capture: { ...minted.grant, expiresAt: new Date(expiresAt).toISOString() } };
 }
 
 // ── Held-lease checks ───────────────────────────────────────────────────────
@@ -438,6 +501,8 @@ export async function reportScoutProbeResults(input: ScoutResultsInput, store: S
     accepted.push({ candidateId: id, result: norm.result, reproducibility: rep });
   }
 
+  await keepOwnedEvidenceRefs(run.id, accepted, store);
+
   const written: string[] = [];
   for (const a of accepted) {
     const ok = await store.recordResult({ runId: run.id, holder, now: input.now, ...a });
@@ -463,6 +528,53 @@ export async function reportScoutProbeResults(input: ScoutResultsInput, store: S
     status: 200,
     body: { accepted: written, remaining: 0, finalized: true, runStatus: outcome.status === 'completed' ? 'completed' : 'failed' },
   };
+}
+
+// ── Run evidence ────────────────────────────────────────────────────────────
+
+/** `evidence:<uuid>`: a run evidence object (POST /api/quality-scout/runs/[id]/evidence). */
+export const SCOUT_EVIDENCE_REF_RE = /^evidence:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/**
+ * Drop every `evidence:` ref that does not name an object this run uploaded:
+ * a runner cannot point a finding at another run's (or team's) object.
+ */
+async function keepOwnedEvidenceRefs(
+  runId: string,
+  accepted: Array<{ result: VerificationResult }>,
+  store: ScoutRunnerHostStore,
+): Promise<void> {
+  const wanted = new Set<string>();
+  for (const a of accepted) {
+    for (const r of a.result.evidenceRefs) {
+      const m = r.ref.match(SCOUT_EVIDENCE_REF_RE);
+      if (m) wanted.add(m[1].toLowerCase());
+    }
+  }
+  const owned = wanted.size > 0 && store.ownedEvidenceIds ? await store.ownedEvidenceIds(runId, [...wanted]) : new Set<string>();
+  for (const a of accepted) {
+    a.result.evidenceRefs = a.result.evidenceRefs.filter((r) => {
+      if (!r.ref.startsWith('evidence:')) return true;
+      const m = r.ref.match(SCOUT_EVIDENCE_REF_RE);
+      return !!m && owned.has(m[1].toLowerCase());
+    });
+  }
+}
+
+/**
+ * The held-lease check the probes and release routes use, for the run's
+ * evidence upload and confirm routes: another team's run is 404, a lease this
+ * key and lease id do not hold (or that expired) is 409.
+ */
+export async function checkScoutRunLease(
+  caller: ScoutHostCaller,
+  runId: string,
+  leaseId: unknown,
+  now: Date,
+  store: ScoutRunnerHostStore,
+): Promise<{ ok: true; run: ScoutRun } | { ok: false; status: number; body: { error: string; code: string } }> {
+  const loaded = await loadHeld(caller, runId, leaseId, now, store);
+  return loaded.ok ? { ok: true, run: loaded.held.run } : loaded;
 }
 
 // ── Release ─────────────────────────────────────────────────────────────────

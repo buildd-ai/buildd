@@ -2,7 +2,8 @@
  * Default roles seeded into new workspaces.
  *
  * Roles: Organizer (Sonnet), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
- * Analyst (Sonnet), Reviewer (Sonnet), Visual Auditor (Sonnet), Spec Validator (Sonnet).
+ * Analyst (Sonnet), Reviewer (Sonnet), Visual Auditor (Sonnet), Spec Validator (Sonnet),
+ * Platform Operator (Sonnet; holds deploy capabilities only where a workspace enables it).
  * Each role's `model` is the claim-time router's role floor. The kind×complexity
  * matrix only moves off that floor for tasks whose row actually carries `kind` /
  * `complexity` — schedule-generated tasks (classifyScheduleCadence) and tasks
@@ -17,8 +18,9 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
-import { registerTextPrompt, resolvePromptEntry } from '@buildd/core/prompts';
+import { BUILDD_ACTION_TOOL_NAMES, LEGACY_BUILDD_ACTION_TOOL, VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
+import { registerTextPrompt, resolvePromptEntry, resolvedPromptVersion } from '@buildd/core/prompts';
+import { OPERATOR_ROLE_SLUG } from './permission-registry';
 import type { RoleOverride } from './policy-overrides';
 import { loadPolicyOverrides } from './policy-overrides-source';
 
@@ -27,6 +29,15 @@ const BUILDD_MCP = {
   url: 'https://buildd.dev/api/mcp',
   headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
 };
+
+/**
+ * A role that may call any buildd action lists every action tool: each group
+ * tool (`mcp__buildd__buildd_<group>`, the standard surface) and the legacy
+ * `mcp__buildd__buildd`, which only a runner predating group tools is still
+ * served. Subagent `tools` take exact names, so no wildcard. Drop the legacy
+ * name with the legacy surface (apps/web/src/app/api/mcp/tools.ts).
+ */
+const BUILDD_ACTION_TOOLS: readonly string[] = BUILDD_ACTION_TOOL_NAMES;
 
 /**
  * Choice criteria for role inference (knowledge-base: buildd/design/role-routing.md §2). This
@@ -84,6 +95,8 @@ interface DefaultRole extends DefaultRoleDefinition {
   shippedContentHashes: string[];
   /** True when `content` is an active prompts row's body (`rolePromptId`). */
   fromPrompt: boolean;
+  /** The active prompts row's version when `fromPrompt`; else null. */
+  promptRowVersion: number | null;
 }
 
 const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
@@ -458,9 +471,9 @@ If a near-duplicate exists, update it instead of creating a new entry.
     color: '#A855F7',
     model: 'sonnet',
     isRole: true,
-    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', 'mcp__buildd__recall', 'mcp__buildd__learn'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd_analytics', 'mcp__buildd__buildd_work', LEGACY_BUILDD_ACTION_TOOL, 'mcp__buildd__recall', 'mcp__buildd__learn'],
     canDelegateTo: ['researcher', 'writer'],
-    mcpServers: { buildd: { ...BUILDD_MCP, url: 'https://buildd.dev/api/mcp?tools=groups' } },
+    mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
     routing: {
       whenToUse: 'Pulls data, metrics or usage numbers by query or API and reports what they show, with the query, sample size and time range.',
@@ -534,7 +547,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     model: 'sonnet',
     isRole: true as const,
     allowedTools: [
-      'mcp__buildd__buildd',     // read task/artifact context — read-only
+      ...BUILDD_ACTION_TOOLS,     // read task/artifact context — read-only
     ],
     canDelegateTo: [] as string[],
     mcpServers: { buildd: BUILDD_MCP },
@@ -797,7 +810,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow or run shoot.sh, not to edit. No Write/Edit. AskUserQuestion is
     // the boot-failure parking path. Like every role's allowedTools this is
     // enforced only on the useSkillAgents subagent path.
-    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', 'mcp__buildd__buildd'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'AskUserQuestion', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
@@ -877,7 +890,7 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // for a normal main-agent role it is descriptive, which is why the omission was
     // not what blocked spec_compare. The actual blocker was action-level gating —
     // spec_compare sat in adminActions and is now in workerActions.
-    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'mcp__buildd__buildd'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', ...BUILDD_ACTION_TOOLS],
     canDelegateTo: [],
     mcpServers: { buildd: BUILDD_MCP },
     requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
@@ -885,6 +898,47 @@ If a near-duplicate exists, update it instead of creating a new entry.
       whenToUse: 'Checks shipped code against an existing spec or design doc and reports drift claim by claim: matches, documented but not built, built but not documented, contradicted. Report only.',
       notFor: 'Open questions with no spec to check against (researcher); fixing the drift it finds (builder)',
     },
+  },
+  {
+    // Platform Operator (permission-registry.ts, "Agent capabilities"). The
+    // persona is deliberately plain: it is the public fallback for
+    // `buildd.role.operator`, which a deployment replaces through the prompts
+    // table. Authority does not come from this text: a workspace must enable
+    // the role and name its targets (operator-capability.ts), and the server
+    // checks every deploy against that grant. Provider details live in the
+    // deploy adapters, not here.
+    slug: OPERATOR_ROLE_SLUG,
+    name: 'Platform Operator',
+    description: 'Runs deployments for the targets a workspace allows, using approved credentials the server holds',
+    content: `# Platform Operator
+
+You run deployment and infrastructure tasks for this workspace.
+
+## Rules
+
+- Only act on the providers, projects and environments this workspace has enabled for you. If the task names a target outside them, stop and say which target is not allowed.
+- Deploy through \`buildd action=deploy\` with provider, project, environment, credentialRef and an operation (status, put_secret, upload_worker, ensure_bucket). Name the credential by its reference; the server uses it for you. You never receive or need the credential value, so never ask for it, print it or store it. A refusal names what the workspace does not allow; report it, do not work around it.
+- Creating, rotating, deleting or revealing a credential is not part of a normal deploy. If a task needs it and you were not granted it, stop and explain what a human must do.
+- Report what you deployed: target, environment, the deployment identifier, and the outcome.
+
+## Pull Gates (REQUIRED before saving memory)
+
+Before saving any new memory:
+\`\`\`
+recall query="<proposed memory title>"
+\`\`\`
+If a near-duplicate exists, update it instead of creating a new entry.
+`,
+    color: '#65A30D',
+    model: 'sonnet',
+    isRole: true,
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', ...BUILDD_ACTION_TOOLS],
+    canDelegateTo: [],
+    mcpServers: { buildd: BUILDD_MCP },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    // Not routable: an Operator task is filed with the slug on purpose, never
+    // inferred from free text, so no task drifts into deploy authority.
+    routing: { disabled: true },
   },
 ];
 
@@ -910,6 +964,7 @@ export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
   supersededContentHashes: r.supersededContentHashes ?? [],
   shippedContentHashes: [roleContentHash(r.content)],
   fromPrompt: false,
+  promptRowVersion: null,
 }));
 
 const DEFAULT_ROLE_SLUGS = new Set(DEFAULT_ROLES.map(r => r.slug));
@@ -946,19 +1001,78 @@ export function resolveDefaultRoles(overrides: Record<string, RoleOverride> = {}
   for (const slug of Object.keys(overrides)) {
     if (!DEFAULT_ROLE_SLUGS.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
   }
-  return DEFAULT_ROLES.map(role => {
-    const o = overrides[role.slug];
-    const base: DefaultRole = !o ? role : {
-      ...role,
-      content: o.content ?? role.content,
-      description: o.description ?? role.description,
-      version: Math.max(role.version, o.version ?? 0),
-      supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
-      shippedContentHashes: [...new Set([...role.shippedContentHashes, ...(o.content ? [roleContentHash(o.content)] : [])])],
-    };
-    const prompt = resolvePromptEntry(rolePromptId(role.slug), base.content);
-    return prompt.source === 'active' ? { ...base, content: prompt.body, fromPrompt: true } : base;
-  });
+  return DEFAULT_ROLES.map(role => resolveDefaultRole(role, overrides[role.slug]));
+}
+
+/** One default role through both layers of `resolveDefaultRoles`. */
+function resolveDefaultRole(role: DefaultRole, o: RoleOverride | undefined): DefaultRole {
+  const base: DefaultRole = !o ? role : {
+    ...role,
+    content: o.content ?? role.content,
+    description: o.description ?? role.description,
+    version: Math.max(role.version, o.version ?? 0),
+    supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
+    shippedContentHashes: [...new Set([...role.shippedContentHashes, ...(o.content ? [roleContentHash(o.content)] : [])])],
+  };
+  const prompt = resolvePromptEntry(rolePromptId(role.slug), base.content);
+  return prompt.source === 'active' ? { ...base, content: prompt.body, fromPrompt: true, promptRowVersion: prompt.version } : base;
+}
+
+/** The prompts-table id of the Platform Operator persona. */
+export const OPERATOR_PROMPT_ID = rolePromptId(OPERATOR_ROLE_SLUG);
+
+/**
+ * Which persona text a role runs, without the text: safe for telemetry, the
+ * decision ledger, deploy identity and audit rows.
+ *
+ * - `source`: `active` when a prompts row supplied the body, else `default`
+ *   (the public text, or a policy-override text).
+ * - `promptVersion`: `v<role version>` for the default, `v<role version>+p<row
+ *   version>` for an active row (`resolvedPromptVersion`).
+ * - `fingerprint`: sha256 of the body in effect. For an active row this is
+ *   the row's content hash, so it matches `/api/deploy-identity`.
+ */
+export interface RolePersonaIdentity {
+  slug: string;
+  promptId: string;
+  source: 'active' | 'default';
+  promptVersion: string;
+  fingerprint: string;
+}
+
+export interface ResolvedRolePersona extends RolePersonaIdentity {
+  body: string;
+}
+
+/**
+ * The persona a default role runs in this process, through the same chain as
+ * `resolveDefaultRoles`. Null for a slug with no default role. With no prompts
+ * row it is the public text, so OSS, CI and dev work unchanged.
+ */
+export function resolveRolePersona(slug: string, overrides: Record<string, RoleOverride> = {}): ResolvedRolePersona | null {
+  const shipped = DEFAULT_ROLES.find(r => r.slug === slug);
+  if (!shipped) return null;
+  const role = resolveDefaultRole(shipped, overrides[slug]);
+  const source = role.fromPrompt ? 'active' : 'default';
+  return {
+    slug,
+    promptId: rolePromptId(slug),
+    source,
+    promptVersion: resolvedPromptVersion(`v${role.version}`, { source, version: role.promptRowVersion }),
+    fingerprint: roleContentHash(role.content),
+    body: role.content,
+  };
+}
+
+/** `resolveRolePersona` minus the body. The only shape to log or persist. */
+export function rolePersonaIdentity(persona: ResolvedRolePersona): RolePersonaIdentity {
+  const { body: _body, ...identity } = persona;
+  return identity;
+}
+
+/** The persona as this deployment resolves it, policy overrides included. */
+export async function currentRolePersona(slug: string): Promise<ResolvedRolePersona | null> {
+  return resolveRolePersona(slug, (await loadPolicyOverrides()).roles);
 }
 
 async function currentDefaultRoles(): Promise<DefaultRole[]> {

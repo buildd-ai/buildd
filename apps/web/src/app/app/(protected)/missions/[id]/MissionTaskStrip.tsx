@@ -174,7 +174,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
       </div>
       {/* Phone: ‹ [Next open] ›. Desktop: ‹ › [Next open]. */}
       <div className="mt-2 flex gap-2">
-        <button type="button" data-testid="landed-strip-prev" aria-label="Previous task" onClick={() => select(slots[stepIndex(sel, -1, n)].id)} className={`${STEP_BTN} order-1 w-11 text-[18px]`}>‹</button>
+        <button type="button" data-testid="landed-strip-prev" aria-label="Previous task" onClick={() => select(slots[stepIndex(sel, -1, n)].id)} className={`${STEP_BTN} order-1 w-11 text-heading`}>‹</button>
         <button
           type="button"
           data-testid="landed-strip-next-open"
@@ -184,7 +184,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
         >
           {nextOpenLabel}
         </button>
-        <button type="button" data-testid="landed-strip-next" aria-label="Next task" onClick={() => select(slots[stepIndex(sel, 1, n)].id)} className={`${STEP_BTN} order-3 w-11 text-[18px] ${compact ? '' : 'md:order-2'}`}>›</button>
+        <button type="button" data-testid="landed-strip-next" aria-label="Next task" onClick={() => select(slots[stepIndex(sel, 1, n)].id)} className={`${STEP_BTN} order-3 w-11 text-heading ${compact ? '' : 'md:order-2'}`}>›</button>
       </div>
       {!compact && (
         <span className="hidden font-mono text-eyebrow text-text-muted md:block">← → to move between tasks</span>
@@ -288,7 +288,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-[15px]' : 'text-[15px] md:text-[18px]'}`}>{t.title}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
@@ -371,7 +371,7 @@ const FoldDrawer = memo(function FoldDrawer({ ref, slot, index, tone, caret, lin
         style={{ left: caret }}
       />
       <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{stripTick(index)}</span>
-      <p className="font-mono text-[15px] font-semibold text-text-primary">
+      <p className="font-mono text-lede font-semibold text-text-primary">
         {`${k} ${slot.state === 'landed' ? 'landed' : 'queued'} tasks`}
       </p>
       <a

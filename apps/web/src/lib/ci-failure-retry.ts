@@ -553,6 +553,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
+    prRefs: prGate.headRef ? { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null } : null,
   });
 
   if (!retryTask) {

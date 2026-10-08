@@ -55,6 +55,12 @@ export interface CIRetryParams {
    * because of who authored the failing commit (§6.9).
    */
   attemptsUsed?: number;
+  /**
+   * The PR's actual head/base. When the head is not `worker.branch` the retry
+   * is bound to an existing PR (typically a mission integration PR), and
+   * `create_pr` rejects a fresh PR from the worker branch as duplicate lineage.
+   */
+  prRefs?: { headRef: string; baseRef: string | null } | null;
 }
 
 export interface CIRetryTask {
@@ -138,7 +144,7 @@ export function summarizePrFixAttempts(
  * which prevents infinite retry loops.
  */
 export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
-  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, ciFailedJobId, workspaceMaxCiRetries } = params;
+  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, ciFailedJobId, workspaceMaxCiRetries, prRefs } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = Math.max(0, params.attemptsUsed ?? 0);
@@ -157,7 +163,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, { reason: 'after CI', iteration: displayIteration }),
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, nextIteration >= maxIterations, ciFailedJobId ?? null, worker.prNumber ?? null),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, nextIteration >= maxIterations, ciFailedJobId ?? null, worker.prNumber ?? null, prRefs?.headRef && prRefs.headRef !== worker.branch ? { head: prRefs.headRef, base: prRefs.baseRef, workerBranch: worker.branch } : null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -207,6 +213,7 @@ function buildRetryDescription(
   isFinalAttempt?: boolean,
   ciFailedJobId?: number | null,
   prNumber?: number | null,
+  bound: { head: string; base: string | null; workerBranch: string } | null = null,
 ): string {
   // `gh run view <id> --log-failed` returns EMPTY output and exit 0 — it is not
   // a retention problem, the command simply does not produce the failed-step
@@ -230,6 +237,12 @@ gh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/${ciFailedJo
   | sed 's/^[0-9T:.-]*Z //' | awk '/unit test files? failed:/,/Full output/'
 \`\`\`${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
 `
+    : '';
+
+  // Bound PR: the head is not the worker's branch, so create_pr from the
+  // worker branch 409s as duplicate lineage. Name the real push target.
+  const boundNote = bound
+    ? `**Bound PR lineage:** PR #${prNumber} is open from \`${bound.head}\`${bound.base ? ` into \`${bound.base}\`` : ''}, not from \`${bound.workerBranch}\`. Do NOT open a new task-branch PR with \`create_pr\` — it will 409 as duplicate lineage, even if the task description below says to open one. Push your fix to \`${bound.head}\` (fast-forward; fetch first, never force), then call \`create_pr\` only to record the existing PR if asked.\n\n`
     : '';
 
   const prChecksCommand = prNumber ? `gh pr checks ${prNumber}` : 'gh pr checks';
@@ -256,7 +269,7 @@ picks this up next. Do not fail silently:
 
 **Attempt ${iteration} of ${maxIterations}.**
 
-## What failed
+${boundNote}## What failed
 
 \`\`\`
 ${failureContext}
@@ -268,7 +281,7 @@ ${logSection}## Instructions
 2. ${ciRunId ? 'Pull the failing logs with the command above and read them carefully' : 'Read the failure summary above carefully'}
 3. Fix the failing tests/build/lint issues
 4. Run the verification command locally before completing
-5. Push your fixes to the existing branch (the PR will auto-update)
+5. Push your fixes to ${bound ? `\`${bound.head}\`` : 'the existing branch'} (the PR will auto-update)
 6. Confirm the PR's own checks are green: \`${prChecksCommand}\`. A local run, or a
    type check of one file, is not enough: it does not run the checks that gate
    the merge. Wait for the checks to finish. Report SUCCESS only when every

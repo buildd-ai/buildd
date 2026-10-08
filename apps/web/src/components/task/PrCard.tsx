@@ -48,7 +48,11 @@ export interface PrOutcome {
   repoLabel?: string | null;
   summary?: string | null;
   totals: { add: number; rem: number; files: number; commits: number; attempts: number; claimToMerge: string | null };
-  attempts: Array<{ add: number; rem: number; files: number; running?: boolean }>;
+  /**
+   * `actions`: what the attempt did that the diff cannot show (an edited PR
+   * body, a re-run), from its recorded tool calls (tasks/[id]/attempt-actions.ts).
+   */
+  attempts: Array<{ add: number; rem: number; files: number; running?: boolean; actions?: string[] }>;
   lineage: PrLineageStep[];
   commits: PrCommitChecks[];
 }
@@ -478,6 +482,16 @@ export function CommitChecksList({ commits }: { commits: PrCommitChecks[] }) {
   );
 }
 
+/** "+3 −1 · 2 files", or what a no-diff attempt did instead ("Edited PR body"). */
+export function attemptDiffLabel(a: PrOutcome['attempts'][number]): string {
+  const lines = a.add + a.rem;
+  if (lines === 0 && a.files === 0) {
+    if (a.actions && a.actions.length > 0) return a.actions.join(' · ');
+    if (a.running) return 'in progress';
+  }
+  return `+${a.add} −${a.rem} · ${a.files} file${a.files === 1 ? '' : 's'}`;
+}
+
 /**
  * The diff split by attempt. Attempt identity and +/- colour are separate
  * channels: each attempt is its own group (width by its share of changed
@@ -502,7 +516,7 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
             ><div className="flex h-[18px] gap-[3px]">
                 {a.add > 0 && <span data-sign="add" className="bg-status-success" style={{ flexGrow: a.add, flexBasis: 0 }} title={`Attempt ${i + 1}: +${a.add}`} />}
                 {a.rem > 0 && <span data-sign="rem" className="bg-status-error" style={{ flexGrow: a.rem, flexBasis: 0, minWidth: 4 }} title={`Attempt ${i + 1}: −${a.rem}`} />}
-                {pending && <span data-sign="pending" className="flex-1 border-2 border-dashed border-text-muted" title={`Attempt ${i + 1}: ${a.running ? 'in progress' : 'no changes'}`} />}
+                {pending && <span data-sign="pending" className="flex-1 border-2 border-dashed border-text-muted" title={`Attempt ${i + 1}: ${attemptDiffLabel(a)}`} />}
               </div><div data-testid="pr-diff-attempt-marker" aria-hidden="true" className="mt-1 h-[6px] border-x-2 border-b-2 border-text-muted" />
               <div className="mt-1 font-mono text-[11px] font-semibold text-text-muted">{i + 1}</div>
             </div>
@@ -512,7 +526,7 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
       <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 font-mono text-[12px] text-text-muted tabular-nums">
         {attempts.map((a, i) => (
           <span key={i}>
-            <span className="font-semibold text-text-secondary">{i + 1}</span> Attempt {i + 1}{i > 0 ? ' (fix)' : ''} · {a.running && a.add + a.rem === 0 ? 'in progress' : `+${a.add} −${a.rem} · ${a.files} file${a.files === 1 ? '' : 's'}`}
+            <span className="font-semibold text-text-secondary">{i + 1}</span> Attempt {i + 1}{i > 0 ? ' (fix)' : ''} · {attemptDiffLabel(a)}
           </span>
         ))}
       </div>
@@ -581,27 +595,21 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
         {total > 0 && <DiffBar attempts={attempts} />}
       </section>
 
-      {outcome.lineage.length > 0 && (
-        <section>
+      {/* One timeline: the attempt → CI → retry chain, then each attempt's
+          checks behind a disclosure that opens on its failing check. The
+          separate "Checks by commit" section said the same thing twice. */}
+      {(outcome.lineage.length > 0 || outcome.commits.length > 0) && (
+        <section data-testid="pr-history">
           <div className="flex items-baseline justify-between border-b border-border-default pb-2 mb-5">
             <span className="section-label">PR history</span>
           </div>
-          <LineageChain steps={outcome.lineage} />
-        </section>
-      )}
-
-      {outcome.commits.length > 0 && (
-        <section>
-          <div className="flex items-baseline justify-between border-b border-border-default pb-2 mb-1">
-            <span className="section-label">Checks by commit</span>
-            <span className="hidden sm:flex items-center gap-3 font-mono text-[11px] text-text-muted">
-              <span className="inline-flex items-center gap-1.5"><span className="w-[9px] h-[9px] bg-status-success" />pass</span>
-              <span className="inline-flex items-center gap-1.5"><span className="w-[9px] h-[9px] bg-status-error" />fail</span>
-            </span>
-          </div>
-          <CommitChecksList
-            commits={outcome.commits.map(c => (c.runs || !ciChecks || c.attempt !== outcome.commits[outcome.commits.length - 1].attempt ? c : { ...c, runs: ciChecks.runs }))}
-          />
+          {outcome.lineage.length > 0 && <LineageChain steps={outcome.lineage} />}
+          {outcome.commits.length > 0 && (
+            <CommitChecksMobile
+              className={outcome.lineage.length > 0 ? 'mt-5 border-t border-border-default' : ''}
+              commits={outcome.commits.map(c => (c.runs || !ciChecks || c.attempt !== outcome.commits[outcome.commits.length - 1].attempt ? c : { ...c, runs: ciChecks.runs }))}
+            />
+          )}
         </section>
       )}
     </div>

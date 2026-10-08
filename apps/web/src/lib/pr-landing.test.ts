@@ -923,6 +923,13 @@ describe('landPr — safety rails', () => {
     expect(mockDispatchConflictRetry.mock.calls[0]![0].behindOnly).toBeFalsy();
   });
 
+  it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {
+    gh.mergeableState = 'dirty';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, branchUpdated: true, conflictFalsePositive: true }));
+    const out = await land();
+    expect(out).toMatchObject({ kind: 'updating_branch' });
+  });
+
   it('branch protection is a human decision', async () => {
     gh.mergeableState = 'blocked';
     expect(await land()).toMatchObject({ kind: 'needs_human', cause: 'branch_protection' });
@@ -949,6 +956,85 @@ describe('landPr — safety rails', () => {
     );
     expect(out.kind).toBe('merged');
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Convergence holes seen live (PR shapes, not hypotheticals) ─────────────────
+
+describe('landPr — a ready PR is never stranded waiting on a person who is not needed', () => {
+  // The sweep wires no dispatchFix: what it gets is landPr's own default.
+  const sweepDeps = (send: LandPrDeps['dispatchStaleApprovalReReview']): LandPrDeps => {
+    const { dispatchFix: _omit, ...rest } = deps();
+    return { ...rest, dispatchStaleApprovalReReview: send };
+  };
+
+  it('#3654 shape: green, mergeable, never reviewed — the workspace reviewer is requested, once', async () => {
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    const send = mock(async (_i: any): Promise<any> => ({ outcome: 'dispatched', reviewTaskId: 'review-new', plan: 'full' }));
+    const out = await land({ policy: agentReview, door: 'sweep', eventHeadSha: 'head1' }, sweepDeps(send));
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'review-new' });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ prNumber: 42, headSha: 'head1', firstReview: true, policy: agentReview });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+
+    // The next sweep sees the queued reviewer and waits — no second request.
+    verdict = 'in_flight';
+    reviewStatus = { state: 'queued', verdict: null, confidence: null, merged: false };
+    const again = await land({ policy: agentReview, door: 'sweep' }, sweepDeps(send));
+    expect(again.kind).toBe('waiting_ci');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('a never-reviewed PR with red CI is not sent to review', async () => {
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    const send = mock(async (_i: any): Promise<any> => ({ outcome: 'dispatched', reviewTaskId: 'r', plan: 'full' }));
+    const out = await land({ policy: agentReview, door: 'sweep' }, sweepDeps(send));
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('#3502 shape: escalated earlier, CI green, now DIRTY — one conflict repair keyed to the live base', async () => {
+    verdict = 'escalated';
+    reviewStatus = { state: 'escalated', verdict: 'escalate', confidence: 0.5, merged: false };
+    gh.mergeableState = 'dirty';
+    gh.baseTip = 'base-now';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'conflict-task-9' }));
+    const out = await land({ policy: agentReview, door: 'sweep' });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-9' });
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(mockDispatchConflictRetry.mock.calls[0]![0]).toMatchObject({ prNumber: 42, headSha: 'head1', baseSha: 'base-now' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('#3673 shape: approved, DIRTY and red — the conflict is repaired first, and it never merges', async () => {
+    gh.mergeableState = 'dirty';
+    gh.checkRuns = [{ name: 'Visual QA', status: 'completed', conclusion: 'failure' }];
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'conflict-task-3' }));
+    const out = await land({ policy: agentReview, door: 'sweep' });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-3' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(landingEvents().at(-1)!.detail).toMatchObject({ alsoRefused: 'ci' });
+  });
+
+  it('a dirty PR on a deny path gets its repair, and the deny path still blocks the merge', async () => {
+    gh.mergeableState = 'dirty';
+    gh.prFiles = ['secrets/key.ts'];
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['secrets/'] } };
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'c' }));
+    expect(await land({ policy })).toMatchObject({ kind: 'needs_fix', fix: 'conflict' });
+    gh.mergeableState = 'clean';
+    expect(await land({ policy })).toMatchObject({ kind: 'needs_human', cause: 'deny_path' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a repair already in flight is reported as the owner, not filed twice', async () => {
+    gh.mergeableState = 'dirty';
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false, inFlightTaskId: 'live-fix' }));
+    expect(await land()).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'live-fix' });
   });
 });
 

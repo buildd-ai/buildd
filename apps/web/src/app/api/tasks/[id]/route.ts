@@ -254,6 +254,14 @@ export async function PATCH(
     }
     // A task token can only edit its own task, not child tasks
     if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+      // GET lets a task token read any task in its own workspace, so a 404
+      // here contradicts what the caller just saw. Say it is a scope limit
+      // when the task is visible to it; stay 404 for a task it cannot see.
+      if (apiAccount.taskScope && task.workspaceId === apiAccount.taskScope.workspaceId) {
+        return NextResponse.json({
+          error: 'A task token may only edit its own task. This task is in your workspace but is not yours to change; ask a person or an organizer to cancel or edit it.',
+        }, { status: 403 });
+      }
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 

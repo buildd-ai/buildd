@@ -233,3 +233,11 @@ describe('sweepTerminalWorktrees', () => {
     expect(res).toEqual([{ id: 'gone', outcome: 'missing' }]);
   });
 });
+
+test('a cloud session in the clone is never swept', async () => {
+  const results = await sweepTerminalWorktrees({ records: [record('cloud-session', repo)],
+    inMemoryWorkers: [], now: Date.now(), retentionMs: 0, archiveDir });
+  expect(results).toEqual([]);
+  expect(existsSync(join(repo, '.git'))).toBe(true);
+  expect(git(repo, 'rev-parse --show-toplevel').trim()).toBe(repo);
+});

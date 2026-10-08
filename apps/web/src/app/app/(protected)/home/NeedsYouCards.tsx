@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArmButton } from '@/components/missions/MissionListCards';
+import type { UnifiedQuestion } from '../tasks/[id]/question-hero';
 
 export interface HomeQuestion {
   workerId: string;
@@ -17,8 +18,8 @@ export interface HomeQuestion {
   label: string;
   runnerName: string | null;
   askedAt: string | null;
-  prompt: string;
-  options: string[];
+  /** The same normalized question the task page renders (lib/home-attention.ts `homeQuestionView`). */
+  question: UnifiedQuestion;
 }
 
 /** "Per line — match Stripe" → { main: "Per line", sub: "match Stripe" }. */
@@ -39,6 +40,9 @@ export function QuestionCard({ q }: { q: HomeQuestion }) {
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const { headline, context, body } = q.question;
+  // The agent's default first, so it is the highlighted one-tap answer.
+  const options = [...q.question.options].sort((a, b) => Number(b.recommended) - Number(a.recommended));
 
   async function send(message: string) {
     if (!message.trim() || sent) return;
@@ -72,24 +76,29 @@ export function QuestionCard({ q }: { q: HomeQuestion }) {
           {[q.label, q.runnerName, ago(q.askedAt)].filter(Boolean).join(' · ')}
         </span>
       </div>
-      <p className="mb-3.5 font-mono text-[13px] leading-relaxed text-text-primary">{q.prompt}</p>
-      {q.options.length > 0 && (
-        <div className="mb-2.5 grid grid-cols-2 gap-2.5">
-          {q.options.slice(0, 4).map((opt, i) => {
-            const { main, sub } = splitOption(opt);
+      <p className="mb-1.5 font-mono text-[13px] leading-relaxed text-text-primary">{headline}</p>
+      {(context ?? body) && (
+        <p data-testid="needs-you-context" className="mb-3.5 line-clamp-3 font-mono text-[12px] leading-relaxed text-text-secondary [overflow-wrap:anywhere]">{context ?? body}</p>
+      )}
+      {options.length > 0 && (
+        <div className="mb-2.5 mt-2 grid grid-cols-2 gap-2.5">
+          {options.slice(0, 4).map((opt, i) => {
+            const split = splitOption(opt.label);
+            const main = opt.description ? opt.label : split.main;
+            const sub = opt.description ?? split.sub;
             return (
               <button
-                key={opt}
+                key={opt.label}
                 type="button"
                 data-testid="needs-you-answer"
                 disabled={!!sent || pending}
-                onClick={() => send(opt)}
+                onClick={() => send(opt.label)}
                 className={`flex min-h-12 flex-col items-center justify-center border-2 px-2 py-1.5 font-mono disabled:opacity-60 ${
                   i === 0 ? 'border-primary bg-primary text-white shadow-sm' : 'border-border-strong bg-surface-3 text-text-primary'
                 }`}
               >
-                <span className="text-[13px] font-semibold">{sent === opt ? 'Sent…' : main}</span>
-                {sub && <span className={`text-[11px] ${i === 0 ? 'text-white/85' : 'text-text-muted'}`}>{sub}</span>}
+                <span className="text-[13px] font-semibold">{sent === opt.label ? 'Sent…' : main}</span>
+                {sub && <span className={`line-clamp-2 text-[11px] ${i === 0 ? 'text-white/85' : 'text-text-muted'}`}>{sub}</span>}
               </button>
             );
           })}

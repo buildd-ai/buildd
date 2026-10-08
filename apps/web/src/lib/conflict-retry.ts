@@ -9,10 +9,16 @@
  *   - Do NOT create a separate integration task.
  *   - Flip the originating task back to needs-work on the same branch.
  *   - One retry task per (workspaceId, prNumber, headSha) — deduped.
+ *   - One live fix attempt per PR (conflict, CI or review fix): they all push
+ *     to the same branch.
  *
  * Guard:
  *   - Honors maxConflictIterations (default 3). On exhaustion, does NOT dispatch
- *     and returns { exhausted: true } — callers must escalate to human.
+ *     and returns { exhausted: true } — callers must escalate to human. The
+ *     budget bounds attempts at ONE conflict: when the caller names the base
+ *     tip, a conflict basis (head + base) no attempt has seen yet gets one
+ *     more attempt past the cap. The base moving is what makes a new
+ *     conflict, so this stays bounded by real merges, never by retries.
  *   - Controlled by workspace gitConfig.autoResolveMergeConflicts (default ON).
  */
 
@@ -26,7 +32,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
-import { refreshBehindPr } from '@/lib/base-refresh';
+import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import type { SemanticAssessment } from '@/lib/semantic-refresh';
 import type { BranchUpdateFailure } from '@/lib/pr-branch-update';
 import { formatAttemptTitle } from '@/lib/task-title';
@@ -175,12 +181,26 @@ export interface ConflictRetryInput {
    */
   migrationCollision?: MigrationCollision;
   /**
+   * The open PR's actual head/base refs. When `headRef` differs from the
+   * worker's own branch (e.g. the PR is a mission integration PR the retry is
+   * bound to), `create_pr` will 409 on a fresh PR from the worker branch, so
+   * the migration-collision brief says up front to push to `headRef` instead.
+   */
+  prRefs?: { headRef: string; baseRef: string | null } | null;
+  /**
    * When set, the base merges in cleanly but both sides verifiably edit the
    * same symbol (conflict-aware-orchestration.md §4): the task is a semantic
    * conflict review — merge the base, then reconcile the named symbols on the
    * merits — reusing the same dedup/cap/dispatch machinery.
    */
   semanticConflict?: SemanticAssessment;
+  /** The conflict basis (`conflictBasisKey`) this attempt repairs, stamped on its context. */
+  conflictBasis?: string | null;
+}
+
+/** The conflict an attempt repairs: the PR head and the base tip it conflicts with. */
+export function conflictBasisKey(headSha: string, baseSha: string): string {
+  return `${headSha}:${baseSha}`;
 }
 
 export interface ConflictRetryTask {
@@ -203,7 +223,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict, prRefs, conflictBasis } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -233,7 +253,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       iteration: nextIteration,
     }),
     description: migrationCollision
-      ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision)
+      ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prRefs ?? null)
       : semanticConflict
         ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
         : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
@@ -281,6 +301,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
         : {}),
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
+      ...(conflictBasis ? { conflictBasis } : {}),
       prNumber: worker.prNumber,
       ...lineageStamp(originalTask, [worker.prNumber]),
       // Cross-repo override: when the PR is in a different repo than the task's workspace,
@@ -373,11 +394,22 @@ function buildMigrationCollisionDescription(
   iteration: number,
   maxIterations: number,
   collision: MigrationCollision,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
+  // The PR's head is not this worker's branch: the retry is bound to an
+  // existing PR (typically a mission integration PR). create_pr rejects a new
+  // PR from the worker branch as duplicate lineage, so name the real target.
+  const boundHead = prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
+  const lineageNote = boundHead
+    ? `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. Fix the migration on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`
+    : '';
+  const pushStep = boundHead
+    ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force), then request re-review so the collision flag clears.`
+    : `Push to the existing branch, then request re-review so the collision flag clears.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
   const otherPrUrl = `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.
+  return `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.${lineageNote}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -396,7 +428,7 @@ function buildMigrationCollisionDescription(
    \`\`\`
 5. Confirm \`bun db:generate\` reports no pending schema changes (the regenerated SQL matches your original intent — read it), and that \`_journal.json\` entries are sequential with strictly increasing \`when\` timestamps. Delete any spurious extra migration \`db:generate\` mints.
 6. Change nothing else — this is a migration-file-only fix, same doctrine as any conflict-retry.
-7. Push to the existing branch, then request re-review so the collision flag clears.
+7. ${pushStep}
 
 PR: ${prUrl}
 Colliding PR: ${otherPrUrl}
@@ -468,6 +500,12 @@ export interface DispatchConflictRetryParams {
    * top of the attempts already spent.
    */
   humanInitiated?: boolean;
+  /**
+   * The base branch tip the conflict is against, when the caller read it. Keys
+   * the attempt to its conflict basis (head + base) so a spent budget from an
+   * earlier conflict does not strand this one. Omitted, the cap is absolute.
+   */
+  baseSha?: string | null;
 }
 
 export interface DispatchConflictRetryResult {
@@ -522,6 +560,12 @@ export interface DispatchConflictRetryResult {
    * not run. `state` is the delivery's state after the kernel acted.
    */
   kernel?: { result: string; reason: string | null; state: string | null; attempt: ConflictSeen['attempt'] };
+  /**
+   * The PR was flagged as conflicting, but a merge against the current base
+   * tip was clean: the flag was stale. No agent was filed; `branchUpdated` or
+   * `alreadyUpToDate` says what was done instead.
+   */
+  conflictFalsePositive?: boolean;
 }
 
 /**
@@ -694,28 +738,39 @@ export async function dispatchConflictRetry(
     return { dispatched: false, disabled: true };
   }
 
-  // One live conflict retry per PR, whatever the head. The unique index keys on
+  // One live fix attempt per PR, whatever the head. The unique index keys on
   // (PR, head SHA), but the retry itself pushes to the PR — a new head, so a
   // new key — and a merge attempt against that head used to file a second
-  // retry onto the branch the first was still working. Checked before the
-  // behind-only update too: moving the branch under a working agent races its
-  // push.
+  // retry onto the branch the first was still working. A live CI or review
+  // fix pushes to the same branch, so it counts too (its agent merges the base
+  // as part of its own push). Checked before the behind-only update too:
+  // moving the branch under a working agent races its push.
   const liveRetry = await db.query.tasks.findFirst({
     where: and(
       eq(tasks.workspaceId, workspaceId),
-      eq(tasks.conflictRetryPrNumber, prNumber),
+      or(
+        eq(tasks.conflictRetryPrNumber, prNumber),
+        eq(tasks.ciRetryPrNumber, prNumber),
+        eq(tasks.reviewerRetryPrNumber, prNumber),
+      ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true, status: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
+    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
   });
   if (liveRetry) {
     // S37: an existing remediation is the canonical one. A stalled one is
     // re-dispatched or repaired, never shadowed by a second fix task.
     const recovery = await recoverStalledConflictFix(liveRetry);
     console.log(
-      `[conflict-retry] PR #${prNumber} already has live conflict retry ${liveRetry.id} — not filing another` +
+      `[conflict-retry] PR #${prNumber} already has live fix attempt ${liveRetry.id} — not filing another` +
         (recovery.action !== 'none' ? ` (stalled: ${recovery.action})` : ''),
     );
+    // A conflict repair that is still waiting to start is woken, not doubled:
+    // a lost wake must not leave the one repair sitting in the queue. (A
+    // stalled one was already woken by its recovery above.)
+    if (recovery.action === 'none' && liveRetry.status === 'pending' && liveRetry.conflictRetryPrNumber === prNumber) {
+      await wakeTask(liveRetry.id, 'conflict.retry');
+    }
     return {
       dispatched: false,
       inFlightTaskId: liveRetry.id,
@@ -762,19 +817,61 @@ export async function dispatchConflictRetry(
   // in) a verified same-symbol edit, falls through to an agent; operational
   // failures, a moved head and unknown symbol coverage never do.
   const behindInstallationId = workspace.githubInstallation?.installationId ?? null;
+  const refreshParams = behindInstallationId
+    ? {
+        installationId: behindInstallationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        workspaceId,
+        taskId,
+        workerId,
+        missionId: task.missionId ?? null,
+        gitConfig: workspace.gitConfig as WorkspaceGitConfig | null,
+      }
+    : null;
   let semanticConflict: SemanticAssessment | undefined;
-  if (params.behindOnly && behindInstallationId) {
-    const refresh = await refreshBehindPr({
-      installationId: behindInstallationId,
-      repoFullName,
-      prNumber,
-      headSha,
-      workspaceId,
-      taskId,
-      workerId,
-      missionId: task.missionId ?? null,
-      gitConfig: workspace.gitConfig as WorkspaceGitConfig | null,
+
+  // Claimed conflict: `mergeable: dirty` is a hint, never the verdict. GitHub
+  // computes it lazily, so right after the base moves it is often stale, and
+  // most PRs it flags merge cleanly. Before an agent is filed, the same
+  // update-branch merge is attempted against the CURRENT base tip — GitHub's
+  // own server-side merge is the merge-tree check. Clean: the branch is
+  // updated mechanically and no agent runs. Only a definitive clean answer
+  // skips the agent; a real conflict, a moved head, an operational failure or
+  // any error falls through to today's dispatch, never a silent drop. A
+  // migration-number collision is invisible to git, so it is not re-checked.
+  if (refreshParams && !params.behindOnly && !migrationCollision) {
+    const recheck: RefreshOutcome | null = await refreshBehindPr(refreshParams).catch((err) => {
+      console.warn(`[conflict-retry] conflict recheck failed for PR #${prNumber} — dispatching as before:`, err);
+      return null;
     });
+    if (recheck?.kind === 'updated' || recheck?.kind === 'up_to_date') {
+      console.log(`[conflict-retry] PR #${prNumber} flagged as conflicting but merges cleanly with its base (${recheck.kind}) — no agent dispatched`);
+      fireGateEvent({
+        gate: GATE_SLUGS.BASE_REFRESH,
+        surface: 'conflict-retry',
+        outcome: 'warned',
+        reason: 'conflict_false_positive',
+        workspaceId,
+        missionId: task.missionId ?? null,
+        taskId,
+        workerId,
+        callerOrigin: 'system',
+        detail: { prNumber, headSha, repoFullName, recheck: recheck.kind, stage: 'conflict_recheck' },
+      });
+      return recheck.kind === 'updated'
+        ? { dispatched: true, branchUpdated: true, conflictFalsePositive: true }
+        : { dispatched: false, alreadyUpToDate: true, conflictFalsePositive: true };
+    }
+    if (recheck?.kind === 'semantic_conflict') semanticConflict = recheck.assessment;
+    else if (recheck?.kind !== 'conflict') {
+      console.warn(`[conflict-retry] conflict recheck for PR #${prNumber} was inconclusive (${recheck?.kind ?? 'no answer'}) — dispatching as before`);
+    }
+  }
+
+  if (params.behindOnly && refreshParams) {
+    const refresh = await refreshBehindPr(refreshParams);
     switch (refresh.kind) {
       case 'updated':
         console.log(`[conflict-retry] PR #${prNumber} was behind its base — updated via GitHub, no agent dispatched`);
@@ -897,7 +994,15 @@ export async function dispatchConflictRetry(
     });
   }
 
-  const retryTask = buildConflictRetryTask({
+  let prRefs: ConflictRetryInput['prRefs'] = null;
+  if (migrationCollision && installationId) {
+    prRefs = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`)
+      .then(pr => (pr?.head?.ref ? { headRef: String(pr.head.ref), baseRef: pr.base?.ref ? String(pr.base.ref) : null } : null))
+      .catch(() => null);
+  }
+
+  const basis = params.baseSha ? conflictBasisKey(headSha, params.baseSha) : null;
+  const buildRetry = (maxConflictIterations?: number) => buildConflictRetryTask({
     originalTask: {
       id: task.id,
       title: task.title,
@@ -912,16 +1017,35 @@ export async function dispatchConflictRetry(
     repoFullName,
     prRepoUrl,
     migrationCollision,
+    prRefs,
     semanticConflict,
-    ...(params.humanInitiated
-      ? {
-          maxConflictIterations:
-            (typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
-              ? ((task.context as Record<string, unknown>).conflictIteration as number)
-              : 0) + policyValue('maxConflictIterations'),
-        }
-      : {}),
+    conflictBasis: basis,
+    ...(maxConflictIterations !== undefined ? { maxConflictIterations } : {}),
   });
+  const spentIterations =
+    typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
+      ? ((task.context as Record<string, unknown>).conflictIteration as number)
+      : 0;
+
+  let retryTask = buildRetry(params.humanInitiated ? spentIterations + policyValue('maxConflictIterations') : undefined);
+
+  // The cap counts attempts at earlier conflicts too. A basis no attempt has
+  // seen (the base moved, or the head did) is a new conflict and gets one
+  // attempt; the same basis twice is a person's.
+  if (!retryTask && basis && !params.humanInitiated && policyValue('maxConflictIterations') > 0) {
+    const attempted = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.workspaceId, workspaceId),
+        eq(tasks.conflictRetryPrNumber, prNumber),
+        sql`${tasks.context}->>'conflictBasis' = ${basis}`,
+      ),
+      columns: { id: true, subjectHeadSha: true },
+    });
+    if (!attempted) {
+      console.log(`[conflict-retry] PR #${prNumber} budget spent on earlier conflicts; new basis ${basis.slice(0, 7)} gets one attempt`);
+      retryTask = buildRetry(spentIterations + 1);
+    }
+  }
 
   if (!retryTask) {
     console.log(`[conflict-retry] iteration cap reached for PR #${prNumber} — escalate to human`);

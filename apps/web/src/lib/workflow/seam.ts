@@ -1029,7 +1029,7 @@ export async function observeConflict(p: {
 // ── T15/T16: the merge doors (Slice C) ──────────────────────────────────────
 
 export type { KernelLanding, LandingInput, LandingOutcome } from './landing';
-export { staleLandingVersion, kernelLandingView, listApprovedKernelPrs } from './landing';
+export { staleLandingVersion, kernelLandingView, listApprovedKernelPrs, notKernelOwnedPr } from './landing';
 
 /**
  * The merge of a kernel-owned PR, for every merge door (§14 Slice C): the door

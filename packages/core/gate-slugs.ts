@@ -221,6 +221,15 @@ export const GATE_SLUGS = {
    * a non-critical effect; nothing escalates, the row is the alert.
    */
   WORKFLOW_EFFECT_DEAD: 'workflow_effect_dead',
+  /**
+   * GitHub webhook — a PR merged or commits were pushed onto a live worker's
+   * base, touching files in its scope (observed touches ∪ declared manifest),
+   * so it was told to rebase (`lib/base-advance-notice.ts`). ADVISORY: nothing
+   * is blocked. `warned` = one notice queued; later changes inside the debounce
+   * window fold into the same row (`detail.coalesced`, `detail.coalescedChanges`).
+   * The denominator for "do notified workers conflict less".
+   */
+  BASE_ADVANCE_NOTICE: 'base_advance_notice',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

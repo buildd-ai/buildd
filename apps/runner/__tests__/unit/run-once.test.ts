@@ -559,7 +559,7 @@ describe('classifyClaimFailure', () => {
   });
 
   test('a managed-runner entitlement block is a deferral (retry later), never a refusal or failure', () => {
-    for (const code of ['managed_concurrency', 'managed_runner_hours']) {
+    for (const code of ['managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours']) {
       const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'all_candidates_deferred', claimTaskExclusionCode: code });
       expect(classifyClaimFailure(err)).toBe('deferred');
     }

@@ -71,14 +71,14 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
       <div data-testid="worker-steer-panel" className="space-y-3">
         {!taskTerminal && !hasUnansweredQuestion && status !== 'starting' && <InstructWorkerForm workerId={workerId} pendingInstructions={null} />}
         <div data-testid="worker-release-slot" className="space-y-2">
-          <p className="text-[12px] text-text-muted">
+          <p className="text-meta text-text-muted">
             {taskTerminal
               ? 'Task ended, but a local session still holds a slot.'
               : 'Runs in a local session. Buildd can’t stop it.'}
           </p>
           {confirm ? (
             <>
-              <p data-testid="worker-release-slot-confirm-copy" className="text-[12px] text-text-secondary">
+              <p data-testid="worker-release-slot-confirm-copy" className="text-meta text-text-secondary">
                 Frees the slot in Buildd. The local session keeps running; close it yourself.
                 {!taskTerminal && ' The task goes back to the queue.'}
               </p>
@@ -87,11 +87,11 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
                   type="button"
                   onClick={release}
                   disabled={loading}
-                  className="min-h-11 md:min-h-9 px-3 text-[12px] font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3 disabled:opacity-50"
+                  className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3 disabled:opacity-50"
                 >
                   {loading ? 'Releasing…' : 'Confirm release'}
                 </button>
-                <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-[12px] text-text-muted hover:text-text-primary">
+                <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-meta text-text-muted hover:text-text-primary">
                   Cancel
                 </button>
               </div>
@@ -103,8 +103,8 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
                 data-testid="worker-release-slot-btn"
                 onClick={() => setConfirm(true)}
                 className={taskTerminal
-                  ? 'min-h-11 md:min-h-9 px-3 text-[12px] font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3'
-                  : 'min-h-11 md:min-h-9 px-3 text-[12px] font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary'}
+                  ? 'min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3'
+                  : 'min-h-11 md:min-h-9 px-3 text-meta font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary'}
               >
                 Release slot
               </button>
@@ -128,11 +128,11 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
                 type="button"
                 onClick={abort}
                 disabled={loading}
-                className="min-h-11 md:min-h-9 px-3 text-[12px] font-medium border-2 border-status-error text-status-error hover:bg-status-error/10 disabled:opacity-50"
+                className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-status-error text-status-error hover:bg-status-error/10 disabled:opacity-50"
               >
                 {loading ? 'Stopping…' : 'Confirm stop'}
               </button>
-              <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-[12px] text-text-muted hover:text-text-primary">
+              <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-meta text-text-muted hover:text-text-primary">
                 Cancel
               </button>
             </>
@@ -141,7 +141,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
               type="button"
               data-testid="worker-abort-btn"
               onClick={() => setConfirm(true)}
-              className="min-h-11 md:min-h-9 px-3 text-[12px] font-medium border border-border-default text-text-secondary hover:border-status-error hover:text-status-error"
+              className="min-h-11 md:min-h-9 px-3 text-meta font-medium border border-border-default text-text-secondary hover:border-status-error hover:text-status-error"
             >
               Stop agent
             </button>

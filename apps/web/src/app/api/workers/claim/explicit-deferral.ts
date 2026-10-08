@@ -128,5 +128,14 @@ export function describeExplicitDeferral(
         detail: `The team's monthly managed runner-hours are used up. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows.`,
       };
     }
+    case 'hosted_runner_hours': {
+      const at = str(detail.resetsAt);
+      const used = num(detail.used);
+      const limit = num(detail.limit);
+      return {
+        code: reason,
+        detail: `Hosted runner allowance used${used !== null && limit !== null ? ` (${used} of ${limit} counted hours this month)` : ''}. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows, or a runner of your own can take it.`,
+      };
+    }
   }
 }

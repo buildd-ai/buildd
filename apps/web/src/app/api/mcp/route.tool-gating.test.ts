@@ -132,6 +132,17 @@ function authenticateAs({ level, authType, teamId = TEAM_ID }: Account) {
 
 const KNOWLEDGE_TOOLS = ['buildd_memory', 'recall', 'learn'];
 
+const LEGACY_WORKER_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+/**
+ * The legacy surface is served only to a runner worker whose runner predates
+ * group tools. This file's db mock has no heartbeat table, so any worker
+ * session here is one whose runner cannot be shown to support them.
+ */
+function legacySurfaceQuery(): string {
+  mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1' });
+  return `?workspace=${WORKSPACE_ID}&worker=${LEGACY_WORKER_ID}`;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('MCP tool gating — workspace data class', () => {
@@ -145,10 +156,10 @@ describe('MCP tool gating — workspace data class', () => {
   it('offers the knowledge tools for a standard workspace', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID });
 
-    const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=legacy`);
+    const names = await listTools(legacySurfaceQuery());
     for (const tool of KNOWLEDGE_TOOLS) expect(names).toContain(tool);
     // The groups surface lists recall/learn; deprecated buildd_memory is callable, not listed.
-    const groups = await listTools(`?workspace=${WORKSPACE_ID}&tools=groups`);
+    const groups = await listTools(`?workspace=${WORKSPACE_ID}`);
     expect(groups).toContain('recall');
     expect(groups).toContain('learn');
   });
@@ -157,7 +168,7 @@ describe('MCP tool gating — workspace data class', () => {
     mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive', teamId: TEAM_ID });
 
     for (const surface of ['legacy', 'groups']) {
-      const names = await listTools(`?workspace=${WORKSPACE_ID}&tools=${surface}`);
+      const names = await listTools(surface === 'legacy' ? legacySurfaceQuery() : `?workspace=${WORKSPACE_ID}`);
       for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
       // Task coordination is unaffected — the data class gates knowledge only.
       expect(names).toContain(surface === 'legacy' ? 'buildd' : 'buildd_tasks');
@@ -177,7 +188,7 @@ describe('MCP tool gating — workspace data class', () => {
 
     const names = await listTools(`?workspace=${WORKSPACE_ID}`);
     for (const tool of KNOWLEDGE_TOOLS) expect(names).not.toContain(tool);
-    expect(names).toContain('buildd');
+    expect(names).toContain('buildd_tasks');
   });
 
   it('refuses a knowledge tool call in a sensitive workspace even if it was somehow invoked', async () => {
@@ -312,7 +323,7 @@ describe("MCP tool gating — an orchestration task's admin per-task token", () 
   });
 
   it('refuses the same way through a grouped tool', async () => {
-    const result = await callTool('buildd_admin', { action: 'manage_secrets', params: { action: 'list' } }, `${q}&tools=groups`);
+    const result = await callTool('buildd_admin', { action: 'manage_secrets', params: { action: 'list' } }, q);
     expect(JSON.parse(result.content[0].text).reason).toContain('team-wide');
     expect(mockHandleBuilddAction).not.toHaveBeenCalled();
   });

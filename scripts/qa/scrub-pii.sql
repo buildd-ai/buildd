@@ -228,6 +228,7 @@ DELETE FROM conversations;
 -- Standing rules are text a person wrote about how they work; wiped like chat.
 DELETE FROM chat_directives;
 DELETE FROM local_sessions;         -- presence of people's local coding sessions (repo, client)
+DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens can't verify anyway
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
@@ -236,6 +237,8 @@ DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Who deployed what with which credential reference: an audit trail, not app state.
+DELETE FROM deployment_audit_events;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.

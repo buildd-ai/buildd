@@ -19,7 +19,7 @@
  * A person's action carries the delivery `version` they saw (§7.2): a stale
  * one is answered `stale` with the current view (HTTP 409) and applies nothing.
  */
-import { sql } from 'drizzle-orm';
+import { sql, type Column, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
@@ -97,6 +97,20 @@ export async function kernelLandingView(workspaceId: string, repoFullName: strin
   const d = (await loadView({ deliveryId }, exec)).delivery;
   if (!d) return null;
   return { deliveryId, current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound } };
+}
+
+/**
+ * SQL predicate: no kernel delivery owns this (workspace, PR number) in a
+ * workspace whose kill switch is on. The landing sweep's legacy floor arms
+ * that admit a PR without a reviewer verdict (no review yet, conflicting) use
+ * it, so a kernel PR is a candidate only through `listApprovedKernelPrs`.
+ */
+export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL | Column): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
+    WHERE kd.workspace_id = ${workspaceIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel'
+      AND COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  )`;
 }
 
 /**

@@ -361,14 +361,23 @@ token for each run. A scoped key needs at least the **Task agent** capabilities
 `knowledge:write`) and, if limited to workspaces, the dispatching workspace;
 narrowing the key later ends the tokens it minted.
 
-`deploy.ts` fetches the saved token with the admin key
+With the token saved in buildd, `deploy.ts` runs every Cloudflare step it
+can **server-side** (`POST /api/deployments` with the admin key: the R2
+bucket, Worker secrets, secret listing, the workers.dev URL), so the token
+stays on the server and each step lands in the deployment audit trail
+(docs/specs/deployment-actions.md). Only `wrangler deploy` needs the token on
+your machine, because it builds and pushes the container image there; for that
+one step the script fetches it through the audited reveal route
 (`POST /api/cloudflare/credential/reveal`: `bld_` admin keys only, own team
-only, `no-store`). To keep the token out of buildd entirely, set
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead; the script then
-never calls that route. It then:
+only, `no-store`). `--secrets-only` skips the code deploy (rotate a token,
+point another workspace, change the model proxy) and needs no token here at
+all. `--credential-ref` names a labelled credential (default `cloudflare`).
+To keep the token out of buildd entirely, set `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` instead; every step then runs locally with wrangler.
+It then:
 
-1. `wrangler deploy`
-2. `wrangler secret put` `BUILDD_SERVER` (`--worker-server`, default the
+1. Ensure the snapshot bucket, then `wrangler deploy` (both skipped with `--secrets-only`)
+2. Put Worker secrets `BUILDD_SERVER` (`--worker-server`, default the
    buildd URL), `BUILDD_API_KEY` (the runner key) and a freshly generated
    `DISPATCH_TOKEN`
 3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] }`
@@ -851,3 +860,22 @@ The smoke's egress step checks the container env, a synthetic OTLP POST
 (credential added by fingerprint, container auth stripped, plain http refused)
 and runs a real `claude -p` in the container, whose exports are logged by the
 echoing handler.
+
+## Remote browser for visual audits
+
+Wrangler includes the `BROWSER` Browser Rendering binding. Opt in with
+`BROWSER_BRIDGE=1` on the Worker. The task-token response authorizes browser access
+only for the server-stored visual-auditor role; builder runs acquire no browser.
+The container gets an ephemeral bridge capability, never a Cloudflare account
+credential. The agent sees only a loopback CDP endpoint and service API.
+
+The remote browser reaches registered container-local HTTP services through CDP
+request fulfilment and `getTcpPort().fetch`, without public ingress. Bind the app
+to `0.0.0.0`; use `scripts/qa/serve-local.sh` with a synthetic database, then the
+usual `scripts/qa/capture.ts` commands. Synthetic database provisioning is a caller
+responsibility. Browser session milliseconds and request/byte totals appear in
+the cloud run report. Every outcome closes and revokes the session, including
+parking and keeping a warm container.
+
+The bridge remains opt-in pending live verification. Follow the test deployment
+recipe and negative checks in [the provider contract](../../docs/specs/visual-qa-browser-providers.md).

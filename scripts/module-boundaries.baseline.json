@@ -193,7 +193,6 @@
       "apps/web/src/lib/silent-completion.ts": "health-quality",
       "apps/web/src/lib/supersession.ts": "reviews-merge",
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
-      "packages/core/bash-failure-trace.ts": "health-quality",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"

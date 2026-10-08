@@ -11,11 +11,11 @@ const { attachAgentEndpoints } = await import('./agent-endpoint-injection');
 
 const endpoint = {
   kind: 'anthropic-compatible' as const, baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent-example',
-  authHeader: 'authorization' as const, models: { 'claude-sonnet-5': 'team-sonnet' }, secretId: 's-1', scope: 'team' as const,
+  authHeader: 'authorization' as const, models: { 'claude-sonnet-5': 'team-sonnet' }, toolSearch: false, secretId: 's-1', scope: 'team' as const,
 };
 const openAiEndpoint = {
   kind: 'openrouter' as const, baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-agent-example',
-  authHeader: 'authorization' as const, models: {}, openAiBaseUrl: 'https://openrouter.ai/api/v1', secretId: 's-2', scope: 'team' as const,
+  authHeader: 'authorization' as const, models: {}, openAiBaseUrl: 'https://openrouter.ai/api/v1', toolSearch: true, secretId: 's-2', scope: 'team' as const,
 };
 const win: AgentModelDecision = { winner: 'endpoint', endpoint };
 const winOpenAi: AgentModelDecision = { winner: 'endpoint', endpoint: openAiEndpoint };
@@ -42,6 +42,23 @@ describe('attachAgentEndpoints', () => {
       authHeader: 'authorization', models: { 'claude-sonnet-5': 'team-sonnet' },
     });
     expect(resolve).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'acc-1', backend: 'claude' });
+  });
+
+  it('tool search: the winning endpoint\'s effective capability rides on a Claude claim', async () => {
+    const { workers, tasks } = claim();
+    await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => winOpenAi });
+    expect(workers[0].modelEndpoint.toolSearch).toBe(true);
+  });
+
+  it('tool search: a workspace-scoped winner carries its own value, not the team default', async () => {
+    const { workers, tasks } = claim();
+    const wsOff: AgentModelDecision = { winner: 'endpoint', endpoint: { ...openAiEndpoint, toolSearch: false, scope: 'workspace' } };
+    await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => wsOff });
+    expect('toolSearch' in workers[0].modelEndpoint).toBe(false);
+    const gwOn: AgentModelDecision = { winner: 'endpoint', endpoint: { ...endpoint, kind: 'anthropic-compatible', toolSearch: true, scope: 'workspace' } };
+    const second = claim();
+    await attachAgentEndpoints(second.workers, second.tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => gwOn });
+    expect(second.workers[0].modelEndpoint.toolSearch).toBe(true);
   });
 
   it('endpoint loses the ranking: nothing attached, worker not reported', async () => {

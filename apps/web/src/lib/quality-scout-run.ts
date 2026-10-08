@@ -48,6 +48,7 @@ import { generateScoutCandidates, type ScoutProbeCandidate, type ScoutSignals } 
 import {
   runScoutProbe,
   SCOUT_ADAPTER_BY_KIND,
+  SCOUT_VIEWPORTS,
   type ScoutProbeExecution,
   type ScoutProbePorts,
   type ScoutRunProbeOptions,
@@ -67,6 +68,7 @@ import {
 import { selectScoutProbes, type ScoutProbeDecider } from '@buildd/core/quality-scout/selector';
 import {
   DEFAULT_SCOUT_HOST_DEADLINE_MS,
+  DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
   DEFAULT_SCOUT_RUNNER_MAX_DURATION_MS,
   MAX_SCOUT_HOST_DEADLINE_MS,
   SCOUT_ACTION_OUTCOMES,
@@ -112,7 +114,7 @@ export interface ScoutRunRequest {
   trigger: ScoutRunTrigger;
   mode: ScoutMode;
   candidate: { ref: string; sha: string };
-  budget?: { maxProbes?: number; maxCostUsd?: number | null };
+  budget?: { maxProbes?: number; maxCostUsd?: number | null; maxCaptureProbes?: number };
   maxDurationMs?: number;
   /** Manual runs only: distinguishes a deliberate re-run of the same SHA from a double tap. */
   dedupeKey?: string;
@@ -259,6 +261,30 @@ export function clampRunnerDuration(ms: number | undefined): number {
 
 /** The lease a runner holds is its duration bound plus this; the deadline never cuts a held lease short. */
 export const SCOUT_LEASE_SLACK_MS = 5 * 60_000;
+
+/** A Visual QA capture run takes roughly 5-25 min per viewport; the lease plans for the slow end. */
+export const SCOUT_CAPTURE_MS_PER_VIEWPORT = 25 * 60_000;
+
+/**
+ * The runner bound when a run carries a surface probe. Its capture token is a
+ * GitHub installation token minted when the lease is won, which lives an hour
+ * and is clipped to the lease, so bound + slack stays at or under 55 min.
+ */
+export const MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS = 50 * 60_000;
+
+/**
+ * The runner bound a parked run gets. With no surface probe, exactly
+ * `clampRunnerDuration`. With `captureProbes` surface probes (each one a
+ * Visual QA run per viewport), an unset bound defaults to the capture estimate
+ * (never below the plain default), and any bound is held to
+ * `MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS`.
+ */
+export function scoutRunnerDuration(ms: number | undefined, captureProbes: number): number {
+  if (captureProbes <= 0) return clampRunnerDuration(ms);
+  const estimate = captureProbes * SCOUT_VIEWPORTS.length * SCOUT_CAPTURE_MS_PER_VIEWPORT;
+  const wanted = clampRunnerDuration(ms ?? Math.max(estimate, DEFAULT_SCOUT_RUNNER_MAX_DURATION_MS));
+  return Math.min(wanted, MAX_SCOUT_CAPTURE_RUNNER_DURATION_MS);
+}
 
 export function clampHostDeadline(ms: number | undefined, runnerMaxDurationMs: number): number {
   const wanted = typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? Math.min(Math.floor(ms), MAX_SCOUT_HOST_DEADLINE_MS) : DEFAULT_SCOUT_HOST_DEADLINE_MS;
@@ -407,6 +433,10 @@ export async function planScoutRun(
       selectScoutProbes(set, deps.decide, {
         budget: run.budget.maxProbes,
         ...(hostable ? { hostable } : {}),
+        capture: {
+          max: run.budget.maxCaptureProbes ?? DEFAULT_SCOUT_MAX_CAPTURE_PROBES,
+          needsCapture: (c) => scoutHostNeed(c.executor, profile) === 'capture',
+        },
         ...(maxCostUsd !== null && deps.takeDecisionCost
           ? {
               cost: {
@@ -538,7 +568,8 @@ const runnerProbesOf = (records: readonly ScoutProbeRecord[]) => records.filter(
  */
 export async function parkScoutRun(plan: ScoutPlannedRun, req: ScoutRunRequest, deps: Pick<ScoutRunDeps, 'now' | 'ledger'>): Promise<ScoutRunOutcome> {
   const now = deps.now();
-  const runnerMaxDurationMs = clampRunnerDuration(req.host?.runnerMaxDurationMs);
+  const captureProbes = runnerProbesOf(plan.records).filter((p) => scoutHostNeed(p.executor, plan.profile) === 'capture').length;
+  const runnerMaxDurationMs = scoutRunnerDuration(req.host?.runnerMaxDurationMs, captureProbes);
   const hostDeadline = new Date(now.getTime() + clampHostDeadline(req.host?.hostDeadlineMs, runnerMaxDurationMs)).toISOString();
   const run: ScoutRun = {
     ...plan.run,

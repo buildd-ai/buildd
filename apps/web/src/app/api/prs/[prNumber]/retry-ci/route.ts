@@ -261,6 +261,7 @@ export async function POST(
     ciRunUrl: ciLogs.runUrl,
     workspaceMaxCiRetries: policyValue('maxCiRetries'),
     attemptsUsed: 0,
+    prRefs: pr.head?.ref ? { headRef: String(pr.head.ref), baseRef: pr.base?.ref ? String(pr.base.ref) : null } : null,
   });
 
   if (!retryTask) {

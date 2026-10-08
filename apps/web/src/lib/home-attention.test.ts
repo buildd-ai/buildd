@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { deriveHomeAttention as derive, homeAttentionCopy } from './home-attention';
+import { deriveHomeAttention as derive, homeAttentionCopy, homeQuestionView } from './home-attention';
 import { isActionableChip } from './action-queue';
 import { deriveHomeNeedsYou } from './home-needs-you';
 const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
@@ -31,7 +31,7 @@ describe('phone Home attention', () => {
     expect(items[0].primary?.label).toBe('Check PR');
   });
   it('shows a parked question once and counts stranded missions once', () => {
-    const q = { workerId: 'worker-a', taskId: 'task-a', href: '/app/tasks/task-a', label: 'Builder', runnerName: null, askedAt: null, prompt: 'Which direction?', options: [] };
+    const q = { workerId: 'worker-a', taskId: 'task-a', href: '/app/tasks/task-a', label: 'Builder', runnerName: null, askedAt: null, question: { headline: 'Which direction?', body: null, options: [], noteId: null } };
     const strand = { missionId: 'mission-a', quietMs: 7200000, taskId: 'task-b', claimable: 1, blockedReason: null, order: 'runner-first' as const };
     const mission = { view: { id: 'mission-a', title: 'Navigation', href: '/app/missions/mission-a' }, model: { strand } } as any;
     const items = deriveHomeAttention({ queue: [{ subjectKey: 'q', chip: 'QUESTION', taskId: 'task-a' }], questions: [q, q], missions: [mission, mission], held: [] });
@@ -43,6 +43,42 @@ describe('phone Home attention', () => {
     const items = deriveHomeAttention({ queue: [{ ...pr('doc'), docFixTaskId: 'doc-task' }], missions: [], questions: [], held: [] });
     expect(items[0].sentence).toContain('doc back in line');
     expect(homeAttentionCopy(items).headline).toBe('1 thing needs you.');
+  });
+});
+
+describe('Home question cards are never context-free', () => {
+  // The exact regression: the agent's explanation lived in the brief (or only in its
+  // needs_input error) and Home rendered "How should I proceed?" with a generic line.
+  const ERROR = 'needs_input: Visual QA cannot boot the app: the mission migration is below the migration high-water mark. How should I proceed?';
+  const card = (question: NonNullable<ReturnType<typeof homeQuestionView>>) => deriveHomeAttention({
+    queue: [], missions: [], held: [],
+    questions: [{ workerId: 'w', taskId: 't', href: '/app/tasks/t', label: 'Surface audit', runnerName: null, askedAt: null, question }],
+  })[0];
+
+  it('keeps the brief context, structured options and recommendation', () => {
+    const view = homeQuestionView({
+      waitingFor: { type: 'question', prompt: 'How should I proceed?', context: 'Visual QA cannot boot: a migration is below the high-water mark.', options: [{ label: 'Skip visual QA', description: 'Ships without screenshots', recommended: true }, 'Wait'] },
+      error: ERROR, taskTitle: 'Surface audit',
+    })!;
+    expect(view.options.map(o => o.label)).toEqual(['Skip visual QA', 'Wait']);
+    const item = card(view);
+    expect(item.title).toBe('How should I proceed?');
+    expect(item.sentence).toContain('high-water mark');
+    expect(item.sentence).not.toBe('An agent needs your answer to continue.');
+  });
+
+  it('fails open to the worker error when the stored question lost its brief', () => {
+    const view = homeQuestionView({ waitingFor: { type: 'question', prompt: 'How should I proceed?' }, error: ERROR, taskTitle: 'Surface audit' })!;
+    expect(card(view).sentence).toContain('high-water mark');
+  });
+
+  it('with nothing else, still says which task asked', () => {
+    const view = homeQuestionView({ waitingFor: { type: 'question', prompt: 'How should I proceed?' }, error: null, taskTitle: 'Surface audit' })!;
+    expect(card(view).sentence).toBe('Asked while working on "Surface audit".');
+  });
+
+  it('a row with no question is not a card', () => {
+    expect(homeQuestionView({ waitingFor: null, error: ERROR, taskTitle: 'x' })).toBeNull();
   });
 });
 

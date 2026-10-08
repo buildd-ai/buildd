@@ -164,10 +164,12 @@ const SAFE: Record<string, string[]> = {
     'chat_retro', // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
-    'managed_runner_plan'], // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
+    'model_upgrade_policy'], // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
+  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
@@ -178,6 +180,9 @@ const SAFE: Record<string, string[]> = {
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
+    // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
+    // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
+    'verdict_decision',
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],

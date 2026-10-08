@@ -35,21 +35,24 @@ export default function StatRow({
 }: {
   elapsed: string | null;
   turns: number;
-  tokens: number;
+  /** Null hides the tile: a figure the run did not report is not a 0. */
+  tokens: number | null;
   /** `state` is `resolvePrDisplayState`'s: the delivery's for a kernel-owned PR, else the columns'. */
   pr: { url: string; number: number | null; state: PrDisplayState } | null;
   filesTouched: number;
   added: number | null;
   removed: number | null;
 }) {
-  const tok = formatTokens(tokens);
+  const tok = tokens == null ? null : formatTokens(tokens);
   const lifecycle = pr ? PR_PILL[pr.state] : null;
   const hasDiff = (added ?? 0) > 0 || (removed ?? 0) > 0;
   return (
-    <div data-testid="worker-stats" className="grid grid-cols-2 md:grid-cols-5 border-2 border-border-strong bg-card mt-4 md:mt-5">
+    <div data-testid="worker-stats" className={`grid grid-cols-2 ${tokens == null ? 'md:grid-cols-4' : 'md:grid-cols-5'} border-2 border-border-strong bg-card mt-4 md:mt-5`}>
       <Tile value={<span suppressHydrationWarning>{elapsed ?? <span className="text-text-muted">0</span>}</span>} label="Elapsed" />
       <Tile value={turns} label="Turns" />
-      <Tile value={tok ? tok.replace(/[kM]$/, '') : <span className="text-text-muted">0</span>} unit={tok?.match(/[kM]$/)?.[0]} label="Tokens" />
+      {tokens != null && (
+        <Tile testId="worker-stat-tokens" value={tok ? tok.replace(/[kM]$/, '') : <span className="text-text-muted">0</span>} unit={tok?.match(/[kM]$/)?.[0]} label="Tokens" />
+      )}
       {pr ? (
         <Tile
           testId="worker-stat-pr"

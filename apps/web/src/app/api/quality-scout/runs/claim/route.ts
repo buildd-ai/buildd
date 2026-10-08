@@ -15,9 +15,17 @@
  *
  * Response (ScoutRunClaimResponse): the run, its runner probes, the frozen
  * profile and the lease (leaseId + expiry), or { run: null, reason }.
+ *
+ * Capture: a surface probe is handed only to a key flagged as a trusted host
+ * runner (`accounts.hostRunner`) that advertised `ports.capture`. Its claim
+ * carries `capture`, a GitHub token minted for this run alone (one repo,
+ * Actions write, expiry clipped to the lease; lib/quality-scout-capture-grant.ts),
+ * or `captureUnavailable` saying why not. Any other key's `ports.capture` is
+ * ignored.
  */
 import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { scoutCaptureGrantMinter } from '@/lib/quality-scout-capture-grant';
 import { claimScoutRunForRunner, parseScoutHostPorts } from '@/lib/quality-scout-runner-host';
 import { dbScoutRunnerHostStore } from '@/lib/quality-scout-runner-host-store';
 import { isQualityScoutDisabled } from '@/lib/quality-scout-trigger';
@@ -48,6 +56,8 @@ export async function POST(req: NextRequest) {
       now: new Date(),
       disabled: isQualityScoutDisabled(),
       newLeaseId: randomUUID,
+      // Only a trusted host-runner key is ever handed a capture token (and only after it wins the lease).
+      ...(auth.caller.hostRunner ? { mintCaptureGrant: scoutCaptureGrantMinter(auth.caller) } : {}),
     },
     dbScoutRunnerHostStore,
   );

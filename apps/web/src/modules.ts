@@ -30,12 +30,15 @@ import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import type { QuestionCheckDeps } from '@/lib/question-gate-check';
+import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
 import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
+import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -55,6 +58,9 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
+  // Last: the verdict recompute reads the evidence record the knowledge
+  // module wrote and the CI/PR state the reviews module settled.
+  ...verdictSubscribers,
 ];
 
 /**
@@ -103,3 +109,9 @@ let workflowEffectHandlersMemo: EffectHandlers | null = null;
 export function workflowEffectHandlers(): EffectHandlers {
   return (workflowEffectHandlersMemo ??= withSupersessionEffects(withLandingEffects(withTrunkEffects(withConflictEffects(withCiRetryEffects(reviewEffectHandlers))))));
 }
+
+/**
+ * The question gate's recover slot (lib/question-gate-check.ts): a recoverable
+ * blocker an agent tried to ask about is filed as a repair task instead.
+ */
+export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;

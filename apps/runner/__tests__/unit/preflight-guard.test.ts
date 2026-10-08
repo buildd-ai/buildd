@@ -56,6 +56,12 @@ describe('createPreflightGuard', () => {
     expect(((await guard(CREATE_PR)) as any).hookSpecificOutput?.permissionDecision).toBe('deny');
   });
 
+  test('create_pr on the group tool surface is gated too', async () => {
+    const { guard } = harness({ 'lint': failed('2 problems') });
+    const groupCreatePr = { ...CREATE_PR, tool_name: 'mcp__buildd__buildd_work' };
+    expect(((await guard(groupCreatePr)) as any).hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
   test('every command passing lets the ship through, and the same head is not re-checked', async () => {
     const { guard, ran } = harness({ a: ok, b: ok });
     expect(await guard(BASH_PUSH)).toEqual({});

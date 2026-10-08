@@ -14,7 +14,7 @@
  * the backstop. A head that already passed is not re-checked.
  */
 import { execFileSync } from 'child_process';
-import { BUILDD_MCP_TOOL_NAME } from './action-events';
+import { isBuilddActionTool } from '@buildd/shared';
 import { denyPreToolUse } from './hook-factory';
 import { isShipCommand } from './path-claim-enforcement';
 import { runnerDenial } from './runner-denial';
@@ -62,7 +62,7 @@ function tail(text: string): string {
 /** The ship calls preflight guards: `git push`, `gh pr create`, buildd `create_pr`. */
 function isShip(toolName: string, toolInput: Record<string, unknown>): boolean {
   if (toolName === 'Bash') return isShipCommand(toolInput.command);
-  return toolName === BUILDD_MCP_TOOL_NAME && toolInput.action === 'create_pr';
+  return isBuilddActionTool(toolName) && toolInput.action === 'create_pr';
 }
 
 export function createPreflightGuard(deps: {

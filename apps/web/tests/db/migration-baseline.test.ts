@@ -195,7 +195,7 @@ afterAll(async () => {
     await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)).catch(() => {});
   }
   if (work) rmSync(work, { recursive: true, force: true });
-});
+}, 120_000);
 
 describe('squashed baseline', () => {
   it('the old tree ends exactly at the baseline cut point', () => {

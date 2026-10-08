@@ -13,7 +13,7 @@ export function coordinationFilters(input: { workspaceIds: string[]; missionId?:
   return { window: input.window, windowStart: windowStart.toISOString(), workspaceIds: input.workspaceIds, missionId: input.missionId ?? null };
 }
 
-/** Per-workspace opt-in state of each orchestration decision shadow (`teams.enabledDecisionShadows`). */
+/** Per-workspace opt-in state of each opt-in decision capability (`teams.enabledDecisionShadows`). */
 export async function fetchDecisionCapabilities(workspaceIds: string[]): Promise<CoordinationDecisionCapability[]> {
   const workspaceRows = workspaceIds.length ? await db.query.workspaces.findMany({
     where: inArray(workspaces.id, workspaceIds),
@@ -21,7 +21,7 @@ export async function fetchDecisionCapabilities(workspaceIds: string[]): Promise
     with: { team: { columns: { enabledDecisionShadows: true } } },
   }) : [];
   return workspaceRows.flatMap(workspace =>
-    OPT_IN_CAPABILITIES.filter(capability => capability.startsWith('orchestration_')).map(capability => ({
+    OPT_IN_CAPABILITIES.map(capability => ({
       workspaceId: workspace.id,
       capability,
       status: workspace.team.enabledDecisionShadows?.includes(capability) ? 'enabled' as const : 'capability_disabled' as const,

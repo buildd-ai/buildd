@@ -112,6 +112,22 @@ LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
 team, a tie to the endpoint, only the winner delivered. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
+**Protocol capabilities** ride on the same blob: `"capabilities": {
+"toolSearch"?: boolean }`, either kind. `toolSearch` is Claude's deferred
+MCP/tool loading (ToolSearch + `tool_reference` blocks), which Claude Code
+switches off by itself for any non-Anthropic `ANTHROPIC_BASE_URL`. The
+effective value (`effectiveToolSearch`) is the explicit one when set, else the
+kind's default: `openrouter` on (it supports the semantics; `false` is the
+escape hatch), `gateway` and `anthropic-compatible` off (a LiteLLM deployment or
+custom proxy may not pass them through). It resolves per row, so a workspace
+row carries its own value and the winner's is what the claim sends
+(`modelEndpoint.toolSearch`, Claude tasks only). The runner then sets
+`ENABLE_TOOL_SEARCH=true` in that run's env (`applyModelEnv`) and deletes it on
+every other path; it is not in `RUNNER_ENV_PASSTHROUGH`, so one runner can
+serve endpoints that differ. Codex is unaffected. Not yet applied on cloud
+runs: the container talks to `api.anthropic.com` and egress rewrites it, so
+Claude Code there keeps its Anthropic default.
+
 **The same row also routes Codex tasks**, for a `kind` that has an
 OpenAI-compatible wire in addition to its Anthropic one: `gateway` (LiteLLM
 speaks both off the same base) and `openrouter` (its native wire *is* OpenAI
@@ -287,10 +303,21 @@ Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
 `POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
 endpoints and records `lastVerifiedAt` / health (a rejection marks it
 `revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`
-returns masked metadata only. `POST /api/cloudflare/credential/reveal` is the
-one route that returns a stored value: `bld_` admin API keys only, own team
-only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
-sent to a runner.
+returns masked metadata only.
+
+The token is **used** without being handed out: deployment actions
+(docs/specs/deployment-actions.md) resolve it server-side by credential
+reference (the row's label, or `cloudflare` when unlabelled) and call
+Cloudflare themselves, returning a redacted result. A Platform Operator task
+reaches them through the `deploy` MCP action under its workspace grant
+(docs/specs/agent-capabilities.md); a person with an admin key through
+`POST /api/deployments`. Every call is audited in `deployment_audit_events`.
+
+`POST /api/cloudflare/credential/reveal` is the one route that returns a
+stored value, the `secrets:reveal` escape hatch: `bld_` admin API keys only,
+own team only, `no-store`, audited as elevated before it decrypts. Its one
+remaining caller is the container-image `wrangler deploy` step of
+`apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 

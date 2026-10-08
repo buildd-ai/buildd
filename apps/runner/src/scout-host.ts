@@ -46,9 +46,18 @@ export function resolveScoutSandbox(env: NodeJS.ProcessEnv, bwrapSupported: () =
 }
 
 /** `environment.scoutHost` for the heartbeat, or undefined when this runner cannot host. */
-export function scoutHostAdvert(sandbox: ScoutSandbox, repos: readonly string[]): WorkerEnvironment['scoutHost'] {
+export function scoutHostAdvert(sandbox: ScoutSandbox, repos: readonly string[], capture = false): WorkerEnvironment['scoutHost'] {
   if (sandbox.mode === null || repos.length === 0) return undefined;
-  return { repos: [...repos], command: true, capture: false };
+  return { repos: [...repos], command: true, capture };
+}
+
+/**
+ * Surface probes: capture runs on GitHub's runner through `visual-qa.yml`,
+ * so it needs no local browser, only the run-scoped token a claim hands a
+ * trusted host-runner key. On by default; BUILDD_SCOUT_CAPTURE=0 opts out.
+ */
+export function resolveScoutCapture(env: NodeJS.ProcessEnv): boolean {
+  return env.BUILDD_SCOUT_CAPTURE !== '0';
 }
 
 export interface ScoutBwrapContext {
@@ -120,6 +129,8 @@ export interface ScoutHostPollerOptions {
   sandbox: () => ScoutSandbox;
   /** True while the runner has any working worker. Checked before claiming and again before checking out. */
   isBusy: () => boolean;
+  /** Offer `ports.capture` (surface probes). Default false. */
+  capture?: () => boolean;
   runnerId?: string;
   /** Injectable for tests; default `hostClaimedScoutRun`. */
   hostRun?: (opts: HostScoutRunOptions) => ReturnType<typeof hostClaimedScoutRun>;
@@ -160,7 +171,7 @@ export class ScoutHostPoller {
 
   /** The heartbeat advert (`environment.scoutHost`), or undefined. */
   advert(): WorkerEnvironment['scoutHost'] {
-    return scoutHostAdvert(this.opts.sandbox(), this.offerableRepos().map((r) => r.slug));
+    return scoutHostAdvert(this.opts.sandbox(), this.offerableRepos().map((r) => r.slug), this.opts.capture?.() === true);
   }
 
   /** Claim and host at most one Scout run. Never throws. */
@@ -175,7 +186,7 @@ export class ScoutHostPoller {
       if (repos.length === 0) return 'idle';
       const claim = await this.opts.api.claim({
         repos: repos.map((r) => r.slug),
-        ports: { command: true, capture: false, browser: false },
+        ports: { command: true, capture: this.opts.capture?.() === true, browser: false },
         ...(this.opts.runnerId ? { runnerId: this.opts.runnerId } : {}),
       });
       if (!claim.run) return 'idle';
@@ -248,6 +259,7 @@ export function createScoutHostPoller(config: {
     scanRepos: config.scanRepos,
     sandbox: () => resolveScoutSandbox(process.env, config.bwrapSupported),
     isBusy: config.isBusy,
+    capture: () => resolveScoutCapture(process.env),
     runnerId: config.runnerId,
     hostOptions: { secretValues: runnerSecretValues(process.env), tmpRoot },
     bwrap: { extraMounts: process.env.BUILDD_SCOUT_MOUNT_EXTRA, pathExists: (p) => fs.existsSync(p) },

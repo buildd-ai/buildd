@@ -358,6 +358,27 @@ export function findRegenerable(path: string): RegenerablePath | null {
 }
 
 /**
+ * Paths a task's working set may lease: trimmed, trailing separators dropped,
+ * de-duplicated (order preserved), never blank, never the repo-wide sentinel,
+ * never a regenerable file (a generated file is not a mutex). The runner's
+ * tracker and the server's reconciliation both apply this, so the two sides
+ * agree on what "the set" is and no ACK is ever awaited for a path the server
+ * would silently drop. Pure; see packages/core/working-set.ts.
+ */
+export function leasablePaths(paths: readonly unknown[] | null | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of paths ?? []) {
+    if (typeof raw !== 'string') continue;
+    const p = stripTrailingSep(raw.trim());
+    if (!p || p === REPO_WIDE_SENTINEL || seen.has(p) || findRegenerable(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+/**
  * Split observed overlapping paths into the ones that are a genuine contention
  * signal and the ones that just need a command re-run.
  *

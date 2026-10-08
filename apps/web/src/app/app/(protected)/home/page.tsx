@@ -15,6 +15,10 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamRole, resolveActiveTeamScope } from '@/lib/team-access';
+import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
+import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
+import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
+import { roleHas as roleHasPermission } from '@/lib/permission-registry';
 import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
 import { InFlightGroupCard } from './InFlightGroupCard';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
@@ -151,6 +155,10 @@ export default async function HomePage({
   let firstTask: FirstTaskState = 'none';
   // Getting-started: does the team hold an agent key? null = not looked up.
   let hasAgentCredential: boolean | null = null;
+  // Hosted runner allowance at 80% / used; null below that or without one.
+  let hostedRunnerBanner: { level: 'warn' | 'used'; text: string } | null = null;
+  // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
+  let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -313,15 +321,18 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent, overrides, agentKey] = await Promise.all([
+        const [role, chatAvail, recent, overrides, agentKey, hostedBanner] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
           getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
+          teamHostedRunnerBanner(activeTeamId).catch(() => null),
         ]);
         hasAgentCredential = agentKey;
+        hostedRunnerBanner = hostedBanner;
+        if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -2082,7 +2093,7 @@ export default async function HomePage({
   // ── Fleet redesign ──
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
     workerId: q.workerId, taskId: q.taskId, label: q.label, runnerName: q.runnerName,
-    askedAt: q.askedAt, prompt: q.prompt, options: q.options,
+    askedAt: q.askedAt, question: q.question,
     href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
   }));
   // A parked worker's question renders once, as the one-tap card.
@@ -2131,6 +2142,16 @@ export default async function HomePage({
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
+      {hostedRunnerBanner && (
+        <div className="mx-auto max-w-[1320px]">
+          <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />
+        </div>
+      )}
+      {modelUpgradeTeamId && (
+        <div className="mx-auto max-w-[1320px]">
+          <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
+        </div>
+      )}
       <MobileHome items={phoneAttention} ask={phoneAsk} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
       <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">

@@ -17,6 +17,7 @@ import * as schema from '@buildd/core/db/schema';
 
 export type CapabilityName =
   | 'github.repo_grant'
+  | 'github.scout_capture_grant'
   | 'model.endpoint'
   | 'task_token.mint'
   | 'runner.size'

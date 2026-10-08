@@ -3,12 +3,12 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform, arch, hostname } from 'os';
 import type { WorkerEnvironment, WorkerTool } from '@buildd/shared';
-import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
+import { CAPABILITY_BROWSER, CAPABILITY_MCP_GROUP_TOOLS, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/shared';
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
 import { resolveClaudeCliVersion } from './sdk-binary-path';
-import { checkBrowserCapability } from './browser-capability';
+import { selectedBrowserCapability, getBrowserProviderProbe } from './browser-provider';
 import { hostSeatMode, localCodexAuthPath } from './host-seat';
 
 export interface ScanConfig {
@@ -100,11 +100,15 @@ function probeBwrapNamespaces(unshareFlags: readonly string[], loaderBinds = fal
  * user-ns check passes. Confirmed by inspecting the Claude Code binary: it always
  * passes all three --unshare flags to bwrap.
  *
+ * Binds the ELF loader dirs too (loaderBinds): without them the probe reads
+ * false on every merged-usr host whatever the kernel allows, which forced the
+ * inner sandbox and subprocess env scrub off there.
+ *
  * This is the STRICTEST of the runner's bwrap requirements. Do not reuse it for a
  * consumer that unshares less — see checkBwrapMountIsolationSupport.
  */
 export function checkBwrapSupport(): boolean {
-  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net']);
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net'], true);
 }
 
 /**
@@ -119,9 +123,7 @@ export function checkBwrapSupport(): boolean {
  */
 export function checkBwrapMountIsolationSupport(): boolean {
   // The wrapper's own argv binds /bin, /lib and /lib64 (SYSTEM_RO_BINDS), so the
-  // probe does too. checkBwrapSupport above still binds only /usr: on a
-  // merged-usr host it reads false whatever the kernel allows. Changing that
-  // flips Claude Code's inner sandbox on for those hosts and is a separate change.
+  // probe does too.
   return probeBwrapNamespaces(['--unshare-user', '--unshare-pid'], true);
 }
 
@@ -276,7 +278,9 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   const mcpServers = scanMcpServersRich(mcpJsonPaths);
 
-  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex'])];
+  // CAPABILITY_MCP_GROUP_TOOLS: this build matches buildd actions on the group
+  // tools, so the MCP server may serve its worker sessions those.
+  const envKeys = [...new Set([...scanEnvKeys(config?.extraEnvKeys), 'backend:codex', CAPABILITY_MCP_GROUP_TOOLS])];
 
   // A plain `codex login` on this machine (~/.codex/auth.json, no CODEX_HOME
   // set) is local Codex auth too: advertise it under the same key the claim
@@ -288,7 +292,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
 
   // Self-check: does headless Chromium actually launch on this runner?
   // Logs one line with what was found or why not (see browser-capability.ts).
-  if (checkBrowserCapability()) {
+  if (selectedBrowserCapability()) {
     envKeys.push(CAPABILITY_BROWSER);
   }
 
@@ -317,6 +321,7 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       hostname: hostname(),
     },
     scannedAt: new Date().toISOString(),
+    browserProvider: getBrowserProviderProbe(),
     claudeCliVersion: resolveClaudeCliVersion(),
   };
 }

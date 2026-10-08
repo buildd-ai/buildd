@@ -39,22 +39,30 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],
   ['experiments', /prompt-evals|experiment|readout|shadow-harness|health-experiments|\/api\/experiments|tier-explore/],
-  ['jev-decisions', /decision|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys/],
+  ['jev-decisions', /decision|recoverable-blocker|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys/],
   ['chat', /\/chat|chat-|conversation-title|\/api\/ai\/|\/lib\/ai\/|\/share\//],
   ['releases', /(?<!path-claim-)release|\/api\/deploy-identity|health-watcher-vercel|deploy-identity/],
   ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)/],
   ['knowledge', /knowledge|memory|evidence|linked-knowledge|retrieval|feedback-digest|\/api\/feedback|recall|learn|embed|entity-|scip|prior-work|insight/],
-  ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence|stall-notify|connector-block-notify|personal-workspace-links/],
+  // `presence-token` is the agent plugin hooks' auth credential (core), not chat/notification presence.
+  ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence(?!-token)|stall-notify|connector-block-notify|personal-workspace-links/],
   ['schedules', /schedule/],
   ['roles-skills', /role-(config|colors|outcomes|tool-scope|routing|env)|default-roles|effective-roles|task-role|delegate-options|\/api\/roles|\/skills|role-gate|skill-and-role|role-model-routing|\/team\//],
   ['reviews-merge', /reviewer-evidence|(?<!p)review|merge-policy|auto-merge|pr-landing|landing-action|ci-red|ci-failure|ci-retry|ci-drift|ci-gate|ci-lifecycle|ci-job-log|failed-checks|conflict-retry|dead-zone|dead-pr|supersession|pr-re-review|stale-approval|pr-lede-correction|pr-activity|dependency-bot|pr-attention|pr-branch-update|base-refresh|pr-scope-reconcile|spec-|discrepanc|doc-fix|migration-collision|\/prs\//],
-  ['health-quality', /(?<!credential-)health|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
+  ['health-quality', /(?<!credential-)health|post-session|quality-scout|scout-capabilit|failure-|error-pattern|error-traces|explain|insights|(?<!runner-)usage-|gate-analytics|coordination-stats|\/stats|spend-summary|fleet-view|queue-stall|mission-invariant|role-outcomes|cron-health|routing-calibration|routing-analytics|silent-completion|stranded|pacing-stall|workspace-error-traces|subagent-time|scheduling-metrics|model-quality|\/admin|platform-admin|task-category|dispatch-health|signal-registry|derived-metric|terminal-record|friction|bash-failure-trace/],
   ['model-tiers', /tier-|model-tier|\/settings\/models\/|\/api\/model-tiers|tier-weights|openrouter-rankings|litellm/],
 ];
 
 export type Owner = ModuleId | 'core';
 
+/** Core run-record helpers whose names also match broader module heuristics. */
+const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
+  'packages/core/bash-failure-trace.ts',
+  'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
+]);
+
 export function moduleOf(path: string): Owner {
+  if (CORE_RUN_RECORD_FILES.has(path)) return 'core';
   const q = '/' + path;
   for (const [id, re] of MODULE_RULES) if (re.test(q)) return id;
   return 'core';

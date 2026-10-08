@@ -108,6 +108,21 @@ describe('planDeploy: first deploy', () => {
   });
 });
 
+describe('planDeploy: --secrets-only', () => {
+  it('leaves the code alone (no bucket, no wrangler deploy), so no local Cloudflare token is needed', () => {
+    const p = planDeploy(inputs({ skipWorkerDeploy: true, rotate: true, workerSecretNames: ['DISPATCH_TOKEN', 'BUILDD_API_KEY', 'BUILDD_SERVER'] }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(kinds(p.steps)).not.toContain('wrangler_deploy');
+    expect(kinds(p.steps)).not.toContain('ensure_snapshot_bucket');
+    expect(kinds(p.steps)).toContain('put:DISPATCH_TOKEN');
+  });
+
+  it('refuses a Worker that was never deployed', () => {
+    expect(planDeploy(inputs({ skipWorkerDeploy: true, workerSecretNames: null })).ok).toBe(false);
+  });
+});
+
 describe('planDeploy: idempotent re-run', () => {
   const deployed = {
     workerSecretNames: ['DISPATCH_TOKEN', 'BUILDD_API_KEY', 'BUILDD_SERVER'],
@@ -338,6 +353,12 @@ describe('planDeploy: model proxy (--model-proxy-url)', () => {
     const p = planDeploy(inputs({ ...deployed, modelProxy: { url: '', key: '', authHeader: '' } }));
     expect(p.ok && kinds(p.steps)).toEqual(['ensure_snapshot_bucket', 'wrangler_deploy', 'put:BUILDD_SERVER']);
   });
+});
+
+it('retains the Browser Rendering binding when rendering a custom deployment', () => {
+  const base = require('fs').readFileSync(require('path').join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+  const config = JSON.parse(renderWranglerConfig(base, deployNames('browser-test')).replace(/^\s*\/\/.*$/gm, ''));
+  expect(config.browser).toEqual({ binding: 'BROWSER' });
 });
 
 describe('owner seat (--owner-seat)', () => {

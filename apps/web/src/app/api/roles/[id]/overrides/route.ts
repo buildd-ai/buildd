@@ -9,6 +9,8 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
+import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
+import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -74,6 +76,23 @@ export async function POST(
       }
     }
 
+    // Agent capability grant (docs/specs/agent-capabilities.md): same rule as
+    // the team-default PATCH route — only a role with a capability ceiling can
+    // hold a grant at all.
+    let operatorConfig: OperatorGrantConfig | null = null;
+    let hasOperatorGrant = false;
+    if ('operatorGrant' in body) {
+      hasOperatorGrant = true;
+      if (!AGENT_CAPABILITY_NAMES.some(c => roleMayHold(teamDefault.slug, c))) {
+        return NextResponse.json({ error: `Role "${teamDefault.slug}" holds no agent capabilities; operatorGrant has no effect for it` }, { status: 400 });
+      }
+      if (body.operatorGrant !== null) {
+        const parsed = parseOperatorGrantInput(body.operatorGrant);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+        operatorConfig = parsed.config;
+      }
+    }
+
     // Determine which fields are overridden (explicitly passed)
     const overriddenFields: Record<string, unknown> = {};
     if (body.allowedTools !== undefined) overriddenFields.allowedTools = body.allowedTools;
@@ -105,6 +124,7 @@ export async function POST(
     let result;
     if (existing) {
       // Update existing override
+      if (hasOperatorGrant) overriddenFields.metadata = withOperatorGrantMetadata(existing.metadata, operatorConfig);
       const [updated] = await db
         .update(workspaceSkills)
         .set({ ...overriddenFields, updatedAt: new Date() })
@@ -135,7 +155,10 @@ export async function POST(
       return NextResponse.json({ skill: result });
     }
 
-    // Create new workspace override, inheriting all non-overridden fields from team default
+    // Create new workspace override, inheriting all non-overridden fields from
+    // team default — except the operator grant, which is never inherited: it
+    // is the workspace's own opt-in, not a copy of the team's ceiling config.
+    if (hasOperatorGrant) overriddenFields.metadata = withOperatorGrantMetadata({}, operatorConfig);
     const [inserted] = await db
       .insert(workspaceSkills)
       .values({
