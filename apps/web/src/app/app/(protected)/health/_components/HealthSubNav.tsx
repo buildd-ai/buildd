@@ -22,7 +22,7 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
     <>
       <div className="hidden md:block w-56 shrink-0 border-r border-border-default bg-surface-2">
         <nav aria-label="Health" data-testid="health-subnav" className="sticky top-0 max-h-screen overflow-y-auto px-3 py-6">
-          <div className="block px-2 mb-5 text-[15px] font-semibold text-text-primary">Health</div>
+          <div className="block px-2 mb-5 text-lede font-semibold text-text-primary">Health</div>
           <ul className="space-y-0.5">
             {items.map(item => {
               const isActive = active?.id === item.id;
@@ -32,7 +32,7 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
                     href={href(item.href)}
                     aria-current={isActive ? 'page' : undefined}
                     data-active={isActive ? 'true' : undefined}
-                    className={`block px-2 py-1.5 text-[13px] border-l-2 transition-colors ${
+                    className={`block px-2 py-1.5 text-body border-l-2 transition-colors ${
                       isActive
                         ? 'border-accent text-accent-text bg-accent-soft font-medium'
                         : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'

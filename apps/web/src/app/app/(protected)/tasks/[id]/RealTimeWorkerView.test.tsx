@@ -207,6 +207,54 @@ describe('RealTimeWorkerView — running', () => {
     expect(html).not.toContain('worker-stat-files');
   });
 
+  test('no Touched list: the tape is the heartbeat, the log the record', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+    expect(html).toContain('worker-activity-tape');
+    expect(html).not.toContain('worker-touched');
+  });
+
+  test('top to bottom: Now strip and phase rail, then results, then the log', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+    const now = html.indexOf('data-testid="worker-now-strip"');
+    const rail = html.indexOf('data-testid="worker-step-rail"');
+    const stats = html.indexOf('data-testid="worker-stats"');
+    const log = html.indexOf('data-testid="worker-activity-log"');
+    expect(now).toBeGreaterThanOrEqual(0);
+    expect(now).toBeLessThan(rail);
+    expect(rail).toBeLessThan(stats);
+    expect(stats).toBeLessThan(log);
+  });
+
+  test('the log shows durations, not "just now"', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+    expect(html).not.toContain('just now');
+    // Session started → progress milestone: 200s.
+    expect(html).toContain('3m');
+    expect(html).toContain('running 1m');
+  });
+
+  test('hides the tokens figure when it is 0 after real turns', () => {
+    const html = renderToStaticMarkup(
+      <RealTimeWorkerView initialWorker={{ ...running, inputTokens: 0, outputTokens: 0 } as any} taskId="task-1" nowMs={T0 + 261_000} />,
+    );
+    expect(html).toContain('worker-stats');
+    expect(html).not.toContain('worker-stat-tokens');
+    expect(html).not.toMatch(/>Tokens</);
+  });
+
+  test('shows the tokens figure when it was reported', () => {
+    const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
+    expect(html).toContain('worker-stat-tokens');
+  });
+
+  test('the paused bar drops a 0 tokens figure too', () => {
+    const html = render(
+      baseWorker({ status: 'waiting_input', turns: 5, waitingFor: { type: 'question', prompt: 'Q', options: [] } }),
+    );
+    expect(html).toContain('worker-paused-bar');
+    expect(html).not.toContain(' tok<');
+  });
+
   test('instructions are not rendered here any more (they live in the side panel)', () => {
     const html = renderToStaticMarkup(<RealTimeWorkerView initialWorker={running as any} taskId="task-1" nowMs={T0 + 261_000} />);
     expect(html).not.toContain('worker-instruct-form');
@@ -279,5 +327,33 @@ describe('staleAnswerNotice', () => {
   test('is null for any other rejection, which keeps the question open', () => {
     expect(staleAnswerNotice({ error: 'Backend credential (claude) is revoked.', credentialRevoked: true }, 'task-1')).toBeNull();
     expect(staleAnswerNotice(null, 'task-1')).toBeNull();
+  });
+});
+
+// S36: a kernel-owned delivery whose next move is the platform's (a recoverable
+// blocker) is stated with its evidence, never asked as "Needs input".
+describe('RealTimeWorkerView — kernel DeliveryView owner of the next move', () => {
+  const waiting = baseWorker({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Push failed, what now?', options: [] } });
+  const renderWith = (delivery: { headline: string; owner: string; needsYou: boolean; detail: string | null } | null) =>
+    renderToStaticMarkup(<RealTimeWorkerView initialWorker={waiting as any} taskId="task-1" delivery={delivery} />);
+
+  test('platform-owned: no needs-input banner, the headline and evidence instead', () => {
+    const html = renderWith({ headline: 'Waiting for the fix to reach GitHub', owner: 'platform', needsYou: false, detail: 'PR #7 is still at abc1234' });
+    expect(html).not.toContain('worker-needs-input-banner');
+    expect(html).toContain('worker-platform-owned-banner');
+    expect(html).toContain('Waiting for the fix to reach GitHub');
+    expect(html).toContain('PR #7 is still at abc1234');
+  });
+
+  test.each(['reviewer', 'landing', 'trunk'])('%s-owned: no needs-input banner', (owner) => {
+    const html = renderWith({ headline: 'In review', owner, needsYou: false, detail: null });
+    expect(html).not.toContain('worker-needs-input-banner');
+    expect(html).toContain('worker-platform-owned-banner');
+  });
+
+  test('a worker-owned or human-owned delivery keeps the question', () => {
+    expect(renderWith({ headline: 'Fixing review feedback', owner: 'worker', needsYou: false, detail: null })).toContain('worker-needs-input-banner');
+    expect(renderWith({ headline: 'Needs a decision', owner: 'human', needsYou: true, detail: null })).toContain('worker-needs-input-banner');
+    expect(renderWith(null)).toContain('worker-needs-input-banner');
   });
 });

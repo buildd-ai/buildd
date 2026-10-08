@@ -261,7 +261,7 @@ describe('NeedsYouStack', () => {
   const html = renderToStaticMarkup(
     <NeedsYouStack
       count={2}
-      questions={[{ workerId: 'w2', taskId: 't2', href: '/app/missions/m1?from=home&task=t2', label: 'checkout', runnerName: 'atlas', askedAt: null, prompt: 'Per line or total?', options: ['Per line — match Stripe', 'Total only'] }]}
+      questions={[{ workerId: 'w2', taskId: 't2', href: '/app/missions/m1?from=home&task=t2', label: 'checkout', runnerName: 'atlas', askedAt: null, question: { headline: 'Per line or total?', body: null, noteId: null, context: 'Rounding each line can differ from rounding the total.', options: [{ label: 'Per line — match Stripe', recommended: false }, { label: 'Total only', recommended: false }] } }]}
       held={[{ id: 'm9', title: 'Spec first', href: '/app/missions/m9', ready: 1, roles: ['writer'], done: 0, total: 1, heldFor: '1d' }]}
       shipped={[]}
     />,
@@ -272,6 +272,10 @@ describe('NeedsYouStack', () => {
     expect(html.match(/data-testid="needs-you-answer"/g)?.length).toBe(2);
     expect(html).toContain('data-testid="mission-arm-button"');
     expect(html).toContain('>2</span>');
+  });
+  it('shows the question context, not just the question', () => {
+    expect(html).toContain('data-testid="needs-you-context"');
+    expect(html).toContain('Rounding each line can differ');
   });
   // Regression: page.tsx always passes `{cond && <…/>}` children, so with
   // nothing waiting `children` was `[false, false]` — truthy — and the heading

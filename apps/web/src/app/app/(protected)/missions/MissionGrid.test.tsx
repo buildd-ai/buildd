@@ -127,11 +127,21 @@ describe('MissionGrid', () => {
 });
 
 describe('MissionGrid — nothing running', () => {
-  it('says so, with the free slots and the last thing that shipped', () => {
+  it('shows only a muted last-run line when nothing is running', () => {
     const html = renderToStaticMarkup(<MissionGrid missions={[done, recurring]} slots={{ live: 0, max: 8 }} />);
     const empty = html.slice(html.indexOf('data-testid="missions-nothing-running"'));
-    expect(empty).toContain('All 8 slots free.');
+    // The empty state should show the last completed mission info
     expect(empty).toContain('Retire the legacy lock');
+    // Should not have the dashed box styling that makes it look like another card
+    expect(empty).not.toContain('border-dashed');
+    // Should not repeat "Nothing running" — that's in the page headline
+    expect(empty).not.toContain('Nothing running');
+  });
+
+  it('hides the empty state when there is no completed mission to reference', () => {
+    const html = renderToStaticMarkup(<MissionGrid missions={[recurring]} slots={{ live: 0, max: 8 }} />);
+    // No empty state element should render if there's nothing to show
+    expect(html).not.toContain('data-testid="missions-nothing-running"');
   });
 });
 

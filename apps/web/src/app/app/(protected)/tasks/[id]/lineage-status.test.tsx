@@ -121,3 +121,23 @@ describe('lineageWorkerHistory', () => {
     }
   });
 });
+
+describe('HeaderStatusPill — kernel DeliveryView', () => {
+  const d = (o: Partial<{ headline: string; owner: string; needsYou: boolean; stage: string; detail: string | null }>) => ({ headline: 'Review queued', owner: 'reviewer', needsYou: false, stage: 'review', detail: null, ...o });
+  it('reads the kernel headline instead of the raw task status', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="waiting_on_you" merged={false} delivery={d({ headline: 'Waiting for the fix to reach GitHub', owner: 'platform', stage: 'awaiting_push' })} />);
+    expect(html).toContain('Waiting for the fix to reach GitHub');
+    expect(html).not.toContain('Needs input');
+    expect(html).not.toContain('bg-accent ');
+  });
+  it('is loud only for a human-owned state', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="running" merged={false} delivery={d({ headline: 'The reviewer escalated this PR', owner: 'human', needsYou: true, stage: 'needs_you' })} />);
+    expect(html).toContain('bg-accent');
+    expect(html).toContain('data-owner="human"');
+  });
+  it('shows release composition as a landing-ready state', () => {
+    const html = renderToStaticMarkup(<HeaderStatusPill status="completed" merged={false} delivery={d({ headline: 'Release composition verified', owner: 'landing', stage: 'approved' })} />);
+    expect(html).toContain('Release composition verified');
+    expect(html).toContain('text-status-success');
+  });
+});

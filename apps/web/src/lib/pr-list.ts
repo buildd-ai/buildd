@@ -18,6 +18,9 @@ import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { PrListState as SharedPrListState } from '@buildd/shared';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { loadPrAttention } from '@/lib/pr-attention';
+import { prListStatus, type PrListStatus } from '@/lib/pr-presentation';
+import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import type { DeliveryView } from '@/lib/workflow/projections';
 
 export const PR_LIST_STATES = ['open', 'attention', 'conflict', 'ci_failed', 'merged'] as const satisfies readonly SharedPrListState[];
 export type PrListState = (typeof PR_LIST_STATES)[number];
@@ -45,15 +48,34 @@ export function buildPrListWhere(opts: { workspaceIds: string[]; state: PrListSt
   if (opts.state === 'merged') {
     base.push(isNotNull(workers.mergedAt), gte(workers.mergedAt, opts.since ?? new Date(0)));
   } else {
+    // Every open PR: attention ("waiting on you"), conflict and ci_failed are
+    // decided after the collapse, a kernel-owned PR's from its delivery
+    // (Slice F), so the column never narrows the candidates.
     base.push(isNull(workers.mergedAt));
-    // attention also means "waiting on you", decided after the query (needsAttention).
-    if (opts.state === 'open' || opts.state === 'attention') {
-      base.push(or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))!);
-    } else {
-      base.push(eq(workers.prLifecycleStatus, opts.state));
-    }
+    base.push(or(isNull(workers.prLifecycleStatus), notInArray(workers.prLifecycleStatus, TERMINAL))!);
   }
   return and(...base)!;
+}
+
+/** What a kernel-owned delivery says about its PR, in the list's own words. */
+export interface KernelPr {
+  prNumber: number;
+  status: PrListStatus | null;
+  mergedAt: Date | null;
+}
+
+/**
+ * Slice F (§13.10): taskId → the delivery's PR state, for every task (owner
+ * or attempt) of a kernel-owned delivery. A legacy or PR-less task is absent
+ * and its rows keep the fact-cache columns.
+ */
+export function kernelPrStatuses(views: ReadonlyMap<string, Pick<DeliveryView, 'prNumber' | 'prState' | 'mergedAt'>>): Map<string, KernelPr> {
+  const out = new Map<string, KernelPr>();
+  for (const [taskId, v] of views) {
+    if (v.prNumber == null || v.prState == null) continue;
+    out.set(taskId, { prNumber: v.prNumber, status: prListStatus(v.prState), mergedAt: v.mergedAt ? new Date(v.mergedAt) : null });
+  }
+  return out;
 }
 
 export interface PrListRow {
@@ -82,14 +104,29 @@ export type ShapedPr = PrListRow & { workerIds: string[] };
 const time = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : 0);
 const RANK: Record<string, number> = { conflict: 0, ci_failed: 1 };
 
-/** One row per PR, filtered to `state` and sorted: see the module comment. */
-export function shapePrRows(rows: PrListRow[], state: PrListState): ShapedPr[] {
+/**
+ * One row per PR, filtered to `state` and sorted: see the module comment.
+ * `kernel` (taskId → KernelPr) speaks for a kernel-owned PR: its delivery
+ * decides merged, closed and the state, and the worker columns are not read.
+ */
+export function shapePrRows(rows: PrListRow[], state: PrListState, kernel: ReadonlyMap<string, KernelPr> = new Map()): ShapedPr[] {
   const byPr = new Map<string, PrListRow[]>();
   for (const r of rows) byPr.set(r.prUrl, [...(byPr.get(r.prUrl) ?? []), r]);
 
   const out: ShapedPr[] = [];
   for (const group of byPr.values()) {
     const workerIds = group.map(r => r.workerId);
+    const k = group.map(r => (r.taskId ? kernel.get(r.taskId) : undefined)).find((x, i) => x && x.prNumber === group[i].prNumber);
+    if (k) {
+      const latest = [...group].sort((a, b) => time(b.startedAt) - time(a.startedAt))[0];
+      if (k.status === 'merged') {
+        if (state === 'merged') out.push({ ...latest, status: 'merged', mergedAt: k.mergedAt ?? latest.mergedAt, workerIds });
+        continue;
+      }
+      if (state === 'merged' || k.status === 'closed' || k.status === 'unresolvable') continue;
+      if (state === 'open' || state === 'attention' || k.status === state) out.push({ ...latest, status: k.status, workerIds });
+      continue;
+    }
     const merged = group.filter(r => r.mergedAt || r.status === 'merged').sort((a, b) => time(b.mergedAt) - time(a.mergedAt))[0];
     if (merged) {
       if (state === 'merged') out.push({ ...merged, status: 'merged', workerIds });
@@ -172,8 +209,16 @@ export function waitingReason(i: {
   escalated: boolean;
   approved: boolean;
   status: string | null;
+  /** Landing's own needs_human record: it saw the PR approved and green and still could not land it. */
+  handoff?: { cause: string; reason: string } | null;
 }): string {
   if (i.conflictFixesSpent) return 'conflict fixes used up';
+  // The handoff outranks a stale lifecycle ("CI not green yet"), but not a
+  // PR that has since gone conflicting or red.
+  if (i.handoff && i.status !== 'conflict' && i.status !== 'ci_failed') {
+    if (i.handoff.cause === 'deny_path') return `${i.approved ? 'approved, ' : ''}protected path — merge is yours`;
+    return `landing needs you: ${i.handoff.reason}`;
+  }
   const blocked = i.status === 'conflict' ? 'conflicting'
     : i.status === 'ci_failed' ? 'CI red'
     : i.status === 'ci_green' ? null
@@ -199,6 +244,7 @@ async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Prom
       conflictFixesSpent: attention.deadZoneExhaustedMap.has(w.id),
       escalated: !!w.taskId && attention.escalationMap.has(w.taskId),
       approved: !!w.taskId && attention.approvalMap.has(w.taskId),
+      handoff: w.taskId ? attention.landingHandoffMap.get(w.taskId) ?? null : null,
       status: statusByWorker.get(w.id) ?? null,
     }));
   }
@@ -252,7 +298,8 @@ export async function listPrsQuery(opts: { workspaceIds: string[]; state: PrList
     .orderBy(desc(workers.startedAt))
     .limit(1000);
   const limit = Math.min(opts.limit ?? 20, MAX_PR_LIST);
-  const shaped = shapePrRows(rows as PrListRow[], opts.state);
+  const kernel = kernelPrStatuses(await getDeliveryViewsForTasks(rows.flatMap(r => (r.taskId ? [r.taskId] : []))));
+  const shaped = shapePrRows(rows as PrListRow[], opts.state, kernel);
   // attention filters on the signals, so it reads them for every open PR first.
   const prs = opts.state === 'attention' ? shaped : shaped.slice(0, limit);
   const attention = opts.state === 'merged' ? null : await loadAttentionIndex(prs, opts.workspaceIds);

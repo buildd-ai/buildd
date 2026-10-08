@@ -13,6 +13,21 @@ buildd              # or: buildd service install, to run it in the background
 clone of this repo under `~/.buildd`, headless Chromium, and the `buildd`
 launcher at `~/.local/bin/buildd`.
 
+**Only using buildd from your own Claude Code, Codex or Cursor?** You don't need
+the runner. The client-only install checks out just `buildd login`, `buildd
+install` and the agent plugin, with no `bun install`, no Chromium and no service:
+
+```bash
+curl -fsSL https://buildd.dev/install.sh | bash -s -- --client
+exec $SHELL
+buildd install --global   # the installer already ran buildd login if you weren't logged in
+```
+
+Nothing runs buildd tasks on that machine; `buildd` on its own says the runner
+isn't installed. Run the installer again with `--client` to update it, or
+without it to add the runner in place. `--client` over a full install changes
+nothing (the full install already has everything).
+
 The runner is headless: it serves no local page unless started with
 `buildd --debug` (http://localhost:8766), and without a login it idles, so
 `buildd login` comes first. Running `buildd` on its own starts the runner in
@@ -187,7 +202,11 @@ Codex task per login, or give Codex a team OpenAI API key.
 | `buildd status` | Show login status |
 | `buildd service install\|uninstall\|status\|logs` | Manage the background service (macOS/Linux) |
 | `buildd init <workspace-id>` | Write a per-repo `.mcp.json` for Claude Code |
-| `buildd install --global` | Register the buildd MCP server in `~/.claude.json`, and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
+| `buildd install --global` | Register the buildd MCP server for your workspace folders only, across every team you are in (per folder in `~/.claude.json`; a folder in a team your login key can't reach signs in with OAuth instead; a repo with its own buildd `.mcp.json` is left alone), and install the session presence hooks + skill for every detected client (Claude Code, Codex, Cursor) — see `plugin/README.md` |
+| `buildd install --here` | Register the buildd MCP server for the current folder, workspace or not (e.g. to set up a new workspace) |
+| `buildd install --global --everywhere` | Register it for every Claude Code session instead |
+| `buildd install --global --oauth` (or `--here --oauth`) | Same folders, but each points at that workspace's OAuth MCP endpoint with no key on disk; Claude Code signs you in in the browser the first time each folder uses buildd. Opt-in for now |
+| `buildd install --global --status` | List every buildd MCP entry in `~/.claude.json` and whether it uses the key or OAuth (no network) |
 | `buildd install [--global] --status` / `--uninstall` | Show or remove only buildd's own hook entries; every other hook is preserved |
 
 ## Agent identity on buildd

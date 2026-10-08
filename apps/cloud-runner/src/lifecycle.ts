@@ -42,6 +42,12 @@ import type { ReusedContainer, WarmContainer } from './container-lease';
 export const RESET_COMMAND = ['buildd-once', '--reset-container'] as const;
 /** The reset's last line on success, next to exit 0. */
 export const RESET_OK_LINE = 'BUILDD_RESET=ok';
+/** A lease container's deferred warm snapshot upload, before it is destroyed (apps/runner/src/warm-upload-cli.ts). */
+export const WARM_UPLOAD_COMMAND = ['buildd-once', '--upload-warm'] as const;
+/** That command's last line. */
+export const WARM_UPLOAD_DONE_PREFIX = 'BUILDD_WARM_UPLOAD_DONE=';
+/** Set on a lease container's run: the runner defers its warm upload (apps/runner/src/warm-repo.ts). */
+export const WARM_UPLOAD_DEFER_ENV = 'BUILDD_WARM_UPLOAD_DEFER';
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
@@ -124,6 +130,21 @@ export interface RunState {
   warm?: WarmContainer;
   /** Lease agent: this attempt starts in a container another run left warm. */
   reusedContainer?: ReusedContainer;
+  /**
+   * Lease agent: since when the warm container is uploading the snapshot its
+   * last run deferred, just before it is destroyed. The lease is busy meanwhile.
+   */
+  warmUploadSince?: number;
+  /**
+   * Lease agent: the workspace's warm cap (gitConfig.warmSnapshot.maxBytes)
+   * from the last run's authenticated grant, for that deferred upload.
+   */
+  snapshotMaxBytes?: number;
+  /**
+   * Task agent: a dispatch held for a lease in its tail (since when, and the
+   * request). Routed at once when the agent restarts before it was.
+   */
+  routePending?: { since: number; request: DispatchRequest };
 }
 
 /** One agent restart found by `recoverOrphan` (the container outlives the agent). */
@@ -171,6 +192,12 @@ export interface DispatchRequest {
    * never from the webhook body. Keys container reuse (container-lease.ts).
    */
   workspaceId?: string;
+  /**
+   * How long the task agent held this dispatch for a lease of its workspace
+   * to finish its tail and go warm (container-lease.ts waitForTailLease),
+   * for the run report. Absent: no wait.
+   */
+  leaseWaitMs?: number;
 }
 
 /**
@@ -334,6 +361,9 @@ export function resolveStartTimeoutMs(env: { CONTAINER_START_TIMEOUT_MS?: string
 }
 
 export interface ContainerEnvSource {
+  BROWSER_BRIDGE?: string;
+  /** Ephemeral capability created by the owning agent for this attempt. */
+  browserSessionToken?: string;
   BUILDD_SERVER?: string;
   BUILDD_API_KEY?: string;
   MODEL?: string;
@@ -455,24 +485,40 @@ export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): R
     BUILDD_EXECUTOR: CLOUD_EXECUTOR,
     [RUNNER_GROUP_CONTAINER_ENV]: env.RUNNER_GROUP || DEFAULT_RUNNER_GROUP,
   };
+  if (env.BROWSER_BRIDGE === '1' && env.browserSessionToken) {
+    out.BUILDD_BROWSER_BRIDGE_URL = 'https://buildd-browser.invalid';
+    out.BUILDD_BROWSER_SESSION_TOKEN = env.browserSessionToken;
+  }
   const optional = ['MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
   for (const key of optional) {
     const v = env[key];
     if (v) out[key] = v;
   }
-  if (env.WARM_REPOS === '1') {
-    // The runner restores and uploads snapshots through this pseudo-host;
-    // the egress handler serves it (snapshots.ts). No key, no credential.
-    out.BUILDD_WARM_REPO = '1';
-    out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
-    if (/^\d{1,16}$/.test(env.WARM_MAX_BUNDLE_BYTES?.trim() ?? '')) {
-      out.BUILDD_WARM_MAX_BUNDLE_BYTES = String(warmMaxBundleBytes(env));
-    }
-  }
+  Object.assign(out, warmRepoEnv(env));
   if (env.RESUMABLE_RUNS === '1') {
     // Park a worker that waits for input instead of holding the container.
     out.BUILDD_ONCE_PARK = '1';
     out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
+  }
+  return out;
+}
+
+/**
+ * The env of the deferred warm upload: the image env and the snapshot
+ * pseudo-host only. No token: the run is over, and the snapshot host is
+ * authorised by the lease (worker-agent.ts getSnapshotScope), not the container.
+ */
+export function warmUploadEnv(env: ContainerEnvSource): Record<string, string> {
+  return { ...IMAGE_ENV, BUILDD_EXECUTOR: CLOUD_EXECUTOR, ...warmRepoEnv(env) };
+}
+
+function warmRepoEnv(env: ContainerEnvSource): Record<string, string> {
+  if (env.WARM_REPOS !== '1') return {};
+  // The runner restores and uploads snapshots through this pseudo-host;
+  // the egress handler serves it (snapshots.ts). No key, no credential.
+  const out: Record<string, string> = { BUILDD_WARM_REPO: '1', BUILDD_SNAPSHOT_URL: `https://${SNAPSHOT_HOST}` };
+  if (/^\d{1,16}$/.test(env.WARM_MAX_BUNDLE_BYTES?.trim() ?? '')) {
+    out.BUILDD_WARM_MAX_BUNDLE_BYTES = String(warmMaxBundleBytes(env));
   }
   return out;
 }

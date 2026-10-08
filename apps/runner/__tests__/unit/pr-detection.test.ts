@@ -29,6 +29,12 @@ describe('isCreatePrCall', () => {
     expect(isCreatePrCall('mcp__buildd__buildd', { action: 'create_pr' })).toBe(true);
   });
 
+  test('true for create_pr on the group tool buildd_work (the standard surface)', () => {
+    expect(isCreatePrCall('mcp__buildd__buildd_work', { action: 'create_pr' })).toBe(true);
+    expect(isCreatePrCall('mcp__codex_apps__buildd.buildd_work', { action: 'create_pr' })).toBe(true);
+    expect(isCreatePrCall('mcp__buildd__buildd_work', { action: 'complete_task' })).toBe(false);
+  });
+
   test('false for other buildd actions and unrelated tools', () => {
     expect(isCreatePrCall('mcp__buildd__buildd', { action: 'complete_task' })).toBe(false);
     expect(isCreatePrCall('Bash', { command: 'git push' })).toBe(false);
@@ -41,6 +47,16 @@ describe('detectCreatedPr', () => {
     const r = detectCreatedPr({
       toolName: 'mcp__buildd__buildd',
       input: { action: 'create_pr' },
+      resultText: SUCCESS_RESULT,
+    });
+    expect(r.created).toBe(true);
+    expect(r.url).toBe('https://github.com/buildd-ai/buildd/pull/42');
+  });
+
+  test('detects a real PR created through the group tool', () => {
+    const r = detectCreatedPr({
+      toolName: 'mcp__buildd__buildd_work',
+      input: { action: 'create_pr', params: { title: 't' } },
       resultText: SUCCESS_RESULT,
     });
     expect(r.created).toBe(true);

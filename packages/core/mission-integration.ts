@@ -131,8 +131,30 @@ export function isPrLegalForMissionTask(args: {
 }
 
 /**
+ * Does `branch` embed `taskId` — the first 8 characters every task branch
+ * carries (`generateTaskBranchName` in `./branch-names.ts`)?
+ *
+ * A read of data already present in the string, not a re-derivation of the
+ * naming rule: `branch-names.ts` imports `MISSION_BRANCH_PREFIX` from this
+ * file, so this file importing it back to regenerate a candidate name would
+ * be the circular, two-generators mistake that file's own docstring warns
+ * about. Matching the embedded id segment sidesteps that entirely — it holds
+ * regardless of `branchPrefix` / `useBuildBranch` / `branchingStrategy`, none
+ * of which this pure predicate ever sees. The id segment is always followed
+ * by `-<slug>` or end-of-string in every shape the generator produces, so
+ * requiring that boundary (rather than a bare substring match) is cheap
+ * insurance against a slug that coincidentally contains 8 matching hex chars.
+ */
+function branchNamesTaskId(branch: string, taskId: string): boolean {
+  const id8 = taskId.trim().slice(0, 8).toLowerCase();
+  if (id8.length < 8) return false;
+  return new RegExp(`${id8}(-|$)`).test(branch.toLowerCase());
+}
+
+/**
  * Does `contextBaseBranch` name a genuine stacked-plan predecessor, rather
- * than the Option A′ default or the recovery-task current-head marker?
+ * than the Option A′ default, the recovery-task current-head marker, or an
+ * unrelated branch nobody declared a dependency on?
  *
  * A stacked plan step's `context.baseBranch` names a *sibling task's own
  * branch* (`approve-plan.ts`'s `resolveDependencyBranch`) — real stacking,
@@ -143,6 +165,17 @@ export function isPrLegalForMissionTask(args: {
  * must not be mistaken for a stacked declaration — nor must the Option A′
  * default, where `context.baseBranch` was filled in as the integration base
  * itself and so trivially matches it.
+ *
+ * Neither is enough on its own, though: a value that merely isn't the
+ * integration branch or the head is not evidence of a *declared* dependency —
+ * it is just everything else. So this also requires `dependsOn` (this task's
+ * `tasks.dependsOn`) to name a task whose id is embedded in `base`
+ * (`branchNamesTaskId`). A `baseBranch` naming a branch with no such edge is
+ * unverified and must not be treated as a stack: a plan step that sets
+ * `baseBranch` without pairing it with `dependsOn` (schema allows this —
+ * `planning.ts` only says "usually paired") did not declare the dependency it
+ * needs to stack on, and `resolveTaskPrBase` must fall through to the
+ * mission's real integration branch for it, enforced.
  *
  * Every mission-integration derivation/enforcement point (PR creation,
  * adoption, retarget detection) must skip a task this returns `true` for —
@@ -163,6 +196,8 @@ export function isStackedPhaseBase(args: {
   contextBaseBranch?: string | null;
   head?: string | null;
   mission?: MissionIntegrationFields | null;
+  /** This task's `tasks.dependsOn` — the only sibling branches a stacked phase may name. */
+  dependsOn?: string[] | null;
 }): boolean {
   const integrationBase = missionIntegrationBase(args.mission);
   if (!integrationBase) return false;
@@ -170,7 +205,7 @@ export function isStackedPhaseBase(args: {
   if (!base) return false;
   if (looksLikeMissionIntegrationBranch(base)) return false;
   if (base === args.head) return false;
-  return true;
+  return (args.dependsOn ?? []).some((id) => branchNamesTaskId(base, id));
 }
 
 /** Which input decided a task PR's base. Reported so a caller can say why. */
@@ -195,6 +230,8 @@ export interface TaskPrBaseTask {
   title?: string | null;
   taskClass?: string | null;
   context?: unknown;
+  /** `tasks.dependsOn` — verifies a stacked-phase `context.baseBranch` declaration. */
+  dependsOn?: string[] | null;
 }
 
 /**
@@ -252,6 +289,7 @@ export function resolveTaskPrBase(args: {
       contextBaseBranch,
       head: args.head ?? null,
       mission: args.mission,
+      dependsOn: args.task?.dependsOn ?? null,
     });
   const enforced =
     !!integrationBase && !isMissionPrOwner && !isStackedPhase && !args.integrationBaseMissing;

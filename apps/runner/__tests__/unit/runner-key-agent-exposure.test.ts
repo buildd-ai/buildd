@@ -10,7 +10,7 @@
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/runner-key-agent-exposure.test.ts
  */
 import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -20,7 +20,7 @@ import {
   urlOrigin,
 } from '../../src/mcp-json';
 import { withoutRunnerKeyValues } from '../../src/runner-key-guard';
-import { writeBuilddMcpEntry } from '../../src/claude-json-mcp';
+import { refreshBuilddMcpEntries } from '../../src/claude-json-mcp';
 
 const RUNNER_KEY = 'bld_runner_key_never_for_agents';
 const TASK_TOKEN = 'bldt_task_token_for_this_session';
@@ -163,24 +163,50 @@ describe('workers.ts wiring', () => {
   });
 });
 
-describe('writeBuilddMcpEntry (~/.claude.json from buildd login)', () => {
+describe('refreshBuilddMcpEntries (buildd login keeps the install scope)', () => {
   let dir: string;
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+  const key = (k: string) => ({ type: 'http', url: 'https://old.test/api/mcp', headers: { Authorization: `Bearer ${k}` } });
 
-  test('writes the buildd entry, keeps the rest, and leaves the file 0600', () => {
+  test('re-keys existing key entries (user-wide and per folder), never adds a user-wide one, leaves OAuth entries alone', () => {
     dir = mkdtempSync(join(tmpdir(), 'claude-json-'));
     const p = join(dir, '.claude.json');
-    writeFileSync(p, JSON.stringify({ theme: 'dark', mcpServers: { other: { type: 'http', url: 'https://x.test' } } }));
-    chmodSync(p, 0o644);
-    writeBuilddMcpEntry(p, 'bld_human_key', 'https://buildd.test');
+    const oauth = { type: 'http', url: 'https://old.test/api/mcp-oauth/ws-1' };
+    writeFileSync(p, JSON.stringify({
+      theme: 'dark',
+      projects: {
+        '/code/a': { allowedTools: ['Bash'], mcpServers: { buildd: key('bld_old'), other: { command: 'x' } } },
+        '/code/b': { mcpServers: { buildd: oauth } },
+        '/code/c': {},
+      },
+    }));
+    expect(refreshBuilddMcpEntries(p, 'bld_new', 'https://buildd.test')).toBe(1);
     const data = JSON.parse(readFileSync(p, 'utf-8'));
+    expect(data.mcpServers?.buildd).toBeUndefined();
+    expect(data.projects['/code/a'].mcpServers.buildd).toEqual({ type: 'http', url: 'https://buildd.test/api/mcp', headers: { Authorization: 'Bearer bld_new' } });
+    expect(data.projects['/code/a'].mcpServers.other).toEqual({ command: 'x' });
+    expect(data.projects['/code/a'].allowedTools).toEqual(['Bash']);
+    expect(data.projects['/code/b'].mcpServers.buildd).toEqual(oauth);
+    expect(data.projects['/code/c']).toEqual({});
     expect(data.theme).toBe('dark');
-    expect(data.mcpServers.other).toBeDefined();
-    expect(data.mcpServers.buildd).toEqual({
-      type: 'http',
-      url: 'https://buildd.test/api/mcp',
-      headers: { Authorization: 'Bearer bld_human_key' },
-    });
     expect(statSync(p).mode & 0o777).toBe(0o600);
+  });
+
+  test('an existing user-wide key entry (from --everywhere) is re-keyed in place', () => {
+    dir = mkdtempSync(join(tmpdir(), 'claude-json-'));
+    const p = join(dir, '.claude.json');
+    writeFileSync(p, JSON.stringify({ mcpServers: { buildd: key('bld_old') } }));
+    expect(refreshBuilddMcpEntries(p, 'bld_new', 'https://buildd.test')).toBe(1);
+    expect(JSON.parse(readFileSync(p, 'utf-8')).mcpServers.buildd.headers.Authorization).toBe('Bearer bld_new');
+  });
+
+  test('no file or no buildd entry: nothing written, 0', () => {
+    dir = mkdtempSync(join(tmpdir(), 'claude-json-'));
+    const p = join(dir, '.claude.json');
+    expect(refreshBuilddMcpEntries(p, 'bld_new', 'https://buildd.test')).toBe(0);
+    expect(existsSync(p)).toBe(false);
+    writeFileSync(p, '{"mcpServers":{"x":{"command":"y"}}}');
+    expect(refreshBuilddMcpEntries(p, 'bld_new', 'https://buildd.test')).toBe(0);
+    expect(readFileSync(p, 'utf-8')).toBe('{"mcpServers":{"x":{"command":"y"}}}');
   });
 });

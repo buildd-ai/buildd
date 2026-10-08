@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Scan the candidate commit message for production data (see pre-commit, which
+# scans the staged tree). Never blocks when python3 or the checker is missing.
+set -euo pipefail
+if command -v python3 >/dev/null 2>&1 && [ -f scripts/check_no_prod_data.py ]; then
+  if ! bash scripts/check-no-prod-data-local.sh --staged --message-file "$1" 2>&1; then
+    echo "✖ no-prod-data check failed on the commit message." >&2
+    exit 1
+  fi
+fi

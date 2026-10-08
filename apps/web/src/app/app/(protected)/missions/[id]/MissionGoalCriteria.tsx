@@ -61,11 +61,11 @@ function formatRelativeTime(isoString: string): string {
 function PlainErrorMessage({ error, testId }: { error: PlainError; testId?: string }) {
   return (
     <div role="alert" data-testid={testId}>
-      <p className="text-[12px] text-status-error leading-snug">{error.text}</p>
+      <p className="text-meta text-status-error leading-snug">{error.text}</p>
       {error.detail && (
         <details className="mt-1">
-          <summary className="text-[11px] text-text-muted cursor-pointer">Technical details</summary>
-          <p className="text-[11px] font-mono text-text-muted mt-1 break-words">{error.detail}</p>
+          <summary className="text-meta text-text-muted cursor-pointer">Technical details</summary>
+          <p className="text-meta font-mono text-text-muted mt-1 break-words">{error.detail}</p>
         </details>
       )}
     </div>
@@ -150,7 +150,7 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
   return (
     <form onSubmit={handleSubmit} className="border border-border-default rounded-sm p-3 space-y-3 bg-surface-2">
       <div className="flex items-center gap-2">
-        <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
+        <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
         <Select
           aria-label="Criterion type"
           value={type}
@@ -170,24 +170,24 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
       {type === 'description' && (
         <>
           <div className="flex items-start gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Criteria</label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
               placeholder="e.g. Scorecard artifact produced covering all retrieval layers"
               rows={2}
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
               required
             />
           </div>
           <div className="flex items-start gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Why not a script?</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Why not a script?</label>
             <textarea
               value={notMechanizableReason}
               onChange={e => setNotMechanizableReason(e.target.value)}
               placeholder="A prose verdict needs a live model. Say why no command / PR / artifact / task check can express this."
               rows={2}
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border resize-none"
               required
               minLength={10}
             />
@@ -197,12 +197,12 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
 
       {type === 'command' && (
         <div className="flex items-start gap-2">
-          <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Command</label>
+          <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0 pt-1">Command</label>
           <input
             value={command}
             onChange={e => setCommand(e.target.value)}
             placeholder="e.g. bun test"
-            className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+            className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
             required
           />
         </div>
@@ -211,21 +211,21 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
       {type === 'artifact_exists' && (
         <>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Key</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Key</label>
             <input
               value={artifactKey}
               onChange={e => setArtifactKey(e.target.value)}
               placeholder="e.g. deploy-url (optional)"
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Type</label>
             <input
               value={artifactType}
               onChange={e => setArtifactType(e.target.value)}
               placeholder="e.g. summary (optional)"
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
             />
           </div>
         </>
@@ -234,17 +234,17 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
       {type === 'metric' && (
         <>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Query</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Query</label>
             <input
               value={metricQuery}
               onChange={e => setMetricQuery(e.target.value)}
               placeholder="e.g. test_coverage"
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
               required
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Op</label>
+            <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Op</label>
             <Select
               aria-label="Comparison"
               value={metricOp}
@@ -266,34 +266,34 @@ export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add cr
               onChange={e => setMetricThreshold(e.target.value)}
               placeholder="threshold"
               type="number"
-              className="w-24 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+              className="w-24 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
               required
             />
             <input
               value={metricUnit}
               onChange={e => setMetricUnit(e.target.value)}
               placeholder="unit (opt)"
-              className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
+              className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border font-mono"
             />
           </div>
         </>
       )}
 
       <div className="flex items-center gap-2">
-        <label className="text-[11px] text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Label</label>
+        <label className="text-meta text-text-muted font-mono uppercase tracking-wide w-16 shrink-0">Label</label>
         <input
           value={label}
           onChange={e => setLabel(e.target.value)}
           placeholder="Custom label (optional)"
-          className="flex-1 bg-surface-1 border border-border-default text-[12px] text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
+          className="flex-1 bg-surface-1 border border-border-default text-meta text-text-primary px-2 py-1 rounded-sm focus:outline-none focus:border-accent-border"
         />
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <button type="submit" className="px-3 py-1 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors">
+        <button type="submit" className="px-3 py-1 text-meta font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors">
           {submitLabel}
         </button>
-        <button type="button" onClick={onCancel} className="px-3 py-1 text-[12px] text-text-muted hover:text-text-secondary transition-colors">
+        <button type="button" onClick={onCancel} className="px-3 py-1 text-meta text-text-muted hover:text-text-secondary transition-colors">
           Cancel
         </button>
       </div>
@@ -454,25 +454,25 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         onKeyDown={(e) => e.key === 'Enter' && toggleRow(i)}
       >
         {/* Verdict badge */}
-        <span className={`shrink-0 mt-0.5 w-5 h-5 flex items-center justify-center border text-[11px] font-bold ${vc.cls}`}>
+        <span className={`shrink-0 mt-0.5 w-5 h-5 flex items-center justify-center border text-meta font-bold ${vc.cls}`}>
           {vc.icon}
         </span>
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <span className={`inline-block text-[11px] md:text-[10px] px-1 rounded-sm mb-1 ${auto ? 'font-mono text-text-muted border border-border-default' : 'italic text-text-muted border border-dashed border-border-default'}`}>
+          <span className={`inline-block text-meta px-1 rounded-sm mb-1 ${auto ? 'font-mono text-text-muted border border-border-default' : 'italic text-text-muted border border-dashed border-border-default'}`}>
             {typeLabel}
           </span>
-          <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
+          <p className={`text-body text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
             {label}
           </p>
           {isExpanded && c.type === 'description' && c.notMechanizableReason && (
-            <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
+            <p className="text-meta text-text-muted mt-1 italic leading-snug">
               Judged by {c.grader === 'api' ? 'an API call' : c.grader === 'runner' ? 'a runner agent' : 'an API call, or a runner agent when no key is set'} because: {c.notMechanizableReason}
             </p>
           )}
           {/* Inline CI-block annotation for the PR check — derived from live worker state */}
           {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
-            <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
+            <p className="text-meta text-status-error mt-0.5 leading-snug font-mono">
               blocked: {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
               {failingCiPrNumbers.map((n, idx) => (
                 <span key={n}>
@@ -483,11 +483,11 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             </p>
           )}
           {cs?.evidence ? (
-            <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
+            <p className={`text-meta text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
               {cs.evidence}
             </p>
           ) : !cs && criteriaState ? (
-            <p className="text-[12px] text-text-muted mt-0.5 leading-snug" data-testid="criterion-not-checked">
+            <p className="text-meta text-text-muted mt-0.5 leading-snug" data-testid="criterion-not-checked">
               Not checked since this was added or changed.
             </p>
           ) : null}
@@ -495,7 +495,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             <a
               href={`/app/tasks/${cs.workerTaskId}`}
               onClick={(e) => e.stopPropagation()}
-              className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
+              className="inline-block text-meta font-mono text-text-muted hover:text-text-primary underline mt-0.5"
             >
               verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
             </a>
@@ -503,7 +503,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
           {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
               {cs.evidenceRefs.map((ref, ri) => (
-                <span key={ri} className="text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                <span key={ri} className="text-meta font-mono text-text-muted px-1 border border-border-default rounded-sm">
                   {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
                 </span>
               ))}
@@ -516,7 +516,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
             <button
               onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
               disabled={savingCriteria}
-              className="text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
+              className="text-meta text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
               title="Remove criterion"
               aria-label="Remove criterion"
             >
@@ -534,7 +534,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
     );
   }
 
-  const ctaClass = 'shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors disabled:opacity-50 active:scale-95 touch-manipulation';
+  const ctaClass = 'shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-meta font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors disabled:opacity-50 active:scale-95 touch-manipulation';
 
   return (
     <div className="card p-4">
@@ -543,7 +543,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="section-label whitespace-nowrap">Goal criteria</h2>
           {overallVerdict && !blocked && (
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
+            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}
@@ -579,8 +579,8 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
           that could only fail. */}
       {blocked && (
         <div className="mb-3 border-l-2 border-status-warning pl-3 py-1" data-testid="criteria-needs-check">
-          <p className="text-[13px] font-medium text-text-primary leading-snug">{blocked.headline}</p>
-          <p className="text-[12px] text-text-muted leading-snug mt-0.5">{blocked.reason}</p>
+          <p className="text-body font-medium text-text-primary leading-snug">{blocked.headline}</p>
+          <p className="text-meta text-text-muted leading-snug mt-0.5">{blocked.reason}</p>
           {!readonly && !showAddForm && (
             <button
               type="button"
@@ -597,7 +597,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
 
       {/* Last run metadata */}
       {evaluatedAt && !blocked && (
-        <p className="text-[11px] text-text-muted mb-3">
+        <p className="text-meta text-text-muted mb-3">
           Last run {formatRelativeTime(evaluatedAt)}{evaluatedBy ? ` · ${evaluatedBy}` : ''}
         </p>
       )}
@@ -611,12 +611,12 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       {/* Criteria list: automatic checks first, AI-judged ones set apart — only
           the former give the mission a verdict that needs no model. */}
       {criteria.length === 0 ? (
-        <p className="text-[13px] text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
+        <p className="text-body text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
       ) : (
         <div className="space-y-2 mb-3">
-          {showGroupHeadings && <p className="text-[11px] text-text-muted uppercase tracking-wide">Checked automatically</p>}
+          {showGroupHeadings && <p className="text-meta text-text-muted uppercase tracking-wide">Checked automatically</p>}
           {automatic.map(renderRow)}
-          {showGroupHeadings && <p className="text-[11px] text-text-muted uppercase tracking-wide pt-2">Judged by AI</p>}
+          {showGroupHeadings && <p className="text-meta text-text-muted uppercase tracking-wide pt-2">Judged by AI</p>}
           {judged.map(renderRow)}
         </div>
       )}
@@ -636,7 +636,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       {!readonly && !showAddForm && (
         <button
           onClick={() => setShowAddForm(true)}
-          className="text-[12px] text-text-muted hover:text-text-secondary transition-colors font-mono"
+          className="text-meta text-text-muted hover:text-text-secondary transition-colors font-mono"
         >
           + Add criterion
         </button>
@@ -646,8 +646,8 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       {!readonly && criteria.length > 0 && (
         <div className="mt-3 pt-3 border-t border-border-default flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <span className="text-[12px] text-text-secondary">Auto-verify on completion</span>
-            <p className="text-[11px] text-text-muted mt-0.5">Check criteria when the mission completes.</p>
+            <span className="text-meta text-text-secondary">Auto-verify on completion</span>
+            <p className="text-meta text-text-muted mt-0.5">Check criteria when the mission completes.</p>
           </div>
           <Switch
             checked={autoVerify}

@@ -15,6 +15,7 @@ describe('Home inbox nav badge', () => {
     expect(html).toContain('>home<');
     expect(html).toContain('bg-accent');
   });
+
   it('does not substitute an unrelated escalation count before the inbox mounts', () => {
     inboxCount = null;
     expect(renderToStaticMarkup(<MissionsBottomNav />)).not.toContain('nav-tab-badge');

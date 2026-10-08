@@ -278,6 +278,8 @@ export type CoreEvent =
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   /** A check suite completed red on a PR. Every delivery, once per PR in the suite. */
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
+  /** Every check suite on a worker PR's head passed (the PR's lifecycle is now ci_green). Every delivery. */
+  | { type: 'pr.ci_passed'; repoFullName: string; prNumber: number; headSha: string; installationId: number }
   /**
    * A push (`synchronize`) to an open PR a buildd worker owns: every delivery,
    * redeliveries included. `worker` is the newest row owning the PR (a retry
@@ -289,6 +291,18 @@ export type CoreEvent =
       repoFullName: string;
       pr: { number: number; headSha: string; htmlUrl: string; baseRef: string | null; body: string | null; draft: boolean };
       worker: { id: string; workspaceId: string; taskId: string | null; branch: string };
+    }
+  /**
+   * A buildd worker's PR became visible for review: opened ready, or taken out
+   * of draft. Every delivery, redeliveries included. Subscribers must be
+   * idempotent.
+   */
+  | {
+      type: 'pr.review_ready';
+      installationId: number;
+      repoFullName: string;
+      pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
+      worker: { id: string; workspaceId: string; taskId: string };
     };
 
 /** The worker that owns a PR, as the webhook resolved it. */

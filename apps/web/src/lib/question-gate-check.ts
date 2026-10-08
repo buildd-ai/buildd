@@ -4,8 +4,12 @@
  * Called by the runner, through POST /api/workers/[id]/question-check, before
  * it parks an AskUserQuestion. Two stages, both unconditional (the workspace
  * kill switch — `scope.gateEnabled === false` — is the only thing that skips
- * both):
+ * both), behind one deterministic step:
  *
+ *  0. Recover (`@buildd/core/human-attention`): a question whose own text is a
+ *     recoverable platform blocker, with no hard rail, is never sent — a
+ *     repair task is filed or reused and the agent is told to carry on. A
+ *     filing failure falls through to the stages below.
  *  1. Brief check (`QUESTION_GATE_DECISION`): a confident `needs_context`
  *     pushes the question back to the agent, up to the pushback cap.
  *  2. Decide / hold / ask (`QUESTION_DECIDE_DECISION`): once the brief check
@@ -15,7 +19,8 @@
  *     (`asked`).
  *
  * Never throws, and every failure sends the question unchanged (fail open).
- * Stage 2's answered calls are recorded as `decision_records` rows
+ * Both stages write `decision_records` rows (stage 1: prompt `qg1`; stage 2:
+ * `qd1`), so pushbacks show in `get_decision_stats` too, in the same ledger
  * (`packages/core/decision-ledger.ts` — the same ledger every other Jev
  * decision in buildd writes to, not a second mechanism); every call that
  * reached the provider, at either stage, also writes its `ai_usage` receipt.
@@ -27,11 +32,14 @@ import {
   HOLD_RESURFACE_MS,
   QUESTION_DECIDE_DECISION_TIMEOUT_MS,
   QUESTION_GATE_DECISION_TIMEOUT_MS,
+  QUESTION_GATE_PROMPT_VERSION,
   detectHardRail,
+  detectIrreversibleAction,
   fingerprintOf,
   gateQuestion,
   resolveDecideOutcome,
   type HardRailInput,
+  type HardRailKind,
   type QuestionDecideAnswer,
   type QuestionGateOutcome,
   type QuestionGateReply,
@@ -44,7 +52,8 @@ import {
   readQuestionDecideRun,
   readQuestionGateRun,
 } from '@buildd/core/question-gate-decision';
-import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText } from '@buildd/core/question-brief';
+import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf } from '@buildd/core/question-brief';
+import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RepairTaskSpec } from '@buildd/core/human-attention';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -103,7 +112,20 @@ export interface QuestionCheckDeps {
   runDecide?: typeof QUESTION_DECIDE_DECISION.run;
   record?: (input: DecisionLedgerInput) => Promise<string | null | void>;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
+  /**
+   * File or reuse the repair task for a recoverable blocker; null when it could
+   * not. A slot, not a default: the filer lives in a module and the composition
+   * root (modules.ts) supplies it. Absent, a recoverable blocker is asked.
+   */
+  fileRepair?: (input: FileRepairInput) => Promise<{ id: string; reused: boolean } | null>;
   now?: () => number;
+}
+
+export interface FileRepairInput {
+  workspaceId: string;
+  missionId: string | null;
+  blockedTaskId: string;
+  spec: RepairTaskSpec;
 }
 
 async function defaultResolveAccess(s: { teamId: string; workspaceId: string; accountId: string | null }): Promise<DecisionAccess> {
@@ -119,6 +141,16 @@ async function defaultRecord(input: DecisionLedgerInput): Promise<string | null>
 async function defaultRecordReceipts(receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }): Promise<void> {
   const { insertDecisionReceipts } = await import('./memory-decisions');
   await insertDecisionReceipts(receipts, scope);
+}
+
+/** Subject type a decided row is filed under, so the worker's end can label it. */
+export const DECIDED_SUBJECT_TYPE = 'worker';
+
+/** The chosen option's full visible text (label, consequence, description). */
+function chosenOptionText(q: QuestionGateRequest['question'], index: number): string[] {
+  const o = q.options?.[index];
+  if (!o) return [];
+  return typeof o === 'string' ? [o] : [o.label, o.consequence, o.description].filter((t): t is string => !!t);
 }
 
 /** A gateway-routed decision model cannot answer a decision pinned to Jev. */
@@ -139,6 +171,46 @@ export async function checkQuestion(
 
   if (!scope.gateEnabled) {
     return { verdict: 'send', outcome: 'off', version: null, latencyMs: now() - started };
+  }
+
+  // ── Stage 0: recover instead of asking ──────────────────────────────────
+  // Deterministic and model-free, so it runs for sensitive workspaces too (no
+  // text leaves the workspace: the repair task is filed in it). A hard rail
+  // always wins — those questions go to a person whatever they describe.
+  const questionText = briefedQuestionText(req.question);
+  // The question's own prompt/context naming an irreversible action is the
+  // pre-call half of the `irreversible` rail (the picked option is the other
+  // half, in stage 2): a person must see it, never Jev or auto-repair.
+  const rail: HardRailKind | null = detectHardRail({ ...scope.hardRail, questionText })
+    ?? (detectIrreversibleAction([req.question.prompt, req.question.context]) ? 'irreversible' : null);
+  const blocker = rail ? null : classifyRecoverableBlocker(questionText);
+  if (blocker && deps.fileRepair) {
+    const spec = repairTaskSpec(blocker, {
+      scopeId: scope.missionId ?? scope.workspaceId,
+      blockedTaskId: scope.taskId,
+      blockedTaskTitle: scope.taskTitle,
+      evidence: [req.question.context, req.question.prompt].filter(Boolean).join(' '),
+    });
+    const repair = await deps.fileRepair({
+      workspaceId: scope.workspaceId, missionId: scope.missionId, blockedTaskId: scope.taskId, spec,
+    }).catch(() => null);
+    if (repair) {
+      await record({
+        teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
+        capability: 'question_gate', fingerprint: fingerprintOf({ blocker: blocker.kind, taskId: scope.taskId }),
+        ruleAnswer: 'recover', appliedAnswer: 'recover', applied: true, status: 'applied',
+        reason: `recovered:${blocker.kind}`, latencyMs: now() - started,
+      }).catch(() => {});
+      return {
+        verdict: 'decide',
+        outcome: 'recovered',
+        disposition: 'decide',
+        reason: recoveredAnswerText(blocker, { repairTaskId: repair.id, reused: repair.reused, recommended: recommendedOf(req.question)?.label }),
+        repairTaskId: repair.id,
+        version: null,
+        latencyMs: now() - started,
+      };
+    }
   }
 
   // ── Stage 1: the brief check ────────────────────────────────────────────
@@ -187,11 +259,23 @@ export async function checkQuestion(
       error = 'transport';
     }
     if (gateReceipts.length) await recordReceipts(gateReceipts, { teamId: scope.teamId, accountId: scope.accountId }).catch(() => {});
+    const stage1Base = {
+      teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
+      capability: 'question_gate', fingerprint: fingerprintOf({ stage: 1, taskId: scope.taskId, req }),
+      promptVersion: QUESTION_GATE_PROMPT_VERSION, minConfidence: DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
+      latencyMs: now() - started,
+    };
     if (error) {
+      await record({ ...stage1Base, status: 'fallback', applied: false, reason: error }).catch(() => {});
       stage1Outcome = 'error';
       skipStage2 = true;
     } else {
       const gated = gateQuestion(label && confidence !== undefined ? { label, confidence } : null, DEFAULT_QUESTION_GATE_MIN_CONFIDENCE);
+      await record({
+        ...stage1Base, verdict: label ?? null, confidence: confidence ?? null,
+        applied: gated.verdict === 'pushback', status: gated.verdict === 'pushback' ? 'applied' : 'suggested',
+        appliedAnswer: gated.verdict === 'pushback' ? 'pushback' : 'send',
+      }).catch(() => {});
       if (gated.verdict === 'pushback') {
         return {
           verdict: 'pushback',
@@ -212,7 +296,6 @@ export async function checkQuestion(
   }
 
   // ── Stage 2: decide / hold / ask ────────────────────────────────────────
-  const rail = detectHardRail({ ...scope.hardRail, questionText: briefedQuestionText(req.question) });
   if (rail) {
     await record({
       teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
@@ -280,8 +363,20 @@ export async function checkQuestion(
 
   if (resolution.disposition === 'decide' && resolution.optionIndex !== undefined) {
     const chosenLabel = optionLabels(req.question)[resolution.optionIndex] ?? '';
+    // Option-level rail: the pick itself names an irreversible/external
+    // action, so a person sees the question (`ask`, not `hold`).
+    if (detectIrreversibleAction(chosenOptionText(req.question, resolution.optionIndex))) {
+      await record({
+        ...ledgerBase, applied: false, status: 'suggested', reason: 'rail_blocked:irreversible',
+      }).catch(() => {});
+      return {
+        verdict: 'send', outcome: 'hard_rail', disposition: 'ask', rail: 'irreversible',
+        version: QUESTION_DECIDE_DECISION.version, latencyMs,
+      };
+    }
     await record({
       ...ledgerBase, applied: true, status: 'applied', appliedAnswer: chosenLabel,
+      subjectType: DECIDED_SUBJECT_TYPE, subjectId: scope.workerId,
     }).catch(() => {});
     return {
       verdict: 'decide',

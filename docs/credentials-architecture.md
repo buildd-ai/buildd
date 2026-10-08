@@ -112,6 +112,22 @@ LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
 team, a tie to the endpoint, only the winner delivered. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
+**Protocol capabilities** ride on the same blob: `"capabilities": {
+"toolSearch"?: boolean }`, either kind. `toolSearch` is Claude's deferred
+MCP/tool loading (ToolSearch + `tool_reference` blocks), which Claude Code
+switches off by itself for any non-Anthropic `ANTHROPIC_BASE_URL`. The
+effective value (`effectiveToolSearch`) is the explicit one when set, else the
+kind's default: `openrouter` on (it supports the semantics; `false` is the
+escape hatch), `gateway` and `anthropic-compatible` off (a LiteLLM deployment or
+custom proxy may not pass them through). It resolves per row, so a workspace
+row carries its own value and the winner's is what the claim sends
+(`modelEndpoint.toolSearch`, Claude tasks only). The runner then sets
+`ENABLE_TOOL_SEARCH=true` in that run's env (`applyModelEnv`) and deletes it on
+every other path; it is not in `RUNNER_ENV_PASSTHROUGH`, so one runner can
+serve endpoints that differ. Codex is unaffected. Not yet applied on cloud
+runs: the container talks to `api.anthropic.com` and egress rewrites it, so
+Claude Code there keeps its Anthropic default.
+
 **The same row also routes Codex tasks**, for a `kind` that has an
 OpenAI-compatible wire in addition to its Anthropic one: `gateway` (LiteLLM
 speaks both off the same base) and `openrouter` (its native wire *is* OpenAI

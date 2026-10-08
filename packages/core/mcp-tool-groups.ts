@@ -18,6 +18,7 @@
  * `buildParamsDescription` and is served on demand by the `help` action.
  */
 import { allActions, buildParamsDescription, type BuilddAction } from './mcp-tools';
+import { BUILDD_MCP_TOOL_GROUPS } from '@buildd/shared';
 
 /** Chat's tool groups. `notifications` has chat-native tools only. */
 export const CHAT_AREAS = ['missions', 'tasks', 'workers', 'prs', 'memory', 'schedules', 'artifacts', 'notifications', 'admin'] as const;
@@ -115,7 +116,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   suggest_schedule_update: 'work',
 };
 
-export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
+/** Declared in @buildd/shared so tool-name matching needs no action registry. */
+export const MCP_TOOL_GROUPS = BUILDD_MCP_TOOL_GROUPS;
 export type McpToolGroup = (typeof MCP_TOOL_GROUPS)[number];
 
 const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
@@ -287,7 +289,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
-  explain: 'what a task, mission, workspace or PR waits on, with evidence',
+  explain: 'task/mission/workspace/PR blockers and evidence',
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
   dispatch_health: 'task delivery: verdict, outbox counts, latency',
@@ -300,12 +302,12 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
-  list_prs: 'open PRs (conflicts and red CI first), or merged ones',
+  list_prs: 'open PRs (conflicts/red CI first) or merged',
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
   update_pr: 'replace a PR\'s body',
-  request_pr_review: 'hand a PR to a reviewer agent',
+  request_pr_review: 'dispatch PR review',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
   release_status: 'what a release would ship and whether CI is green',

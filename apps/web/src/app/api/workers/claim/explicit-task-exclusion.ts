@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
-import type { ClaimTaskExclusion, ClaimTaskExclusionCode } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, type ClaimTaskExclusion, type ClaimTaskExclusionCode, type WorkerEnvironment } from '@buildd/shared';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { dependencySatisfied } from './deps-gate';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
@@ -48,6 +48,7 @@ export type ExplicitTaskGates = Partial<Record<ExplicitTaskGateName, SQL>>;
 
 export interface ExplicitTaskProbe {
   status: string | null;
+  roleSlug?: string | null;
   claimedBy: string | null;
   expiresAt: Date | string | null;
   startAt: Date | string | null;
@@ -104,7 +105,9 @@ export function classifyExplicitTaskExclusion(probe: ExplicitTaskProbe | null, n
   }
   for (const [gate, code, detail] of GATE_ORDER) {
     const v = probe.gates[gate];
-    if (v === false || v === null) return { code, detail };
+    if (v === false || v === null) return { code, detail: gate === 'role' && probe.roleSlug === VISUAL_AUDITOR_ROLE_SLUG
+      ? 'This visual task requires the browser capability. This runner has no working browser provider and does not advertise the visual-auditor role. Check its browser provider probe; cloud-only workspaces cannot fall back to a host runner.'
+      : detail };
   }
   // Every condition of the claim WHERE is classified above (scope, status,
   // claim expiry, startAt, and each gate), so a row that passes all of them was
@@ -133,7 +136,9 @@ const shortId = (id: string) => id.slice(0, 8);
  * The deps_blocked sentence: which dependencies hold the task and why.
  *
  * POST /api/tasks adds a dependsOn edge to every in-flight task whose concrete
- * pathManifest overlaps the new one (path-overlap serialization). The filer
+ * pathManifest shares a file, a migration path or a serialized surface with
+ * the new one (path-overlap serialization; prefix-only overlap is soft and
+ * never an edge, see `partitionOverlapEdges`). The filer
  * never declared those edges, so "a dependency is not satisfied" on a task
  * they believe is dependency-free reads as a platform bug. When both manifests
  * overlap the sentence says the edge came from that rule.
@@ -191,6 +196,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
     const rows = await db
       .select({
         status: tasks.status,
+        roleSlug: tasks.roleSlug,
         claimedBy: tasks.claimedBy,
         expiresAt: tasks.expiresAt,
         startAt: tasks.startAt,
@@ -214,7 +220,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
       else if (v === false || v === 'f' || v === 'false' || v === null) gates[name] = false;
     }
     const exclusion = classifyExplicitTaskExclusion(
-      { status: row.status ?? null, claimedBy: row.claimedBy ?? null, expiresAt: row.expiresAt ?? null, startAt: row.startAt ?? null, gates },
+      { status: row.status ?? null, roleSlug: row.roleSlug ?? null, claimedBy: row.claimedBy ?? null, expiresAt: row.expiresAt ?? null, startAt: row.startAt ?? null, gates },
       opts.now,
     );
     if (exclusion.code === 'deps_blocked') {
@@ -366,10 +372,18 @@ export async function stampLastClaimAttempt(opts: {
   deferrals?: Record<string, number>;
   /** The specific gate, when the claim named one — `reason` alone is often just `no_pending_tasks`. */
   exclusion?: ClaimTaskExclusion;
+  browserProvider?: WorkerEnvironment['browserProvider'];
+  runnerGroup?: string | null;
   now: Date;
 }): Promise<void> {
   if (opts.workspaceIds.length === 0) return;
   try {
+    const probe = opts.browserProvider;
+    const browserRefusal = opts.exclusion?.code === 'role_mismatch' && probe?.ok === false
+      ? sql` || CASE WHEN ${tasks.roleSlug} = ${VISUAL_AUDITOR_ROLE_SLUG} AND COALESCE(${tasks.context} #>> '{visualQa,lastBrowserRefusal,at}', '') < ${new Date(opts.now.getTime() - 60_000).toISOString()}
+          THEN jsonb_build_object('visualQa', COALESCE(${tasks.context}->'visualQa', '{}'::jsonb) || jsonb_build_object('lastBrowserRefusal', ${JSON.stringify({ provider: probe.provider, code: probe.code ?? 'provider_unavailable', detail: probe.detail ?? opts.exclusion.detail, at: opts.now.toISOString(), runnerGroup: opts.runnerGroup ?? null })}::jsonb))
+          ELSE '{}'::jsonb END`
+      : sql``;
     await db.update(tasks)
       .set({
         context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
@@ -377,7 +391,7 @@ export async function stampLastClaimAttempt(opts: {
           lastClaimAttemptReason: opts.reason,
           ...(opts.deferrals ? { lastClaimAttemptDeferrals: opts.deferrals } : {}),
           ...(opts.exclusion ? { lastClaimAttemptExclusion: { code: opts.exclusion.code, detail: opts.exclusion.detail } } : {}),
-        })}::jsonb`,
+        })}::jsonb${browserRefusal}`,
         updatedAt: opts.now,
       })
       .where(explicitTaskScope(opts.taskId, opts.workspaceIds));

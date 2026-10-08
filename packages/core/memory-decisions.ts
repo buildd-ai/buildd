@@ -13,7 +13,8 @@
  * | type            | live   | overrides the caller's type above a high threshold      |
  * | update          | live   | resolves the 0.88 to 0.94 near-duplicate band           |
  * | use             | live   | writes memory_uses.outcome used / ignored               |
- * | relevance       | shadow | nothing; logs a verdict per pushed hit                  |
+ * | relevance       | live   | claim_context: demotes confident "not relevant" hits    |
+ * |                 | shadow | every other push: logs a verdict per hit, sampled       |
  * | promote         | live   | veto only: defers a rule-promoted candidate one cycle   |
  * | chat_tier       | live   | proposes a directive card in chat (judgeChatDirective)  |
  * | directive_scope | live   | preselects the card's scope (judgeChatDirective)        |
@@ -26,10 +27,11 @@
  * - `PROMOTE_VETO_LIVE`: the lifecycle asks promote for every item in shadow
  *   and the deterministic rule alone decides (./memory-lifecycle).
  * - `TYPE_OVERRIDE_LIVE`, `UPDATE_LIVE`, `USE_LABELS_LIVE`, `CHAT_TIER_LIVE`,
- *   `DIRECTIVE_SCOPE_LIVE`: their gate returns "not confident", so the rule
- *   that ran before the decision existed decides.
- *
- * Relevance is shadow and has nothing to roll back.
+ *   `DIRECTIVE_SCOPE_LIVE`, `RELEVANCE_DEMOTE_LIVE`: their gate returns "not
+ *   confident", so the rule that ran before the decision existed decides.
+ *   For relevance the web app also reads `MEMORY_RELEVANCE_LIVE=0`, which
+ *   uninstalls the live judge so claim_context goes back to the sampled shadow
+ *   (apps/web/src/lib/memory-decisions.ts).
  *
  * Every verdict is logged as a `memory_decisions` row (verdict, confidence,
  * what the rule said, whether it was applied). The thresholds are provisional:
@@ -85,6 +87,26 @@ export const UPDATE_MIN_CONFIDENCE = 0.9;
  * does not, so it needs more confidence than the other actions.
  */
 export const UPDATE_MERGE_MIN_CONFIDENCE = 0.95;
+/**
+ * Relevance demotion: a pushed claim_context hit moves below the others only
+ * when Jev says "not relevant" at p <= 0.15. The act is soft (order only, the
+ * hit stays in the list and `recall` still reaches it), but it is the first
+ * relevance verdict that changes what an agent reads, so it starts above the
+ * 0.8 the other soft acts use.
+ */
+export const RELEVANCE_DEMOTE_MIN_CONFIDENCE = 0.85;
+
+/**
+ * Whole-call budget for the live relevance judge on the claim path, key lookup
+ * and the workspace/attribution checks included. claim_context pushes at most
+ * three memories, judged in parallel, so this is one round trip: a Jev call is
+ * typically a few hundred ms, and 1.5s leaves room for a slow one while
+ * staying under a third of MEMORY_DECISION_TIMEOUT_MS. The claim already
+ * spends an embed and a rerank on the same retrieval; this caps what the
+ * judge can add. Past it, the rule order is used and the rows log the timeout.
+ */
+export const RELEVANCE_LIVE_BUDGET_MS = 1_500;
+
 /** Use label: `used` at p >= 0.8, `ignored` at p <= 0.2, nothing in between. */
 export const USE_MIN_CONFIDENCE = 0.8;
 /** Chat tier: proposes a card the user confirms. */
@@ -109,12 +131,13 @@ export const USE_LABELS_LIVE = true;
 export const PROMOTE_VETO_LIVE = true;
 export const CHAT_TIER_LIVE = true;
 export const DIRECTIVE_SCOPE_LIVE = true;
+export const RELEVANCE_DEMOTE_LIVE = true;
 
 /** Use labels written per completed task. */
 export const MAX_USE_LABELS_PER_TASK = 10;
 /** Promote verdicts per lifecycle call (veto and shadow together). */
 export const MAX_PROMOTE_SHADOW_ITEMS = 10;
-/** Relevance verdicts per retrieval (shadow). */
+/** Relevance verdicts per retrieval (shadow and live). */
 export const MAX_RELEVANCE_SHADOW_HITS = 8;
 /** Run budget for the off-path fan-outs (use labels, relevance shadow). */
 export const MEMORY_DECISION_POOL_BUDGET_MS = 15_000;
@@ -155,6 +178,8 @@ export function clip(text: string | null | undefined, max: number): string {
 const PROMPT_VERSION = 'md1';
 /** promote went from shadow to a live veto: its own version so readouts split pre/post. */
 const PROMOTE_PROMPT_VERSION = 'md2';
+/** relevance went from shadow to a live demotion on claim_context: same reason. */
+const RELEVANCE_PROMPT_VERSION = 'md2';
 
 export const MEMORY_LEARN_DECISION = definePromptedDecision({
   id: 'buildd.memory_learn',
@@ -233,7 +258,7 @@ export const MEMORY_USE_DECISION = definePromptedDecision({
 
 export const MEMORY_RELEVANCE_DECISION = definePromptedDecision({
   id: 'buildd.memory_relevance',
-  promptVersion: PROMPT_VERSION,
+  promptVersion: RELEVANCE_PROMPT_VERSION,
   questions: {
     relevant: noul(
       {
@@ -246,7 +271,8 @@ export const MEMORY_RELEVANCE_DECISION = definePromptedDecision({
       },
     ),
   },
-  mode: 'shadow',
+  mode: 'gated',
+  minConfidence: RELEVANCE_DEMOTE_MIN_CONFIDENCE,
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
@@ -415,6 +441,12 @@ export function gateDirectiveScope(answer: ChoiceAnswer<DirectiveScope> | null |
   return answer.choice;
 }
 
+/** Demote (move below the relevant hits) only on a confident "not relevant". */
+export function gateRelevanceDemote(answer: NoulAnswer | null | undefined): boolean {
+  if (!RELEVANCE_DEMOTE_LIVE || !answer || !Number.isFinite(answer.noul)) return false;
+  return answer.noul < 0.5 && noulConfidence(answer.noul) >= RELEVANCE_DEMOTE_MIN_CONFIDENCE;
+}
+
 /** Veto (defer one cycle) only on a confident "do not promote". */
 export function gatePromoteVeto(answer: NoulAnswer | null | undefined): boolean {
   if (!answer || !Number.isFinite(answer.noul)) return false;
@@ -547,6 +579,23 @@ export interface PromoteItem {
   live: boolean;
 }
 
+export interface RelevanceLiveHit extends RelevanceShadowHit {
+  /** Never demoted, whatever Jev says (a directive, a pinned or rule-mandated hit). */
+  mandatory?: boolean;
+}
+
+export interface RelevanceJudgement {
+  /** Hits to move below the rest. Never a mandatory one. */
+  demote: ReadonlySet<string>;
+  /**
+   * Log the verdicts. `applied`: the caller used the order (false when it fell
+   * back to the rule order, e.g. past its own deadline). Idempotent.
+   */
+  record(applied: boolean): void;
+}
+
+export const FALLBACK_RELEVANCE_JUDGEMENT: RelevanceJudgement = { demote: new Set(), record: () => {} };
+
 export interface PromoteVerdict { memoryId: string; veto: boolean }
 
 export interface MemoryDecider {
@@ -561,6 +610,13 @@ export interface MemoryDecider {
   judgeUpdate(input: { scope: MemoryDecisionScope; incoming: MemoryText; existing: MemoryText & { id: string } }): Promise<UpdateJudgement>;
   labelUses(input: { scope: MemoryDecisionScope; summary: string; memories: Array<MemoryText & { memoryId: string }> }): Promise<UseLabel[]>;
   shadowRelevance(input: { scope: MemoryDecisionScope; task: string; caller: string; hits: RelevanceShadowHit[] }): Promise<void>;
+  /**
+   * The live relevance gate (claim_context): one verdict per hit inside
+   * `budgetMs` (default RELEVANCE_LIVE_BUDGET_MS), returning the hits to
+   * demote. Fails open (demotes nothing), never throws. Optional so older
+   * fakes still type.
+   */
+  judgeRelevance?(input: { scope: MemoryDecisionScope; task: string; caller: string; hits: RelevanceLiveHit[]; budgetMs?: number }): Promise<RelevanceJudgement>;
   /**
    * Chat tier and, when a workspace is in scope, directive scope, in parallel
    * inside one deadline. Null = not configured (no key). Each answer is null
@@ -632,20 +688,28 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
     return res === timedOut ? failedRun(decision, 'timeout', started) : res;
   }
 
-  /** Key once, then a bounded pool of calls. Null = not configured. */
+  /**
+   * Key once, then a bounded pool of calls. Null = not configured. `budgetMs`
+   * makes the whole thing, key included, fit one budget (the live claim path);
+   * without it the off-path limits apply.
+   */
   async function runMany<T, Q extends DecisionQuestions>(
     decision: Decision<Q>,
     scope: MemoryDecisionScope,
     items: readonly T[],
     stateOf: (item: T) => Record<string, unknown>,
+    budgetMs?: number,
   ): Promise<Array<{ item: T; run: DecisionRun<Q> }> | null> {
     const started = now();
-    const apiKey = await bounded<string | null | typeof KEY_TIMEOUT>(deps.resolveKey(scope), timeoutMs, KEY_TIMEOUT);
+    const keyMs = budgetMs ?? timeoutMs;
+    const apiKey = await bounded<string | null | typeof KEY_TIMEOUT>(deps.resolveKey(scope), keyMs, KEY_TIMEOUT);
     if (apiKey === KEY_TIMEOUT) return items.map(item => ({ item, run: failedRun(decision, 'timeout', started) }));
     if (!apiKey) return null;
+    const remaining = budgetMs === undefined ? null : budgetMs - (now() - started);
+    if (remaining !== null && remaining <= 0) return items.map(item => ({ item, run: failedRun(decision, 'timeout', started) }));
     const res = await decision.runEach(items, {
       apiKey, stateOf, headers: { ...ATTRIBUTION_HEADERS }, ...(deps.fetch ? { fetch: deps.fetch } : {}), now,
-      timeoutMs, budgetMs: MEMORY_DECISION_POOL_BUDGET_MS,
+      timeoutMs: remaining ?? timeoutMs, budgetMs: remaining ?? MEMORY_DECISION_POOL_BUDGET_MS,
     });
     // Items the pool budget cut off are logged as timeouts, not dropped.
     return res.items.map(r => ({ item: r.item, run: r.run ?? failedRun(decision, 'timeout', started) }));
@@ -814,6 +878,38 @@ export function createMemoryDecider(deps: MemoryDecisionDeps): MemoryDecider {
         return items.map(i => ({ memoryId: i.memoryId, veto: vetoed.has(i.memoryId) }));
       } catch {
         return none;
+      }
+    },
+
+    async judgeRelevance({ scope, task, caller, hits, budgetMs }) {
+      const items = hits.slice(0, MAX_RELEVANCE_SHADOW_HITS);
+      if (items.length === 0 || !task.trim()) return FALLBACK_RELEVANCE_JUDGEMENT;
+      try {
+        const runs = await runMany(MEMORY_RELEVANCE_DECISION, scope, items, h => relevanceState(task, h), budgetMs ?? RELEVANCE_LIVE_BUDGET_MS);
+        if (!runs) return FALLBACK_RELEVANCE_JUDGEMENT;
+        const verdicts = runs.map(({ item, run }) => {
+          const answer = run.result.ok ? run.result.answers.relevant : null;
+          return { item, run, answer, demote: !item.mandatory && gateRelevanceDemote(answer) };
+        });
+        let done = false;
+        return {
+          demote: new Set(verdicts.filter(v => v.demote).map(v => v.item.memoryId)),
+          record(applied) {
+            if (done) return;
+            done = true;
+            safeRecord(deps, verdicts.map(({ item, run, answer, demote }) => ({
+              ...baseRow(scope, run as DecisionRun<DecisionQuestions>, MEMORY_RELEVANCE_DECISION as Decision<DecisionQuestions>),
+              memoryId: item.memoryId, decision: 'relevance' as const, mode: 'live' as const, caller,
+              verdict: answer ? String(answer.noul >= 0.5) : null,
+              confidence: answer ? noulConfidence(answer.noul) : null,
+              probability: answer?.noul ?? null,
+              rule: item.mandatory ? 'mandatory' : (item.gatedBy ?? 'shown'),
+              applied: applied && demote,
+            })), receiptsOf(verdicts.map(v => v.run as DecisionRun<DecisionQuestions>)), scope);
+          },
+        };
+      } catch {
+        return FALLBACK_RELEVANCE_JUDGEMENT;
       }
     },
 

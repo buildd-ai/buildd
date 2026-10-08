@@ -22,35 +22,44 @@
  */
 import { loadTaskAccess } from './agent-capabilities/access-log';
 import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
-import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
+import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, VISUAL_AUDITOR_ROLE_SLUG, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
 import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
 import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
-import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
+import { missions, tasks, workers, gateEvents, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
 import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
 import { loadDependencyRows } from '@/lib/dependency-rows';
-import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { resolvePrDisplayState } from '@/lib/pr-presentation';
+import { deliverySettled } from '@/lib/workflow/delivery-display';
+import type { DeliveryView } from '@/lib/workflow/projections';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { getDeliveryViewsForTasks, kernelReplacedFailedTaskIds, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
+import { attemptLine } from '@/lib/workflow/projections';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
-import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { REPO_WIDE_SENTINEL, readSoftOverlaps } from '@buildd/core/path-overlap';
+import { buildCoordinationHolds, coordinationGateDetail, coordinationLink, type CoordinationHold, type CoordinationHolder } from '@/lib/explain-coordination';
 import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
+import { loadBrowserRunnerHeartbeats } from './runner-heartbeats';
+import { browserRunnerOnline } from './visual-audit-runner';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
   buildStateBecause,
   buildConflictBecause,
+  deliveryTransitionLink,
   dispatchWakeLink,
   withDispatchLink,
+  entitlementHoldLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -75,6 +84,10 @@ const GATE_HISTORY_LIMIT = 10;
  * readable without SQL.
  */
 async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
+  return (await loadGateRows(taskId)).map(r => r.entry);
+}
+
+async function loadGateRows(taskId: string): Promise<Array<{ entry: GateHistoryEntry; detail: unknown }>> {
   const rows = await db.query.gateEvents.findMany({
     where: eq(gateEvents.taskId, taskId),
     orderBy: [desc(gateEvents.occurredAt)],
@@ -83,15 +96,46 @@ async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
   });
   return rows.map(r => {
     const detail = r.detail as Record<string, unknown> | null;
+    const holder = coordinationGateDetail(detail);
     return {
-      occurredAt: r.occurredAt.toISOString(),
-      gate: r.gate,
-      outcome: r.outcome as GateHistoryEntry['outcome'],
-      reason: r.reason,
-      consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
-      firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+      entry: {
+        occurredAt: r.occurredAt.toISOString(),
+        gate: r.gate,
+        outcome: r.outcome as GateHistoryEntry['outcome'],
+        reason: r.reason,
+        consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
+        firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+        ...(holder ? { holder } : {}),
+      },
+      detail,
     };
   });
+}
+
+/**
+ * Who holds a pending task, and why (./explain-coordination). One extra read,
+ * only for a pending task that names holders. A failure omits it.
+ */
+async function loadCoordination(
+  task: { id: string; status: string; dependsOn?: string[] | null; pathManifest?: string[] | null; pathDeclaration?: unknown },
+  gateRows: Array<{ entry: GateHistoryEntry; detail: unknown }>,
+): Promise<CoordinationHold[]> {
+  if (task.status !== 'pending') return [];
+  const gateDetails = gateRows.map(r => ({ reason: r.entry.reason, detail: r.detail }));
+  const ids = new Set<string>(task.dependsOn ?? []);
+  for (const e of readSoftOverlaps(task.pathDeclaration)) ids.add(e.taskId);
+  for (const g of gateRows) if (g.entry.holder?.blockingTaskId) ids.add(g.entry.holder.blockingTaskId);
+  ids.delete(task.id);
+  const rows = ids.size > 0
+    ? await db.query.tasks.findMany({
+        where: inArray(tasks.id, [...ids]),
+        columns: { id: true, title: true, status: true, pathManifest: true },
+      })
+    : [];
+  const holders = new Map<string, CoordinationHolder>(
+    (rows as Array<{ id: string; title: string | null; status: string; pathManifest: string[] | null }>).map(r => [r.id, r]),
+  );
+  return buildCoordinationHolds({ task, holders, gateDetails });
 }
 
 /** Cap on how many gated subjects a workspace answer returns. */
@@ -136,6 +180,7 @@ type LoadedTask = {
   id: string;
   title: string;
   status: string;
+  roleSlug?: string | null;
   mode: string | null;
   kind: string | null;
   taskClass: string;
@@ -174,7 +219,7 @@ type LoadedTask = {
 };
 
 const TASK_COLUMNS = {
-  id: true, title: true, status: true, mode: true, kind: true, taskClass: true,
+  id: true, title: true, status: true, roleSlug: true, mode: true, kind: true, taskClass: true,
   parentTaskId: true, creationSource: true, category: true, subjectPrNumber: true,
   pathManifest: true, context: true, startAt: true, loopConfig: true, loopState: true,
   result: true, createdAt: true, updatedAt: true, dependsOn: true,
@@ -199,6 +244,23 @@ const WORKER_WITH = {
 
 const LIVE_WORKER_STATUSES = new Set<string>(SHARED_LIVE_WORKER_STATUSES);
 const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
+
+/** Unknown reads stay unknown; local-session missions do not need runner eligibility. */
+async function missingBrowserFor(rows: LoadedTask[], workspaceId: string | null, local: boolean): Promise<boolean> {
+  if (local || !workspaceId || !rows.some(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG && t.status === 'pending' && !hasLiveWorker(t))) return false;
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { id: true, teamId: true, accessMode: true, gitConfig: true, webhookConfig: true },
+    });
+    if (!ws) return false;
+    const now = Date.now();
+    const hbs = await loadBrowserRunnerHeartbeats(ws, now);
+    return hbs !== null && !browserRunnerOnline(hbs, workspaceId, now);
+  } catch {
+    return false;
+  }
+}
 
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
@@ -263,12 +325,17 @@ function iso(d: Date | string | null | undefined): string | null {
   return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
 }
 
-/** A history node's PR state: `derivePrDisplayState`, projected onto `HistoryNode['prState']`. */
+/**
+ * A history node's PR state: `resolvePrDisplayState`, projected onto
+ * `HistoryNode['prState']`. A task that owns a kernel-owned delivery reads the
+ * delivery (§17.5), never the worker's fact-cache columns.
+ */
 export function historyPrStateOf(
   w: Pick<LoadedTask['workers'][number], 'prNumber' | 'prLifecycleStatus' | 'mergedAt'> | undefined,
+  delivery?: Pick<DeliveryView, 'prState' | 'prNumber'> | null,
 ): HistoryNode['prState'] {
-  if (!w?.prNumber) return 'none';
-  const state = derivePrDisplayState(w.prLifecycleStatus, w.mergedAt);
+  if (!w?.prNumber && !(delivery?.prState && delivery.prNumber != null)) return 'none';
+  const state = resolvePrDisplayState({ delivery, prLifecycleStatus: w?.prLifecycleStatus, mergedAt: w?.mergedAt });
   switch (state) {
     case 'merged': case 'closed': case 'conflict': case 'ci_failed': return state;
     case 'unresolvable': return 'closed';
@@ -280,7 +347,7 @@ export function historyPrStateOf(
  * Attempts collapsed under their parent via `parentTaskId` + `taskClass`.
  * Nesting is read through `attachAttempts` (PR #1674) — not re-derived here.
  */
-function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
+function buildHistory(loaded: LoadedTask[], deliveries: ReadonlyMap<string, DeliveryView> = new Map()): HistoryNode[] {
   const attemptsByParent = attachAttempts(loaded);
   const ids = new Set(loaded.map(t => t.id));
   const byCreated = (a: LoadedTask, b: LoadedTask) =>
@@ -297,7 +364,7 @@ function buildHistory(loaded: LoadedTask[]): HistoryNode[] {
       status: t.status,
       taskClass: t.taskClass,
       prNumber: w?.prNumber ?? null,
-      prState: historyPrStateOf(w),
+      prState: historyPrStateOf(w, ownerView(deliveries, t.id)),
       createdAt: iso(t.createdAt),
       ...(hint ? { evidence: hint } : {}),
       ...(Array.isArray(result?.mismatch) && result.mismatch.length > 0 ? { mismatch: result.mismatch } : {}),
@@ -383,9 +450,12 @@ async function viewForMission(missionId: string): Promise<{
     })),
   );
 
+  // S35: a failed attempt the kernel already replaced (its delivery is live or
+  // shipped) is history too, read from the DeliveryView, not a title heuristic.
+  const kernelReplaced = await kernelReplacedFailedTaskIds(failedDeliverables.map(t => t.id));
   const health = deriveTaskHealthSignal(
     { ...m, heartbeatWaitingUntil },
-    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) || kernelReplaced.has(t.id) })),
     { dependencies: foreignDeps },
   );
 
@@ -468,7 +538,7 @@ async function viewForMission(missionId: string): Promise<{
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
-  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id));
+  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id) && !kernelReplaced.has(t.id));
   const supersededTasks = failedDeliverables
     .filter(t => supersededMap.has(t.id))
     .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
@@ -518,6 +588,7 @@ async function viewForMission(missionId: string): Promise<{
     ),
   };
 
+  const missingBrowser = await missingBrowserFor(openTasks, m.workspaceId ?? null, m.executor === 'local');
   return {
     view: deriveMissionStateView(input),
     mission: m,
@@ -528,6 +599,7 @@ async function viewForMission(missionId: string): Promise<{
         title: t.title,
         status: t.status,
         live: hasLiveWorker(t),
+        missingBrowser: missingBrowser && t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG,
         waitingOn: waitingOnOf(t).map(id => ({ id, title: loadedById.get(id)?.title ?? null })),
       })),
       failedTasks: failedTasks.map(t => ({
@@ -636,8 +708,42 @@ function withBackendRouting(answer: ExplainAnswer, task: { context: Record<strin
   };
 }
 
+/** The delivery `taskId` owns, from a loaded map; null when it is an attempt or legacy. */
+function ownerView(m: ReadonlyMap<string, DeliveryView>, taskId: string): DeliveryView | null {
+  const v = m.get(taskId);
+  return v && v.ownerTaskId === taskId ? v : null;
+}
+
+/**
+ * §17.5: the owner task's unmerged PR, read from its kernel-owned delivery.
+ * Merged, superseded and abandoned deliveries are settled; a closed one with no
+ * edge is closed-unsuperseded (the remedy is a supersession, not a merge).
+ */
+export function kernelUnmergedPr(
+  task: { id: string; title: string; status: string },
+  worker: { prUrl?: string | null; supersessionScan?: { suggestion?: unknown } | null } | undefined,
+  d: Pick<DeliveryView, 'state' | 'prNumber'>,
+): NonNullable<StateBecauseExtras['unmergedPrs']> {
+  if (task.status === 'cancelled' || task.status === 'pending' || d.prNumber == null) return [];
+  if (d.state === 'MERGED' || d.state === 'SUPERSEDED' || d.state === 'ABANDONED' || d.state === 'FAILED') return [];
+  const closed = d.state === 'CLOSED_UNMERGED';
+  const suggestion = closed ? worker?.supersessionScan?.suggestion : undefined;
+  return [{
+    taskId: task.id,
+    title: task.title,
+    prNumber: d.prNumber,
+    prUrl: worker?.prUrl ?? null,
+    ...(closed ? { closedUnsuperseded: true as const } : {}),
+    ...(suggestion ? { suggestion: suggestion as never } : {}),
+  }];
+}
+
 async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
+  /** Every DeliveryView the chain's tasks belong to, keyed by task id. */
+  deliveries: Map<string, DeliveryView>;
+  /** The delivery this task OWNS, when the kernel owns it. */
+  ownDelivery: DeliveryView | null;
   task: LoadedTask;
   family: LoadedTask[];
   /** The whole fix-attempt chain this task sits in, for `history` only — state is still derived from `family`. */
@@ -648,10 +754,10 @@ async function viewForTask(taskId: string): Promise<{
 } | null> {
   const task = (await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true },
+    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true, pathDeclaration: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null }) | undefined;
+  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null; pathDeclaration?: unknown }) | undefined;
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
@@ -701,23 +807,30 @@ async function viewForTask(taskId: string): Promise<{
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
+  // One DeliveryView load for the whole chain (§17.5). A task that OWNS a
+  // kernel-owned delivery takes its PR reading from the delivery; the worker
+  // columns below are the legacy path only.
+  const deliveries = await getDeliveryViewsForTasks(historyTasks.map(t => t.id));
+  const ownDelivery = ownerView(deliveries, taskId);
   // A PR recorded as superseded (task fcaf83d5) shipped anyway, under a
   // different, merged PR — verified against GitHub at write time, so it reads
   // as shipped here without a second check. Never awaiting-merge.
   // An abandoned PR (closed, with a person's reason) is settled, not awaiting.
-  const unmergedPr = task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
-    && !(worker.prLifecycleStatus === 'closed' && worker.abandonedAt)
-    ? [{
-        taskId: task.id,
-        title: task.title,
-        prNumber: worker.prNumber,
-        prUrl: worker.prUrl,
-        ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
-        ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
-          ? { suggestion: worker.supersessionScan.suggestion }
-          : {}),
-      }]
-    : [];
+  const unmergedPr: NonNullable<StateBecauseExtras['unmergedPrs']> = ownDelivery
+    ? kernelUnmergedPr(task, worker, ownDelivery)
+    : task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
+      && !(worker.prLifecycleStatus === 'closed' && worker.abandonedAt)
+      ? [{
+          taskId: task.id,
+          title: task.title,
+          prNumber: worker.prNumber,
+          prUrl: worker.prUrl,
+          ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
+          ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
+            ? { suggestion: worker.supersessionScan.suggestion }
+            : {}),
+        }]
+      : [];
 
   // The newest open fix attempt (builder-after-review, CI retry). While one is
   // open the PR is about to change, so it — not the merge — is what this task
@@ -731,12 +844,16 @@ async function viewForTask(taskId: string): Promise<{
     : openAttempt
       ? [{ id: openAttempt.taskId, status: openAttempt.status, title: openAttempt.title }]
       : [];
-  const failedTasks = family.filter(t => t.status === 'failed');
+  // S35: a failed attempt the kernel already carried past is history, not a failure.
+  const replaced = replacedFailedTaskIds(deliveries, family.filter(t => t.status === 'failed').map(t => t.id));
+  const failedTasks = family.filter(t => t.status === 'failed' && !replaced.has(t.id));
 
   const input: MissionStateInput = {
     // A cancelled task is closed, not idle. `completed` is only terminal for
     // this view once its PR has landed — the merge rule below decides that.
-    status: task.status === 'cancelled' || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
+    status: task.status === 'cancelled'
+      || (task.status === 'completed' && unmergedPr.length === 0 && !openAttempt)
+      || (!!ownDelivery && deliverySettled(ownDelivery) && ownDelivery.state !== 'FAILED' && !openAttempt)
       ? 'completed'
       : 'active',
     openAttempt,
@@ -752,7 +869,10 @@ async function viewForTask(taskId: string): Promise<{
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
     wait: classifyMissionWait(family as unknown as WaitClassifiableTask[]),
-    ciRed: deriveCiRedChains(unmergedPr.filter(p => !p.closedUnsuperseded), family),
+    ciRed: deriveCiRedChains(
+      unmergedPr.filter(p => !p.closedUnsuperseded).map(p => (ownDelivery ? { ...p, ciRed: ownDelivery.prState === 'ci_failed' } : p)),
+      family,
+    ),
     completion: unmergedPr.length > 0 && !openAttempt
       ? {
           ok: false,
@@ -766,15 +886,18 @@ async function viewForTask(taskId: string): Promise<{
       : null,
   };
 
+  const missingBrowser = await missingBrowserFor(family, task.workspaceId, executor === 'local');
   return {
     view: deriveMissionStateView(input),
+    deliveries,
+    ownDelivery,
     task: task as LoadedTask,
     family,
     lineage: historyTasks,
     workspaceId: task.workspaceId ?? null,
     missionId: task.missionId ?? null,
     answerExtras: {
-      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)) })),
+      openTasks: openTasks.map(t => ({ id: t.id, title: t.title, status: t.status, live: family.some(f => f.id === t.id && hasLiveWorker(f)), missingBrowser: missingBrowser && family.some(f => f.id === t.id && f.roleSlug === VISUAL_AUDITOR_ROLE_SLUG) })),
       failedTasks: failedTasks.map(t => ({
         id: t.id,
         title: t.title,
@@ -789,10 +912,29 @@ async function viewForTask(taskId: string): Promise<{
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
+/** Attach the kernel's DeliveryView reading when the task's delivery is kernel-owned (S28). */
+function withDelivery(answer: ExplainAnswer, v: DeliveryView | null): ExplainAnswer {
+  if (!v) return answer;
+  return {
+    ...answer,
+    delivery: { state: v.state, owner: v.owner, needsYou: v.needsYou, headline: v.headline, detail: v.detail, attempts: attemptLine(v.attempts) },
+  };
+}
+
+/** The task verdict for `explain`: rules plus any cached wording for the same state. */
+async function loadTaskVerdictForExplain(taskId: string): Promise<ExplainAnswer['verdict'] | null> {
+  const { loadVerdictRecord } = await import('./task-verdict-decision-refresh');
+  const { applyVerdictDecision } = await import('./task-verdict');
+  const { verdict, stored } = await loadVerdictRecord(taskId);
+  if (!verdict) return null;
+  const v = applyVerdictDecision(verdict, stored);
+  return { state: v.state, headline: v.headline, cause: v.cause, actions: v.actions, wordedBy: v.wordedBy };
+}
+
 export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
-  const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
+  const { view, task, lineage, answerExtras, workspaceId, missionId, deliveries } = loaded;
 
   const subject: ExplainAnswer['subject'] = {
     scope: 'task',
@@ -810,16 +952,31 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const wake = task.status === 'pending'
     ? dispatchWakeLink(await latestDispatchForTask(taskId).catch(() => null), { taskId, workspaceId }, Date.now())
     : null;
-  const because = withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), wake);
-  const gateHistory = await loadGateHistory(taskId);
+  const dv = deliveries.get(taskId) ?? null;
+  const transition = deliveryTransitionLink(dv ? { ...dv, attemptLine: attemptLine(dv.attempts) } : null, { taskId, workspaceId });
+  const hold = task.status === 'pending' ? entitlementHoldLink(task.context, { taskId, workspaceId }) : null;
+  const gateRows = await loadGateRows(taskId);
+  const gateHistory = gateRows.map(r => r.entry);
+  const holds = await loadCoordination(task as any, gateRows).catch(() => [] as CoordinationHold[]);
+  const coordLink = coordinationLink(holds, { taskId, workspaceId });
+  const because = withDispatchLink(
+    withDispatchLink(withDispatchLink(withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), transition), wake), hold),
+    coordLink as Parameters<typeof withDispatchLink>[1],
+  );
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
   // What the task's runs were given and refused; the most recent 40, so a
   // long-running task's renewals do not crowd out the answer.
   const access = (await loadTaskAccess(taskId).catch(() => [])).slice(-40);
-  const answer = withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task);
-  return { scope: 'task', subjects: [access.length > 0 ? { ...answer, access } : answer] };
+  const routed = withBackendRouting(answerFrom(view, subject, buildHistory(lineage, deliveries), because, gateHistory, evidenceObjects), task);
+  const answer = withDelivery(routed, dv);
+  // The verdict the task page leads with, from the same loader the
+  // state-change recompute uses. Read-only: no model call. A failure omits it.
+  const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
+  const withCoordination = holds.length > 0 ? { ...answer, coordination: { holds } } : answer;
+  const withAccess = access.length > 0 ? { ...withCoordination, access } : withCoordination;
+  return { scope: 'task', subjects: [verdict ? { ...withAccess, verdict } : withAccess] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────

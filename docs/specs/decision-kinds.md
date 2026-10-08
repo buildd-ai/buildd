@@ -2,7 +2,7 @@
 title: Decision Kinds (First-Party Adapters and Migration Seam)
 status: active
 owner: max
-last_verified: 2026-10-03
+last_verified: 2026-10-07
 summary: A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 domain: tasks
 surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, packages/core/decision-kind-post-session-triage.ts, packages/core/decision-kind-scout-probe-selection.ts]
@@ -80,11 +80,11 @@ differ on purpose; the request, response, ledger and readout are identical.
 | Output | `skip` \| `analyse`, focus in the reason code (`triageFocusOf`) | `run` \| `defer` \| `unsupported` |
 | Override | Any hard trigger the feature reports ⇒ `analyse` | No executor ⇒ `unsupported`; must-run ⇒ `run`; no budget ⇒ `defer` |
 | Fallback | Fails open: `skip`, `TRIAGE_UNAVAILABLE` when no model answered | Leans toward coverage: `run` if it touches changed paths, else `defer` |
-| Rollout | `live` | `shadow` (Scout is advisory in v1) |
+| Rollout | `live` | `live` (optional probes only; must-run probes are a rule). Rollback is `mode: 'shadow'` in the binding |
 | Escalation | None | On low confidence; no model bound yet |
 | Outcome source / labels | `post_session_analysis`: `actionable`, `not_actionable` | `scout_probe_result`: `defect_found`, `no_defect` |
 
-A feature imports the kind and calls `runBuilddDecision(postSessionTriageKind, …)`.
+The post-session loop (`apps/web/src/lib/post-session-triage.ts`) and Quality Scout's selector both run their kind through `runBuilddDecision`; each triage writes a `decision_records` row for subject `post_session_run`, which Stage C labels. A feature imports the kind and calls `runBuilddDecision(postSessionTriageKind, …)`.
 It keeps its own fact collection, trigger rules, probe catalogue and
 execution; the kind owns only the decision contract. Adding an escalation
 model or a challenger after measuring is a binding change
@@ -119,7 +119,7 @@ challenger agreement, latency, cost and labelled correctness.
 - AC-1: GIVEN a triage request with any hard trigger WHEN it runs in `live`, `shadow` or `disabled` mode THEN the response is `analyse` with source `rule` and no attempts.
 - AC-2: GIVEN no provider route WHEN triage runs THEN the decision is `skip` with reason code `triage_unavailable`.
 - AC-3: GIVEN a probe with no executor WHEN scout selection runs THEN the decision is `unsupported`, even if the probe is must-run.
-- AC-4: GIVEN the scout kind in shadow mode and a confident cheap answer of `run` on a probe that touches no changed paths WHEN it runs THEN the applied decision is `defer` and the ledger row is `suggested` with verdict `run`.
+- AC-4: GIVEN a scout kind bound `mode: 'shadow'` (the rollback setting) and a confident cheap answer of `run` on a probe that touches no changed paths WHEN it runs THEN the applied decision is `defer` and the ledger row is `suggested` with verdict `run`.
 - AC-5: GIVEN a scout cheap answer below threshold and a bound escalation model WHEN it runs THEN the response's attempt chain is cheap then escalation, with the escalation attempt pointing back at the cheap one.
 - AC-6: GIVEN a triage kind bound to a challenger WHEN a model-decided call is recorded THEN a challenger row with its agreement exists for that record, and the applied decision is unchanged.
 - AC-7: GIVEN a capability that is switched off WHEN the readout is computed THEN collection state is `disabled`, not `insufficient_sample`.

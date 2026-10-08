@@ -693,6 +693,44 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Files runners regenerate instead of merging (packages/shared/src/derived-files.ts).
+  it('accepts well-formed gitConfig.derivedFiles and null to clear', async () => {
+    for (const value of [[{ glob: '/bun.lock', regenerate: 'bun install' }], [{ glob: 'x.lock', regenerate: 'y', strategy: 'ours' }], [], null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, derivedFiles: value });
+    }
+  });
+
+  it('rejects a derivedFiles rule the runner would drop (repo-wide, migration chain, malformed)', async () => {
+    for (const value of [
+      [{ glob: '**', regenerate: 'x' }],
+      [{ glob: 'packages/core/drizzle/meta/_journal.json', regenerate: 'bun db:generate' }],
+      [{ glob: 'bun.lock' }],
+      [{ glob: 'bun.lock', regenerate: 'bun install', strategy: 'union' }],
+      'bun.lock',
+      { glob: 'bun.lock', regenerate: 'bun install' },
+    ]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { derivedFiles: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/^gitConfig\.derivedFiles/);
+    }
+  });
+
+  it('rejects a non-boolean gitConfig.mergiraf', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { mergiraf: 'yes' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
   // Cloud-runner container class (packages/shared/src/runner-size.ts).
   it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
     for (const value of ['standard', 'large', null]) {
@@ -727,6 +765,29 @@ describe('PATCH /api/workspaces/[id]', () => {
     const clear = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSizeDerived: null } } });
     expect((await PATCH(clear, { params: mockParams })).status).toBe(200);
     expect(capturedUpdates.gitConfig).toMatchObject({ runnerSizeDerived: null });
+  });
+
+  // Early release is a workspace opt-in (knowledge-base: buildd/design/early-release.md).
+  it('accepts every gitConfig.earlyRelease mode and null to clear', async () => {
+    for (const value of [{ mode: 'off' }, { mode: 'rule_only' }, { mode: 'rule_and_jev' }, null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, earlyRelease: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.earlyRelease shape or mode (returns 400)', async () => {
+    for (const value of ['rule_only', true, { mode: 'on' }, { mode: 'rule_only', extra: 1 }]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { earlyRelease: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/earlyRelease/);
+    }
   });
 
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {

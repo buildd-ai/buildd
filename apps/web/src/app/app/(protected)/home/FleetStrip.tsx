@@ -46,7 +46,7 @@ function RoleSquare({ slug, name, color }: { slug: string | null; name: string |
     <span
       aria-hidden="true"
       title={label}
-      className={`grid h-[18px] w-[18px] shrink-0 place-items-center font-mono text-[11px] font-bold text-white ${color ? '' : 'bg-text-muted'}`}
+      className={`grid h-[18px] w-[18px] shrink-0 place-items-center font-mono text-meta font-bold text-white ${color ? '' : 'bg-text-muted'}`}
       style={color ? { backgroundColor: color } : undefined}
     >
       {label[0]?.toUpperCase()}
@@ -73,7 +73,7 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
     const last = slot.last;
     const named = !!last && !!(last.label ?? last.prNumber);
     return (
-      <div className="flex min-w-0 items-center gap-2.5 font-mono text-[12.5px] text-text-muted">
+      <div className="flex min-w-0 items-center gap-2.5 font-mono text-meta text-text-muted">
         <span aria-hidden="true" className="h-[18px] w-[18px] shrink-0 border border-dashed border-border-strong" />
         {/* The label truncates; the age never does — it is the one fact a
             glance needs ("idle · last rates service · 4m"). */}
@@ -98,11 +98,11 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
   const body = (
     <>
       <div className="flex min-w-0 items-baseline gap-2 font-mono">
-        <span className="shrink-0 text-[13px] font-semibold text-text-primary">{w.label}</span>
-        <span className="truncate text-[12px] text-text-secondary">{w.rest}</span>
+        <span className="shrink-0 text-body font-semibold text-text-primary">{w.label}</span>
+        <span className="truncate text-meta text-text-secondary">{w.rest}</span>
       </div>
       {w.question ? (
-        <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
+        <div className="mt-1 flex items-center gap-1.5 font-mono text-meta font-bold uppercase tracking-[1px] text-status-warning">
           ? Needs input{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
         </div>
       ) : w.phase ? (
@@ -111,9 +111,9 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
         </div>
       ) : justClaimed ? (
         // Claimed this minute and nothing reported: not "— · 0m" under an empty track.
-        <div data-testid="fleet-slot-claimed" className="mt-1 font-mono text-[11px] font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</div>
+        <div data-testid="fleet-slot-claimed" className="mt-1 font-mono text-meta font-semibold uppercase tracking-[0.8px] text-accent-text">claimed</div>
       ) : mins != null ? (
-        <div className="mt-1 font-mono text-[11px] tabular-nums text-text-muted">{mins}</div>
+        <div className="mt-1 font-mono text-meta tabular-nums text-text-muted">{mins}</div>
       ) : null}
     </>
   );
@@ -164,7 +164,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
         style={{ '--runner-rows': `span ${rows.length}` } as CSSProperties}
       >
         {/* Wraps to two lines before it truncates; the title always has the whole name. */}
-        <span title={runner.elastic && !roomy && runner.machine ? `${runner.name} · ${runner.machine}` : runner.name} className="min-w-0 font-mono text-[13px] font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2 md:text-[14px]">
+        <span title={runner.elastic && !roomy && runner.machine ? `${runner.name} · ${runner.machine}` : runner.name} className="min-w-0 font-mono text-title font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2">
           {runner.name}
         </span>
         {runner.elastic ? (
@@ -174,16 +174,16 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
           // fits one 50px row like a one-row machine: name only on desktop
           // (its single row already is the run; the executor is in the title).
           <>
-            {runner.machine && <span className={`max-w-full truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
-            <b data-testid="fleet-elastic-running" className={`font-mono text-[11px] font-semibold tabular-nums text-accent-text md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.elastic.running} running</b>
+            {runner.machine && <span className={`max-w-full truncate font-mono text-meta text-text-muted ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
+            <b data-testid="fleet-elastic-running" className={`font-mono text-meta font-semibold tabular-nums text-accent-text ${roomy ? '' : 'md:hidden'}`}>{runner.elastic.running} running</b>
           </>
         ) : (
           <>
-            {runner.machine && <span className={`truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
+            {runner.machine && <span className={`truncate font-mono text-meta text-text-muted ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
             <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} rows={rows} /></span>
           </>
         )}
-        {!runner.online && <span className="font-mono text-[11px] text-status-warning">offline</span>}
+        {!runner.online && <span className="font-mono text-meta text-status-warning">offline</span>}
       </div>
       {rows.map((row) => row.kind === 'slot' ? (
         <div
@@ -204,7 +204,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
           data-testid="fleet-idle-slots"
           data-count={row.count}
           style={{ height: SLOT_LANE_ROW_PX }}
-          className="flex items-center gap-2.5 border-b border-border-default px-3 font-mono text-[12.5px] text-text-muted md:col-start-2 md:px-4"
+          className="flex items-center gap-2.5 border-b border-border-default px-3 font-mono text-meta text-text-muted md:col-start-2 md:px-4"
         >
           <span aria-hidden="true" className="h-[18px] w-[18px] shrink-0 border border-dashed border-border-strong" />
           {row.count} idle slots
@@ -221,7 +221,7 @@ function FleetTable({ fleet, now, timeZone }: { fleet: FleetSnapshot; now: numbe
         {/* Same height as the chart's axis band, so the rows line up. */}
         <div
           aria-hidden="true"
-          className={`hidden border-b border-border-default font-mono text-[11px] font-semibold uppercase tracking-[1.5px] text-text-muted xl:grid ${TABLE_COLS}`}
+          className={`hidden border-b border-border-default font-mono text-meta font-semibold uppercase tracking-[1.5px] text-text-muted xl:grid ${TABLE_COLS}`}
           style={{ height: SLOT_LANE_AXIS_PX }}
         >
           <span className="flex items-center px-5">Runner</span>
@@ -244,7 +244,7 @@ function SummaryLine({ fleet, now }: { fleet: FleetSnapshot; now: number }) {
   const who = s.runnerNames.length === 1 ? s.runnerNames[0] : `${s.runnerNames.length} runners`;
   const running = fleet.runners.flatMap(r => r.slots.map(sl => sl.worker).filter(Boolean)).map(w => w!.label);
   return (
-    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[12.5px] text-text-secondary">
+    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-meta text-text-secondary">
       <span title={s.runnerNames.join(', ')} className="max-w-[16rem] truncate font-semibold text-text-primary">{who}</span>
       {s.busy > 0 ? (
         <span>
@@ -286,7 +286,7 @@ export function FleetStrip({
     return (
       <section data-testid="home-fleet" className="mb-8">
         <div className="mb-3">{label}</div>
-        <div className="border border-dashed border-border-strong px-5 py-4 font-mono text-[12.5px] text-text-secondary">
+        <div className="border border-dashed border-border-strong px-5 py-4 font-mono text-meta text-text-secondary">
           No runners online. Run <code className="text-text-primary">buildd</code> on a machine where it is installed, or{' '}
           <Link href="/app/settings/runners" className="text-accent-text hover:underline">install it</Link>.
         </div>
@@ -304,7 +304,7 @@ export function FleetStrip({
           >
             <span className="section-label hidden shrink-0 text-text-muted md:inline">Runners</span>
             <SummaryLine fleet={fleet} now={now} />
-            <span className="shrink-0 font-mono text-[11px] text-text-muted">
+            <span className="shrink-0 font-mono text-meta text-text-muted">
               <span className="group-open:hidden">show ▸</span>
               <span className="hidden group-open:inline">hide ▾</span>
             </span>
@@ -322,7 +322,7 @@ export function FleetStrip({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         {label}
         {roles.length > 0 && (
-          <span className="hidden flex-wrap gap-3.5 font-mono text-[12px] text-text-secondary md:flex">
+          <span className="hidden flex-wrap gap-3.5 font-mono text-meta text-text-secondary md:flex">
             {roles.map(r => (
               <span key={r.slug} className="inline-flex items-center gap-1.5">
                 <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${r.color ? '' : 'bg-text-muted'}`} style={r.color ? { backgroundColor: r.color } : undefined} />

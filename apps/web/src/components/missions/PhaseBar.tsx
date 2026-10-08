@@ -5,12 +5,13 @@
  * - `lg`: the missions list — labels inside cells, phase name + n/N under each group.
  * - `sm`: Home's compact missions summary — no labels, no captions.
  *
- * Colour is tokens only: done = success fill, in CI = success outline,
- * running = accent outline,
- * needs you = warning fill, failed = error fill, queued = hairline.
+ * Colour is tokens only and comes from the cell's canonical tone: landed =
+ * success fill, failed = error fill, active = accent outline, open =
+ * hairline, held = dashed.
  */
 import Link from 'next/link';
 import type { ListCell, ListCellState, ListPhase } from '@/lib/mission-list-card';
+import type { StripTone } from '@/lib/mission-task-strip';
 
 export const CELL_STATE_LABEL: Record<ListCellState, string> = {
   done: 'merged',
@@ -22,25 +23,26 @@ export const CELL_STATE_LABEL: Record<ListCellState, string> = {
   skipped: 'cancelled',
 };
 
-/** Cell box classes per state. The only place the bar's colour is spelled. */
-export const CELL_BOX: Record<ListCellState, string> = {
-  done: 'bg-status-success border border-status-success',
-  in_ci: 'border-2 border-status-success',
-  running: 'border border-accent',
-  needs_you: 'bg-status-warning border border-status-warning',
-  failed: 'bg-status-error border border-status-error',
-  queued: 'border border-border-default',
-  skipped: 'border border-dashed border-border-default',
+/**
+ * Cell box classes per canonical tone (`stripTone`) — the same landed / failed
+ * / open / held vocabulary as the mission page's strip. The only place the
+ * bar's colour is spelled; it is keyed by tone, never by a raw state, so a
+ * failed cell cannot take another bucket's colour.
+ */
+export const TONE_BOX: Record<StripTone, string> = {
+  ok: 'bg-status-success border border-status-success',
+  error: 'bg-status-error border border-status-error',
+  active: 'border border-accent',
+  open: 'border border-border-default',
+  held: 'border border-dashed border-border-default bg-surface-2',
 };
 
-const CELL_TEXT: Record<ListCellState, string> = {
-  done: 'text-[var(--card)]',
-  in_ci: 'text-status-success',
-  running: 'text-text-primary',
-  needs_you: 'text-[var(--card)]',
-  failed: 'text-[var(--card)]',
-  queued: 'text-text-muted',
-  skipped: 'text-text-muted line-through',
+const TONE_TEXT: Record<StripTone, string> = {
+  ok: 'text-[var(--card)]',
+  error: 'text-[var(--card)]',
+  active: 'text-text-primary',
+  open: 'text-text-muted',
+  held: 'text-text-muted',
 };
 
 function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
@@ -50,14 +52,15 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
       href={cell.href}
       data-testid="phase-bar-cell"
       data-state={cell.state}
+      data-tone={cell.tone}
       data-task-id={cell.taskId}
       aria-label={`${cell.label}: ${CELL_STATE_LABEL[cell.state]}`}
       title={`${cell.title} · ${CELL_STATE_LABEL[cell.state]}`}
-      className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${CELL_BOX[cell.state]} hover:opacity-90`}
+      className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${TONE_BOX[cell.tone]} hover:opacity-90`}
     >
       {size === 'lg' && (
         <span
-          className={`absolute inset-0 flex items-center justify-center overflow-hidden whitespace-nowrap px-0.5 font-mono text-[11px] md:text-[10px] font-semibold ${CELL_TEXT[cell.state]}`}
+          className={`absolute inset-0 flex items-center justify-center overflow-hidden whitespace-nowrap px-0.5 font-mono text-[11px] md:text-[10px] font-semibold ${TONE_TEXT[cell.tone]}`}
         >
           <span className="min-w-0 truncate">{cell.label}</span>
         </span>
@@ -95,16 +98,22 @@ export default function PhaseBar({ phases, size = 'lg' }: { phases: readonly Lis
   );
 }
 
-const LEGEND: ListCellState[] = ['done', 'in_ci', 'running', 'needs_you', 'failed', 'queued'];
+const LEGEND: ReadonlyArray<{ tone: StripTone; label: string }> = [
+  { tone: 'ok', label: 'landed' },
+  { tone: 'active', label: 'active' },
+  { tone: 'error', label: 'failed' },
+  { tone: 'open', label: 'open' },
+  { tone: 'held', label: 'held' },
+];
 
 export function PhaseBarLegend() {
   return (
     <div data-testid="phase-bar-legend" className="hidden flex-wrap gap-x-3.5 gap-y-1 font-mono text-[11px] text-text-muted md:flex">
-      {LEGEND.map(s => (
-        <span key={s} className="inline-flex items-center gap-1.5">
-          <i aria-hidden="true" className={`relative inline-block h-2.5 w-2.5 overflow-hidden ${CELL_BOX[s]}`}>
+      {LEGEND.map(({ tone, label }) => (
+        <span key={tone} className="inline-flex items-center gap-1.5">
+          <i aria-hidden="true" className={`relative inline-block h-2.5 w-2.5 overflow-hidden ${TONE_BOX[tone]}`}>
           </i>
-          {CELL_STATE_LABEL[s]}
+          {label}
         </span>
       ))}
     </div>

@@ -47,6 +47,11 @@ suppresses the count/UUID rules for that PR, and is reported. Documenting this
 check necessarily instantiates the patterns it forbids.
 
 Usage:  check_no_prod_data.py <base-ref> [--body FILE] [--title FILE]
+                              [--staged] [--message-file FILE]
+
+--staged scans merge-base..index instead of base...HEAD (pre-commit: a UUID
+removed in the staged diff is gone, one added is caught). --message-file adds
+the candidate commit message to the prose scan (commit-msg hook).
 Exit:   0 clean, 1 violation, 2 usage error.
 """
 
@@ -268,6 +273,11 @@ def main() -> int:
             else:
                 title_file = val
 
+    staged = "--staged" in args
+    message_file = None
+    if "--message-file" in args:
+        message_file = args[args.index("--message-file") + 1]
+
     rep = Report()
 
     body = ""
@@ -293,9 +303,22 @@ def main() -> int:
     if msgs.strip():
         scan_prose(msgs, "commit message", rep, check_counts)
 
+    if message_file and os.path.exists(message_file):
+        # Drop git's "# ..." comment lines, which git strips from the message.
+        cand = "".join(l for l in open(message_file, encoding="utf8", errors="replace")
+                       if not l.startswith("#"))
+        if cand.strip():
+            scan_prose(cand, "commit message (candidate)", rep, check_counts)
+
     excludes = [f":(exclude){p}" for p in SELF]
+    if staged:
+        mb = subprocess.run(["git", "merge-base", base, "HEAD"],
+                            capture_output=True, text=True).stdout.strip() or base
+        diff_range = ["--cached", mb]
+    else:
+        diff_range = [f"{base}...HEAD"]
     diff = subprocess.run(
-        ["git", "diff", f"{base}...HEAD", "--", ".",
+        ["git", "diff", *diff_range, "--", ".",
          ":(exclude)packages/core/drizzle/meta", *excludes],
         capture_output=True, text=True).stdout
 

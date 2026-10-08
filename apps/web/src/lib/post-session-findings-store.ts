@@ -86,6 +86,7 @@ export const postSessionFindingStore: PostSessionFindingStore = {
         workerId: postSessionRuns.workerId,
         taskId: postSessionRuns.taskId,
         workspaceId: postSessionRuns.workspaceId,
+        teamId: workspaces.teamId,
         missionId: postSessionRuns.missionId,
         policyVersion: postSessionRuns.policyVersion,
         mode: postSessionRuns.mode,
@@ -95,7 +96,7 @@ export const postSessionFindingStore: PostSessionFindingStore = {
       .innerJoin(workspaces, eq(workspaces.id, postSessionRuns.workspaceId))
       .where(eq(postSessionRuns.id, runId))
       .limit(1);
-    return row ? { ...row, gitConfig: row.gitConfig ?? null } : null;
+    return row ? { ...row, teamId: row.teamId ?? null, gitConfig: row.gitConfig ?? null } : null;
   },
 
   async insertFinding({ workspaceId, signature, policyVersion, aggregate, now }) {

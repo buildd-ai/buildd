@@ -227,7 +227,7 @@ export default function AppFreshness() {
             transition: pull.phase === 'pulling' ? 'none' : 'transform 180ms ease-out',
           }}
         >
-          <div className="flex min-h-9 items-center gap-2 border-2 border-border-strong bg-card px-3 font-mono text-[12px] font-semibold text-text-primary shadow-[var(--card-shadow)]">
+          <div className="flex min-h-9 items-center gap-2 border-2 border-border-strong bg-card px-3 font-mono text-meta font-semibold text-text-primary shadow-[var(--card-shadow)]">
             {pull.phase === 'refreshing' ? (
               <Spinner size="xs" aria-label="Refreshing" />
             ) : (
