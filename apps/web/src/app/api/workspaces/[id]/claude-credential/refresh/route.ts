@@ -21,6 +21,10 @@ type RouteContext = { params: Promise<{ id: string }> };
 // is deliberately unavailable in this deployment, not malformed (4xx) or broken (500). The
 // runner-side broker refreshes autonomously while it holds the credential lease, so the
 // actionable advice is "check the runner is online", not "try again".
+//
+// Any member of the workspace's team may call this, without manage_team_credentials: it
+// rotates the EXISTING credential's tokens in place and cannot replace or remove it.
+// Connecting, replacing or deleting one goes through the gated routes.
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   const user = await getCurrentUser();
