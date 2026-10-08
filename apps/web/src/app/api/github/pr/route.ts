@@ -1350,7 +1350,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const requestBody = await req.json();
-    const { workerId, prNumber, body: newPrBody, draft: draftUpdate } = requestBody;
+    const { workerId, prNumber, body: newPrBody, draft: draftUpdate, workspaceId: prWorkspaceId } = requestBody;
     // Presence of `body` switches this call from closing the PR to rewriting
     // its body — the two things this route's only caller set ever needed
     // from a bare PATCH. See update_pr in mcp-tools.ts.
@@ -1361,9 +1361,6 @@ export async function PATCH(req: NextRequest) {
     const capability = isReadyUpdate ? 'pr.mark_ready' as const
       : isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
-    }
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
     }
@@ -1371,13 +1368,27 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'body must be a string' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
-    });
-
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+    } else {
+      // workerId absent — resolve the owning worker from prNumber, as merge_pr does.
+      // The ownership checks below then apply to the resolved worker unchanged.
+      const resolved = await resolveWorkerByPrNumber(account, prNumber, prWorkspaceId);
+      if (typeof resolved.status === 'number') {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
     }
 
     if (!(await canActOnWorkerPr(account, worker))) {

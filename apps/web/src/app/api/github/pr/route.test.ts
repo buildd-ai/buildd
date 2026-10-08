@@ -3341,16 +3341,39 @@ describe('PATCH /api/github/pr', () => {
     expect(data.error).toBe('Invalid API key');
   });
 
-  it('returns 400 when workerId is missing', async () => {
+  it('resolves the worker from prNumber when workerId is missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
-    const req = createPatchRequest({
+    mockGetTeamWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w-1', accountId: 'account-1', workspaceId: 'ws-1', prNumber: 42, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK },
+    ]);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'closed',
+      title: 'Refresh',
+    });
+    const res = await PATCH(createPatchRequest({
       headers: { Authorization: 'Bearer bld_test' },
       body: { prNumber: 42 },
-    });
-    const res = await PATCH(req);
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe('workerId required');
+    }));
+    expect(res.status).toBe(200);
+    const [, path, options] = mockGithubApi.mock.calls[0];
+    expect(path).toBe('/repos/owner/repo/pulls/42');
+    expect(JSON.parse(options.body).state).toBe('closed');
+  });
+
+  it('returns 404 when workerId is missing and no worker owns the prNumber', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([]);
+    const res = await PATCH(createPatchRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { prNumber: 42 },
+    }));
+    expect(res.status).toBe(404);
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('returns 400 when prNumber is missing', async () => {
