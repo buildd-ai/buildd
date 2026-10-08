@@ -293,7 +293,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
   dispatch_health: 'task delivery: verdict, outbox counts, latency',
-  list_incidents: 'failure incidents',
+  list_incidents: 'known incidents',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
@@ -363,6 +363,8 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
+  list_incidents: '{workspaceId?, status?, …}',
+  get_decision_stats: '{workspaceId?, missionId?, window?, capability?, …}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
 };
 
