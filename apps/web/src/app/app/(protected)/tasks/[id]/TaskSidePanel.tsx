@@ -28,7 +28,7 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
 
   if (delivery && !merged) {
     // Use deliveryReading for canonical tone and label mapping.
-    const reading = deliveryReading({ stage: delivery.stage, state: delivery.state, headline: delivery.headline, owner: delivery.owner });
+    const reading = deliveryReading({ stage: delivery.stage as never, state: delivery.state as never, headline: delivery.headline, owner: delivery.owner as never });
 
     let toneClasses = '';
     let shouldPulse = false;
