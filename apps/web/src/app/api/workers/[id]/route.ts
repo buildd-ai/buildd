@@ -69,6 +69,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { attemptEnded as workflowAttemptEnded, attemptEndFromPatch, fixCompletionGate, isKernelReviewRound, isRepairRole, recordLocalHead, recordReviewVerdict, taskRetryCoversAttemptEnd } from '@/lib/workflow/seam';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -4227,6 +4228,16 @@ export async function PATCH(
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
   }
+
+  // A conflict retry the runner finished itself (derived files only, no agent).
+  // After the write landed, so a refused completion is never counted.
+  const derivedMergeEvent = derivedMergeGateEvent(status, body.derivedMergeFinish, {
+    workspaceId: worker.workspaceId,
+    missionId: taskMissionId,
+    taskId: worker.taskId,
+    workerId: worker.id,
+  });
+  if (derivedMergeEvent) fireGateEvent(derivedMergeEvent);
 
   // The worker's terminal write landed. Module reactions: memory use labels
   // (lib/knowledge-subscribers.ts), scheduled after the response. The first

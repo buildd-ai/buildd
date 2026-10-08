@@ -664,7 +664,8 @@ describe('run report', () => {
     expect(r.repo).toEqual({
       source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, warmUploadSkipReason: null,
       cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1_073_741_824 },
-      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, cacheRaw: null, upload: null, warmRepo: null },
+      warmUploadDeferred: false, reuseFetchSkipped: null,
+      bytes: { clone: null, restore: 5000, fetch: 64, reuseFetch: null, cache: null, cacheRaw: null, upload: null, warmRepo: null },
     });
     expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null, restoreCache: 250 });
   });
