@@ -7,6 +7,8 @@
 import Link from 'next/link';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { formatAge } from '@/lib/mission-board';
+import { derivePrDisplayState } from '@/lib/pr-presentation';
+import { deliveryReading, type DeliveryDisplay, type DeliveryReadingInput, type DeliveryTone } from '@/lib/workflow/delivery-display';
 import NowStrip from '@/app/app/(protected)/tasks/[id]/NowStrip';
 import { RunnerAvatar, ScopeChip, useNow } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import type { BuilddObjectRef } from '../chat-contract';
@@ -14,12 +16,32 @@ import { useChatActions } from '../ChatActions';
 import type { TaskObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, type Tone } from './parts';
 
+/**
+ * A kernel-owned delivery's words for the tile (§17.5). Null for `working`:
+ * the owner's own attempt is the reading.
+ */
+export function taskStateForDelivery(d: DeliveryReadingInput & Pick<DeliveryDisplay, 'prNumber'>): { label: string; tone: Tone; live: boolean } | null {
+  const r = deliveryReading(d);
+  if (!r) return null;
+  const pr = d.prNumber != null ? `#${d.prNumber} ` : '';
+  return { label: `${pr}${r.label}`, tone: TILE_TONE_FOR_DELIVERY[r.tone], live: false };
+}
+
+/** The tile's palette per canonical delivery tone (`deliveryReading`). */
+const TILE_TONE_FOR_DELIVERY: Record<DeliveryTone, Tone> = {
+  needs: 'attention', live: 'live', stalled: 'neutral', landed: 'ok', closed: 'idle', failed: 'bad',
+};
+
 /** The tile's words for where a task is: the worker's state wins over the task row's. */
 export function taskState(view: TaskObjectView): { label: string; tone: Tone; live: boolean } {
   const w = view.worker;
   if (w?.waiting) return { label: 'needs input', tone: 'attention', live: false };
-  if (w?.mergedAt) return { label: `#${w.prNumber} merged`, tone: 'ok', live: false };
-  if (w?.prLifecycleStatus === 'ci_failed') return { label: `#${w.prNumber} CI failed`, tone: 'bad', live: false };
+  const kernel = view.delivery ? taskStateForDelivery(view.delivery) : null;
+  if (kernel) return kernel;
+  // Legacy-owned: the one fact-cache mapping.
+  const pr = w?.prNumber ? derivePrDisplayState(w.prLifecycleStatus, w.mergedAt) : null;
+  if (pr === 'merged') return { label: `#${w!.prNumber} merged`, tone: 'ok', live: false };
+  if (pr === 'ci_failed') return { label: `#${w!.prNumber} CI failed`, tone: 'bad', live: false };
   if (w && ['running', 'starting', 'idle'].includes(w.status)) return { label: 'running', tone: 'live', live: true };
   if (w?.prNumber && view.status !== 'completed') return { label: `#${w.prNumber} in review`, tone: 'ok', live: false };
   switch (view.status) {

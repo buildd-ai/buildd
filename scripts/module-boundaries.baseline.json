@@ -23,6 +23,8 @@
       "apps/web/src/lib/ci-red-queue.ts": "reviews-merge",
       "apps/web/src/lib/ci-red-sweep-deps.ts": "reviews-merge",
       "apps/web/src/lib/dead-zone-sweep.ts": "reviews-merge",
+      "apps/web/src/lib/early-release-reconciler.ts": "releases",
+      "apps/web/src/lib/mission-branch-refresh.ts": "missions",
       "apps/web/src/lib/pr-landing-sweep-deps.ts": "reviews-merge",
       "apps/web/src/lib/pr-landing-sweep.ts": "reviews-merge",
       "apps/web/src/lib/pr-supersession-detect.ts": "reviews-merge",
@@ -37,6 +39,7 @@
       "apps/web/src/lib/ci-failure-excerpts.ts": "reviews-merge",
       "apps/web/src/lib/conflict-retry.ts": "reviews-merge",
       "apps/web/src/lib/dependency-bot-pr.ts": "reviews-merge",
+      "apps/web/src/lib/early-release-stacking.ts": "releases",
       "apps/web/src/lib/escalation-supersession.ts": "reviews-merge",
       "apps/web/src/lib/evidence-inline.ts": "knowledge",
       "apps/web/src/lib/failed-checks.ts": "reviews-merge",
@@ -218,8 +221,7 @@
       "packages/core/decision-client.ts": "jev-decisions",
       "packages/core/orchestration-claim-decision.ts": "jev-decisions",
       "packages/core/orchestration-claim-source.ts": "missions",
-      "packages/core/orchestration-decision.ts": "jev-decisions",
-      "packages/core/orchestration-promotion.ts": "missions"
+      "packages/core/orchestration-decision.ts": "jev-decisions"
     },
     "apps/web/src/app/api/workers/claim/prompt-context-pipeline.ts": {
       "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
@@ -251,8 +253,12 @@
       "packages/core/spec-conformance-schedule.ts": "spec-conformance"
     },
     "apps/web/src/app/api/workspaces/[id]/route.ts": {
+      "apps/web/src/lib/early-release-mode.ts": "releases",
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge"
+    },
+    "apps/web/src/app/api/workspaces/[id]/settings/route.ts": {
+      "apps/web/src/lib/early-release-mode.ts": "releases"
     },
     "apps/web/src/app/api/workspaces/route.ts": {
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge"
@@ -352,6 +358,7 @@
       "apps/web/src/lib/chat/instructions.ts": "chat",
       "apps/web/src/lib/chat/routing.ts": "chat",
       "apps/web/src/lib/default-roles.ts": "roles-skills",
+      "apps/web/src/lib/early-release-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-quality-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-rubric.ts": "missions",
       "apps/web/src/lib/heartbeat-triage.ts": "missions",

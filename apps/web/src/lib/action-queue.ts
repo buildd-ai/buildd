@@ -2,6 +2,7 @@ import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
+import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -403,6 +404,8 @@ export interface EscalationRawItem {
    * generic line.
    */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /**
    * Persisted lifecycle value. `'unresolvable'` is terminal and drops the row
    * out of the queue entirely — it belongs on the health/orphans surface, not
@@ -476,8 +479,20 @@ export interface ActionQueueItem {
   unblockMissionTitle?: string | null;
   waitingMinutes?: number | null;
   escalationReason?: string | null;
-  /** See {@link EscalationRawItem.hasEscalationNote} — carried through unchanged. */
+  /**
+   * See {@link EscalationRawItem.hasEscalationNote} — carried through, and also
+   * true when a kernel-owned delivery is ESCALATED by a reviewer verdict
+   * (see `reviewerEscalated`): the kernel round is the escalation, so the card
+   * must offer the escalation actions, not the no-verdict set.
+   */
   hasEscalationNote?: boolean;
+  /**
+   * True when the PR's delivery is kernel-owned and ESCALATED by the reviewer
+   * (review_escalated / review_exhausted). On those deliveries the verdict lives
+   * in the kernel round, so the legacy `verdictSummary` / note fields are null
+   * even though a reviewer did decide — the card reads this instead.
+   */
+  reviewerEscalated?: boolean;
   workerId?: string;
   question?: string;
   /** Set when the card is CI-gated — drives FIXING_CI / CI_RUNNING / CI BLOCKED copy. */
@@ -509,6 +524,8 @@ export interface ActionQueueItem {
   mergeConflict?: boolean;
   /** See {@link EscalationRawItem.conflictReason}. */
   conflictReason?: string | null;
+  /** S37: why the live conflict fix for this PR has stalled; null when it has not. */
+  remediationStalled?: string | null;
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
@@ -569,6 +586,12 @@ export interface ActionQueueItem {
   missionMergeBlockedReason?: string | null;
   /** Set when chip === 'CI_RUNNING' / 'REVIEW_RUNNING' — what exactly is pending. See resolveMergeChip. */
   pendingGates?: PendingGates | null;
+  /**
+   * Set when the PR's delivery is kernel-owned: the canonical owner of the
+   * next move, its headline and evidence (workflow-state-kernel §17.5). The
+   * card's chip was taken from it, not from raw worker/reviewer columns.
+   */
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -622,7 +645,63 @@ export interface BuildActionQueueOptions {
    * an expiry check the caller already ran a moment earlier.
    */
   snoozedSubjectKeys?: ReadonlySet<string>;
+  /**
+   * taskId → DeliveryView for tasks whose delivery the workflow kernel owns
+   * (`getDeliveryViewsForTasks`). For those, the chip is the kernel's owner of
+   * the next move, never an inference from worker/reviewer/task columns; a
+   * task absent from the map keeps today's projection (§14 cutover).
+   */
+  deliveryViews?: ReadonlyMap<string, DeliveryView>;
 }
+
+/**
+ * The chip a kernel-owned delivery projects. Landing (APPROVED/LANDING) keeps
+ * the legacy merge chip, because the merge rails stay legacy until Slice C;
+ * every other state is decided by who owns the next move, so a recoverable
+ * blocker (AWAITING_PUSH, a stalled conflict fix) is agent-handled, and only
+ * a human-owned state (ESCALATED) asks for a person.
+ */
+export function chipForDelivery(v: DeliveryView, legacyChip: ActionChip): ActionChip {
+  // Landing: the kernel holds an approval and the effective merge policy has
+  // the landing path merge it, so a legacy merge CTA (REVIEW: no reviewer-task
+  // approve on record; MERGE) is the auto-merge in flight it actually is, the
+  // same "merging" the board, list, strip and chat read. Every other legacy
+  // gate (BLOCKED, CI, conflict) stands.
+  if (v.owner === 'landing') return legacyChip === 'REVIEW' || legacyChip === 'MERGE' ? 'AUTO_MERGE' : legacyChip;
+  // An approved PR a person merges (human tier, approve-only, open handoff,
+  // the mission-PR gate) is the merge it actually is.
+  if (v.owner === 'human' && v.state === 'APPROVED' && legacyChip === 'REVIEW') return 'MERGE';
+  if (v.owner === 'human') return legacyChip === 'MERGE' || legacyChip === 'BLOCKED' || legacyChip === 'REVIEW' ? legacyChip : 'REVIEW';
+  if (v.cta?.action === 'repair_remediation' || v.cta?.action === 'create_conflict_fix' || v.headline === 'Resolving conflicts') return 'RESOLVING';
+  switch (v.state) {
+    case 'AWAITING_REVIEW': return 'REVIEW_RUNNING';
+    case 'REPAIRING': return v.stateReason === 'ci' ? 'FIXING_CI' : 'RESOLVING';
+    case 'BLOCKED_ON_TRUNK': return 'FIXING_CI';
+    default: return 'FIXING_REVIEW';
+  }
+}
+
+/**
+ * S36: Needs You membership for a task whose delivery the kernel owns is the
+ * kernel's `needsYou`, never the legacy reviewer gate / note / tier predicate
+ * (that only restyles rows the kernel already admits). Landing keeps the
+ * legacy predicate because the merge rails stay legacy until Slice C. A task
+ * with no view keeps today's predicate untouched.
+ */
+export function kernelInboxMembership(view: DeliveryView | undefined, legacyIncluded: boolean): boolean {
+  if (!view) return legacyIncluded;
+  if (view.owner === 'landing') return legacyIncluded;
+  return view.needsYou;
+}
+
+/** ESCALATED because a reviewer decided (escalate, or rounds spent without an approval). */
+const REVIEWER_ESCALATION_REASONS: ReadonlySet<string> = new Set(['review_escalated', 'review_exhausted']);
+const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
+  v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
+
+const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
+  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
+});
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
 const LIVE_MISSION_STATUSES = new Set(['active', 'paused']);
@@ -1229,7 +1308,10 @@ export function buildActionQueue(
           now,
         })
       : null;
-    const chip: ActionChip = staleGate ? 'STALE' : baseChip;
+    const kernelView = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+    const chip: ActionChip = kernelView
+      ? (() => { const c = chipForDelivery(kernelView, baseChip); return c === baseChip && staleGate ? 'STALE' : c; })()
+      : staleGate ? 'STALE' : baseChip;
     // Which RESOLVING/BLOCKED readings come from a conflict, not from red CI.
     const mergeConflict =
       (chip === 'RESOLVING' || chip === 'BLOCKED')
@@ -1274,9 +1356,20 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
-      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null } : {}),
+      ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
       pendingGates,
+      ...(kernelView ? {
+        delivery: deliveryCard(kernelView),
+        // The card's reason line is the kernel's evidence, not a raw column.
+        ...(kernelView.owner !== 'landing' || kernelView.compositionVerified
+          ? { escalationReason: kernelView.detail ? `${kernelView.headline} · ${kernelView.detail}` : kernelView.headline }
+          : {}),
+        ...(kernelView.cta?.action === 'repair_remediation' ? { mergeConflict: true, conflictReason: kernelView.detail, conflictRetryTaskId: kernelView.cta.taskId, remediationStalled: kernelView.detail } : {}),
+        // A reviewer verdict that escalated lives in the kernel round, not in a
+        // legacy note: the card has a verdict to dispatch against or merge past.
+        ...(isKernelReviewerEscalation(kernelView) ? { hasEscalationNote: true, reviewerEscalated: true } : {}),
+      } : {}),
     });
   }
 
@@ -1355,6 +1448,13 @@ export function buildActionQueue(
       }
     } else if (item.kind === 'failed') {
       const key = `task:${item.taskId}`;
+      // S35: a failed attempt of a kernel-owned delivery that is still live,
+      // or already shipped, is history, not a failure that needs you. Use
+      // attemptFailureCounts: it returns true only for the current/owner task
+      // in a FAILED delivery; past attempts or any task in a live/shipped
+      // delivery return false.
+      const fv = item.taskId ? options.deliveryViews?.get(item.taskId) : undefined;
+      if (fv && item.taskId && !attemptFailureCounts(fv, item.taskId)) continue;
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,

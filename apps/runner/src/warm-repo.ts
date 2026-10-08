@@ -27,14 +27,16 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join, relative } from 'path';
+import { dirname, isAbsolute, join, relative } from 'path';
 import {
   emitCacheSkipped,
   emitMetric,
   emitPhase,
   emitRepoSource,
+  emitWarmUploadDeferred,
   emitWarmUploadSkipped,
   emitWarmRefresh,
+  WARM_REFRESH_REASONS,
   type RepoFallbackReason,
   type RunMetric,
   type WarmRefreshReason,
@@ -488,6 +490,31 @@ export interface WarmRepoDeps {
    * against its store index).
    */
   reusedContainer?: boolean;
+  /**
+   * A lease container (container reuse, BUILDD_WARM_UPLOAD_DEFER=1): the
+   * run records the upload it is due instead of making it (defer).
+   */
+  deferUpload?: boolean;
+}
+
+/** Set by the cloud Worker on a lease container's run. */
+export const WARM_UPLOAD_DEFER_ENV = 'BUILDD_WARM_UPLOAD_DEFER';
+/** In the session's tmpDir (under BUILDD_HOME, so a reset wipes it). */
+export const DEFERRED_UPLOAD_FILE = 'deferred-upload.json';
+
+/** The upload a run is due: which clone, and seed or refresh (and why). */
+export interface DeferredUpload {
+  clonePath: string;
+  decision: 'seed' | 'refresh';
+  reason?: WarmRefreshReason;
+}
+
+export function parseDeferredUpload(v: unknown): DeferredUpload | null {
+  const o = (v ?? {}) as Partial<DeferredUpload>;
+  if (typeof o.clonePath !== 'string' || !isAbsolute(o.clonePath)) return null;
+  if (o.decision !== 'seed' && o.decision !== 'refresh') return null;
+  if (o.reason !== undefined && !WARM_REFRESH_REASONS.includes(o.reason)) return null;
+  return { clonePath: o.clonePath, decision: o.decision, ...(o.reason ? { reason: o.reason } : {}) };
 }
 
 export interface CloneHooks {
@@ -495,6 +522,12 @@ export interface CloneHooks {
   restore(clonePath: string, cloneUrl: string): boolean;
   /** After a normal clone succeeded. */
   afterClone(clonePath: string): void;
+  /**
+   * After a reused container's clone was seeded from the packs its reset
+   * kept (container-reset.ts). Not a clone: its size on disk is not what
+   * the run downloaded (the seed reports that itself). afterClone when absent.
+   */
+  afterSeed?(clonePath: string): void;
 }
 
 export function freeBytesOf(path: string): number | null {
@@ -756,6 +789,7 @@ export class WarmRepoSession {
         this.clonePath = clonePath;
         emitMetric('clone_bytes', objectBytes(clonePath), this.d.lineOpts);
       },
+      afterSeed: (clonePath) => { this.clonePath = clonePath; },
     };
   }
 
@@ -886,7 +920,8 @@ export class WarmRepoSession {
   /** Best effort; never throws. Call once, after the run's outcome is known. */
   async refresh(end: RunEnd): Promise<void> {
     try {
-      await this.refreshOrThrow(end);
+      if (this.d.deferUpload) this.defer(end);
+      else await this.refreshOrThrow(end);
     } catch (err) {
       this.d.log(`[warm] snapshot upload skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -956,9 +991,10 @@ export class WarmRepoSession {
     return cache.bytes;
   }
 
-  private async refreshOrThrow(end: RunEnd): Promise<void> {
+  /** Whether this run's clone is due an upload, and why; null when not. */
+  private decide(end: RunEnd): DeferredUpload | null {
     const clonePath = this.clonePath;
-    if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return;
+    if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return null;
     const currentCacheBytes = dirSizeBytes(this.d.cacheDir);
 
     // Calculate cache growth, deciding whether to suppress a missing pnpm store.
@@ -981,7 +1017,55 @@ export class WarmRepoSession {
       }
     }
     const { decision, reason } = decideWarmRefresh({ result: this.result, end, currentCacheBytes: grownBytes });
-    if (decision === 'none') return;
+    if (decision === 'none') return null;
+    return { clonePath, decision, ...(reason ? { reason } : {}) };
+  }
+
+  private async refreshOrThrow(end: RunEnd): Promise<void> {
+    const due = this.decide(end);
+    if (due) await this.upload(due);
+  }
+
+  /**
+   * Lease containers (deferUpload): record the upload this run is due
+   * instead of making it, so the container is free the moment the run ends.
+   * The kept container is the warm state; the upload runs when the lease
+   * lets the container go (uploadDeferred), and never when the next task
+   * takes it over (its reset wipes the record).
+   */
+  private defer(end: RunEnd): void {
+    const due = this.decide(end);
+    if (!due) return;
+    mkdirSync(this.d.tmpDir, { recursive: true });
+    writeFileSync(join(this.d.tmpDir, DEFERRED_UPLOAD_FILE), JSON.stringify(due));
+    emitWarmUploadDeferred(this.d.lineOpts);
+    this.d.log(`[warm] snapshot upload (${due.decision}) deferred until the container is released`);
+  }
+
+  /**
+   * `buildd-once --upload-warm`: the upload a run deferred, if one is
+   * recorded. True when a generation was committed. Best effort; never throws.
+   */
+  async uploadDeferred(): Promise<boolean> {
+    const file = join(this.d.tmpDir, DEFERRED_UPLOAD_FILE);
+    let due: DeferredUpload | null = null;
+    try {
+      due = parseDeferredUpload(JSON.parse(readFileSync(file, 'utf-8')));
+    } catch { /* none recorded */ }
+    rmSync(file, { force: true });
+    if (!due || !existsSync(join(due.clonePath, '.git'))) return false;
+    try {
+      return await this.upload(due);
+    } catch (err) {
+      this.d.log(`[warm] deferred snapshot upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Bundle and upload one generation. True when it was committed. */
+  private async upload(due: DeferredUpload): Promise<boolean> {
+    const { clonePath, decision, reason } = due;
+    const currentCacheBytes = dirSizeBytes(this.d.cacheDir);
     if (reason) emitWarmRefresh(reason, this.d.lineOpts);
     assertSnapshotSafe(clonePath);
 
@@ -1000,11 +1084,11 @@ export class WarmRepoSession {
     this.metric('warm_repo_bytes', measured);
     if (measured > cap) {
       this.skipTooLarge(`the repo is ${measured} bytes, over the ${cap}-byte warm snapshot cap`);
-      return;
+      return false;
     }
 
     const begin = this.d.transport.post('/warm/begin');
-    if (begin.status === 409) { this.d.log('[warm] another refresh of this workspace is in flight'); return; }
+    if (begin.status === 409) { this.d.log('[warm] another refresh of this workspace is in flight'); return false; }
     const generation = (begin.body as { generation?: unknown } | null)?.generation;
     if (begin.status !== 201 || typeof generation !== 'string' || !GENERATION_RE.test(generation)) {
       throw new Error(`begin answered ${begin.status || 'nothing'}`);
@@ -1031,7 +1115,7 @@ export class WarmRepoSession {
         staged.cleanup();
       }
       if (!repo.ok) {
-        if (repo.reason === 'too_large') { this.skipTooLarge(`the bundle grew past ${maxBytes} bytes while streaming`); return; }
+        if (repo.reason === 'too_large') { this.skipTooLarge(`the bundle grew past ${maxBytes} bytes while streaming`); return false; }
         throw new Error(`bundle upload failed: ${repo.detail}`);
       }
       uploaded += repo.bytes;
@@ -1041,6 +1125,7 @@ export class WarmRepoSession {
       const commit = this.d.transport.post(`/warm/${generation}/commit`, commitBody);
       if (commit.status !== 201) throw new Error(`commit answered ${commit.status || 'nothing'}`);
       this.d.log(`[warm] ${decision === 'seed' ? 'seeded' : 'refreshed'} generation ${generation} (${uploaded} bytes)`);
+      return true;
     } finally {
       emitPhase('warm_upload_end', this.d.lineOpts);
       this.metric('warm_upload_bytes', uploaded);
@@ -1052,6 +1137,7 @@ export class WarmRepoSession {
 export function createWarmRepoSession(env: Record<string, string | undefined>, tmpDir: string): WarmRepoSession {
   const session = new WarmRepoSession({
     reusedContainer: isReusedContainer(env),
+    deferUpload: env[WARM_UPLOAD_DEFER_ENV] === '1',
     transport: curlTransport(env[SNAPSHOT_URL_ENV] ?? ''),
     cacheDir: bunCacheDir(env),
     tmpDir,

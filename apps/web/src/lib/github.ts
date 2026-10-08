@@ -244,6 +244,37 @@ export async function mergePullRequest(
 }
 
 /**
+ * Mark a draft pull request ready for review — the undraft half of early
+ * release's stacking mechanics (docs/design/early-release.md). GitHub's REST
+ * API has no endpoint for this; only the GraphQL mutation does, and that
+ * mutation takes the PR's GraphQL node id rather than its number, so this
+ * reads the PR via REST first to get it.
+ *
+ * A PR that is already not a draft (redelivered webhook, or a human already
+ * marked it ready) is a no-op success, not an error.
+ */
+export async function markPullRequestReadyForReview(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (!pr?.draft) return { ok: true };
+    const nodeId = pr.node_id;
+    if (!nodeId) return { ok: false, message: `PR #${prNumber} on ${repoFullName} has no node_id` };
+    await githubGraphQL(
+      installationId,
+      `mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }`,
+      { id: nodeId },
+    );
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * Post a reviewer verdict as a real GitHub review.
  *
  * Without this, an agent verdict lives only in buildd's own store: GitHub

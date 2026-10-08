@@ -338,6 +338,8 @@ describe('assertion coverage over the real migration corpus', () => {
     // fully checkable), so the tree starts again from zero. A new data fix,
     // lone ALTER COLUMN or function/trigger migration may raise this: say which
     // one beside the bump, as the pre-squash version of this test did.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(0);
+    //  - 0267_soft_overlap_legacy_edges: data fix (pending tasks' legacy
+    //    inferred path-overlap edges move to soft evidence); idempotent UPDATE.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(1);
   });
 });

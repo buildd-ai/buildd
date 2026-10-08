@@ -27,10 +27,15 @@ import {
   appendTail,
   assertRunnerConfig,
   buildContainerEnv,
+  CLOUD_MODEL_AUTH_CONTAINER_ENV,
   EXIT_PARKED,
   EXIT_NOT_ATTACHABLE,
   IMAGE_ENV,
   RESET_COMMAND,
+  WARM_UPLOAD_COMMAND,
+  WARM_UPLOAD_DEFER_ENV,
+  WARM_UPLOAD_DONE_PREFIX,
+  warmUploadEnv,
   RESET_OK_LINE,
   attachOrphanCommand,
   crashReportAction,
@@ -77,6 +82,7 @@ import {
 } from './run-report';
 import { otelContainerEnv, type OtelEnv } from './otel';
 import {
+  WARM_UPLOAD_TIMEOUT_MS,
   decideLeaseClaim,
   keepsContainerWarm,
   prepMsOf,
@@ -157,6 +163,12 @@ export interface SupervisorDeps {
    * deployer set the seat secret. Absent: runs start exactly as before.
    */
   ownerSeat?: OwnerSeatPort;
+  /**
+   * The model route this run's egress plans to take, handed to the container
+   * as CLOUD_MODEL_AUTH_CONTAINER_ENV so the runner reports the matching cost
+   * basis (docs/specs/real-and-virtual-cost.md). Absent or null: no hint.
+   */
+  plannedModelAuth?(): Promise<ModelAuth | null>;
   /** Lease agents: a one-shot that calls expireWarmContainer() at `at` (epoch ms). */
   scheduleWarmExpiry?(at: number): Promise<void>;
   fetch: typeof fetch;
@@ -283,7 +295,10 @@ export class TaskSupervisor {
       startedAt: this.d.now(),
       ...(this.d.config.agentVersion ? { agentVersion: this.d.config.agentVersion } : {}),
       outputTail: [],
-      timings: request.scheduledFor !== undefined ? { scheduledFor: request.scheduledFor } : {},
+      timings: {
+        ...(request.scheduledFor !== undefined ? { scheduledFor: request.scheduledFor } : {}),
+        ...(request.leaseWaitMs !== undefined && request.leaseWaitMs > 0 ? { leaseWaitMs: request.leaseWaitMs } : {}),
+      },
       ...(history.length ? { reportHistory: history } : {}),
       // Carried forward ONLY for the agent's own backoff retry of a deferred
       // attempt — any other dispatch (a real retry webhook, a resume, the
@@ -319,7 +334,7 @@ export class TaskSupervisor {
   dispatchLeased(request: LeasedDispatchRequest): LeasedDispatchResult {
     const lease = this.d.config.lease;
     const state = this.d.getState();
-    const refuse = (reason: 'already_live' | 'not_parked' | 'busy' | 'not_warm'): LeasedDispatchResult =>
+    const refuse = (reason: 'already_live' | 'not_parked' | 'busy' | 'tail' | 'not_warm'): LeasedDispatchResult =>
       ({ accepted: false, reason, attempt: state.attempt, status: state.status });
     if (!lease) return refuse('busy');
     const sameTask = state.taskId === request.taskId;
@@ -339,10 +354,16 @@ export class TaskSupervisor {
       windowMs: this.d.config.reuseWindowMs ?? 0,
       containerRunning: this.d.container.running,
     });
-    if (decision.claim === 'busy') return refuse('busy');
+    if (decision.claim === 'busy') return refuse(decision.reason === 'tail' ? 'tail' : 'busy');
     if (request.warmOnly && decision.claim !== 'warm') return refuse('not_warm');
     const reuse: ReusedContainer | undefined = decision.claim === 'warm'
-      ? { fromTaskId: decision.warm.fromTaskId, idleMs: Math.max(0, this.d.now() - decision.warm.since), baselinePrepMs: decision.warm.baselinePrepMs }
+      ? {
+          fromTaskId: decision.warm.fromTaskId,
+          idleMs: Math.max(0, this.d.now() - decision.warm.since),
+          baselinePrepMs: decision.warm.baselinePrepMs,
+          // The upload the previous run deferred is not needed: this run takes its container.
+          ...(decision.warm.uploadPending ? { uploadSkipped: true } : {}),
+        }
       : undefined;
     if (!sameTask) {
       // A different task: its attempts count from 1. Earlier tasks' reports
@@ -358,15 +379,50 @@ export class TaskSupervisor {
    * The warm window ended. Destroy the kept container unless a run took it
    * (or a later run left a newer one, with its own expiry).
    */
-  async expireWarmContainer(): Promise<{ expired: boolean }> {
+  async expireWarmContainer(): Promise<{ expired: boolean; uploaded?: boolean }> {
     const state = this.d.getState();
     const w = state.warm;
     if (!w || this.hasLiveRun || state.status === 'starting' || state.status === 'running') return { expired: false };
     if (this.d.now() - w.since < (this.d.config.reuseWindowMs ?? 0)) return { expired: false };
-    this.patch({ warm: undefined });
+    // Not taken: the upload its run deferred is due now, before the container
+    // goes. The lease is busy meanwhile (decideLeaseClaim `uploading`).
+    const upload = !!w.uploadPending && this.d.container.running;
+    this.patch({ warm: undefined, ...(upload ? { warmUploadSince: this.d.now() } : {}) });
+    let uploaded: boolean | undefined;
+    if (upload) {
+      try {
+        uploaded = await this.d.keepAliveWhile(() => this.runDeferredUpload(w.fromTaskId));
+      } finally {
+        this.patch({ warmUploadSince: undefined });
+      }
+    }
     await this.stopContainer('warm window ended');
     this.d.log(`[cloud-runner] lease: warm container from task ${w.fromTaskId} expired`);
-    return { expired: true };
+    return { expired: true, ...(upload ? { uploaded } : {}) };
+  }
+
+  /** `buildd-once --upload-warm` in the kept container, bounded. True when it uploaded a generation. */
+  private async runDeferredUpload(fromTaskId: string): Promise<boolean> {
+    const start = this.d.now();
+    try {
+      const proc = await this.d.container.exec([...WARM_UPLOAD_COMMAND], { stdout: 'pipe', stderr: 'pipe', env: warmUploadEnv(this.d.config) });
+      const lines: string[] = [];
+      const read = async (stream: ReadableStream<Uint8Array> | null) => {
+        if (!stream) return;
+        const text = await new Response(stream).text();
+        for (const l of text.split('\n')) if (l.trim()) lines.push(l.trim());
+      };
+      const code = await Promise.race([
+        Promise.all([proc.exitCode, read(proc.stdout), read(proc.stderr)]).then(([exit]) => exit),
+        this.d.sleep(WARM_UPLOAD_TIMEOUT_MS).then(() => null),
+      ]);
+      const done = lines.find(l => l.startsWith(WARM_UPLOAD_DONE_PREFIX))?.slice(WARM_UPLOAD_DONE_PREFIX.length);
+      this.d.log(`[cloud-runner] lease: deferred warm upload of task ${fromTaskId}'s container: ${code === null ? 'timed out' : `exit ${code}, ${done ?? 'no result'}`} in ${Math.round((this.d.now() - start) / 1000)}s`);
+      return code === 0 && done === 'uploaded';
+    } catch (err) {
+      this.d.log(`[cloud-runner] lease: deferred warm upload of task ${fromTaskId}'s container failed: ${describe(err)}`);
+      return false;
+    }
   }
 
   /**
@@ -476,6 +532,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+        ...(await this.modelAuthEnv()),
       };
       await this.d.installEgress();
       const proc = await c.exec(attachOrphanCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe', env });
@@ -560,6 +617,7 @@ export class TaskSupervisor {
       const env = {
         ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
         ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+        ...(await this.modelAuthEnv()),
       };
       // The interception belonged to the agent before the restart; the park
       // upload goes through the snapshot route, so this agent installs its own.
@@ -623,7 +681,13 @@ export class TaskSupervisor {
       // does not verify clean. Any other leftover container is destroyed.
       const reused = await this.prepareReusedContainer();
       if (!reused && c.running) await c.destroy('leftover container from a previous attempt');
-      const env = { ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()), ...otelEnv };
+      const env = {
+        ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
+        ...otelEnv,
+        ...(await this.modelAuthEnv()),
+        // A lease keeps the container: its run leaves the warm upload for the lease's end.
+        ...(this.d.config.lease && this.d.config.WARM_REPOS === '1' ? { [WARM_UPLOAD_DEFER_ENV]: '1' } : {}),
+      };
       await this.d.installEgress();
       if (!reused) {
         c.start({ env, enableInternet: true, labels: { [RUN_LABEL_NAME]: runLabel(this.d.taskId, attempt) } });
@@ -744,6 +808,7 @@ export class TaskSupervisor {
           // The baseline is a fresh container's prep: measured by the run that
           // started this container, carried through every reuse after it.
           baselinePrepMs: reusedOk ? reusedOk.baselinePrepMs : prepMsOf(report.durationsMs),
+          ...(report.repo.warmUploadDeferred ? { uploadPending: true } : {}),
         }
       : undefined;
     this.patch({
@@ -987,6 +1052,18 @@ export class TaskSupervisor {
     } catch (err) {
       this.d.log(`[cloud-runner] task ${this.d.taskId}: crash report failed: ${describe(err)}`);
       return 'error';
+    }
+  }
+
+  /** The planned model route as container env; empty when unknown. Never fails a run. */
+  private async modelAuthEnv(): Promise<Record<string, string>> {
+    if (!this.d.plannedModelAuth) return {};
+    try {
+      const auth = await this.d.plannedModelAuth();
+      return auth ? { [CLOUD_MODEL_AUTH_CONTAINER_ENV]: auth } : {};
+    } catch (err) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: planning the model route failed: ${describe(err)}; the runner gets no cost-basis hint`);
+      return {};
     }
   }
 

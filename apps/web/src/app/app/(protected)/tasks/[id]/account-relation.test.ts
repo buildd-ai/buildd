@@ -21,11 +21,12 @@ const USED = ['name', 'authType'] as const;
 const ALLOWLIST = `account: { columns: { ${USED.map(c => `${c}: true`).join(', ')} } }`;
 
 /**
- * How many account relations the page selects: the root tree, the two worker
- * reads, and the CI-retry attempts' workers (Worker history lists them beside
- * the task's own, so they carry the same shape).
+ * How many account relations the page selects: the root tree, the worker read,
+ * and the CI-retry attempts' workers (Worker history lists them beside the
+ * task's own, so they carry the same shape). The re-read after a render-time
+ * merge refresh is gone: that import now runs after the response.
  */
-const ACCOUNT_RELATION_SITES = 4;
+const ACCOUNT_RELATION_SITES = 3;
 
 describe('tasks/[id]/page.tsx account relation', () => {
   it('never selects the account relation wholesale', () => {
@@ -33,9 +34,7 @@ describe('tasks/[id]/page.tsx account relation', () => {
   });
 
   it('declares the same explicit allowlist at every account site', () => {
-    // The two worker reads must agree -- one is a re-read of the other after the
-    // read-through merge-state refresh, and a divergence there would mean the
-    // refreshed rows carry a different shape than the ones they replace.
+    // Every account site carries the same explicit allowlist.
     expect(pageSource.split(ALLOWLIST).length - 1).toBe(ACCOUNT_RELATION_SITES);
   });
 

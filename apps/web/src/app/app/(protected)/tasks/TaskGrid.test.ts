@@ -59,7 +59,10 @@ function stageToHistogramBucket(stage: Stage): string {
     case 'CI_FAILING':
     case 'MERGE':
     case 'REVIEWING':
+    case 'FIXING':
       return 'REVIEW';
+    case 'STALLED':
+      return 'BLOCKED';
     case 'WAITING_INPUT':
       return 'RUNNING';
     default:
@@ -245,5 +248,38 @@ describe('capGroupedRows', () => {
   it('no cap returns the input', () => {
     const groups = [g('a', 3)];
     expect(capGroupedRows(groups, Infinity)).toBe(groups);
+  });
+});
+
+// §17.5 (Slice E): a kernel-owned delivery buckets by its own stage, the one the
+// card's chip shows, whatever the worker columns say.
+describe('kernel-owned rows: chip and histogram read the delivery', () => {
+  const d = (stage: NonNullable<GridTask['delivery']>['stage']): NonNullable<GridTask['delivery']> => ({
+    ownerTaskId: 't1', state: 'FIXING', stage, owner: 'worker', needsYou: false, headline: 'x', detail: null, prNumber: 1234, prState: 'awaiting_ci', attemptLine: null, cta: null,
+  });
+  it.each([
+    ['fixing', 'REVIEW'],
+    ['awaiting_push', 'REVIEW'],
+    ['review', 'REVIEW'],
+    ['merged', 'DONE'],
+    ['superseded', 'DONE'],
+    ['blocked', 'BLOCKED'],
+  ] as const)('%s reads %s in both views, with columns that say merged', (stage, expected) => {
+    const task = makeTask({ prLifecycleStatus: 'merged', delivery: d(stage) });
+    expect(deriveGridTaskStage(task)).toBe(expected);
+    expect(stageToHistogramBucket(cardStage(task))).toBe(expected);
+  });
+  it.each(['needs_you', 'approved'] as const)("%s (a person's move) is in review on the histogram and needs you on the chip", (stage) => {
+    const task = makeTask({ delivery: { ...d(stage), owner: 'human', needsYou: true } });
+    expect(deriveGridTaskStage(task)).toBe('REVIEW');
+    expect(cardStage(task)).toBe('WAITING_INPUT');
+  });
+  it('approved with the landing path merging it is moving on the chip, never needs you', () => {
+    const task = makeTask({ delivery: { ...d('approved'), state: 'APPROVED', owner: 'landing', needsYou: false } });
+    expect(cardStage(task)).not.toBe('WAITING_INPUT');
+    expect(deriveGridTaskStage(task)).not.toBe('FAILED');
+  });
+  it('gridTaskPrProps forwards the delivery to the card', () => {
+    expect(gridTaskPrProps(makeTask({ delivery: d('fixing') })).delivery?.stage).toBe('fixing');
   });
 });

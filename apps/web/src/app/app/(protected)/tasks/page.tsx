@@ -1,5 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
+import { getOwnerDeliveryDisplays } from '@/lib/workflow/delivery-view';
+import type { DeliveryDisplay } from '@/lib/workflow/delivery-display';
+import { tasks, workers, workspaces as workspacesTable, missions, initiatives, teams } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
@@ -44,6 +46,7 @@ export default async function TasksPage({
     prUrl: string | null;
     prNumber: number | null;
     prLifecycleStatus: string | null;
+    delivery: DeliveryDisplay | null;
     summary: string | null;
     hasArtifact: boolean;
     filesChanged: number | null;
@@ -80,6 +83,7 @@ export default async function TasksPage({
   // Now/History (the default view). A band drill-down (`?ids=`/`?selection=`)
   // is a historical list another surface links to and keeps TaskGrid.
   let activity: ActivityData | null = null;
+  let teamName: string | null = null;
 
   if (!isDev && user) {
     try {
@@ -87,6 +91,15 @@ export default async function TasksPage({
       const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
 
       if (activeTeamId) {
+        // Query team name for the header eyebrow
+        try {
+          const team = await db.query.teams.findFirst({
+            where: eq(teams.id, activeTeamId),
+            columns: { name: true },
+          });
+          teamName = team?.name || null;
+        } catch {}
+
         // Resolve initiative title early (independent of workspace/task queries)
         if (initiativeId) {
           try {
@@ -271,6 +284,8 @@ export default async function TasksPage({
             .filter(t => t.status === 'completed' && (t.result as { prUrl?: string } | null)?.prUrl)
             .map(t => t.id);
           const prLifecycleByTaskId = new Map<string, string | null>();
+          // §17.5: a kernel-owned delivery's stage and PR state, not the columns.
+          const deliveryByTaskId = await getOwnerDeliveryDisplays(allTasks.map(t => t.id));
           if (completedPrTaskIds.length > 0) {
             const lastWorkers = await db.query.workers.findMany({
               where: inArray(workers.taskId, completedPrTaskIds),
@@ -371,6 +386,7 @@ export default async function TasksPage({
               prUrl: result?.prUrl || null,
               prNumber: result?.prNumber || null,
               prLifecycleStatus: result?.prUrl ? (prLifecycleByTaskId.get(t.id) ?? null) : null,
+              delivery: deliveryByTaskId.get(t.id) ?? null,
               summary: result?.summary || null,
               hasArtifact: !!result?.structuredOutput || (result?.files?.length ?? 0) > 0,
               filesChanged: result?.files?.length ?? null,
@@ -473,6 +489,7 @@ export default async function TasksPage({
       initiativeTitle={initiativeTitle}
       initiativeMissionIds={initiativeMissionIds}
       localSessions={localSessions}
+      teamName={teamName}
     />
   );
 }

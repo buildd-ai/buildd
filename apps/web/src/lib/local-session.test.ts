@@ -518,6 +518,14 @@ describe('usage', () => {
     expect(w.effort).toMatchObject({ toolCalls: 7, subagents: 0, requests: 4, costUnknown: false });
   });
 
+  it('carries the hook-reported cost basis to the write, and unknown when the hook sends none', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'touch', usage: { ...usage(id), costBasis: 'virtual' } }, ACCOUNT, later(30_000));
+    await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(90_000));
+    expect(usageWrites.map(u => u.costBasis)).toEqual(['virtual', 'unknown']);
+  });
+
   it('an unpriced model leaves the cost unknown, never written as a number', async () => {
     claimWorker(id);
     await run({ event: 'bind', workerId: id });
@@ -589,6 +597,19 @@ describe('contract', () => {
       expect(ev({ workers: Array.from({ length: 21 }, () => worker) }).ok).toBe(false);
       expect(ev({ workers: [{ ...worker, firstAt: 'yesterday' }] }).ok).toBe(false);
       expect(ev({ workers: [] }).ok).toBe(true);
+    });
+
+    // docs/specs/real-and-virtual-cost.md: the hook reports a basis only when
+    // its environment settles one; `mixed` is a server-side result, never sent.
+    it('accepts a cost basis of real, virtual or unknown alongside usage, and nothing else', () => {
+      for (const costBasis of ['real', 'virtual', 'unknown']) {
+        const r = ev({ workers: [worker], costBasis });
+        expect(r.ok).toBe(true);
+        expect((r as any).event.usage.costBasis).toBe(costBasis);
+      }
+      expect(ev({ workers: [worker], costBasis: 'mixed' }).ok).toBe(false);
+      expect(ev({ workers: [worker], costBasis: 'oauth' }).ok).toBe(false);
+      expect((ev({ workers: [worker] }) as any).event.usage.costBasis).toBeUndefined();
     });
   });
 

@@ -13,7 +13,7 @@ const mockReconcile = mock(() =>
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: mockResolveAccountTeamIds }));
-mock.module('@/lib/pr-state-reconcile', () => ({ reconcileMissionPrState: mockReconcile }));
+mock.module('@/lib/pr-fact-import', () => ({ importMissionPrFacts: mockReconcile }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
