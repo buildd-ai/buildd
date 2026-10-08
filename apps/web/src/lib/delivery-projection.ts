@@ -339,17 +339,21 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
 
   const first = roots.map(t => {
     const kids = attempts.get(t.id) ?? [];
-    const workers = [...(t.workers ?? []), ...kids.flatMap(k => k.workers ?? [])];
+    const repairs = kids.filter(isRepairAttempt(rules));
+    // A live reviewer is the audit running, not a build or a repair: its
+    // workers count as agents but never decide the task's kind.
+    const workers = [...(t.workers ?? []), ...repairs.flatMap(k => k.workers ?? [])];
+    const reviewers = kids.filter(k => !repairs.includes(k)).flatMap(k => k.workers ?? []);
     // An attempt that succeeded resolves the parent (computeMissionProgress's best-status rule).
     const status = kids.some(k => k.status === 'completed') && t.status === 'failed' ? 'completed' : t.status;
-    return { t, workers, status, repairRounds: kids.filter(isRepairAttempt(rules)).length };
+    return { t, workers, reviewers, status, repairRounds: repairs.length };
   });
   const landedIds = new Set<string>();
-  const deliveries = first.map(({ t, workers, status, repairRounds }) => {
+  const deliveries = first.map(({ t, workers, reviewers, status, repairRounds }) => {
     const r = m.reviews?.get(t.id);
     const delivery = projectTaskDelivery({ status, workers, repairRounds, review: r?.review, headSha: r?.headSha });
     if (delivery.landed) landedIds.add(t.id);
-    return { t, workers, status, repairRounds, delivery };
+    return { t, workers, reviewers, status, repairRounds, delivery };
   });
   // Second pass: an unclaimed task whose in-mission dependency has not landed waits on it.
   for (const d of deliveries) {
@@ -360,7 +364,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
 
   const tasks = deliveries.map(d => ({ id: d.t.id, title: d.t.title, delivery: d.delivery }));
   const allLanded = progress.totalTasks > 0 && progress.completedTasks >= progress.totalTasks;
-  const anyLive = deliveries.some(d => d.workers.some(w => LIVE.has(w.status)));
+  const anyLive = deliveries.some(d => [...d.workers, ...d.reviewers].some(w => LIVE.has(w.status)));
   const complete = m.status === 'completed';
   const onTrunk = m.integrationBranch ? complete : null;
   const milestones: MissionMilestones = {

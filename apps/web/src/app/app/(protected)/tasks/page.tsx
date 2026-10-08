@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces as workspacesTable, missions, initiatives } from '@buildd/core/db/schema';
 import { desc, eq, inArray, and, gte, isNull } from 'drizzle-orm';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { deriveTaskType, type TaskType } from '@buildd/core/mission-helpers';
 import { deriveDisplayStatus, LIVE_WORKER_STATUSES, deriveChainPosition, isSubjectDead } from '@/lib/task-presentation';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
@@ -11,6 +12,8 @@ import { resolveActiveTeamId, getTeamWorkspaceIds } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
+import ActivityView from './ActivityView';
+import { loadActivity, type ActivityData } from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
@@ -18,7 +21,7 @@ import { backendLabel } from '@buildd/core/backend-policy';
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; ids?: string | string[]; selection?: string }>;
+  searchParams: Promise<{ mission?: string; workspace?: string; initiative?: string; ids?: string | string[]; selection?: string; view?: string }>;
 }) {
   const params = await searchParams;
   const { mission: missionId, workspace: wsFilter, initiative: initiativeId } = params;
@@ -74,6 +77,9 @@ export default async function TasksPage({
   let initiativeTitle: string | null = null;
   let initiativeMissionIds: string[] = [];
   let localSessions: LocalSessionView[] = [];
+  // Now/History (the default view). A band drill-down (`?ids=`/`?selection=`)
+  // is a historical list another surface links to and keeps TaskGrid.
+  let activity: ActivityData | null = null;
 
   if (!isDev && user) {
     try {
@@ -221,6 +227,14 @@ export default async function TasksPage({
             }
           }
 
+          if (!taskListFilter) {
+            const inView = allTasks.filter(t => {
+              if (missionId) return t.missionId === missionId;
+              if (initiativeId) return !!t.missionId && initiativeMissionIds.includes(t.missionId);
+              return true;
+            });
+            activity = await loadActivity({ tasks: inView, missionTitles: missionTitleMap, localClientByTaskId, now: Date.now(), rules: missionHelpers });
+          } else {
           // Query active workers to enrich task status and timestamps
           const taskIds = allTasks.map(t => t.id);
           const activeWorkers = taskIds.length > 0
@@ -399,6 +413,7 @@ export default async function TasksPage({
                 && !hasBypassFlag(ctx, BYPASS_MISSION_BUDGET_KEY),
             };
           });
+          }
         }
       }
     } catch (error) {
@@ -417,6 +432,32 @@ export default async function TasksPage({
       });
       missionTitle = mission?.title || null;
     } catch {}
+  }
+
+  if (activity || !taskListFilter) {
+    const mode = params.view === 'history' ? 'history' : 'now';
+    const href = (view: 'now' | 'history') => {
+      const q = new URLSearchParams();
+      if (missionId) q.set('mission', missionId);
+      if (wsFilter) q.set('workspace', wsFilter);
+      if (initiativeId) q.set('initiative', initiativeId);
+      if (view === 'history') q.set('view', 'history');
+      const qs = q.toString();
+      return `/app/tasks${qs ? `?${qs}` : ''}`;
+    };
+    return (
+      <ActivityView
+        mode={mode}
+        now={activity?.now ?? { groups: [], inMotion: 0, liveAgents: 0 }}
+        history={activity?.history ?? []}
+        latest={activity?.latest ?? null}
+        nowMs={Date.now()}
+        hrefs={{ now: href('now'), history: href('history') }}
+        missionFilter={missionId ? { id: missionId, title: missionTitle } : null}
+        initiativeTitle={initiativeTitle}
+        localSessions={localSessions}
+      />
+    );
   }
 
   return (
