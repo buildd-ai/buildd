@@ -94,6 +94,7 @@ regression without a human noticing nine dead runs.
 | 20 | `pr/route.ts:687` | `pr_head_mismatch` | rejected | PR head is not the worker's own branch |
 | 21 | `pr/route.ts:705` | `pr_base_mismatch` | rejected | PR base disagrees with the mission integration branch |
 | 21a | `pr/route.ts:refusePrOwnership` | `pr_ownership` | rejected | an agent run recording a PR its task does not own: `head_not_owned`, `protected_head`, or `pr_outside_linked_repo` (adoption). Runs on fresh create, dedup-by-head and `prUrl` adoption; people and teammates are exempt. See `lib/agent-capabilities/pr-ownership.ts` |
+| 21b | `lib/github-repo-access-gate.ts:refuseForRepoAccess` | `github_repo_access` | rejected | the GitHub App cannot act on the workspace's existing repo: reason is one of `installation_missing`, `repo_not_selected`, `repo_not_found`, `installation_suspended`, `permission_missing`, `app_permission_missing`, `workspace_not_linked`, `no_repo`, `app_not_configured`. Runs on create_pr, get_pr, merge_pr and update_pr; a synced-but-unlinked repo is healed instead of refused. Typed 409 body with remediation; a refused write stamps the task so it resumes once access is verified |
 
 ### merge_pr — `apps/web/src/app/api/github/pr/route.ts` (PUT)
 
