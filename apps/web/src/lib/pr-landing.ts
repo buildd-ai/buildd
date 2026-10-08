@@ -133,7 +133,7 @@ export type HumanCause =
 export type LandingOutcome =
   | { kind: 'merged'; sha: string }
   | { kind: 'updating_branch'; newHeadSha: string }
-  | { kind: 'waiting_ci'; headSha: string }
+  | { kind: 'waiting_ci'; headSha: string; /** What the landing is actually waiting on (the refusing rail / check / review / kernel state). */ reason?: string }
   | { kind: 'needs_fix'; reason: string; fix: FixKind; taskId?: string }
   | { kind: 'needs_human'; reason: string; cause: HumanCause };
 
@@ -592,7 +592,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   const human = (cause: HumanCause, reason: string, extra?: Record<string, unknown>) =>
     done({ kind: 'needs_human', cause, reason }, reason, { cause, ...extra });
   const waiting = (reason: string, extra?: Record<string, unknown>) =>
-    done({ kind: 'waiting_ci', headSha: headSha ?? '' }, reason, extra);
+    done({ kind: 'waiting_ci', headSha: headSha ?? '', reason }, reason, extra);
 
   const bypass = (gate: string, reason: string, detail: Record<string, unknown>) => {
     if (!act) return;
