@@ -97,6 +97,23 @@ describe('GET /api/workspaces/[id]/settings', () => {
     const data = await res.json();
     expect(data.workTrackerConfig).toBeNull();
   });
+
+  it('reports the resolved early-release mode, off when absent or unrecognized', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1' });
+    for (const [gitConfig, mode] of [
+      [null, 'off'],
+      [{}, 'off'],
+      [{ earlyRelease: null }, 'off'],
+      [{ earlyRelease: { mode: 'bogus' } }, 'off'],
+      [{ earlyRelease: { mode: 'rule_only' } }, 'rule_only'],
+      [{ earlyRelease: { mode: 'rule_and_jev' } }, 'rule_and_jev'],
+    ] as const) {
+      mockWorkspacesFindFirst.mockResolvedValue({ workTrackerConfig: null, gitConfig });
+      const data = await (await GET(makeReq(), { params: PARAMS })).json();
+      expect(data.earlyRelease).toEqual({ mode });
+    }
+  });
 });
 
 describe('PATCH /api/workspaces/[id]/settings', () => {

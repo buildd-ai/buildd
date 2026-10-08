@@ -616,8 +616,10 @@ export interface WorkspaceGitConfig {
   // PR's diff and never calls the decision model. 'rule_and_jev' runs the
   // full `buildd.early_release` kind (early-release-decision.ts), asking Jev
   // when no rule fires. Read only through resolveEarlyReleaseMode() in
-  // apps/web/src/lib/early-release-dispatch.ts.
-  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' };
+  // apps/web/src/lib/early-release-mode.ts; PATCH /api/workspaces/[id] rejects
+  // any other value, and GET /api/workspaces/[id]/settings reports the resolved
+  // mode. Clear with `earlyRelease: null`.
+  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' } | null;
 
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
