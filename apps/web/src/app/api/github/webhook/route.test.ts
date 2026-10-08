@@ -5721,10 +5721,18 @@ describe('pull_request retarget off the mission integration branch (P2b)', () =>
   });
 
   it('does not report for a stacked-plan phase — its base was never the integration branch', async () => {
-    const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+    const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+    const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
     mockWorkersFindFirst.mockReturnValue(taskWorker({
       prBaseRef: predecessorBranch,
-      task: { id: 't-2', title: 'Second phase', taskClass: 'work', missionId: 'mission-1', context: { baseBranch: predecessorBranch } },
+      task: {
+        id: 't-2',
+        title: 'Second phase',
+        taskClass: 'work',
+        missionId: 'mission-1',
+        context: { baseBranch: predecessorBranch },
+        dependsOn: [predecessorId],
+      },
     }));
     optedInMission();
 
