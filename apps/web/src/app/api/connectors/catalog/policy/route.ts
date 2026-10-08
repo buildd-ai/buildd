@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectorCatalogTeamPolicies } from '@buildd/core/db/schema';
-import { CATALOG_POLICIES, type CatalogPolicy } from '@/lib/connector-catalog';
+import { connectorCatalogTeamPolicies, connectors } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
+import { CATALOG_POLICIES, normalizeConnectorUrl, type CatalogPolicy } from '@/lib/connector-catalog';
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
-import { preinstallForTeam } from '@/lib/connector-provision';
+import { preinstallForTeam, registrationRefusalBody } from '@/lib/connector-provision';
 import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
 
 /**
@@ -11,7 +12,10 @@ import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
  * for their team: 'blocked' (hidden), 'available' (default) or 'preinstalled'
  * (created now and enabled in every workspace, including future ones).
  * Blocking or un-preinstalling never deletes a connector already installed;
- * removing one stays an explicit act on Settings → MCP connectors.
+ * removing one stays an explicit act on Settings → MCP connectors. Blocking
+ * does revoke agent access to it, at every boundary that hands a connector to
+ * an agent (lib/connector-access-policy.ts); the response lists the installed
+ * connectors that were kept so the admin sees nothing was silently removed.
  */
 export async function PUT(req: NextRequest) {
   const caller = await resolveConnectorTeam(req);
@@ -37,6 +41,8 @@ export async function PUT(req: NextRequest) {
     try {
       connectorId = (await preinstallForTeam(caller.teamId, { ...entry, policy }, req.nextUrl.origin)).id;
     } catch (err) {
+      const refusal = registrationRefusalBody(err, entry.url);
+      if (refusal) return NextResponse.json(refusal, { status: 422 });
       return NextResponse.json(
         { error: 'preinstall_failed', message: `Could not set up ${entry.name}: ${(err as Error).message}` },
         { status: 422 },
@@ -50,6 +56,13 @@ export async function PUT(req: NextRequest) {
       target: [connectorCatalogTeamPolicies.teamId, connectorCatalogTeamPolicies.slug],
       set: { policy, updatedByAccountId: caller.accountId, updatedAt: new Date() },
     });
+
+  if (policy === 'blocked') {
+    const target = normalizeConnectorUrl(entry.url);
+    const owned = await db.query.connectors.findMany({ where: eq(connectors.teamId, caller.teamId), columns: { id: true, url: true } });
+    const retainedConnectorIds = owned.filter(c => normalizeConnectorUrl(c.url) === target).map(c => c.id);
+    return NextResponse.json({ slug, policy, connectorId, retainedConnectorIds });
+  }
 
   return NextResponse.json({ slug, policy, connectorId });
 }

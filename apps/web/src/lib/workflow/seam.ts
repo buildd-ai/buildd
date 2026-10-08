@@ -32,7 +32,8 @@ import { floorCandidatesSql, type FloorCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
-import type { Verdict } from './types';
+import type { MigrationSafety } from '@/lib/migration-safety';
+import type { PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
@@ -115,6 +116,55 @@ export interface OpenInput {
   prNumber: number;
   installationId: number;
   source: string;
+  /** A preflight finding for the PR's head, recorded as policy evidence before the owner hand-off (T28). */
+  policy?: PolicyFinding;
+}
+
+export interface PolicyFinding { outcome: PolicyOutcome; reason: string; destructive: boolean }
+
+/**
+ * Pure: what a pre-flight escalation asks of the platform, as the policy
+ * evidence the workflow kernel records (docs/specs/workflow-state-kernel.md
+ * §6.3 T28).
+ *
+ *  - A PR that mixes safe EXPAND and CONTRACT migrations is agent work: split
+ *    it, ship the additive half first. Nobody needs to decide anything.
+ *  - Everything else the pre-flight escalated (destructive SQL, an
+ *    uninspectable migration, a deny path, a human-tier workspace policy) is a
+ *    person's decision, and `destructive` marks the migration cases that keep
+ *    the explicit human approval rail.
+ */
+export function policyFindingFor(p: {
+  reason: string;
+  migrationSafety?: MigrationSafety;
+}): PolicyFinding {
+  const ms = p.migrationSafety;
+  if (ms && !ms.safe && ms.mixedSplit === true) {
+    return { outcome: 'agent_split', reason: p.reason, destructive: false };
+  }
+  return { outcome: 'human', reason: p.reason, destructive: !!ms && !ms.safe && !ms.collision };
+}
+
+
+/**
+ * T28: import a preflight finding as policy evidence bound to the PR's LIVE head
+ * (read now, never the webhook's). CAS through the kernel, effects through the
+ * outbox; the same finding on the same head replays as a duplicate, and a head
+ * that moved meanwhile makes it stale (no escalation). Null = not the kernel's PR.
+ */
+export async function recordPolicyEvidence(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; finding: PolicyFinding;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const live = await readerFor(deps, p.installationId).readPr(p.repoFullName, p.prNumber);
+  if (!live || live.state !== 'open') return null;
+  const result = await applyCommand(
+    { type: 'PolicyEvidenceRecorded', actor: p.source, evidence: { headSha: live.headSha, ...p.finding } },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  await drainDelivery(deliveryId, deps);
+  return result;
 }
 
 /**
@@ -141,7 +191,10 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
 
   // Already owned (the other door got here first)?
   const byPr = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
-  if (byPr) return { owned: true, deliveryId: byPr };
+  if (byPr) {
+    if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, deps);
+    return { owned: true, deliveryId: byPr };
+  }
   const existing = await resolveOwnerDelivery(p.workspaceId, p.ownerTaskId, deps.exec);
   if (existing && existing.authority === 'legacy') return { owned: false, reason: 'released' };
 
@@ -172,6 +225,9 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
     { kind: 'head_observed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: reader },
   );
+  // Before the late hand-off below: an ended owner attempt reads this evidence when it picks
+  // between a review round and a person.
+  if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, { ...deps, drain: async () => null });
 
   await db.update(tasks)
     .set({ deliveryId, deliveryRole: 'owner' })

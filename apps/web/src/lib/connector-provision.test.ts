@@ -9,7 +9,11 @@ const mockDiscoverAndRegisterDeps = {
   register: mock(async () => ({ client_id: 'cid', client_secret: 'csecret' })),
 };
 
+class FakeRejected extends Error {
+  constructor(readonly needsApprovedClient: boolean, readonly description: string | null = null) { super('DCR failed'); }
+}
 mock.module('@/lib/mcp-oauth', () => ({
+  ClientRegistrationRejectedError: FakeRejected,
   discoverOAuthMetadata: mockDiscoverAndRegisterDeps.discover,
   registerClient: mockDiscoverAndRegisterDeps.register,
   getCallbackUrl: (o: string) => `${o}/api/connectors/callback`,
@@ -44,7 +48,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { ensureCatalogConnector, preinstallForTeam, applyPreinstalledToWorkspace, discoverAndRegister } = await import('./connector-provision');
+const { ensureCatalogConnector, preinstallForTeam, applyPreinstalledToWorkspace, discoverAndRegister, registrationRefusalBody } = await import('./connector-provision');
 
 const entry = (over: any = {}) => ({
   id: null, source: 'builtin', policy: 'preinstalled', slug: 'neon', name: 'Neon', url: 'https://mcp.neon.tech/mcp',
@@ -57,7 +61,38 @@ describe('discoverAndRegister', () => {
   it('registers a client and encrypts its secret', async () => {
     const r = await discoverAndRegister('https://mcp.x', 'https://buildd.dev');
     expect(r).toMatchObject({ authMode: 'oauth', clientId: 'cid', encryptedClientSecret: 'enc:csecret' });
-    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback');
+    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback', { grantTypesSupported: undefined });
+  });
+
+  it("passes the AS's supported grant types so refresh_token is registered when offered", async () => {
+    mockDiscoverAndRegisterDeps.discover.mockResolvedValueOnce({
+      authMode: 'oauth',
+      authorizationServer: { registration_endpoint: 'https://as/reg', grant_types_supported: ['authorization_code', 'refresh_token'] },
+    } as any);
+    await discoverAndRegister('https://mcp.axiom.co/mcp', 'https://buildd.dev');
+    expect(mockDiscoverAndRegisterDeps.register).toHaveBeenLastCalledWith('https://as/reg', 'https://buildd.dev/api/connectors/callback', {
+      grantTypesSupported: ['authorization_code', 'refresh_token'],
+    });
+  });
+});
+
+describe('registrationRefusalBody', () => {
+  it("uses the catalog's Vercel guidance for Vercel's approved-clients-only refusal", () => {
+    const body = registrationRefusalBody(new FakeRejected(true), 'https://mcp.vercel.com/');
+    expect(body?.error).toBe('needs_approved_client');
+    expect(body?.message).toContain('Vercel');
+    expect(body?.actionUrl).toContain('vercel.com/docs');
+  });
+
+  it('names the host and the provider reason for an unlisted server', () => {
+    const body = registrationRefusalBody(new FakeRejected(true, 'redirect not approved'), 'https://mcp.example.org/mcp');
+    expect(body?.message).toContain('mcp.example.org');
+    expect(body?.message).toContain('redirect not approved');
+  });
+
+  it('returns null for outages and unrelated errors, leaving the generic error', () => {
+    expect(registrationRefusalBody(new FakeRejected(false), 'https://mcp.vercel.com')).toBeNull();
+    expect(registrationRefusalBody(new Error('ECONNRESET'), 'https://mcp.vercel.com')).toBeNull();
   });
 });
 

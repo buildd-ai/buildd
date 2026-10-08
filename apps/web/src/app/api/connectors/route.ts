@@ -8,7 +8,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
-import { discoverAndRegister } from '@/lib/connector-provision';
+import { discoverAndRegister, registrationRefusalBody } from '@/lib/connector-provision';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
 import { resolveConnectorIcon } from '@/lib/connector-icon';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
@@ -111,8 +112,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Team catalog policy: a blocked entry's connector stays listed (nothing is
+    // silently deleted) but is flagged, since agents can no longer use it.
+    const blockedCatalogs = await loadBlockedCatalogs([teamId, ...sharedIn.map(c => c.teamId)]);
+
     // Credential-free projection — never include clientId/encryptedClientSecret.
     const project = (c: typeof rows[number]) => ({
+      blockedByPolicy: !!connectorBlock(c, teamId, blockedCatalogs),
       id: c.id,
       name: c.name,
       url: c.url,
@@ -271,6 +277,8 @@ export async function POST(req: NextRequest) {
         clientId = setup.clientId ?? undefined;
         encryptedClientSecret = setup.encryptedClientSecret ?? undefined;
       } catch (err) {
+        const refusal = registrationRefusalBody(err, url);
+        if (refusal) return NextResponse.json(refusal, { status: 422 });
         return NextResponse.json(
           { error: 'discovery_failed', message: `Could not reach this MCP server: ${(err as Error).message}` },
           { status: 422 },
