@@ -5666,7 +5666,7 @@ describe('path-overlap claim guard', () => {
     const MISSION_BRANCH = 'mission/example-integration-1a2b3c4d';
     const trunkTask = () => ({
       ...taskWithManifest(['apps/web/src/app/api/workers/claim/route.ts']),
-      workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev' }, teamId: 'team-1' },
+      workspace: { id: 'ws-1', gitConfig: { defaultBranch: 'dev', claimPlanner: 'record' }, teamId: 'team-1' },
     });
     const refreshManifest = ['apps/web/src/app/api/workers/claim/route.ts', 'apps/web/src/lib/pr-landing.ts', 'packages/core/mcp-tools.ts'];
 
