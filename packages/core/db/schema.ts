@@ -1698,6 +1698,35 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
     .where(sql`${t.state} = 'active'`),
 }));
 
+// Early-release ledger — docs/design/early-release.md "Data model". One row per
+// decision to release (or hold) a dependent task before its upstream's PR has
+// merged. Append-only: a reconciler revoking a release stamps revokedAt /
+// revokedReason on the existing row rather than deleting it, so the decision
+// history stays auditable. Every row written here also fires the
+// `early_release` gate event.
+export const dependencyReleases = pgTable('dependency_releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  dependentTaskId: uuid('dependent_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  upstreamTaskId: uuid('upstream_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The upstream PR the decision was made against.
+  upstreamPrNumber: integer('upstream_pr_number').notNull(),
+  // start_now: dependent may claim off trunk. start_stacked: claim off the
+  // upstream's branch (baseBranch). wait: keep the dependsOn gate closed.
+  decision: text('decision').notNull().$type<'start_now' | 'wait' | 'start_stacked'>(),
+  // Who decided: a deterministic rule, the decision model, or the fallback when
+  // the model was unavailable or unsure.
+  source: text('source').notNull().$type<'rule' | 'model' | 'fallback'>(),
+  // Stable machine-readable reason, e.g. which rule matched.
+  reasonCode: text('reason_code').notNull(),
+  // Branch the dependent was released onto; set for start_stacked.
+  baseBranch: text('base_branch'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+}, (t) => ({
+  dependentUpstreamIdx: index('dependency_releases_dependent_upstream_idx').on(t.dependentTaskId, t.upstreamTaskId),
+}));
+
 // The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the
 // derived GAP between a spec's declared status and what the checker actually
 // found, not a re-derived report line: identity is the exact

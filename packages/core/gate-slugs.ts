@@ -241,6 +241,15 @@ export const GATE_SLUGS = {
    * already open and nothing new was dispatched.
    */
   MISSION_BRANCH_REFRESH: 'mission_branch_refresh',
+||||||| parent of 2d9060af2 (feat(schema): dependency_releases ledger and early_release gate slug)
+  /**
+   * Early release of a dependent task before its upstream PR merges
+   * (docs/design/early-release.md). Fires on every release decision — a
+   * deterministic rule or the decision model choosing `start_now`,
+   * `start_stacked` or `wait` (each a `dependency_releases` row) — and on every
+   * reconciler action that later revokes or re-bases such a release.
+   */
+  EARLY_RELEASE: 'early_release',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
