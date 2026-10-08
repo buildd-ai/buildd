@@ -80,6 +80,11 @@ export interface MissionBoardProps extends BoardLinkContext {
    * block points at the drawer instead of drawing a second call to action.
    */
   stripFocus?: StripFocus | null;
+  /**
+   * Each deliverable's own Build › Audit › Land and audit/repair evidence
+   * (`missionTaskDeliveries`): the drawer's stage row and disclosure.
+   */
+  deliveries?: LandedStripProps['deliveries'];
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -100,7 +105,7 @@ export default function MissionBoard(props: MissionBoardProps) {
 
 function BoardView({
   model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review,
-  workspaceId = null, executor = null, stripFocus = null, ...link
+  workspaceId = null, executor = null, stripFocus = null, deliveries = null, ...link
 }: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   // The Landed strip's selection: a store, so selecting re-renders the strip
@@ -138,7 +143,7 @@ function BoardView({
         missionId={link.missionId}
         visual={vm}
         onReview={review ? () => review.openDeck(null) : undefined}
-        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus } : null}
+        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus, deliveries } : null}
       />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
@@ -233,7 +238,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
   visual?: VisualReviewModel | null;
   onReview?: () => void;
   /** The interactive Landed strip (the mission page's Board); absent: the plain meter. */
-  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus'> | null;
+  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus' | 'deliveries'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;

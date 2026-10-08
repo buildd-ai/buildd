@@ -234,6 +234,26 @@ describe('digestTaskContext and the Visual review coverage', () => {
   });
 });
 
+describe('digests and the Landed drawer audit evidence', () => {
+  // reviewOf binds a reviewer run's verdict to the head it read; the drawer
+  // reads it from the digest, so it must read the same as from the full row.
+  it('a reviewer verdict and its head read the same from the digest', async () => {
+    const { reviewOf } = await import('@/lib/activity-delivery');
+    const cases = [
+      { result: { effectiveVerdict: 'request-changes', output: bulky, structuredOutput: { verdict: 'approve', notes: bulky } }, context: { headSha: 'a1b2c3d4e5', prompt: bulky } },
+      { result: { structuredOutput: { verdict: 'approve' } }, context: { headSha: 'd4e5f60718' } },
+    ];
+    for (const c of cases) {
+      expect(reviewOf(digestTaskResult(c.result), digestTaskContext(c.context))).toEqual(reviewOf(c.result, c.context));
+    }
+    expect(reviewOf(digestTaskResult(cases[0].result), digestTaskContext(cases[0].context))).toEqual({ verdict: 'request-changes', headSha: 'a1b2c3d4e5' });
+  });
+
+  it('workers carry the head they pushed', () => {
+    expect(MISSION_WORKER_COLUMNS.lastCommitSha).toBe(true);
+  });
+});
+
 describe('indexTaskDigests', () => {
   it('maps id → digest with nulls preserved', () => {
     const m = indexTaskDigests([{ id: 'a', result: { summary: 's' }, context: null }]);

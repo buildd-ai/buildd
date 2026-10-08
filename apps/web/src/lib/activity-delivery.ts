@@ -13,7 +13,7 @@
  * Design: docs/prototypes/cross-surface-delivery (`#activity`, `#activity/history`).
  */
 import {
-  bindVerdict, projectMissionDelivery, DELIVERY_KIND,
+  bindVerdict, deliveryStageIndex, projectMissionDelivery, DELIVERY_KIND,
   type BoundVerdict, type DeliveryKind, type DeliveryTone, type DeliveryWorker,
   type MissionDelivery, type MissionTaskRules, type ReviewEvidence, type TaskDelivery,
 } from './delivery-projection';
@@ -456,6 +456,88 @@ export function buildActivityNow(input: {
 
   const inMotion = out.reduce((n, g) => n + g.rows.filter(r => IN_MOTION.has(r.delivery.kind)).length, 0);
   return { groups: out, inMotion, liveAgents };
+}
+
+// ── Mission detail: one task's delivery ─────────────────────────────────────
+
+/** Build › Audit › Land, one short phrase per stage, for the Landed strip's drawer. */
+export interface StageNotes { build: string; audit: string; land: string }
+
+/**
+ * A mission task's own delivery, for mission detail's drawer: where it is on
+ * Build › Audit › Land and the evidence behind it. Mission dependency progress
+ * (landed n/m, what unblocks what) stays the strip's; this is one task's flow.
+ */
+export interface TaskDeliveryDetail {
+  kind: DeliveryKind;
+  repairRounds: number;
+  prNumber: number | null;
+  stages: StageNotes;
+  /** Revision cards and repairs, newest first: the drawer's "Audit and repair". */
+  evidence: EvidenceEntry[];
+  revisions: number;
+  repairs: number;
+}
+
+/** A gate that ran: not a placeholder for one that never did. */
+const ran = (g: Gate) => !g.void && g.result !== VERDICT_GATE.none.result;
+const gateLine = (gates: readonly Gate[]) => gates.filter(ran).map(g => `${g.name} ${g.result}`).join(' · ');
+/** Evidence worth opening: a repair, or a gate that ran (struck-through ones included). */
+const informative = (evidence: readonly EvidenceEntry[]) =>
+  evidence.some(e => e.type === 'repair' || e.gates.some(g => g.void || ran(g)));
+
+function stageNotes(delivery: TaskDelivery, prNumber: number | null, evidence: readonly EvidenceEntry[]): StageNotes {
+  const at = deliveryStageIndex(delivery.kind);
+  const cur = evidence.find((e): e is Extract<EvidenceEntry, { type: 'revision' }> => e.type === 'revision' && e.current);
+  const onHead = cur?.sha ? ` on ${cur.sha}` : '';
+  const pr = prNumber ? `PR #${prNumber} opened` : null;
+  const build = at < 0 ? 'Not started' : at === 0 ? 'Agent building' : pr ?? 'Done';
+  let audit: string;
+  if (at < 1) audit = 'After Build';
+  else if (delivery.kind === 'repair') {
+    audit = `Repair ${delivery.repairRounds || 1}${delivery.repairReason ? ` · ${REPAIR_FOR[delivery.repairReason]}` : ''}`;
+  } else if (delivery.kind === 'unavailable') audit = 'Could not run; retries on its own';
+  else if (delivery.kind === 'needs') audit = 'Waiting on a decision';
+  else audit = (cur && gateLine(cur.gates) ? `${gateLine(cur.gates)}${onHead}` : null)
+    ?? (at === 1 ? `Review and CI${onHead}` : prNumber ? 'No review recorded' : 'No PR to audit');
+  const land = at < 2 ? 'After Audit'
+    : delivery.kind === 'landing' ? 'Merging'
+    : delivery.kind === 'notlanded' ? (prNumber ? 'Closed without merging' : 'Stopped without landing')
+    : prNumber ? 'Merged' : 'Nothing to merge';
+  return { build, audit, land };
+}
+
+/**
+ * Per-task delivery details for one mission, keyed by deliverable id. Each
+ * task's kind IS the mission projection's (`mission.tasks`), so the drawer,
+ * Activity, Missions and Home read one state; attempts fold into their
+ * deliverable exactly as Activity folds them, so a repair or a review run is
+ * evidence on its task's card, never a card of its own.
+ */
+export function buildTaskDeliveryDetails(input: {
+  tasks: readonly ActivityTaskInput[];
+  mission: MissionDelivery;
+  rules: MissionTaskRules;
+}): Record<string, TaskDeliveryDetail> {
+  const byId = new Map(input.mission.tasks.map(t => [t.id, t.delivery]));
+  const out: Record<string, TaskDeliveryDetail> = {};
+  for (const d of foldDeliveries(input.tasks, input.rules)) {
+    const delivery = byId.get(d.root.id);
+    if (!delivery) continue;
+    const prNumber = prOf(d).owner?.prNumber ?? null;
+    const built = buildEvidence(d);
+    const evidence = informative(built) ? built : [];
+    out[d.root.id] = {
+      kind: delivery.kind,
+      repairRounds: delivery.repairRounds,
+      prNumber,
+      stages: stageNotes(delivery, prNumber, built),
+      evidence,
+      revisions: evidence.filter(e => e.type === 'revision').length,
+      repairs: evidence.filter(e => e.type === 'repair').length,
+    };
+  }
+  return out;
 }
 
 // ── History ─────────────────────────────────────────────────────────────────

@@ -59,6 +59,8 @@ import MissionFeedLayout from './MissionFeedLayout';
 import MissionSheetRow from './MissionSheetRow';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
+import * as missionHelpers from '@buildd/core/mission-helpers';
+import { missionTaskDeliveries, type MissionDeliveryTaskRow } from './mission-task-delivery';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { loadFleetCapacity } from '@/lib/home-fleet';
 import { parseMissionLayout } from '@/lib/mission-layout';
@@ -1323,6 +1325,14 @@ export default async function MissionDetailPage({
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
   });
+  // The drawer's per-task Build › Audit › Land and audit/repair evidence: the
+  // shared delivery projection over the same rows (Home, Missions, Activity).
+  const taskDeliveries = missionTaskDeliveries({
+    mission: { id, title: mission.title, status: mission.status, isHeld, integrationBranch: (mission as { integrationBranchEnabled?: boolean | null }).integrationBranchEnabled === true },
+    tasks: allTasks as unknown as MissionDeliveryTaskRow[],
+    digestOf,
+    rules: missionHelpers,
+  });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.
   const completionText = completionPick && !shippedView?.lede
@@ -1359,6 +1369,7 @@ export default async function MissionDetailPage({
     stripFocus: !quietState && missionAnswer && primaryAffordance?.kind === 'internal' && primaryAffordance.taskId
       ? { taskId: primaryAffordance.taskId, reason: missionAnswer.situation.headline }
       : null,
+    deliveries: taskDeliveries,
   };
   const verifiedPill = (
     <MissionVerifiedPill

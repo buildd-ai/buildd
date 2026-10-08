@@ -9,11 +9,11 @@
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { DeliveryChip, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryChip, DeliveryEvidence, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
   filterEpisodes, filterNow,
-  type ActivityNow, type ActivityOutcome, type ActivityScope, type Episode, type EvidenceEntry, type LatestTask, type NowGroup, type NowRow,
+  type ActivityNow, type ActivityOutcome, type ActivityScope, type Episode, type LatestTask, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { Select } from '@/components/ui/Select';
@@ -222,49 +222,13 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
       )}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
-          {row.evidence.map((e, i) => <EvidenceView key={i} entry={e} />)}
+          {row.evidence.map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
           <div className="mt-3 flex flex-wrap gap-2">
             <Link href={row.href} className="inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-body font-semibold md:min-h-9">Task page ›</Link>
             {missionHref && <Link href={missionHref} className="inline-flex min-h-11 items-center border border-border-default px-3.5 font-mono text-body md:min-h-9">Open in mission ›</Link>}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-const REPAIR_REASON = { ci: 'CI failed', conflict: 'conflict with its base', review: 'review notes' } as const;
-const REPAIR_STATUS = { running: 'agent fixing now', pushed: 'pushed', failed: 'did not finish', queued: 'queued for a free slot' } as const;
-
-function EvidenceView({ entry }: { entry: EvidenceEntry }) {
-  if (entry.type === 'repair') {
-    return (
-      <div data-testid="activity-repair" className="ml-2.5 mt-2 border-l-2 border-dashed border-status-warning px-2.5 py-1.5 text-meta text-text-secondary">
-        <span className="font-semibold text-status-warning">↻ Repair {entry.round}</span>
-        {' · automatic'}
-        {entry.reason && ` · ${REPAIR_REASON[entry.reason]}`}
-        {` · ${REPAIR_STATUS[entry.status]}`}
-        {entry.sha && ` ${entry.sha}`}
-      </div>
-    );
-  }
-  return (
-    <div data-testid="activity-revision" data-current={entry.current} className={`mt-2 bg-[var(--chat-surface)] px-3 py-2.5 ${entry.current ? 'border-2 border-border-strong' : 'border border-border-default opacity-80'}`}>
-      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2">
-        <span className="text-body font-semibold text-text-primary">
-          {entry.sha ? <>Revision <span className="font-mono">{entry.sha}</span></> : 'Revision'}
-          <span className="ml-1.5 text-meta font-normal text-text-muted">{entry.current ? 'current head' : 'older head'}</span>
-        </span>
-        <span className="text-meta text-text-muted">audit round {entry.round}</span>
-      </div>
-      {entry.gates.map((g, i) => (
-        <div key={i} className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-baseline gap-x-2 py-0.5">
-          <span aria-hidden="true" className={TONE_TEXT[g.tone]}>{g.glyph}</span>
-          <span className={`text-body ${g.void ? 'text-text-muted line-through' : 'text-text-primary'}`}>{g.name}</span>
-          <span className={`text-right text-meta ${g.void ? 'text-text-muted line-through' : TONE_TEXT[g.tone]}`}>{g.result}</span>
-          {g.why && <span className="col-start-2 col-end-4 text-meta text-text-muted">{g.why}</span>}
-        </div>
-      ))}
     </div>
   );
 }

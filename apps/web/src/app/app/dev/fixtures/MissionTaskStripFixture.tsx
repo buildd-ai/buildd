@@ -75,6 +75,7 @@ export default function MissionTaskStripFixture() {
           missionId={MISSION_ID}
           workspaceId={WORKSPACE_ID}
           executor={fixture.executor}
+          deliveries={fixture.deliveries ?? null}
           stripFocus={situation && openTask ? { taskId: openTask, reason: situation.headline } : null}
           notice={situation ? <MissionSituationBlock missionId={MISSION_ID} situation={situation} because={[]} /> : null}
           completionText={variant === 'all-landed' ? 'Shipped the runner and checked it end to end.' : null}
