@@ -52,6 +52,7 @@ import { mcpGroupOfToolName } from "@buildd/core/mcp-tool-groups";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
+import { builddServerInfo } from "@/lib/mcp-server-info";
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -373,7 +374,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
   };
 
   const server = new Server(
-    { name: "buildd", version: "0.1.0" },
+    builddServerInfo(appBaseUrl || 'https://buildd.dev'),
     {
       capabilities: {
         tools: {},
