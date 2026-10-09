@@ -129,7 +129,8 @@ export async function estimateTaskSize(
   return estimateTaskSizeFromSessions(ids, sessions as NeighbourSession[], { k, cutoff: args.cutoff });
 }
 
-async function defaultStore(): Promise<TaskAreaQuerier> {
+/** The `task` corpus store neighbours come from. Also used by ./task-estimate-source.ts. */
+export async function defaultStore(): Promise<TaskAreaQuerier> {
   const { PgVectorStore, getVoyageEmbedder } = await import('./knowledge-store');
   return new PgVectorStore(getVoyageEmbedder()) as unknown as TaskAreaQuerier;
 }

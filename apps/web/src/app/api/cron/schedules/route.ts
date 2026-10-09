@@ -10,6 +10,7 @@ import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
+import { scheduleTaskEstimate } from '@/lib/task-estimate-hook';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
@@ -970,6 +971,14 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           scheduleCreationManifestShadow(task, { teamId: workspace?.teamId ?? null }, after);
         } catch (err) {
           console.error(`[cron-schedules] manifest shadow scheduling failed for ${task.id} (non-fatal):`, err);
+        }
+
+        // Task estimates experiment (lib/task-estimate-hook.ts): after the
+        // response, never awaited; a planning cycle is bookkeeping and skipped.
+        try {
+          scheduleTaskEstimate(task, after);
+        } catch (err) {
+          console.error(`[cron-schedules] estimate scheduling failed for ${task.id} (non-fatal):`, err);
         }
 
         // Fire schedule triggered event — thin payload only (Pusher 10KB cap).

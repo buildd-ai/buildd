@@ -58,6 +58,8 @@ export interface ReplayDeps {
   k?: number;
   /** Cold start: pretend the workspace is new — no neighbours, no history. */
   heldOut?: boolean;
+  /** Score only these task ids. Every task still counts as history and as a neighbour. */
+  only?: ReadonlySet<string>;
 }
 
 const ms = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : NaN);
@@ -91,6 +93,7 @@ export async function replayTasks(
 
   const rows: ReplayRow[] = [];
   for (const task of all) {
+    if (deps.only && !deps.only.has(task.id)) continue;
     const actual = actualOf(byTask.get(task.id) ?? []);
     if (actual.minutes <= 0) continue;
     const cutoff = task.createdAt;
@@ -127,12 +130,14 @@ export async function loadReplayInput(opts: { workspaceId?: string } = {}): Prom
   const rows = await db
     .select({
       id: tasks.id, workspaceId: tasks.workspaceId, title: tasks.title, description: tasks.description,
-      createdAt: tasks.createdAt, completedAt: tasks.completedAt,
+      createdAt: tasks.createdAt,
       kind: tasks.kind, complexity: tasks.complexity, pathManifest: tasks.pathManifest,
     })
     .from(tasks)
     .where(where);
-  const taskRows = rows as ReplayTask[];
+  // `tasks` has no completed_at column: a task's completion is its last
+  // completed session's end, filled in once the sessions are loaded.
+  const taskRows: ReplayTask[] = rows.map(r => ({ ...r, completedAt: null }));
   const sessions: ReplaySession[] = [];
   for (let i = 0; i < taskRows.length; i += 500) {
     const ids = taskRows.slice(i, i + 500).map(t => t.id);
@@ -144,6 +149,15 @@ export async function loadReplayInput(opts: { workspaceId?: string } = {}): Prom
       .from(workers)
       .where(and(inArray(workers.taskId, ids), eq(workers.status, 'completed'), isNotNull(workers.startedAt), isNotNull(workers.completedAt)));
     sessions.push(...(part as ReplaySession[]));
+  }
+  const lastEnd = new Map<string, number>();
+  for (const s of sessions) {
+    const end = ms(s.completedAt);
+    if (s.taskId && Number.isFinite(end) && end > (lastEnd.get(s.taskId) ?? -Infinity)) lastEnd.set(s.taskId, end);
+  }
+  for (const t of taskRows) {
+    const end = lastEnd.get(t.id);
+    if (end !== undefined) t.completedAt = new Date(end);
   }
   return { tasks: taskRows, sessions };
 }

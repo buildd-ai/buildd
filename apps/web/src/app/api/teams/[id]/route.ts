@@ -97,6 +97,7 @@ export async function GET(
         credentialPolicy: true,
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
+        taskEstimates: true,
         timezone: true,
         permissionOverrides: true,
       },
@@ -159,7 +160,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -269,6 +270,19 @@ export async function PATCH(
         return NextResponse.json({ error: 'chatCapNewSessionTier must be a boolean' }, { status: 400 });
       }
       updates.chatCapNewSessionTier = chatCapNewSessionTier;
+    }
+    // Task estimates experiment (packages/core/task-estimate-source.ts; removal
+    // in packages/core/TASK-ESTIMATES-REMOVAL.md): { enabled: boolean }, stamped
+    // with who set it and when. Gated like every field here: a session user
+    // holding manage_team_settings (owner/admin by default; no API key).
+    if (taskEstimates !== undefined) {
+      if (
+        !taskEstimates || typeof taskEstimates !== 'object' || Array.isArray(taskEstimates) ||
+        Object.keys(taskEstimates).some(k => k !== 'enabled') || typeof taskEstimates.enabled !== 'boolean'
+      ) {
+        return NextResponse.json({ error: 'taskEstimates must be { enabled: boolean }' }, { status: 400 });
+      }
+      updates.taskEstimates = { enabled: taskEstimates.enabled, setBy: user.id, setAt: new Date().toISOString() };
     }
     // Chat is always on: there is no switch. A `chatDisabled` field (the old
     // kill switch; teams.chat_disabled is deprecated) is ignored.

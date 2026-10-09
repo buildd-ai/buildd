@@ -22,6 +22,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp, scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
+import { scheduleTaskEstimate } from '@/lib/task-estimate-hook';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -1769,6 +1770,17 @@ export async function POST(req: NextRequest) {
         }, after);
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);
+      }
+    }
+
+    // Task estimates experiment (lib/task-estimate-hook.ts): one frozen
+    // estimate per new work task on an opted-in team. After the response,
+    // never awaited, never fails creation.
+    if (intake.outcome.action !== 'attached') {
+      try {
+        scheduleTaskEstimate(task, after);
+      } catch (err) {
+        console.error('[task-create] estimate scheduling failed (non-fatal):', err);
       }
     }
 
