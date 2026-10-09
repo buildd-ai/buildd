@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Notice from '@/components/ui/Notice';
+import { Select } from '@/components/ui/Select';
 import { tomorrowMorning } from '@/lib/start-time-options';
 import { pauseUntilPhrase, type WorkspacePauseRow } from '@/lib/workspace-pause-view';
 
@@ -60,14 +61,12 @@ export default function WorkspacePausePanel({ workspaces }: { workspaces: Worksp
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-text-secondary">Pause new starts</span>
         {workspaces.length > 1 && (
-          <select
+          <Select
             aria-label="Workspace to pause"
-            className="min-h-11 border border-border-default bg-transparent px-2 text-sm md:min-h-8"
             value={current.id}
-            onChange={e => setSelected(e.target.value)}
-          >
-            {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </select>
+            onChange={setSelected}
+            options={workspaces.map(w => ({ value: w.id, label: w.name }))}
+          />
         )}
         <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void send(current.id, { for: '1h' })}>For 1 hour</button>
         <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void send(current.id, { for: '4h' })}>For 4 hours</button>
