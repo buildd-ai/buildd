@@ -802,8 +802,16 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 
 Mirror `task_dispatch_outbox` (`packages/core/dispatch-outbox.ts`, `dispatch-authority.ts`):
 claim due rows with `FOR UPDATE SKIP LOCKED` in one CTE, set `status='delivering'` and
-`attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again;
-ack with `WHERE id AND status='delivering'`; failure returns the row to `pending` with
+`attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again.
+A batch is claimed under one lease but its handlers run one after another, so each row
+is renewed for itself just before its turn (`renewEffectLeaseSql`: `WHERE id AND
+status='delivering' AND attempt_count` = the claim's) and kept alive while its handler
+runs; no row back means another drain re-claimed it after the batch lease ran out, and
+this drain skips it (`lost`) instead of running it a second time. §10.4's current-ness
+check reads the delivery as returned by that renewal, not the claim-time snapshot. Ack
+and failure are fenced the same way (`WHERE id AND status='delivering' AND
+attempt_count`), so a stale attempt can neither settle nor re-open the attempt that
+re-claimed its row (625449c7). Failure returns the row to `pending` with
 exponential backoff (15s doubling, cap 30m); at 8 attempts the row is `dead`, a
 `gate_events` row is written (`workflow_effect_dead`: `stranded` for a critical
 effect, `warned` otherwise; `dead-effects.ts`) and, for effects marked `critical`
