@@ -200,7 +200,8 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
 export function isPolicyMerge(s: EscalationSubject): boolean {
   const classes = s.riskClasses ?? [];
   return !!s.policyOnly
-    && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted' || s.why === 'human_tier')
+    // Not `human_tier`: there the workspace merge policy itself says a person merges.
+    && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted')
     && s.ci === 'green' && s.headIsCurrent !== false && !s.draft && !s.sizeXl
     && classes.length > 0 && classes.every(c => POLICY_MERGE_CLASSES.has(c));
 }

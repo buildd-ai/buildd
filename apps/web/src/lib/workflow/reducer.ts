@@ -79,6 +79,26 @@ export function isReviewEscalation(reason: string | null | undefined): boolean {
   return typeof reason === 'string' && reason.startsWith('review_');
 }
 
+/**
+ * An escalation a machine repair may still move first (task a90fc99b): a
+ * reviewer's or the policy's call on the change. A person can't merge a PR
+ * whose CI is red or whose migration number collides, so the repair runs
+ * first and the person decides on a mergeable head. Not a landing hand-off or
+ * a spent budget: those already are the person's next move.
+ */
+export function isRepairableEscalation(reason: string | null | undefined): boolean {
+  return isReviewEscalation(reason) || reason === 'policy_human';
+}
+
+/**
+ * Attempts that ended `unproven` (reported success, nothing provable on
+ * GitHub: no diff, no push) that a family may absorb before they count toward
+ * its cap. A false success is not a try at the fix, so it does not spend the
+ * budget; the allowance keeps an agent that always claims success from
+ * looping forever.
+ */
+export const UNPROVEN_ATTEMPT_ALLOWANCE = 2;
+
 /** `push_recovery` backoff (§9): 2m, 10m, 30m, then T22. */
 export const PUSH_RECOVERY_BACKOFF_MS = [120_000, 600_000, 1_800_000] as const;
 
@@ -127,7 +147,9 @@ export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approv
  */
 export function ledgerBudget(attempts: AttemptSnapshot[], family: AttemptFamily, configuredMax: number, mode: AttemptMode = 'agent'): { spent: number; max: number } {
   const rows = attempts.filter((a) => a.family === family && a.mode === mode);
-  const spent = rows.filter((a) => a.status !== 'skipped').length;
+  const dispatched = rows.filter((a) => a.status !== 'skipped');
+  const unproven = dispatched.filter((a) => a.outcome === 'unproven').length;
+  const spent = dispatched.length - Math.min(unproven, UNPROVEN_ATTEMPT_ALLOWANCE);
   const extended = rows.filter((a) => a.trigger === 'human').reduce((m, a) => Math.max(m, a.maxAttempts), 0);
   return { spent, max: Math.max(configuredMax, extended) };
 }
@@ -201,6 +223,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
+    case 'PolicyMergeApproved': return pr ? `policymerge:${pr}:${cmd.headSha}` : null;
     // One landing request per (head, version): a replay is a duplicate, while a person re-landing
     // the same head after a refusal (the delivery moved on since) is a new request.
     case 'LandingRequested': return pr && d ? landingKey(pr, cmd.headSha, d.version) : null;
@@ -687,7 +710,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       // §6.10: a delivery already repairing this CI joins the incident too; its
       // queued per-PR attempt is skipped (spends nothing) and T25 decides.
       const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
-      if (!allowed.includes(dd.state) && !reopen && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      // a90fc99b: a review or policy escalation with red CI gets its CI fix first.
+      const escalatedRed = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason);
+      if (!allowed.includes(dd.state) && !reopen && !escalatedRed && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
       // §6.3 T10 guard "live check-suite read": a stale or redelivered hint for a
       // head that is not red now (re-run green, or re-running) moves nothing.
       if (cmd.liveChecks && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
@@ -710,6 +735,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (spent >= max) {
         // A person past the cap extends the budget explicitly (BudgetExtended), never as "iteration 0".
         if (human) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
+        // Already a person's: a spent CI budget does not replace why it escalated.
+        if (escalatedRed) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
         return c.apply(`${key}:exhausted`, 'ESCALATED', {
           guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
           effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}@v${dd.version}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
@@ -777,7 +804,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED', 'REPAIRING'];
-      if (!allowed.includes(dd.state)) return c.stale('state_not_allowed');
+      // a90fc99b: a review or policy escalation that conflicts or collides is repaired first. A
+      // behind-only refresh is not: nothing lands an escalated PR, so keeping it fresh buys nothing.
+      const escalatedRepair = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason)
+        && (cmd.migrationCollision === true || cmd.mergeable !== 'behind');
+      if (!allowed.includes(dd.state) && !escalatedRepair) return c.stale('state_not_allowed');
       if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused) return c.rejected('fix_in_flight');
       if (cmd.isDependencyBot) return c.rejected('dependency_bot_pr');
       const kind = cmd.migrationCollision ? 'migration' : cmd.mergeable === 'behind' ? 'behind' : 'conflict';
@@ -838,6 +869,24 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
         effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:approve:${cmd.reviewId}`, payload: { event: 'human_approved', reviewId: cmd.reviewId } }],
         evidence: { reviewId: cmd.reviewId, commitId: cmd.commitId },
+      });
+    }
+
+    // a90fc99b: the escalation gate's policy-merge rule (rule-only, never a model).
+    case 'PolicyMergeApproved': {
+      const dd = d!;
+      if (!cmd.actor.startsWith('rule:')) return c.rejected('rule_actor_required');
+      if (dd.state !== 'ESCALATED') return c.stale('state_not_allowed');
+      if (!isRepairableEscalation(dd.stateReason)) return c.rejected('escalation_not_policy_mergeable');
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      // A destructive migration is a person's whatever the paths say.
+      if (dd.policyEvidence?.destructive) return c.rejected('destructive_migration');
+      return c.apply(`policymerge:${c.prKey}:${cmd.headSha}`, 'APPROVED', {
+        guardHead: true,
+        patch: { approvedHeads: [...dd.approvedHeads.filter((h) => h !== cmd.headSha), cmd.headSha], approvalBasis: 'policy_rule', stateReason: null },
+        attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
+        evidence: { headSha: cmd.headSha, rule: cmd.actor, reason: cmd.reason, fromReason: dd.stateReason },
+        bypass: { actor: cmd.actor, reason: cmd.reason, overrodeState: dd.state, overrodeReason: dd.stateReason },
       });
     }
 
@@ -1776,7 +1825,9 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
         : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES}); landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
-        effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail } }],
+        // a90fc99b: a cycle the landing sweep restarts after the cooldown is Buildd's wait, not a
+        // page. Only the last cycle, which nothing restarts, tells a person.
+        effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail } }] : [],
         evidence: { ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}) },
       });
     }

@@ -43,6 +43,7 @@ import {
   verdictAt,
   verdictCode,
   verdictFromCode,
+  type EscalationAction,
   type EscalationSubject,
   type EscalationVerdict,
   type JevAction,
@@ -55,9 +56,10 @@ import type { FileRepairInput } from './question-gate-check';
 /** A Buildd-owned state that has not changed for this long is the person's again. */
 export const ESCALATION_STUCK_MS = 6 * 60 * 60_000;
 /**
- * Shorter for a policy merge: the rule says it should land, and until the
- * kernel lands it by policy (task a90fc99b) nothing else will, so the person
- * gets it back sooner.
+ * Shorter for a policy merge: the rule approves it and landing should take it
+ * within a sweep or two (task a90fc99b); one that hasn't landed by then hit
+ * something the rule couldn't see (a legacy PR, a policy that keeps the
+ * merge, a rail), so the person gets it back sooner.
  */
 export const POLICY_MERGE_STUCK_MS = 2 * 60 * 60_000;
 /** Model calls one gate pass may make; the rest ask this time and get their look on the next read. */
@@ -98,6 +100,12 @@ export interface EscalationGateDeps {
    * stored once and later reads only reuse it.
    */
   act?: (subject: GatedSubject, action: JevAction) => Promise<void>;
+  /**
+   * Run a Buildd-owned RULE verdict's step that no sweep takes on its own
+   * (lib/merge-policy-rule-executor.ts: `policy_merge`). Called once per state,
+   * on the look that files the verdict, never on a reuse.
+   */
+  actRule?: (subject: GatedSubject, action: EscalationAction) => Promise<void>;
   now?: () => number;
   maxModelCalls?: number;
 }
@@ -256,6 +264,7 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
             ...ledgerBase, ruleAnswer: verdictCode(rule), appliedAnswer: verdictCode(rule), applied: true, status: 'applied',
             reason: rule.owner === 'person' ? `rule:${rule.rail ?? 'person'}` : `rule:${rule.action}`, latencyMs: now() - started,
           }).catch(() => {});
+          if (rule.owner === 'buildd' && deps.actRule) await deps.actRule(s, rule.action).catch(() => {});
           continue;
         }
 
