@@ -9,6 +9,7 @@ import { assertMemberRepoAccess, memberRepoAccessSubject } from '@/lib/member-re
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { isAuditStorageKey } from '@/lib/storage-keys';
+import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 
@@ -91,10 +92,22 @@ export async function GET(
     ? `${appBaseUrl()}/share/${artifact.shareToken}`
     : null;
 
+  // A file artifact has no inline content; hand back a short-lived presigned
+  // URL under the same access check as above so a key-only caller (an agent
+  // that may not use credentials from disk) can still read the bytes.
+  let downloadUrl: string | null = null;
+  if (artifact.storageKey && isStorageConfigured()) {
+    try {
+      downloadUrl = await generateDownloadUrl(artifact.storageKey);
+    } catch {
+      downloadUrl = null;
+    }
+  }
+
   // Return full artifact without the worker relation
   const { worker: _worker, ...artifactData } = artifact;
   return NextResponse.json({
-    artifact: { ...artifactData, shareUrl },
+    artifact: { ...artifactData, shareUrl, downloadUrl },
   });
 }
 
