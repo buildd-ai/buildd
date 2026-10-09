@@ -17,7 +17,7 @@ const release = {
   failureReason: null,
 };
 
-function render() {
+function render(overrides = {}) {
   return renderToStaticMarkup(
     <ReleaseRow
       release={release}
@@ -26,9 +26,25 @@ function render() {
       metrics={{ taskCount: 2, missionCount: 1 }}
       stateBadge={{ label: 'Healthy', cls: 'text-status-success' }}
       archetypeBadge={{ label: 'Gated', cls: 'text-blue-600' }}
+      {...overrides}
     />,
   );
 }
+
+const supersededRelease = {
+  id: 'r2',
+  workspaceId: 'ws1',
+  archetype: 'gated',
+  state: 'failed',
+  dispatchedAt: '2026-09-06T00:00:00.000Z',
+  deployedAt: null,
+  commitsAheadAtDispatch: 2,
+  previousSha: 'cccccccccccc',
+  headSha: 'dddddddddddd',
+  version: 'v1.2.1',
+  runUrl: null,
+  failureReason: 'superseded by release r1 (PR #123 merged)',
+};
 
 /** Max <a> nesting depth in the rendered markup. Anything above 1 is invalid HTML. */
 function maxAnchorDepth(html: string): number {
@@ -40,6 +56,91 @@ function maxAnchorDepth(html: string): number {
   }
   return max;
 }
+
+describe('ReleaseRow superseded state', () => {
+  it('displays "Superseded by vX.Y.Z" for failed releases with superseded failureReason', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseRow
+        release={supersededRelease}
+        workspaceName="demo"
+        commitRangeUrl="https://github.com/o/r/compare/cccccc...dddddd"
+        metrics={{ taskCount: 0, missionCount: 0 }}
+        stateBadge={{ label: 'Superseded', cls: 'text-text-muted border-border-default' }}
+        archetypeBadge={{ label: 'Gated', cls: 'text-blue-600' }}
+        supersededByVersion="v1.2.3"
+        supersededByReleaseId="r1"
+      />,
+    );
+    expect(html).toContain('Superseded by');
+    expect(html).toContain('>v1.2.3</a>');
+    expect(html).not.toContain('superseded by release r1');
+  });
+
+  it('uses neutral badge style for superseded releases, not error tone', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseRow
+        release={supersededRelease}
+        workspaceName="demo"
+        commitRangeUrl="https://github.com/o/r/compare/cccccc...dddddd"
+        metrics={{ taskCount: 0, missionCount: 0 }}
+        stateBadge={{ label: 'Superseded', cls: 'text-text-muted border-border-default' }}
+        archetypeBadge={{ label: 'Gated', cls: 'text-blue-600' }}
+        supersededByVersion="v1.2.3"
+        supersededByReleaseId="r1"
+      />,
+    );
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('data-tone="q"');
+    expect(html).not.toContain('text-status-error');
+  });
+
+  it('links to the newer release when superseded', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseRow
+        release={supersededRelease}
+        workspaceName="demo"
+        commitRangeUrl="https://github.com/o/r/compare/cccccc...dddddd"
+        metrics={{ taskCount: 0, missionCount: 0 }}
+        stateBadge={{ label: 'Superseded', cls: 'text-text-muted border-border-default' }}
+        archetypeBadge={{ label: 'Gated', cls: 'text-blue-600' }}
+        supersededByVersion="v1.2.3"
+        supersededByReleaseId="r1"
+      />,
+    );
+    expect(html).toContain('href="/app/releases/r1"');
+  });
+});
+
+describe('ReleaseRow successor fallbacks', () => {
+  it('keeps a neutral linked fallback when the successor version is null', () => {
+    const html = render({ release: supersededRelease, supersededByReleaseId: 'r1', supersededByVersion: null });
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('Superseded by');
+    expect(html).toContain('href="/app/releases/r1"');
+    expect(html).toContain('>a newer release</a>');
+    expect(html).not.toContain('superseded by release r1');
+    expect(html).not.toContain('text-status-error');
+    expect(maxAnchorDepth(html)).toBe(1);
+  });
+
+  it('stays neutral when the successor cannot be resolved', () => {
+    const html = render({ release: supersededRelease });
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('Superseded');
+    expect(html).not.toContain('superseded by release r1');
+    expect(html).not.toContain('text-status-error');
+  });
+
+  it('preserves the error tone and reason for an ordinary failure', () => {
+    const html = render({
+      release: { ...supersededRelease, failureReason: 'Deployment failed' },
+      stateBadge: { label: 'Failed', cls: 'text-status-error' },
+    });
+    expect(html).toContain('Deployment failed');
+    expect(html).toContain('text-status-error');
+    expect(html).not.toContain('data-state="queued"');
+  });
+});
 
 describe('ReleaseRow layout', () => {
   // `.card` is a components-layer class that sets background/border but NO
