@@ -29,7 +29,7 @@ const THUMB_WIDTH = { mobile: 'w-24', desktop: 'w-44' } as const;
 export function TaskShippedTitle({ view, title }: { view: TaskShippedView; title: string }) {
   return (
     <div data-testid="task-shipped-title">
-      <Eyebrow as="p" tone="accent">{view.eyebrow}</Eyebrow>
+      <Eyebrow as="p" tone="muted">{view.eyebrow}</Eyebrow>
       <h1 className="mt-1.5 text-heading font-semibold tracking-[-0.2px] break-words max-w-[760px]">{title}</h1>
     </div>
   );
@@ -57,7 +57,7 @@ export function TaskShippedBody({
         <section
           data-testid="task-shipped-lede-card"
           aria-label="What changed"
-          className="flex flex-col gap-3 border-2 border-border-strong bg-card px-4 py-4 shadow-[var(--card-shadow)] md:px-5"
+          className="card flex flex-col gap-3 px-4 py-4 md:px-5"
         >
           {view.lede && <Lede className="font-medium">{view.lede}</Lede>}
           {view.changeTypeLabel && (
@@ -78,7 +78,7 @@ export function TaskShippedBody({
                       <span className={`relative block overflow-hidden border-2 border-border-strong bg-surface-2 ${THUMB_WIDTH[s.viewport]} ${viewportAspect(s.viewport)}`}>
                         <ShotImage shot={{ id: s.artifactId, src: shotSrc(s.artifactId) }} alt={label} className="block h-full w-full object-cover object-top" />
                       </span>
-                      <span className="font-mono text-meta uppercase tracking-[1px] text-text-muted">{VIEWPORT_LABEL[s.viewport]}</span>
+                      <span className="font-mono text-meta text-text-muted">{VIEWPORT_LABEL[s.viewport]}</span>
                     </a>
                   </li>
                 );

@@ -466,7 +466,6 @@ export default async function TasksPage({
         mode={mode}
         now={activity?.now ?? { groups: [], inMotion: 0, liveAgents: 0 }}
         history={activity?.history ?? []}
-        latest={activity?.latest ?? null}
         nowMs={Date.now()}
         hrefs={{ now: href('now'), history: href('history') }}
         missionFilter={missionId ? { id: missionId, title: missionTitle } : null}
