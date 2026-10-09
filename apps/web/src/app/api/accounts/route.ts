@@ -145,6 +145,7 @@ export async function POST(req: NextRequest) {
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       maxConcurrentWorkers: maxConcurrentWorkers || 3,
       teamId,
+      createdByUserId: user.id,
     };
 
     const [account] = await db
