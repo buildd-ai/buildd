@@ -10,6 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -463,7 +464,8 @@ export async function POST(req: NextRequest) {
     if (!stampedGrant.ok) {
       return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });
     }
-    const incomingContext = stampedGrant.context as typeof rawIncomingContext;
+    // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
+    const incomingContext = withoutReviewDispatchContext(stampedGrant.context) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
