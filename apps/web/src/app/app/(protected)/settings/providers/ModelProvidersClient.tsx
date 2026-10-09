@@ -129,9 +129,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                   </div>
                 ))}
                 <p className="pt-1 text-text-muted">
-                  A provider key picks the route, not the model: an OpenAI key runs OpenAI models in chat and Codex.
-                  Claude Code and cloud coding need an Anthropic-compatible route (Anthropic, OpenRouter or a gateway).
-                  A ChatGPT login is a separate seat that signs in Codex only; it never serves chat.
+                  Claude Code and cloud coding need an Anthropic-compatible route. A ChatGPT login signs in Codex only.
                 </p>
               </dl>
             )}
