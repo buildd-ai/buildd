@@ -8,6 +8,8 @@
 // stored per-task/role/workspace settings: disable a provider and matching jobs
 // run on an enabled one; re-enable and they snap back to their original backend.
 
+import { backendCredentialPurposes } from '@builddai/ai-kit/models/provider-registry';
+
 /** Backends that can be persisted on `tasks.backend` (the `agent_backend` enum). */
 export type AgentBackend = 'claude' | 'codex';
 
@@ -24,7 +26,9 @@ export interface BackendDescriptor {
   label: string;
   /**
    * Secret purposes that make this backend usable for a team/workspace. Any one
-   * of them being present counts as configured.
+   * of them being present counts as configured. Derived from the provider
+   * registry (`@buildd/core/providers`): the storages of the providers mapped
+   * to this backend that its agent surface reads today.
    */
   credentialPurposes: readonly string[];
   /**
@@ -48,7 +52,7 @@ export const BACKEND_REGISTRY: Record<BackendId, BackendDescriptor> = {
     label: 'Claude',
     // A team-managed credential is optional: without one, tasks run on the
     // account's own OAuth/API key, which the claim route attaches.
-    credentialPurposes: ['claude_credential', 'oauth_token', 'anthropic_api_key'],
+    credentialPurposes: backendCredentialPurposes('claude'),
     implicitlyConfigured: true,
     failoverPriority: 10,
     dispatchable: true,
@@ -56,7 +60,9 @@ export const BACKEND_REGISTRY: Record<BackendId, BackendDescriptor> = {
   codex: {
     id: 'codex',
     label: 'Codex',
-    credentialPurposes: ['codex_credential'],
+    // A ChatGPT connect or a plain OpenAI API key: the Codex CLI runs on either
+    // (isBackendConfigured in apps/web/src/lib/backend-failover.ts counts both).
+    credentialPurposes: backendCredentialPurposes('codex'),
     implicitlyConfigured: false,
     failoverPriority: 20,
     dispatchable: true,
@@ -65,12 +71,14 @@ export const BACKEND_REGISTRY: Record<BackendId, BackendDescriptor> = {
   // OpenRouter via its llmProvider config (apps/runner/src/index.ts) and the
   // model tier registry accepts provider='openrouter', but no task-level route
   // exists and `agent_backend` has no enum value. Flip `dispatchable` (plus the
-  // enum + an `openrouter_credential` purpose) and failover picks it up with no
-  // other changes.
+  // enum) and failover picks it up with no other changes. No agent reader takes
+  // a stored OpenRouter key yet (the key is `inference_key`/`openrouter`, read
+  // by chat only), so the registry derives an empty list here rather than
+  // naming a purpose that does not exist.
   openrouter: {
     id: 'openrouter',
     label: 'OpenRouter',
-    credentialPurposes: ['openrouter_credential'],
+    credentialPurposes: backendCredentialPurposes('openrouter'),
     implicitlyConfigured: false,
     failoverPriority: 30,
     dispatchable: false,
