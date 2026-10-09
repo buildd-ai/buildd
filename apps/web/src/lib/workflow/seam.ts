@@ -777,6 +777,13 @@ export async function observeCiFailure(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
 
+  // §6.3 T10: the hint is a pointer; whether CI is red on the head is read now.
+  // Nothing failing (re-run green, or re-running) and the reducer refuses it.
+  const liveChecks = live.headSha === p.headSha && reader.checkRuns
+    ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null)
+    : null;
+  const notRed = !!liveChecks && liveChecks.failing.length === 0;
+
   // §6.10: classify the failure by its signature, and route a trunk-caused one
   // to its incident (T25) instead of a per-PR attempt. Only for a head the
   // delivery is acting on, in a state a CI failure moves.
@@ -785,7 +792,7 @@ export async function observeCiFailure(p: {
   let signature = p.signature;
   let incident: TrunkClassification['incident'] = null;
   const ciState = !!d && (TRUNK_SOURCE_STATES.has(d.state) || (d.state === 'REPAIRING' && d.stateReason === 'ci'));
-  if (d && ciState && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
+  if (d && ciState && !notRed && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
     const cls = await classifyCiFailure({
       workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
@@ -796,7 +803,7 @@ export async function observeCiFailure(p: {
   }
   const preflightMiss = await preflightMissFor(reader, p, deps);
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}) },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}), ...(liveChecks ? { liveChecks } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);

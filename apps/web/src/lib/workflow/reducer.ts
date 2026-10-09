@@ -609,12 +609,18 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       // queued per-PR attempt is skipped (spends nothing) and T25 decides.
       const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
       if (!allowed.includes(dd.state) && !reopen && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      // §6.3 T10 guard "live check-suite read": a stale or redelivered hint for a
+      // head that is not red now (re-run green, or re-running) moves nothing.
+      if (cmd.liveChecks && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
       if (cmd.openTrunkIncidentId && dd.state !== 'CHANGES_REQUESTED') {
         return reduce(view, { type: 'TrunkRedObserved', actor: cmd.actor, incidentId: cmd.openTrunkIncidentId, signature: cmd.signature, headSha: cmd.headSha, thresholdMet: true }, opts);
       }
       const key = `ci:${dd.id}:${cmd.headSha}`;
       // §6.10 tier 3 (S31): a failure a preflight should have caught is tagged, never acted on.
-      const miss = cmd.preflightMiss ? { preflightMiss: cmd.preflightMiss } : {};
+      const miss = {
+        ...(cmd.preflightMiss ? { preflightMiss: cmd.preflightMiss } : {}),
+        ...(cmd.liveChecks ? { liveChecks: cmd.liveChecks } : {}),
+      };
       const ciPatch: DeliveryPatch = { ci: 'red', ciHeadSha: cmd.headSha };
       if (dd.state === 'CHANGES_REQUESTED') {
         // The owed review fix will push a new head; record the CI fact only.
