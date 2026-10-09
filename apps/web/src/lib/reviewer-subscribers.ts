@@ -38,6 +38,7 @@ import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { observeHead, openKernelDelivery, policyFindingFor } from '@/lib/workflow/seam';
 import { releaseKernelDeliveryForPr } from '@/lib/workflow/authority';
+import { agentReviewsDataMigrations } from '@buildd/shared';
 
 /** The webhook payload shape the dispatch functions read. */
 type WebhookPr = { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null };
@@ -310,6 +311,7 @@ async function maybeDispatchReviewer(
       repoFullName,
       policyConfig: policyConfig ?? undefined,
       migrationSafety,
+      agentDecidesDataMigrations: agentReviewsDataMigrations(policy),
       // Already fetched above for the policy override and the pre-flight
       // check — passing it through saves a second identical GitHub call.
       prFiles,

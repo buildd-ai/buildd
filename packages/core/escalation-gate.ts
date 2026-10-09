@@ -79,6 +79,12 @@ export interface EscalationSubject {
   draft?: boolean;
   /** The diff is extra large (the merge-advice XL bucket). */
   sizeXl?: boolean;
+  /**
+   * The workspace lets the reviewer agent decide data migrations
+   * (`mergePolicy.dataMigrations`, @buildd/shared `agentReviewsDataMigrations`).
+   * A data migration is then not a person's rail; destructive DDL still is.
+   */
+  agentReviewsDataMigrations?: boolean;
 }
 
 /** A named next step Buildd takes instead of asking. */
@@ -146,7 +152,8 @@ const HARD_RISK_CLASSES: ReadonlySet<string> = new Set(['ci_deploy_config', 'aut
 const POLICY_MERGE_CLASSES: ReadonlySet<string> = new Set(['destructive_schema_change', 'public_api_contract', 'dependency_bump']);
 const SECURITY = /\bsecurity (?:concern|risk|issue|hole|scope|review|sensitive)|\bsecurity-sensitive\b|\bvulnerab|\bprivilege escalation\b|\bauth(?:entication|orization)? bypass\b|\bleaks? (?:a |the )?(?:secret|token|credential)/i;
 const COLLISION = /\bmigration (?:number|index) collision\b|\bcollides with (?:open )?pr\b|\brenumber/i;
-const DATA_MIGRATION = /\bdata migration\b|\bdestructive (?:schema|migration)\b|\bdrops? (?:a |the )?(?:table|column)s?\b/i;
+const DATA_MIGRATION = /\bdata migration\b/i;
+const DESTRUCTIVE_MIGRATION = /\bdestructive (?:schema|migration)\b|\bdrops? (?:a |the )?(?:table|column)s?\b/i;
 const STRANDED_CAUSES: ReadonlySet<string> = new Set(['refresh_exhausted', 'refresh_failed', 'base_rewritten']);
 const PROTECTED_CAUSES: ReadonlySet<string> = new Set(['deny_path']);
 
@@ -178,7 +185,13 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
 
   if (s.handoffCause && PROTECTED_CAUSES.has(s.handoffCause)) return person('protected_path');
   if ((s.riskClasses ?? []).some(c => HARD_RISK_CLASSES.has(c))) return person('protected_path');
-  if (textsOf(s).some(t => DATA_MIGRATION.test(t))) return person('data_migration');
+  if (textsOf(s).some(t => DESTRUCTIVE_MIGRATION.test(t))) return person('data_migration');
+  if (textsOf(s).some(t => DATA_MIGRATION.test(t))) {
+    if (!s.agentReviewsDataMigrations) return person('data_migration');
+    // The reviewer decides data migrations here, and landing no longer refuses
+    // one, so a landing that stopped on it just lands again.
+    if (s.why === 'landing_handoff') return buildd('retry_landing');
+  }
   if (textsOf(s).some(t => SECURITY.test(t))) return person('security');
   // Landing's own words only: a reviewer's prose says "safe to merge this" far more often than it names an irreversible step.
   if (detectIrreversibleAction([s.handoffReason])) return person('irreversible');
@@ -218,6 +231,8 @@ export function escalationFingerprint(s: EscalationSubject): string {
     cause: s.handoffCause ?? null, collision: !!s.migrationCollision, stranded: !!s.landingStranded, head: s.headSha ?? null,
     detail: s.detail ?? null, handoff: s.handoffReason ?? null,
     classes: [...(s.riskClasses ?? [])].sort(), policy: !!s.policyOnly, current: s.headIsCurrent ?? null, draft: !!s.draft, xl: !!s.sizeXl,
+    // Only when on, so a workspace without the setting keeps its stored verdicts.
+    ...(s.agentReviewsDataMigrations ? { dataByAgent: true } : {}),
   };
   return createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
 }

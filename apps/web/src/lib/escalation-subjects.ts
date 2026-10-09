@@ -92,6 +92,8 @@ export interface PrSubjectInput {
   linesChanged?: number | null;
   /** The head the latest reviewer verdict was made against, when known. */
   reviewedHeadSha?: string | null;
+  /** The workspace merge policy lets the reviewer agent decide data migrations. */
+  agentReviewsDataMigrations?: boolean;
 }
 
 /** An escalation whose words say a hard path rule, not the reviewer's judgment, sent it to a person. Pure. */
@@ -144,6 +146,7 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     headIsCurrent: i.reviewedHeadSha && i.headSha ? i.reviewedHeadSha === i.headSha : null,
     draft: !!i.draft,
     sizeXl: i.linesChanged != null && i.linesChanged >= XL_DIFF_LINES,
+    agentReviewsDataMigrations: !!i.agentReviewsDataMigrations,
   };
   return { ...subject, teamId: i.teamId, sensitive: i.sensitive };
 }
