@@ -24,8 +24,8 @@ const base = (over: Partial<EscalationSubject>): EscalationSubject => ({
 
 /**
  * The ten shapes the owner was paged for on one day (mission 9c079a70). Only
- * the protected-path, data-migration and reviewer-escalated mission-ship shapes
- * are a person's; every other one has a named machine owner.
+ * the protected-path, data-migration, security and reviewer-escalated
+ * mission-ship shapes are a person's; every other one has a named machine owner.
  */
 const SHAPES: Array<{ name: string; subject: EscalationSubject; owner: 'person' | 'buildd'; action?: string; rail?: string }> = [
   {
@@ -59,9 +59,9 @@ const SHAPES: Array<{ name: string; subject: EscalationSubject; owner: 'person' 
     owner: 'buildd', action: 'wait_ci',
   },
   {
-    name: 'human merge, CI not green (security-tagged review)',
+    name: 'a security-tagged review, CI not green yet',
     subject: base({ why: 'reviewer_escalated', ci: 'running', detail: 'Decide whether to drop an unverified branch; security scope' }),
-    owner: 'buildd', action: 'wait_ci',
+    owner: 'person', rail: 'security',
   },
   {
     name: 'protected path: a workflow file',
@@ -93,8 +93,8 @@ describe('escalationRule: the ten shapes', () => {
     });
   }
 
-  it('exactly three of the ten are a person\'s', () => {
-    expect(SHAPES.filter(s => escalationRule(s.subject)?.owner === 'person')).toHaveLength(3);
+  it('exactly four of the ten are a person\'s', () => {
+    expect(SHAPES.filter(s => escalationRule(s.subject)?.owner === 'person')).toHaveLength(4);
   });
 });
 
@@ -124,8 +124,57 @@ describe('escalationRule: ordering', () => {
     expect(escalationRule(base({ why: 'reviewer_escalated', ci: 'green' }))).toBeNull();
   });
 
-  it('an irreversible action named in the escalation goes to a person', () => {
-    expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Landing it needs a force push to the base branch' }))).toMatchObject({ owner: 'person', rail: 'irreversible' });
+  it('an irreversible step named by landing goes to a person; a reviewer saying "merge this" does not', () => {
+    expect(escalationRule(base({ why: 'landing_handoff', handoffCause: 'refresh_unsafe', handoffReason: 'Landing it needs a force push to the base branch' }))).toMatchObject({ owner: 'person', rail: 'irreversible' });
+    expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Looks good, safe to merge this once a person signs off' }))).toBeNull();
+  });
+
+  it('a security concern in the escalation goes to a person; a passing mention does not', () => {
+    expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Security concern: the token is logged' }))).toMatchObject({ owner: 'person', rail: 'security' });
+    expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Adds a settings page; no auth changes' }))).toBeNull();
+  });
+});
+
+describe('escalationRule: the backtest\'s findings', () => {
+  const policyOnly = (over: Partial<EscalationSubject> = {}) => base({
+    why: 'reviewer_escalated', ci: 'green', policyOnly: true, riskClasses: ['destructive_schema_change'], headIsCurrent: true,
+    detail: 'Hard rule: schema changes require human review', ...over,
+  });
+
+  it('a policy-only escalation with every gate holding lands by rule, not by a person', () => {
+    expect(escalationRule(policyOnly())).toMatchObject({ owner: 'buildd', action: 'policy_merge' });
+    expect(escalationRule(policyOnly({ riskClasses: ['destructive_schema_change', 'public_api_contract'] }))).toMatchObject({ action: 'policy_merge' });
+  });
+
+  it.each([
+    ['CI still running', { ci: 'running' as const }, 'wait_ci'],
+    ['pushed since the review', { headIsCurrent: false }, null],
+    ['a draft', { draft: true }, null],
+    ['an XL diff', { sizeXl: true }, null],
+    ['not policy only', { policyOnly: false }, null],
+  ])('not when %s', (_n, over, action) => {
+    const v = escalationRule(policyOnly(over as Partial<EscalationSubject>));
+    if (action) expect(v).toMatchObject({ action });
+    else expect(v).toBeNull();
+  });
+
+  it('workflow and secrets paths always go to a person', () => {
+    expect(escalationRule(policyOnly({ riskClasses: ['ci_deploy_config'] }))).toMatchObject({ owner: 'person', rail: 'protected_path' });
+    expect(escalationRule(policyOnly({ riskClasses: ['destructive_schema_change', 'auth_and_secrets'] }))).toMatchObject({ owner: 'person', rail: 'protected_path' });
+  });
+
+  it('a data migration UPDATE goes to a person even when policy only', () => {
+    expect(escalationRule(policyOnly({ detail: 'Hard rule: runs data migration UPDATE on tasks' }))).toMatchObject({ owner: 'person', rail: 'data_migration' });
+  });
+
+  it('a collision named in the escalation is a renumber', () => {
+    expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Migration index collision: renumber 0277' }))).toMatchObject({ owner: 'buildd', action: 'renumber_migration' });
+  });
+
+  it('Jev is never offered a merge', async () => {
+    const { JEV_ACTIONS } = await import('../escalation-gate');
+    expect(JEV_ACTIONS as readonly string[]).not.toContain('retry_landing');
+    expect(JEV_ACTIONS as readonly string[]).not.toContain('policy_merge');
   });
 });
 
