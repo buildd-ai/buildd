@@ -34,7 +34,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2321,9 +2321,10 @@ export class WorkerManager {
               const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
               console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
               worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (merged.status === 'merged') derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
               if (merged.status === 'merged' || merged.status === 'conflicts') {
                 this.addMilestone(worker, {
                   type: 'status',

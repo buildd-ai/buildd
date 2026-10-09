@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -15,6 +15,7 @@ import {
   derivedMergeVerificationCommand,
   formatDerivedMergeSummary,
   formatDerivedFinishFallback,
+  canFinishWithoutAgent,
 } from '../../src/merge-drivers';
 
 function git(cwd: string, ...args: string[]): string {
@@ -264,6 +265,70 @@ describe('mergiraf (real git)', () => {
   });
 });
 
+describe('mergeBaseWithDerivedFiles: structural resolutions and slow merges (real git)', () => {
+  let dir: string;
+  let bin: string;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    if (bin) rmSync(bin, { recursive: true, force: true });
+  });
+
+  /** A stand-in for mergiraf: optionally slow, takes theirs, reports a solve on stderr like the real one. */
+  function fakeMergiraf(sleepSeconds = 0): string {
+    bin = mkdtempSync(join(tmpdir(), 'fake-mergiraf-'));
+    const path = join(bin, 'mergiraf');
+    // Called as: mergiraf merge --git %O %A %B -s ... (so $4 = ours/out, $5 = theirs)
+    // Like the real one, it names the file from -p (%P), not git's temp file.
+    writeFileSync(path, [
+      '#!/bin/sh',
+      `sleep ${sleepSeconds}`,
+      'ours="$4"; theirs="$5"; name=""',
+      'while [ $# -gt 0 ]; do [ "$1" = "-p" ] && name="$2"; shift; done',
+      'cp "$theirs" "$ours"',
+      'echo "INFO Mergiraf: Solved 1 conflict. Review with: mergiraf review $(basename "$name")_AbCd1234" >&2',
+      'exit 0',
+      '',
+    ].join('\n'));
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  test('a merge mergiraf resolved is reported with the files it touched', () => {
+    dir = conflictedRepo({ alsoRealConflict: true });
+    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
+    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
+    expect(result.status).toBe('merged');
+    expect(result.structurallyResolved).toEqual(['src.ts']);
+    // The agent is told to review exactly that file.
+    const note = formatDerivedMergeNote(result, 'main') ?? '';
+    expect(note).toContain('src.ts');
+    expect(note).toMatch(/review/i);
+  });
+
+  test('a derived-only merge reports no structural resolutions', () => {
+    dir = conflictedRepo();
+    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf() });
+    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]));
+    expect(result.status).toBe('merged');
+    expect(result.structurallyResolved).toEqual([]);
+  });
+
+  test('a merge that outlives its time limit is aborted, says it timed out, and leaves the branch as it was', () => {
+    dir = conflictedRepo({ alsoRealConflict: true });
+    const before = git(dir, 'rev-parse', 'HEAD');
+    registerMergeDrivers(dir, normalizeDerivedFiles([LOCK_RULE]), { mergiraf: true, mergirafPath: fakeMergiraf(3) });
+    const result = mergeBaseWithDerivedFiles(dir, 'main', normalizeDerivedFiles([LOCK_RULE]), { timeoutMs: 1000 });
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/timed out/);
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    // The driver outlives the killed git and may write git's temp file late:
+    // it must never show up as something an agent could commit.
+    execFileSync('sleep', ['3']);
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+  });
+});
+
 describe('isConflictRetryContext', () => {
   test('true only for a merge or semantic conflict retry on a resume branch', () => {
     expect(isConflictRetryContext({ resumeBranch: 'b', failureContext: { errorType: 'merge_conflict' } })).toBe(true);
@@ -393,5 +458,16 @@ describe('formatDerivedMergeSummary / formatDerivedFinishFallback', () => {
     const push = formatDerivedFinishFallback({ status: 'push_failed', verification: null, error: 'rejected' });
     expect(push).toContain('rejected');
     expect(push).toContain('not pushed');
+  });
+});
+
+describe('canFinishWithoutAgent', () => {
+  const base = { conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
+  test('only a clean merge with no structural resolution skips the agent', () => {
+    expect(canFinishWithoutAgent({ ...base, status: 'merged' })).toBe(true);
+    expect(canFinishWithoutAgent({ ...base, status: 'merged', structurallyResolved: ['src/a.ts'] })).toBe(false);
+    expect(canFinishWithoutAgent({ ...base, status: 'conflicts', conflicted: ['b.ts'] })).toBe(false);
+    expect(canFinishWithoutAgent({ ...base, status: 'up_to_date' })).toBe(false);
+    expect(canFinishWithoutAgent({ ...base, status: 'error', error: 'x' })).toBe(false);
   });
 });
