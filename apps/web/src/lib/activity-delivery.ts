@@ -207,7 +207,9 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
  */
 function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery {
   // The root stands as the deliverable even when it is an attempt whose parent is not loaded.
-  const root = { ...d.root, parentTaskId: null, taskClass: 'work' };
+  // The mission projection drops cancelled roots, so a cancelled one is projected as
+  // failed; History names it "not landed" and adds a Cancelled step.
+  const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
   const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
   return m.tasks.find(t => t.id === d.root.id)!.delivery;

@@ -196,6 +196,15 @@ describe('Activity History', () => {
   });
 });
 
+describe('a cancelled standalone task', () => {
+  it('reads as an episode that did not land, instead of throwing and blanking the whole page', () => {
+    const cancelled = task({ status: 'cancelled', updatedAt: ago(1) });
+    const eps = buildActivityHistory({ tasks: [cancelled], missions: [], rules });
+    expect(eps.map(e => [e.id, e.kind])).toEqual([[cancelled.id, 'notlanded']]);
+    expect(eps[0].steps.some(s => s.text === 'Cancelled')).toBe(true);
+  });
+});
+
 describe('reviewOf: a reviewer run read like derivePrReviewStatus reads it', () => {
   it('the server effective verdict wins over the model output; the head comes from context', () => {
     expect(reviewOf({ effectiveVerdict: 'escalate', structuredOutput: { verdict: 'approve' } }, { headSha: 'abc1234' })).toEqual({ verdict: 'escalate', headSha: 'abc1234' });
