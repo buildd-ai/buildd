@@ -37,6 +37,21 @@ describe('ciStateOf', () => {
   });
 });
 
+describe('prSubjectFor: policy-merge inputs', () => {
+  it('reads risk classes from the task paths, policy-only from the escalation words, XL from the diff', () => {
+    const s = prSubjectFor(input({
+      pathManifest: ['packages/core/db/schema.ts', 'packages/core/drizzle/'], escalated: { reason: 'Hard rule: schema changes require human review' },
+      linesChanged: 1200, draft: false, headSha: 'h', reviewedHeadSha: 'h',
+    }));
+    expect(s.riskClasses).toContain('destructive_schema_change');
+    expect(s).toMatchObject({ policyOnly: true, sizeXl: true, headIsCurrent: true, draft: false });
+  });
+
+  it('a reviewer\'s own judgment is not policy only', () => {
+    expect(prSubjectFor(input({ escalated: { reason: 'The fix does not handle the empty list case' } })).policyOnly).toBe(false);
+  });
+});
+
 describe('prSubjectFor', () => {
   it('keys a PR by workspace and number', () => {
     expect(prSubjectFor(input()).key).toBe('pr:ws:9');

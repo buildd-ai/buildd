@@ -7,6 +7,7 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
 import type { CiState, EscalationSubject, EscalationWhy } from '@buildd/core/escalation-gate';
+import { detectAllRiskClasses } from '@buildd/core/risk-class-detect';
 import type { GatedSubject } from '@/lib/escalation-gate-check';
 
 /** How far back a landing deferral still describes the PR. */
@@ -84,7 +85,23 @@ export interface PrSubjectInput {
   /** A conflict repair, CI or review fix, running checks or a reviewer agent is live. */
   machineActing: boolean;
   landingStall: LandingStall | null;
+  /** The task's declared paths: the risk classes the PR falls in. */
+  pathManifest?: readonly string[] | null;
+  draft?: boolean | null;
+  /** Lines added + removed. */
+  linesChanged?: number | null;
+  /** The head the latest reviewer verdict was made against, when known. */
+  reviewedHeadSha?: string | null;
 }
+
+/** An escalation whose words say a hard path rule, not the reviewer's judgment, sent it to a person. Pure. */
+const POLICY_TEXT = /\bpolicy\b|\bhuman review\b|\brequires? (?:a )?human\b|\bhuman (?:approval|sign-?off)\b|\bhard (?:escalation )?(?:rule|trigger)s?\b|\bmandatory escalation\b/i;
+export function isPolicyOnlyText(text: string | null | undefined): boolean {
+  return !!text && POLICY_TEXT.test(text);
+}
+
+/** Lines at which a diff is extra large: the merge-advice XL bucket (lib/merge-advice.ts). */
+export const XL_DIFF_LINES = 1000;
 
 const KERNEL_WHY: Record<string, EscalationWhy> = {
   review_escalated: 'reviewer_escalated',
@@ -120,6 +137,13 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     migrationCollision: i.landingStall === 'migration_collision',
     landingStranded: i.landingStall === 'stranded',
     headSha: i.headSha ?? null,
+    riskClasses: i.pathManifest?.length
+      ? detectAllRiskClasses([...i.pathManifest]).filter(e => e.detectedPaths.length > 0).map(e => e.name)
+      : [],
+    policyOnly: why === 'human_tier' || isPolicyOnlyText(i.escalated?.reason ?? i.kernel?.detail ?? null),
+    headIsCurrent: i.reviewedHeadSha && i.headSha ? i.reviewedHeadSha === i.headSha : null,
+    draft: !!i.draft,
+    sizeXl: i.linesChanged != null && i.linesChanged >= XL_DIFF_LINES,
   };
   return { ...subject, teamId: i.teamId, sensitive: i.sensitive };
 }
