@@ -197,6 +197,8 @@ export interface CloudflareEndpointRef {
   accountId: string;
   gatewayId: string | null;
   upstreamKey: string | null;
+  /** The team's minted AI Gateway Run token (cloudflare-gateway-tokens.ts), used when the blob has none of its own. */
+  gatewayToken?: string | null;
 }
 
 /** What a run authenticates with once a blob is resolved. */
@@ -454,7 +456,8 @@ export function resolveEndpointFromBlob(
     if (!cloudflare?.gatewayId || !cloudflare.upstreamKey) return null;
     const baseUrl = cloudflareAgentBaseUrl(cloudflare, blob.upstream);
     if (!baseUrl) return null;
-    const headers = blob.gatewayToken ? { 'cf-aig-authorization': `Bearer ${blob.gatewayToken}` } : undefined;
+    const gatewayToken = blob.gatewayToken || cloudflare.gatewayToken || null;
+    const headers = gatewayToken ? { 'cf-aig-authorization': `Bearer ${gatewayToken}` } : undefined;
     return {
       kind: 'cloudflare',
       upstream: blob.upstream,
@@ -700,8 +703,15 @@ export async function resolveEndpointRefs(
       const upstreamKey = blob.upstream === 'openrouter'
         ? (await resolveStoredOpenRouterKey(refScope))?.key ?? null
         : await resolveStoredAnthropicKey(refScope);
-      // Only the ids: the team's Cloudflare token never leaves the server.
-      refs.cloudflare = { accountId: cf.accountId, gatewayId: cf.gatewayId, upstreamKey };
+      // Only the ids: the team's Cloudflare token never leaves the server. A
+      // minted run-only token may (the team's, never a person's: agent runs
+      // are team work here).
+      let gatewayToken: string | null = null;
+      if (!blob.gatewayToken) {
+        const { resolveGatewayRunToken } = await import('./cloudflare-gateway-tokens');
+        gatewayToken = (await resolveGatewayRunToken({ teamId: refScope.teamId, userId: null, accountId: cf.accountId }))?.token.token ?? null;
+      }
+      refs.cloudflare = { accountId: cf.accountId, gatewayId: cf.gatewayId, upstreamKey, ...(gatewayToken ? { gatewayToken } : {}) };
     }
   }
   return refs;

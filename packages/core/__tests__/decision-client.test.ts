@@ -756,6 +756,27 @@ describe('decisionCall via Cloudflare', () => {
     expect(seen[0].headers.get('cf-aig-authorization')).toBe(`Bearer ${CF_TOKEN}`);
   });
 
+  it("spends the acting person's minted run token before the team's, and the team's before the team credential", async () => {
+    teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } };
+    const minted = (id: string, token: string, userId: string | null) => secretRow({
+      id, purpose: 'cloudflare_gateway_token', label: null, userId,
+      encryptedValue: `enc:${JSON.stringify({ token, tokenId: `tok${id}000000`, accountId: ACCOUNT, expiresOn: '2099-01-01T00:00:00Z' })}`,
+    });
+    const cf = cfRow({ apiToken: CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' });
+    const auth = async (rows: any[], userId?: string) => {
+      secretRows = rows;
+      let seen = '';
+      const fetcher = mock(async (_u: string, init?: RequestInit) => { seen = new Headers(init?.headers).get('authorization') ?? ''; return jsonResponse(CLEF_BODY); });
+      expect((await decisionCall(params({ fetcher, questions: NOUL, ...(userId ? { userId } : {}) }))).ok).toBe(true);
+      return seen;
+    };
+    const PERSONAL = 'personal-run-token-abcdefghijk';
+    const TEAM = 'team-run-token-abcdefghijklmnop';
+    expect(await auth([cf, minted('p', PERSONAL, 'u-1'), minted('t', TEAM, null)], 'u-1')).toBe(`Bearer ${PERSONAL}`);
+    expect(await auth([cf, minted('p', PERSONAL, 'u-2'), minted('t', TEAM, null)], 'u-1')).toBe(`Bearer ${TEAM}`);
+    expect(await auth([cf, minted('p', PERSONAL, 'u-1')])).toBe(`Bearer ${CF_TOKEN}`);
+  });
+
   it('returns missing_key, with no request, without a Cloudflare credential, a gateway for Jev, or a live row', async () => {
     const fetcher = mock(async () => jsonResponse(CLEF_BODY));
     teamRow = { inferenceFeatureModes: null, decisionModel: { endpoint: 'systemone', model: 'clef', via: 'cloudflare' } };
