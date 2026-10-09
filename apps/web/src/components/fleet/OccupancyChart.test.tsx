@@ -23,7 +23,7 @@ describe('OccupancyPlot', () => {
     expect(html).not.toContain('>10</text>');
     expect(html).not.toContain('occupancy-capacity-line');
     // Capacity is still stated, as a number.
-    expect(html).toMatch(/Slots online<\/span><span[^>]*>10</);
+    expect(html).toMatch(/>10<\/span><span[^>]*>Slots online</);
   });
 
   it('draws slots online as a reference line when the data reaches that high', () => {
@@ -34,8 +34,8 @@ describe('OccupancyPlot', () => {
   it('states peak, average, in use now and slots online as separate numbers', () => {
     const html = render([run('http://r', NOW - 2 * H, NOW - H)], '24h', 10, 3);
     for (const label of ['Peak', 'Average', 'In use now', 'Slots online']) expect(html).toContain(`>${label}<`);
-    expect(html).toMatch(/In use now<\/span><span[^>]*>3</);
-    expect(html).toMatch(/Average<\/span><span[^>]*>&lt;1</);
+    expect(html).toMatch(/>3<\/span><span[^>]*>In use now</);
+    expect(html).toMatch(/>&lt;1<\/span><span[^>]*>Average</);
   });
 
   it('shows peak demand as its own line on 7d and 30d', () => {

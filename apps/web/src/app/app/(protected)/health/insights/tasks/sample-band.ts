@@ -4,10 +4,11 @@
  * account has no tasks in any band (docs/specs/qa-capture-steps.md). Dev server
  * only; production ignores the param. `sample` is a typical band, `large` one
  * holding hundreds of rows. `&band=<key>` picks the label; default Released.
- * The rows go through the real TaskGrid, never the DB, and nothing writes.
+ * The rows go through the real list and delivery projection, never the DB,
+ * and nothing writes.
  */
 import { BAND_LABEL, type BandKey } from '@/components/insights/flow-chart-model';
-import type { GridTask } from '../../../tasks/TaskGrid';
+import type { BandTaskInput } from './band-rows';
 
 export type BandDrillQaState = 'sample' | 'large';
 const QA_STATES: readonly BandDrillQaState[] = ['sample', 'large'];
@@ -44,39 +45,33 @@ function sampleId(n: number): string {
   return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 }
 
-export function sampleBandSelection(state: BandDrillQaState, rawBand: string | undefined, now = Date.now()): { label: string; tasks: GridTask[] } {
+export function sampleBandSelection(state: BandDrillQaState, rawBand: string | undefined, now = Date.now()): { label: string; tasks: BandTaskInput[] } {
   const band: BandKey = rawBand && Object.hasOwn(BAND_LABEL, rawBand) ? (rawBand as BandKey) : 'released';
   const span = state === 'large' ? 30 * DAY : 7 * DAY;
   const count = state === 'large' ? 340 : 14;
   const from = now - span;
   const r = rng(state === 'large' ? 7 : 3);
-  const tasks: GridTask[] = [];
+  const tasks: BandTaskInput[] = [];
   for (let n = 0; n < count; n++) {
     const updated = now - r() * (span - H);
     const roll = r();
     const status = roll < 0.08 ? 'failed' : roll < 0.14 ? 'in_progress' : 'completed';
     const withPr = status !== 'failed' && r() < 0.7;
     const mi = Math.floor(r() * MISSIONS.length);
+    const prUrl = withPr ? `https://github.com/example/sample/pull/${1000 + n}` : null;
     tasks.push({
       id: sampleId(n + 1),
       title: `${TITLES[n % TITLES.length]} (${n + 1})`,
       status,
-      category: null,
-      createdAt: new Date(updated - (0.5 + r() * 4) * H).toISOString(),
       updatedAt: new Date(updated).toISOString(),
-      workspaceName: 'sample',
-      prUrl: withPr ? `https://github.com/example/sample/pull/${1000 + n}` : null,
-      prNumber: withPr ? 1000 + n : null,
-      prLifecycleStatus: withPr ? (status === 'completed' ? 'merged' : 'pr_open') : null,
-      summary: status === 'completed' ? 'Sample summary for the band drill-down fixture.' : null,
-      hasArtifact: false,
-      filesChanged: withPr ? 1 + Math.floor(r() * 12) : null,
-      waitingPrompt: null,
-      missionId: MISSIONS[mi] ? `sample-mission-${mi}` : null,
       missionTitle: MISSIONS[mi],
-      taskType: null,
-      taskClass: 'work',
-      parentTaskId: null,
+      workers: [{
+        status: status === 'in_progress' ? 'running' : status,
+        prUrl,
+        prNumber: withPr ? 1000 + n : null,
+        mergedAt: withPr && status === 'completed' ? new Date(updated) : null,
+        prLifecycleStatus: withPr ? (status === 'completed' ? 'merged' : 'pr_open') : null,
+      }],
     });
   }
   return {
