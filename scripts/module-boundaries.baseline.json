@@ -545,15 +545,6 @@
     "apps/web/src/app/app/(protected)/home/ActionQueueCard.tsx": {
       "apps/web/src/lib/action-card-context.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/home/FleetLanes.tsx": {
-      "apps/web/src/lib/fleet-view.ts": "health-quality"
-    },
-    "apps/web/src/app/app/(protected)/home/FleetStrip.tsx": {
-      "apps/web/src/components/chat/SteerButton.tsx": "chat",
-      "apps/web/src/lib/fleet-view.ts": "health-quality",
-      "apps/web/src/lib/mission-list-card.ts": "missions",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
-    },
     "apps/web/src/app/app/(protected)/home/HomeMissions.tsx": {
       "apps/web/src/components/chat/ChatEntry.tsx": "chat",
       "apps/web/src/components/missions/MissionCard.tsx": "missions",
@@ -743,10 +734,6 @@
     },
     "apps/web/src/components/LandingActionConfirm.tsx": {
       "apps/web/src/lib/landing-action-view.ts": "reviews-merge"
-    },
-    "apps/web/src/components/MissionProgress.tsx": {
-      "apps/web/src/lib/mission-helpers.ts": "missions",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/components/MissionProgressBar.tsx": {
       "apps/web/src/lib/mission-helpers.ts": "missions",
