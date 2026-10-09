@@ -4661,9 +4661,14 @@ describe('POST /api/workers/claim', () => {
       // Role resolution: a team-default role (workspaceId null) with the given refs.
       // Used by both the model-floor prefetch and the connector-block role lookup.
       if (roleSlug) {
-        mockWorkspaceSkillsFindMany.mockResolvedValue([
-          { slug: roleSlug, isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs },
-        ]);
+        const row = { slug: roleSlug, isRole: true, enabled: true, workspaceId: null, teamId: 'team-1', model: 'inherit', connectorRefs };
+        // The first role query is the connector pre-filter (availability gate,
+        // HTTP-probing): these tests are about injection, and the gate has its
+        // own suite (connector-prefilter.test.ts), so it sees a role with no
+        // refs. Until role rows were matched on their team, this fixture's
+        // missing teamId hid the refs from the gate by accident.
+        mockWorkspaceSkillsFindMany.mockResolvedValueOnce([{ ...row, connectorRefs: [] }]);
+        mockWorkspaceSkillsFindMany.mockResolvedValue([row]);
       } else {
         mockWorkspaceSkillsFindMany.mockResolvedValue([]);
       }
@@ -5131,10 +5136,11 @@ describe('POST /api/workers/claim', () => {
       mockDbExecute.mockReturnValue(Promise.resolve({
         rows: [{ id: 'worker-cue', task_id: 'task-cue', branch: 'buildd/test', status: 'idle' }],
       }));
-      // Role owned by team-task, referencing conn-cue
-      mockWorkspaceSkillsFindMany.mockResolvedValue([
-        { slug: 'builder', isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs: ['conn-cue'] },
-      ]);
+      // Role owned by team-task, referencing conn-cue. The first role query is
+      // the connector pre-filter (see setupConnectorClaim): it sees no refs.
+      const cueRole = { slug: 'builder', isRole: true, enabled: true, workspaceId: null, teamId: 'team-task', model: 'inherit', connectorRefs: ['conn-cue'] };
+      mockWorkspaceSkillsFindMany.mockResolvedValueOnce([{ ...cueRole, connectorRefs: [] }]);
+      mockWorkspaceSkillsFindMany.mockResolvedValue([cueRole]);
       // Connector owned by team-task (must resolve only for tasks in team-task workspaces)
       mockConnectorsFindMany.mockResolvedValue([
         {

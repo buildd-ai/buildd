@@ -22,6 +22,7 @@ import {
   secrets,
   workspaceSkills,
 } from '@buildd/core/db/schema';
+import { lazyRequester, pickVisibleRoleRowLazy, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
 import type { SecretsProvider } from '@buildd/core/secrets';
@@ -85,12 +86,17 @@ export async function resolveMcpConnectorsForTask(
         eq(workspaceSkills.workspaceId, task.workspaceId),
       ),
     ),
-    columns: { connectorRefs: true, workspaceId: true },
+    // Personal rows (team-level) ride along; the pick below filters them.
+    columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
-  if (roleRows.length === 0) return [];
 
-  // Workspace-scoped override wins over the team-default row.
-  const role = roleRows.find(r => (r as any).workspaceId) ?? roleRows[0];
+  // Shared role precedence (role-visibility.ts): workspace override > the
+  // requester's own personal row > shared personal > team default. Another
+  // member's private role never mounts its connectors on this task.
+  const role = await pickVisibleRoleRowLazy(
+    roleRows, roleSlug, { teamId: workspaceTeamId, workspaceId: task.workspaceId }, lazyRequester(task),
+  );
+  if (!role) return [];
   const connectorRefs = ((role as any).connectorRefs as string[] | null) ?? [];
   if (connectorRefs.length === 0) return [];
 
