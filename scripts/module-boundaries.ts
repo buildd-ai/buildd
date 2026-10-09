@@ -74,6 +74,8 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
 ]);
 
 export function moduleOf(path: string): Owner {
+  // Lifecycle progress is a core coordination fact, not stored knowledge evidence.
+  if (path === 'packages/core/run-evidence.ts') return 'core';
   if (CORE_RUN_RECORD_FILES.has(path)) return 'core';
   const q = '/' + path;
   for (const [id, re] of MODULE_RULES) if (re.test(q)) return id;

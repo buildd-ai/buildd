@@ -82,7 +82,7 @@ export function toLocator(page: Page, selector: string): Locator {
 
 // --- Steps ---
 
-export const STEP_ACTIONS = ['click', 'hover', 'fill', 'press', 'select', 'waitFor', 'waitMs'] as const;
+export const STEP_ACTIONS = ['click', 'hover', 'fill', 'press', 'select', 'waitFor', 'waitMs', 'assertLayout'] as const;
 export type StepAction = (typeof STEP_ACTIONS)[number];
 
 export type Step = {
@@ -99,14 +99,19 @@ export type Step = {
   timeoutMs?: number;
   /** This step sends a write. Honoured only on the sandbox (see validatePlan). */
   commit?: boolean;
+  /** assertLayout: the smallest tap target allowed below md, in px. Default 44. */
+  minTarget?: number;
 };
 
 export const WAIT_MS_CAP = 5_000;
 export const DEFAULT_STEP_TIMEOUT_MS = 10_000;
 export const MAX_STEP_TIMEOUT_MS = 30_000;
+/** docs/design/design-system.md: touch targets >= 44px on mobile. */
+export const DEFAULT_MIN_TARGET = 44;
+const MAX_MIN_TARGET = 96;
 
 const NEEDS_SELECTOR: ReadonlySet<StepAction> = new Set(['click', 'hover', 'fill', 'select', 'waitFor']);
-const STEP_FIELDS = new Set(['action', 'selector', 'value', 'key', 'state', 'ms', 'timeoutMs', 'commit']);
+const STEP_FIELDS = new Set(['action', 'selector', 'value', 'key', 'state', 'ms', 'timeoutMs', 'commit', 'minTarget']);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -141,6 +146,13 @@ export function validateStep(raw: unknown, where: string): Step {
   if (action === 'waitMs') {
     if (typeof raw.ms !== 'number' || !Number.isFinite(raw.ms) || raw.ms < 0) throw new Error(`${where}: waitMs needs ms >= 0`);
     step.ms = Math.min(raw.ms, WAIT_MS_CAP);
+  }
+  if (raw.minTarget !== undefined) {
+    if (action !== 'assertLayout') throw new Error(`${where}: minTarget is only for assertLayout`);
+    if (typeof raw.minTarget !== 'number' || !Number.isFinite(raw.minTarget) || raw.minTarget <= 0 || raw.minTarget > MAX_MIN_TARGET) {
+      throw new Error(`${where}: minTarget must be a number of px in (0, ${MAX_MIN_TARGET}]`);
+    }
+    step.minTarget = raw.minTarget;
   }
   if (raw.timeoutMs !== undefined) {
     if (typeof raw.timeoutMs !== 'number' || !Number.isFinite(raw.timeoutMs) || raw.timeoutMs <= 0) {
@@ -231,9 +243,90 @@ export function parsePlan(text: string, opts: { pageSource: string }): PlanRoute
   return validatePlan(raw, opts);
 }
 
+// --- Layout assertion ---
+
+/** Below Tailwind's `md`, the tap-target rule applies (the design system's "mobile"). */
+const MOBILE_MAX_WIDTH = 768;
+
+/** What `assertLayout` reads off the page: plain numbers, so the rule stays pure. */
+export type LayoutMeasurement = {
+  viewportWidth: number;
+  /** document.documentElement.scrollWidth */
+  scrollWidth: number;
+  /** Elements in scope whose box runs past the right edge with nothing clipping them. */
+  overflowing: string[];
+  /** Visible interactive elements in scope, with their box size. */
+  targets: Array<{ desc: string; width: number; height: number }>;
+};
+
+/**
+ * The layout rule: nothing scrolls sideways, and below md every tap target is
+ * at least `minTarget` px in both directions. One line per violation.
+ */
+export function layoutViolations(m: LayoutMeasurement, opts: { minTarget: number }): string[] {
+  const out: string[] = [];
+  if (m.scrollWidth > m.viewportWidth) out.push(`horizontal overflow: page is ${m.scrollWidth}px wide in a ${m.viewportWidth}px viewport`);
+  for (const el of m.overflowing) out.push(`past the right edge: ${el}`);
+  if (m.viewportWidth < MOBILE_MAX_WIDTH) {
+    for (const t of m.targets) {
+      if (t.width < opts.minTarget || t.height < opts.minTarget) {
+        out.push(`tap target ${t.desc} is ${Math.round(t.width)}x${Math.round(t.height)}, under ${opts.minTarget}px`);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Runs in the browser (serialized by Playwright, so self-contained). `scope` is
+ * the element the step's selector matched, or <body>.
+ */
+function measureLayout(scope: Element): LayoutMeasurement {
+  const vw = window.innerWidth;
+  const describe = (el: Element) => {
+    const tag = el.tagName.toLowerCase();
+    const testid = el.getAttribute('data-testid');
+    if (testid) return `${tag}[data-testid=${testid}]`;
+    const label = (el.getAttribute('aria-label') ?? el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    return label ? `${tag} "${label}"` : tag;
+  };
+  const clippedBefore = (el: Element) => {
+    for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      const ox = getComputedStyle(n).overflowX;
+      if (ox !== 'visible') return n.getBoundingClientRect().right <= vw + 1;
+    }
+    return false;
+  };
+  const overflowing: string[] = [];
+  for (const el of Array.from(scope.querySelectorAll('*'))) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0 || r.right <= vw + 1) continue;
+    if (clippedBefore(el)) continue;
+    // Report the outermost offender only: its children overflow with it.
+    if (el.parentElement && overflowing.length && el.parentElement.closest('[data-qa-overflow]')) continue;
+    el.setAttribute('data-qa-overflow', '');
+    overflowing.push(describe(el));
+  }
+  for (const el of Array.from(document.querySelectorAll('[data-qa-overflow]'))) el.removeAttribute('data-qa-overflow');
+
+  const targets: LayoutMeasurement['targets'] = [];
+  const sel = 'a[href], button, [role="button"], summary, input:not([type="hidden"]), select, textarea';
+  for (const el of Array.from(scope.querySelectorAll(sel))) {
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') continue;
+    // A link inside running text is exempt (WCAG 2.5.8's inline exception).
+    if (el.tagName === 'A' && style.display === 'inline') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    targets.push({ desc: describe(el), width: r.width, height: r.height });
+  }
+  return { viewportWidth: vw, scrollWidth: document.documentElement.scrollWidth, overflowing: overflowing.slice(0, 5), targets };
+}
+
 // --- Running ---
 
-export type StepFailure = { index: number; selector: string | null; error: string };
+/** `assertion` marks a failed layout gate, including a prerequisite or measurement failure. */
+export type StepFailure = { index: number; selector: string | null; error: string; assertion?: true };
 
 /**
  * Run steps in order on the page. Stops at the first step that fails and
@@ -280,9 +373,16 @@ export async function runSteps(
         case 'waitMs':
           await page.waitForTimeout(Math.min(step.ms ?? 0, WAIT_MS_CAP));
           break;
+        case 'assertLayout': {
+          const scope = step.selector ? at() : page.locator('body').first();
+          const measured = await scope.evaluate(measureLayout, undefined, { timeout });
+          const violations = layoutViolations(measured, { minTarget: step.minTarget ?? DEFAULT_MIN_TARGET });
+          if (violations.length) return { index, selector: step.selector ?? null, assertion: true, error: `layout: ${violations.join('; ')}` };
+          break;
+        }
       }
     } catch (err) {
-      return { index, selector: step.selector ?? null, error: String((err as Error)?.message ?? err).split('\n')[0] };
+      return { index, selector: step.selector ?? null, ...(steps.some(s => s.action === 'assertLayout') ? { assertion: true as const } : {}), error: String((err as Error)?.message ?? err).split('\n')[0] };
     } finally {
       opts.afterStep?.(step, index);
     }

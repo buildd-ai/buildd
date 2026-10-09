@@ -287,6 +287,12 @@ export class CodexBackend implements AgentBackend {
         return;
       }
       prompt_ = this.extractPromptText(next.value);
+      // The parked message is now this thread's next prompt: report it, so a
+      // steering message is acknowledged at the boundary where Codex reads it.
+      const uuid = (next.value as { uuid?: unknown } | null)?.uuid;
+      if (typeof uuid === 'string' && uuid.length > 0) {
+        yield { type: 'input_consumed', uuids: [uuid] };
+      }
     }
 
     // Final completion: emit the synthetic `result` exactly once (R4) with

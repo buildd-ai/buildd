@@ -7,6 +7,7 @@
  * chain showed a builder's review passes as if they were the plan it executes.
  */
 import { deriveTaskType } from '@buildd/core/mission-helpers';
+import { compareTasksChrono, oldestFirst, type Chrono } from '@/lib/attempt-order';
 
 export interface AttemptProbe {
   taskClass?: string | null;
@@ -39,11 +40,14 @@ export function selectExecutionPlan<T extends AttemptProbe & { id: string }>(
   return plan;
 }
 
-/** Split a task's children into genuine subtasks and attempts at it, keeping order. */
-export function partitionChildTasks<T extends AttemptProbe>(children: readonly T[]): { subtasks: T[]; attempts: T[] } {
+/**
+ * Split a task's children into genuine subtasks and attempts at it, each in
+ * (createdAt, id) order — never the order the rows arrived in.
+ */
+export function partitionChildTasks<T extends AttemptProbe & Chrono>(children: readonly T[]): { subtasks: T[]; attempts: T[] } {
   const subtasks: T[] = [];
   const attempts: T[] = [];
-  for (const c of children) (isAttemptTask(c) ? attempts : subtasks).push(c);
+  for (const c of oldestFirst(children, compareTasksChrono)) (isAttemptTask(c) ? attempts : subtasks).push(c);
   return { subtasks, attempts };
 }
 
