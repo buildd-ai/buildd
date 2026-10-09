@@ -144,7 +144,7 @@ export function MissionGrid({
       <div data-testid="mission-group" data-group="open" aria-label="Open missions" className="space-y-7">
         {sections.map(sec => (
           <section key={sec.key} data-testid="mission-section" data-section={sec.key} aria-labelledby={`mission-section-${sec.key}`}>
-            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 md:justify-start">
               <h2 id={`mission-section-${sec.key}`} className={`text-body font-semibold ${sec.key === 'needs' ? 'text-status-warning' : 'text-text-secondary'}`}>
                 {sec.label}<span className="font-normal"> · </span><span data-testid="mission-section-count" className="tabular-nums">{sec.rows.length}</span>
               </h2>
@@ -211,9 +211,17 @@ export function MissionGrid({
       )}
 
       {rows.length > 0 && (
-        <p data-testid="portfolio-definitions" className="text-meta leading-relaxed text-text-muted">
-          Open: {COUNTER_DEFINITIONS.open} Needs you: {COUNTER_DEFINITIONS.needs} In motion: {COUNTER_DEFINITIONS.motion} Waiting: {COUNTER_DEFINITIONS.waiting}
-        </p>
+        <details data-testid="portfolio-definitions" className="group/defs">
+          <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-meta text-text-muted hover:text-text-primary md:min-h-8 [&::-webkit-details-marker]:hidden">
+            What these words count <span aria-hidden="true" className="transition-transform group-open/defs:rotate-90">›</span>
+          </summary>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-1 pb-1 text-meta">
+            <dt className="font-semibold text-text-primary">Open</dt><dd className="text-text-secondary">{COUNTER_DEFINITIONS.open}</dd>
+            <dt className="font-semibold text-text-primary">Needs you</dt><dd className="text-text-secondary">{COUNTER_DEFINITIONS.needs}</dd>
+            <dt className="font-semibold text-text-primary">In motion</dt><dd className="text-text-secondary">{COUNTER_DEFINITIONS.motion}</dd>
+            <dt className="font-semibold text-text-primary">Waiting</dt><dd className="text-text-secondary">{COUNTER_DEFINITIONS.waiting}</dd>
+          </dl>
+        </details>
       )}
     </div>
   );
