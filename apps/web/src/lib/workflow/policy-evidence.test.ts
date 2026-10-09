@@ -55,7 +55,23 @@ describe('T28 PolicyEvidenceRecorded', () => {
   test('replaying the recorded finding is a duplicate, not a second escalation', () => {
     const d = run(view(D({ policyEvidence: ev() })), cmd(ev()));
     expect(d.result).toBe('duplicate');
-    expect(stableIdempotencyKey(cmd(ev()), D())).toBe('policy:d1:H1:human');
+    expect(stableIdempotencyKey(cmd(ev()), D())).toBe('policy:d1:H1:human@v5');
+  });
+
+  // 10658a4c: the key names the version it was read at, the recorded finding decides a replay.
+  test('a person resolved the escalation at the same head: the same finding again is a duplicate, their call stands', () => {
+    const resolved = D({ state: 'AWAITING_REVIEW', version: 9, currentRound: 2, policyEvidence: ev() });
+    expect(run(view(resolved, [R({ id: 'r2', round: 2 })]), cmd(ev())).result).toBe('duplicate');
+  });
+
+  test('the delivery moved on and dropped the finding (a base retarget): the same finding applies again', () => {
+    const retargeted = D({ state: 'AWAITING_REVIEW', version: 12, currentRound: 2, policyEvidence: null });
+    const a = applied(run(view(retargeted, [R({ id: 'r2', round: 2 })]), cmd(ev())));
+    expect(a.toState).toBe('ESCALATED');
+    expect(a.patch.stateReason).toBe('policy_human');
+    expect(a.idempotencyKey).toBe('policy:d1:H1:human@v12');
+    expect(stableIdempotencyKey(cmd(ev()), retargeted)).toBe('policy:d1:H1:human@v12');
+    expect(stableIdempotencyKey(cmd(ev()), retargeted)).not.toBe(stableIdempotencyKey(cmd(ev()), D()));
   });
 
   test('a running owner attempt: recorded for the hand-off, no escalation yet', () => {

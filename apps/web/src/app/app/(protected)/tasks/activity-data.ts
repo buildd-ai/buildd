@@ -16,8 +16,8 @@ import { missions, workers } from '@buildd/core/db/schema';
 import { and, desc, inArray, ne } from 'drizzle-orm';
 import { projectMissionDelivery, type MissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
 import {
-  buildActivityHistory, buildActivityNow, latestTask, reviewOf,
-  type ActivityNow, type ActivityTaskInput, type Episode, type LatestTask,
+  buildActivityHistory, buildActivityNow, reviewOf,
+  type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
 
 export interface ActivityTaskRow {
@@ -37,7 +37,6 @@ export interface ActivityTaskRow {
 export interface ActivityData {
   now: ActivityNow;
   history: Episode[];
-  latest: LatestTask | null;
 }
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
@@ -140,6 +139,5 @@ export async function loadActivity(input: {
   return {
     now: buildActivityNow({ ...args, now: input.now }),
     history: buildActivityHistory(args),
-    latest: latestTask(tasks, rules),
   };
 }

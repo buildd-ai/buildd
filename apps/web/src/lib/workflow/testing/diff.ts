@@ -116,6 +116,50 @@ export const KNOWN_EVOLUTIONS: KnownEvolution[] = [
       return { ...replayed, transition: { ...p, evidence: rest } };
     },
   },
+  {
+    // 10658a4c: T28's key and every head-bound exhaustion key name the version they were
+    // read at (`…@v{N}`, spec §6.3 T7/T28), so a second occurrence after a person resolves
+    // back to the same head is not a replay of the first. A recording from before carries
+    // the bare key: the replay may drop exactly that suffix, on exactly those keys, when the
+    // bare key is the recorded one, and nothing else.
+    id: 'version-bound occurrence keys (10658a4c, spec §6.3 T7/T28)',
+    apply(recorded, replayed) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      const suffix = /@v\d+$/;
+      const bound = (k: string) => (k.startsWith('policy:') || k.startsWith('exhaust:')) && suffix.test(k);
+      let changed = false;
+      let transition = p;
+      if (r && p && bound(p.idempotencyKey) && p.idempotencyKey.replace(suffix, '') === r.idempotencyKey) {
+        transition = { ...p, idempotencyKey: r.idempotencyKey };
+        changed = true;
+      }
+      const recordedKeys = new Set(recorded.effects.map((e) => e.dedupeKey));
+      const effects = replayed.effects.map((e) => {
+        if (e.kind !== 'escalate_exhaustion' || !bound(e.dedupeKey) || recordedKeys.has(e.dedupeKey)) return e;
+        const bare = e.dedupeKey.replace(suffix, '');
+        if (!recordedKeys.has(bare)) return e;
+        changed = true;
+        return { ...e, dedupeKey: bare };
+      });
+      return changed ? { transition, effects } : null;
+    },
+  },
+  {
+    // 10658a4c: a dead dispatch_review escalates as `review_unavailable` (spec §6.3 T22b), which
+    // T5 lets anyone retry; before, it was the generic `effect_dead`. Same transition, same
+    // effects: the replay may put back exactly the old reason in the evidence and the notice.
+    id: 'dead dispatch_review is review_unavailable (10658a4c, spec §6.3 T22b)',
+    apply(recorded, replayed) {
+      const r = recorded.transition;
+      const p = replayed.transition;
+      if (!r || !p || p.command !== 'EffectDead' || !isObj(p.evidence) || !isObj(r.evidence)) return null;
+      if (p.evidence.effectKind !== 'dispatch_review' || p.evidence.reason !== 'review_unavailable' || r.evidence.reason !== 'effect_dead') return null;
+      const effects = replayed.effects.map((e) => (e.kind === 'notify' && isObj(e.payload) && e.payload.reason === 'review_unavailable'
+        ? { ...e, payload: { ...e.payload, reason: 'effect_dead' } } : e));
+      return { transition: { ...p, evidence: { ...p.evidence, reason: 'effect_dead' } }, effects };
+    },
+  },
 ];
 
 /**

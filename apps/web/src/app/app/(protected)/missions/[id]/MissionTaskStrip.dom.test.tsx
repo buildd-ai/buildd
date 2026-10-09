@@ -10,8 +10,8 @@
  * - the situation block's single-task affordance selects that cell and moves
  *   focus to the drawer instead of rendering a second call to action;
  * - selecting a task makes no request;
- * - with per-task deliveries, the drawer adds the task's own Build › Audit ›
- *   Land row and an "Audit and repair" disclosure, without adding a cell;
+ * - with per-task deliveries, the drawer adds the task's own Build → Audit →
+ *   Land `Lifecycle` and an "Audit and repair" disclosure, without adding a cell;
  *   without them the drawer is exactly what it was.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
@@ -308,7 +308,7 @@ describe('Landed strip', () => {
 });
 
 describe('Landed strip drawer: the selected task\'s own delivery', () => {
-  const stages = () => Array.from(drawer().querySelectorAll<HTMLElement>('[data-testid="delivery-stage"]'));
+  const stages = () => Array.from(drawer().querySelectorAll<HTMLElement>('[data-testid="lifecycle-step"]'));
   const toggle = () => drawer().querySelector<HTMLButtonElement>('[data-testid="landed-strip-drawer-evidence-toggle"]');
   const evidence = () => drawer().querySelector<HTMLElement>('[data-testid="landed-strip-drawer-evidence"]');
 
@@ -329,7 +329,7 @@ describe('Landed strip drawer: the selected task\'s own delivery', () => {
     expect(stages().map(s => [s.dataset.stage, s.dataset.state])).toEqual([['build', 'done'], ['audit', 'current'], ['land', 'later']]);
     expect(stages()[0].textContent).toBe('✓ BuildPR #434 opened');
     expect(stages()[1].textContent).toContain('Repair 2 · CI failed');
-    expect(stages()[1].getAttribute('aria-current')).toBe('step');
+    expect(stages()[1].querySelector('[aria-current="step"]')?.textContent).toBe('↻ Audit · repair 2');
   });
 
   it('a repairing task opens its audit and repair evidence; the toggle closes it', async () => {
@@ -373,6 +373,6 @@ describe('Landed strip drawer: the selected task\'s own delivery', () => {
   it('without deliveries the drawer has no stage row (every older caller)', async () => {
     await mount(missionTaskStripFixture('mid-open'));
     expect(drawer().querySelector('[data-testid="landed-strip-drawer-delivery"]')).toBeNull();
-    expect(drawer().querySelector('[data-testid="delivery-stages"]')).toBeNull();
+    expect(drawer().querySelector('[data-testid="lifecycle"]')).toBeNull();
   });
 });

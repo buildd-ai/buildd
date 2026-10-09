@@ -152,12 +152,12 @@ describe('recordPrSupersession — cross-repo target', () => {
 
 describe('recordPrAbandonment', () => {
   it('requires a reason', async () => {
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: '  ', recordedBy: 'me' })).toMatchObject({ ok: false, status: 400 });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: '  ', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 400 });
     expect(updates).toHaveLength(0);
   });
 
   it('records abandonment on a closed PR', async () => {
-    const r = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me' });
+    const r = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me', actor: 'human:u-1' });
     expect(r.ok).toBe(true);
     expect(updates[0].set).toMatchObject({ abandonedReason: 'plan changed', abandonedRecordedBy: 'me' });
     expect(updates[0].set.abandonedAt).toBeInstanceOf(Date);
@@ -165,12 +165,19 @@ describe('recordPrAbandonment', () => {
 
   it('refuses an open PR', async () => {
     workerRow = closedWorker({ prLifecycleStatus: 'pr_open' });
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it.each(['agent:acct-svc', 'agent:task-1', 'runner', 'svc key'])('refuses a non-person actor (%s) before reading or writing anything', async (actor) => {
+    workerRow = closedWorker({ workspaceId: 'ws-1' });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'svc key', actor })).toMatchObject({ ok: false, status: 403 });
+    expect(updates).toHaveLength(0);
+    expect(kernelCalls).toHaveLength(0);
   });
 
   it('refuses a PR already recorded as superseded', async () => {
     workerRow = closedWorker({ supersededByPrNumber: 9 });
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me', actor: 'human:u-1' })).toMatchObject({ ok: false, status: 409 });
   });
 });
 
@@ -221,9 +228,9 @@ describe('a kernel-owned PR: T20/T21 decide, the direct column write never runs'
   it('abandonment goes through T21 as a person, and the kernel (not a stale column) decides it is closed', async () => {
     workerRow = closedWorker({ workspaceId: 'ws-1', prLifecycleStatus: 'pr_open' }); // the close webhook was lost
     kernelAnswer = { handled: true, deliveryId: 'd1', result: { result: 'applied', transitionId: 't', deliveryId: 'd1', version: 9, decision: {} } };
-    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me@example.com', actor: 'human:u-1' })).toEqual({ ok: true });
     expect(kernelCalls).toEqual([{ fn: 'abandonDelivery', p: {
-      workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'human:me@example.com', reason: 'plan changed',
+      workspaceId: 'ws-1', repoFullName: 'org/kb', prNumber: 6, installationId: 11, actor: 'human:u-1', reason: 'plan changed',
     } }]);
     expect(updates).toHaveLength(0);
   });

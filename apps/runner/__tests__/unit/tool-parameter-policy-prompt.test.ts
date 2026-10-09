@@ -239,4 +239,14 @@ describe('assembled system prompt: tool parameter policy', () => {
     expect(toolParameterIndex).toBeGreaterThanOrEqual(0);
     expect(toolChannelIndex).toBeLessThan(toolParameterIndex);
   });
+
+  test('tells the agent not to narrate imminent tool calls', async () => {
+    const append = await runTask(manager, {}, 'w-tool-param-6');
+
+    expect(append).toContain('## Narration Policy');
+    expect(append).toContain('Call tools directly');
+    expect(append).toContain('Let me…');
+    // Findings, decisions, warnings and results are still worth writing.
+    expect(append).toContain('finding, a decision, a warning or a result');
+  });
 });

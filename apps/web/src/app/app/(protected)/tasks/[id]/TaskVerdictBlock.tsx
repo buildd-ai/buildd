@@ -11,13 +11,13 @@ import Chip, { type ChipTone } from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import type { StoredVerdictDecision, TaskVerdict, VerdictState } from '@/lib/task-verdict';
 
-const STATE: Record<VerdictState, { label: string; tone: ChipTone; border: string }> = {
-  shipped: { label: 'Shipped', tone: 'success', border: 'border-status-success' },
-  done: { label: 'Done', tone: 'success', border: 'border-status-success' },
-  blocked: { label: 'Blocked', tone: 'error', border: 'border-status-error' },
-  failed: { label: 'Failed', tone: 'error', border: 'border-status-error' },
-  needs_you: { label: 'Needs you', tone: 'warning', border: 'border-status-warning' },
-  in_progress: { label: 'In progress', tone: 'running', border: 'border-status-running' },
+const STATE: Record<VerdictState, { label: string; tone: ChipTone }> = {
+  shipped: { label: 'Shipped', tone: 'success' },
+  done: { label: 'Done', tone: 'success' },
+  blocked: { label: 'Blocked', tone: 'error' },
+  failed: { label: 'Failed', tone: 'error' },
+  needs_you: { label: 'Needs you', tone: 'warning' },
+  in_progress: { label: 'In progress', tone: 'running' },
 };
 
 // The primary uses the shared button class (globals.css), so it matches every
@@ -53,7 +53,8 @@ export default function TaskVerdictBlock({
       data-testid="task-verdict"
       data-state={verdict.state}
       data-worded-by={verdict.wordedBy}
-      className={`mb-6 border-2 border-l-[6px] bg-card px-4 py-4 shadow-[var(--card-shadow)] md:px-5 ${s.border}`}
+      // L2 (a hairline card); L3 only when it asks you for a decision. The chip carries the tone.
+      className={`mb-6 px-4 py-4 md:px-5 ${verdict.state === 'needs_you' ? 'card-decision' : 'card'}`}
     >
       <div data-testid="task-header-status" data-status={displayStatus} data-verdict={verdict.state}>
         <Chip tone={s.tone} variant="soft">{s.label}</Chip>
@@ -104,7 +105,7 @@ export default function TaskVerdictBlock({
         </div>
       )}
       <div className="mt-3 border-t border-border-default" data-testid="task-verdict-why">
-        <Disclosure summary={<span className="font-mono text-meta uppercase tracking-[1px] text-text-muted">Why this?</span>}>
+        <Disclosure summary={<span className="text-meta text-text-muted">Why this?</span>}>
           <div className="pb-2 pt-1 text-meta text-text-secondary space-y-1.5">
             <p>
               The state comes from the record (pull request, checks, attempts, workers), never from the agent&apos;s summary.

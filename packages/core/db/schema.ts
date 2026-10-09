@@ -1104,6 +1104,13 @@ export const workspaces = pgTable('workspaces', {
   // workspaces (those are never serialized by the per-repo guard).
   maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
 
+  // "Pause new starts until <time>": until then runner claims skip this
+  // workspace's tasks (the claim route's workspacePaused gate). Running work
+  // carries on and a person's interactive claim is never paused. NULL or a
+  // past time = not paused, so it resumes on its own. By = the user who set it.
+  newStartsPausedUntil: timestamp('new_starts_paused_until', { withTimezone: true }),
+  newStartsPausedBy: text('new_starts_paused_by'),
+
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
   // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
@@ -1874,7 +1881,21 @@ export type WorkerWaitingFor = {
  * older rows carry only the label, so readers must degrade to parsing it.
  */
 export type WorkerMilestone =
-  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
+  | {
+      type: 'phase';
+      /** The assistant text that opened the phase (first sentence) — kept verbatim for audit. */
+      label?: string;
+      toolCount: number;
+      ts: number;
+      pending?: boolean;
+      /**
+       * Distinct operations the phase called, in order (`get_decision`, `Edit`,
+       * `Bash`): the MCP action or tool name, never its input. Lets readers name
+       * a phase by what it did when its text was only a lead-in to the calls.
+       * Absent on older runners.
+       */
+      ops?: string[];
+    }
   | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }

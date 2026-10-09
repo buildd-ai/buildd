@@ -90,8 +90,10 @@ export function visualReviewPhaseActions({
     if (!auditTaskId) throw new Error('There is no audit task to act on.');
     return auditTaskId;
   };
+  // Turn off / Skip are the person choosing to stop the audit, running or not,
+  // so this is the explicit abort the task PATCH asks for on a live worker.
   const cancelAudit = (id: string) =>
-    send(fetchImpl, `/api/tasks/${enc(id)}`, json('PATCH', { status: 'cancelled' }), 'Could not cancel the audit. Try again.');
+    send(fetchImpl, `/api/tasks/${enc(id)}`, json('PATCH', { status: 'cancelled', abort: true }), 'Could not cancel the audit. Try again.');
   return {
     async onTurnOff() {
       await send(fetchImpl, `/api/missions/${enc(missionId)}`, json('PATCH', { autoSurfaceAudit: false }), 'Could not turn the audit off. Try again.');

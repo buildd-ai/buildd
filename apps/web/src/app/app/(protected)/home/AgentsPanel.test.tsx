@@ -14,7 +14,7 @@ const model: AgentsModel = {
 describe('AgentsPanel', () => {
   test('summary, one square per slot, no runner or role', () => {
     const html = renderToStaticMarkup(<AgentsPanel model={model} />);
-    expect(html).toContain('3 of 4 busy');
+    expect(html).toMatch(/3<\/b> of 4 busy/);
     expect(html.match(/data-testid="agent-square"/g)).toHaveLength(4);
     expect(html).toContain('data-kind="waiting"');
     expect(html).not.toContain('Steer');
@@ -22,9 +22,26 @@ describe('AgentsPanel', () => {
     expect(html).toContain('Ship it');
   });
 
-  test('names the longest idle stretch and links it to Health › Runners', () => {
+  test('names the longest idle stretch as a caption, with Runners › the one way in', () => {
     const html = renderToStaticMarkup(<AgentsPanel model={model} idle={[{ from: 0, to: 2 * 3_600_000, waited: 3 }]} />);
     expect(html).toContain('idle 2h while 3 tasks waited');
-    expect(html).toContain('href="/app/health/runners"');
+    expect(html.match(/href="\/app\/health\/runners"/g)).toHaveLength(1);
+    // The caption is quiet text under the chart, not a second bold link.
+    expect(html).toMatch(/<p data-testid="agents-idle"[^>]*text-text-muted/);
+  });
+
+  test('each line wears its slot square: the same mark for busy and waiting as the row above', () => {
+    const html = renderToStaticMarkup(<AgentsPanel model={model} />);
+    const marks = [...html.matchAll(/data-testid="agent-line-square" data-kind="(\w+)"/g)].map(m => m[1]);
+    expect(marks).toEqual(['busy', 'waiting']);
+    expect(html).not.toContain('▶');
+    expect(html).toContain('needs you');
+  });
+
+  test('the count sits beside the squares; no runner says so plainly', () => {
+    expect(renderToStaticMarkup(<AgentsPanel model={model} />)).toMatch(/<b[^>]*>3<\/b> of 4 busy/);
+    const none = renderToStaticMarkup(<AgentsPanel model={{ busy: 0, total: 0, squares: [], lines: [] }} />);
+    expect(none).toContain('No runner online');
+    expect(none).not.toContain('agent-square');
   });
 });
