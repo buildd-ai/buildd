@@ -61,6 +61,20 @@ describe('FleetOverview', () => {
     expect(fleetOverviewHeadline(fleet([]), 'Team 1').map(p => p.text).join('')).toBe('No runners online for Team 1.');
   });
 
+  it('never counts runs on an offline runner against online capacity', () => {
+    // An offline runner whose last heartbeat still listed workers: those runs
+    // are not in the online slots, so "3 of 0 slots busy" is impossible.
+    const f = fleet([runner('a', 'runner-1', 3, 4, false)]);
+    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('All runners offline. 3 runs were on them at their last check-in.');
+    const mixed = fleet([runner('a', 'runner-1', 1, 4), runner('b', 'runner-2', 2, 4, false)]);
+    expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots busy. 1 offline, with 2 runs at its last check-in.');
+  });
+
+  it('drops the second link to the same slots (Home and Health already show them)', () => {
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 4)])} />);
+    expect(text(html)).not.toContain('Live slots on Home');
+  });
+
   it('an elastic cloud group reads N running, not busy of a fixed slot count', () => {
     const group: FleetRunner = {
       ...runner('g', 'my-dispatcher', 3, 3), machine: 'Cloudflare · elastic',
@@ -100,7 +114,8 @@ describe('Settings → Runners page order', () => {
     const tokensAt = page.indexOf('<RunnerTokensSection');
     expect(fleetAt).toBeGreaterThan(-1);
     expect(connAt).toBeGreaterThan(fleetAt);
-    expect(page.indexOf('<AgentBackendsSection')).toBeGreaterThan(connAt);
+    // Agent backends moved to Settings › Models (one place for model config).
+    expect(page).not.toContain('<AgentBackendsSection');
     expect(page.indexOf('<CloudflareSection')).toBeGreaterThan(connAt);
     expect(tokensAt).toBeGreaterThan(page.indexOf('<CloudflareSection'));
     // The same heartbeat-backed snapshot Home builds, not a new API.

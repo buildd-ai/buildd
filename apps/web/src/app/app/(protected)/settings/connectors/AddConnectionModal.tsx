@@ -329,7 +329,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                   type="button"
                   onClick={pickCustom}
                   data-testid="connector-catalog-custom"
-                  className="flex items-start gap-3 p-3 text-left border border-dashed border-border-default hover:border-primary transition-colors"
+                  className="flex items-start gap-3 p-3 text-left border border-border-default rounded-[var(--radius-card)] hover:border-border-strong transition-colors"
                 >
                   <ConnectorIcon name="+" size={24} />
                   <span className="min-w-0 flex-1">
@@ -432,7 +432,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                 <button
                   type="submit"
                   disabled={submitting || !name.trim() || !url.trim() || (preset?.authMode === 'header' && !headerValue.trim())}
-                  className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                  className="btn btn-primary flex-1"
                 >
                   {submitting ? 'Checking…' : preset ? `Add ${preset.name}` : 'Continue'}
                 </button>
@@ -477,7 +477,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     <button
                       onClick={handleConnect}
                       disabled={submitting}
-                      className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                      className="btn btn-primary flex-1"
                     >
                       {submitting ? 'Redirecting…' : 'Connect'}
                     </button>
@@ -496,7 +496,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                   </button>
                   <button
                     onClick={handleDone}
-                    className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+                    className="btn btn-primary flex-1"
                   >
                     Done
                   </button>
@@ -538,7 +538,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     <button
                       type="submit"
                       disabled={submitting || !headerValue.trim()}
-                      className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                      className="btn btn-primary flex-1"
                     >
                       {submitting ? 'Saving…' : 'Save'}
                     </button>

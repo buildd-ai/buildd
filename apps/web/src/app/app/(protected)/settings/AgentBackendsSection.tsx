@@ -1359,7 +1359,7 @@ function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCanc
   authorizeUrl: string; code: string; onChange: (v: string) => void; busy: boolean; onSubmit: () => void; onCancel: () => void;
 }) {
   return (
-    <div className="border-2 border-accent p-3 space-y-2">
+    <div className="card p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish connecting Claude</div>
         <button onClick={onCancel} className="btn btn-quiet">Cancel</button>
@@ -1719,7 +1719,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
 /** Shown while a Codex device-code login is in progress (buildd polls in the background). */
 function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: string; verificationUri: string; onCancel: () => void }) {
   return (
-    <div className="border-2 border-accent p-3 space-y-2">
+    <div className="card p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish sign-in</div>
         <button onClick={onCancel} className="btn btn-quiet">Cancel</button>

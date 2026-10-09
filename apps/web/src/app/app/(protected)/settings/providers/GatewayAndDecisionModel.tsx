@@ -27,7 +27,7 @@ const INPUT = 'w-full h-10 px-3 bg-surface-1 border border-border-default focus:
 
 async function errorText(res: Response): Promise<string> {
   const body = await res.json().catch(() => ({} as Record<string, unknown>));
-  return typeof body.error === 'string' ? body.error : `Request failed (HTTP ${res.status})`;
+  return typeof body.error === 'string' ? body.error : "That didn’t go through. Try again.";
 }
 
 /** Both parts together; the decision model reloads when the gateway changes. */
