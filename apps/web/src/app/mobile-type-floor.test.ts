@@ -28,8 +28,6 @@ const TOKEN_EXEMPT: Array<{ file: string; context: string; why: string }> = [
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] transition-transform duration-200', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[9px] rotate-90 inline-block">▶', why: 'disclosure chevron glyph' },
   { file: 'app/app/(protected)/missions/[id]/CondensedTimeline.tsx', context: 'text-[10px]">▶</span>', why: 'disclosure chevron glyph' },
-  { file: 'components/MissionsSidebar.tsx', context: 'text-[9px] font-bold rounded-full', why: 'desktop-only rail (hidden md:flex)' },
-  { file: 'components/TeamSwitcherRail.tsx', context: 'text-[7px] font-mono uppercase', why: 'desktop-only rail (hidden md:flex)' },
 ];
 
 /** A text-[Npx] token with its full variant chain, e.g. `dark:hover:text-[9px]`. */

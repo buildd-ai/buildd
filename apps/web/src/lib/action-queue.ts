@@ -129,6 +129,21 @@ function describeReviewMachineState(item: EscalationRawItem, now: Date): string 
   return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
 }
 
+/**
+ * Buildd is still acting on a PR that also waits on a human review: a conflict
+ * repair is live, a CI or review fix is in flight, checks or a reviewer agent
+ * are running. The review waits for that to settle; Home names it in its quiet
+ * "also in progress" line instead of asking for it now. A repair that gave up,
+ * a plain conflict or red CI with no fix running is the person's again.
+ */
+export function reviewMachineActing(item: Pick<EscalationRawItem, 'deadZoneExhausted' | 'conflictRetryTaskId' | 'ciGate' | 'reviewInFlight' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt'>, now: Date): boolean {
+  if (item.deadZoneExhausted) return false;
+  if (item.conflictRetryTaskId) return true;
+  if (item.ciGate?.kind === 'fixing' || item.ciGate?.kind === 'running') return true;
+  if (item.reviewInFlight) return true;
+  return pendingCiState({ ...item, now }) === 'running';
+}
+
 function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
   if (input.ciGate?.kind === 'running' || input.prLifecycleStatus === 'ci_running') return 'running';
   if (input.prLifecycleStatus === 'ci_green') return 'passed';
@@ -466,6 +481,8 @@ export interface EscalationRawItem {
 export interface ActionQueueItem {
   humanReview?: HumanPrReview | null;
   machineStatus?: string | null;
+  /** A human review whose PR Buildd is still repairing or checking (`reviewMachineActing`). */
+  machineActing?: boolean;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -1384,6 +1401,7 @@ export function buildActionQueue(
       subjectKey: key,
       humanReview: item.humanReview,
       machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
+      machineActing: item.humanReview ? reviewMachineActing(item, now) : false,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
