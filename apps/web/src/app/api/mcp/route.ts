@@ -28,6 +28,7 @@ import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
+import { claimingUserId } from "@/lib/worker-owner";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
@@ -1201,8 +1202,12 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
       return grantJsonError(403, { error: "Worker not found for this account" });
     }
     const sessionUserId = (account as { sessionUserId?: string }).sessionUserId ?? null;
-    scheduleInteractiveTouch({ accountId: account.id, userId: sessionUserId, sessionKey, level: account.level });
-    const api = createApi(jwt, signInteractiveSession({ accountId: account.id, userId: sessionUserId, sessionKey }), target.workspaceId);
+    // Interactive claims and their liveness belong to the user behind the
+    // connection, person or agent: an agent grant has no session user, but
+    // its claims are its connecting user's (lib/worker-owner.ts).
+    const claimUserId = claimingUserId(account);
+    scheduleInteractiveTouch({ accountId: account.id, userId: claimUserId, sessionKey, level: account.level });
+    const api = createApi(jwt, signInteractiveSession({ accountId: account.id, userId: claimUserId, sessionKey }), target.workspaceId);
     const isSensitive = (await resolveWorkspaceDataClass(target.workspaceId)) === 'sensitive';
     server = createMcpServer(api, account.level as 'worker' | 'admin', target.workspaceId, undefined, account.teamId, workerParam || undefined, 'oauth', appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, false, sessionUserId, principal, { listWorkspaces, instructions });
   } else {

@@ -13,6 +13,7 @@ import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
+import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -2968,8 +2969,11 @@ export async function POST(req: NextRequest) {
     // The authenticated OAuth session user, never the client-relayed session
     // marker: an OAuth session acts as its team's shared account, so this is
     // what PATCH /api/workers/[id] matches to let only the claimer act as the
-    // worker (lib/worker-owner.ts). NULL for a bld_ key.
-    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+    // worker (lib/worker-owner.ts). An account-level 'agent' grant records
+    // the user who connected it: every grant session in a team shares one
+    // account, so this is what keeps one member's agent off another's claim.
+    // NULL for a bld_ key.
+    const claimedByUserId = claimingUserId(account);
     // Same rule as the pre-check: a session is not limited, and a runner's
     // count leaves the person's own sessions out.
     const accountSlotPredicate = interactiveSession
