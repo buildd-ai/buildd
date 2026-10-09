@@ -126,8 +126,12 @@ export default async function ArtifactDetailPage({
             &larr; Back
           </Link>
         ) : (
-          <Link href="/app/artifacts" className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
-            &larr; Artifacts
+          // The artifacts list is retired: back goes to the work it belongs to.
+          <Link
+            href={taskId ? `/app/tasks/${taskId}` : artifact.missionId ? `/app/missions/${artifact.missionId}` : '/app/missions'}
+            className="text-sm text-text-muted hover:text-text-secondary mb-4 block"
+          >
+            &larr; {taskId ? 'Task' : artifact.missionId ? 'Mission' : 'Missions'}
           </Link>
         )}
 

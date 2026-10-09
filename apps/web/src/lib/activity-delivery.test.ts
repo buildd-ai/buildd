@@ -3,7 +3,7 @@ import * as rules from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from './delivery-projection';
 import {
   NOT_LANDED_NOW_WINDOW_MS, WAITING_ROWS_PER_GROUP,
-  buildActivityHistory, buildActivityNow, filterEpisodes, filterNow, latestTask, repairReasonOf, reviewOf,
+  buildActivityHistory, buildActivityNow, filterEpisodes, repairReasonOf, reviewOf,
   type ActivityTaskInput,
 } from './activity-delivery';
 
@@ -183,35 +183,25 @@ describe('Activity History', () => {
     const standalone = inAudit();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: standalone.id, status: 'completed', workers: [{ status: 'completed' }] });
     const failed = task({ status: 'failed', updatedAt: ago(3) });
-    const eps = buildActivityHistory({ tasks: [inMission, standalone, retry, failed], missions: [], rules });
+    const asking = task({ status: 'in_progress', workers: [{ status: 'waiting_input' }] });
+    const eps = buildActivityHistory({ tasks: [inMission, standalone, retry, failed, asking], missions: [], rules });
     const ids = (f: Parameters<typeof filterEpisodes>[1]) => filterEpisodes(eps, f).map(e => e.id).sort();
     expect(ids({ scope: 'missions', outcome: 'any' })).toEqual([inMission.id]);
-    expect(ids({ scope: 'tasks', outcome: 'any' })).toEqual([standalone.id, failed.id].sort());
+    expect(ids({ scope: 'tasks', outcome: 'any' })).toEqual([standalone.id, failed.id, asking.id].sort());
     expect(ids({ scope: 'all', outcome: 'retries' })).toEqual([standalone.id]);
     expect(ids({ scope: 'all', outcome: 'landed' })).toEqual([inMission.id]);
-    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id]);
+    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id, asking.id].sort());
+    expect(ids({ scope: 'all', outcome: 'you' })).toEqual([asking.id]);
     expect(ids({ scope: 'all', outcome: 'any', missionId: 'm' })).toEqual([inMission.id]);
   });
 });
 
-describe('filterNow', () => {
-  it('scope and retries filters drop empty groups', () => {
-    const parent = inAudit({ missionId: 'm', missionTitle: 'M' });
-    const fix = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: parent.id, missionId: 'm', status: 'completed', workers: [{ status: 'completed' }] });
-    const rows = [parent, fix, running()];
-    const n = now(rows, [missionOf('m', 'M', rows)]);
-    expect(filterNow(n, { scope: 'tasks', outcome: 'any' }).map(g => g.title)).toEqual(['Standalone']);
-    expect(filterNow(n, { scope: 'all', outcome: 'retries' }).map(g => g.title)).toEqual(['M']);
-  });
-});
-
-describe('latestTask: the two-tap path', () => {
-  it('is the root touched most recently, counting its attempts', () => {
-    const old = inAudit({ updatedAt: ago(100) });
-    const kid = task({ taskClass: 'attempt', parentTaskId: old.id, updatedAt: ago(0), title: '[builder · after CI #1] x' });
-    const other = running({ updatedAt: ago(2) });
-    expect(latestTask([old, kid, other], rules)?.id).toBe(old.id);
-    expect(latestTask([], rules)).toBeNull();
+describe('a cancelled standalone task', () => {
+  it('reads as an episode that did not land, instead of throwing and blanking the whole page', () => {
+    const cancelled = task({ status: 'cancelled', updatedAt: ago(1) });
+    const eps = buildActivityHistory({ tasks: [cancelled], missions: [], rules });
+    expect(eps.map(e => [e.id, e.kind])).toEqual([[cancelled.id, 'notlanded']]);
+    expect(eps[0].steps.some(s => s.text === 'Cancelled')).toBe(true);
   });
 });
 
