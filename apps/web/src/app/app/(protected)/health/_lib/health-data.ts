@@ -43,6 +43,8 @@ import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capab
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
 import { loadRunnersFleet } from '@/lib/home-fleet';
+import type { LaneMission } from '@/components/fleet/runner-lanes';
+import { loadLaneMissions } from './lane-missions';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
 
@@ -192,7 +194,7 @@ export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
 export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>> = {
   // Problems: broken credentials, stranded backends, offline runners, failing schedules.
-  // failureGroups feeds the Overview's top failures (TopFailureGroups) and the
+  // failureGroups feeds the Overview's top failures (failureProblemLine) and the
   // status sentence's failure count; budgetForecast feeds the Budget row.
   // agentAccess: access problems count on Overview and are listed on Failures.
   overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
@@ -231,7 +233,7 @@ export interface HealthData {
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
   /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
-  runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
+  runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
   now: number;
 }
 
@@ -666,7 +668,9 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
   // Team experiments (model routing A/B). Admins-only rows are dropped for
   // members inside the loader; a failure hides the section, never the page.
   const runnerLanes = need('runnerLanes')
-    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now }).catch(() => null)
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
+      .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
+      .catch(() => null)
     : null;
 
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId).catch(() => null) : null;
