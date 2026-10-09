@@ -79,6 +79,7 @@ import { roleSlugGate } from './role-gate';
 // applying it.
 import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
+import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
@@ -718,6 +719,14 @@ export async function POST(req: NextRequest) {
     claimableConditions.push(explicitTaskGates.workspaceExecutor);
   }
 
+  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
+  // Runner claims wait; a person's interactive session is never paused, and an
+  // admin force claim lifts it like the other workspace gates.
+  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
+    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
+    claimableConditions.push(explicitTaskGates.workspacePaused);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -815,6 +824,7 @@ export async function POST(req: NextRequest) {
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
         workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
+        workspacePaused: workspaceNotPausedGate(now),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
