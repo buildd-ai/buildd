@@ -347,6 +347,12 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
 
+### Model-tier ceilings (`docs/specs/model-tier-ceilings.md`)
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 71 | `lib/tier-ceiling-check.ts:rejectOverCeiling` (from `tasks/route.ts` POST, `tasks/[id]/route.ts` PATCH, `chat/route.ts` POST, `chat/[id]/route.ts` PATCH/POST) | `tier_ceiling` | rejected | an explicit tier / model pin / role model above the effective maximum; 403 `policy_denied`, `detail` is the structured error. Claim-time holds are `claim_loop_deferral` with reason `tier_policy`. |
+
 ### Early release of dependents (`docs/design/early-release.md`)
 
 | Site | Gate | Outcome | Meaning |

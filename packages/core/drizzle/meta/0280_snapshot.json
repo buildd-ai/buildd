@@ -1,6 +1,6 @@
 {
-  "id": "37e8bf69-5e43-403e-8086-947e3856d2d5",
-  "prevId": "a78865dd-bad9-4dd7-9805-8be0f4d94e4a",
+  "id": "5640cb41-8de9-4d43-a8c0-5f2457f2f999",
+  "prevId": "239b0996-2b2d-44e2-93f1-73dddbc9f359",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18862,6 +18862,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "model_tier_ceilings": {
+          "name": "model_tier_ceilings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -19116,6 +19122,12 @@
         },
         "chat_retro": {
           "name": "chat_retro",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model_tier_ceilings": {
+          "name": "model_tier_ceilings",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

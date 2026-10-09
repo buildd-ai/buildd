@@ -32,6 +32,8 @@
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./model-policy": "./model-policy.ts",
     "./model-pin": "./model-pin.ts",
+    "./model-tier-ceiling": "./model-tier-ceiling.ts",
+    "./model-tier-ceiling-store": "./model-tier-ceiling-store.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-capability-requirements": "./model-capability-requirements.ts",
     "./dispatch-model-guard": "./dispatch-model-guard.ts",

@@ -152,6 +152,14 @@ export function describeExplicitDeferral(
         detail: `The team's credential policy is personal keys only, and ${(cause && why[cause]) || 'no personal key can be used for it'}. Add a personal ${backendKey} key under Settings, or have an admin change the team's credential policy.`,
       };
     }
+    case 'tier_policy': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'Its model tier is above the model-tier maximum that applies to it.'} ${remedy ?? 'Lower the task tier, or ask a team admin to raise the maximum.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
     case 'hosted_runner_hours': {
       const at = str(detail.resetsAt);
       const used = num(detail.used);

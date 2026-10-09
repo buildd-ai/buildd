@@ -1,5 +1,24 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+// No network: an exact model pin is banded by family when the catalog is empty.
+mock.module('@buildd/core/model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => [] }));
+
 
 const TASK_ID = '11111111-1111-1111-1111-111111111111';
 const MISSING_TASK_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -1090,6 +1109,32 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(sets[0].context.model).toBe('claude-opus-4-8');
       expect(sets[0].context.modelPinned).toBe(true);
       expect(sets[0].context.other).toBe(1);
+    });
+
+    describe('model-tier ceiling', () => {
+      afterEach(() => { ceilingTest.inputs = {}; });
+
+      it('re-tiering above the team ceiling is refused with policy_denied and nothing is written', async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'premium' } } };
+        const { res, sets } = await patch(baseTask(), { tier: 'premium-plus' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: 'policy_denied', maxTier: 'premium', requested: { tier: 'premium-plus', origin: 'task_tier' } });
+        expect(sets).toHaveLength(0);
+      });
+
+      it('an exact premium-plus model pin is refused; an in-band one and a lower tier are allowed', async () => {
+        ceilingTest.inputs = { team: { workspaces: { 'ws-1': { all: 'premium' } } } };
+        const denied = await patch(baseTask(), { model: 'claude-fable-5-1' });
+        expect(denied.res.status).toBe(403);
+        expect((await denied.res.json()).code).toBe('model_above_ceiling');
+        expect((await patch(baseTask(), { model: 'claude-opus-4-8' })).res.status).toBe(200);
+        expect((await patch(baseTask(), { tier: 'budget' })).res.status).toBe(200);
+      });
+
+      it('clearing a tier or pin is never refused', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'budget' } } };
+        expect((await patch(baseTask({ model: 'claude-opus-4-8', modelPinned: true }), { model: null, tier: null })).res.status).toBe(200);
+      });
     });
 
     it('model: null clears the pin so routing decides at the next claim', async () => {
