@@ -271,6 +271,8 @@ describe('setupWorktree — mission integration branch guard', () => {
   // through unrejected and the worktree landed directly on the mission branch.
   test('distinct per-task branch + baseBranch-only mission context: requestedBranch must not drift onto the base', async () => {
     const TASK_BRANCH = 'buildd/task123-some-slug';
+    // A first attempt: the task's own branch is not on origin yet.
+    missingBranches.add(TASK_BRANCH);
 
     const result = await setupWorktree(
       MAIN_WORKTREE,
