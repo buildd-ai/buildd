@@ -331,7 +331,7 @@ describe('size cap keeps head and tail', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000); // builds and gzips a multi-MB report; slow when the machine is compiling
 });
 
 describe('confirming an upload', () => {
