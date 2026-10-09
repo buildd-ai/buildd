@@ -9,8 +9,11 @@
  * `/api/github/pr`), never a session — this is an agent-callable write.
  * A per-task token may supersede the PR its own run opened or a PR its own
  * task names (never because the PR owner's task names it), and only with a PR
- * in its own workspace's repo (not another repo of the mission). For a PR the
- * workflow kernel owns, the write is T20 (docs/specs/workflow-state-kernel.md
+ * in its own workspace's repo (not another repo of the mission). An agent run
+ * on its runner's key names itself with workerId (as close_pr and update_pr
+ * do) and is held to the same rule: its own worker's PR, a PR its task names,
+ * or, for an orchestration task, a PR on its own mission. People keep their
+ * team-wide reach. For a PR the workflow kernel owns, the write is T20 (docs/specs/workflow-state-kernel.md
  * §17.1, Slice D).
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -21,6 +24,13 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeTaskNam
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
+import { agentRunMayActOnPr } from '@/lib/agent-capabilities/worker-pr';
+
+// The acting run's task, as agentRunMayActOnPr reads it (same columns close_pr loads).
+const ACTING_TASK_COLUMNS = {
+  id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true,
+  reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
+} as const;
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -63,6 +73,20 @@ export async function POST(req: NextRequest) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let resolved: any;
+  // The run doing the recording. With both workerId and prNumber, workerId names
+  // the caller's own run and prNumber the PR it wants to record.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let acting: any = null;
+  if (workerId) {
+    acting = await db.query.workers.findFirst({
+      where: eq(workers.id, workerId),
+      with: { workspace: true, task: { columns: ACTING_TASK_COLUMNS } },
+    });
+    if (!acting) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    if (!(await canActOnWorkerPr(account, acting))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+  }
 
   if (prNumber != null) {
     // prNumber is explicit — resolve by it. This takes precedence over workerId
@@ -81,16 +105,9 @@ export async function POST(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, resolved))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-  } else if (workerId) {
-    // workerId supplied directly — still must belong to the caller's team.
-    resolved = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true },
-    });
-    if (!resolved) return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
-    if (!(await canActOnWorkerPr(account, resolved))) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
-    }
+  } else if (acting) {
+    // workerId alone: the PR is that worker's own (team scoping checked above).
+    resolved = acting;
   } else {
     return NextResponse.json({ error: 'workerId or prNumber is required' }, { status: 400 });
   }
@@ -105,6 +122,17 @@ export async function POST(req: NextRequest) {
     );
     if (!allowed) {
       return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR its own task names' }, { status: 403 });
+    }
+  }
+
+  // An agent run on its runner's key: the PR must be its task's own, as for
+  // close_pr. A per-task token is held to the stricter rule above instead.
+  if (!account.taskScope) {
+    const pr = resolved.prNumber as number | null;
+    if (pr != null && !(await agentRunMayActOnPr(account, acting ?? resolved, pr))) {
+      return NextResponse.json({
+        error: `An agent run may supersede only its own PR (#${(acting ?? resolved).prNumber ?? 'none'}) or one its task names`,
+      }, { status: 403 });
     }
   }
 
