@@ -61,8 +61,15 @@ describe('workspace settings page', () => {
 
   it('keeps the readiness rows admin-only, as the config page had them', () => {
     const readiness = PAGE.slice(PAGE.indexOf('title="Readiness"'), PAGE.indexOf('title="Repository"'));
-    expect(readiness).toContain('{canManageSettings && (\n              <WorkspaceHealthCard');
-    expect(readiness).toContain('{canManageSettings && <ReadinessCard');
+    // Visibility (admin-only, one notice per problem) lives in readiness-notices.ts.
+    expect(readiness).toContain('{notices.health.length > 0 && (\n              <WorkspaceHealthCard');
+    expect(readiness).toContain('{notices.readiness && <ReadinessCard');
+    expect(readiness).toContain('{notices.repoAccess && repoAccessView && (');
+    expect(PAGE).toContain('canManage: canManageSettings,');
     expect(PAGE).toContain("roleHas(access.role, 'manage_workspace_settings', overrides)");
+  });
+
+  it('names the workspace on a phone, where the shell header only says Workspaces', () => {
+    expect(PAGE).toMatch(/<SettingsPage\s+title=\{workspace\.name\}\s+titleOnMobile/);
   });
 });

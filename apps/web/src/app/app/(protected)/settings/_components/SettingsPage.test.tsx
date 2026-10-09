@@ -28,4 +28,17 @@ describe('SettingsPage', () => {
     expect(headerClass(html).split(/\s+/)).not.toContain('hidden');
     expect(html).toContain('What you pay.');
   });
+
+  it('titleOnMobile shows the h1 on a phone, even with no description', () => {
+    const html = renderToStaticMarkup(<SettingsPage title="web-app" titleOnMobile><p>x</p></SettingsPage>);
+    expect(headerClass(html).split(/\s+/)).not.toContain('hidden');
+    const h1 = html.match(/<h1 class="([^"]*)">web-app<\/h1>/);
+    expect(h1).not.toBeNull();
+    expect(h1![1].split(/\s+/)).not.toContain('hidden');
+  });
+
+  it('keeps the h1 desktop-only by default', () => {
+    const html = renderToStaticMarkup(<SettingsPage title="Billing" description="d"><p>x</p></SettingsPage>);
+    expect(html).toMatch(/<h1 class="hidden md:block[^"]*">Billing<\/h1>/);
+  });
 });
