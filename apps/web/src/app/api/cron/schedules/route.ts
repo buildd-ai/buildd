@@ -1,4 +1,5 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
@@ -369,7 +370,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // Build task context — include trigger metadata if present
         const template = schedule.taskTemplate;
         const taskContext: Record<string, unknown> = {
-          ...(template.context || {}),
+          // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
+          ...withoutLandingOverrideGrant(template.context || {}),
           scheduleId: schedule.id,
           scheduleName: schedule.name,
         };

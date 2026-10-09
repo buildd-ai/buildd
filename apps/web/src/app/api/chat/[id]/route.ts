@@ -29,6 +29,7 @@ import { checkChatLimits } from '@/lib/chat/limits';
 import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { createInProcessApi } from '@/lib/chat/in-process-api';
 import { loadChatReach } from '@/lib/chat/reach';
+import { assertMemberRepoAccess } from '@/lib/member-repo-access';
 import { autoTitleConversation } from '@/lib/chat/auto-title';
 import { handleTopicVerdict } from '@/lib/chat/retitle';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
@@ -90,6 +91,8 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     if (await isSensitiveWorkspace(ws.id)) {
       return NextResponse.json({ error: 'sensitive_workspace', message: 'This workspace is marked sensitive, so its data is not sent to a chat model.' }, { status: 403 });
     }
+    const repoAccessRefusal = await assertMemberRepoAccess(r.caller.user.id, ws.id);
+    if (repoAccessRefusal) return repoAccessRefusal;
   }
   if (body.tier !== undefined) {
     await setConversationTier(r.conversation.id, body.tier);
@@ -126,7 +129,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const [user, workspace, reach, allowedToolGroups] = await Promise.all([
     turnUserFor(r.caller.user, conv.teamId, settings.timezone),
     workspaceForConversation(conv.workspaceId, conv.teamId),
-    loadChatReach(conv.teamId),
+    loadChatReach(conv.teamId, r.caller.user.id),
     // The caller's own "Allow" choices; empty (ask for everything) on failure.
     loadAllowedToolGroups(conv.teamId, r.caller.user.id),
   ]);

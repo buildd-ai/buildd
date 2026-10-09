@@ -15,7 +15,7 @@ const writes: string[] = [];
 let keyAccount: any = { id: 'acct-1', name: 'CI', teamId: '11111111-1111-4111-8111-111111111111', level: 'admin' };
 
 mock.module('@/auth', () => ({ auth: async () => null }));
-mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => keyAccount }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => keyAccount, invalidateAccountCacheByHash: () => {} }));
 mock.module('@/lib/backend-strand', () => ({
   getBackendStrandSummary: async ({ teamId }: { teamId: string }) => ({ teamId, backends: [] }),
 }));

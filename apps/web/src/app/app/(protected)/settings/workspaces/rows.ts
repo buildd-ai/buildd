@@ -95,6 +95,9 @@ export function buildWorkspaceRows({
 }): { rows: WorkspaceRow[]; moveTeams: Array<{ id: string; name: string }> } {
   const adminTeams = teamsHolding(userId, teams, 'manage_workspace_settings', overrides);
   const adminIds = new Set(adminTeams.map((t) => t.id));
+  // Moving needs migrate_workspace in the source team and in at least one other.
+  const moveTeams = teamsHolding(userId, teams, 'migrate_workspace', overrides);
+  const moveIds = new Set(moveTeams.map((t) => t.id));
   const teamName = new Map(teams.map((t) => [t.id, t.name]));
 
   const rows = workspaces.map((ws): WorkspaceRow => {
@@ -115,11 +118,11 @@ export function buildWorkspaceRows({
       openTasks: Number(a?.openTasks ?? 0),
       health: { stuckTasks: Number(a?.stuckTasks ?? 0), redPrs: Number(a?.redPrs ?? 0) },
       canEdit,
-      canMove: canEdit && adminTeams.length > 1,
+      canMove: moveIds.has(ws.teamId) && moveTeams.length > 1,
     };
   });
 
-  return { rows, moveTeams: adminTeams.map((t) => ({ id: t.id, name: t.name })) };
+  return { rows, moveTeams: moveTeams.map((t) => ({ id: t.id, name: t.name })) };
 }
 
 export { sortByActivity, isInactive, groupWorkspaceRows, INACTIVE_AFTER_DAYS, type WorkspaceGroup } from './list-groups';

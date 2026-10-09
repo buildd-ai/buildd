@@ -362,10 +362,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
     unread). Never falls back to a runner or seat. With no key the Chat entry
     point still shows, its page says who can fix it, and the mission form stays.
-  - *Built-in* decision calls (`task_category`, `task_classification`):
+  - *Built-in* decision calls (`task_category`):
     no toggle; they run whenever a key resolves.
-  - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
-    `mission_summary` declared with no call site and not shown in Settings).
+  - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
+    and the retired `heartbeat_triage` keep their ids so stored overrides
+    validate, and are not shown in Settings).
     `heartbeat_triage` no longer runs: the heartbeat's stuck check
     (`isMissionStuck`) answers deterministically whether a cycle needs the
     organizer, so its cron call site was removed and its experiment concluded
@@ -607,6 +608,15 @@ watchers (`watched_projects`) that auto-file ops tasks + Pushover alerts.
 
 Check `authType` to know which limits apply. CLI auth via device-code flow
 (`device_codes`). MCP clients via OAuth 2.1 PKCE.
+
+**Repository access.** By default, team membership is the whole check: a member
+can see everything Buildd can see in the workspace's repository through its
+GitHub App installation, whatever their own GitHub rights. A workspace admin can
+set `gitConfig.memberRepoAccess: 'require_read'`; then a person (dashboard or
+OAuth MCP session) must also hold read or higher on the linked repo on GitHub to
+create tasks, read diff artifacts, chat over the workspace or recall its `code`
+corpus. A person with no linked GitHub account, or whom GitHub cannot confirm,
+is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
 
 ---
 

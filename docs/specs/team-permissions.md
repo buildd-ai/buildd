@@ -109,7 +109,11 @@ it (or none).
   permission check.
 - Key-level clamping by role (`maxKeyLevelForRole`, `levelForTeamRole`): the
   ceiling on a key a role may mint. Covered by `manage_team_keys` only in that
-  owner/admin may mint admin keys.
+  owner/admin may mint admin keys. The same ceiling follows the person who
+  minted a key (`accounts.created_by_user_id`): a role change, removal, leave
+  or ownership transfer lowers their keys in that team to what they may now
+  mint (`apps/web/src/lib/creator-key-clamp.ts`; never raised, never revoked,
+  keys with no recorded creator untouched).
 - Platform admin (`apps/web/src/lib/platform-admin.ts`), a cross-team operator
   allowlist, not a team role.
 
@@ -150,17 +154,36 @@ this spec's `last_verified` date.
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/teams/[id]/members/route.ts:92` | add a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/route.ts:108` | add a member as owner | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:34` | change a member's role | owner | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:113` | remove a member | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:150` | remove an owner | owner (admins refused) | — | `assign_team_owner` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:27` | list invitations | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/api/teams/[id]/invitations/route.ts:71` | invite (as admin or member) | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:86` | add a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:101` | add a member as owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/route.ts:106` | add a member as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:49` | change a role between member and admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:74` | change a role to or from owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:142` | remove a member | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/members/[userId]/route.ts:160` | remove an owner | owner (admins refused) | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/ownership/route.ts:36` | transfer ownership (target → owner, caller → admin) | owner | — | `assign_team_owner` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:29` | list invitations | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:74` | invite | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/api/teams/[id]/invitations/route.ts:91` | invite as admin | owner, admin | — | `assign_team_roles` |
 | `apps/web/src/app/api/teams/[id]/invitations/[invitationId]/route.ts:33` | revoke an invitation | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/app/(protected)/teams/[id]/page.tsx:67` | UI: show member management | owner, admin | — | `manage_team_members` |
-| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:297` | UI: role picker | owner | — | `assign_team_owner` |
-| `apps/web/src/app/app/(protected)/settings/team/page.tsx:62` | UI: manage members | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/app/(protected)/teams/[id]/page.tsx:70` | UI: show member management | owner, admin | — | `manage_team_members` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:66` | UI: edit team button | owner, admin | — | `manage_team_settings` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:68` | UI: owner in the role picker, transfer ownership, remove an owner | owner | — | `assign_team_owner` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:69` | UI: role picker (member/admin, not on owner rows), invite as admin | owner, admin | — | `assign_team_roles` |
+| `apps/web/src/app/app/(protected)/settings/team/page.tsx:74` | UI: manage members | owner, admin | — | `manage_team_members` |
+
+Rules that need no permission, enforced in the same routes:
+
+- Any member MAY leave (remove themselves) without `manage_team_members`,
+  except from a personal team and except the last owner.
+- No change MAY demote or remove the team's last owner, whoever asks; the
+  check counts current owners, not whether the caller is the target.
+- Ownership transfer writes promote-then-demote in one `db.batch`, and the
+  demote only matches once the target is an owner, so a team never has zero
+  owners.
+- An invitation MAY be accepted only by a signed-in user whose email equals the
+  invitation's (trimmed, case-insensitive); anyone else gets a 403 naming the
+  masked address it was sent to.
 
 ### Team settings
 
@@ -168,7 +191,7 @@ this spec's `last_verified` date.
 |---|---|---|---|---|
 | `apps/web/src/app/api/teams/[id]/route.ts:159` | PATCH team name, slug, AI features, chat budgets, key policy, timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/api/teams/[id]/route.ts:307` | DELETE team | owner | — | `delete_team` |
-| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:253` | UI: delete team button | owner | — | `delete_team` |
+| `apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx:67` | UI: delete team button | owner | — | `delete_team` |
 | `apps/web/src/app/app/(protected)/settings/TimezoneSection.tsx:62` | UI: edit team timezone | owner, admin | — | `manage_team_settings` |
 | `apps/web/src/app/app/(protected)/settings/_lib/settings-context.ts:53` | UI: settings admin sections | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-timezone.ts:99` | own timezone change seeds owned teams | owner | — | `seed_team_timezone` |
@@ -183,6 +206,7 @@ this spec's `last_verified` date.
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
+| `apps/web/src/app/api/accounts/[id]/route.ts:84` | delete someone else's key (a key you created is yours to delete) | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/[id]/regenerate-key/route.ts:54` | regenerate a key | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/[id]/host-runner/route.ts:50` | flag a host-runner key | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/route.ts:108` | mint an admin-level key | owner, admin | — | `manage_team_keys` |
@@ -201,7 +225,9 @@ this spec's `last_verified` date.
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/secrets/route.ts:103` | team model key | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | team model key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:134` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh stays open to members) | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/api/inference-keys/route.ts:37` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/verify/route.ts:29` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:37` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
@@ -223,6 +249,8 @@ this spec's `last_verified` date.
 |---|---|---|---|---|
 | `apps/web/src/app/api/workspaces/[id]/config/route.ts:147` | write workspace config | owner, admin | admin | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:218` | PATCH git config, access mode, data class, connector gate, webhook | owner, admin | admin (route policy) | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/[id]/settings/route.ts:53` | PATCH work tracker config | owner, admin | admin | `manage_workspace_settings` |
+| `apps/web/src/app/api/workspaces/route.ts:217` | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:453` | DELETE workspace | owner | — | `delete_workspace` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx:80` | UI: config admin sections | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:156` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
@@ -250,6 +278,12 @@ this spec's `last_verified` date.
 | `apps/web/src/app/api/connectors/route.ts:162` | create a connector | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/shares/route.ts:75` | manage connector shares | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/transfer/route.ts:83` | transfer a connector (both teams) | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
+| `apps/web/src/app/api/workspaces/[id]/connectors/route.ts:136` | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
+| `apps/web/src/app/api/roles/route.ts:108` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/route.ts:47` | edit or delete a role, or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/overrides/route.ts:81` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/route.ts:57` | create or upsert a workspace role (skill CRUD, `isRole`) | owner, admin | admin (in-route) | `manage_agent_roles` |
+| `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts:55` | edit or delete a workspace role, or make a skill one | owner, admin | admin (in-route) | `manage_agent_roles` |
 | `apps/web/src/app/api/evidence-backends/route.ts:56` | create a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:56` | edit a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:99` | delete a backend | owner, admin | admin | `manage_evidence_backends` |
@@ -264,10 +298,7 @@ route moves onto the permission. All are overridable.
 | Permission | Covers | Session | Key |
 |---|---|---|---|
 | `assign_team_roles` | move a member between member and admin (owner moves stay `assign_team_owner`) | owner, admin | — |
-| `manage_team_credentials` | write or delete a team- or workspace-wide agent credential not covered by `manage_team_model_keys`, incl. workspace Claude/Codex credentials | owner, admin | admin |
 | `manage_team_notifications` | team notification settings (Pushover, notify webhook) | owner, admin | admin |
-| `create_workspace` | create a workspace in the team | owner, admin | admin |
-| `manage_agent_roles` | create, edit and delete agent roles and their workspace overrides (operator grant, MCP servers, required env vars, connectors) | owner, admin | admin |
 
 ### Oddities, reproduced not fixed
 
@@ -297,11 +328,12 @@ route moves onto the permission. All are overridable.
    team the API key's team owner belongs to. That is reach, not a permission,
    so it is not in the registry; noted because it reads `role = 'owner'`.
 6. **Writes with no role gate.** For a session, these need only membership:
-   deleting an API key (`apps/web/src/app/api/accounts/[id]/route.ts`), editing
-   or deleting a connector, deleting a memory, secrets other than the team
-   model key, a workspace's name/repo/branch, and the mission, task, schedule
-   and skill admin routes (those hold API keys to admin, but not sessions).
-   They are not permission decisions today, so they are not in the registry.
+   editing or deleting a connector, deleting a memory, a workspace's
+   name/repo/branch/concurrency cap, and the mission, task and schedule admin
+   routes (those hold API keys to admin, but not sessions). Skill CRUD is in
+   this list only for plain skills (`isRole` false); a role needs
+   `manage_agent_roles`. They are not permission decisions today, so they are
+   not in the registry.
 7. **Owner-only where admin may be intended.** Deleting a workspace (an admin
    gets 404) and changing any member's role (an admin cannot even move
    member↔admin) are owner-only. Reproduced as `delete_workspace` and

@@ -75,6 +75,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const planned = planExperimentPatch(
     {
+      kind: row.kind,
       status: row.status,
       treatmentFraction: Number(row.treatmentFraction),
       policyVersion: row.policyVersion,

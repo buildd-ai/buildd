@@ -28,7 +28,7 @@ import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, type FloorCandidate } from './reconcile';
+import { floorCandidatesSql, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
@@ -957,6 +957,65 @@ export async function reconcileKernelDeliveries(
     } catch (err) {
       s.errors++;
       console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
+    }
+  }
+  return s;
+}
+
+export interface TreadmillCycleSummary {
+  /** Treadmill escalations past the cooldown that the pass looked at. */
+  checked: number;
+  /** Returned to APPROVED with a fresh refresh budget; the landing sweep picks them up. */
+  restarted: number;
+  /** Refused by the reducer (cycles used up, head not approved, moved since the read): stays with a person. */
+  refused: number;
+  errors: number;
+}
+
+/**
+ * S15 cycles, the kernel's half of the landing cooldown: a delivery the
+ * behind-refresh treadmill escalated gets a fresh refresh budget once
+ * `cooldownMs` has passed since that escalation, up to `MAX_TREADMILL_CYCLES`
+ * cycles (the reducer's bound). Only the treadmill cause qualifies (the SQL
+ * pins the transition that produced the current version); a merge refusal or a
+ * failed refresh stays with a person. The restart is pinned to that version, so
+ * a person's move in between wins.
+ */
+export async function restartTreadmillCycles(
+  o: { cooldownMs: number; limit?: number },
+  deps: SeamDeps & {
+    apply?: typeof applyCommand;
+    owned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<string | null>;
+    drain?: (deliveryId: string) => Promise<unknown>;
+  } = {},
+): Promise<TreadmillCycleSummary> {
+  const exec = deps.exec ?? seamExec;
+  const apply = deps.apply ?? applyCommand;
+  const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, deps.exec));
+  const drain = deps.drain ?? ((id: string) => drainDelivery(id, deps));
+  const s: TreadmillCycleSummary = { checked: 0, restarted: 0, refused: 0, errors: 0 };
+  const rows = ((await exec(treadmillCycleCandidatesSql({ limit: o.limit ?? 20, cooldownMs: o.cooldownMs }))).rows ?? []) as TreadmillCycleCandidate[];
+  for (const row of rows) {
+    const deliveryId = String(row.id);
+    try {
+      // The kill switch: a delivery released to legacy is legacy's.
+      if ((await owned(String(row.workspace_id), String(row.repo_full_name), Number(row.pr_number))) !== deliveryId) continue;
+      s.checked++;
+      const result = await apply(
+        { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle', expectedVersion: Number(row.version) },
+        { ref: { deliveryId }, exec: deps.exec },
+      );
+      if (result.result === 'applied') {
+        s.restarted++;
+        console.log(`[workflow] treadmill cycle restarted for ${row.repo_full_name}#${row.pr_number}`);
+        await drain(deliveryId);
+      } else {
+        s.refused++;
+        console.log(`[workflow] treadmill cycle not restarted for ${row.repo_full_name}#${row.pr_number}: ${result.result} (${'reason' in result ? result.reason : 'no reason'})`);
+      }
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] treadmill cycle restart of ${row.repo_full_name}#${row.pr_number} failed:`, err);
     }
   }
   return s;

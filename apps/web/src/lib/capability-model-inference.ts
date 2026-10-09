@@ -522,7 +522,7 @@ export async function invokeModelInference(
  * Imported lazily: the DB client is server-only.
  */
 export const resolveTeamDecisionRoute: RouteResolver = async ({ teamId, workspaceId, accountId }) => {
-  const [{ db }, { resolveDecisionRoute }, { readDecisionModel }, { isInferenceKeyPolicy }, { createPublicGatewayFetcher }] = await Promise.all([
+  const [{ db }, { resolveDecisionRoute }, { readDecisionModel }, { effectiveKeyPolicy }, { createPublicGatewayFetcher }] = await Promise.all([
     import('@buildd/core/db'),
     import('@buildd/core/decision-client'),
     import('@buildd/core/decision-model'),
@@ -531,13 +531,13 @@ export const resolveTeamDecisionRoute: RouteResolver = async ({ teamId, workspac
   ]);
   const team = await db.query.teams.findFirst({
     where: (t, { eq }) => eq(t.id, teamId),
-    columns: { decisionModel: true, inferenceKeyPolicy: true },
+    columns: { decisionModel: true, inferenceKeyPolicy: true, credentialPolicy: true },
   });
   if (!team) return null;
   const config = readDecisionModel(team.decisionModel);
   const route = await resolveDecisionRoute(config, {
     teamId, workspaceId, accountId,
-    ...(isInferenceKeyPolicy(team.inferenceKeyPolicy) ? { keyPolicy: team.inferenceKeyPolicy } : {}),
+    ...(effectiveKeyPolicy(team) ? { keyPolicy: effectiveKeyPolicy(team)! } : {}),
     allowPlatformKey: false,
   });
   if (!route.apiKey) return null;

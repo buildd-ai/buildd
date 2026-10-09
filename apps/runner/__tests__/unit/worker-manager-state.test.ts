@@ -883,7 +883,15 @@ describe('WorkerManager — state transitions', () => {
 
         manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
         await manager.claimAndStart(makeTask());
-        await new Promise(r => setTimeout(r, 200));
+        // Poll rather than a fixed sleep: the session needs a variable number of
+        // ticks to drain on a loaded CI runner.
+        const deadline = Date.now() + 5000;
+        while (
+          Date.now() < deadline &&
+          !manager.getWorker('w-empty-q')?.output.join('\n').includes('Tests finished, continuing.')
+        ) {
+          await new Promise(r => setTimeout(r, 25));
+        }
 
         const worker = manager.getWorker('w-empty-q');
         expect(worker?.error ?? '').not.toContain('needs_input');

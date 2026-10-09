@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -19,6 +20,13 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mock(() => Promise.resolve(false)),
   verifyAccountWorkspaceAccess: mock(() => Promise.resolve(false)),
 }));
+
+// The caller's role per team; `can` resolves through the real registry.
+// Existing cases run as the team owner.
+let teamRoles: Record<string, string> = { team1: 'owner' };
+const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -384,4 +392,70 @@ describe('DELETE /api/roles/[id]', () => {
     const data = await res.json();
     expect(data.success).toBe(true);
   });
+});
+
+// manage_agent_roles (docs/specs/team-permissions.md)
+describe('/api/roles/[id]: manage_agent_roles', () => {
+  const ID = TEAM_ROLE.id;
+  const params = { params: Promise.resolve({ id: ID }) };
+  let set: ReturnType<typeof mock>;
+  let where: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1']));
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(TEAM_ROLE));
+    set = mock(() => ({ where: mock(() => ({ returning: mock(() => Promise.resolve([{ ...TEAM_ROLE, name: 'x' }])) })) }));
+    mockWorkspaceSkillsUpdate.mockReset();
+    mockWorkspaceSkillsUpdate.mockReturnValue({ set });
+    where = mock(() => Promise.resolve());
+    mockWorkspaceSkillsDelete.mockReset();
+    mockWorkspaceSkillsDelete.mockReturnValue({ where });
+  });
+
+  const patch = (body: unknown) => PATCH(new NextRequest(`http://localhost/api/roles/${ID}`, { method: 'PATCH', body: JSON.stringify(body) }), params);
+  const del = () => DELETE(new NextRequest(`http://localhost/api/roles/${ID}`, { method: 'DELETE' }), params);
+
+  it('refuses a team member editing a role, and writes nothing', async () => {
+    teamRoles = { team1: 'member' };
+    const res = await patch({ name: 'x' });
+    expect(res.status).toBe(403);
+    expect(set).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user1' }, 'manage_agent_roles', 'team1');
+  });
+
+  it('refuses a team member deleting a role, and deletes nothing', async () => {
+    teamRoles = { team1: 'member' };
+    const res = await del();
+    expect(res.status).toBe(403);
+    expect(where).not.toHaveBeenCalled();
+  });
+
+  it('refuses a team member promoting a plain skill into a role', async () => {
+    teamRoles = { team1: 'member' };
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve({ ...TEAM_ROLE, isRole: false }));
+    const res = await patch({ isRole: true });
+    expect(res.status).toBe(403);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('leaves a plain skill member-writable', async () => {
+    teamRoles = { team1: 'member' };
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve({ ...TEAM_ROLE, isRole: false }));
+    const res = await patch({ name: 'x' });
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} edit and delete a role`, async () => {
+      teamRoles = { team1: role };
+      expect((await patch({ name: 'x' })).status).toBe(200);
+      expect(set).toHaveBeenCalledTimes(1);
+      expect((await del()).status).toBe(200);
+      expect(where).toHaveBeenCalledTimes(1);
+    });
+  }
 });

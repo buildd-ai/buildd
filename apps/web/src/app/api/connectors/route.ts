@@ -1,7 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, secrets } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -14,7 +14,7 @@ import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
 import { resolveConnectorIconData } from '@/lib/connector-icon';
 import { scheduleStaleIconRefresh } from '@/lib/connector-icon-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -38,22 +38,6 @@ async function authenticateRequest(req: NextRequest) {
   return null;
 }
 
-/**
- * Team-admin gate for connector writes (spec §6). A session user must be an
- * owner/admin of the team to create a connector; a plain `member` is rejected
- * with 403. Personal teams have no `team_members` row — absence => allowed
- * (the user implicitly owns their personal team, and `getUserTeamIds` already
- * scopes `teamId` to teams the user belongs to).
- */
-async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  // No row = the caller's personal team, which they own.
-  if (!membership) return true;
-  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
-}
 
 export async function GET(req: NextRequest) {
   const auth = await authenticateRequest(req);
@@ -175,7 +159,7 @@ export async function POST(req: NextRequest) {
     const cookieTeamId = req.cookies.get('buildd-team')?.value;
     teamId = (cookieTeamId && teamIds.includes(cookieTeamId)) ? cookieTeamId : teamIds[0];
     // Spec §6: only a team owner/admin may create a connector.
-    if (!(await isTeamAdmin(auth.user.id, teamId))) {
+    if (!(await canManageTeamConnectors(auth.user.id, teamId))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   }

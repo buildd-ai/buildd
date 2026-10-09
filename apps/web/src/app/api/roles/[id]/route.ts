@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
+import { can } from '@/lib/permissions';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -36,6 +37,17 @@ async function findAccessibleRole(roleId: string, userId: string) {
 
   return { role, teamIds, wsIds };
 }
+
+/**
+ * manage_agent_roles in the row's team, asked only when the row is a role or
+ * is being made one. A plain skill stays writable by any member who can see it.
+ */
+async function mayManageRole(userId: string, row: { teamId: string; isRole: boolean }, makesRole: unknown): Promise<boolean> {
+  if (!row.isRole && makesRole !== true) return true;
+  return can({ kind: 'user', userId }, 'manage_agent_roles', row.teamId);
+}
+
+const FORBIDDEN = { error: 'Managing agent roles requires team admin' };
 
 // GET /api/roles/[id] — fetch any role by ID
 export async function GET(
@@ -87,6 +99,10 @@ export async function PATCH(
     const { name, description, content, model, allowedTools, canDelegateTo,
       background, maxTurns, color, mcpServers, requiredEnvVars, connectorRefs, isRole,
       repoUrl, enabled, defaultBackend } = body;
+
+    if (!(await mayManageRole(user.id, existing, isRole))) {
+      return NextResponse.json(FORBIDDEN, { status: 403 });
+    }
 
     // Routing text (role-routing.md §2): validated, never truncated.
     const routing = parseRoutingPatch(body);
@@ -246,6 +262,9 @@ export async function DELETE(
     const { role: existing } = await findAccessibleRole(id, user.id);
     if (!existing) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
+    }
+    if (!(await mayManageRole(user.id, existing, false))) {
+      return NextResponse.json(FORBIDDEN, { status: 403 });
     }
 
     if (existing.configStorageKey && isStorageConfigured()) {

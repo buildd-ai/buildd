@@ -64,6 +64,12 @@ interface Props {
   overrides: Role[];
   workspaces: WorkspaceOption[];
   delegateOptions: DelegateOption[];
+  /**
+   * Holds `manage_agent_roles` in the role's team (overrides applied). False:
+   * the role and its overrides read-only, with no save, delete or new
+   * override. Defaults to true.
+   */
+  canEdit?: boolean;
 }
 
 /**
@@ -126,12 +132,15 @@ function WorkspaceOverrideEditor({
   workspaceName,
   onUpdate,
   onDelete,
+  canEdit = true,
 }: {
   override: Role;
   teamDefault: Role;
   workspaceName: string;
   onUpdate: (updates: Partial<Record<OverridableField, unknown>>) => Promise<void>;
   onDelete: () => Promise<void>;
+  /** False: the override opens to read, with nothing to change, save or remove. */
+  canEdit?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -213,7 +222,7 @@ function WorkspaceOverrideEditor({
       </button>
 
       {expanded && (
-        <div className="p-4 space-y-5">
+        <fieldset disabled={!canEdit} className="p-4 space-y-5 min-w-0">
           {/* Subagent Tools */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
@@ -329,7 +338,7 @@ function WorkspaceOverrideEditor({
             </div>
           )}
 
-          <div className="flex items-center gap-3 pt-2 border-t border-border-default">
+          {canEdit && <div className="flex items-center gap-3 pt-2 border-t border-border-default">
             <button
               type="button"
               onClick={handleSave}
@@ -345,14 +354,14 @@ function WorkspaceOverrideEditor({
             >
               Remove override
             </button>
-          </div>
-        </div>
+          </div>}
+        </fieldset>
       )}
     </div>
   );
 }
 
-export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, delegateOptions }: Props) {
+export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, delegateOptions, canEdit = true }: Props) {
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -555,8 +564,12 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           </div>
           {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
-          <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} />
+          {canEdit && <HeaderSaveButton dirty={dirty} saving={saving} saved={saved} onSave={handleSave} />}
         </div>
+
+        {!canEdit && (
+          <p data-testid="role-read-only" className="-mt-5 mb-8 text-xs text-text-muted">Admins can change this role.</p>
+        )}
 
         {error && (
           <div className="mb-6 px-4 py-2 rounded-md bg-status-error/10 text-status-error text-sm">
@@ -564,6 +577,9 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           </div>
         )}
 
+        {/* A disabled fieldset disables every control inside it: the role
+            stays readable, nothing in it can be changed. */}
+        <fieldset disabled={!canEdit} className="min-w-0">
         {/* Applies to */}
         <div className="border border-border-default rounded-lg p-4 mb-8">
           <div className="flex items-center gap-2 mb-3">
@@ -809,17 +825,20 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
 
             {/* Delete */}
-            <div className="pt-4 border-t border-border-default">
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="text-[13px] text-status-error hover:underline disabled:opacity-50"
-              >
-                {deleting ? 'Deleting…' : 'Delete this role'}
-              </button>
-            </div>
+            {canEdit && (
+              <div className="pt-4 border-t border-border-default">
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="text-[13px] text-status-error hover:underline disabled:opacity-50"
+                >
+                  {deleting ? 'Deleting…' : 'Delete this role'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
+        </fieldset>
 
         {/* Platform Operator access: a distinct admin surface, not a content/tools/mcp override. */}
         {role.slug === OPERATOR_ROLE_SLUG && (
@@ -828,6 +847,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             teamMetadata={role.metadata}
             overrides={overrideList}
             workspaces={userWorkspaces}
+            canEdit={canEdit}
           />
         )}
 
@@ -841,7 +861,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 A workspace can override single fields. The rest inherit the team default above.
               </p>
             </div>
-            {availableForOverride.length > 0 && (
+            {canEdit && availableForOverride.length > 0 && (
               <button
                 type="button"
                 onClick={() => setShowAddOverride(!showAddOverride)}
@@ -853,7 +873,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
           </div>
 
           {/* Add override form */}
-          {showAddOverride && availableForOverride.length > 0 && (
+          {canEdit && showAddOverride && availableForOverride.length > 0 && (
             <div className="mb-4 p-4 border border-border-default rounded-lg bg-surface-2">
               <p className="text-[13px] text-text-primary mb-3">Create an override for a specific workspace</p>
               <div className="flex flex-wrap items-center gap-3">
@@ -902,6 +922,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     workspaceName={wsName}
                     onUpdate={(updates) => handleUpdateOverride(override.id, wsId, updates)}
                     onDelete={() => handleDeleteOverride(override.id)}
+                    canEdit={canEdit}
                   />
                 );
               })}
@@ -940,7 +961,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
 
         {/* Sits below Workspace Overrides but saves the team role above, so it
             says so; overrides keep their own "Save override" buttons. */}
-        <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />
+        {canEdit && <MobileSaveBar onSave={handleSave} saving={saving} saved={saved} error={error} dirty={dirty} label="Save role" />}
       </div>
       {confirmDialog}
     </main>

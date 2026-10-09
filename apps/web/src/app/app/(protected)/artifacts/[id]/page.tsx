@@ -10,6 +10,8 @@ import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
+import MemberRepoAccessNotice from '@/components/MemberRepoAccessNotice';
+import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';
@@ -91,6 +93,9 @@ export default async function ArtifactDetailPage({
   if (!workspaceId || !wsIds.includes(workspaceId)) {
     notFound();
   }
+
+  // A diff is repository code: the workspace's opt-in GitHub check applies.
+  const repoAccess = artifact.type === 'diff' ? await memberHasRepoAccess(user.id, workspaceId) : null;
 
   const metadata = artifact.metadata as Record<string, unknown> | null;
   const artifactUrl = metadata?.url as string | undefined;
@@ -194,7 +199,9 @@ export default async function ArtifactDetailPage({
             <MarkdownContent content={artifact.content} />
           )}
 
-          {(artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
+          {repoAccess && !repoAccess.allowed ? (
+            <MemberRepoAccessNotice result={repoAccess} returnTo={`/app/artifacts/${artifact.id}`} />
+          ) : (artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
             <ArtifactCodeBody type={artifact.type} content={artifact.content} />
           )}
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -28,6 +29,12 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@/lib/account-workspace-cache', () => ({
   getAccountWorkspacePermissions: mock(() => Promise.resolve([])),
 }));
+
+// The caller's role per team; `can` resolves through the real registry.
+let teamRoles: Record<string, string> = {};
+const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@/lib/mission-context', () => ({
   getWorkspaceRoles: mockGetWorkspaceRoles,
@@ -124,6 +131,7 @@ describe('POST /api/roles', () => {
     mockGetUserTeamIds.mockReset();
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsInsert.mockReset();
+    teamRoles = { team1: 'owner' };
   });
 
   it('returns 401 if not authenticated', async () => {
@@ -201,6 +209,49 @@ describe('POST /api/roles', () => {
     const data = await res.json();
     expect(data.skill.workspaceId).toBeNull();
     expect(data.skill.teamId).toBe('team1');
+  });
+
+  // manage_agent_roles (docs/specs/team-permissions.md)
+  function insertSpy() {
+    const values = mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'r1', teamId: 'team1', workspaceId: null, isRole: true }])) }));
+    mockWorkspaceSkillsInsert.mockReturnValue({ values });
+    return values;
+  }
+  function createRole(extra: Record<string, unknown> = {}) {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(null));
+    return POST(new NextRequest('http://localhost/api/roles', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Builder', content: 'You are Builder', ...extra }),
+    }));
+  }
+
+  it('refuses a team member and writes nothing', async () => {
+    teamRoles = { team1: 'member' };
+    const values = insertSpy();
+    const res = await createRole();
+    expect(res.status).toBe(403);
+    expect(values).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user1' }, 'manage_agent_roles', 'team1');
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} create a role`, async () => {
+      teamRoles = { team1: role };
+      const values = insertSpy();
+      const res = await createRole();
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it('leaves a non-role skill (isRole: false) as before: a member may create it', async () => {
+    teamRoles = { team1: 'member' };
+    const values = insertSpy();
+    const res = await createRole({ isRole: false });
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledTimes(1);
   });
 });
 
