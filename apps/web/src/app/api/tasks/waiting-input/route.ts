@@ -6,6 +6,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { admitsToNeedsYou } from '@buildd/core/needs-you';
+import type { WaitingFor } from '@buildd/shared';
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -61,7 +62,7 @@ export async function GET() {
           workspaceId: t.workspaceId,
           // Lets the banner open the task in its mission (mission-task-href.ts).
           missionId: t.missionId ?? null,
-          waitingFor: worker?.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+          waitingFor: worker?.waitingFor as WaitingFor | null,
           // Answered on the resume path: `waitingFor` is cleared at once, but
           // the worker stays waiting_input until the runner resumes it. The
           // answer is on its way, so this no longer needs the person.
