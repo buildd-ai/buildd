@@ -107,6 +107,13 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   // git rev-list --count: used by fetchBranch to verify resume candidate exists,
   // and by collectGitStats to count commits vs the base ref.
   if (cmd.includes('rev-list --count')) {
+    // A task's own branch has never been pushed: only an explicit resumeBranch
+    // is expected to exist on origin (see setupWorktree's implicit-resume probe).
+    if (/\.\.origin\/buildd\/(retry-task-branch|test-branch)"/.test(cmd)) {
+      const err: any = new Error('unknown revision or path not in the working tree');
+      err.status = 128;
+      throw err;
+    }
     if (revListBehavior === 'missing') {
       const err: any = new Error('unknown revision or path not in the working tree');
       err.status = 128;
