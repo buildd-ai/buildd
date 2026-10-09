@@ -15,9 +15,9 @@ import { idleStretchLabel, type IdleStretch } from '@/lib/idle-while-queued';
 const RUNNERS_HREF = '/app/health/runners';
 
 function Square({ kind, size = 'h-3 w-3', testId = 'agent-square' }: { kind: AgentSquare; size?: string; testId?: string }) {
-  if (kind === 'busy') return <i aria-hidden="true" data-testid={testId} data-kind="busy" className={`block shrink-0 rounded-[2px] bg-accent ${size}`} />;
-  if (kind === 'waiting') return <i aria-hidden="true" data-testid={testId} data-kind="waiting" data-state="waiting" data-tone="act" data-pattern="hatch-bold" className={`state-cell block shrink-0 rounded-[2px] shadow-[inset_0_0_0_1px_var(--accent)] ${size}`} />;
-  return <i aria-hidden="true" data-testid={testId} data-kind="free" className={`block shrink-0 rounded-[2px] shadow-[inset_0_0_0_1px_var(--border-strong)] ${size}`} />;
+  if (kind === 'busy') return <i aria-hidden="true" data-testid={testId} data-kind="busy" className={`block shrink-0 rounded-[var(--radius-cell)] bg-accent ${size}`} />;
+  if (kind === 'waiting') return <i aria-hidden="true" data-testid={testId} data-kind="waiting" data-state="waiting" data-tone="act" data-pattern="hatch-bold" className={`state-cell block shrink-0 rounded-[var(--radius-cell)] shadow-[inset_0_0_0_1px_var(--accent)] ${size}`} />;
+  return <i aria-hidden="true" data-testid={testId} data-kind="free" className={`block shrink-0 rounded-[var(--radius-cell)] shadow-[inset_0_0_0_1px_var(--border-strong)] ${size}`} />;
 }
 
 export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: { model: AgentsModel; occupancy?: OccupancySeries | null; idle?: readonly IdleStretch[]; idPrefix?: string }) {
