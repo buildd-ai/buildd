@@ -309,7 +309,8 @@ person the task is for.
 **Invariants**:
 - `teams.credential_policy` is one of `team`, `personal_first`,
   `personal_only`, or NULL (not opted in). It is written through
-  `PATCH /api/teams/[id]` (`manage_team_settings`) as `credentialPolicy`. The
+  `PATCH /api/teams/[id]` or `PATCH /api/providers` (both `manage_team_settings`)
+  as `credentialPolicy`. The
   legacy chat-only name `inferenceKeyPolicy` keeps it in step only once it is
   set; it never opts a team in.
 - With NULL or `team`, agent runs use team credentials and nothing personal is
@@ -403,6 +404,10 @@ session-only or rejects keys. Line numbers are as of this spec's
 |---|---|---|---|---|
 | `apps/web/src/app/api/secrets/route.ts:115` | team model key, decision key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
 | `apps/web/src/app/api/secrets/route.ts:115` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace provider credential stored as a chat key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`, `oauth_token`) | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts:73` | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/providers/route.ts:207` | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh and verify stay open to members) | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:39` | UI: runner credentials | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:40` | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |

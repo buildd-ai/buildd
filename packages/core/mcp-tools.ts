@@ -18,6 +18,8 @@ import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { handleModelUpgradeAction } from './mcp-model-upgrades';
+import { defaultProvidersScope, handleProvidersAction, providersNeedsAdmin, type ProvidersOp } from './mcp-providers';
+import { modelCredentialPurposes } from './providers/manage';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
 import { formatAnalyticsReadFailure, readScheduleDelegation } from './token-delegation';
 import { saveMemory, updateMemory } from './memory-write';
@@ -394,7 +396,23 @@ export const workerActions = [
   // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
   // handler with the same structured forbidden result requireAdminLevel gives.
   'manage_experiments',
+  // Model providers and credentials (/api/providers). Worker level, split by
+  // sub-action: list/explain read; set/delete `mine` are a signed-in person's
+  // own key; team/workspace set/delete and set_policy need admin, checked in
+  // the handler (the route checks the permission again).
+  'manage_providers',
 ] as const;
+
+export const PROVIDER_OPS = ['list', 'set', 'delete', 'explain', 'set_policy'] as const;
+export const PROVIDER_MINE_TASK_TOKEN_REFUSAL =
+  'A per-task token has no person behind it, so it cannot set or remove a personal credential for anyone. Use team or workspace scope with an admin token, or ask the person to do it from their own session.';
+export const PROVIDER_TASK_TOKEN_READ_ONLY =
+  'A per-task token can list providers and explain what would run in its own workspace; it cannot change a credential or the credential policy, at any level.';
+export const PROVIDER_MINE_KEY_REFUSAL =
+  'An API key has no person behind it, so it cannot hold a personal credential. Use an MCP session signed in as yourself (OAuth), or scope team/workspace.';
+/** manage_secrets set refuses these: model credentials have one write path. */
+export const MODEL_PURPOSE_REFUSAL = (purpose: string) =>
+  `purpose ${purpose} is a model credential; use manage_providers { action: "set", provider, scope, value } so it is stored where every surface reads it.`;
 
 /** manage_experiments sub-actions that write, and so require an admin token. */
 export const EXPERIMENT_WRITE_OPS = ['create', 'update', 'start', 'pause', 'conclude'] as const;
@@ -699,6 +717,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null), whenToUse? (20–300 chars, null clears), notFor? (≤200 chars, null clears), claudeAiArtifacts? ("off"|"read"|"publish", null clears), personal? (true: edit a personal role by slug — your own first, else a shared one; worker level, the owner or a team admin once shared may edit), visibility? (with personal: "team" shares it with the team, "private" takes it back) } — update skill by slug [admin; personal: true at worker level]',
     delete_skill: '{ slug (required), workspaceId?, personal? (true: delete your own personal role, or a shared one as a team admin; worker level) } — delete skill by slug [admin; personal: true at worker level]',
     manage_evidence_backends: '{ action: "list" | "get" | "create" | "update" | "delete" | "verify", backendId? (required except list/create), workspaceId? (create: scope the backend to one workspace; omit for the team default), provider? (create: "s3" | "r2" | "s3_compatible" | "buildd_default"), endpoint? (https URL; required for r2 and s3_compatible; must resolve to a public address), region?, bucket? (required except buildd_default), prefix? (one path segment, default "evidence"), forcePathStyle?: boolean, sse? ("none" | "AES256" | "aws:kms"), kmsKeyId? (only with aws:kms), retentionDays? (1-3650, default 30), maxBytesPerTask? (bytes, default 8 MiB), credentials? ({ accessKeyId, secretAccessKey, sessionToken? }; required for create, replaces the stored credential on update; never returned) } — where a team\'s run evidence is written: a workspace backend beats the team backend, which beats the buildd-managed bucket. create and update verify the bucket on save (PUT, GET, DELETE of one probe object under {prefix}/.buildd-probe/, never a list) and report it; a failing probe does not reject the save or affect any task. verify re-runs the probe and warns when the probe object is readable without credentials. provider and workspaceId cannot change after create. [admin]',
+    manage_providers: '{ action: "list" | "set" | "delete" | "explain" | "set_policy", provider? (required for set/delete: anthropic | claude-subscription | openai | codex-subscription | openrouter | litellm | custom-endpoint), scope? ("team" | "workspace" | "mine"; set/delete default: mine for a signed-in person, else team), workspaceId? (required with scope workspace), shape? (api_key | setup_token | gateway | endpoint; default the provider\'s pasteable one), value? (set: the key or token; never echoed back), config? (set: gateway { baseUrl }; endpoint { baseUrl, authHeader?, models?, appliesTo?, capabilities? }), surface? (explain, required: chat | agent-claude | agent-codex | cloud-egress; set: refuse unless the provider serves it), as? (explain: "self" your own work, default for a person | "team" team work), policy? (set_policy: team | personal_first | personal_only) } — model providers and their credentials, one write path for every surface. list: each provider, what it serves and why not (registry reasons), per scope the rows set (last four, health, legacy storage, what reads them today), and the credential policy. set validates and verifies before storing; a subscription login (oauth) is refused with a link to finish in the browser. explain: what the resolver would pick for a surface and why, never a value. Impossible provider×surface or scope pairs are refused with the registry reason. list/explain: worker level (a task token: its own workspace). set/delete scope mine: a signed-in person (OAuth session), never a task token or API key. set/delete scope team|workspace and set_policy [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
     get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
@@ -4175,6 +4194,8 @@ export async function handleBuilddAction(
       }
 
       if (subAction === 'set') {
+        const purpose = typeof params.purpose === 'string' && params.purpose ? params.purpose : 'mcp_credential';
+        if (modelCredentialPurposes().includes(purpose)) return errorResult(MODEL_PURPOSE_REFUSAL(purpose));
         if (!params.label) throw new Error('label is required (env var name, e.g. "buildd-api-key")');
         if (!params.value) throw new Error('value is required (the secret value)');
 
@@ -4182,7 +4203,7 @@ export async function handleBuilddAction(
           method: 'POST',
           body: JSON.stringify({
             value: params.value,
-            purpose: params.purpose || 'mcp_credential',
+            purpose,
             label: params.label,
           }),
         });
@@ -6455,6 +6476,33 @@ export async function handleBuilddAction(
         `${acceptedLine}${promotedLine}\n\n` +
         `Evidence (the exact read that produced this verdict):\n${JSON.stringify(d.evidence, null, 2)}`
       );
+    }
+
+    case 'manage_providers': {
+      const op = params.action as string;
+      if (!op || !(PROVIDER_OPS as readonly string[]).includes(op)) {
+        throw new Error(`action must be one of: ${PROVIDER_OPS.join(', ')}`);
+      }
+      const writes = op === 'set' || op === 'delete';
+      const scope = typeof params.scope === 'string' ? params.scope : writes ? defaultProvidersScope(ctx) : undefined;
+      if (scope !== undefined && !['team', 'workspace', 'mine'].includes(scope)) {
+        throw new Error("scope must be 'team', 'workspace' or 'mine'");
+      }
+      if ((writes || op === 'set_policy') && ctx.principal === 'task_token') {
+        return errorResult(scope === 'mine' ? PROVIDER_MINE_TASK_TOKEN_REFUSAL : PROVIDER_TASK_TOKEN_READ_ONLY);
+      }
+      if (tokenScopes == null && providersNeedsAdmin(op as ProvidersOp, scope)) {
+        const level = await ctx.getLevel();
+        if (level !== 'admin') {
+          return forbiddenResult(`manage_providers action '${op}'${op === 'set_policy' ? '' : ` with scope ${scope}`} requires admin token level (scope mine is your own, at worker level)`, level, 'admin');
+        }
+      }
+      if (writes && scope === 'mine' && ctx.principal === 'key') return errorResult(PROVIDER_MINE_KEY_REFUSAL);
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : scope === 'workspace' || op === 'list' || op === 'explain' ? await ctx.getWorkspaceId() : null;
+      if (scope === 'workspace' && !wsId) throw new Error('workspaceId is required with scope workspace');
+      return text(await handleProvidersAction(api, op as ProvidersOp, params, wsId, scope));
     }
 
     case 'manage_experiments': {
