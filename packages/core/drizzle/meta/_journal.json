@@ -212,6 +212,13 @@
       "when": 1791542840273,
       "tag": "0280_rapid_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 281,
+      "version": "7",
+      "when": 1791546351767,
+      "tag": "0281_shallow_white_tiger",
+      "breakpoints": true
     }
   ]
 }

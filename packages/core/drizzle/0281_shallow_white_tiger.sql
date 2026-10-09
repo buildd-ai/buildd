@@ -1,0 +1,20 @@
+CREATE TABLE "task_estimate_actuals" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"team_id" uuid NOT NULL,
+	"workspace_id" uuid NOT NULL,
+	"task_id" uuid NOT NULL,
+	"agent_minutes" real NOT NULL,
+	"tokens" integer NOT NULL,
+	"repairs" integer DEFAULT 0 NOT NULL,
+	"worker_count" integer DEFAULT 0 NOT NULL,
+	"first_started_at" timestamp with time zone,
+	"wall_minutes" real,
+	"wall_basis" text,
+	"recorded_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "task_estimate_actuals" ADD CONSTRAINT "task_estimate_actuals_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_estimate_actuals" ADD CONSTRAINT "task_estimate_actuals_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_estimate_actuals" ADD CONSTRAINT "task_estimate_actuals_task_id_tasks_id_fk" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "task_estimate_actuals_task_idx" ON "task_estimate_actuals" USING btree ("task_id");--> statement-breakpoint
+CREATE INDEX "task_estimate_actuals_team_idx" ON "task_estimate_actuals" USING btree ("team_id");
