@@ -16,7 +16,7 @@ import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/co
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
-import type { QueuedInterval, RunInterval } from './idle-while-queued';
+import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -338,4 +338,48 @@ export async function loadQueueHistory(input: { wsIds: string[]; from: number; n
     else if (t.status === 'pending') queued.push({ from: created, to: null });
   }
   return { runs, queued };
+}
+
+/**
+ * Health › Runners' lanes: the fleet with its recent runs (not just the live
+ * ones) and the stretches every slot sat idle while work waited. Lean on
+ * purpose: no ticker, counts or questions, and only the runners page calls it.
+ */
+export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
+  const { teamId, wsIds, now } = input;
+  if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
+  const windowStart = now - FLEET_WINDOW_MS;
+  const [heartbeatRows, workerRows, history] = await Promise.all([
+    loadFleetHeartbeats({ teamId, wsIds, now }),
+    db
+      .select({
+        id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
+        prNumber: workers.prNumber,
+        taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+        roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+      })
+      .from(workers)
+      .leftJoin(tasks, eq(workers.taskId, tasks.id))
+      .where(and(
+        inArray(workers.workspaceId, wsIds),
+        or(inArray(workers.status, [...LIVE_WORKER_STATUSES]), gte(workers.startedAt, new Date(windowStart))),
+      ))
+      .orderBy(desc(workers.startedAt))
+      .limit(FLEET_WORKER_ROW_CAP),
+    loadQueueHistory({ wsIds, from: windowStart, now }),
+  ]);
+  const rows: FleetWorkerRow[] = workerRows.map(r => ({
+    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    task: r.taskId ? {
+      id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
+      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
+    } : null,
+  }));
+  const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], rows, {
+    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+  });
+  const from = Math.max(fleet.window.from, windowStart);
+  return { fleet, idle: idleWhileQueued({ ...history, from, to: now }) };
 }
