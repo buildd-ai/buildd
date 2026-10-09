@@ -253,3 +253,43 @@ describe('verdict codes', () => {
 });
 
 void (null as unknown as EscalationSubject);
+
+describe('gateEscalations: a rule verdict\'s step runs once per state (a90fc99b)', () => {
+  const policyOnly = (over: Partial<GatedSubject> = {}) => subject({
+    why: 'reviewer_escalated', ci: 'green', policyOnly: true, riskClasses: ['destructive_schema_change'], headIsCurrent: true,
+    headSha: 'h1', detail: 'Hard rule: schema changes require human review', ...over,
+  });
+
+  it('a policy_merge rule verdict calls actRule on the look that files it', async () => {
+    const ruled: Array<{ key: string; action: string }> = [];
+    const h = harness({ actRule: async (s, action) => { ruled.push({ key: s.key, action }); } });
+    const v = (await gateEscalations([policyOnly()], h.deps)).get('pr:ws:7');
+    expect(v).toMatchObject({ owner: 'buildd', by: 'rule', action: 'policy_merge' });
+    expect(ruled).toEqual([{ key: 'pr:ws:7', action: 'policy_merge' }]);
+    expect(h.calls()).toBe(0);
+  });
+
+  it('a reuse of the same state does not run the step again', async () => {
+    const s = policyOnly();
+    const stored = new Map<string, StoredVerdict>([[s.key, {
+      fingerprint: escalationFingerprint(s), appliedAnswer: 'buildd:rule:policy_merge:', createdAt: new Date(NOW - 60_000),
+    }]]);
+    const ruled: string[] = [];
+    const h = harness({ actRule: async (_s, action) => { ruled.push(action); } }, stored);
+    expect((await gateEscalations([s], h.deps)).get(s.key)).toMatchObject({ action: 'policy_merge' });
+    expect(ruled).toEqual([]);
+  });
+
+  it('a person-owned rule verdict runs nothing', async () => {
+    const ruled: string[] = [];
+    const h = harness({ actRule: async (_s, action) => { ruled.push(action); } });
+    await gateEscalations([policyOnly({ riskClasses: ['ci_deploy_config'] })], h.deps);
+    expect(ruled).toEqual([]);
+  });
+
+  it('a failing step never changes the verdict', async () => {
+    const h = harness({ actRule: async () => { throw new Error('kernel down'); } });
+    expect((await gateEscalations([policyOnly()], h.deps)).get('pr:ws:7')).toMatchObject({ owner: 'buildd', action: 'policy_merge' });
+  });
+});
+
