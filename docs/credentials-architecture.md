@@ -72,6 +72,25 @@ rows (one per env-var `label`), so the pick runs per label. The pick is
 `pickMostSpecificCredential` in `packages/core/secrets/team-scope.ts`; the query goes through
 `teamCredentialWhere`, so a personal (`userId`) row is never returned.
 
+### One stored Anthropic or OpenAI key, every surface
+
+A team's Anthropic or OpenAI API key has one canonical storage, `inference_key` with the
+provider's `label` (`anthropic`, `openai`): the row chat reads. Agent runs read it too: the
+host claim's key attach, the Claude route decision, the endpoint ranking, the Codex OpenAI
+key (`resolveOpenAiApiKey` / `hasOpenAiApiKey`) and server-side Anthropic auth
+(`resolveAnthropicAuth`, which cloud egress uses). The legacy purposes `anthropic_api_key`
+and `openai_api_key` are still read as aliases. The pick is `pickTeamAgentApiKey`: the order
+above, plus, within one scope, canonical before legacy (so a team with only legacy rows is
+served exactly as before). The storages come from the provider registry
+(`packages/core/providers/agent-keys.ts`). These are team reads: `user_id IS NULL` is pinned in
+SQL and re-checked in code; a requester's own key reaches a run only through the credential
+policy (`claim/personal-credential-injection.ts`).
+
+`/api/providers` writes team and workspace Anthropic and OpenAI keys to canonical storage
+(`writeStorage` in `packages/core/providers/manage.ts`). Setting one needs both
+`manage_team_model_keys` and `manage_team_credentials`, since it is a chat key and an agent
+credential at once. `POST /api/secrets` still writes the purpose it is given.
+
 ### Who may write a shared credential
 
 Writing or deleting a team-wide, workspace-wide or account-wide credential
@@ -379,7 +398,9 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
 `inference_key` (label `openai`), and **not** the same purpose as
 `codex_credential` — both already existed, and this backend reuses neither:
 
-- **Why not reuse `inference_key`/`openai`?** That row serves chat and decision
+- **Why not reuse `inference_key`/`openai`?** (Superseded: Codex runs now read
+  that row too, ranked above `openai_api_key` within a scope; see "One stored
+  Anthropic or OpenAI key, every surface". The original reasoning:) That row served chat and decision
   calls only (`resolveInferenceKey` in `packages/core/inference-keys.ts`), with
   its own precedence (caller → account → workspace → team, plus a personal
   `userId` dimension — see "API-token model keys" above). Routing it into
@@ -401,7 +422,7 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
 **Resolution order:** `attachCodexCredentials` (claim route) tries
 `resolveCodexCredential` (`codex_credential`) first — an existing ChatGPT
 connect, OAuth or legacy API-key blob, wins if present — and falls back to
-`resolveOpenAiApiKey` (`openai_api_key`) only when nothing resolves there.
+`resolveOpenAiApiKey` (`inference_key`/`openai`, then `openai_api_key`) only when nothing resolves there.
 Either one is synthesized into the exact same `codexCredential: { credentialType:
 'api_key', apiKey }` wire shape the runner already materializes into
 `auth.json` (`writeCodexApiKeyToHome` in `apps/runner/src/codex-auth.ts`) — so

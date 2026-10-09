@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { secrets, accounts } from '@buildd/core/db/schema';
 import { encrypt, decrypt } from '@buildd/core/secrets';
 import { pickMostSpecificCredential, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { agentKeyPurposes, agentKeyStorageIndex, isAgentKeyRow } from '@buildd/core/providers/agent-keys';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
 
@@ -661,14 +662,25 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
 
 // ── Server-side Anthropic auth ────────────────────────────────────────────────
 
-/** Purposes that can authenticate a direct call to the Anthropic API. */
-const ANTHROPIC_AUTH_PURPOSES = ['anthropic_api_key', 'oauth_token', 'claude_credential'] as const;
+/**
+ * Purposes that can authenticate a direct call to the Anthropic API: the
+ * team's API key in either storage (canonical `inference_key` / `anthropic`,
+ * legacy `anthropic_api_key`, provider parity), then the seats.
+ */
+const ANTHROPIC_KEY_PURPOSES = agentKeyPurposes('anthropic');
+const ANTHROPIC_AUTH_PURPOSES = [...ANTHROPIC_KEY_PURPOSES, 'oauth_token', 'claude_credential'] as const;
 
 export interface AnthropicAuth {
   /** Ready-to-spread request headers, including `anthropic-version`. */
   headers: Record<string, string>;
-  purpose: 'anthropic_api_key' | 'oauth_token' | 'claude_credential';
+  /** `inference_key` and `anthropic_api_key` are both the team's API key (x-api-key). */
+  purpose: 'inference_key' | 'anthropic_api_key' | 'oauth_token' | 'claude_credential';
   secretId: string;
+}
+
+/** Is this resolved auth the team's metered API key (either storage), not a seat? */
+export function isAnthropicApiKeyAuth(auth: Pick<AnthropicAuth, 'purpose'>): boolean {
+  return auth.purpose === 'inference_key' || auth.purpose === 'anthropic_api_key';
 }
 
 /**
@@ -695,31 +707,40 @@ export async function resolveAnthropicAuth(opts: {
   teamId: string;
   workspaceId?: string | null;
 }): Promise<AnthropicAuth | null> {
-  const rows = await db.query.secrets.findMany({
-    where: and(
-      eq(secrets.teamId, opts.teamId),
-      or(...ANTHROPIC_AUTH_PURPOSES.map(p => eq(secrets.purpose, p))),
+  // Team rows only (user_id IS NULL): a person's own key is never the team's.
+  const rows = (await db.query.secrets.findMany({
+    where: teamCredentialWhere(
+      { teamId: opts.teamId, purpose: [...ANTHROPIC_AUTH_PURPOSES] },
       or(
         isNull(secrets.workspaceId),
         opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`,
       ),
     ),
     columns: {
-      id: true, purpose: true, encryptedValue: true,
+      id: true, purpose: true, label: true, userId: true, encryptedValue: true,
       workspaceId: true, healthStatus: true, updatedAt: true,
     },
-  });
+  })) as Array<{
+    id: string; purpose: string; label?: string | null; userId?: string | null; encryptedValue: string;
+    workspaceId: string | null; healthStatus: string | null; updatedAt: Date | null;
+  }>;
   if (rows.length === 0) return null;
 
-  const rank = (r: { purpose: string }) => ANTHROPIC_AUTH_PURPOSES.indexOf(r.purpose as never);
+  // An API key in either storage is one class (0); then the setup token, then the managed seat.
+  const isKey = (r: { purpose: string; label?: string | null }) => isAgentKeyRow(r, 'anthropic');
+  const rank = (r: { purpose: string; label?: string | null }) =>
+    isKey(r) ? 0 : (ANTHROPIC_KEY_PURPOSES as readonly string[]).includes(r.purpose) ? -1 : ANTHROPIC_AUTH_PURPOSES.indexOf(r.purpose as never);
+  // Within the key class: canonical (0) before the legacy alias.
+  const storage = (r: { purpose: string; label?: string | null }) => (isKey(r) ? agentKeyStorageIndex(r, 'anthropic') : 0);
 
   const best = rows
-    .filter(r => rank(r) >= 0)
+    .filter(r => !r.userId && rank(r) >= 0)
     .sort((a, b) =>
       rank(a) - rank(b) ||
       // Workspace-specific beats team-wide.
       (b.workspaceId === opts.workspaceId ? 1 : 0) - (a.workspaceId === opts.workspaceId ? 1 : 0) ||
       ((a.healthStatus as string) === 'revoked' ? 1 : 0) - ((b.healthStatus as string) === 'revoked' ? 1 : 0) ||
+      storage(a) - storage(b) ||
       (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0)
     )[0];
 
@@ -738,7 +759,7 @@ export async function resolveAnthropicAuth(opts: {
   if (!value) return null;
 
   const headers: Record<string, string> = { 'anthropic-version': ANTHROPIC_API_VERSION };
-  if (best.purpose === 'anthropic_api_key') headers['x-api-key'] = value;
+  if (isKey(best)) headers['x-api-key'] = value;
   else headers['Authorization'] = `Bearer ${value}`;
 
   return { headers, purpose: best.purpose as AnthropicAuth['purpose'], secretId: best.id };
