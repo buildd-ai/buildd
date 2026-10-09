@@ -40,6 +40,7 @@ import {
   type RouteGroup,
   type PickerTarget,
   routeUnsupported,
+  targetOf,
   rowWarning,
 } from '@/lib/model-picker';
 import { VendorMark } from './VendorMark';
@@ -58,7 +59,7 @@ interface BaseProps {
   /** Replace the trigger's content. */
   triggerLabel?: ReactNode;
   /** What the pick will run: routes that can't serve it are disabled, and OpenAI models warn. */
-  target?: PickerTarget;
+  target?: PickerTarget | ((routeId: string) => PickerTarget | undefined);
   /** Badge text for current rows. Default "current". */
   currentLabel?: string;
   className?: string;
@@ -210,7 +211,7 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
       return;
     }
     const spec = routes.find((r) => r.id === it.row.route);
-    if (spec && routeUnsupported(spec, target) && !it.row.badges.includes('current')) return;
+    if (spec && routeUnsupported(spec, targetOf(target, spec.id)) && !it.row.badges.includes('current')) return;
     if (multi) { toggle(it.row); return; }
     const sp = props as SingleProps;
     if (!sp.value || pickerKey(sp.value) !== it.row.key) sp.onChange({ route: it.row.route, model: it.row.model });
@@ -349,8 +350,8 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
     const isActive = i === active;
     const isLocked = multi && lockedKeys.has(row.key);
     const checked = multi ? isLocked || draftKeys.has(row.key) : row.badges.includes('current');
-    const unsupported = routeUnsupported(routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, target);
-    const warning = rowWarning(row, routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, target);
+    const unsupported = routeUnsupported(routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, targetOf(target, row.route));
+    const warning = rowWarning(row, routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, targetOf(target, row.route));
     const blocked = (multi && !checked && full) || (!!unsupported && !checked);
     return (
       <div

@@ -428,6 +428,16 @@ export function withKeyStatus(
 /** What the chosen model will be used for. Omitted = no check. */
 export type PickerTarget = 'chat' | 'claude-code' | 'cloud' | 'codex';
 
+/** Resolve a picker's `target`, which may vary by route (a coding cell mixes Claude and Codex runners). */
+export function targetOf(target: PickerTarget | ((routeId: string) => PickerTarget | undefined) | undefined, routeId: string): PickerTarget | undefined {
+  return typeof target === 'function' ? target(routeId) : target;
+}
+
+/** What a tier cell's pick will run: chat is chat; coding is Codex on the Codex runner, Claude Code otherwise. */
+export function cellTarget(surface: 'agent' | 'chat'): (routeId: string) => PickerTarget {
+  return (routeId) => (surface === 'chat' ? 'chat' : routeId === 'runner:codex' ? 'codex' : 'claude-code');
+}
+
 const OPENAI_ROUTES = new Set(['openai', 'openai-codex', 'runner:codex']);
 const needsAnthropicWire = (t: PickerTarget) => t === 'claude-code' || t === 'cloud';
 

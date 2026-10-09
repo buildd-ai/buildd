@@ -166,6 +166,15 @@ describe('ModelTiersClient: the cell editor', () => {
     expect(ed.textContent).not.toContain('%');
   });
 
+  it('passes the cell surface to the picker so a Codex runner is not disabled in a coding cell', async () => {
+    await mount();
+    await click(q('[data-testid="cell-agent-premium"]'));
+    await click(q('[data-testid="cell-primary-picker"]'));
+    const rows = [...document.querySelectorAll('[role="option"]')];
+    const codex = rows.filter((r) => r.getAttribute('data-key')?.startsWith('runner:codex::'));
+    for (const r of codex) expect(r.getAttribute('aria-disabled')).toBeNull();
+  });
+
   it('dial 1 greys out may-also-use', async () => {
     await mount();
     await click(q('[data-testid="cell-agent-premium"]'));

@@ -7,6 +7,7 @@ import {
   formatPrice,
   groupPickerRows,
   routeUnsupported,
+  cellTarget,
   rowWarning,
   sameModel,
   withKeyStatus,
@@ -215,5 +216,13 @@ describe('routeUnsupported / rowWarning', () => {
     expect(rowWarning(row, or, 'cloud')).toMatch(/cloud coding/);
     expect(rowWarning(row, or, 'chat')).toBeNull();
     expect(rowWarning({ route: 'openrouter', vendor: 'anthropic' }, or, 'claude-code')).toBeNull();
+  });
+});
+
+describe('cellTarget', () => {
+  it('chat cells are chat; coding cells follow their runner', () => {
+    expect(cellTarget('chat')('anthropic')).toBe('chat');
+    expect(cellTarget('agent')('runner:claude')).toBe('claude-code');
+    expect(cellTarget('agent')('runner:codex')).toBe('codex');
   });
 });

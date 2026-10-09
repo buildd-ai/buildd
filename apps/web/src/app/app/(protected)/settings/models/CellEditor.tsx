@@ -13,7 +13,7 @@ import type { TierProvider } from '@buildd/core/model-tier-defaults';
 import { AnchoredPopover } from '@/components/ui/AnchoredPopover';
 import Sheet from '@/components/ui/Sheet';
 import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
-import { ARM_ROUTE_SPECS, TIER_ROUTES, pickerKey, withKeyStatus, type PickerValue } from '@/lib/model-picker';
+import { ARM_ROUTE_SPECS, TIER_ROUTES, pickerKey, cellTarget, withKeyStatus, type PickerValue } from '@/lib/model-picker';
 import { providerForModel, type CatalogModel, type TierSuggestion } from '@/lib/tier-mapping';
 import type { TierPoolRowView, TierPoolsResponse } from '@/lib/tier-pools-view';
 import { DIAL_LABEL, SURFACE_LABEL, learningParagraph } from '@/lib/model-policy-cells-view';
@@ -139,6 +139,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
           aria-label={`Primary model for ${cell.tier}, ${SURFACE_LABEL[cell.surface].toLowerCase()}`}
           tier={cell.tier}
           routes={primaryRoutes}
+          target={cellTarget(cell.surface)}
           models={models}
           loading={catalogLoading}
           value={primary}
@@ -181,6 +182,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
                 aria-label={`Add models ${cell.tier} may also use`}
                 tier={cell.tier}
                 routes={armRoutes}
+                target={cellTarget(cell.surface)}
                 models={models}
                 locked={locked}
                 value={[]}
