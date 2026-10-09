@@ -17,6 +17,7 @@ import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export interface GridTask {
   id: string;
@@ -108,14 +109,14 @@ function renderTaskCard(
     <SwipeableRow
       key={task.id}
       cardType={cardType}
-      taskTitle={task.title}
+      taskTitle={displayTaskTitle(task.title)}
       prUrl={swipePrUrl}
       taskId={task.id}
       taskStatus={task.status}
     >
       <TaskCard
         id={task.id}
-        title={task.title}
+        title={displayTaskTitle(task.title)}
         taskStatus={task.status}
         workerStatus={task.workerStatus}
         missionId={task.missionId}
@@ -915,8 +916,8 @@ export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missio
                       {task.workspaceName}
                     </span>
                   </div>
-                  <div className="text-[13px] text-text-primary line-clamp-2 leading-snug">
-                    {task.title}
+                  <div className="text-[13px] text-text-primary line-clamp-2 leading-snug" title={task.title}>
+                    {displayTaskTitle(task.title)}
                   </div>
                 </Link>
               ))}

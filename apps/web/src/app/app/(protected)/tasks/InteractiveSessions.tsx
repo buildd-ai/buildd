@@ -5,6 +5,7 @@ import Section from '@/components/ui/Section';
 // Client-safe: the collapse rules, and types only from the db-backed view module.
 import { groupSessionsForDisplay, sessionTaskPreview } from '@/lib/local-session-display';
 import type { LocalSessionView, LocalSessionState, LocalSessionTaskView } from '@/lib/local-session-view';
+import { displayTaskTitle } from '@/lib/task-title';
 
 /**
  * Local interactive sessions (Claude Code, Codex, Cursor on someone's own
@@ -47,8 +48,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 function TaskLink({ t }: { t: LocalSessionTaskView }) {
   return (
-    <Link href={`/app/tasks/${t.id}`} className="block min-h-6 truncate text-body text-text-primary hover:underline">
-      {t.title}
+    <Link href={`/app/tasks/${t.id}`} title={t.title} className="block min-h-6 truncate text-body text-text-primary hover:underline">
+      {displayTaskTitle(t.title)}
     </Link>
   );
 }
