@@ -32,8 +32,13 @@ import { agentKeyStorageIndex, type AgentKeyProvider } from '../providers/agent-
  * team's `pushover` channel on purpose: team reads of `pushover` stay
  * unambiguous, and a personal alert can never resolve to the team key
  * (knowledge-base: buildd/design/subscriptions-and-notifications.md, decision 1).
+ *
+ * `cloudflare_gateway_token` is a minted AI Gateway Run token
+ * (../cloudflare-gateway-tokens.ts): one person's, or the team's agents token
+ * with no `userId`. Like `inference_key`, a team read of it is still the team
+ * row only (`TeamReadablePurpose`).
  */
-export const PERSONAL_SECRET_PURPOSES = ['inference_key', 'pushover_personal'] as const;
+export const PERSONAL_SECRET_PURPOSES = ['inference_key', 'pushover_personal', 'cloudflare_gateway_token'] as const;
 export type PersonalSecretPurpose = (typeof PERSONAL_SECRET_PURPOSES)[number];
 
 export function isPersonalSecretPurpose(purpose: string): purpose is PersonalSecretPurpose {
@@ -50,7 +55,7 @@ export type TeamCredentialPurpose = Exclude<SecretPurpose, PersonalSecretPurpose
  * `TeamCredentialPurpose`; through this helper the read is still only the
  * team's row, because `user_id IS NULL` is pinned below whatever is asked for.
  */
-export type TeamReadablePurpose = TeamCredentialPurpose | 'inference_key';
+export type TeamReadablePurpose = TeamCredentialPurpose | 'inference_key' | 'cloudflare_gateway_token';
 
 export interface TeamCredentialFilter {
   purpose: TeamReadablePurpose | readonly TeamReadablePurpose[];

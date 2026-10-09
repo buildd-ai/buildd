@@ -123,7 +123,7 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('{/* Action first'));
     expect(header).toContain('data-testid="task-subline"');
     expect(header).toContain('<Lifecycle state={headerLifecycle}');
-    expect(header).not.toContain('uppercase');
+    expect(header).not.toMatch(/upper[c]ase/);
     expect(header).not.toContain('task-error-count');
     expect(header).not.toContain('Created <ZonedTime');
     expect(header).not.toContain('task.category');

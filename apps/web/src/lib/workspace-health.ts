@@ -11,13 +11,18 @@ import { isSystemWorkspace } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName, RiskClassAction } from '@buildd/shared';
 import { PRESET_ACTIONS, effectivePathsForClass } from './workspace-policy';
 
-/** `warning` = legacy, should be fixed. `action` = an offer, not a problem. */
-export type HealthSeverity = 'warning' | 'action' | 'info';
+/** `warning` = legacy, should be fixed. */
+export type HealthSeverity = 'warning' | 'info';
 
-export type HealthActionKind = 'review-policy' | 'move-team';
+export type HealthActionKind = 'review-policy';
 
+/**
+ * Moving the workspace to another team is not a health item: it is the
+ * settings page's Danger zone action, and offering it here put it on the page
+ * twice.
+ */
 export interface HealthItem {
-  id: 'policy' | 'team-placement' | 'system-workspace';
+  id: 'policy' | 'system-workspace';
   severity: HealthSeverity;
   label: string;
   /** One-line consequence of taking the action, when it is not obvious. */
@@ -31,8 +36,6 @@ export interface WorkspaceHealthInput {
   configStatus: string;
   accessMode: string;
   gitConfig: Record<string, unknown> | null;
-  /** How many teams the viewing user belongs to. */
-  userTeamCount: number;
 }
 
 /**
@@ -80,15 +83,6 @@ export function checkWorkspaceHealth(input: WorkspaceHealthInput): HealthItem[] 
         ? 'Uses legacy merge settings instead of a risk-class policy'
         : 'Merge policy has not been reviewed',
       action: { kind: 'review-policy', label: 'Review proposed policy' },
-    });
-  }
-
-  if (input.userTeamCount > 1) {
-    items.push({
-      id: 'team-placement',
-      severity: 'action',
-      label: 'Move this workspace to another of your teams',
-      action: { kind: 'move-team', label: 'Move to team…' },
     });
   }
 

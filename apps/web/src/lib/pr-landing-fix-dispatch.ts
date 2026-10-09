@@ -30,11 +30,13 @@ export type LandingFixResult = { taskId?: string; skipped?: string } | null;
 /**
  * The collision migration-safety.ts describes, read back from its reason:
  * `migration number collision: <file> conflicts with open PR #<n> migration <otherFile>`.
- * Null for any other wording (the base-collision form names no other PR file pair this way).
+ * A slot taken on the base reads `#null` and comes back with `against: 'base'`. Null for any other wording.
  */
 export function collisionFromReason(reason: string): MigrationCollision | null {
-  const m = /^migration number collision:\s*(\S+)\s+conflicts with open PR #(\d+) migration\s+(\S+)/.exec(reason);
+  const m = /^migration number collision:\s*(\S+)\s+conflicts with open PR #(\d+|null) migration\s+(\S+)/.exec(reason);
   if (!m) return null;
+  // A slot taken on the base renders its PR number as "null" (migration-safety.ts).
+  if (m[2] === 'null') return { file: m[1]!, otherPrNumber: null, otherFile: m[3]!, against: 'base' };
   return { file: m[1]!, otherPrNumber: Number(m[2]), otherFile: m[3]! };
 }
 

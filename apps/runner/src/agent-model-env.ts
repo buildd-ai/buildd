@@ -171,6 +171,20 @@ export function shouldUseClaudeCredential(
 }
 
 export const TOOL_SEARCH_ENV = 'ENABLE_TOOL_SEARCH';
+/** Claude Code's extra request headers: newline-separated `Name: Value` lines. */
+export const CUSTOM_HEADERS_ENV = 'ANTHROPIC_CUSTOM_HEADERS';
+
+/**
+ * `modelEndpoint.headers` as ANTHROPIC_CUSTOM_HEADERS, or null when there are
+ * none. A name or value with a line break (or a name that is not a token) is
+ * dropped rather than allowed to inject another header.
+ */
+export function customHeadersValue(headers: Record<string, string> | undefined): string | null {
+  const lines = Object.entries(headers ?? {})
+    .filter(([k, v]) => /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(k) && typeof v === 'string' && !/[\r\n]/.test(v))
+    .map(([k, v]) => `${k}: ${v}`);
+  return lines.length > 0 ? lines.join('\n') : null;
+}
 
 export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput): ModelEnvResult {
   const { serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
@@ -224,6 +238,11 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
     for (const k of AUTH_VARS) delete env[k];
     env.ANTHROPIC_BASE_URL = teamEndpoint.baseUrl;
     env[teamEndpoint.authHeader === 'x-api-key' ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN'] = teamEndpoint.authToken;
+    // The team endpoint's own headers replace any the machine set: a
+    // machine's headers were meant for its own proxy, not the team's.
+    delete env[CUSTOM_HEADERS_ENV];
+    const customHeaders = customHeadersValue(teamEndpoint.headers);
+    if (customHeaders) env[CUSTOM_HEADERS_ENV] = customHeaders;
     if (input.budgetModel) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = mapAgentModel(teamEndpoint, input.budgetModel);
     const toolSearch = teamEndpoint.toolSearch === true;
     if (toolSearch) env[TOOL_SEARCH_ENV] = 'true';
