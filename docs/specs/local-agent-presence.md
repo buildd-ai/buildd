@@ -2,7 +2,7 @@
 title: Local Agent Presence
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-09
 summary: A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
@@ -114,7 +114,7 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 - `end` is a compare-and-swap on `ended_at IS NULL`; only the first end acts.
 - With reason `exit` or `other`, each held live worker is detached through `detachInteractiveWorker` (the "Release slot" primitive): a terminal task keeps its status and PR and its worker is recorded completed; an open task goes back to `pending` and its worker is recorded failed with the released-slot error. The seat, path claims and capacity wake are released once.
 - Reason `clear` ends the presence but keeps every claim: the conversation's process and the MCP connection that made the claims keep running.
-- A `start` for an ended session (resume) re-opens it.
+- A `start` for an ended session (resume) re-opens it. A `touch` re-opens it only when it lands more than a minute after the end (a resume whose start was missed); one sooner is a hook that was in flight when the session closed, and changes nothing.
 - Without any end event (crash), the bound worker falls to the existing 2 h interactive idle reaper and presence reads offline after 10 minutes.
 
 **Acceptance criteria**:
@@ -158,6 +158,7 @@ is, from numbers the client already wrote locally, and MUST never move content.
 
 ## Surfaces
 
+- A session's state is decided by its own client's events alone (`local_sessions.last_seen_at`: start, touch, bind, end). It is Working only when that client was heard from in the last 10 minutes and it holds a live worker; Online when heard from and holding none; Offline when not heard from; Ended once the client said so. A write to a held worker (`workers.updated_at`: reaper, webhooks, usage, another session's MCP calls) never makes a session online, never lists an old one again and never moves its clock. A quiet session that still holds live workers reads Offline with those seats shown as held, releasable from the task page.
 - Home's runner board shows live session claims as their own lane, "Your sessions", after the runners: one row per live claim (task, elapsed, progress, steer), captioned "N working · M online". The lane exists only while a claim is live; it is never one of the runners, never counted in the runner count, "Agents live n/N" or capacity, and never reads offline or idle. A claim whose start was never stamped starts at its last activity.
 - Activity shows an "Interactive sessions" section, collapsed so it never buries the task list: sessions working on a task are shown; online sessions with no task are rows when there are at most two, else one "N online with no task" disclosure; offline and ended sessions fold under "N earlier sessions"; a session lists at most three tasks (live first, newest first) then "+N more". Each row: client as a muted badge, state word (Working / Online / Offline / Ended), repo, time, and for live work the line "Runs on your machine. Buildd can release its slot, not close it." The section count is sessions online now. A task worked from a local session names its client (e.g. "Claude Code · local") where a runner name would appear.
 - Release from the dashboard stays the task page's "Release slot" (owner/admin).
