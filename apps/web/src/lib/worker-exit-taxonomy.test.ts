@@ -10,6 +10,7 @@ import {
   isUnrecognizedModelError,
   rejectedModelId,
   INTERACTIVE_ABANDONED_ERROR,
+  INTERACTIVE_BACKSTOP_ERROR,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
   STALE_EXPIRED_ERROR,
@@ -137,6 +138,18 @@ describe('classifyStaleExit', () => {
     // Neither charges the task a retry.
     expect(consumesRetryAttempt(unstarted.exitCause)).toBe(false);
     expect(consumesRetryAttempt(started.exitCause)).toBe(false);
+  });
+
+  it('an interactive release names the signal that expired: the idle TTL or the hard backstop', () => {
+    const now = new Date('2026-10-09T09:13:00Z');
+    const ago = (h: number) => new Date(now.getTime() - h * 3_600_000);
+    expect(classifyStaleExit({ runner: 'mcp', startedAt: ago(5), updatedAt: ago(3) }, now).error).toBe(INTERACTIVE_ABANDONED_ERROR);
+    expect(classifyStaleExit({ runner: 'mcp', startedAt: ago(30), updatedAt: ago(9) }, now).error).toBe(INTERACTIVE_BACKSTOP_ERROR);
+    expect(INTERACTIVE_ABANDONED_ERROR).toContain('2 hours');
+    expect(INTERACTIVE_BACKSTOP_ERROR).toContain('8 hours');
+    // Neither says the task completed.
+    expect(INTERACTIVE_ABANDONED_ERROR).toContain('back to pending');
+    expect(INTERACTIVE_BACKSTOP_ERROR).toContain('back to pending');
   });
 
   it('a runner whose id merely contains "mcp" is still judged as a runner', () => {

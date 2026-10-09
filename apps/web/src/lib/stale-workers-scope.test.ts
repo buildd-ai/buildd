@@ -62,7 +62,7 @@ import {
   HEARTBEAT_STALE_MS,
 } from './stale-workers';
 import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
-import { interactiveAbandonedScope, interactiveTouchScope, INTERACTIVE_TOUCH_THROTTLE_MS } from './interactive-worker-liveness';
+import { claimantPresenceAlive, heldByLivePresence, interactiveAbandonedScope, interactiveTouchScope, INTERACTIVE_TOUCH_THROTTLE_MS } from './interactive-worker-liveness';
 
 const dialect = new PgDialect();
 
@@ -224,7 +224,9 @@ describe('staleWorkerScope: interactive MCP workers', () => {
     expect(text).toMatch(/"workers"\."account_id" = \$\d/);
     expect(text).toMatch(/"workers"\."runner" = \$\d/);
     expect(text).toContain('"workers"."updated_at" <');
-    expect(text).not.toContain('team_id');
+    // What it selects is never team-scoped. (team_id appears only inside the
+    // exemption below: which person's presence may spare the worker.)
+    expect(text.split(' and not ')[0]).not.toContain('team_id');
     expect(q.params).toEqual(expect.arrayContaining(['account-1', 'mcp', 'idle', 'running', 'starting']));
     // A parked question is governed by the waiting_input sweep, not this arm.
     expect(q.params).not.toContain('waiting_input');
@@ -251,6 +253,40 @@ describe('staleWorkerScope: interactive MCP workers', () => {
     expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString());
     expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString());
     expect(INTERACTIVE_WORKER_BUSY_MAX_MS).toBeGreaterThan(INTERACTIVE_WORKER_IDLE_TTL_MS);
+  });
+
+  // Owner evidence: the client's presence stayed fresh while the claim it was
+  // not holding (a /clear, a missed bind) went 2h without a touch.
+  it('the interactive arm spares a worker whose claimant has a live session in its workspace, up to the backstop', () => {
+    const q = dialect.sqlToQuery(interactiveAbandonedScope('account-1', NOW));
+    const text = q.sql.toLowerCase().replace(/\s+/g, ' ');
+    expect(text).toContain('not ( "workers"."updated_at" > $');
+    expect(text).toContain('from "local_sessions" ls_mine');
+    expect(text).toContain('ls_mine."workspace_id" = "workers"."workspace_id"');
+    expect(text).toContain('ls_mine."account_id" = "workers"."account_id"');
+    // A person's presence: whoever the claim recorded, else a member of the claiming account's team.
+    expect(text).toContain('t_who.context->>$');
+    expect(q.params).toContain('interactiveClaimUserId');
+    expect(text).toContain('join "accounts" a_mine on a_mine.team_id = tm_mine."team_id"');
+    expect(text).toContain('a_mine.id = "workers"."account_id"');
+  });
+
+  it('each exemption renders on its own, correlated to the outer worker row', () => {
+    const held = dialect.sqlToQuery(heldByLivePresence(NOW));
+    expect(held.sql).toMatch(/^EXISTS \(/);
+    expect(held.sql).toContain('ls_hold."busy_since" IS NOT NULL');
+    expect(held.params).toEqual([
+      new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString(),
+      new Date(NOW.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString(),
+    ]);
+    const mine = dialect.sqlToQuery(claimantPresenceAlive(NOW));
+    expect(mine.sql).toContain('"workers"."updated_at" >');
+    expect(mine.sql).toContain('ls_mine."last_seen_at" >');
+    expect(mine.params).toEqual(expect.arrayContaining([
+      new Date(NOW.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString(),
+      new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString(),
+      'interactiveClaimUserId',
+    ]));
   });
 
   it('the team-scoped never-started arm skips interactive workers', () => {

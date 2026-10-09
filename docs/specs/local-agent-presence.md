@@ -65,7 +65,7 @@ to buildd with four typed events and nothing else, and MUST never break the
 agent loop it runs in.
 
 **Invariants**:
-- The wire format is `{ event: start|touch|bind|end, client: claude|codex|cursor|other, clientSessionId, clientVersion?, repo?, interactive?, workerId? (bind only), reason?: exit|clear|other (end only), usage? (touch and end only) }`. The endpoint refuses any other field, at every level of `usage` too, so no prompt, response, reasoning, transcript or secret can ride along.
+- The wire format is `{ event: start|touch|bind|end, client: claude|codex|cursor|other, clientSessionId, clientVersion?, repo?, interactive?, workerId? (bind only), reason?: exit|clear|other (end only), usage? (touch and end only), busy? (touch only), continuesSessionId? (start only) }`. The endpoint refuses any other field, at every level of `usage` too, so no prompt, response, reasoning, transcript or secret can ride along.
 - The client session id is stored only as a SHA-256 hash. `repo` is reduced to `owner/name` (credentials and host dropped) on the client and again on the server.
 - Auth is the person's presence token (`bldp_`, `~/.buildd/config.json` `presenceToken`, written by `buildd login`; `BUILDD_PRESENCE_TOKEN` overrides), else the account API key. No credential is written into any hook configuration. Trigger-level keys are refused.
 - A presence token is minted only by a login (device flow or browser), for the person who signed in, one per machine (a new login on the same machine revokes the previous one). It is HMAC-signed and never stored; its `presence_tokens` row (user, machine label, created, last used, revoked) is what makes it revocable: `buildd logout` revokes it, and the signed-in person can list and revoke theirs (`/api/auth/presence-token`). A token whose person is in no team any more is refused.
@@ -95,6 +95,7 @@ become tracked work only through that session's own verified `claim_task`.
 - A presence may hold several workers: Claude Code subagents share the parent's `session_id` and their tool calls fire the parent's hooks, so each subagent's `claim_task` binds to the same presence (`local_session_workers`, one row per worker). One worker is bound to at most one presence, ever (primary key on `local_session_workers.worker_id`). A presence bound before multi-claim keeps its single worker through the legacy `local_sessions.bound_worker_id` column, which is read (never written) and also guards that worker against other sessions.
 - The hook keeps, on the person's machine only, which subagent made which claim (`agent_id` from the subagent's PostToolUse payload); it is never sent.
 - A hook `touch` refreshes `workers.updated_at` only for the presence's own held workers, each under the same once-a-minute guard as the MCP touch. Another session's hooks never touch them.
+- A `touch` may carry `busy`: `true` from `UserPromptSubmit` and `PreToolUse` (a turn or a tool is starting), `false` from `Stop`. The server writes `local_sessions.busy_since` only when the mark changes, never throttled, with `last_seen_at`; a `start` clears it. A long command fires no hook until it returns, so this is what tells the interactive reaper the client is still working (see [runner-liveness](runner-liveness.md)). Client side, a flip is sent at once and an unchanged mark is throttled like any touch; `PreToolUse` is async on Claude Code, reads no tool input and no transcript, and a racing write never drops a recorded claim (claims are merged with the state file at write time).
 - The hook binds deterministically: its post-tool hook reads the worker id from buildd's own `claim_task` reply. It reads no other tool output.
 
 **Acceptance criteria**:
@@ -113,14 +114,15 @@ and exactly once, and MUST never complete unfinished work or rewrite a finished 
 **Invariants**:
 - `end` is a compare-and-swap on `ended_at IS NULL`; only the first end acts.
 - With reason `exit` or `other`, each held live worker is detached through `detachInteractiveWorker` (the "Release slot" primitive): a terminal task keeps its status and PR and its worker is recorded completed; an open task goes back to `pending` and its worker is recorded failed with the released-slot error. The seat, path claims and capacity wake are released once.
-- Reason `clear` ends the presence but keeps every claim: the conversation's process and the MCP connection that made the claims keep running.
+- Reason `clear` ends the presence but keeps every claim: the conversation's process and the MCP connection that made the claims keep running. The hook leaves a note (old session id only, per folder and client, on the machine) and the `start` of the session that continues (`SessionStart` with `source: clear`, within a minute) carries `continuesSessionId`. The server moves every worker the named presence holds to the new one, only for a presence of the same owner and client that is open or ended by `clear`, and the hook moves its local claims and usage totals with them, so the cleared conversation's touches keep its claims alive.
 - A `start` for an ended session (resume) re-opens it. A `touch` re-opens it only when it lands more than a minute after the end (a resume whose start was missed); one sooner is a hook that was in flight when the session closed, and changes nothing.
-- Without any end event (crash), the bound worker falls to the existing 2 h interactive idle reaper and presence reads offline after 10 minutes.
+- Without any end event (crash), the bound worker falls to the interactive reaper (2 h, or up to the 8 h backstop when the presence was mid-turn) and presence reads offline after 10 minutes. A reaped claim's open task goes back to `pending` at once, so the same client can claim it again.
 
 **Acceptance criteria**:
 - AC-7: GIVEN a bound worker on an `in_progress` task WHEN `end` (exit) arrives THEN the task is `pending`, not `completed`.
 - AC-8: GIVEN a bound worker whose task is `completed` WHEN `end` arrives three times THEN the task stays `completed` and the seat is released once.
 - AC-8b: GIVEN a presence holding two live workers WHEN `end` (exit) arrives THEN both tasks go back to `pending` and each seat is released exactly once; a replayed `end` changes nothing.
+- AC-8c: GIVEN a presence holding a live worker WHEN it ends with `clear` and the continuing session's `start` names it THEN the new presence holds the worker, nothing is released, and the new session's touches keep it alive; a `start` naming a session that exited, or another account's, moves nothing.
 
 **Code surface**: `handleLocalSessionEvent` `end` branch, `detachInteractiveWorker` (`apps/web/src/lib/interactive-detach.ts`).
 
@@ -179,7 +181,7 @@ installable from the repo's marketplace (`.claude-plugin/marketplace.json`).
 |---|---|---|---|
 | Plugin install | marketplace plugin, or `buildd install` | hooks file via `buildd install`; Codex plugin bundling | hooks file via `buildd install` |
 | MCP | plugin `mcpServers` or `~/.claude.json` | `codex mcp add` (printed by the installer) | Settings > MCP (printed by the installer) |
-| Lifecycle hooks | SessionStart, UserPromptSubmit, Stop, PostToolUse, SessionEnd | same names; each hook must be trusted in `/hooks` first | sessionStart, afterAgentResponse, stop, afterMCPExecution, sessionEnd |
+| Lifecycle hooks | SessionStart, UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionEnd | same names; each hook must be trusted in `/hooks` first | sessionStart, afterAgentResponse, stop, afterMCPExecution, sessionEnd |
 | Stable session id | `session_id` | `session_id` | `conversation_id` |
 | Session end | reliable on exit; `clear` keeps the claim | `SessionEnd` reason is always `other` (treated as exit) | only `window_close` / `user_close` end; `completed`/`aborted`/`error` are touches |
 | Subagent identity | subagents share the parent `session_id`; they are the same presence | same | same conversation |
