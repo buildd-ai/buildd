@@ -1068,6 +1068,12 @@ describe('T25/T26 trunk breaker (S24)', () => {
     expect(applied(tr(V(D({ state: 'REPAIRING', stateReason: 'ci' })))).patch.resumeState).toBe('AWAITING_REVIEW');
     expect(applied(tr(V(D({ state: 'REPAIRING', stateReason: 'ci', approvedHeads: ['H1'] })))).patch.resumeState).toBe('APPROVED');
   });
+  test('the dispatch key is the incident, never the base: a new incident after recovery owes a dispatch of its own', () => {
+    // workflow_effects dedupes on this key forever; a base-scoped key would swallow every later red on that base.
+    const key = (incidentId: string) => applied(tr(V(D({ state: 'AWAITING_REVIEW' })), { incidentId })).effects.find((e) => e.kind === 'dispatch_trunk_fix')!.dedupeKey;
+    expect(key('i1')).toBe('dispatch_trunk_fix:i1');
+    expect(key('i2')).not.toBe(key('i1'));
+  });
   test('guards', () => {
     expectResult(tr(V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1' }))), 'duplicate');
     expectResult(tr(V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i2' }))), 'stale', 'blocked_on_other_incident');
