@@ -410,7 +410,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
   `LLM_PROVIDER` still wins. Endpoint runs are metered. **Codex**: the same row
   routes Codex tasks too, when the kind has an OpenAI-compatible wire —
-  `gateway` (LiteLLM) and `openrouter` do, `anthropic-compatible` doesn't. A
+  `gateway` (LiteLLM) and `openrouter` do, `anthropic-compatible` doesn't
+  (`cloudflare` does only through an OpenRouter upstream with no gateway
+  token). A `cloudflare` endpoint sends agents through the team's Cloudflare AI
+  Gateway on its stored Anthropic or OpenRouter key; a Run-only gateway token
+  rides as a header, so only a runner that applies headers gets one. A
   Codex task ranks the endpoint against `openai_api_key` / `codex_credential`
   instead (`resolveAgentModelRoute`'s `backend: 'codex'`), and the runner
   applies it as `OPENAI_BASE_URL` + `OPENAI_API_KEY` (not the Anthropic auth

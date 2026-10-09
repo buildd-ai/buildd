@@ -1484,7 +1484,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1508,6 +1508,15 @@ export interface ClaimModelEndpoint {
    * default. Absent/false: not set. Never applied to a Codex run.
    */
   toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
