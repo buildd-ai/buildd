@@ -1083,7 +1083,7 @@ async function handlePullRequestEvent(event: {
     // A kernel-owned merge's work already ran (or is durably owed) as effects of T17.
     if (!kernelOwned) {
       await runMergedPrWork({
-        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null },
+        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null, runner: worker.runner },
         task: worker.task
           ? {
               id: worker.task.id,
