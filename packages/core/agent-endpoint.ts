@@ -13,10 +13,18 @@
  *   { "kind": "gateway", "agentBaseUrl"?: "…", "models"?: {…} }
  *       Reference to the team's LiteLLM gateway row (`inference_key`/`litellm`,
  *       same scope or broader): its key, its root minus a trailing `/v1`.
+ *   { "kind": "openrouter", "baseUrl", "authHeader"?, "models"?: {…} }
+ *       Reference to the team's OpenRouter key (`inference_key`/`openrouter`,
+ *       or its legacy `decision_key`, same scope or broader), exactly as the
+ *       gateway reference above. The canonical shape.
  *   { "kind": "openrouter" | "anthropic-compatible", "baseUrl", "apiKey",
  *     "authHeader"?: "authorization" | "x-api-key", "models"?: {…} }
  *       Self-contained. `baseUrl` is the Anthropic-compatible root;
- *       `/v1/messages` is appended by the client.
+ *       `/v1/messages` is appended by the client. For `openrouter` this inline
+ *       key is legacy: it still works, and
+ *       `scripts/consolidate-openrouter-endpoint-keys.ts` turns it into a
+ *       reference. A row whose inline key differs from the stored one is left
+ *       inline and flagged `capabilities.legacyInlineKey`.
  *
  * Either shape may carry `"appliesTo": ["<workspace id>", …]` on the team-wide
  * row: the endpoint then applies to those workspaces only (absent = all).
@@ -87,6 +95,12 @@ export type AgentModelMap = Record<string, string>;
 export interface AgentEndpointCapabilities {
   /** Anthropic deferred tool loading (ToolSearch / `tool_reference`) passes through. */
   toolSearch?: boolean;
+  /**
+   * `openrouter` only, set by the consolidation backfill: the row's inline key
+   * differs from the stored OpenRouter key at its scope, so it was left inline
+   * for a person to pick one. Not a wire capability; nothing routes on it.
+   */
+  legacyInlineKey?: boolean;
 }
 
 /**
@@ -110,7 +124,17 @@ export function effectiveToolSearch(kind: AgentEndpointKind, capabilities?: Agen
 export type AgentEndpointBlob =
   | { kind: 'gateway'; agentBaseUrl?: string; models?: AgentModelMap; appliesTo?: string[]; capabilities?: AgentEndpointCapabilities }
   | {
-      kind: 'openrouter' | 'anthropic-compatible';
+      kind: 'openrouter';
+      baseUrl: string;
+      /** Legacy inline key. Absent = a reference to the stored OpenRouter key. */
+      apiKey?: string;
+      authHeader: AgentEndpointAuthHeader;
+      models?: AgentModelMap;
+      appliesTo?: string[];
+      capabilities?: AgentEndpointCapabilities;
+    }
+  | {
+      kind: 'anthropic-compatible';
       baseUrl: string;
       apiKey: string;
       authHeader: AgentEndpointAuthHeader;
@@ -209,10 +233,10 @@ export function parseCapabilities(raw: unknown): { ok: true; capabilities?: Agen
   if (!isRecord(raw)) return { ok: false, error: 'capabilities must be an object.' };
   const out: AgentEndpointCapabilities = {};
   for (const [k, v] of Object.entries(raw)) {
-    if (k !== 'toolSearch') return { ok: false, error: `Unknown endpoint capability: ${k}.` };
+    if (k !== 'toolSearch' && k !== 'legacyInlineKey') return { ok: false, error: `Unknown endpoint capability: ${k}.` };
     if (v === undefined || v === null) continue;
-    if (typeof v !== 'boolean') return { ok: false, error: 'capabilities.toolSearch must be true or false.' };
-    out.toolSearch = v;
+    if (typeof v !== 'boolean') return { ok: false, error: `capabilities.${k} must be true or false.` };
+    out[k] = v;
   }
   return { ok: true, capabilities: Object.keys(out).length > 0 ? out : undefined };
 }
@@ -263,11 +287,22 @@ export function validateAgentEndpointInput(input: unknown): Validated {
   if (typeof rawUrl !== 'string') return { ok: false, error: 'baseUrl is required.' };
   const problem = gatewayUrlProblem(rawUrl);
   if (problem) return { ok: false, error: problem };
-  const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
-  if (!apiKey || /\s/.test(apiKey)) return { ok: false, error: 'That doesn\'t look like a key.' };
   const authHeader = parseAuthHeader(input.authHeader);
   if (!authHeader) return { ok: false, error: 'authHeader must be authorization or x-api-key.' };
-  const blob: AgentEndpointBlob = { kind: kind as 'openrouter' | 'anthropic-compatible', baseUrl: normalizeGatewayUrl(rawUrl), apiKey, authHeader };
+  // OpenRouter with no key is a reference to the stored OpenRouter key.
+  const noKey = input.apiKey === undefined || input.apiKey === null || input.apiKey === '';
+  if (kind === 'openrouter' && noKey) {
+    const blob: AgentEndpointBlob = { kind: 'openrouter', baseUrl: normalizeGatewayUrl(rawUrl), authHeader };
+    if (models.models) blob.models = models.models;
+    if (scope.appliesTo) blob.appliesTo = scope.appliesTo;
+    if (caps.capabilities) blob.capabilities = caps.capabilities;
+    return { ok: true, blob };
+  }
+  const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+  if (!apiKey || /\s/.test(apiKey)) return { ok: false, error: 'That doesn\'t look like a key.' };
+  const blob: AgentEndpointBlob = kind === 'openrouter'
+    ? { kind: 'openrouter', baseUrl: normalizeGatewayUrl(rawUrl), apiKey, authHeader }
+    : { kind: 'anthropic-compatible', baseUrl: normalizeGatewayUrl(rawUrl), apiKey, authHeader };
   if (models.models) blob.models = models.models;
   if (scope.appliesTo) blob.appliesTo = scope.appliesTo;
   if (caps.capabilities) blob.capabilities = caps.capabilities;
@@ -308,8 +343,27 @@ function openAiBaseUrlFor(kind: AgentEndpointKind, anthropicBaseUrl: string, gat
   return undefined;
 }
 
-/** A blob plus (for `kind: gateway`) the gateway it points at, as a route. Null when it routes nothing. */
-export function resolveEndpointFromBlob(blob: AgentEndpointBlob, gateway: LiteLLMGateway | null): AgentEndpointRoute | null {
+/** An `openrouter` blob with no inline key: it routes the stored OpenRouter key. */
+export function isOpenRouterReference(blob: AgentEndpointBlob): boolean {
+  return blob.kind === 'openrouter' && !blob.apiKey;
+}
+
+/** A blob that needs a stored credential looked up before it routes anything. */
+export function isEndpointReference(blob: AgentEndpointBlob): boolean {
+  return blob.kind === 'gateway' || isOpenRouterReference(blob);
+}
+
+/**
+ * A blob plus what it references, as a route: for `kind: gateway` the gateway
+ * it points at; for an `openrouter` reference the stored OpenRouter key
+ * (`openRouterKey`, ignored when the blob carries its own legacy key). Null
+ * when it routes nothing.
+ */
+export function resolveEndpointFromBlob(
+  blob: AgentEndpointBlob,
+  gateway: LiteLLMGateway | null,
+  openRouterKey: string | null = null,
+): AgentEndpointRoute | null {
   if (blob.kind === 'gateway') {
     if (!gateway) return null;
     const baseUrl = blob.agentBaseUrl ?? agentBaseUrlFromGateway(gateway.baseURL);
@@ -323,10 +377,12 @@ export function resolveEndpointFromBlob(blob: AgentEndpointBlob, gateway: LiteLL
       toolSearch: effectiveToolSearch('gateway', blob.capabilities),
     };
   }
+  const apiKey = blob.kind === 'openrouter' ? (blob.apiKey || openRouterKey) : blob.apiKey;
+  if (!apiKey) return null;
   return {
     kind: blob.kind,
     baseUrl: blob.baseUrl,
-    apiKey: blob.apiKey,
+    apiKey,
     authHeader: blob.authHeader,
     models: blob.models ?? {},
     openAiBaseUrl: openAiBaseUrlFor(blob.kind, blob.baseUrl, undefined),
@@ -427,6 +483,47 @@ export function rankEndpointRows<T extends { workspaceId: string | null; account
 
 // ── Resolvers (lazy DB) ───────────────────────────────────────────────────────
 
+/** The scopes an endpoint reference may resolve in: its own or broader, never personal or account. */
+const REFERENCE_SCOPES = ['workspace', 'team'] as const;
+
+export interface StoredOpenRouterKey {
+  key: string;
+  secretId: string;
+  scope: 'workspace' | 'team';
+}
+
+/**
+ * The stored OpenRouter key an `openrouter` reference at this scope resolves
+ * to: `workspaceId` set = that workspace's key, else the team's; `workspaceId`
+ * null = the team's only (a team-wide reference never picks up one
+ * workspace's key). Canonical `inference_key`/`openrouter` over legacy
+ * `decision_key`, healthy over revoked, newest: the resolver's chat ranking,
+ * narrowed exactly as `resolveLiteLLMGateway` narrows it for a gateway
+ * reference. The inference key policy does not bind it (agent runs are not
+ * server-side spend, docs/design/agent-model-endpoint.md §1). Null when none.
+ * Throws on a lookup failure; callers decide what that means.
+ */
+export async function resolveStoredOpenRouterKey(opts: { teamId: string; workspaceId: string | null }): Promise<StoredOpenRouterKey | null> {
+  const { decrypt } = await import('./secrets');
+  const { resolveProviderCredential } = await import('./providers/resolve');
+  const result = await resolveProviderCredential({
+    teamId: opts.teamId,
+    workspaceId: opts.workspaceId,
+    accountId: null,
+    requesterUserId: null,
+    surface: 'chat',
+    provider: 'openrouter',
+    scopes: REFERENCE_SCOPES,
+    team: { credentialPolicy: 'team' },
+    accept: v => v.trim().length > 0,
+    decrypt,
+  });
+  if (result.none || !result.source.secretId) return null;
+  const scope = result.scope === 'workspace' ? 'workspace' : result.scope === 'team' ? 'team' : null;
+  if (!scope) return null;
+  return { key: result.credential.value.trim(), secretId: result.source.secretId, scope };
+}
+
 /**
  * The endpoint for this team (and workspace): a workspace row first, then the
  * team's (only when its `appliesTo` is absent or lists this workspace);
@@ -459,15 +556,16 @@ export async function resolveAgentEndpoint(opts: { teamId: string; workspaceId?:
         if (!endpointAppliesTo(blob, r.workspaceId, opts.workspaceId)) continue;
         const scope: AgentEndpointScope = r.workspaceId ? 'workspace' : 'team';
         let gateway: LiteLLMGateway | null = null;
+        let openRouterKey: string | null = null;
+        // Same scope or broader: a team-wide reference never picks up one
+        // workspace's gateway or key.
+        const refScope = { teamId: opts.teamId, workspaceId: scope === 'workspace' ? opts.workspaceId ?? null : null };
         if (blob.kind === 'gateway') {
-          // Same scope or broader: a team-wide reference never picks up one
-          // workspace's gateway.
-          gateway = await resolveLiteLLMGateway(
-            { teamId: opts.teamId, workspaceId: scope === 'workspace' ? opts.workspaceId : null },
-            { ignoreKeyPolicy: true },
-          );
+          gateway = await resolveLiteLLMGateway(refScope, { ignoreKeyPolicy: true });
+        } else if (isOpenRouterReference(blob)) {
+          openRouterKey = (await resolveStoredOpenRouterKey(refScope))?.key ?? null;
         }
-        const route = resolveEndpointFromBlob(blob, gateway);
+        const route = resolveEndpointFromBlob(blob, gateway, openRouterKey);
         if (route) return { ...route, secretId: r.id, scope };
       } catch (e) {
         console.error(`[agent-endpoint] failed to read secret ${r.id}:`, e);
