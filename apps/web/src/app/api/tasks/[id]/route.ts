@@ -1,7 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
-import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
+import { isTerminalTaskStatus, canDeleteTask, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
@@ -29,6 +29,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
@@ -287,7 +288,7 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn, abort } = body;
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
     // there, via check_path_claim / POST /api/tasks/[id]/path-claim, which take a
@@ -456,6 +457,37 @@ export async function PATCH(
       }
       updateData.context = baseCtx;
     }
+    // Reschedule: move a queued task's start later, or back to ASAP (startAt:
+    // null), without cancelling it. The claim route already honours startAt
+    // and the outbox trigger re-wakes on the new time. Only before a worker
+    // has the task: a started run is paused or cancelled, not rescheduled.
+    if (startAt !== undefined || startIn !== undefined) {
+      if (task.status !== 'pending' || task.claimedBy) {
+        const state = task.status === 'pending' ? 'claimed by a worker' : task.status;
+        return NextResponse.json(
+          { error: `This task is already ${state}, so it has no start time to move. A start time only applies while a task is waiting; cancel it, or wait for it to finish.` },
+          { status: 409 },
+        );
+      }
+      let deferred;
+      try {
+        deferred = startAt === null && startIn === undefined
+          ? { startAt: null, resolution: null }
+          : resolveDeferredStart({ startAt, startIn });
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid start time' }, { status: 400 });
+      }
+      updateData.startAt = deferred.startAt;
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      if (deferred.resolution) {
+        baseCtx.startResolution = deferred.resolution;
+        baseCtx.rescheduledBy = { at: new Date().toISOString(), userId: user && !apiAccount ? user.id : null };
+      } else {
+        delete baseCtx.startResolution;
+        delete baseCtx.rescheduledBy;
+      }
+      updateData.context = baseCtx;
+    }
     if (rawRequiredConnectors !== undefined) {
       if (rawRequiredConnectors === null) {
         updateData.requiredConnectors = null;
@@ -553,6 +585,30 @@ export async function PATCH(
             { error: 'Cannot change status directly — task has an active worker. Use complete_task via the worker instead.' },
             { status: 409 }
           );
+        }
+      }
+      // Cancelling stops a live agent mid-run: its session ends and any work it
+      // has not pushed is lost. The caller has to ask for that (abort: true);
+      // without it the cancel is refused and nothing changes.
+      if (status === 'cancelled') {
+        if (abort !== undefined && typeof abort !== 'boolean') {
+          return NextResponse.json({ error: 'abort must be true or false' }, { status: 400 });
+        }
+        if (abort !== true) {
+          const liveWorker = await db.query.workers.findFirst({
+            where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+            columns: { id: true, status: true },
+          });
+          if (liveWorker) {
+            return NextResponse.json(
+              {
+                error: `An agent is working on this task right now (worker ${liveWorker.id}, ${liveWorker.status}). Cancelling stops it mid-run and loses anything it has not pushed. To stop it anyway, send abort: true. To hold work that has not started, move its start time instead.`,
+                code: 'live_worker',
+                workerId: liveWorker.id,
+              },
+              { status: 409 },
+            );
+          }
         }
       }
       updateData.status = status;
