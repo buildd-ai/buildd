@@ -407,6 +407,29 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Member repo access (lib/member-repo-access.ts): exact values only, and
+      // turning it on needs a linked repo, or every member would be refused.
+      if ('memberRepoAccess' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).memberRepoAccess;
+        if (mode !== null && mode !== 'off' && mode !== 'require_read') {
+          return NextResponse.json(
+            { error: "gitConfig.memberRepoAccess must be 'off', 'require_read' or null" },
+            { status: 400 },
+          );
+        }
+        if (mode === 'require_read') {
+          const linked = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, id),
+            columns: { githubRepoId: true },
+          });
+          if (!linked?.githubRepoId) {
+            return NextResponse.json(
+              { error: 'gitConfig.memberRepoAccess needs a linked GitHub repository first' },
+              { status: 400 },
+            );
+          }
+        }
+      }
       // GitHub credentials opt-out for self-hosted agents: the one accepted
       // value is 'runner', so a typo cannot hand agents the operator's token.
       if ('agentGitHubCredentials' in gitConfig) {
