@@ -179,6 +179,18 @@ export async function findSharedSlugClash(
   });
 }
 
+/**
+ * True when a write lost the race for a team-level slug: the database's
+ * `ws_skills_team_slug_idx` holds team roles and shared personal roles in one
+ * namespace, so this is the same clash `findSharedSlugClash` reports.
+ */
+export function isSharedSlugViolation(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } } | null;
+  const c = e?.code === '23505' ? e : e?.cause?.code === '23505' ? e.cause : null;
+  if (!c) return false;
+  return !c.constraint || c.constraint === 'ws_skills_team_slug_idx';
+}
+
 export function sharedSlugClashBody(clash: { id: string; slug: string; ownerUserId: string | null }) {
   const kind = clash.ownerUserId ? 'a shared personal role' : 'a team role';
   return {
