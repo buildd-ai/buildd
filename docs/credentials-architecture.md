@@ -179,6 +179,16 @@ or `{ "kind": "openrouter" | "anthropic-compatible", "baseUrl", "apiKey",
 routes; `packages/core/scripts/consolidate-openrouter-endpoint-keys.ts` (dry
 run by default, `--apply` to write) turns it into a reference, or flags the row
 `capabilities.legacyInlineKey` when the stored key differs.
+`{ "kind": "cloudflare", "upstream": "anthropic" | "openrouter", "gatewayToken"? }`
+references the team's `cloudflare_token` row for its account and AI Gateway ids
+only (never its token) and the stored Anthropic or OpenRouter key (same scope or
+broader). Agents call `gateway.ai.cloudflare.com/v1/<account>/<gateway>/<upstream>`
+with that key. `gatewayToken`, for an authenticated gateway, must be a separate
+token limited to AI Gateway Run: it reaches runners as `cf-aig-authorization`
+(`modelEndpoint.headers` → `ANTHROPIC_CUSTOM_HEADERS`), so an endpoint carrying
+one is only given to a runner declaring the `agent_endpoint_headers` feature;
+the cloud egress adds it to each forwarded call. A Codex task gets an OpenAI
+route only through an OpenRouter upstream with no gateway token.
 `resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
 `anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
 team, a tie to the endpoint, only the winner delivered. The key policy does not
@@ -391,13 +401,36 @@ own team only, `no-store`, audited as elevated before it decrypts. Its one
 remaining caller is the container-image `wrangler deploy` step of
 `apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
-The same row also serves **decision calls** when the team's decision model says
+The same row's account and gateway ids (never the token) also route **agent
+runs** through an `agent_endpoint` of kind `cloudflare` (see "Agent model
+endpoint" above).
+
+It also serves **decision calls** when the team's decision model says
 `via: 'cloudflare'` (`packages/core/cloudflare-ai-gateway.ts`). Cloudflare's Clef
 models run on Workers AI with the token as the key, through `aiGatewayId` when it is
 set. Jev goes through the gateway's OpenRouter path, still on the team's OpenRouter
 key, and the token is sent as `cf-aig-authorization`. The key policy `own` turns
 this off, and a `revoked` row is skipped. For Clef the token needs Workers AI Read,
 and AI Gateway Run if the gateway is authenticated.
+
+### Minted AI Gateway Run tokens (`cloudflare_gateway_token`)
+
+Tokens the team's `cloudflare_token` mints (`POST /accounts/<id>/tokens`,
+account-owned, AI Gateway Run + Workers AI Read only, 90-day expiry), so model
+calls stop spending a token that can deploy Workers. Purpose
+`cloudflare_gateway_token`, a `PERSONAL_SECRET_PURPOSES` entry: one row per
+person (`userId` set) and one team row (no `userId`, the agents token), JSON
+`{ token, tokenId, accountId, expiresOn }`. Minting needs the team token to hold
+Account API Tokens Edit; a refusal says so. Creating again replaces the row and
+revokes the old token at Cloudflare; removing revokes first and keeps the row if
+Cloudflare cannot be reached. `/api/cloudflare/gateway-tokens` (session only):
+any member manages their own, owners and admins the team's; reads are masked.
+
+Spent by `packages/core/cloudflare-gateway-tokens.ts` `resolveGatewayRunToken`:
+decision calls via Cloudflare use the acting person's token, else the team's,
+else the team `cloudflare_token` as before. A `cloudflare` agent endpoint with no
+pasted `gatewayToken` sends the team's token (never a person's) as
+`cf-aig-authorization`. Expired, revoked and other-account tokens are skipped.
 
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 

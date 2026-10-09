@@ -266,6 +266,24 @@ describe('shutdownDeadBuilddPrs', () => {
 
   // ── Tier 2: conflict-dead + green successor ─────────────────────────────────
 
+  it('never auto-closes a mission ship PR that merely shares a subject with the merged PR', async () => {
+    mockWorkspacesFindFirst.mockImplementation(() => makeWorkspace());
+    mockWorkersFindFirst.mockImplementation(() => makeEventWorker());
+    mockTasksFindFirst.mockImplementation(() => makeEventTask());
+    mockTasksFindMany.mockImplementation(() => [
+      { ...makeLoserTask(), title: 'Ship mission: Failure Pattern Sentinel', taskClass: 'bookkeeping' },
+    ]);
+    mockWorkersFindMany.mockImplementation(() => [
+      makeLoserWorker({ updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) }),
+    ]);
+
+    const result = await shutdownDeadBuilddPrs(WS_ID, WINNER_PR, true, INSTALLATION_ID, REPO);
+
+    expect(result.closedPrNumbers).toHaveLength(0);
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(recordedFacts).toHaveLength(0);
+  });
+
   it('Tier 2: closes a conflict-dead loser PR after conflictDeadDays when winner merges', async () => {
     // conflictDetectedAt = 8 days ago (> 7 day threshold)
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);

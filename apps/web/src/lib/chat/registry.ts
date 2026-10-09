@@ -143,6 +143,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   explain: one(read('GET /api/explain')),
   get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
   get_failure_analytics: one(read('GET /api/health/failures')),
+  list_incidents: one(read('GET /api/health/incidents')),
   dispatch_health: one(deferred('ops read over the transport; the dashboard section covers chat users')),
   get_manifest_coverage: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_path_claim_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
