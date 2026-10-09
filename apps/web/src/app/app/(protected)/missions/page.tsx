@@ -9,36 +9,20 @@ import Link from 'next/link';
 import { NewWorkLink, SetUpChatNudge } from '@/components/chat/ChatEntry';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
-import { computeMissionFlightStrip, type MissionFlightStripData } from '@buildd/core/mission-helpers';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import {
-  buildMissionCardView,
-  countActiveMissions,
-  failedDeliverableTaskIds,
-  summarizeMissionForCard,
-  type BlockingTask,
-  type MissionCardRow,
-} from '@/lib/mission-card-view';
-import { MissionGrid, type MissionItem } from './MissionGrid';
+import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
+import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { MissionGrid, type PortfolioRow } from './MissionGrid';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
-  adaptFlightStripInputs,
   buildActiveMissionsQueryArgs,
   buildCompletedMissionsQueryArgs,
   decodeCompletedCursor,
   paginateCompletedMissions,
 } from '@/lib/missions-query';
-import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
-import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
-import { applyStrandChoice } from '@/lib/strand-choice-shadow';
-import { loadWorkerProgress } from '@/lib/worker-progress';
-import { loadTeamRoleColors } from '@/lib/role-colors';
-import { SlotMeter } from '@/components/fleet/SlotMeter';
 
 export const dynamic = 'force-dynamic';
-
-const GROUP_SORT_COMPLETED_LAST = (g: string) => (g === 'completed' ? 1 : 0);
 
 export default async function MissionsPage({
   searchParams,
@@ -96,7 +80,6 @@ export default async function MissionsPage({
     teamWorkspaces,
     activeRows,
     completedRowsPage,
-    roleColors,
     teamRows,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
@@ -125,8 +108,6 @@ export default async function MissionsPage({
       .where(eq(workspaces.teamId, activeTeamId)),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
-    // Role colours for the live-agent dots — read from the roles, never hardcoded.
-    loadTeamRoleColors(activeTeamId),
     // The header's "Missions · <team>" label.
     db.select({ name: teams.name }).from(teams).where(eq(teams.id, activeTeamId)).limit(1),
   ]);
@@ -140,124 +121,58 @@ export default async function MissionsPage({
 
   const allMissions = [...activeRows, ...completedRows] as any[];
 
-  // Blocked-PR index spans every loaded mission because `dependsOn` crosses
-  // mission boundaries; the rule itself is shared with the Initiatives list
-  // (`blockedByPRTaskIds`) so the two surfaces cannot disagree.
-  const allMissionTaskMap = new Map<string, BlockingTask>();
-  for (const m of allMissions) {
-    for (const t of m.tasks || []) allMissionTaskMap.set(t.id, t as BlockingTask);
-  }
-
   // D6: release state is workspace-level — one footer per workspace, rendered
-  // once on the list, never on each mission card.
+  // once on the list, never on each mission row.
   const uniqueWorkspaces = new Map<string, { id: string; name: string | null; gitConfig: unknown; releaseConfig: unknown }>();
   for (const m of allMissions) {
     const ws = m.workspace as { id: string; name: string; gitConfig: unknown; releaseConfig: unknown } | null | undefined;
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
-
-  // These two read from the mission rows above and from nothing each other
-  // produces, so they are one wait rather than two. The release footers are
-  // themselves 3 deep per workspace.
+  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
+  // so the two surfaces cannot disagree about queue depth or deploy state.
   const releaseFooters: Record<string, ReleaseFooterData> = {};
-  // The running cells fill to each live worker's last reported progress.
-  const liveWorkerIds = (activeRows as any[]).flatMap(m => (m.tasks || []).flatMap((t: any) =>
-    (t.workers || []).filter((w: any) => (LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)).map((w: any) => w.id as string)));
-  const [steeringMarksByMission, progressByWorker, , missionDeliveryViews] = await Promise.all([
-    // Rule A-1/A-2: human steering marks (mission_notes, authorType='user') are
-    // one batched query across the whole active set, not one per mission.
-    loadHumanSteeringMarksByMission(activeRows.map((m: any) => m.id)),
-    loadWorkerProgress(liveWorkerIds),
-    // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
-    // so the two surfaces cannot disagree about queue depth or deploy state.
-    Promise.all(
-      Array.from(uniqueWorkspaces.values()).map(async (ws) => {
-        releaseFooters[ws.id] = await loadReleaseFooterData({
-          id: ws.id,
-          name: ws.name,
-          gitConfig: ws.gitConfig,
-          releaseConfig: ws.releaseConfig,
-        });
-      }),
-    ),
-    // S35: the kernel's reading of every failed deliverable, so a failed
-    // attempt with a live or shipped replacement does not read FAILED.
-    getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[])),
-  ]);
-
-  // Rule A-1/A-2: live flight-strip compute for every non-completed mission.
-  // On a card it is reachable only from ⤢ (FlightDetailSheet, D4); completed
-  // cards are compact and draw no strip (D7).
-  const flightStripByMission = new Map<string, MissionFlightStripData | null>();
-  for (const obj of activeRows as any[]) {
-    const { tasks: flightTasks, workers: flightWorkers } = adaptFlightStripInputs(obj.tasks || []);
-    flightStripByMission.set(
-      obj.id,
-      computeMissionFlightStrip(flightTasks, flightWorkers, {
-        missionCompletedAt: obj.completedAt ?? null,
-        steeringEvents: steeringMarksByMission.get(obj.id),
-      }),
-    );
-  }
-
-  // One model per card — the same builder Home uses (lib/mission-card-view.ts),
-  // so a mission's chip, sentence, pulse and group read the same on both.
-  const now = Date.now();
-  const missionsList: MissionItem[] = allMissions.map((obj) => {
-    const row = obj as MissionCardRow;
-    const summary = summarizeMissionForCard(row, { now, deliveryViews: missionDeliveryViews });
-    const view = buildMissionCardView(row, {
-      from: 'missions',
-      now,
-      summary,
-      deliveryViews: missionDeliveryViews,
-      taskIndex: allMissionTaskMap,
-      flightStrip: flightStripByMission.get(obj.id) ?? null,
-    });
-
-    // lastActivityAt: most recent task update or lastTaskStartedAt
-    const taskTimes = (obj.tasks || []).map((t: any) => t.updatedAt ? new Date(t.updatedAt as any).getTime() : 0);
-    const lastTaskStartedMs = obj.lastTaskStartedAt ? new Date(obj.lastTaskStartedAt).getTime() : 0;
-    const lastActivityMs = Math.max(0, ...taskTimes, lastTaskStartedMs);
-
-    return {
-      view,
-      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker, taskIndex: allMissionTaskMap }),
-      workspaceId: obj.workspaceId || null,
-      workspaceName: (obj.workspace as any)?.name || null,
-      isHeld: obj.isHeld ?? false,
-      nextScanMins: summary.nextScanMins,
-      lastActivityAt: lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : null,
-      lastRunAt: (obj.schedule as any)?.lastRunAt ? String((obj.schedule as any).lastRunAt) : null,
-    };
-  });
-
-  // Stranded local missions: the decision shadow looks after the response
-  // (lib/strand-choice-shadow.ts). It can only ever order the two buttons.
-  await applyStrandChoice(
-    missionsList.flatMap((m, i) => (m.list.strand ? [{ row: allMissions[i] as MissionCardRow & { teamId?: string | null }, strand: m.list.strand }] : [])),
-    { now, userId: user.id },
+  await Promise.all(
+    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
+      releaseFooters[ws.id] = await loadReleaseFooterData({
+        id: ws.id,
+        name: ws.name,
+        gitConfig: ws.gitConfig,
+        releaseConfig: ws.releaseConfig,
+      });
+    }),
   );
 
-  // Sort: unfinished missions first by lastActivityAt desc, then completed.
-  missionsList.sort((a, b) => {
-    const byGroup = GROUP_SORT_COMPLETED_LAST(a.view.group) - GROUP_SORT_COMPLETED_LAST(b.view.group);
-    if (byGroup !== 0) return byGroup;
-    const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
-    const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
-    return bTime - aTime;
-  });
-
-  // D8: the header counts with the cards' own grouping (healthToGroup), so a
-  // mission waiting on you — a live worker — counts as active here too.
-  const activeCount = countActiveMissions(missionsList.map(m => m.view.group));
-  const runningMissions = missionsList.filter(m => m.list.kind === 'active');
-  const dayStart = new Date(now);
-  dayStart.setHours(0, 0, 0, 0);
-  const headline = missionsHeadline({
-    running: runningMissions.length,
-    liveAgents: runningMissions.reduce((n, m) => n + m.list.live.count, 0),
-    shippedToday: missionsList.filter(m => m.view.completedAt && new Date(m.view.completedAt).getTime() >= dayStart.getTime()).length,
+  // One row per mission from the shared delivery projection — the same one
+  // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
+  // and next milestone read the same on both.
+  const live = new Set<string>(LIVE_WORKER_STATUSES);
+  const now = Date.now();
+  const rows: PortfolioRow[] = allMissions.map((obj) => {
+    const delivery = projectMissionDelivery({
+      id: obj.id, title: obj.title, status: obj.status, href: `/app/missions/${obj.id}`,
+      isHeld: obj.isHeld ?? false, integrationBranch: obj.integrationBranchEnabled === true,
+      tasks: obj.tasks ?? [],
+    }, missionHelpers);
+    const tasks = (obj.tasks ?? []) as Array<{ updatedAt?: Date | string | null; workers?: Array<{ status: string }> }>;
+    const lastAdvancedAt = Math.max(
+      0,
+      ...tasks.map(t => (t.updatedAt ? new Date(t.updatedAt).getTime() : 0)),
+      obj.lastTaskStartedAt ? new Date(obj.lastTaskStartedAt).getTime() : 0,
+    );
+    const schedule = obj.schedule as { cronExpression?: string | null; taskTemplate?: { context?: { heartbeat?: boolean } } } | null;
+    const recurring = !!schedule?.cronExpression && schedule.taskTemplate?.context?.heartbeat !== true && obj.status !== 'completed';
+    return {
+      // The client needs the mission's facts, not every task's projection.
+      delivery: { ...delivery, tasks: [] },
+      status: obj.status,
+      workspaceId: obj.workspaceId ?? null,
+      workspaceName: (obj.workspace as { name?: string } | null)?.name ?? null,
+      priority: obj.priority ?? 0,
+      liveAgents: tasks.reduce((n, t) => n + (t.workers ?? []).filter(w => live.has(w.status)).length, 0),
+      lastAdvancedAt: lastAdvancedAt > 0 ? lastAdvancedAt : null,
+      completedAt: obj.completedAt ? new Date(obj.completedAt).getTime() : null,
+      nextScanMins: recurring ? summarizeMissionForCard(obj as MissionCardRow, { now }).nextScanMins : null,
+    };
   });
 
   return (
@@ -265,24 +180,14 @@ export default async function MissionsPage({
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="min-w-0">
           <div className="section-label hidden text-text-muted md:block">
-            Missions{team?.name ? ` · ${team.name}` : ''}
+            {team?.name ?? 'Team'}
           </div>
-          <h1 data-testid="missions-headline" className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
-            {headline}
+          {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
+          <h1 data-testid="missions-headline" className="sr-only md:not-sr-only md:mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
+            Missions
           </h1>
-          <span data-testid="missions-active-count" className="sr-only">{activeCount} active</span>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          {maxSeats > 0 && (
-            <span
-              data-testid="missions-slots"
-              className="flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap border border-border-default px-2.5 font-mono text-[12px] text-text-secondary"
-              title={`${activeSeats} of ${maxSeats} concurrent worker slots in use`}
-            >
-              <SlotMeter live={activeSeats} max={maxSeats} maxSquares={8} />
-              {activeSeats}/{maxSeats} slots
-            </span>
-          )}
           <SetUpChatNudge />
           <NewWorkLink
             kind="mission"
@@ -295,12 +200,18 @@ export default async function MissionsPage({
         </div>
       </div>
 
-      {missionsList.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary">No missions.</p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />
+        <MissionGrid
+          rows={rows}
+          releaseFooters={releaseFooters}
+          slots={{ live: activeSeats, max: maxSeats }}
+          workspaces={teamWorkspaces}
+          now={now}
+        />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the
