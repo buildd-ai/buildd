@@ -14,7 +14,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
@@ -180,7 +180,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations'>,
   // One options bag, because the bound now needs the mission row too: the
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
@@ -372,7 +372,10 @@ export async function evaluateAutoMergeSafety(
       files,
       ...(deltaBase ? { deltaBase } : {}),
     });
-    if (!migrationSafety.safe) {
+    // A data migration is a person's call unless the workspace lets the
+    // reviewer agent decide it (mergePolicy.dataMigrations, agent-review tier
+    // only); then the approval that got the PR here is the decision.
+    if (!migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
       return { ok: false, reason: migrationSafety.reason };
     }
   }
@@ -1153,7 +1156,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -1226,7 +1229,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -1310,7 +1313,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber: prNumber ?? null }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

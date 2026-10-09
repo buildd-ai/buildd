@@ -83,5 +83,5 @@ export default async function UsageDrilldownPage({
     );
   }
 
-  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} hostedRunner={hostedRunner} />;
+  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} hostedRunner={hostedRunner} roleUsage={loaded.roleUsage} monthly={loaded.monthly} />;
 }

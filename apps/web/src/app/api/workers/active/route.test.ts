@@ -873,6 +873,32 @@ describe('GET /api/workers/active', () => {
       expect(by['http://atlas.local:8766'].fleet).toBeNull();
     });
 
+    // Found in the live pause proof (task 4b2b30a9): a paused or parked worker
+    // holds no runner slot (the runner's own heartbeat already excludes it),
+    // but the server counted it, so a runner read "2 busy" with one working
+    // and a parked cloud run read "1 running" with no container left.
+    it('a parked cloud run is not running, even while its last heartbeat is fresh', async () => {
+      session();
+      mockHeartbeatsFindMany.mockResolvedValue([host, cloud('parked')]);
+      mockWorkersFindMany.mockResolvedValue([
+        { accountId: 'account-1', localUiUrl: 'headless://container/once/parked', status: 'waiting_input', waitingFor: { type: 'pause' }, parkedUntil: new Date(Date.now() + 3_600_000) },
+      ]);
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis.map((r: any) => r.localUiUrl)).toEqual(['http://atlas.local:8766']);
+    });
+
+    it('a paused worker on a host runner holds no slot; one waiting on a question still does', async () => {
+      session();
+      mockHeartbeatsFindMany.mockResolvedValue([host]);
+      mockWorkersFindMany.mockResolvedValue([
+        { accountId: 'account-1', localUiUrl: 'http://atlas.local:8766', status: 'running' },
+        { accountId: 'account-1', localUiUrl: 'http://atlas.local:8766', status: 'waiting_input', waitingFor: { type: 'pause' } },
+        { accountId: 'account-1', localUiUrl: 'http://atlas.local:8766', status: 'waiting_input', waitingFor: { type: 'question' } },
+      ]);
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis[0]).toMatchObject({ activeWorkers: 2, capacity: 2 });
+    });
+
     it('drops a finished cloud run (fresh heartbeat, nothing running) so no picker targets a dead container', async () => {
       session();
       mockHeartbeatsFindMany.mockResolvedValue([host, cloud('done', null), cloud('done2')]);

@@ -1077,6 +1077,66 @@ describe('POST /api/tasks', () => {
     expect(mockTasksInsert.mock.calls.length).toBe(insertCalls);
   });
 
+  // A task's PR link (lib/pr-reach-grant.ts): stamped by the server at filing, never taken from the caller.
+  describe('PR link stamped at filing (context.prReach)', () => {
+    const capture = () => {
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-l', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      return seen;
+    };
+    const forged = { prReach: { prNumbers: [99], grantedBy: 'human:someone-else', grantedAt: 'x' } };
+
+    it('a person filing links the PRs the filing names, and the server stamps who', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Resolve conflicts on #42', context: forged } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [42], grantedBy: 'human:user-123' });
+    });
+
+    it('an API key with no person and no worker gets no link, and its own prReach is dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Land PR #42', context: { ...forged, prNumber: 42 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('prReach');
+    });
+
+    const agentFiling = () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: 'w-parent', creationSource: 'mcp', parentTaskId: 'task-parent' });
+      // First lookup: the filing worker's task. Later ones: does the filing task own the PR through a worker? No.
+      let n = 0;
+      mockWorkersFindFirst.mockImplementation((async () => (n++ === 0 ? { taskId: 'task-parent' } : null)) as never);
+    };
+    const parentTask = (context: unknown) => ({ id: 'task-parent', workspaceId: 'ws-1', missionId: null, roleSlug: 'builder', mode: 'execution', context, reviewerRetryPrNumber: null, ciRetryPrNumber: null, conflictRetryPrNumber: null });
+
+    it('an agent run filing a child that names a PR its own task does not reach links nothing', async () => {
+      agentFiling();
+      mockTasksFindFirst.mockResolvedValue(parentTask({}));
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Land PR #7', description: 'merge #7', context: { prNumber: 7, ...forged } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('prReach');
+    });
+
+    it('an agent run passes on a PR link its own task holds', async () => {
+      agentFiling();
+      mockTasksFindFirst.mockResolvedValue(parentTask({ prReach: { prNumbers: [7], grantedBy: 'human:user-123', grantedAt: 'x' } }));
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Rebase PR #7 and #8' } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [7], grantedBy: 'task:task-parent' });
+    });
+  });
+
   it('creates task with session auth', async () => {
     const createdTask = {
       id: 'task-123',

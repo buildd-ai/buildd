@@ -299,9 +299,8 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
 }
 
 /**
- * `Notes` — the mission's notes feed, in a sheet
- * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W3 footer rows). It was the
- * Feed tab. The sheet mounts the feed only when opened, so the notes fetch and
+ * `Notes` — the mission's notes feed and its composer, in a sheet, opened
+ * from the History tab (knowledge-base: buildd/design/mission-feed-mobile-continuity.md). The sheet mounts the feed only when opened, so the notes fetch and
  * its Pusher subscription cost nothing until someone reads them.
  */
 export function MissionNotesSheet({ missionId, defaultOpen = false }: { missionId: string; defaultOpen?: boolean }) {
@@ -312,11 +311,11 @@ export function MissionNotesSheet({ missionId, defaultOpen = false }: { missionI
         type="button"
         data-testid="mission-notes-row"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 w-full items-center gap-2 border-t border-border-default text-left font-mono text-[12px] text-text-secondary hover:text-text-primary"
+        aria-haspopup="dialog"
+        className="flex min-h-11 w-full items-center gap-2 border-y border-border-default text-left text-body text-text-secondary hover:text-text-primary md:min-h-9"
       >
-        <span aria-hidden="true" className="text-text-muted">─</span>
-        <span className="flex-1">Notes</span>
-        <span aria-hidden="true">›</span>
+        <span className="flex-1">Notes, and ask the organizer</span>
+        <span aria-hidden="true" className="text-text-muted">›</span>
       </button>
       <SideSheet
         open={open}

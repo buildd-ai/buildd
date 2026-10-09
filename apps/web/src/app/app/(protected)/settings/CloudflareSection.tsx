@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
+import CloudflareGatewayTokens from './CloudflareGatewayTokens';
 
 interface Team {
   id: string;
@@ -153,7 +154,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
 
   const meta = cred ? (
     <span data-testid="cloudflare-credential">
-      {teamName ? `${teamName} · ` : ''}Account {cred.accountId ?? '?'} · token {cred.tokenHint ?? '?'}
+      {teamName ? `${teamName} · ` : ''}Account <span className="font-mono">{cred.accountId ?? '?'}</span> · token <span className="font-mono">{cred.tokenHint ?? '?'}</span>
     </span>
   ) : (
     <>{teamName ? `${teamName} · ` : ''}Cloud runner account</>
@@ -173,7 +174,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
           onClick={nextStep}
           disabled={busy}
           data-testid="cloudflare-next"
-          className={`btn ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}
+          className="btn"
         >
           {busy ? 'Working…' : state.next}
         </button>
@@ -218,6 +219,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
               <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
             </div>
           )}
+          {state.kind === 'verified' && <CloudflareGatewayTokens teamId={selectedTeamId} />}
           {canManage && <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => verify(cred.id)} disabled={busy} className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}>
               {busy ? 'Working…' : 'Verify'}

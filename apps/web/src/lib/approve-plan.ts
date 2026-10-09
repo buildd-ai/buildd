@@ -1,4 +1,5 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { resolvePrReachGrant } from '@/lib/pr-reach-grant';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -336,6 +337,14 @@ export async function approvePlan(
     // plan child from birth: never delivered as a plain new task (legacy
     // webhooks, GitHub Actions) in the moment before a label could land.
     const planCause = step.dependsOn?.length ? 'plan_child.created' : 'plan_child.ready';
+    // A step that names a PR reaches it only if the planning task itself does
+    // (lib/pr-reach-grant.ts): a plan passes on its author's reach, never more.
+    const stepPrReach = task.workspaceId
+      ? await resolvePrReachGrant(
+          { title: step.title, description: step.description ?? null, workspaceId: task.workspaceId },
+          { kind: 'task', taskId: planningTaskId },
+        ).catch(() => null)
+      : null;
     const [created] = await withDispatchHint({ cause: planCause }, db
       .insert(tasks)
       .values({
@@ -403,6 +412,7 @@ export async function approvePlan(
             ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
             : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
+          ...(stepPrReach ? { prReach: stepPrReach } : {}),
         },
       })
       .returning());

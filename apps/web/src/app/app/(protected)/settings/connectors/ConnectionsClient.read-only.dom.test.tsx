@@ -41,7 +41,8 @@ async function mount(canManage: boolean) {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 }
 
-const labels = () => [...host.querySelectorAll('button')].map((b) => b.textContent);
+// Controls only: a row's Details toggle (aria-expanded) shows, it changes nothing.
+const labels = () => [...host.querySelectorAll('button:not([aria-expanded])')].map((b) => b.textContent);
 
 describe('ConnectionsClient: member vs admin', () => {
   it("lists the page's active team", async () => {

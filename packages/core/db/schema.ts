@@ -2115,6 +2115,11 @@ export const workers = pgTable('workers', {
   // the worker counts as holding its transcript (answer-resume.ts G2) and is
   // exempt from the offline-runner sweep. NULL for every other runner.
   parkedUntil: timestamp('parked_until', { withTimezone: true }),
+  // A person asked this running worker to pause (POST /api/workers/[id]/pause).
+  // Served to the runner on every PATCH response (`pauseRequested`) until the
+  // worker parks as waiting_input or ends, so a missed realtime push still
+  // lands. Cleared on that park, or on any terminal status.
+  pauseRequestedAt: timestamp('pause_requested_at', { withTimezone: true }),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // What the agent actually sent on a completion the outputRequirement gate
@@ -3319,7 +3324,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential' | 'cloudflare_gateway_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).

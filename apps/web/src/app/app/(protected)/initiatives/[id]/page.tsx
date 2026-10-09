@@ -9,12 +9,13 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { loadInitiativeCards } from '@/lib/initiative-cards';
 import {
   InitiativeActionButton,
-  InitiativeBar,
   InitiativeFacts,
   InitiativeMeta,
   InitiativeMissionLines,
   InitiativeStatusChip,
+  InitiativeStrip,
 } from '@/components/initiatives/InitiativeCard';
+import Eyebrow from '@/components/ui/Eyebrow';
 import InitiativeStatusControl from '@/components/initiatives/InitiativeStatusControl';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
@@ -88,77 +89,59 @@ export default async function InitiativeDetailPage({ params }: { params: Promise
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 pb-10 max-w-[1180px]">
-      <nav className="mb-5 flex min-w-0 items-center gap-2 font-mono text-[12px] text-text-muted">
-        <Link href="/app/initiatives" className="shrink-0 hover:text-text-secondary">Initiatives</Link>
-        <span aria-hidden="true">/</span>
-        <span className="truncate text-text-secondary">{card.title}</span>
-      </nav>
+      <Link href="/app/initiatives" className="font-mono text-[13px] text-text-muted hover:text-text-primary">‹ Initiatives</Link>
 
-      <header data-testid="initiative-detail" className="card px-4 py-5 md:px-6">
+      {/* Header: unboxed (L1), like the mission page's. */}
+      <header data-testid="initiative-detail" className="mt-3 flex flex-col gap-2">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
-            <InitiativeStatusChip status={card.status} label={card.statusLabel} />
-            <h1 className="mt-2 font-mono text-[22px] font-semibold leading-tight tracking-[-0.5px] text-text-primary md:text-[26px]">
-              {card.title}
-            </h1>
-            <div className="mt-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <h1 className="min-w-0 text-xl font-semibold leading-tight text-text-primary md:text-2xl">{card.title}</h1>
+              <InitiativeStatusChip status={card.status} label={card.statusLabel} />
+            </div>
+            <div className="mt-1.5">
               <InitiativeMeta card={card} />
             </div>
           </div>
-          <div className="hidden shrink-0 md:block">
-            <InitiativeActionButton initiativeId={card.id} action={card.action} />
+          {/* Only answering a decision shows here: held missions are armed from their own line. */}
+          <div className="shrink-0">
+            <InitiativeActionButton initiativeId={card.id} action={card.action} variant="header" />
           </div>
         </div>
 
         {card.description && (
-          <p className="mt-3 max-w-[70ch] whitespace-pre-wrap text-[14px] leading-relaxed text-text-secondary">{card.description}</p>
+          <p className="max-w-[70ch] whitespace-pre-wrap text-[14px] leading-relaxed text-text-secondary">{card.description}</p>
         )}
 
         {card.segments.length > 0 && (
-          <div className="mt-5">
-            <InitiativeBar segments={card.segments} size="lg" />
+          <div className="mt-2">
+            <InitiativeStrip segments={card.segments} />
           </div>
         )}
-        {card.facts.length > 0 && (
-          <div className="mt-3">
-            <InitiativeFacts card={card} />
-          </div>
-        )}
-        {card.action && (
-          <div className="mt-4 md:hidden">
-            <InitiativeActionButton initiativeId={card.id} action={card.action} />
-          </div>
-        )}
+        <InitiativeFacts card={card} />
 
-        <div className="mt-5 border-t border-border-default pt-4">
+        <div className="mt-2">
           <InitiativeStatusControl initiativeId={card.id} status={card.status} />
         </div>
       </header>
 
       <section id="missions" className="mt-8">
         <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="section-label text-text-muted">
-            Missions <span className="text-text-secondary">{card.missions.length}</span>
-          </h2>
+          <Eyebrow as="h2" tone="muted">
+            Missions <span className="ml-1 font-mono font-normal">{card.missions.length}</span>
+          </Eyebrow>
           <div className="flex items-center gap-2">
             <AssignMissionModal initiativeId={id} initiativeTitle={card.title} assignableMissions={assignableMissions} />
-            <Link
-              href={`/app/missions/new?initiative=${encodeURIComponent(id)}`}
-              className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3 font-mono text-[12px] font-semibold text-white shadow-sm hover:bg-primary-hover md:min-h-9"
-            >
+            <Link href={`/app/missions/new?initiative=${encodeURIComponent(id)}`} className="btn btn-sm h-11 md:h-6">
               + New mission
             </Link>
           </div>
         </div>
         {card.missions.length === 0 ? (
-          <div className="card p-6 text-center">
-            <p className="text-sm text-text-secondary">No missions.</p>
-          </div>
+          <p className="text-body text-text-secondary">No missions in this initiative.</p>
         ) : (
-          <div className="card px-4 pb-1 md:px-5">
-            <div className="-mx-4 md:-mx-5 [&>ul]:border-t-0 [&>ul]:px-4 md:[&>ul]:px-5">
-              <InitiativeMissionLines missions={card.missions} detail />
-            </div>
+          <div className="border-b border-border-default">
+            <InitiativeMissionLines missions={card.missions} detail />
           </div>
         )}
       </section>
@@ -171,18 +154,18 @@ export default async function InitiativeDetailPage({ params }: { params: Promise
 
       {initiativeArtifacts.length > 0 && (
         <section className="mt-8">
-          <h2 className="section-label mb-2.5 text-text-muted">
-            Artifacts <span className="text-text-secondary">{initiativeArtifacts.length}</span>
-          </h2>
-          <div className="flex flex-col gap-1.5">
+          <Eyebrow as="h2" tone="muted" className="mb-2.5 block">
+            Artifacts <span className="ml-1 font-mono font-normal">{initiativeArtifacts.length}</span>
+          </Eyebrow>
+          <div className="flex flex-col border-b border-border-default">
             {initiativeArtifacts.map((a) => (
               <a
                 key={a.id}
                 href={a.shareToken ? `/share/${a.shareToken}` : '#'}
-                className="card flex items-center gap-3 p-3 hover:border-border-hover"
+                className="flex min-h-11 items-center gap-3 border-t border-border-default py-2.5 hover:text-text-primary"
               >
                 <span className="flex-1 truncate text-sm text-text-primary">{a.title || 'Untitled'}</span>
-                <span className="shrink-0 text-[11px] text-text-muted">{a.type}</span>
+                <span className="shrink-0 font-mono text-meta text-text-muted">{a.type}</span>
               </a>
             ))}
           </div>

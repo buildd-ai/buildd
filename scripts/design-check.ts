@@ -2,7 +2,7 @@
 /**
  * Design drift check — a ratchet over design-system debt in apps/web/src.
  *
- *   bun run design:check                          # fail if any rule's total rose
+ *   bun run design:check                          # fail if any rule rose (per-file for the newer rules)
  *   bun run design:check --update                 # lower the baseline to today's counts
  *   bun run design:check --update --allow-increase  # deliberately raise it
  *
@@ -26,7 +26,11 @@ export type RuleKey =
   | 'rawHexColors'
   | 'roundedFullChips'
   | 'handRolledSheets'
-  | 'localStatusBadges';
+  | 'localStatusBadges'
+  | 'framedBoxes'
+  | 'trackedLabels'
+  | 'accentFills'
+  | 'tintedStateBoxes';
 
 export interface Violation {
   file: string;
@@ -37,6 +41,8 @@ export interface Violation {
 interface Rule {
   key: RuleKey;
   name: string;
+  /** Per-file ratchet: any file above its baseline, or absent from it, fails. Otherwise only the rule total is compared. */
+  perFile?: boolean;
   appliesTo: (file: string) => boolean;
   /** Messages for one line; one entry per violation on that line. */
   check: (line: string) => string[];
@@ -47,11 +53,24 @@ export type Counts = Record<RuleKey, Record<string, number>>;
 
 const isUiPrimitive = (f: string) => f.includes('/components/ui/');
 const isFlightStrip = (f: string) => f.endsWith('/FlightStrip.tsx');
+const isNeedsYouOrLive = (f: string) =>
+  /\/(NeedsYou[A-Za-z]*|NeedsInput[A-Za-z]*|DecisionCard|LiveDot|LiveIndicator)\.tsx$/.test(f);
 const isSource = (f: string) => f.endsWith('.ts') || f.endsWith('.tsx');
 
 const FONT_SIZE = /text-\[[0-9.]+px\]/g;
 const HEX = /#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{3}(?![0-9A-Fa-f])/;
 const STYLING_CONTEXT = /(className|style|bg-|text-|border-|fill-|stroke-|ring-)/;
+// A framed box: border + radius + padding on one line. `.card` / <Card> carry all three in a class.
+const FRAME_BORDER = /(?:^|[\s"'`{])border(?=[\s"'`}]|$)/;
+const FRAME_RADIUS = /\brounded(?:-(?:sm|md|lg|xl|2xl|3xl|card|\[[^\]]+\]))?(?=[\s"'`}]|$)/;
+const FRAME_PADDING = /\bp[xy]?-\d/;
+const TRACKING = /\btracking-\[[^\]]+\]/g;
+const UPPERCASE = /(?:^|[\s"'`:])uppercase(?=[\s"'`}]|$)/;
+// Solid or alpha accent/primary fills. accent-soft / accent-text are the sanctioned quiet forms.
+const ACCENT_FILL = /\bbg-(?:accent|primary)(?:\/\d+|-hover)?(?=[\s"'`}]|$)/;
+const ACCENT_BORDER_OR_TEXT = /\b(?:border|text|ring)-(?:accent|primary)(?:\/\d+)?(?=[\s"'`}]|$)|\bbg-(?:accent|primary)-soft\b/;
+const SELECTED_STATE = /\b(?:isActive|isSelected|selected|active|checked|aria-pressed|aria-selected|aria-current|data-\[state=(?:active|on|checked)\])\b/;
+const TINTED_STATE = /\bbg-status-[a-z]+\/\d+/;
 // rounded-full is only a defect on chip/badge-like elements; avatars and dots are fine.
 const CHIP_LIKE = /text-\[[0-9.]+px\]|\buppercase\b|\btext-(chip|eyebrow|xs)\b|\bpx-/;
 
@@ -104,6 +123,48 @@ export const RULES: Rule[] = [
         ? ['Found local StatusBadge definition; consolidate on components/StatusBadge.tsx or use Chip per design-system.md §4']
         : [],
   },
+  {
+    key: 'framedBoxes',
+    perFile: true,
+    name: 'Hand-rolled framed boxes',
+    appliesTo: f => isSource(f) && !isUiPrimitive(f) && !isFlightStrip(f),
+    check: line =>
+      FRAME_BORDER.test(line) && FRAME_RADIUS.test(line) && FRAME_PADDING.test(line)
+        ? ["Found border + radius + padding on one element; use <Card> / .card (design-system.md §1.1, §4), or a hairline row (L1)"]
+        : [],
+  },
+  {
+    key: 'trackedLabels',
+    perFile: true,
+    name: 'Uppercase / tracked labels',
+    appliesTo: f => isSource(f) && !isUiPrimitive(f) && !isFlightStrip(f),
+    check: line => [
+      ...(UPPERCASE.test(line) ? ["Found 'uppercase'; labels are sentence case (design-system.md §1.1), use Eyebrow or text-meta text-text-muted"] : []),
+      ...(line.match(TRACKING) ?? []).map(m => `Found ${m}; no tracked labels (design-system.md §1.1), use Eyebrow or a type-scale role`),
+    ],
+  },
+  {
+    key: 'accentFills',
+    perFile: true,
+    name: 'Accent fills / selected',
+    appliesTo: f => isSource(f) && !isUiPrimitive(f) && !isNeedsYouOrLive(f) && !isFlightStrip(f) && !f.endsWith('/PrimaryAction.tsx'),
+    check: line => {
+      if (ACCENT_FILL.test(line)) return ["Found an accent/primary background fill; orange belongs to PrimaryAction and live/needs-you state (design-system.md §1.1)"];
+      if ((ACCENT_BORDER_OR_TEXT.test(line)) && SELECTED_STATE.test(line))
+        return ['Found accent used as a selected state; selected is ink, not orange (design-system.md §1.1), use Segmented'];
+      return [];
+    },
+  },
+  {
+    key: 'tintedStateBoxes',
+    perFile: true,
+    name: 'Tinted state boxes',
+    appliesTo: f => isSource(f) && !isUiPrimitive(f) && !isFlightStrip(f),
+    check: line =>
+      TINTED_STATE.test(line)
+        ? ['Found a bg-status-*/N tint; use Notice for a block or StatePill for a state word (design-system.md §4)']
+        : [],
+  },
 ];
 
 /** Scan in-memory sources. Pure, so tests can feed it fixtures. */
@@ -144,6 +205,12 @@ export function readSources(root = SCAN_ROOT): { path: string; content: string }
   };
   walk(root);
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Per-file rules: no file above its baseline count or missing from it. Others: total only. */
+function isWithinBaseline(rule: Rule, base: Record<string, number>, now: Record<string, number>) {
+  if (!rule.perFile) return total(now) <= total(base);
+  return Object.entries(now).every(([f, n]) => n <= (base[f] ?? 0));
 }
 
 const total = (perFile: Record<string, number> = {}) => Object.values(perFile).reduce((a, b) => a + b, 0);
@@ -188,7 +255,7 @@ export function findRegressions(
   for (const rule of RULES) {
     const base = baseline[rule.key] ?? {};
     const now = current[rule.key] ?? {};
-    if (total(now) <= total(base)) continue;
+    if (isWithinBaseline(rule, base, now)) continue;
     const rose = new Set(Object.keys(now).filter(f => now[f] > (base[f] ?? 0)));
     out.push({
       rule: rule.key,
@@ -202,9 +269,9 @@ export function findRegressions(
 }
 
 /**
- * The baseline --update would write. Without allowIncrease, each file keeps
- * min(baseline, current) — paid-down debt is locked in, new debt is not
- * absorbed. Returns the rules that would have risen so the caller can refuse.
+ * The baseline --update would write: today's counts, verbatim, so no file that
+ * still has violations loses its entry. Without allowIncrease a rule the gate
+ * would fail is refused instead of absorbed. Returns the rules that would have risen so the caller can refuse.
  */
 export function updatedBaseline(
   baseline: Counts,
@@ -216,17 +283,10 @@ export function updatedBaseline(
   for (const rule of RULES) {
     const base = baseline[rule.key] ?? {};
     const now = current[rule.key] ?? {};
-    if (allowIncrease) {
-      next[rule.key] = { ...now };
-      continue;
-    }
-    if (total(now) > total(base)) refused.push(rule.key);
-    const perFile: Record<string, number> = {};
-    for (const [file, n] of Object.entries(now)) {
-      const kept = Math.min(n, base[file] ?? 0);
-      if (kept > 0) perFile[file] = kept;
-    }
-    next[rule.key] = perFile;
+    if (!allowIncrease && !isWithinBaseline(rule, base, now)) refused.push(rule.key);
+    // Today's counts verbatim: the gate accepts them, and every file that still has
+    // violations keeps its entry (clamping to min(base, now) dropped renamed/new files).
+    next[rule.key] = { ...now };
   }
   return { next, refused };
 }

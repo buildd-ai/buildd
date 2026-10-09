@@ -61,7 +61,7 @@ export function TaskShippedBody({
         >
           {view.lede && <Lede className="font-medium">{view.lede}</Lede>}
           {view.changeTypeLabel && (
-            <div><Chip tone="muted" dot={false} data-testid="task-shipped-change-type">{view.changeTypeLabel}</Chip></div>
+            <p className="text-meta text-text-muted" data-testid="task-shipped-change-type">{view.changeTypeLabel}</p>
           )}
           {view.heroShots.length > 0 && (
             <ul data-testid="task-shipped-hero-shots" className="flex flex-wrap items-end gap-3">
@@ -146,7 +146,7 @@ export function TaskShippedDetails({
               <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 pb-4 pt-1 text-body">
                 {runDetails.map(r => (
                   <div key={r.label} className="contents">
-                    <dt className="font-mono text-meta uppercase tracking-[1px] text-text-muted">{r.label}</dt>
+                    <dt className="font-mono text-meta text-text-muted">{r.label}</dt>
                     <dd className="min-w-0 break-words text-text-primary">{r.value}</dd>
                   </div>
                 ))}
