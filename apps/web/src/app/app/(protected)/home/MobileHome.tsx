@@ -85,8 +85,10 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   </article>;
 }
 
-export function MobileHome({ items: serverItems, ask, counts, milestones, quietMissions, shipped, setup = null, runnerConnected, timeZone }: {
+export function MobileHome({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, shipped, setup = null, runnerConnected, timeZone }: {
   items: HomeAttentionItem[]; ask: ReactNode;
+  /** The Agents panel and Landed this week: after the decisions, Moving between them. */
+  agents?: ReactNode; landed?: ReactNode;
   /** The getting-started checklist while it applies: the phone's next step for a new team. */
   setup?: ReactNode;
   /** false when the team has no runner: there is no fleet to be working without you. */
@@ -113,9 +115,9 @@ export function MobileHome({ items: serverItems, ask, counts, milestones, quietM
   // Systemic causes first and apart: one problem behind many tasks is not a per-task decision.
   const ordered = [...items.filter(i => i.systemic), ...items.filter(i => !i.systemic)];
   const m = shipped[0];
-  const agents = `${counts.liveAgents} agent${counts.liveAgents === 1 ? '' : 's'} working`;
+  const agentsCount = `${counts.liveAgents} agent${counts.liveAgents === 1 ? '' : 's'} working`;
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
-    <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agents}{counts.slots.total > 0 ? ` · ${counts.slots.used}/${counts.slots.total} slots` : ''} · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
+    <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agentsCount}{counts.slots.total > 0 ? ` · ${counts.slots.used}/${counts.slots.total} slots` : ''} · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
     {copy.count === 0 && !setup
       ? <div className="mb-6"><h1 className="sr-only">Home</h1><p data-testid="phone-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">Buildd will ask if a decision comes up.</span></p></div>
       : <><h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
@@ -127,7 +129,9 @@ export function MobileHome({ items: serverItems, ask, counts, milestones, quietM
       {quietMissions > 0 && <p data-testid="phone-not-listed" className="mt-2 text-meta text-text-muted">Not listed here: {quietMissions} mission{quietMissions === 1 ? '' : 's'} waiting on capacity, another mission or an owner. {quietMissions === 1 ? 'It moves' : 'Those move'} on {quietMissions === 1 ? 'its' : 'their'} own.</p>}
     </section>}
     {m && <section className="mb-8"><h2 className="section-label mb-3">Just shipped</h2><article className="border border-border-default bg-[var(--chat-surface)] p-4"><div className="flex justify-between gap-2 text-meta"><span className="flex items-center gap-2 text-status-success"><i className="h-2 w-2 bg-status-success" />shipped {new Date(m.completedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) })}</span>{m.criteria && <span>{m.criteria.passed}/{m.criteria.total} criteria</span>}</div><h3 className="mt-3 text-title font-bold">{m.title}</h3><dl className="mt-4 grid grid-cols-3 gap-3 border-t border-border-default pt-3">{[[m.prs, 'PRs merged'], ...shippedDurationFacts(m)].slice(0, 3).map(([value, label]) => <div key={label}><dt className="text-meta text-text-muted">{label}</dt><dd className="text-heading">{value}</dd></div>)}</dl><Link className="mt-3 inline-flex min-h-11 items-center text-body" href={shippedSummaryHref(m.href)}>Read summary →</Link></article></section>}
+    {agents && <div className="mb-8">{agents}</div>}
     <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
+    {landed && <div className="mb-8">{landed}</div>}
     <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-body text-text-secondary">See everything in motion in Activity →</Link>
   </div>;
 }

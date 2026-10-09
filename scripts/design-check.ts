@@ -82,7 +82,7 @@ export const RULES: Rule[] = [
     appliesTo: f => isSource(f) && !isUiPrimitive(f) && !isFlightStrip(f),
     check: line =>
       /\brounded-full\b/.test(line) && CHIP_LIKE.test(line)
-        ? ["Found 'rounded-full' on a chip/badge-like element; corners are square (design-system.md §2.7), use Chip from components/ui/ (§4)"]
+        ? ["Found 'rounded-full' on a chip/badge-like element; chips take the pill radius from Chip (design-system.md §2.6), use Chip from components/ui/ (§4)"]
         : [],
   },
   {

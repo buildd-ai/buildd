@@ -35,6 +35,8 @@ import InteractiveSessionsFixture from './InteractiveSessionsFixture';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import TeamMembersFixture from './TeamMembersFixture';
+import RefinedComponentsFixture from './RefinedComponentsFixture';
+import MissionFlowFixture from './MissionFlowFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -63,6 +65,8 @@ import {
     VISUAL_REVIEW_FIXTURE_STATE,
     SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
     TEAM_MEMBERS_FIXTURE_STATE,
+    REFINED_COMPONENTS_FIXTURE_STATE,
+    MISSION_FLOW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -192,6 +196,14 @@ export default function DevFixturesPage() {
 
     if (state === TEAM_MEMBERS_FIXTURE_STATE) {
         return <TeamMembersFixture />;
+    }
+
+    if (state === REFINED_COMPONENTS_FIXTURE_STATE) {
+        return <RefinedComponentsFixture />;
+    }
+
+    if (state === MISSION_FLOW_FIXTURE_STATE) {
+        return <MissionFlowFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
