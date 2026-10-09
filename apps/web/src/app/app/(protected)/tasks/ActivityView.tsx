@@ -9,7 +9,9 @@
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { DeliveryEvidence, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { lifecycleState } from '@/components/delivery/lifecycle-state';
+import Lifecycle from '@/components/ui/Lifecycle';
 import { DeliveryStatePill } from '@/components/delivery/DeliveryStatePill';
 import StatePill from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
@@ -252,7 +254,7 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
       </span>
       <span className="col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1">
         <DeliveryStatePill kind={row.delivery.kind} />
-        <DeliveryTrack kind={row.delivery.kind} rounds={rounds} />
+        <Lifecycle state={lifecycleState(row.delivery.kind)} repairs={rounds} />
         {row.live && <span className="inline-flex items-center gap-1.5 text-meta text-text-muted"><span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />agent live</span>}
         {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot held</span>}
         {row.prNumber && <span className="font-mono text-meta text-text-muted">#{row.prNumber}</span>}

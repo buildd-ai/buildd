@@ -55,7 +55,9 @@ import {
   type BoardLinkContext,
 } from './MissionBoardParts';
 import TaskActionZone from './TaskActionZone';
-import { DeliveryEvidence, DeliveryStages } from '@/components/delivery/DeliveryParts';
+import { DeliveryEvidence } from '@/components/delivery/DeliveryParts';
+import { lifecycleState } from '@/components/delivery/lifecycle-state';
+import Lifecycle from '@/components/ui/Lifecycle';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 
 /** The situation block's task, handed to the drawer (its reason is the accessor's sentence). */
@@ -407,7 +409,7 @@ export function DrawerDelivery({ delivery, stages = true }: { delivery: TaskDeli
       {stages && (
         <>
           <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
-          <DeliveryStages kind={delivery.kind} stages={delivery.stages} />
+          <Lifecycle state={lifecycleState(delivery.kind)} repairs={delivery.repairs} notes={[delivery.stages.build, delivery.stages.audit, delivery.stages.land]} />
         </>
       )}
       {delivery.evidence.length > 0 && (
