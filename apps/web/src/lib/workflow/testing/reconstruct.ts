@@ -174,6 +174,8 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         ...(E.carryForward ? { carryForward: E.carryForward as 'content_equivalent' | 'own_refresh' } : {}),
         taskRetryBudgetLeft: requeue,
         reviewRequired: E.policy !== 'no_review',
+        // e9f1674b: the hand-off's live check read; its budget is in the evidence only when it acted.
+        ...(liveChecksOf(E.liveChecks) ? { ci: { liveChecks: liveChecksOf(E.liveChecks)!, signature: str(E.signature) ?? 'ci_failed', maxAttempts: num(E.max) ?? 0 } } : {}),
       });
     }
     case 'ReviewRequested': {
