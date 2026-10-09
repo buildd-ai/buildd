@@ -215,6 +215,8 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'TrunkRecovered': return d ? `trunkok:${cmd.incidentId}:${d.id}` : null;
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
     case 'PolicyEvidenceRecorded': return d ? `policy:${d.id}:${cmd.evidence.headSha}:${cmd.evidence.outcome}` : null;
+    // One failure per reviewer: a repeated report (a retried PATCH, the reaper) is a duplicate.
+    case 'ReviewRoundFailed': return cmd.reviewerTaskId ? roundFailKey(cmd.roundId, cmd.reviewerTaskId) : null;
     default: return null;
   }
 }
@@ -228,6 +230,11 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
  */
 export function headObservationKey(pr: string, fromHead: string | null, toHead: string, version: number): string {
   return `head:${pr}:${fromHead ?? 'none'}->${toHead}@v${version}`;
+}
+
+/** T27's key for a reviewer's failure: the reviewer task, never the round's running count. */
+export function roundFailKey(roundId: string, reviewerTaskId: string): string {
+  return `roundfail:${roundId}:${reviewerTaskId}`;
 }
 
 function landingKey(pr: string, headSha: string, version: number): string {
@@ -609,12 +616,18 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       // queued per-PR attempt is skipped (spends nothing) and T25 decides.
       const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
       if (!allowed.includes(dd.state) && !reopen && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      // §6.3 T10 guard "live check-suite read": a stale or redelivered hint for a
+      // head that is not red now (re-run green, or re-running) moves nothing.
+      if (cmd.liveChecks && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
       if (cmd.openTrunkIncidentId && dd.state !== 'CHANGES_REQUESTED') {
         return reduce(view, { type: 'TrunkRedObserved', actor: cmd.actor, incidentId: cmd.openTrunkIncidentId, signature: cmd.signature, headSha: cmd.headSha, thresholdMet: true }, opts);
       }
       const key = `ci:${dd.id}:${cmd.headSha}`;
       // §6.10 tier 3 (S31): a failure a preflight should have caught is tagged, never acted on.
-      const miss = cmd.preflightMiss ? { preflightMiss: cmd.preflightMiss } : {};
+      const miss = {
+        ...(cmd.preflightMiss ? { preflightMiss: cmd.preflightMiss } : {}),
+        ...(cmd.liveChecks ? { liveChecks: cmd.liveChecks } : {}),
+      };
       const ciPatch: DeliveryPatch = { ci: 'red', ciHeadSha: cmd.headSha };
       if (dd.state === 'CHANGES_REQUESTED') {
         // The owed review fix will push a new head; record the CI fact only.
@@ -1053,8 +1066,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_moved');
       const round = c.roundById(cmd.roundId);
       if (!round || !OPEN_ROUND.has(round.status) || round.round !== dd.currentRound) return c.stale('round_not_current');
+      // A reviewer the round no longer (or never) waits on cannot spend the budget of the one it does.
+      if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
       const n = round.failureCount + 1;
-      const key = `roundfail:${round.id}:${n}`;
+      // Keyed on the reviewer that failed (§6.3 T27); only a kernel-side failure with no reviewer counts by number.
+      const key = cmd.reviewerTaskId ? roundFailKey(round.id, cmd.reviewerTaskId) : `roundfail:${round.id}:${n}`;
+      const ev = cmd.reviewerTaskId ? { roundId: round.id, reason: cmd.reason, reviewerTaskId: cmd.reviewerTaskId } : { roundId: round.id, reason: cmd.reason };
       const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: cmd.reason, failure: n } };
       // A person's takeover is not a contract failure to retry: it escalates now.
       if (n <= cmd.maxContractRetries && cmd.reason !== 'human_takeover') {
@@ -1063,7 +1080,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           guardRound: true,
           rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
           effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n } }, gate],
-          evidence: { roundId: round.id, reason: cmd.reason },
+          evidence: ev,
         });
       }
       return c.apply(key, 'ESCALATED', {
@@ -1071,7 +1088,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { stateReason: 'review_unavailable' },
         rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
         effects: [gate],
-        evidence: { roundId: round.id, reason: cmd.reason },
+        evidence: ev,
       });
     }
 
@@ -1295,7 +1312,7 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return unbound();
   const L = cmd.localHeadSha;
   const live = cmd.live;
-  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live };
+  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live, ...(cmd.ci ? { liveChecks: cmd.ci.liveChecks } : {}) };
 
   if (d.state === 'WORKING') {
     if (cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
@@ -1311,6 +1328,12 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
       if (d.policyEvidence && d.policyEvidence.headSha === h) {
         return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+      }
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
+      // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
+      // live read shows red goes to REPAIRING(ci) through T10's ledger, never to a reviewer.
+      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.decidedAt(h) && !c.openAttempt(['ci'])) {
+        return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
       }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
@@ -1356,9 +1379,15 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   });
 
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
+    // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
+    // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
+    // AWAITING_PUSH head path and the floor already read it. Only when nothing local can be lost
+    // (the WORKING rule, §9 AC-10): an unproven end with unreported commits is still not proof.
+    const unknownLocalIsSafe = cmd.outcome === 'success' || cmd.commitCount === 0;
+    const proofLocal = L ?? (unknownLocalIsSafe ? a.reportedShas.at(-1) ?? null : null);
     const proof = deliveryProof({
       boundHeadSha: a.boundHeadSha,
-      localHeadSha: L,
+      localHeadSha: proofLocal,
       liveHeadSha: livePrOpen(live) ? live!.headSha : null,
       liveContainsLocal: cmd.proof?.liveContainsLocal,
       contentDiffChanged: cmd.proof?.contentDiffChanged,
@@ -1447,6 +1476,36 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
     evidence,
+  });
+}
+
+/**
+ * §6.5 row 1 with a red head (e9f1674b): T10's outcome, taken by the owner's hand-off.
+ * The same ledger row, dispatch key and exhaustion as T10, under the hand-off's own key.
+ * No round is started: resuming from the repair starts one (resumeAfterRepair, T11).
+ */
+function ciRepairAtHandOff(
+  c: Ctx, key: string, h: string, ci: NonNullable<Extract<Command, { type: 'AttemptEnded' }>['ci']>,
+  patch: DeliveryPatch, evidence: Record<string, unknown>,
+): Decision {
+  const d = c.d!;
+  const ciPatch: DeliveryPatch = { ...patch, currentHeadSha: h, ci: 'red', ciHeadSha: h };
+  const ev = { ...evidence, signature: ci.signature };
+  const { spent, max } = c.budget('ci', ci.maxAttempts);
+  if (spent >= max) {
+    return c.apply(key, 'ESCALATED', {
+      patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:${h}`, payload: { family: 'ci', attempts: spent, max, headSha: h, signature: ci.signature } }],
+      evidence: { ...ev, spent, max },
+    });
+  }
+  const n = c.nextNo('ci', 'agent');
+  const id = c.newId();
+  return c.apply(key, 'REPAIRING', {
+    patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
+    attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: h, triggerReason: ci.signature, triggerFactId: null, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
+    effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${d.id}:${h}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: h, signature: ci.signature, trigger: 'automatic' } }],
+    evidence: { ...ev, attemptNo: n, spent: spent + 1, max },
   });
 }
 

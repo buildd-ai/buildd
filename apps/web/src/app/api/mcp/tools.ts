@@ -338,12 +338,12 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     tools.push({
       name: "send_worker_message",
       description: surface === 'groups'
-        ? 'Message an active sibling task in your workspace; sender is the current worker. Delivered on its next update_progress. Terminal recipient: delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
+        ? 'Message an active sibling task in your workspace (sender: you). Delivered at its next turn. Terminal recipient: delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
         : `Send a structured message to another active task worker in the same workspace.
 
 Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
 
-Messages are delivered on the recipient's next update_progress check-in as pendingMessages[].
+Messages reach the recipient at its next turn boundary: its runner injects them into the session, or (interactive session) its next receive_messages / update_progress returns them.
 Sender is resolved automatically from your ?worker= context — do not pass it as a parameter.
 Cross-workspace targeting is rejected (data isolation rule, not a nicety).
 Recipient terminal → returns { delivered: false, reason: "recipient_terminal" }.

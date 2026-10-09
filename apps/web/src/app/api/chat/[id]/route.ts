@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from 'next/server';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { isChatTierName, type ChatTurnRequest, type GetConversationResponse, type UpdateConversationRequest } from '@buildd/shared';
 import {
   getOwnConversation,
@@ -93,6 +94,17 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     }
     const repoAccessRefusal = await assertMemberRepoAccess(r.caller.user.id, ws.id);
     if (repoAccessRefusal) return repoAccessRefusal;
+  }
+  if (body.tier) {
+    // Pinning above the person's tier maximum is refused; the turn re-checks.
+    const nextWs = body.workspaceId !== undefined ? body.workspaceId : r.conversation.workspaceId;
+    const ceilingRejection = await rejectOverCeiling({
+      subject: { teamId: r.conversation.teamId, workspaceId: nextWs, userId: r.caller.user.id },
+      surface: 'chat',
+      request: { tier: body.tier, tierOrigin: 'chat_pin' },
+      gate: { surface: 'PATCH /api/chat/[id]', workspaceId: nextWs, callerOrigin: 'dashboard' },
+    });
+    if (ceilingRejection) return ceilingRejection;
   }
   if (body.tier !== undefined) {
     await setConversationTier(r.conversation.id, body.tier);

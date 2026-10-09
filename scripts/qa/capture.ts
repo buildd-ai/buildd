@@ -31,9 +31,11 @@
  *   QA_PLAN                         — a capture plan: a path to a JSON file, or the JSON itself when it
  *                                     starts with `[`. `[{ route, states?: [{ key, steps }] }]`, steps
  *                                     from a closed list (click, hover, fill, press, select, waitFor,
- *                                     waitMs). Steps never commit: a write needs `commit: true`, which
+ *                                     waitMs, assertLayout). Steps never commit: a write needs `commit: true`, which
  *                                     only QA_PAGE_SOURCE=sandbox honours, and every other write is
- *                                     aborted in the browser. Not combinable with QA_ROUTES.
+ *                                     aborted in the browser. Not combinable with QA_ROUTES. A failed
+ *                                     assertLayout (overflow, a tap target under 44px below md) exits 4
+ *                                     after every shot is written.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -50,6 +52,7 @@
  *   QA_SIGN_IN_PATHS                — comma-separated app sign-in paths (default: /login,/signin,…)
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
+ *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
  */
 
@@ -237,6 +240,13 @@ if (QA_THEME) {
   await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
   console.log(`[capture] theme ${QA_THEME}`);
 }
+// QA_TEAM_ID renders as that team: the same `buildd-team` cookie the team switcher
+// sets (lib/active-team-client.ts). Unset keeps the user's default team.
+const QA_TEAM_ID = process.env.QA_TEAM_ID?.trim();
+if (QA_TEAM_ID) {
+  await context.addCookies([{ name: 'buildd-team', value: encodeURIComponent(QA_TEAM_ID), url: BASE_URL }]);
+  console.log('[capture] team set from QA_TEAM_ID');
+}
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot
 // that looks fine but threw on load (React #418) is still visible.
@@ -399,7 +409,9 @@ for (const route of routes) {
         beforeStep: (step) => g.allow(step.commit === true && PAGE_SOURCE === 'sandbox'),
         afterStep: () => g.allow(false),
       });
-      if (stepFailed) {
+      if (stepFailed?.assertion) {
+        console.error(`[capture] LAYOUT ${route.id}: ${stepFailed.error}`);
+      } else if (stepFailed) {
         console.warn(`[capture] STEP  ${route.id}: steps[${stepFailed.index}] (${describeStep(route.steps[stepFailed.index])}) failed: ${stepFailed.error}; shooting the page as it stands`);
       }
     }
@@ -494,6 +506,15 @@ const walls = [...new Set(captures.map((c) => c.configError).filter((e): e is Ca
 if (walls.length > 0) {
   for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
   process.exit(3);
+}
+
+// A layout gate also fails when a prerequisite or measurement failed: it
+// never passes without checking the requested scenario. Screenshots and
+// metadata are written before the nonzero exit.
+const layoutFailures = captures.filter((c) => c.stepFailed?.assertion);
+if (layoutFailures.length > 0) {
+  for (const c of layoutFailures) console.error(`[capture] LAYOUT FAILED ${c.id}: ${c.stepFailed!.error}`);
+  process.exit(4);
 }
 
 if (captures.some(c => c.providerError)) process.exit(1);

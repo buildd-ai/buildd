@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { MODEL_TIERS_CHANGED_EVENT } from './CellEditor';
 import { Select } from '@/components/ui/Select';
 import Chip from '@/components/ui/Chip';
 import { getModelDisplayName } from '@buildd/core/model-display';
@@ -60,6 +61,12 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
   }, [teamId]);
 
   useEffect(() => { void load(); }, [load]);
+  // A tier edit above changes what is pinned and why; revalidate rather than wait for a reload.
+  useEffect(() => {
+    const onChanged = () => { void load(); };
+    window.addEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+  }, [load]);
 
   async function send(url: string, init: RequestInit, ok: string) {
     setBusy(true);

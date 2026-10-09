@@ -49,8 +49,8 @@ export interface FleetWorkerRow {
   updatedAt?: DateLike;
   prNumber?: number | null;
   waitingFor?: { prompt?: string } | null;
-  /** 0..100 from the latest milestone (`workerProgressSql`). */
-  progress?: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase?: string | null;
   task?: {
     id: string;
     title: string;
@@ -205,7 +205,7 @@ export function buildFleetSnapshot(
       slot.worker = {
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
         label, rest, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
-        status: w.status, progress: w.progress ?? null,
+        status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
         question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
       };
