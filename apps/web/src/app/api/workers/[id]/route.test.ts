@@ -747,12 +747,12 @@ mock.module('@/lib/workflow/seam', () => ({
 // SQL is covered against real Postgres (apps/web/tests/db/review-provenance.test.ts).
 // Here: the review task's own context stands in for the server-resolved PR,
 // and a test overrides either to check the verdict path stops.
-const realReviewProvenance = await import('@/lib/review-provenance');
+const realReviewProvenance = await import('@/lib/verdict-provenance');
 const mockResolveDispatchedReview = mock(async (task: any, _workspaceId: string): Promise<any> => {
   const ctx = (task?.context ?? {}) as Record<string, any>;
   return { ok: true, originalTaskId: ctx.reviewerFor, prNumber: ctx.prNumber, repoFullName: ctx.repoFullName, installationId: ctx.installationId };
 });
-mock.module('@/lib/review-provenance', () => ({
+mock.module('@/lib/verdict-provenance', () => ({
   ...realReviewProvenance,
   resolveDispatchedReview: mockResolveDispatchedReview,
 }));

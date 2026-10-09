@@ -78,7 +78,7 @@ import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
-import { resolveDispatchedReview } from '@/lib/review-provenance';
+import { resolveDispatchedReview } from '@/lib/verdict-provenance';
 import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';

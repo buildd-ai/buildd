@@ -14,7 +14,6 @@
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { isDispatchedReview } from '@/lib/read-only-review';
 import { workspaceRepo } from '@/lib/workflow/github-facts';
 
 /** Context keys only the review system writes. */
@@ -43,9 +42,9 @@ export async function resolveDispatchedReview(
   workspaceId: string,
   deps: { repoOf?: typeof workspaceRepo } = {},
 ): Promise<DispatchedReview> {
-  if (!isDispatchedReview(task.category, task.context)) return { ok: false, reason: 'not a dispatched review' };
   const ctx = (task.context ?? {}) as Record<string, unknown>;
-  const originalTaskId = ctx.reviewerFor as string;
+  const originalTaskId = ctx.reviewerFor;
+  if (task.category !== 'review' || typeof originalTaskId !== 'string' || !originalTaskId) return { ok: false, reason: 'not a dispatched review' };
   if (task.workspaceId !== workspaceId) return { ok: false, reason: 'review task is not in the worker\'s workspace' };
   if (task.parentTaskId !== originalTaskId) return { ok: false, reason: 'review task is not a child of the task it reviews' };
   const prNumber = ctx.prNumber;

@@ -1,6 +1,6 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
-import { withoutReviewDispatchContext } from '@/lib/review-provenance';
+import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
