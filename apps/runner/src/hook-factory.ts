@@ -666,62 +666,15 @@ export class HookFactory {
     };
   }
 
-  // Create a PostToolUse hook that captures team events (TeamCreate, SendMessage, Task).
+  // Create a PostToolUse hook that records tool completion as activity.
   // Purely observational — returns {} and never blocks or modifies tool execution.
-  createTeamTrackingHook(worker: LocalWorker): HookCallback {
+  createToolActivityHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PostToolUse') return {};
 
       // Tool finished — clear the in-flight flag and record activity.
       worker.lastActivity = Date.now();
       worker.toolInFlight = false;
-
-      const toolName = (input as any).tool_name;
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
-
-      if (toolName === 'TeamCreate') {
-        const teamName = (toolInput.team_name as string) || 'unnamed';
-        worker.teamState = {
-          teamName,
-          members: [],
-          messages: [],
-          createdAt: Date.now(),
-        };
-        this.ctx.addMilestone(worker, { type: 'status', label: `Team created: ${teamName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Team created: ${teamName}`);
-      }
-
-      if (toolName === 'SendMessage' && worker.teamState) {
-        const msg = {
-          from: (toolInput.sender as string) || 'leader',
-          to: (toolInput.recipient as string) || (toolInput.type === 'broadcast' ? 'broadcast' : 'unknown'),
-          content: (toolInput.content as string) || '',
-          summary: (toolInput.summary as string) || undefined,
-          timestamp: Date.now(),
-        };
-        worker.teamState.messages.push(msg);
-        // Cap at 200 messages
-        if (worker.teamState.messages.length > 200) {
-          worker.teamState.messages.shift();
-        }
-        // Only emit milestone for broadcasts (avoid noise from DMs)
-        if (toolInput.type === 'broadcast') {
-          this.ctx.addMilestone(worker, { type: 'status', label: `Broadcast: ${msg.summary || msg.content.slice(0, 40)}`, ts: Date.now() });
-        }
-      }
-
-      if (toolName === 'Task' && worker.teamState) {
-        const agentName = (toolInput.name as string) || (toolInput.description as string) || 'subagent';
-        const agentType = (toolInput.subagent_type as string) || undefined;
-        worker.teamState.members.push({
-          name: agentName,
-          role: agentType,
-          status: 'active',
-          spawnedAt: Date.now(),
-        });
-        this.ctx.addMilestone(worker, { type: 'status', label: `Subagent: ${agentName}`, ts: Date.now() });
-        console.log(`[Worker ${worker.id}] Subagent spawned: ${agentName}`);
-      }
 
       return {};
     };
@@ -799,30 +752,6 @@ export class HookFactory {
       }
 
       return {};
-    };
-  }
-
-  // Create a TeammateIdle hook that updates team member status when a teammate goes idle.
-  // Purely observational — emits events for dashboard/Pusher visibility.
-  createTeammateIdleHook(worker: LocalWorker): HookCallback {
-    return async (input) => {
-      if ((input as any).hook_event_name !== 'TeammateIdle') return {};
-
-      const teammateName = (input as any).teammate_name as string;
-      const teamName = (input as any).team_name as string;
-
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'idle';
-        }
-      }
-
-      this.ctx.addMilestone(worker, { type: 'status', label: `Teammate idle: ${teammateName}`, ts: Date.now() });
-      console.log(`[Worker ${worker.id}] Teammate idle: ${teammateName} (team: ${teamName})`);
-
-      return { async: true };
     };
   }
 
@@ -1036,8 +965,8 @@ export class HookFactory {
     };
   }
 
-  // Create a TaskCompleted hook that logs task completions within agent teams.
-  // Emits milestones and updates team state for dashboard visibility.
+  // Create a TaskCompleted hook that logs task-list completions.
+  // Emits milestones for dashboard visibility.
   createTaskCompletedHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'TaskCompleted') return {};
@@ -1046,14 +975,6 @@ export class HookFactory {
       const taskSubject = (input as any).task_subject as string;
       const teammateName = (input as any).teammate_name as string | undefined;
       const teamName = (input as any).team_name as string | undefined;
-
-      // Update team member status if completed by a known teammate
-      if (worker.teamState && teammateName) {
-        const member = worker.teamState.members.find(m => m.name === teammateName);
-        if (member) {
-          member.status = 'done';
-        }
-      }
 
       const label = teammateName
         ? `Task done (${teammateName}): ${taskSubject.slice(0, 50)}`
@@ -1066,7 +987,7 @@ export class HookFactory {
   }
 
   // Create a SubagentStart hook that tracks subagent spawning.
-  // Updates team state and emits milestones for dashboard visibility.
+  // Emits milestones for dashboard visibility.
   createSubagentStartHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStart') return {};
@@ -1077,14 +998,6 @@ export class HookFactory {
       const agentId = (input as any).agent_id as string;
       const agentType = (input as any).agent_type as string;
 
-      // Update team member status if we're tracking team state
-      if (worker.teamState) {
-        const member = worker.teamState.members.find(m => m.name === agentId);
-        if (member) {
-          member.status = 'active';
-        }
-      }
-
       this.ctx.addMilestone(worker, { type: 'status', label: `Subagent started: ${agentType}`, ts: Date.now() });
       console.log(`[Worker ${worker.id}] Subagent started: ${agentType} (id: ${agentId})`);
 
@@ -1093,7 +1006,7 @@ export class HookFactory {
   }
 
   // Create a SubagentStop hook that tracks subagent completion.
-  // Updates team state and emits milestones for dashboard visibility.
+  // Emits milestones for dashboard visibility.
   createSubagentStopHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'SubagentStop') return {};
