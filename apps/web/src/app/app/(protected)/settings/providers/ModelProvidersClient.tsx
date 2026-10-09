@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
 import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
+import { Select } from '@/components/ui/Select';
 import CredentialPolicySelector from './CredentialPolicySelector';
 import ProviderCard from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
@@ -93,17 +94,16 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [] 
             ))}
           </div>
           {scope === 'workspace' && workspaces.length > 0 && (
-            <label className="flex items-center gap-2 text-meta text-text-muted min-w-0">
-              <span className="sr-only">Workspace</span>
-              <select
-                className="h-11 md:h-8 px-2 bg-surface-1 text-body text-text-primary max-w-full"
+            <div className="min-w-0 w-full sm:w-64">
+              <Select
                 value={workspaceId ?? ''}
-                onChange={(e) => setWorkspaceId(e.target.value || null)}
-                data-testid="scope-workspace"
-              >
-                {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </select>
-            </label>
+                onChange={(v) => setWorkspaceId(v || null)}
+                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+                aria-label="Workspace"
+                sheetTitle="Workspace"
+                testId="scope-workspace"
+              />
+            </div>
           )}
         </div>
 

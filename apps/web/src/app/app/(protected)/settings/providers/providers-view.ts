@@ -146,7 +146,7 @@ export const POLICY_OPTIONS: readonly { value: CredentialPolicyValue; label: str
   { value: 'personal_only', label: 'Your key only (no team key)', hint: 'Work you start needs your own key.' },
 ];
 
-export const POLICY_UNSET = 'Not chosen yet: agents use team keys.';
+export const POLICY_UNSET = 'No policy chosen: agents use team keys.';
 export const POLICY_UNSET_HINT = 'Pick one to apply it to agent runs.';
 
 /** One sentence for whoever can't change the policy. */

@@ -138,7 +138,7 @@ function CredentialRow({ row, now }: { row: ProviderCredentialSummary; now?: Dat
         <span className="text-meta text-text-muted">{formatCheckedAgo(row.lastVerifiedAt, now)}</span>
       </div>
       <p className="text-meta text-text-muted" data-testid="provider-row-serves">
-        {row.servesToday.length ? `Used for ${surfaceList(row.servesToday).toLowerCase()}` : 'Not used by anything yet'}
+        {row.servesToday.length ? `Used for ${surfaceList(row.servesToday).toLowerCase()}` : 'Not used by anything'}
       </p>
       {row.lastVerificationError && <p className="text-meta text-status-error break-words">{row.lastVerificationError}</p>}
     </div>

@@ -202,7 +202,7 @@ describe('credential policy', () => {
   it('unset: says agents use team keys and that picking one opts agent runs in', async () => {
     await mount({ credentialPolicy: null });
     const unset = $('[data-testid="credential-policy-unset"]')!.textContent!;
-    expect(unset).toContain('Not chosen yet: agents use team keys.');
+    expect(unset).toContain('No policy chosen: agents use team keys.');
     expect(unset).toContain('apply it to agent runs');
     const radios = [...host.querySelectorAll('input[name="credential-policy"]')] as HTMLInputElement[];
     expect(radios.map((r) => r.value)).toEqual(['team', 'personal_first', 'personal_only']);
