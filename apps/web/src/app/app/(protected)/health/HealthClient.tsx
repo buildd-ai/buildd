@@ -42,6 +42,7 @@ import {
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
+import { OccupancyChart } from '@/components/fleet/OccupancyChart';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
@@ -785,6 +786,14 @@ export function HealthClient({
       {showsState && (
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
+
+      {show('capacity') && (
+        <OccupancyChart
+          capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+          busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+          workspaceId={wsFilter}
+        />
+      )}
 
       {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
