@@ -21,6 +21,8 @@ function github(opts: {
   files: Array<{ filename: string; status?: string }>;
   head?: Record<string, string>;
   base?: Record<string, string>;
+  /** Migration filenames listed in the drizzle dir at the target's tip; absent = listing unavailable. */
+  baseDir?: string[];
   baseRef?: string;
   peers?: Array<{
     number: number;
@@ -48,6 +50,9 @@ function github(opts: {
     const contents = /\/contents\/(.+)\?ref=(.+)$/.exec(url);
     if (contents) {
       const [, path, ref] = contents;
+      if (decodeURIComponent(path) === DIR && ref === BASE_SHA && opts.baseDir) {
+        return opts.baseDir.map((name) => ({ name, type: 'file' }));
+      }
       const source =
         ref === 'abc123' ? opts.head
           : ref === BASE_SHA ? opts.base
@@ -234,6 +239,7 @@ describe('inspectPullRequestMigrations', () => {
       reason:
         'migration number collision: 0094_safe.sql conflicts with open PR #40 migration 0094_collision.sql',
       collision: { file: '0094_safe.sql', otherFile: '0094_collision.sql', otherPrNumber: 40 },
+      kind: 'collision',
     });
   });
 
@@ -293,6 +299,114 @@ describe('inspectPullRequestMigrations', () => {
     expect((await inspect('dev')).safe).toBe(identical);
   });
 
+  describe('a slot the base already uses (the base merged a migration after the branch forked)', () => {
+    const own = `${DIR}/0275_new_feature.sql`;
+
+    it('is a renumber against the base, not a person’s decision', async () => {
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE },
+        baseDir: ['0274_older.sql', '0275_landed_first.sql'],
+      });
+      await expect(inspect('dev')).resolves.toEqual({
+        safe: false,
+        operationClass: 'CONTRACT',
+        kind: 'collision',
+        reason: 'migration number collision: 0275_new_feature.sql is at or below 0275_landed_first.sql, already on the base',
+        collision: { file: '0275_new_feature.sql', otherFile: '0275_landed_first.sql', otherPrNumber: null, against: 'base' },
+      });
+    });
+
+    it('names the base’s newest migration when the base has moved past this number', async () => {
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE },
+        baseDir: ['0276_a.sql', '0277_b.sql'],
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.collision).toEqual({
+        file: '0275_new_feature.sql', otherFile: '0277_b.sql', otherPrNumber: null, against: 'base',
+      });
+    });
+
+    it('passes a migration numbered past everything on the base', async () => {
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE },
+        baseDir: ['0273_a.sql', '0274_b.sql'],
+      });
+      await expect(inspect('dev')).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
+
+    it('still reports destructive SQL first: renumbering does not make a drop safe', async () => {
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: DROP_CONSTRAINT },
+        baseDir: ['0275_landed_first.sql'],
+      });
+      const result = await inspect('dev');
+      expect(result.safe).toBe(false);
+      expect(!result.safe && result.collision).toBeUndefined();
+      expect(!result.safe && result.reason).toBe('drops constraint tasks.tasks_owner_fk');
+    });
+
+    it('skips the check when the base listing cannot be read, as before it existed', async () => {
+      github({ files: [{ filename: own, status: 'added' }], head: { [own]: SAFE } });
+      await expect(inspect('dev')).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
+
+    it('treats novel SQL ordered before an inherited migration the same way', async () => {
+      const inheritedPath = `${DIR}/0266_inherited.sql`;
+      github({
+        files: [
+          { filename: inheritedPath, status: 'added' },
+          { filename: `${DIR}/0265_late.sql`, status: 'added' },
+        ],
+        head: { [inheritedPath]: SAFE, [`${DIR}/0265_late.sql`]: SAFE },
+        base: { [inheritedPath]: SAFE },
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.kind).toBe('collision');
+      expect(!result.safe && result.collision).toEqual({
+        file: '0265_late.sql', otherFile: '0266_inherited.sql', otherPrNumber: null, against: 'base',
+      });
+    });
+  });
+
+  describe('a GitHub read that fails', () => {
+    it('is retried once before failing closed', async () => {
+      github({ files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }], head: { [`${DIR}/0094_safe.sql`]: SAFE } });
+      const route = mockGithubApi.getMockImplementation()!;
+      let failed = false;
+      mockGithubApi.mockImplementation(async (i, url) => {
+        if (url.includes('/pulls/42/files') && !failed) {
+          failed = true;
+          throw new Error('GitHub API error: 502');
+        }
+        return route(i, url);
+      });
+      await expect(inspect()).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+    });
+
+    it('fails closed as uninspectable when the retry fails too', async () => {
+      github({ files: [] });
+      mockGithubApi.mockImplementation(async () => {
+        throw new Error('GitHub API error: 502');
+      });
+      await expect(inspect()).resolves.toEqual({
+        safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list', kind: 'uninspectable',
+      });
+      expect(mockGithubApi.mock.calls.filter((c) => c[1].includes('/pulls/42/files')).length).toBe(2);
+    });
+
+    it('does not retry a verdict that is unsafe on its merits', async () => {
+      github({ files: [{ filename: `${DIR}/0094_safe.sql`, status: 'removed' }] });
+      const result = await inspect();
+      expect(!result.safe && result.kind).toBe('lineage');
+      expect(mockGithubApi.mock.calls.filter((c) => c[1].includes('/pulls/42/files')).length).toBe(1);
+    });
+  });
+
   it('escalates deleting a generated migration', async () => {
     github({ files: [{ filename: `${DIR}/0094_safe.sql`, status: 'removed' }] });
 
@@ -300,6 +414,7 @@ describe('inspectPullRequestMigrations', () => {
       safe: false,
       operationClass: 'CONTRACT',
       reason: `deletes generated migration ${DIR}/0094_safe.sql`,
+      kind: 'lineage',
     });
     expect(mockGithubApi).toHaveBeenCalledTimes(1);
   });
@@ -315,6 +430,7 @@ describe('inspectPullRequestMigrations', () => {
       safe: false,
       operationClass: 'CONTRACT',
       reason: `modifies existing migration ${DIR}/0094_safe.sql`,
+      kind: 'lineage',
     });
   });
 });

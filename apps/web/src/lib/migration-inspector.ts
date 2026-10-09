@@ -3,6 +3,7 @@ import {
   classifyPullRequestMigrations,
   getMigrationNumber,
   isGeneratedMigrationPath,
+  type MigrationCollision,
   type MigrationSafety,
   type OpenPullRequestMigration,
   type PullRequestMigrationFile,
@@ -74,13 +75,60 @@ async function resolveBaseSha(
   }
 }
 
+type InspectParams = Parameters<typeof inspectOnce>[0];
+
+/**
+ * Load executable SQL and compare migration slots (see `inspectOnce`). A
+ * verdict that is unsafe only because GitHub could not be read
+ * (`kind: 'uninspectable'`) is retried once; a second failure is returned
+ * as-is, so the caller still fails closed.
+ */
+export async function inspectPullRequestMigrations(params: InspectParams): Promise<MigrationSafety> {
+  const first = await inspectOnce(params);
+  if (first.safe || first.kind !== 'uninspectable') return first;
+  return inspectOnce(params);
+}
+
+/** Numbered migration filenames in `dir` at `ref`; null when the listing can't be read. */
+async function migrationNamesAt(
+  installationId: number,
+  repoFullName: string,
+  dir: string,
+  ref: string,
+): Promise<string[] | null> {
+  try {
+    const encodedDir = dir.split('/').map(encodeURIComponent).join('/');
+    const data = await githubApi(installationId, `/repos/${repoFullName}/contents/${encodedDir}?ref=${encodeURIComponent(ref)}`);
+    if (!Array.isArray(data)) return null;
+    return data
+      .map((entry: { name?: unknown }) => (typeof entry?.name === 'string' ? entry.name : ''))
+      .filter((name) => /^\d{4}_[^/]+\.sql$/.test(name));
+  } catch {
+    return null;
+  }
+}
+
+function basenameOf(path: string): string {
+  return path.split('/').at(-1) ?? path;
+}
+
+function numberOf(name: string): number {
+  return Number(/^(\d{4})_/.exec(basenameOf(name))?.[1] ?? -1);
+}
+
+/** A migration whose slot is already used on the PR's base: a renumber, never a decision. */
+function behindBase(file: string, otherFile: string, reason: string): MigrationSafety {
+  const collision: MigrationCollision = { file: basenameOf(file), otherFile, otherPrNumber: null, against: 'base' };
+  return { safe: false, operationClass: 'CONTRACT', reason, collision, kind: 'collision' };
+}
+
 /**
  * Load executable SQL and compare migration slots in PRs targeting the same
  * base. Identical files inherited by stacked PRs do not claim a second slot,
  * and SQL the target already carries byte-for-byte is not this PR's to
  * classify — see `resolveBaseSha`.
  */
-export async function inspectPullRequestMigrations(params: {
+async function inspectOnce(params: {
   installationId: number;
   repoFullName: string;
   prNumber: number;
@@ -120,7 +168,7 @@ export async function inspectPullRequestMigrations(params: {
         `/repos/${params.repoFullName}/pulls/${params.prNumber}/files`,
       )) as GitHubPullRequestFile[];
     } catch {
-      return { safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list' };
+      return { safe: false, operationClass: 'CONTRACT', reason: 'could not inspect complete PR file list', kind: 'uninspectable' };
     }
   }
 
@@ -135,6 +183,7 @@ export async function inspectPullRequestMigrations(params: {
       safe: false,
       operationClass: 'CONTRACT',
       reason: `deletes generated migration ${removedMigration.filename}`,
+      kind: 'lineage',
     };
   }
   const touchesSchema = completeFiles.some(
@@ -183,21 +232,42 @@ export async function inspectPullRequestMigrations(params: {
       safe: false,
       operationClass: 'CONTRACT',
       reason: `modifies existing migration ${changedExistingMigration.filename}`,
+      kind: 'lineage',
     };
   }
 
-  // Novel SQL must sort after everything it inherits, or drizzle would apply
-  // it out of order on the target.
-  const highestInherited = Math.max(-1, ...[...inherited].map((path) => Number(getMigrationNumber(path))));
-  const outOfOrder = allMigrationFiles.find(
-    (file) => !inherited.has(file.filename) && Number(getMigrationNumber(file.filename)) <= highestInherited,
-  );
+  // Novel SQL must sort after everything already on the target, or drizzle
+  // would apply it out of order there: after what this PR inherits, and after
+  // what the base merged since the branch forked (a same-number migration the
+  // branch never saw). Either one is a renumber, not a decision; destructive
+  // SQL in the same PR still wins (see the end of this function).
+  const novel = allMigrationFiles.filter((file) => !inherited.has(file.filename));
+  const highestInherited = Math.max(-1, ...[...inherited].map(numberOf));
+  let baseCollision: MigrationSafety | null = null;
+  const outOfOrder = novel.find((file) => numberOf(file.filename) <= highestInherited);
   if (outOfOrder) {
-    return {
-      safe: false,
-      operationClass: 'CONTRACT',
-      reason: `migration ${outOfOrder.filename} is ordered before migrations already on the base`,
-    };
+    const highest = [...inherited].find((path) => numberOf(path) === highestInherited)!;
+    baseCollision = behindBase(
+      outOfOrder.filename,
+      basenameOf(highest),
+      `migration ${outOfOrder.filename} is ordered before migrations already on the base`,
+    );
+  } else if (baseSha && novel.length > 0) {
+    // An unreadable listing skips this check, as before it existed; the
+    // journal conflict on merge stays the backstop.
+    const dir = novel[0].filename.split('/').slice(0, -1).join('/');
+    const names = await migrationNamesAt(params.installationId, params.repoFullName, dir, baseSha);
+    const highestOnBase = Math.max(-1, ...(names ?? []).map(numberOf));
+    const behind = novel.find((file) => numberOf(file.filename) <= highestOnBase);
+    if (names && behind) {
+      const taken = names.find((name) => numberOf(name) === numberOf(behind.filename))
+        ?? names.find((name) => numberOf(name) === highestOnBase)!;
+      baseCollision = behindBase(
+        behind.filename,
+        taken,
+        `migration number collision: ${basenameOf(behind.filename)} is at or below ${taken}, already on the base`,
+      );
+    }
   }
 
   const openPullRequestMigrations: OpenPullRequestMigration[] = [];
@@ -208,7 +278,7 @@ export async function inspectPullRequestMigrations(params: {
     );
     for (const pull of pulls) {
       if (typeof pull !== 'object' || pull === null || !('number' in pull)) {
-        return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
+        return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions', kind: 'uninspectable' };
       }
       if (pull.number === params.prNumber) continue;
       const peer = pull as { number: number; base?: { ref?: string }; head?: { sha?: string } };
@@ -240,12 +310,16 @@ export async function inspectPullRequestMigrations(params: {
       }
     }
   } catch {
-    return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions' };
+    return { safe: false, operationClass: 'CONTRACT', reason: 'could not check migration number collisions', kind: 'uninspectable' };
   }
 
-  return classifyPullRequestMigrations(
+  const verdict = classifyPullRequestMigrations(
     filesWithContent.filter((file) => !inherited.has(file.filename)),
     openPullRequestMigrations,
     params.prNumber,
   );
+  // Destructive SQL, a mixed PR or unreadable SQL outranks a slot already
+  // taken on the base: those still need their own handling.
+  if (!verdict.safe && verdict.kind !== 'collision') return verdict;
+  return baseCollision ?? verdict;
 }
