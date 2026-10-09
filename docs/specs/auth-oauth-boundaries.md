@@ -757,6 +757,25 @@ Settings › Connected apps. Every change applies on the app's next request.
   `apps/web/src/app/api/mcp-grants/[id]/route.test.ts`,
   `apps/web/src/app/api/mcp-grants/route.test.ts`,
   `apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx`
+
+### Live end-to-end check and docs
+
+The sections from "Account-level MCP grants" to here are also checked over
+HTTP against a running production build by
+`apps/web/tests/integration/mcp-multi-workspace.test.ts`: discovery and the
+401 challenge, DCR, authorize with PKCE, the consent POST, code exchange, MCP
+calls in two teams, the four workspace refusals, both kinds (an agent refused
+Abandon and a landing-override grant, a person allowed both), refresh
+rotation and replay, read-only, shrink and expand, membership loss, revoke,
+reconnect, and the legacy endpoint with its deprecation headers. It is opt-in
+(`BUILDD_LIVE_MCP_E2E=1`), loopback only, and not in CI's integration list;
+the recipe is in `docs/mcp-connect-operators.md`. User guide:
+`docs/mcp-connect.md`.
+
+Known gap: a team's session account is provisioned at code exchange and
+refresh only, so a workspace added here in a team the grant never had a token
+for answers 401 on `/api/mcp` until the client's next refresh (AC-45 holds for
+teams the grant already covers). Tracked on the mission.
 ---
 
 ## CLI Device-Code Auth
