@@ -24,6 +24,12 @@ describe('ActionQueueCard — display title and refresh dependency', () => {
     expect(html).toContain('title="feat(settings): clear maximum model tier for team"');
   });
 
+  it('strips a dependency prefix and keeps its full tooltip', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={{ ...base, taskTitle: 'fix(deps): pin the widget parser' }} />);
+    expect(html).toContain('>Pin the widget parser<');
+    expect(html).toContain('title="fix(deps): pin the widget parser"');
+  });
+
   it('does not wrap a plain title', () => {
     const html = renderToStaticMarkup(<ActionQueueCard item={{ ...base, taskTitle: 'Pin the widget parser' }} />);
     expect(html).not.toContain('class="contents"');

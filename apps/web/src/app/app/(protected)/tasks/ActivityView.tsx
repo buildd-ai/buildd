@@ -24,6 +24,7 @@ import type { LocalSessionView } from '@/lib/local-session-view';
 import { Select } from '@/components/ui/Select';
 import InteractiveSessions from './InteractiveSessions';
 import LocalTime from './LocalTime';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export type ActivityMode = 'now' | 'history';
 
@@ -118,7 +119,7 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
         {latest && (
           <Link href={latest.href} data-testid="activity-latest" className="mt-2 flex min-h-11 items-center gap-2 text-meta text-text-secondary">
             <span className="shrink-0 text-text-muted">Latest:</span>
-            <span className="min-w-0 truncate text-text-primary">{latest.title}</span>
+            <span className="min-w-0 truncate text-text-primary" title={latest.title}>{displayTaskTitle(latest.title)}</span>
             <span className="shrink-0 text-text-muted">· {age(latest.at, nowMs)} ›</span>
           </Link>
         )}
@@ -247,7 +248,7 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
   const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair').sort((a, b) => a.round - b.round);
   const head = (
     <>
-      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary">{row.title}</span>
+      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}>{displayTaskTitle(row.title)}</span>
       <span className="whitespace-nowrap font-mono text-meta text-text-muted">
         {age(row.updatedAt, nowMs)}
         {expandable && <span aria-hidden="true" className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-90' : ''}`}>›</span>}
@@ -319,7 +320,7 @@ function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
   return (
     <article data-testid="activity-episode" data-kind={episode.kind} className="border-b border-border-default py-3">
       <div className="flex items-start justify-between gap-3">
-        <Link href={episode.href} className="line-clamp-2 min-w-0 break-words text-title font-semibold text-text-primary">{episode.title}</Link>
+        <Link href={episode.href} className="line-clamp-2 min-w-0 break-words text-title font-semibold text-text-primary" title={episode.title}>{displayTaskTitle(episode.title)}</Link>
         <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
