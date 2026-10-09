@@ -24,7 +24,7 @@ describe('deliveryShipSql', () => {
     const q = dialect.sqlToQuery(deliveryShipSql(['w1:acme/repo#42']));
     expect(q.sql).toContain('-- workflow:delivery_ship');
     expect(q.sql).toContain("d.authority = 'kernel'");
-    expect(q.sql).toContain("COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')");
+    expect(q.sql).toContain("(COALESCE((w.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
     expect(q.sql).toContain("d.workspace_id || ':' || lower(d.repo_full_name) || '#' || d.pr_number AS ship_key");
     expect(q.sql).toContain('IN (SELECT jsonb_array_elements_text($1::jsonb))');
     expect(q.params).toEqual([JSON.stringify(['w1:acme/repo#42'])]);

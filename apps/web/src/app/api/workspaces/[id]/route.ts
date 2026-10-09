@@ -332,6 +332,19 @@ export async function PATCH(
           );
         }
       }
+      // The workflow kernel kill switch (docs/specs/workflow-state-kernel.md §14):
+      // a boolean or null on write. Reads tolerate older string forms through the
+      // one reading (lib/workflow/authority.ts), but a new write says exactly
+      // which side it means.
+      if ('workflowKernel' in gitConfig) {
+        const v = (gitConfig as Record<string, unknown>).workflowKernel;
+        if (v !== null && typeof v !== 'boolean') {
+          return NextResponse.json(
+            { error: 'gitConfig.workflowKernel must be true, false (the kill switch: deliveries go to legacy) or null to clear' },
+            { status: 400 },
+          );
+        }
+      }
       // Path-claim enforcement opt-in: exact values only, so a truthy typo can
       // never quietly turn edit denial on (or appear to and not).
       if ('pathClaimEnforcement' in gitConfig) {
