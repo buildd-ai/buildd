@@ -5,6 +5,7 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
+import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 
 /**
  * POST /api/teams/[id]/ownership { userId } — hand ownership to an existing
@@ -15,6 +16,10 @@ import { isUuid } from '@/lib/uuid';
  * neon-http), promote first. The demote only matches once the target is an
  * owner, so a target who left mid-request leaves the caller an owner and the
  * team never has zero owners.
+ *
+ * Once the caller is admin, their keys are clamped to what an admin may mint
+ * (a no-op unless the team's overrides take manage_team_keys from admins);
+ * the response says how many changed as `clampedKeys`.
  */
 export async function POST(
   req: NextRequest,
@@ -69,7 +74,7 @@ export async function POST(
       return NextResponse.json({ error: 'That member is already an owner' }, { status: 400 });
     }
 
-    const [promoted] = await db.batch([
+    const [promoted, demoted] = await db.batch([
       db.update(teamMembers)
         .set({ role: 'owner' })
         .where(and(
@@ -93,7 +98,11 @@ export async function POST(
       return NextResponse.json({ error: 'That member is no longer in the team. Nothing changed.' }, { status: 409 });
     }
 
-    return NextResponse.json({ success: true });
+    const clampedKeys = demoted.length > 0
+      ? await clampCreatorKeys({ teamId, userId: user.id, role: 'admin' })
+      : 0;
+
+    return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
     console.error('Transfer team ownership error:', error);
     return NextResponse.json({ error: 'Failed to transfer ownership' }, { status: 500 });
