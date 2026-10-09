@@ -40,6 +40,31 @@ describe('phone Home inbox', () => {
     expect(html).toContain('not yet on trunk');
     expect(html).toContain('11 open missions');
   });
+  it('delivery rows are a hairline list: no card frame, no tone edge, the full title, one status line', () => {
+    const html = render();
+    const rows = html.split('data-testid="home-delivery-row"').slice(1).map(r => r.slice(0, r.indexOf('</a>')));
+    expect(rows).toHaveLength(3);
+    for (const r of rows) {
+      expect(r).not.toMatch(/border-l-4|border-l-status|bg-\[var\(--chat-surface\)\]/);
+      expect(r).not.toContain('line-clamp-2');
+      // The phase is named once: the word, not the word and a Build › Audit › Land track again.
+      expect(r.match(/data-testid="delivery-chip"/g)).toHaveLength(1);
+      expect(r).not.toContain('Stage:');
+    }
+    // An exception replaces the evidence it would repeat.
+    const trunk = rows.find(r => r.includes('First-run checklist'))!;
+    expect(trunk).toContain('not yet on trunk');
+    expect(trunk).not.toContain('Every task landed on the mission branch.');
+  });
+  it('a shipped mission names its span as filed to shipped, not "open"', () => {
+    const shipped = [{ id: 's', title: 'Done thing', href: '/app/missions/s', completedAt: '2026-10-09T10:00:00Z', prs: 1, fixes: 0, durationMs: 46 * 3_600_000, activeMs: 40 * 60_000, criteria: null }];
+    const html = renderToStaticMarkup(<MobileHome items={[]} ask={null} counts={counts} milestones={[]} quietMissions={0} shipped={shipped} />);
+    expect(html).toContain('1d 22h');
+    expect(html).toContain('to ship');
+    expect(html).toContain('agent work');
+    expect(html).toContain('PR merged');
+    expect(html).not.toMatch(/>open</);
+  });
   it('separates agents, slots and open missions in the count line', () => {
     expect(render()).toContain('1 agent working · 1/4 slots · 11 open missions');
   });

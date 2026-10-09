@@ -28,12 +28,16 @@ function hhmm(iso: string, tz?: string | null): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(tz ? { timeZone: tz } : {}) });
 }
 
-/** `40m of work` + `35d open`; just the work when the two are about the same. */
+/**
+ * `40m agent work` + `35d to ship`; just the work when the two are about the
+ * same. The span is filed → shipped, so it is labelled as that: a bare "open"
+ * under a big number read as time spent working.
+ */
 export function shippedDurationFacts(m: Pick<HomeShippedMission, 'activeMs' | 'durationMs'>): Array<[string, string]> {
   if (m.durationMs == null) return [];
   const d = describeMissionDuration({ activeMs: m.activeMs === undefined ? m.durationMs : m.activeMs, openMs: m.durationMs });
-  if (d.work == null) return [[d.open, 'open']];
-  return d.showOpen ? [[d.work, 'of work'], [d.open, 'open']] : [[d.work, 'of work']];
+  if (d.work == null) return [[d.open, 'to ship']];
+  return d.showOpen ? [[d.work, 'agent work'], [d.open, 'to ship']] : [[d.work, 'agent work']];
 }
 
 /** "Learn more" lands on the mission page's What shipped header. */
