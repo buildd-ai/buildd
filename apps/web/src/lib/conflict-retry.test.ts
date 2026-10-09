@@ -430,6 +430,22 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).toContain('409');
     });
 
+    it('generic conflict brief routes the push to the bound PR head, not create_pr', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push the resolved merge to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('generic conflict brief is unchanged when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+    });
+
     it('omits the lineage note when the PR head is the worker branch', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect(result!.description).not.toContain('Bound PR lineage');
