@@ -243,6 +243,10 @@ DELETE FROM deployment_audit_events;
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
 DELETE FROM agent_capability_decisions;
+-- Capability requests/grants carry agent-written reasons, tool and resource
+-- names; team capability policy names providers, roles and resources.
+DELETE FROM capability_grants;
+DELETE FROM capability_policies;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR

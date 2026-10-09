@@ -300,7 +300,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_decision_stats: 'decision-shadow counts',
   list_connectors: 'connector health',
   resolve_capability: 'who serves a need',
-  request_capability: 'ask for access this run needs',
+  request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews, body',
@@ -359,8 +359,10 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  // Token, cost and diff counters are runner telemetry; help lists them.
+  update_progress: '{workerId?, progress, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',
-  request_capability: '{capability, provider?, tool?, resource?, environment?, …}',
+  request_capability: '{capability, …}',
   register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',

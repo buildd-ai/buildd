@@ -11,6 +11,7 @@
  * selects health columns only.
  */
 import { createHash } from 'crypto';
+import { isOpenTaskStatus } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { capabilityGrants, capabilityPolicies, tasks, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, lte } from 'drizzle-orm';
@@ -115,7 +116,7 @@ export type RequestOutcome =
 
 export async function requestCapability(principal: AgentPrincipal, req: CapabilityRequest, now: Date = new Date()): Promise<RequestOutcome> {
   const run = await loadRunState(principal.taskId, principal.workerId);
-  if (!['pending', 'assigned', 'in_progress'].includes(run.taskStatus)) {
+  if (!isOpenTaskStatus(run.taskStatus)) {
     return { ok: false, status: 409, code: 'task_not_live', error: 'This task has ended; capability requests are refused.' };
   }
   if (!principal.teamId) return { ok: false, status: 409, code: 'workspace_not_found', error: 'Workspace has no team.' };

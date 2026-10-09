@@ -27,6 +27,7 @@
  *
  * Spec: docs/specs/capability-requests.md
  */
+import { isLiveWorkerStatus, isOpenTaskStatus } from '@buildd/shared';
 import type { CapabilityCandidate, CapabilityResolution } from './connector-capabilities';
 import { parseCapability } from './connector-capabilities';
 import {
@@ -552,9 +553,6 @@ export type UseRefusal =
   | 'target_mismatch' | 'tool_not_granted' | 'tool_risk_exceeds_grant' | 'resource_not_granted' | 'environment_not_granted'
   | 'policy_forbidden' | 'policy_tightened' | 'catalog_blocked' | 'disabled_in_workspace' | 'connector_gone' | 'credential_dead';
 
-const OPEN_TASK = new Set(['pending', 'assigned', 'in_progress']);
-const LIVE_WORKER = new Set(['idle', 'running', 'starting', 'waiting_input']);
-
 /**
  * May this grant be used for this call, now? Every check re-reads live state:
  * a revoke, a terminal task, a role change, a tightened policy, a catalog
@@ -565,8 +563,8 @@ export function checkGrantUse(g: GrantRecord, use: CapabilityUse, ctx: UseContex
   if (g.teamId !== p.teamId || g.workspaceId !== p.workspaceId || g.taskId !== p.taskId || g.workerId !== p.workerId) return 'grant_mismatch';
   if (g.status !== 'granted' || g.revokedAt) return 'grant_not_live';
   if (!g.expiresAt || g.expiresAt.getTime() <= ctx.now.getTime()) return 'grant_expired';
-  if (!OPEN_TASK.has(ctx.taskStatus)) return 'task_terminal';
-  if (!LIVE_WORKER.has(ctx.workerStatus)) return 'worker_not_live';
+  if (!isOpenTaskStatus(ctx.taskStatus)) return 'task_terminal';
+  if (!isLiveWorkerStatus(ctx.workerStatus)) return 'worker_not_live';
   if ((g.roleSlug ?? null) !== (p.roleSlug ?? null)) return 'role_changed';
   if (g.capability !== use.capability || g.provider !== use.provider || (g.connectorId ?? null) !== (use.connectorId ?? null)) return 'target_mismatch';
   if (g.tool) {
@@ -605,8 +603,8 @@ export type ApprovalRefusal = 'task_terminal' | 'worker_not_live' | 'role_change
  * block or a workspace disable, and never for a run that has ended.
  */
 export function approvalRefusal(g: GrantRecord, ctx: Omit<UseContext, 'principal' | 'now'> & { currentRoleSlug: string | null }): ApprovalRefusal | null {
-  if (!OPEN_TASK.has(ctx.taskStatus)) return 'task_terminal';
-  if (!LIVE_WORKER.has(ctx.workerStatus)) return 'worker_not_live';
+  if (!isOpenTaskStatus(ctx.taskStatus)) return 'task_terminal';
+  if (!isLiveWorkerStatus(ctx.workerStatus)) return 'worker_not_live';
   if ((g.roleSlug ?? null) !== (ctx.currentRoleSlug ?? null)) return 'role_changed';
   if (g.connectorId) {
     const c = ctx.candidate;

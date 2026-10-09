@@ -34,7 +34,7 @@ export type ModuleId =
 export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['workspace-migration', /\/migrate\/|migration-slot|workspace-migration|migrate-access|migration-(inspector|outcomes|safety)/],
   ['intake-integrations', /linear|\/webhooks\/ingest|subject-intake/],
-  ['connectors', /\/connectors|connector-|mcp-connector|required-connectors|cross-app|assertion/],
+  ['connectors', /\/connectors|connector-|mcp-connector|required-connectors|cross-app|assertion|capability-grants|\/agent-capabilities\/(requests|policy)\//],
   ['spec-conformance', /spec-(conformance|discrepancy|doc-fix|recheck)|discrepanc|doc-fix/],
   ['visual-qa', /visual-(qa|review|audit|fix)|surface-audit|mcp-visual-review|page-source/],
   ['onboarding', /onboarding|workspace-readiness|\/readiness\//],
