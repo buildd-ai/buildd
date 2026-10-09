@@ -17,7 +17,7 @@ describe('ALLOWABLE_GROUPS', () => {
     expect(ALLOWABLE_GROUPS).toContain('tasks');
     expect(ALLOWABLE_GROUPS).toContain('schedules');
     expect(ALLOWABLE_GROUPS).not.toContain('admin');
-    // prs has no write chat offers (merge/close are deferred; release is admin).
+    // prs' only write is merge_pr, which always asks (irreversible): allowing the group skips nothing.
     expect(ALLOWABLE_GROUPS).not.toContain('prs');
   });
 });
@@ -35,7 +35,8 @@ describe('toolPermissionRows', () => {
     expect(by.tasks.mode).toBe('ask');
     expect(by.tasks.locked).toBe(false);
     expect(by.admin).toMatchObject({ mode: 'ask', locked: true });
-    expect(by.prs).toMatchObject({ mode: 'read', locked: true });
+    // merge_pr always asks, so the PRs row is a locked "Ask", not something to allow.
+    expect(by.prs).toMatchObject({ mode: 'ask', locked: true });
     expect(by.secrets).toMatchObject({ mode: 'never', locked: true });
   });
 
