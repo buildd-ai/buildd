@@ -102,8 +102,8 @@ describe('legacy settings links', () => {
   });
 
   it('resolves the anchors that shipped links point at', () => {
-    expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/runners');
-    expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/runners');
+    expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/models');
+    expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connectors');
     expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/models');

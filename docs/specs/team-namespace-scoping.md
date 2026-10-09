@@ -329,10 +329,10 @@ across tabs/views are a defect.
   header shows "Idle" — NOT a count of 0.
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/team/page.tsx` — `totalActiveWorkerCount` is
+- `apps/web/src/app/app/(protected)/settings/roles/page.tsx` — `totalActiveWorkerCount` is
   derived from `activeWorkers.length` (all workers in scope), separate from role
   attribution logic.
-- `apps/web/src/app/app/(protected)/team/TeamGrid.tsx` — header badge uses
+- `apps/web/src/app/app/(protected)/settings/roles/TeamGrid.tsx` — header badge uses
   `totalActiveWorkerCount`; unattributed workers surfaced in idle section label.
-- Test: `apps/web/src/app/app/(protected)/team/page.test.ts` — covers the
+- Test: `apps/web/src/app/app/(protected)/settings/roles/page.test.ts` — covers the
   unattributed-worker case (AC-2).

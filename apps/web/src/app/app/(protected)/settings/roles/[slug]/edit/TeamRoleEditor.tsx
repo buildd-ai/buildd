@@ -19,6 +19,7 @@ import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 import { NOT_FOR_MAX, WHEN_TO_USE_MAX, WHEN_TO_USE_MIN, readRoleRouting } from '@/lib/role-routing';
 import { OPERATOR_ROLE_SLUG } from '@/lib/permission-registry';
 import { OperatorAccessSection } from './OperatorAccessSection';
+import { RoleConnectorsSection } from './RoleConnectorsSection';
 import Chip from '@/components/ui/Chip';
 import { responseErrorMessage, type RoleVisibility } from '@/lib/personal-roles-shared';
 
@@ -30,7 +31,7 @@ const AVAILABLE_TOOLS = [
 ];
 
 /** Toggle selections: stored order carries no meaning, re-toggling appends. */
-const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo'] as const };
+const DIRTY_OPTS = { unordered: ['allowedTools', 'canDelegateTo', 'connectorRefs'] as const };
 
 interface Role {
   id: string;
@@ -49,6 +50,10 @@ interface Role {
   color: string;
   mcpServers: Record<string, unknown> | string[];
   requiredEnvVars: Record<string, string>;
+  /** Team connectors this role mounts (spec: mcp-connectors-and-roles §2). */
+  connectorRefs?: string[] | null;
+  /** False: takes no new tasks. Absent on old fixtures, read as on. */
+  enabled?: boolean;
   isRole: boolean;
   repoUrl: string | null;
   metadata?: unknown;
@@ -242,6 +247,8 @@ function payloadFromRole(r: Role) {
     background: r.background,
     maxTurns: r.maxTurns || null,
     color: r.color,
+    connectorRefs: r.connectorRefs ?? [],
+    enabled: r.enabled ?? true,
     workspaceId: undefined as string | null | undefined,
   };
 }
@@ -477,6 +484,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
   const [background, setBackground] = useState(role.background);
   const [maxTurns, setMaxTurns] = useState<string>(role.maxTurns?.toString() || '');
   const [color, setColor] = useState(role.color);
+  const [connectorRefs, setConnectorRefs] = useState<string[]>(role.connectorRefs ?? []);
+  const [enabled, setEnabled] = useState(role.enabled ?? true);
 
   // Scope (applies-to): a workspace-scoped role opens on its own workspace,
   // so choosing "All workspaces in team" is what promotes it.
@@ -518,6 +527,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
     background,
     maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
     color,
+    connectorRefs,
+    enabled,
     // Only a move changes anything on save: to a workspace, or (null) up to the team.
     workspaceId: scopeChange(role.workspaceId, scope, targetWorkspaceId),
   };
@@ -861,6 +872,21 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </details>
 
             <div className="divide-y divide-border-default border-y border-border-default">
+              <div className="py-2">
+                <label className="flex min-h-11 cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    data-testid="role-enabled"
+                    checked={enabled}
+                    onChange={(e) => setEnabled(e.target.checked)}
+                    className="rounded border-border-default"
+                  />
+                  <span className="text-sm text-text-primary">Use for new tasks</span>
+                </label>
+                {!enabled && (
+                  <p className="ml-6 text-sm text-text-muted">Turned off: new runs don’t load it. Work already running carries on.</p>
+                )}
+              </div>
               <label className="flex min-h-11 cursor-pointer items-center gap-2 py-2">
                 <input
                   type="checkbox"
@@ -889,6 +915,16 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           </div>
         </Section>
+
+        <RoleConnectorsSection
+          teamId={role.teamId}
+          workspaceId={role.workspaceId}
+          workspaceName={userWorkspaces.find(w => w.id === role.workspaceId)?.name}
+          roleSlug={role.slug}
+          value={connectorRefs}
+          onChange={setConnectorRefs}
+          disabled={!canEdit}
+        />
       </fieldset>
 
       {/* Platform Operator access: a distinct admin surface, not a content/tools/mcp override. */}

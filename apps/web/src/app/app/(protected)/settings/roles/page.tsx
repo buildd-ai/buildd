@@ -9,6 +9,7 @@ import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { can } from '@/lib/permissions';
 import { TeamGrid } from './TeamGrid';
+import { TurnedOffRoles, type TurnedOffRole } from './TurnedOffRoles';
 import { splitTeamLevelRows, type RoleVisibility } from '@/lib/personal-roles-shared';
 
 export const dynamic = 'force-dynamic';
@@ -135,6 +136,27 @@ export default async function RolesPage() {
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
   });
+
+  // Turned-off roles in the same scope (plus the viewer's own personal ones):
+  // listed quietly so they stay findable and can be turned back on.
+  const turnedOffRows = await db.query.workspaceSkills.findMany({
+    where: and(
+      eq(workspaceSkills.enabled, false),
+      eq(workspaceSkills.isRole, true),
+      or(
+        inArray(workspaceSkills.workspaceId, wsIds),
+        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds), or(isNull(workspaceSkills.ownerUserId), eq(workspaceSkills.ownerUserId, user.id))) : undefined,
+      ),
+    ),
+    columns: { id: true, slug: true, name: true, workspaceId: true },
+    orderBy: [desc(workspaceSkills.createdAt)],
+  });
+  const turnedOff: TurnedOffRole[] = turnedOffRows.map(r => ({
+    id: r.id,
+    slug: r.slug,
+    name: r.name,
+    scopeLabel: r.workspaceId ? (wsNameMap.get(r.workspaceId) ?? 'Workspace') : 'Team',
+  }));
 
   // Personal roles in the active team: the viewer's own and teammates' shared ones.
   const personalRows = teamIds.length === 0 ? [] : await db.query.workspaceSkills.findMany({
@@ -341,6 +363,7 @@ export default async function RolesPage() {
         canCreatePersonalRole={canCreatePersonalRole}
         canCreateTeamRole={canCreateTeamRole}
       />
+      <TurnedOffRoles roles={turnedOff} />
     </SettingsPage>
   );
 }
