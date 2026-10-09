@@ -102,6 +102,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   manage_model_tiers: 'admin',
   manage_evidence_backends: 'admin',
   manage_secrets: 'admin',
+  manage_providers: 'admin',
   // a worker's own lifecycle: never a chat tool
   claim_task: 'work',
   update_progress: 'work',
@@ -250,6 +251,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'workspace config', actions: ['manage_workspaces'] },
       { text: 'skills and roles', actions: ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill'] },
       { text: 'secrets', actions: ['manage_secrets'] },
+      { text: 'model providers', actions: ['manage_providers'] },
       { text: 'experiments', actions: ['manage_experiments'] },
       { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
@@ -333,6 +335,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_model_tiers: 'model per tier',
   manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
+  manage_providers: 'model keys per scope, credential policy, what runs',
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
   claim_task: 'claim your assignment, the next, or a named task',
@@ -365,6 +368,9 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
   merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
+  manage_providers: '{action: list|set|delete|explain|set_policy, provider?, scope?, value?, surface?, …}',
+  manage_watched_projects: '{action: list|create|update|delete|run, workspaceId?, projectId?, repo?, …}',
+  manage_workspaces: '{action: list|get|create|update|create_repo|init|readiness|scaffold|author_spec, workspaceId?, name?, repoUrl?, gitConfig?, releaseConfig?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */

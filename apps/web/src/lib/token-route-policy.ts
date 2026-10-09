@@ -11,6 +11,8 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/(stats|health)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
   if (/^\/api\/releases(\/|$)/.test(path)) return 'releases';
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
+  if (/^\/api\/providers(\/|$)/.test(path)) return 'secrets';
+  if (/^\/api\/providers(\/|$)/.test(path)) return 'secrets';
   if (/^\/api\/runner\/credential-(lease|refresh)$/.test(path)) return 'secrets';
   if (/^\/api\/runner(\/|$)/.test(path) || /\/codex-credential\//.test(path)) return 'workers:write';
   // Reading a Scout run's command logs is the read_evidence capability, not the runner's.

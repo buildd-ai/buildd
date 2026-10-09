@@ -83,7 +83,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
   manage_workspaces: 'workspaces:admin', manage_watched_projects: 'workspaces:admin',
-  manage_secrets: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
+  manage_secrets: 'secrets', manage_providers: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
   consolidate_knowledge: 'knowledge:admin', memory_delete: 'knowledge:admin',
 };
 
