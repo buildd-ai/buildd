@@ -86,6 +86,8 @@ export default async function TasksPage({
   // Now/History (the default view). A band drill-down (`?ids=`/`?selection=`)
   // is a historical list another surface links to and keeps TaskGrid.
   let activity: ActivityData | null = null;
+  // Set when the root cap, not the 30-day window, ended History.
+  let historyReach: { oldestAt: string } | null = null;
   let teamName: string | null = null;
   // A failed load says so; it never renders as an empty Now and History.
   let loadFailed = false;
@@ -189,6 +191,9 @@ export default async function TasksPage({
             }),
             bandIds ? Promise.resolve([] as string[]) : loadLiveRootIds(wsIds),
           ]);
+          if (!bandIds && recentTasks.length >= ACTIVITY_ROOT_LIMIT) {
+            historyReach = { oldestAt: recentTasks[recentTasks.length - 1].updatedAt.toISOString() };
+          }
           const loadedRootIds = new Set(recentTasks.map(t => t.id));
           const missingLiveIds = liveRootIds.filter(id => !loadedRootIds.has(id));
           const liveRoots = missingLiveIds.length > 0
@@ -471,6 +476,7 @@ export default async function TasksPage({
         initiativeTitle={initiativeTitle}
         localSessions={localSessions}
         loadError={loadFailed}
+        historyReach={historyReach}
       />
     );
   }
