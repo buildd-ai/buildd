@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getIssuer, OAUTH_SCOPES } from '@/lib/oauth/config';
+import { ACCOUNT_SCOPES_SUPPORTED } from '@/lib/oauth/account-consent';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,9 @@ export async function GET() {
     ],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: OAUTH_SCOPES,
+    // `mcp` for the per-workspace connection; read/write for the account-level
+    // one. `buildd:act-as-person` is accepted but not advertised (account-consent.ts).
+    scopes_supported: [...new Set<string>([...OAUTH_SCOPES, ...ACCOUNT_SCOPES_SUPPORTED])],
   });
 }
 

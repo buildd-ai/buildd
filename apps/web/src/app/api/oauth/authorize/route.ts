@@ -2,11 +2,25 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { createAuthCode, getClient, isSafeRedirectUri } from '@/lib/oauth/storage';
-import { getIssuer, getJwtSecret } from '@/lib/oauth/config';
+import { getAccountResourceUrl, getIssuer, getJwtSecret } from '@/lib/oauth/config';
 import { levelForTeamRole } from '@/lib/oauth/session-level';
+import {
+  applyNav,
+  grantedScopeString,
+  initialConsentState,
+  isAccountResource,
+  parseRequestedAccess,
+  readConsentForm,
+  renderAccountConsentPage,
+  renderGrantInterstitial,
+  validateApproval,
+  type ConsentState,
+  type ConsentTeam,
+} from '@/lib/oauth/account-consent';
+import { createGrant } from '@/lib/mcp-grants';
 import { db } from '@buildd/core/db';
-import { teamMembers, workspaces } from '@buildd/core/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { teamMembers, teams, workspaces } from '@buildd/core/db/schema';
+import { asc, eq, inArray } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,6 +94,34 @@ async function workspacesForUser(userId: string) {
   return rows.map((w) => ({ ...w, role: roleByTeam.get(w.teamId) ?? null }));
 }
 
+/**
+ * The user's teams, each with every workspace it holds, for the account-level
+ * consent page. Read fresh on every render and on approval, so a selection is
+ * always checked against current membership.
+ */
+async function consentTeamsForUser(userId: string): Promise<ConsentTeam[]> {
+  const memberships = await db
+    .select({ teamId: teams.id, name: teams.name, role: teamMembers.role })
+    .from(teamMembers)
+    .innerJoin(teams, eq(teams.id, teamMembers.teamId))
+    .where(eq(teamMembers.userId, userId))
+    .orderBy(asc(teams.name), asc(teams.id));
+  if (memberships.length === 0) return [];
+  const rows = await db
+    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
+    .from(workspaces)
+    .where(inArray(workspaces.teamId, memberships.map((m) => m.teamId)))
+    .orderBy(asc(workspaces.name), asc(workspaces.id));
+  return memberships
+    .map((m) => ({
+      id: m.teamId,
+      name: m.name,
+      role: (m.role as string | null) ?? null,
+      workspaces: rows.filter((w) => w.teamId === m.teamId).map((w) => ({ id: w.id, name: w.name })),
+    }))
+    .filter((t) => t.workspaces.length > 0);
+}
+
 /** The authorize parameters, read from the GET query or the consent POST body. */
 interface AuthorizeParams {
   responseType: string | null;
@@ -90,6 +132,8 @@ interface AuthorizeParams {
   state: string | null;
   scope: string | null;
   workspaceId: string | null;
+  /** RFC 8707 resource indicator. The account-level resource selects grant consent. */
+  resource: string | null;
 }
 
 function readParams(params: URLSearchParams): AuthorizeParams {
@@ -102,6 +146,7 @@ function readParams(params: URLSearchParams): AuthorizeParams {
     state: params.get('state'),
     scope: params.get('scope'),
     workspaceId: params.get('workspace'),
+    resource: params.get('resource'),
   };
 }
 
@@ -150,7 +195,7 @@ const CONSENT_TOKEN_TTL_SECONDS = 10 * 60;
 
 function consentMac(userId: string, p: AuthorizeParams, issuedAt: number): string {
   const payload = JSON.stringify([
-    'buildd-oauth-consent-v1',
+    'buildd-oauth-consent-v2',
     userId,
     p.clientId,
     p.redirectUri,
@@ -160,6 +205,7 @@ function consentMac(userId: string, p: AuthorizeParams, issuedAt: number): strin
     p.scope ?? '',
     p.state ?? '',
     p.responseType,
+    p.resource ?? '',
     issuedAt,
   ]);
   return createHmac('sha256', getJwtSecret()).update(payload).digest('base64url');
@@ -217,6 +263,12 @@ const HTML_HEADERS = {
  *   6. Render a consent page: client, workspace, and the access the
  *      connection will have (the user's team role). No code is issued.
  *
+ * Account-level connection (`resource=<issuer>/api/mcp`, RFC 8707): steps 4-6
+ * become the account consent page (lib/oauth/account-consent.ts): the user's
+ * teams with their workspaces, the kind of connection (agent by default,
+ * person only if the client asked with `buildd:act-as-person`) and read/write.
+ * Approving creates an MCP grant and a code bound to it, not to a workspace.
+ *
  * POST (the consent form):
  *   7. Same-origin + consent token bound to the user and every parameter
  *   8. Deny → redirect back with access_denied
@@ -236,6 +288,23 @@ export async function GET(req: NextRequest) {
     const signinUrl = new URL('/api/auth/signin', req.nextUrl.origin);
     signinUrl.searchParams.set('callbackUrl', req.nextUrl.pathname + req.nextUrl.search);
     return NextResponse.redirect(signinUrl);
+  }
+
+  if (isAccountResource(p.resource, getAccountResourceUrl())) {
+    const consentTeams = await consentTeamsForUser(userId);
+    if (consentTeams.length === 0) {
+      return plainError('no workspaces available for this account — sign in to buildd and create one first', 403);
+    }
+    const requested = parseRequestedAccess(p.scope);
+    return accountConsentResponse({
+      clientName: client.clientName ?? clientId,
+      redirectUri: checked.v.redirectUri,
+      params: p,
+      userId,
+      teams: consentTeams,
+      state: initialConsentState(consentTeams, requested, p.workspaceId),
+      requested,
+    });
   }
 
   // Workspace selection: when omitted, show a picker that links back here with ?workspace=<id>.
@@ -294,6 +363,10 @@ export async function POST(req: NextRequest) {
     return plainError('consent expired or invalid — start the connection again', 403);
   }
 
+  if (isAccountResource(p.resource, getAccountResourceUrl())) {
+    return accountConsentPost({ form, p, userId, clientId, clientName: client.clientName ?? clientId, redirectUri, codeChallenge });
+  }
+
   if (form.get('decision') !== 'approve') {
     return redirectWithError(redirectUri, 'access_denied', p.state, 303);
   }
@@ -332,6 +405,127 @@ export async function POST(req: NextRequest) {
   );
 }
 
+function redirectHostOf(redirectUri: string): string {
+  try {
+    const u = new URL(redirectUri);
+    return u.host || u.protocol;
+  } catch {
+    return redirectUri;
+  }
+}
+
+/** The authorize parameters carried through the account consent form. */
+function accountHiddenFields(p: AuthorizeParams, consentToken: string): Array<[string, string | null]> {
+  return [
+    ['response_type', p.responseType],
+    ['client_id', p.clientId],
+    ['redirect_uri', p.redirectUri],
+    ['code_challenge', p.codeChallenge],
+    ['code_challenge_method', p.codeChallengeMethod],
+    ['state', p.state],
+    ['scope', p.scope],
+    ['workspace', p.workspaceId],
+    ['resource', p.resource],
+    ['csrf_token', consentToken],
+  ];
+}
+
+function accountConsentResponse(args: {
+  clientName: string;
+  redirectUri: string;
+  params: AuthorizeParams;
+  userId: string;
+  teams: ConsentTeam[];
+  state: ConsentState;
+  requested: ReturnType<typeof parseRequestedAccess>;
+  error?: string;
+  status?: number;
+}) {
+  const html = renderAccountConsentPage({
+    clientName: args.clientName,
+    redirectHost: redirectHostOf(args.redirectUri),
+    hidden: accountHiddenFields(args.params, createConsentToken(args.userId, args.params)),
+    teams: args.teams,
+    state: args.state,
+    requested: args.requested,
+    error: args.error ?? null,
+  });
+  return new NextResponse(html, { status: args.status ?? 200, headers: HTML_HEADERS });
+}
+
+/**
+ * The account consent form, after the same-origin and consent-token checks.
+ * Cancel returns access_denied; a page action (search, page, select all)
+ * re-renders with the carried selection; Approve re-validates the selection,
+ * the kind and the permissions against the user's teams now and what the
+ * client asked for, then creates the grant and a code bound to it.
+ */
+async function accountConsentPost(args: {
+  form: URLSearchParams;
+  p: AuthorizeParams;
+  userId: string;
+  clientId: string;
+  clientName: string;
+  redirectUri: string;
+  codeChallenge: string;
+}) {
+  const { form, p, userId, clientId, redirectUri } = args;
+  const decision = form.get('decision');
+  if (decision === 'deny') return redirectWithError(redirectUri, 'access_denied', p.state, 303);
+
+  const consentTeams = await consentTeamsForUser(userId);
+  const requested = parseRequestedAccess(p.scope);
+  const page = (state: ConsentState, error?: string, status?: number) => accountConsentResponse({
+    clientName: args.clientName, redirectUri, params: p, userId, teams: consentTeams, state, requested, error, status,
+  });
+
+  if (decision !== 'approve') {
+    const nav = form.get('nav');
+    if (!nav) return redirectWithError(redirectUri, 'access_denied', p.state, 303);
+    return page(applyNav(readConsentForm(form, consentTeams, requested), nav, consentTeams));
+  }
+
+  const check = validateApproval(form, consentTeams, requested);
+  if (!check.ok) {
+    if (check.showPage) return page(readConsentForm(form, consentTeams, requested), check.message, check.status);
+    return plainError(check.message, check.status);
+  }
+
+  const created = await createGrant({
+    userId,
+    clientId,
+    actsAs: check.actsAs,
+    scopes: check.scopes,
+    workspaceIds: check.workspaceIds,
+  });
+  if (!created.ok) {
+    return plainError('One of the chosen workspaces is not available to you. Start the connection again.', 403);
+  }
+
+  const code = await createAuthCode({
+    clientId,
+    userId,
+    grantId: created.grantId,
+    redirectUri,
+    codeChallenge: args.codeChallenge,
+    codeChallengeMethod: p.codeChallengeMethod,
+    scope: grantedScopeString(check.scopes, check.actsAs),
+  });
+
+  const cbUrl = new URL(redirectUri);
+  cbUrl.searchParams.set('code', code);
+  if (p.state) cbUrl.searchParams.set('state', p.state);
+  return new NextResponse(
+    renderGrantInterstitial({
+      clientName: args.clientName,
+      redirectUrl: cbUrl.toString(),
+      workspaceCount: check.workspaceIds.length,
+      actsAs: check.actsAs,
+    }),
+    { status: 200, headers: HTML_HEADERS },
+  );
+}
+
 const ACCESS_DESCRIPTIONS: Record<'admin' | 'worker', { label: string; detail: string }> = {
   admin: {
     label: 'Admin',
@@ -366,6 +560,7 @@ function renderConsentPage(args: {
     ['state', p.state],
     ['scope', p.scope],
     ['workspace', p.workspaceId],
+    ['resource', p.resource],
     ['csrf_token', args.consentToken],
   ];
   const inputs = hidden

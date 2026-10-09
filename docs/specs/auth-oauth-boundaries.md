@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-09
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
-surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/oauth/token/route.ts, packages/core/db/schema.ts]
+surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts]
+verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -31,6 +31,13 @@ assertions:
   - id: "mcp-grant-tests"
     type: "test_file"
     path: "apps/web/tests/db/mcp-oauth-grants.test.ts"
+  - id: "account-consent-validate"
+    type: "symbol"
+    name: "validateApproval"
+    path: "apps/web/src/lib/oauth/account-consent.ts"
+  - id: "account-consent-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/mcp-oauth-consent.test.ts"
 ---
 # Auth & OAuth Boundaries
 
@@ -350,10 +357,103 @@ workspaces; what it reaches is decided server-side on every request.
 - Token endpoint: `apps/web/src/app/api/oauth/token/route.ts`
 - Tests: `apps/web/tests/db/mcp-oauth-grants.test.ts` (real Postgres)
 
-**Out of scope here**: the consent picker that creates grants, the
-account-level MCP transport and grant management UI are separate tasks of the
-same mission. Refresh-token storage is covered in "Refresh tokens: hashed, one
-family per sign-in" above.
+**Out of scope here**: the account-level MCP transport and grant management
+UI are separate tasks of the same mission. Refresh-token storage is covered in
+"Refresh tokens: hashed, one family per sign-in" above; the consent page that
+creates grants is below.
+
+---
+
+## Account-level consent
+
+**Capability statement**: A person MUST be able to connect one MCP client to a
+chosen set of workspaces across their teams from a single consent page, and
+the server MUST grant exactly what the client asked for and the person chose,
+re-validated on submit.
+
+**Entry point**: `/api/oauth/authorize` with `resource=<issuer>/api/mcp`
+(RFC 8707). Without that resource the per-workspace flow is unchanged
+(`workspace` param or the single-workspace picker, workspace-bound code).
+Protected-resource metadata for the account resource is served at
+`/.well-known/oauth-protected-resource/api/mcp`; the per-workspace metadata,
+the authorization-server metadata and dynamic client registration are
+unchanged apart from the advertised scopes.
+
+**Scopes** (`apps/web/src/lib/oauth/account-consent.ts`):
+- `mcp` or `buildd:write`: read and write. `buildd:read` alone: read only. No
+  read/write scope: read and write, as before. Unknown scopes are ignored and
+  never granted.
+- `buildd:act-as-person`: the client asks for a connection that acts as the
+  person (`buildd install --oauth` sends it). It is accepted but deliberately
+  not listed in `scopes_supported`, so a generic client that requests every
+  advertised scope does not ask to act as the person by default.
+- The code and token carry the granted scope string (`buildd:read`, plus
+  `buildd:write`, plus `buildd:act-as-person` for a person grant). The grant
+  row stays the authority.
+
+**Invariants**:
+- The page lists every team the user is a member of now, each with its
+  workspaces, sorted by name. Each team is a collapsible group paged at 20
+  workspaces; search filters by workspace or team name. Select all (or all
+  matches while searching), Clear all, and per-team select/clear are
+  available. Search, page turns and selection actions are form posts that
+  carry the selection, so the page needs no script.
+- Exactly one workspace is preselected: the `workspace` hint when the user can
+  reach it, else the first workspace of the first team.
+- The kind defaults to **Agent working for you**. **Acts as you** is selectable
+  only when the client sent `buildd:act-as-person`; it is then preselected and
+  the person can downgrade it. Write is preselected only when requested and
+  can be unticked.
+- Every post (page action or decision) needs a same-origin `Origin` and a
+  consent token: an HMAC over the signed-in user and every authorize
+  parameter (client, redirect, PKCE challenge and method, scope, state,
+  workspace hint, resource), valid for 10 minutes. Changing any parameter,
+  another user's token, or a forged one is refused with 403.
+- PKCE is S256 only, checked before the page renders; the token endpoint
+  verifies the verifier.
+- On approval the server re-reads the user's teams and refuses the whole
+  approval when any chosen workspace is not reachable now (403), when the kind
+  is `person` without `buildd:act-as-person`, when the kind is unknown, or when
+  write is chosen but was not requested (400). Nothing is dropped silently,
+  nothing is written, and no refusal names an id. An empty choice shows the
+  page again with a message.
+- Approval creates one grant (`createGrant`) and one code bound to it
+  (`createAuthCode({ grantId })`); the token endpoint binds the code to the
+  grant as in "Account-level MCP grants". Cancel redirects with
+  `access_denied` and the client's `state`.
+
+**Client ID metadata documents (CIMD)**: not supported. Accepting an https URL
+as `client_id` needs a server-side fetch with SSRF protection and caching,
+redirect validation against the fetched document and a consent display of the
+document's origin; that is not small. Clients keep using dynamic client
+registration (`/api/oauth/register`).
+
+**Acceptance criteria**:
+- AC-27: GIVEN an authorize request for the account resource WHEN the page
+  renders THEN it lists only the user's teams' workspaces, preselects one,
+  selects the agent kind and issues no code.
+- AC-28: GIVEN an approval naming a workspace outside the user's teams WHEN it
+  is posted THEN the response is 403, names no id, and no grant row exists.
+- AC-29: GIVEN a request without `buildd:act-as-person` WHEN an approval posts
+  `acts_as=person` THEN the response is 400 and no grant row exists.
+- AC-30: GIVEN a request with `buildd:act-as-person` WHEN the person approves
+  as agent with write unticked THEN the grant is `agent` with `["read"]`.
+- AC-31: GIVEN a consent post with a missing or forged consent token, another
+  user's token, a changed `state` or `scope`, or a foreign or missing Origin
+  THEN it is refused with 403 and nothing is written.
+- AC-32: GIVEN a team with more than one page of workspaces WHEN the person
+  turns the page and ticks another THEN both the earlier and the new choice
+  are in the grant.
+
+**Code surface**:
+- Consent logic and page: `apps/web/src/lib/oauth/account-consent.ts` —
+  `parseRequestedAccess()`, `initialConsentState()`, `applyNav()`,
+  `validateApproval()`, `renderAccountConsentPage()`
+- Authorize endpoint: `apps/web/src/app/api/oauth/authorize/route.ts`
+- Metadata: `apps/web/src/app/.well-known/oauth-protected-resource/api/mcp/route.ts`
+- Fixture for visual review: `/app/dev/oauth-consent` (fake data)
+- Tests: `apps/web/tests/db/mcp-oauth-consent.test.ts` (real Postgres),
+  `apps/web/src/lib/oauth/account-consent.test.ts`
 
 ---
 
