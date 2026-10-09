@@ -129,11 +129,8 @@ export interface RunSpec { seed: number; faults: Faults; strict: boolean; acts: 
  * removes the entry and unskips its case.
  *  - reviewerFails: T27 keys on the round's failure count, not on the reviewer
  *    that failed, so a repeated report re-queues again (fix task 04a79514).
- *  - staleCiHint: T10 applies a check_suite failure hint without a live read
- *    showing CI red, so a redelivered hint for a head now green flaps the
- *    delivery to REPAIRING and back (fix task 438517a9). Replayed only while red.
  */
-const KNOWN_REPLAY_GAPS: ReadonlySet<Act['t'] | 'staleCiHint'> = new Set(['reviewerFails', 'staleCiHint']);
+const KNOWN_REPLAY_GAPS: ReadonlySet<Act['t']> = new Set(['reviewerFails']);
 
 const rate = (max: number) => fc.integer({ min: 0, max: Math.round(max * 100) }).map((n) => n / 100);
 const faultsArb: fc.Arbitrary<Faults> = fc.record({
@@ -268,10 +265,7 @@ function ingestFor(ctx: Ctx) {
         }
       }
     };
-    const staleCiHint = d.name === 'check_suite' && p.check_suite?.conclusion === 'failure';
-    await feed(ctx, `webhook ${d.name}.${p.action ?? ''}`, run, staleCiHint && !ctx.enforceKnownGaps
-      ? { replay: async () => { if (!(await ciGreenNow(ctx, String(p.check_suite.head_sha)))) await run(); } } // KNOWN_REPLAY_GAPS: staleCiHint (438517a9)
-      : {});
+    await feed(ctx, `webhook ${d.name}.${p.action ?? ''}`, run);
   };
 }
 
@@ -761,7 +755,6 @@ export const REGRESSIONS: Array<{ name: string; spec: RunSpec; skip?: string }> 
   {
     // The check was re-run green before its failure hint arrived; the redelivered hint flaps the delivery again.
     name: 'a stale CI-failure hint does not leave APPROVED while CI is green',
-    skip: 'T10 applies without a live read showing CI red: fix task 438517a9',
     spec: { seed: 1, faults: NO_FAULTS, strict: false, enforceKnownGaps: true, acts: [owner(), { t: 'ci', ok: false }, { t: 'ci', ok: true }, { t: 'verdict', v: 'approve', oldest: false }] },
   },
 ];
