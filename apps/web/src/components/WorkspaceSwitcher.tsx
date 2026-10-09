@@ -372,7 +372,6 @@ export function WorkspaceSwitcher({
         open ? 'shadow-sm text-text-primary' : ''
       }`}
     >
-      <span className="text-[11px] md:text-[8px] uppercase tracking-widest text-text-muted leading-tight hidden md:block">WORKSPACE</span>
       <div className="flex items-center gap-1.5">
         {/* Grid glyph: mobile-only, always shown on mobile. Filled when workspace is selected to indicate active filter. */}
         <svg
