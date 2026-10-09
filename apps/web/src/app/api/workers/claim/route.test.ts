@@ -9304,6 +9304,98 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.reason).toBe('budget_exhausted');
   });
 
+  // Friction c0bb4d1f: claim_task {taskId} (runner 'mcp') answered
+  // budget_exhausted when its request reached the route without the
+  // interactive marker. That claim runs on the caller's own seat, not a
+  // runner's, so the account's seat wall is not its wall. A runner naming a
+  // task stays walled (test above and below).
+  const exhaustedOauthAccount = (level: 'admin' | 'worker' = 'admin') => ({
+    ...account(level),
+    authType: 'oauth' as const,
+    budgetExhaustedAt: new Date().toISOString(),
+    budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+  });
+
+  it("runner 'mcp' with an explicit taskId and no interactive marker claims while the account budget is exhausted", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount('worker'));
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.diagnostics).toBeUndefined();
+  });
+
+  it("runner 'mcp' force claim with no interactive marker claims while the account budget is exhausted", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+    expect(data.workers).toHaveLength(1);
+    expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  it("runner 'mcp' with no taskId and no interactive marker is still walled by the account budget", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount('worker'));
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'mcp' } }))).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  it("runner 'mcp' with an explicit taskId and no interactive marker claims while the team pause log walls Claude", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account('worker'), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp' })).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.workers).toHaveLength(1);
+  });
+
+  it('a background runner force claim of a named task is still walled by the account budget', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount('admin'));
+    mockTasksFindMany
+      .mockResolvedValueOnce(forceTarget())
+      .mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7', forceOverride: true })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  it("a cloud executor claiming as runner 'mcp' with a taskId is still walled by the account budget", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount('worker'));
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp', executor: 'cloud' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  it('a budget_exhausted refusal names the wall that blocked it and how it clears', async () => {
+    const account = exhaustedOauthAccount('worker');
+    mockAuthenticateApiKey.mockResolvedValue(account);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+    expect(data.diagnostics.budgetBlock.walls).toEqual([
+      { kind: 'account_seat', backend: 'claude', resetsAt: new Date(account.budgetResetsAt).toISOString() },
+    ]);
+    expect(data.diagnostics.budgetBlock.override).toMatch(/force does not lift/i);
+  });
+
+  it('a budget_exhausted refusal from the team pause log names it as a provider pause', async () => {
+    const resetsAt = new Date(Date.now() + 3600000);
+    mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+    mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'budget' }]);
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+    expect(data.diagnostics.budgetBlock.walls).toEqual([
+      { kind: 'provider_pause', backend: 'claude', resetsAt: resetsAt.toISOString() },
+    ]);
+  });
+
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });

@@ -5,12 +5,12 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -70,6 +70,7 @@ import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
 import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
+import { BudgetWalls } from './budget-block';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
@@ -277,6 +278,17 @@ export async function POST(req: NextRequest) {
     }, { key: { accountId: account.id }, windowMs: 60 * 60 * 1000 });
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
+  // Does the claimed work run on the CALLER's own seat rather than a runner's?
+  // Then a provider wall on the account's seat or in the team pause log (both
+  // recorded by runner runs) is not this claim's wall. True for a verified
+  // interactive session, and for claim_task naming one task (runner 'mcp' +
+  // taskId) when its request arrives without the marker (friction c0bb4d1f).
+  // The marker is still what grants the runner id 'mcp' and the interactive
+  // liveness and cooldown rules below; this only scopes the budget walls. A
+  // runner (its own runner id), a cloud container or a task token stays
+  // walled, with or without a taskId, and force never changes that.
+  const runsOnCallersSeat = !!interactiveSession
+    || (!!taskId && runner === INTERACTIVE_RUNNER && !cloudExecutor && !account.taskScope);
   runner = resolveClaimRunner(runner, interactiveSession);
 
   // Workspaces this account can claim from. Memoized: the claim query needs it,
@@ -877,6 +889,9 @@ export async function POST(req: NextRequest) {
     const future = candidates.filter(d => d.getTime() > nowMs).sort((x, y) => x.getTime() - y.getTime());
     return future.length > 0 ? future[0].toISOString() : null;
   };
+  // The walls this request actually deferred a task on, named in a
+  // budget_exhausted refusal (`diagnostics.budgetBlock`).
+  const budgetWalls = new BudgetWalls();
 
   // Why THIS claim runs a task on a backend other than the one stored on it
   // (every flip below is in-memory). Stamped on the claim's context write as
@@ -2204,11 +2219,14 @@ export async function POST(req: NextRequest) {
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
+    // Which walls set claudePoolBlocked, named if this task is deferred on them.
+    const claudeWalls: Array<[ClaimBudgetWall['kind'], Date | string | null]> = [];
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
-      // Account's own OAuth session/budget is exhausted. Interactive sessions
-      // have their own credentials and do not consume this account budget.
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !runsOnCallersSeat) {
+      // Account's own OAuth session/budget is exhausted. A claim that runs on
+      // the caller's own seat (runsOnCallersSeat) does not spend it.
       claudePoolBlocked = true;
+      claudeWalls.push(['account_seat', effectiveBudgetResetAt(account.budgetExhaustedAt!, account.budgetResetsAt)]);
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
@@ -2224,18 +2242,22 @@ export async function POST(req: NextRequest) {
             await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
           } else {
             claudePoolBlocked = true;
+            claudeWalls.push(['tenant_budget', tenantBudget.budgetResetsAt]);
           }
         }
       }
     }
     // Walls recorded against Claude in the pause log (e.g. a team running on a
     // managed Claude credential rather than this account's own session).
-    // An interactive session is exempt for the same reason as the account flag
-    // above: the wall was hit by a runner's seat, and the session runs the task
-    // on its own credentials. Without this, a task whose runner just died on a
-    // session limit could not be claimed (even with force) until the reset.
-    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
-    if (pauses.has('claude')) claudePoolBlocked = true;
+    // A claim on the caller's own seat is exempt for the same reason as the
+    // account flag above: the wall was hit by a runner's seat. Without this, a
+    // task whose runner just died on a session limit could not be claimed
+    // (even with force) until the reset.
+    const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    if (pauses.has('claude')) {
+      claudePoolBlocked = true;
+      claudeWalls.push(['provider_pause', pauses.get('claude')!.resetsAt]);
+    }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
     // model route is the OAuth seat (./claude-model-route): a task the team
@@ -2256,6 +2278,8 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
+        budgetWalls.add('provider_pause', 'codex', pauses.get('codex')!.resetsAt);
+        for (const [kind, at] of claudeWalls) budgetWalls.add(kind, 'claude', at);
         deferTask(task, 'budget_paused', {
           backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
           ...(backendPinned ? { pinned: true } : {}),
@@ -2303,6 +2327,7 @@ export async function POST(req: NextRequest) {
       if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
+        for (const [kind, at] of claudeWalls) budgetWalls.add(kind, 'claude', at);
         deferTask(task, 'budget_paused', { backend: 'claude', ...(backendPinned ? { pinned: true } : {}) });
         continue;
       }
@@ -3139,13 +3164,19 @@ export async function POST(req: NextRequest) {
     // Same signal for a wall on any OTHER provider: every candidate was deferred
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
-    // Exception: interactive sessions have their own credentials and do not consume
-    // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
-    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    // Exception: a claim that runs on the caller's own seat (runsOnCallersSeat)
+    // does not spend the account's seat, so accountBudgetExhausted is not its wall.
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !runsOnCallersSeat;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
+      if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
+        budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+      }
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
-        diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+        diagnostics: {
+          reason: 'budget_exhausted',
+          ...(budgetWalls.size > 0 ? { budgetBlock: budgetWalls.block() } : {}),
+        } satisfies ClaimDiagnostics,
       });
     }
     // Distinguish true lock-contention (race_lost) from "all candidates were
@@ -3446,9 +3477,9 @@ export async function POST(req: NextRequest) {
       ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
       : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
-    // Only report partial budget exhaustion for background runners. Interactive sessions
-    // have their own credentials and should not be told about account budget state.
-    ...(accountBudgetExhausted && !interactiveSession && {
+    // Only report partial budget exhaustion for claims on a runner's seat. One on
+    // the caller's own seat is not told about the account's seat state.
+    ...(accountBudgetExhausted && !runsOnCallersSeat && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),

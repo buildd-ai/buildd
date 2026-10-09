@@ -184,6 +184,27 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     expect(out).toContain('mission_paced');
   });
 
+  // Friction c0bb4d1f: "budget_exhausted (budget resets at 13:00Z)" did not
+  // say which budget, nor whether anything could lift it.
+  it('names the wall behind a budget_exhausted refusal and what lifts it', async () => {
+    mockApi.mockResolvedValueOnce({
+      workers: [],
+      budgetResetsAt: '2026-10-09T13:00:00.000Z',
+      diagnostics: {
+        reason: 'budget_exhausted',
+        budgetBlock: {
+          walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: '2026-10-09T13:00:00.000Z' }],
+          override: 'Provider walls are hard limits: force does not lift them, and they clear at resetsAt.',
+        },
+      },
+    });
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID }, interactive());
+    const out = result.content[0].text;
+    expect(out).toContain('budget_exhausted');
+    expect(out).toContain('claude account_seat wall until 2026-10-09T13:00:00.000Z');
+    expect(out).toContain('force does not lift them');
+  });
+
   it('surfaces the per-task exclusion when an explicit taskId was filtered out', async () => {
     mockApi.mockResolvedValueOnce({
       workers: [],

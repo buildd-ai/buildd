@@ -1662,6 +1662,30 @@ export interface ClaimDiagnostics {
     confidence: 'low' | 'good';
     samples: number;
   };
+  /**
+   * On reason=budget_exhausted: which provider wall(s) blocked the claim and
+   * how they clear. Every wall here is a hard provider limit; the learned
+   * forecast (`deferrals.oauth_parallelism`, `budgetPressure`) and plan
+   * allowances (`deferrals.*_runner_hours`) never produce budget_exhausted.
+   */
+  budgetBlock?: {
+    walls: ClaimBudgetWall[];
+    /** One sentence: what lifts the block (nothing but the reset, for a provider wall). */
+    override: string;
+  };
+}
+
+/**
+ * A provider wall the claim route honoured.
+ * - `account_seat`: the account's own OAuth seat is walled
+ *   (accounts.budgetExhaustedAt, written when a run on that seat hit the limit).
+ * - `provider_pause`: the backend's pause log (backend_pauses) walls it for the team.
+ * - `tenant_budget`: the task's tenant budget is walled.
+ */
+export interface ClaimBudgetWall {
+  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  backend: 'claude' | 'codex';
+  resetsAt: string | null;
 }
 
 /**
