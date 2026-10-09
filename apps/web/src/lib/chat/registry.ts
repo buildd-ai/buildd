@@ -307,6 +307,11 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
     note: 'Secret values would pass through the model and its provider. Manage keys and tokens on the settings screen.',
     deepLink: '/app/settings?section=agent-backends',
   },
+  manage_providers: {
+    reason: 'secret',
+    note: 'A model key would pass through the model and its provider. Manage providers and keys on the settings screen.',
+    deepLink: '/app/settings?section=agent-backends',
+  },
   claim_task: { reason: 'worker-only', note: 'Claims work for a runner; a person in chat is not a worker.' },
   update_progress: { reason: 'worker-only', note: 'A running worker reports its own progress.' },
   complete_task: { reason: 'worker-only', note: 'A worker completes its own task.' },

@@ -63,6 +63,14 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // and every provider (packages/core/providers/policy.ts), not just decision
   // and inference calls, so `inference-(…policy…)` misfiles it.
   'packages/core/inference-key-policy.ts',
+  // Model-credential storage and resolution for every surface (provider
+  // registry, packages/core/providers): the chat-key resolver, and the LiteLLM
+  // gateway credential and its settings. `inference-(…key…)` and `litellm`
+  // misfile them as the decision and model-tier modules; the one provider write
+  // path (apps/web/src/lib/providers/write-path.ts) is core and writes them.
+  'packages/core/inference-keys.ts',
+  'packages/core/litellm-gateway.ts',
+  'apps/web/src/lib/litellm-gateway-settings.ts',
 ]);
 
 export function moduleOf(path: string): Owner {
