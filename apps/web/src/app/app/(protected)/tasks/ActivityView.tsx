@@ -48,6 +48,8 @@ export interface ActivityViewProps {
   openRowIds?: readonly string[];
   /** The rows could not be read. Shown as a failure, never as an empty Now or History. */
   loadError?: boolean;
+  /** The load hit its root cap: History reaches back only to this time, not the full window. */
+  historyReach?: { oldestAt: string } | null;
   /** Filters to start with (fixtures). The filters are kept across Now and History. */
   initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome };
 }
@@ -97,7 +99,7 @@ export function deliveryBreakdown(now: ActivityNow): { kind: DeliveryKind | 'wai
 
 export { age };
 
-export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, initialFilters }: ActivityViewProps) {
+export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters }: ActivityViewProps) {
   const breakdown = deliveryBreakdown(now);
   const [nowOutcome, setNowOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   // A History-only outcome stays selected there, but cannot hide all of Now.
@@ -163,7 +165,7 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
               : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)}
           </>
         ) : (
-          <HistoryView history={history} nowMs={nowMs} outcome={nowOutcome} onOutcomeChange={setNowOutcome} />
+          <HistoryView history={history} nowMs={nowMs} historyReach={historyReach} outcome={nowOutcome} onOutcomeChange={setNowOutcome} />
         )}
       </div>
     </div>
@@ -192,7 +194,7 @@ function SessionsLine({ sessions, nowMs }: { sessions: LocalSessionView[]; nowMs
   );
 }
 
-function HistoryView({ history, nowMs, outcome, onOutcomeChange: setOutcome }: { history: Episode[]; nowMs: number; outcome: ActivityOutcome; onOutcomeChange: (outcome: ActivityOutcome) => void }) {
+function HistoryView({ history, nowMs, historyReach, outcome, onOutcomeChange: setOutcome }: { history: Episode[]; nowMs: number; historyReach: { oldestAt: string } | null; outcome: ActivityOutcome; onOutcomeChange: (outcome: ActivityOutcome) => void }) {
   const [shown, setShown] = useState(HISTORY_PAGE);
   // The team's zone, else the browser's once mounted; UTC until then so the server render matches.
   const tz = useDisplayTimezone() ?? 'UTC';
@@ -217,6 +219,12 @@ function HistoryView({ history, nowMs, outcome, onOutcomeChange: setOutcome }: {
               {d.episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
             </section>
           ))}
+      {episodes.length > 0 && remaining === 0 && historyReach && (
+        <p data-testid="history-boundary" className="mt-4 text-meta text-text-muted">
+          Older work is not shown. History reaches back to {age(Date.parse(historyReach.oldestAt), nowMs)} ago.{' '}
+          <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-0">Browse missions ›</Link>
+        </p>
+      )}
       {remaining > 0 && (
         <button type="button" data-testid="activity-history-more" onClick={() => setShown(n => n + HISTORY_PAGE)} className="btn mt-4 min-h-11 md:min-h-0">
           Show {Math.min(remaining, HISTORY_PAGE)} more

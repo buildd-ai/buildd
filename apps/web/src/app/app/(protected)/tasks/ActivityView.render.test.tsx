@@ -125,3 +125,21 @@ describe('ActivityView: History', () => {
     expect(tag(html, 'activity-tab-history')).toContain('aria-current="page"');
   });
 });
+
+describe('ActivityView: History root cap', () => {
+  const d = activityFixture(4);
+  const html = (reach: { oldestAt: string } | null) => renderToStaticMarkup(
+    <ActivityView mode="history" now={d.now} history={d.history.slice(0, 3)} latest={d.latest} nowMs={ACTIVITY_FIXTURE_NOW} hrefs={hrefs} historyReach={reach} />,
+  );
+
+  it('says how far back History reaches and links on when the root cap was hit', () => {
+    const out = html({ oldestAt: new Date(ACTIVITY_FIXTURE_NOW - 3 * 86_400_000).toISOString() });
+    expect(out).toContain('data-testid="history-boundary"');
+    expect(out).toContain('Older work is not shown');
+    expect(out).toContain('href="/app/missions"');
+  });
+
+  it('shows no boundary when the window, not the cap, ended History', () => {
+    expect(html(null)).not.toContain('history-boundary');
+  });
+});
