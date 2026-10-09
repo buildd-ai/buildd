@@ -114,6 +114,9 @@ function factInput(c: CorpusDelivery, f: CorpusFact): FactInput | { unreplayable
     case 'pr_closed':
       if (!f.repoFullName || f.prNumber == null) return { unreplayable: 'pr_closed without a PR' };
       return { kind: 'pr_closed', workspaceId: ws, source: f.source, repoFullName: f.repoFullName, prNumber: f.prNumber };
+    case 'base_changed':
+      if (!f.repoFullName || f.prNumber == null) return { unreplayable: 'base_changed without a PR' };
+      return { kind: 'base_changed', workspaceId: ws, source: f.source, repoFullName: f.repoFullName, prNumber: f.prNumber, hintedFromBase: (p.hintedFromBase ?? null) as string | null };
     case 'activity_note':
       // buildSteps never makes one a step (OUT_OF_BAND_FACT_KINDS); reaching here is a harness bug.
       return { unreplayable: 'activity_note is out of band and must not be a step' };

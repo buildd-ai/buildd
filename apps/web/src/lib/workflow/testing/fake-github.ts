@@ -304,10 +304,24 @@ export class FakeGithub {
     if (!was) throw new HttpError(422, 'Reference does not exist');
     repo.branches.delete(branch);
     this.emitPush(repo, branch, was, '0'.repeat(40), { deleted: true, forced: false, pusher: 'dev' });
-    // GitHub closes PRs whose base branch is deleted.
+    // GitHub retargets PRs stacked on the head branch of a merged PR to that PR's base
+    // (pull_request.edited, changes.base); any other PR whose base is deleted is closed.
+    const merged = [...repo.pulls.values()].find((p) => p.merged && p.headRef === branch);
     for (const pr of repo.pulls.values()) {
-      if (pr.state === 'open' && pr.baseRef === branch) this.closeInternal(repo, pr, 'dev');
+      if (pr.state !== 'open' || pr.baseRef !== branch) continue;
+      if (merged && repo.branches.has(merged.baseRef)) this.retargetInternal(repo, pr, merged.baseRef, 'dev');
+      else this.closeInternal(repo, pr, 'dev');
     }
+  }
+
+  /** Change a PR's base: the head stays, the diff is recomputed, `edited` carries `changes.base`. */
+  private retargetInternal(repo: Repo, pr: Pr, base: string, by: string): void {
+    if (pr.baseRef === base) return;
+    const snap = this.prJson(repo, pr, false);
+    const from = { ref: pr.baseRef, sha: repo.branches.get(pr.baseRef) ?? null };
+    pr.baseRef = base;
+    pr.updatedAt = this.tick();
+    this.emitPr(repo, pr, 'edited', snap, { changes: { base: { ref: { from: from.ref }, sha: { from: from.sha } } } }, by);
   }
 
   /** A fast-forward push of one commit to `branch` (created from the default branch if missing). */
@@ -912,7 +926,7 @@ export class FakeGithub {
         else if (b.state === 'open') this.reopenPr(repo.fullName, pr.number, this.appLogin);
         if (typeof b.title === 'string') pr.title = b.title;
         if (typeof b.body === 'string') pr.body = b.body;
-        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); pr.baseRef = b.base; pr.updatedAt = this.tick(); }
+        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); this.retargetInternal(repo, pr, b.base, this.appLogin); }
         return { body: this.prJson(repo, pr, false) };
       }
       if (c === 'merge' && method === 'PUT') {
