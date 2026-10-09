@@ -43,6 +43,9 @@ import {
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
+import { RunnerLanes } from '@/components/fleet/runner-lanes';
+import type { FleetSnapshot } from '@buildd/shared';
+import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
@@ -261,6 +264,8 @@ interface Props {
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -310,6 +315,7 @@ export function HealthClient({
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
   agentAccess = null,
+  runnerLanes = null,
   now,
   page = 'all',
 }: Props) {
@@ -743,6 +749,15 @@ export function HealthClient({
           busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
           workspaceId={wsFilter}
         />
+      )}
+
+      {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
+        <div data-testid="health-section-lanes" className="mb-6">
+          <h3 className="text-xs font-medium text-text-secondary mb-3">Slots over the last hours</h3>
+          <div className="card overflow-hidden">
+            <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} />
+          </div>
+        </div>
       )}
 
       {show('capacity') && (

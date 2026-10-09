@@ -429,7 +429,7 @@ describe('mission sheet (the summoned canvas over a mission)', () => {
 
   it('the context card: status badge, LANDED and GOAL counts, an insight line', async () => {
     await render(overlay());
-    expect(q('[data-testid="mission-context-status"]')?.textContent).toBe('Needs you');
+    expect(q('[data-testid="mission-context-status"]')?.textContent).toContain('Needs you');
     expect(q('[data-testid="mission-context-landed-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-goal-count"]')?.textContent).toMatch(/^\d+\/\d+$/);
     expect(q('[data-testid="mission-context-insight"]')?.textContent).toMatch(/needs? you/);

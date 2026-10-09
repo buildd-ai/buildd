@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { after } from 'next/server';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts, orchestrationManifestPredictions } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -11,13 +11,13 @@ import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/delivery-view';
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
-import { deriveChainPosition, LIVE_WORKER_STATUSES, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
+import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
@@ -37,11 +37,8 @@ import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
-import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
-import { buildAttemptStrips, partitionBookkeeping, repoFullNameFromPrUrl } from '@/lib/attempt-strip';
-import { groupChainUnits } from '@/lib/condensed-timeline';
-import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
-import StructureView from './StructureView';
+import type { BookkeepingTask } from './CondensedTimeline';
+import { partitionBookkeeping } from '@/lib/attempt-strip';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
@@ -58,8 +55,9 @@ import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
-import MissionBoard from './MissionBoard';
-import MissionLanes from './MissionLanes';
+import FlowTimeline from './FlowTimeline';
+import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
+import MissionOverview from './MissionOverview';
 import MissionFeedLayout from './MissionFeedLayout';
 import MissionSheetRow from './MissionSheetRow';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
@@ -111,7 +109,6 @@ import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
-import type { WaitingFor } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -177,13 +174,13 @@ export default async function MissionDetailPage({
   // Everything from here to the merge-policy chip reads off the mission row
   // that is already in hand, and nothing in the group consumes another entry's
   // result — so it is one wait instead of five serial neon-http round trips
-  // (roles/workspaces, reviewer notes, steering notes, policy workspace,
+  // (roles/workspaces, size predictions, steering notes, policy workspace,
   // follow-ups). The derived, purely-computed values follow the group.
   const allMissionTaskIds = (mission.tasks || []).map(t => t.id);
 
   const [
     scopeResult,
-    reviewerNotes,
+    sizePredictions,
     humanSteeringNotes,
     workspaceForPolicy,
     missionFollowupTasks,
@@ -219,25 +216,14 @@ export default async function MissionDetailPage({
       ]);
       return { roles: rolesResult, teamWorkspaces: workspacesResult };
     })(),
-    // Reviewer verdict notes for BT-16 (verdict chips)
+    // The Flow tab's expected task sizes (newest prediction per task).
+    // Best-effort: without one, a task's bar uses the fixed default.
     allMissionTaskIds.length > 0
-      ? db.query.missionNotes.findMany({
-          where: and(
-            inArray(missionNotes.taskId, allMissionTaskIds),
-            inArray(missionNotes.type, ['reviewer_approved', 'reviewer_request_changes', 'reviewer_escalated'] as any[]),
-          ),
-          columns: {
-            taskId: true,
-            type: true,
-            title: true,
-            body: true,
-            status: true,
-            supersededByPrNumber: true,
-            abandonedAt: true,
-            createdAt: true,
-          },
-          orderBy: desc(missionNotes.createdAt),
-        })
+      ? db.select({ taskId: orchestrationManifestPredictions.taskId, expectedSize: orchestrationManifestPredictions.expectedSize })
+          .from(orchestrationManifestPredictions)
+          .where(and(inArray(orchestrationManifestPredictions.taskId, allMissionTaskIds), isNotNull(orchestrationManifestPredictions.expectedSize)))
+          .orderBy(desc(orchestrationManifestPredictions.createdAt))
+          .catch(() => [])
       : [],
     // Human-authored mission notes — the flight-strip steering rail's "human
     // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
@@ -298,21 +284,6 @@ export default async function MissionDetailPage({
   ]);
 
   const { roles, teamWorkspaces } = scopeResult;
-
-  // Map taskId → latest reviewer note
-  const reviewerNoteMap = new Map<string, {
-    type: string;
-    title: string;
-    body: string | null;
-    status: string;
-    supersededByPrNumber: number | null;
-    createdAt: Date;
-  }>();
-  for (const note of reviewerNotes) {
-    if (note.taskId && !reviewerNoteMap.has(note.taskId)) {
-      reviewerNoteMap.set(note.taskId, note);
-    }
-  }
 
   const effectivePolicy = resolvePolicy(
     workspaceForPolicy ?? { gitConfig: null },
@@ -569,63 +540,14 @@ export default async function MissionDetailPage({
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 
-  // BT-16: Map reviewer tasks by their parentTaskId for chip tappability.
-  // Reviewer tasks (category='review') are NOT shown as separate timeline rows;
-  // they surface as inline verdict chips on the task they reviewed.
-  const reviewerTaskMap = new Map<string, { id: string; status: string }>();
-  for (const t of allTasks) {
-    if (t.category === 'review' && t.parentTaskId) {
-      reviewerTaskMap.set(t.parentTaskId, { id: t.id, status: t.status });
-    }
-  }
-
-  // Fix tasks dispatched after a reviewer requested changes, parentTaskId →
-  // the NEWEST retry (AC-21). allTasks is sorted ascending, so the old
-  // "first entry wins" loop kept the oldest; the helper is order-independent.
-  const reviewerRetryMap = buildReviewerRetryMap(allTasks.map(t => ({
-    id: t.id,
-    status: t.status,
-    title: t.title,
-    parentTaskId: t.parentTaskId,
-    reviewerRetryPrNumber: (t as { reviewerRetryPrNumber?: number | null }).reviewerRetryPrNumber ?? null,
-    createdAt: t.createdAt,
-    workers: (t.workers as Array<{ prNumber?: number | null }> | null) ?? null,
-  })));
-
   // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
   const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
 
-  // U8: attempts move onto their parent task's row via `attachAttempts` (wrapped
-  // by buildAttemptStrips), so the footer keeps only genuine housekeeping —
+  // U8: attempts sit on their parent task's row, so the footer keeps only
+  // genuine housekeeping —
   // orchestration planning runs, plus any attempt whose parent row is not
   // rendered (dropping those would delete the run's only published trace).
   const renderedTaskIds = new Set(timelineTasks.map(t => t.id));
-  const attemptStrips = buildAttemptStrips(
-    allTasks.map(t => ({
-      id: t.id,
-      status: t.status,
-      taskClass: t.taskClass,
-      parentTaskId: t.parentTaskId,
-      roleSlug: t.roleSlug,
-      creationSource: t.creationSource,
-      createdAt: t.createdAt,
-      updatedAt: t.updatedAt,
-      ciRetryPrNumber: (t as any).ciRetryPrNumber ?? null,
-      reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
-      conflictRetryPrNumber: (t as any).conflictRetryPrNumber ?? null,
-      context: digestOf(t.id).context,
-    })),
-    {
-      // No repo column is loaded here; every PR url on this mission points at
-      // the same repo, so the first one names it. Null → no PR link, never a
-      // guessed one.
-      repoFullName: repoFullNameFromPrUrl(
-        allTasks.flatMap(t => (t.workers || []) as Array<{ prUrl?: string | null }>).find(w => w.prUrl)?.prUrl,
-      ),
-      roleNameBySlug: new Map(roles.map(r => [r.slug, r.name])),
-    },
-  );
-
   const { footer: footerTasks } = partitionBookkeeping(allTasks, renderedTaskIds);
 
   // Collect bookkeeping tasks for the expandable footer
@@ -640,173 +562,6 @@ export default async function MissionDetailPage({
       resultSummary: extractRunSummary(digestOf(t.id).result),
     };
   });
-
-  // Compute chain positions for mission tasks
-  const chainByTaskId = new Map<string, ChainPositionResult | null>();
-  for (const task of allTasks) {
-    const depIds = (task.dependsOn as string[] | null) ?? [];
-    if (depIds.length === 0) {
-      chainByTaskId.set(task.id, null);
-      continue;
-    }
-    const deps = depIds.map(depId => {
-      const dep = taskMap.get(depId);
-      if (!dep) return null;
-      // Map every loaded worker, not just the latest: the gate asks whether ANY
-      // worker holds an open PR. prLifecycleStatus='closed' releases the guard.
-      const depWorkers = (dep.workers as Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: Date | string | null; prLifecycleStatus?: string | null }> | null) ?? [];
-      return {
-        id: dep.id,
-        title: dep.title,
-        status: dep.status,
-        dependsOn: (dep.dependsOn as string[] | null) ?? [],
-        workers: depWorkers.map(w => ({
-          prUrl: w.prUrl ?? null,
-          prNumber: w.prNumber ?? null,
-          mergedAt: w.mergedAt ? String(w.mergedAt) : null,
-          prLifecycleStatus: w.prLifecycleStatus ?? null,
-        })),
-      };
-    }).filter(Boolean) as ChainPositionDep[];
-    const dependents = allTasks.filter(t => ((t.dependsOn as string[] | null) ?? []).includes(task.id)).length;
-    chainByTaskId.set(task.id, deriveChainPosition({ task: { id: task.id, status: task.status }, deps, dependents }));
-  }
-
-  // ── I-7: Condensed timeline — build groups ────────────────────────────────
-
-  // Normalise a DB worker row to CondensedTaskWorker (all strings, no Date objects)
-  function normaliseWorker(w: {
-    id: string;
-    status: string;
-    prUrl?: string | null;
-    prNumber?: number | null;
-    prLifecycleStatus?: string | null;
-    mergedAt?: Date | string | null;
-    completedAt?: Date | string | null;
-    startedAt?: Date | string | null;
-    currentAction?: string | null;
-    branch?: string | null;
-    waitingFor?: unknown;
-  }): CondensedTaskWorker {
-    return {
-      id: w.id,
-      status: w.status,
-      prUrl: w.prUrl ?? null,
-      prNumber: w.prNumber ?? null,
-      prLifecycleStatus: w.prLifecycleStatus ?? null,
-      mergedAt: w.mergedAt ? String(w.mergedAt) : null,
-      completedAt: w.completedAt ? String(w.completedAt) : null,
-      startedAt: w.startedAt ? String(w.startedAt) : null,
-      currentAction: w.currentAction ?? null,
-      branch: w.branch ?? null,
-      waitingFor: (w.waitingFor as WaitingFor | null) ?? null,
-    };
-  }
-
-  // Build CondensedTask objects for the grouping function.
-  // A completed task with an unmerged PR always lands in "Waiting on you" —
-  // its terminal state is its PR's state, not the task's (task facae217) —
-  // regardless of merge-policy tier or reviewer verdict. See isWaitingOnYou
-  // in condensed-timeline.ts.
-  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => ({
-    id: task.id,
-    status: task.status,
-    dependsOn: (task.dependsOn as string[] | null) ?? null,
-    workers: ((task.workers || []) as any[]).map(normaliseWorker),
-  }));
-  const condensedTaskMapForGrouping = new Map(condensedTasksForGrouping.map(t => [t.id, t]));
-
-  const rawGroups = groupChainUnits(condensedTasksForGrouping, condensedTaskMapForGrouping);
-
-  // Mission-level claim gate, hoisted once: `mission` is a reassignable `let`, so
-  // TS cannot narrow it inside the closure below.
-  const missionBudgetExhausted = mission?.status === 'budget_exhausted';
-
-  // Convert a raw group member to a CondensedTimelineTask with enriched display fields
-  function toTimelineTask(condensedTask: CondensedTask): CondensedTimelineTask {
-    const task = taskMap.get(condensedTask.id)!;
-    const role = task.roleSlug ? rolesMap.get(task.roleSlug) : null;
-    const reviewerNote = reviewerNoteMap.get(task.id) ?? null;
-    const reviewerTaskRef = reviewerTaskMap.get(task.id);
-    return {
-      id: task.id,
-      title: task.title,
-      status: task.status,
-      taskCreatedAt: task.createdAt.toISOString(),
-      taskUpdatedAt: task.updatedAt.toISOString(),
-      roleColor: role?.color ?? '#8A8478',
-      dependsOn: (task.dependsOn as string[] | null) ?? null,
-      pathManifest: ((task as any).pathManifest as string[] | null) ?? null,
-      chain: chainByTaskId.get(task.id) ?? null,
-      // Mission-level claim gate: a budget_exhausted mission blocks every one of
-      // its pending tasks until a human raises the budget, and it never clears on
-      // its own. Surfacing it per row keeps this timeline from showing an
-      // unclaimable task as QUEUED (rule CG-2).
-      missionBudgetExhausted: missionBudgetExhausted,
-      latestWorker: condensedTask.workers[0] ?? null,
-      delivery: deliveryDisplays.get(task.id) ?? null,
-      taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
-      // The three `deriveWorkKind` inputs, plus the stored phase. Carried as
-      // data on the task object so `buildRail` and `computeStructureLayout` —
-      // both pure functions over the task array, neither holding a database
-      // handle — read the identical value.
-      kind: task.kind ?? null,
-      roleSlug: task.roleSlug ?? null,
-      missionPhaseIndex: task.missionPhaseIndex ?? null,
-      missionPhaseLabel: task.missionPhaseLabel ?? null,
-      loopState: task.loopState ?? null,
-      loopMaxLoops: task.loopConfig ? ((task.loopConfig as any).maxLoops ?? 5) : null,
-      loopIteration: task.loopConfig ? task.loopIteration : null,
-      startAt: task.startAt?.toISOString() ?? null,
-      loopExitConditionType: (task.loopConfig as any)?.exitCondition?.type ?? null,
-      reviewerNote: reviewerNote
-        ? {
-            type: reviewerNote.type,
-            title: reviewerNote.title,
-            body: reviewerNote.body,
-            status: reviewerNote.status,
-            supersededByPrNumber: reviewerNote.supersededByPrNumber,
-          }
-        : null,
-      reviewerTaskHref: reviewerTaskRef ? `/app/tasks/${reviewerTaskRef.id}` : null,
-      reviewerRetryTask: reviewerRetryMap.get(task.id) ?? null,
-      attempts: attemptStrips.get(task.id) ?? null,
-    };
-  }
-
-  function toChainUnit(chain: ChainUnit<CondensedTask>): ChainUnit<CondensedTimelineTask> {
-    return { head: toTimelineTask(chain.head), tail: chain.tail.map(toTimelineTask), shape: chain.shape };
-  }
-
-  const timelineGroups: CondensedTimelineGroups = {
-    waitingOnYou: rawGroups.waitingOnYou.map(toChainUnit),
-    running: rawGroups.running.map(toChainUnit),
-    nextQueued: rawGroups.nextQueued.map(toChainUnit),
-    blocked: rawGroups.blocked.map(toChainUnit),
-    done: rawGroups.done.map(toChainUnit),
-    failed: rawGroups.failed.map(toChainUnit),
-  };
-
-  // Structure view: flat chain list (same identifyChains result shared with Timeline)
-  const allChains: ChainUnit<CondensedTimelineTask>[] = [
-    ...timelineGroups.waitingOnYou,
-    ...timelineGroups.running,
-    ...timelineGroups.nextQueued,
-    ...timelineGroups.blocked,
-    ...timelineGroups.done,
-    ...timelineGroups.failed,
-  ];
-
-  // Retry lineage: childId → parentId for tasks both present in the timeline task
-  // set. Consumed by StructureView only; the mobile feed folds a retry under its
-  // parent row as an attempt instead (addendum D1).
-  const timelineTaskIdSet = new Set(timelineTasks.map(t => t.id));
-  const retryLinks = new Map<string, string>();
-  for (const t of timelineTasks) {
-    if (t.parentTaskId && timelineTaskIdSet.has(t.parentTaskId)) {
-      retryLinks.set(t.id, t.parentTaskId);
-    }
-  }
 
   // Verified step: a raw pass count, not `deriveCriteriaGatePresentation`'s
   // label/tone. `passed: null` when the gate has never been evaluated, so the
@@ -1345,7 +1100,7 @@ export default async function MissionDetailPage({
     </MissionSecondaryPanel>
   );
 
-  // ── Board / Lanes (MissionBoard, MissionLanes) ────────────────────────────
+  // ── Board / Flow (MissionBoard, FlowTimeline) ─────────────────────────────
   // One model for both, from the same rows the feed reads; `buildMissionBoard`
   // folds and states them with the feed's own rules, so the counts agree.
   const boardModel = buildMissionBoard({
@@ -1364,6 +1119,9 @@ export default async function MissionDetailPage({
     // Another mission's dependency is judged by the claim gate, not dropped.
     externalDeps: [...foreignDeps.values()],
   });
+  // Flow: the same-files waits Buildd added, and each task's expected size.
+  const flowSameFiles = sameFilesFromRows(allTasks as Array<{ id: string; pathDeclaration?: unknown }>);
+  const flowExpectedMinutes = expectedMinutesFromPredictions(sizePredictions);
   // The drawer's per-task Build › Audit › Land and audit/repair evidence: the
   // shared delivery projection over the same rows (Home, Missions, Activity).
   const taskDeliveries = missionTaskDeliveries({
@@ -1566,22 +1324,14 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
-        lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout
             model={boardModel}
             notes={feedNotes}
             completionText={completionText}
             notice={boardNotice}
-            structure={allChains.some(c => c.tail.length > 0) ? (
-              <StructureView
-                chains={allChains}
-                taskMap={condensedTaskMapForGrouping}
-                missionId={id}
-                retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
-              />
-            ) : undefined}
             visual={boardVisual}
             {...boardLink}
           />,

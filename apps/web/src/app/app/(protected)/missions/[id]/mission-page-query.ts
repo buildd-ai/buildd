@@ -62,8 +62,8 @@ export const MISSION_WORKER_COLUMNS = {
   currentAction: true,
   commitCount: true,
   filesChanged: true,
-  // Board and Lanes (MissionBoard / MissionLanes): the runner a worker ran on
-  // (lanes, fleet slots), its milestones (a tile's notches), and its diff size
+  // Board (MissionBoard): the runner a worker ran on
+  // (fleet slots), its milestones (a tile's notches), and its diff size
   // (landed rows, completion record).
   runner: true,
   // With runner, joins the runner's heartbeat for its hostname (runner-display).
@@ -92,6 +92,8 @@ export const MISSION_TASK_COLUMNS = {
   // Read only to class Lane-2 rail edges as advisory ordering
   // (docs/specs/timeline-mobile-rail.md Rule D3-2).
   pathManifest: true,
+  // Flow: the same-files waits Buildd added (`softOverlaps`), which gate like dependencies.
+  pathDeclaration: true,
   category: true,
   taskClass: true,
   loopConfig: true,
@@ -113,7 +115,7 @@ export const MISSION_TASK_COLUMNS = {
   kind: true,
   // Board: which tasks the "PRs merged" criterion counts before they open one.
   outputRequirement: true,
-  // Board / Lanes: the short label a tile and a bar draw (taskDisplayLabel).
+  // Board / Flow: the short label a tile and a row draw (taskDisplayLabel).
   label: true,
   // Board: the Landed drawer's task actions (Retry on / Switch to).
   backend: true,
