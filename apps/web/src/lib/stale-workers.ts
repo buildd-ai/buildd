@@ -23,6 +23,8 @@ import {
   type AnswerDeliveryRecord,
   type ContinuationParentTask,
 } from '@/lib/answer-resume';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
 const MAX_WORKER_RETRIES = 3;
@@ -1083,9 +1085,10 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
     if (!originalTask) continue;
 
     // Build retry description with context about what was asked
-    const waitingFor = worker.waitingFor as { type?: string; prompt?: string; options?: string[] } | null;
+    const waitingFor = worker.waitingFor as Partial<WaitingFor> | null;
+    const optionLabels = waitingForOptionLabels(waitingFor?.options);
     const waitingContext = waitingFor?.prompt
-      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${waitingFor.options ? ` (options: ${waitingFor.options.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
+      ? `\n\n---\nPrevious attempt stalled waiting for input: "${waitingFor.prompt}"${optionLabels.length ? ` (options: ${optionLabels.join(', ')})` : ''}\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.`
       : '\n\n---\nIMPORTANT: Do NOT ask for user input. Make reasonable decisions autonomously and proceed without blocking.';
 
     const retryDescription = (originalTask.description || '') + waitingContext;

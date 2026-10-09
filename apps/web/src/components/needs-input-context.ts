@@ -5,6 +5,7 @@
  * person, and the hook an answer surface uses to mark one answered.
  */
 import { createContext, useContext } from 'react';
+import type { WaitingFor } from '@buildd/shared';
 
 export interface WaitingTask {
   id: string;
@@ -12,7 +13,7 @@ export interface WaitingTask {
   workspaceId: string;
   /** The task's mission, so a link can open it in mission context. */
   missionId?: string | null;
-  waitingFor: { type: string; prompt: string; options?: string[]; context?: string; recommended?: { label: string; reason?: string } } | null;
+  waitingFor: WaitingFor | null;
   /** Answered; the worker has not picked the answer up yet. Not counted as waiting. */
   answerSent?: boolean;
 }
