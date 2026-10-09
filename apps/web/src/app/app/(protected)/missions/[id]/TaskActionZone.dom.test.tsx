@@ -93,6 +93,15 @@ describe('TaskActionZone — Run now frame', () => {
     expect(group.className).not.toContain('border');
     expect(button('Run now')).toBeDefined();
   });
+
+  it('the Blocked notice drops its box the same way', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ isBlocked: true, blockedByCount: 1 });
+    expect(container.querySelector('[data-testid="task-blocked"]')!.className).toContain('border');
+    await mount({ isBlocked: true, blockedByCount: 1, framed: false });
+    expect(container.querySelector('[data-testid="task-blocked"]')!.getAttribute('class')).toBeNull();
+    expect(container.textContent).toContain('waiting on 1 dependency');
+  });
 });
 
 describe('TaskActionZone — inline Force start', () => {

@@ -92,7 +92,8 @@ export interface TaskActionZoneProps {
   onChanged?: () => void | Promise<void>;
   /**
    * False inside a card that already frames the task (the mission Overview's
-   * focus card, the strip drawer): the Run now group drops its own box.
+   * focus card, the strip drawer): the Blocked notice and the Run now group
+   * drop their own boxes.
    */
   framed?: boolean;
 }
@@ -298,7 +299,7 @@ export default function TaskActionZone({
 
       {/* Blocked — dep gate not satisfied */}
       {has('blocked') && (
-        <div className="border border-status-warning p-4">
+        <div data-testid="task-blocked" className={framed ? 'border border-status-warning p-4' : undefined}>
           <p className="font-mono text-[12px] font-medium text-status-warning">
             Blocked · waiting on {blockedByCount} {blockedByCount === 1 ? 'dependency' : 'dependencies'}
           </p>
