@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 
@@ -39,20 +40,20 @@ export async function GET(
   let authorized = false;
 
   if (account) {
-    // API key auth: verify worker belongs to this account
+    // Bearer auth: only the principal that claimed the worker (lib/worker-owner.ts)
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, id),
-      columns: { id: true, accountId: true, localUiUrl: true, workspaceId: true },
+      columns: { id: true, accountId: true, claimedByUserId: true, localUiUrl: true, workspaceId: true, taskId: true },
     });
     if (!worker) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    if (worker.accountId !== account.id) {
+    if (!callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     authorized = true;
   } else {
-    // Session auth: verify workspace access
+    // Dashboard session path: verify workspace access
     const user = await getCurrentUser();
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

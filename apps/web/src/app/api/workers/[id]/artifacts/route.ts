@@ -6,7 +6,8 @@ import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { appBaseUrl } from '@/lib/app-url';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
@@ -43,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -269,7 +270,7 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (!callerOwnsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
