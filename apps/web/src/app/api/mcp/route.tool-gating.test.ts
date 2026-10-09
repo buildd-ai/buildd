@@ -598,7 +598,7 @@ describe('MCP tool gating — lazily resolved workspace', () => {
   });
 });
 
-describe('MCP tool gating — personal roles (register_skill { personal: true })', () => {
+describe('MCP tool gating — personal roles (skill actions with { personal: true })', () => {
   // The real handler for these: the gate under test lives in it, and the
   // route must hand it who is behind the call (ctx.principal).
   const realFetch = globalThis.fetch;
@@ -629,14 +629,41 @@ describe('MCP tool gating — personal roles (register_skill { personal: true })
     mockHandleBuilddAction.mockImplementation(async () => ({ content: [{ type: 'text', text: '{"dispatched":true}' }] }));
   });
 
-  it('offers register_skill / update_skill / delete_skill to a worker-level session on buildd_admin, but no team-wide admin action', async () => {
+  it('offers the personal-path skill actions to a worker-level session on buildd_admin, but no team-wide admin action', async () => {
     asPerson('worker');
     const res = await POST(makeRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, `?workspace=${WORKSPACE_ID}`));
     const tools: any[] = ((await res.json()) as any).result.tools;
     const admin = tools.find(t => t.name === 'buildd_admin');
     const actions: string[] = admin.inputSchema.properties.action.enum;
-    for (const a of ['register_skill', 'update_skill', 'delete_skill']) expect(actions).toContain(a);
-    for (const a of ['manage_secrets', 'manage_workspaces', 'list_skills', 'get_skill']) expect(actions).not.toContain(a);
+    for (const a of ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill']) expect(actions).toContain(a);
+    for (const a of ['manage_secrets', 'manage_workspaces']) expect(actions).not.toContain(a);
+  });
+
+  it('lets a worker-level OAuth member list their own and shared personal roles, through GET /api/roles', async () => {
+    asPerson('worker');
+    globalThis.fetch = mock(async (url: string, init: RequestInit = {}) => {
+      fetched.push({ url: String(url), method: init.method ?? 'GET', body: undefined });
+      return new Response(JSON.stringify({ roles: [
+        { id: 'team-role', slug: 'builder', name: 'Builder' },
+        { id: 'role-1', slug: 'helper', name: 'Helper', personal: true, mine: true, visibility: 'private' },
+      ] }), { status: 200 });
+    }) as any;
+    const result = await callTool('buildd_admin', { action: 'list_skills', params: { personal: true } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('1 personal role(s)');
+    expect(result.content[0].text).not.toContain('Builder');
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0].method).toBe('GET');
+    expect(new URL(fetched[0].url).pathname).toBe('/api/roles');
+  });
+
+  it('refuses a worker-level team list_skills / get_skill as forbidden, without any API call', async () => {
+    asPerson('worker');
+    for (const [action, params] of [['list_skills', {}], ['get_skill', { slug: 'helper' }]] as const) {
+      const result = await callTool('buildd_admin', { action, params }, `?workspace=${WORKSPACE_ID}`);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ error: 'forbidden', tokenLevel: 'worker', requiredLevel: 'admin' });
+    }
+    expect(fetched).toHaveLength(0);
   });
 
   it('lets a worker-level OAuth member create a personal role, through POST /api/roles', async () => {
@@ -657,6 +684,14 @@ describe('MCP tool gating — personal roles (register_skill { personal: true })
     expect(fetched).toHaveLength(0);
   });
 
+  it('refuses a personal list from a bld_ key (no person behind it), without any API call', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
+    const result = await callTool('buildd', { action: 'list_skills', params: { personal: true } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('API key has no person');
+    expect(fetched).toHaveLength(0);
+  });
+
   it('refuses a personal create from a bld_ key (no person behind it), without any API call', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
     const result = await callTool('buildd', { action: 'register_skill', params: { personal: true, name: 'Helper', content: 'x' } }, `?workspace=${WORKSPACE_ID}`);
@@ -673,6 +708,18 @@ describe('MCP tool gating — personal roles (register_skill { personal: true })
         taskScope: { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 },
       });
       const result = await callTool('buildd', { action: 'register_skill', params: { personal: true, name: 'Helper', content: 'x' } }, `?worker=${OWN_WORKER}`);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('per-task token has no person');
+      expect(fetched).toHaveLength(0);
+    });
+
+    it(`refuses a personal get_skill from a ${level}-level per-task token`, async () => {
+      mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', taskId: 'task-own', workspaceId: WORKSPACE_ID });
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'acc-1', level, teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null,
+        taskScope: { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 },
+      });
+      const result = await callTool('buildd', { action: 'get_skill', params: { personal: true, slug: 'helper' } }, `?worker=${OWN_WORKER}`);
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('per-task token has no person');
       expect(fetched).toHaveLength(0);
