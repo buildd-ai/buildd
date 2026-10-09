@@ -1001,6 +1001,23 @@ describe('POST /api/tasks', () => {
     expect(new Date(data.startAt).toISOString()).toBe(inserted.startAt.toISOString());
   });
 
+  // Opt-in GitHub repo check (lib/member-repo-access.ts): with the setting on
+  // and nothing to confirm access against, a person is refused (fails closed).
+  it('refuses a session user when memberRepoAccess is on and access cannot be confirmed', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { memberRepoAccess: 'require_read' } });
+
+    const response = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Test Task' } }));
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe('member_repo_access');
+    expect(data.reason).toBe('check_failed');
+  });
+
   it('creates task with session auth', async () => {
     const createdTask = {
       id: 'task-123',
