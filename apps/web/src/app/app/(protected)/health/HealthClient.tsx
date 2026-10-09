@@ -216,13 +216,19 @@ const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> 
   // Access problems stop runs and blocked actions are agents reaching outside
   // their task: both are things to act on, so they sit with the failures.
   failures: new Set(['agentAccess', 'failureGroups']),
-  // Only what sets capacity. Schedules live on /app/schedules.
+  // Only what sets capacity. A schedule lives where it is configured: its
+  // mission, or the workspace's schedules (`scheduleHref`).
   runners: new Set(['capacity', 'budget', 'credentials']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
 };
+
+/** Where a schedule is configured: its mission, else the workspace's schedules. */
+export function scheduleHref(s: Pick<ScheduleRow, 'workspaceId' | 'missionId'>): string {
+  return s.missionId ? `/app/missions/${s.missionId}` : `/app/workspaces/${s.workspaceId}/schedules`;
+}
 
 /** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
 const SANDBOX_PLAIN_LABEL: Record<string, string> = {
@@ -662,7 +668,7 @@ export function HealthClient({
             ))}
 
             {failedSchedules.map((s) => (
-              <div key={s.id} className="px-4 py-3">
+              <a key={s.id} href={scheduleHref(s)} data-testid="problem-schedule" className="block px-4 py-3 hover:bg-surface-2">
                 <div className="flex items-start gap-3">
                   <span className="text-status-error mt-0.5 shrink-0 text-sm">⚠</span>
                   <div className="min-w-0 flex-1">
@@ -671,7 +677,7 @@ export function HealthClient({
                     <p className="text-xs text-text-muted mt-0.5">{s.workspaceName}</p>
                   </div>
                 </div>
-              </div>
+              </a>
             ))}
 
             {/* Recent failures, grouped by error signature.

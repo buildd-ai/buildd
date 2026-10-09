@@ -75,6 +75,8 @@ export interface ScheduleRow {
   createdAt: string | null;
   taskTitle: string;
   missionTitle: string | null;
+  /** The mission that owns this schedule, where it is configured; null for a workspace schedule. */
+  missionId?: string | null;
   isHeartbeat: boolean;
 }
 
@@ -343,20 +345,21 @@ export async function loadHealth({
         .select()
         .from(taskSchedules)
         .where(inArray(taskSchedules.workspaceId, scopedWsIds));
-      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null })[];
+      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null; missionId: string | null })[];
 
       const linkedMissions = await db
-        .select({ scheduleId: missions.scheduleId, title: missions.title })
+        .select({ scheduleId: missions.scheduleId, title: missions.title, id: missions.id })
         .from(missions)
         .where(inArray(missions.scheduleId, schedules.map((s: any) => s.id as string)));
       const missionBySchedule = new Map(
         (linkedMissions as any[])
           .filter((m: any) => m.scheduleId)
-          .map((m: any) => [m.scheduleId as string, m.title as string] as const),
+          .map((m: any) => [m.scheduleId as string, { title: m.title as string, id: m.id as string }] as const),
       );
       return (schedules as any[]).map((s: any) => ({
         ...s,
-        missionTitle: missionBySchedule.get(s.id) ?? null,
+        missionTitle: missionBySchedule.get(s.id)?.title ?? null,
+        missionId: missionBySchedule.get(s.id)?.id ?? null,
         isHeartbeat: !!(s.taskTemplate?.context?.heartbeat),
       }));
     })().catch(() => [] as any[])
@@ -624,6 +627,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       createdAt: s.createdAt ? s.createdAt.toISOString() : null,
       taskTitle: s.taskTemplate?.title ?? '',
       missionTitle: s.missionTitle,
+      missionId: s.missionId ?? null,
       isHeartbeat: !!s.isHeartbeat,
     }))
     .sort((a: ScheduleRow, b: ScheduleRow) => {

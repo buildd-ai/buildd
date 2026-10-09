@@ -223,6 +223,17 @@ describe('HealthClient — pages', () => {
     expect(has(html, 'health-section-occupancy')).toBe(false);
   });
 
+  it('a failing schedule on Overview links to where it is configured', () => {
+    const broken = { lastError: 'boom', consecutiveFailures: 3, lastRunAt: ago(HOUR) };
+    const html = render({ ...everything, page: 'overview', schedules: [
+      schedule({ id: 's-ws', name: 'Workspace sweep', ...broken }),
+      schedule({ id: 's-m', name: 'Mission check-in', missionId: 'm-1', missionTitle: 'M', ...broken }),
+    ] });
+    expect(html).toContain('href="/app/workspaces/ws-1/schedules"');
+    expect(html).toContain('href="/app/missions/m-1"');
+    expect(html).not.toContain('/app/schedules');
+  });
+
   it('Overview lists an access problem under Problems, linking to Failures', () => {
     const html = render({ ...everything, page: 'overview' });
     expect(html).toContain('data-testid="problem-access"');
