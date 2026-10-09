@@ -8,8 +8,10 @@ import { allActions } from '../mcp-tools';
 import {
   ACTION_AREA, ACTION_SUMMARY, MCP_TOOL_GROUPS, actionHelp, actionSignature, actionsOfGroup, derivedSignature,
   mcpGroupOf, mcpGroupOfToolName, mcpGroupToolName, mcpGroupPurpose, MCP_GROUP_PURPOSE_PARTS, SIGNATURE_OVERRIDE_ACTIONS,
-  MCP_GROUP_PARAMS, mcpGroupParamsSchema,
+  MCP_GROUP_PARAMS, mcpGroupParamsSchema, ACTION_LISTING, splitListed,
 } from '../mcp-tool-groups';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const names = (sig: string) =>
   sig.replace(/^\{|\}$/g, '').split(',').map(s => s.trim().split(/[:|+]/)[0].replace(/\?$/, '')).filter(n => n && n !== '…');
@@ -82,7 +84,7 @@ describe('short text', () => {
   });
 
   it('derived signatures keep required markers and sub-action values', () => {
-    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?}');
+    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?, all?}');
     expect(actionSignature('manage_secrets')).toContain('action: list|set|delete');
     expect(actionSignature('explain')).toContain('taskId?|missionId?');
   });
@@ -192,5 +194,43 @@ describe('typed params', () => {
     const s = mcpGroupParamsSchema('missions', actionsOfGroup('missions')) as { type: string; additionalProperties?: unknown };
     expect(s.type).toBe('object');
     expect(s.additionalProperties).not.toBe(false);
+  });
+});
+
+describe('listed and More: actions (ACTION_LISTING)', () => {
+  const ROOT = join(import.meta.dir, '..', '..', '..');
+
+  it('places every action, and only real ones', () => {
+    expect(Object.keys(ACTION_LISTING).sort()).toEqual([...allActions].sort());
+  });
+
+  it('splits a group without losing or reordering an action', () => {
+    for (const g of MCP_TOOL_GROUPS) {
+      const actions = actionsOfGroup(g);
+      const { listed, more } = splitListed(actions);
+      expect([...listed, ...more].sort()).toEqual([...actions].sort());
+      expect(listed).toEqual(actions.filter(a => ACTION_LISTING[a] === 'listed'));
+    }
+  });
+
+  it('lists every action a skill, role prompt or runner prompt tells agents to call', () => {
+    // Workflow text agents act on. An action named here must have its own line,
+    // or the agent reading the workflow cannot find its params without a detour.
+    const files = [
+      ...[...new Bun.Glob('.claude/skills/*/{SKILL,CLAUDE}.md').scanSync({ cwd: ROOT, dot: true })],
+      ...[...new Bun.Glob('packages/core/onboarding-templates/*').scanSync({ cwd: ROOT })],
+      'apps/runner/src/prompt-builder.ts',
+      'apps/web/src/lib/default-roles.ts',
+      'apps/web/src/lib/mission-context.ts',
+      'apps/web/src/lib/heartbeat-helpers.ts',
+    ];
+    expect(files.length).toBeGreaterThan(6);
+    const named = new Map<string, string>();
+    for (const f of files) {
+      const body = readFileSync(join(ROOT, f), 'utf8');
+      for (const a of allActions) if (new RegExp(`\\b${a}\\b`).test(body) && !named.has(a)) named.set(a, f);
+    }
+    expect(named.size).toBeGreaterThan(10);
+    for (const [a, f] of named) expect(ACTION_LISTING[a as keyof typeof ACTION_LISTING], `${a} (named in ${f})`).toBe('listed');
   });
 });
