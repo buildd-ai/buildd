@@ -69,10 +69,27 @@ export async function getClient(clientId: string) {
   return rows[0] ?? null;
 }
 
-export async function createAuthCode(args: {
+/**
+ * What a code or refresh token is bound to: one workspace (the legacy
+ * per-workspace connection) or one account-level grant (lib/mcp-grants.ts).
+ * Exactly one; the table CHECKs enforce the same.
+ */
+export type TokenBinding = { workspaceId: string; grantId?: never } | { grantId: string; workspaceId?: never };
+
+function bindingColumns(b: TokenBinding): { workspaceId: string | null; grantId: string | null } {
+  if (typeof b.grantId === 'string') return { workspaceId: null, grantId: b.grantId };
+  return { workspaceId: b.workspaceId ?? null, grantId: null };
+}
+
+function bindingFromRow(row: { workspaceId: string | null; grantId: string | null }): TokenBinding | null {
+  if (row.grantId && !row.workspaceId) return { grantId: row.grantId };
+  if (row.workspaceId && !row.grantId) return { workspaceId: row.workspaceId };
+  return null;
+}
+
+export async function createAuthCode(args: TokenBinding & {
   clientId: string;
   userId: string;
-  workspaceId: string;
   redirectUri: string;
   codeChallenge: string;
   codeChallengeMethod: string;
@@ -84,7 +101,7 @@ export async function createAuthCode(args: {
     code,
     clientId: args.clientId,
     userId: args.userId,
-    workspaceId: args.workspaceId,
+    ...bindingColumns(args),
     redirectUri: args.redirectUri,
     codeChallenge: args.codeChallenge,
     codeChallengeMethod: args.codeChallengeMethod,
@@ -94,9 +111,8 @@ export async function createAuthCode(args: {
   return code;
 }
 
-export type ConsumedAuthCode = {
+export type ConsumedAuthCode = TokenBinding & {
   userId: string;
-  workspaceId: string;
   scope: string | null;
 };
 
@@ -128,13 +144,14 @@ export async function consumeAuthCode(args: {
   const computed = createHash('sha256').update(args.codeVerifier).digest('base64url');
   if (computed !== row.codeChallenge) return { error: 'invalid_grant' };
 
-  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+  const binding = bindingFromRow(row);
+  if (!binding) return { error: 'invalid_grant' };
+  return { ...binding, userId: row.userId, scope: row.scope };
 }
 
-export async function createRefreshToken(args: {
+export async function createRefreshToken(args: TokenBinding & {
   clientId: string;
   userId: string;
-  workspaceId: string;
   scope: string | null;
 }): Promise<string> {
   const token = randomToken(REFRESH_TOKEN_BYTES);
@@ -143,16 +160,15 @@ export async function createRefreshToken(args: {
     token,
     clientId: args.clientId,
     userId: args.userId,
-    workspaceId: args.workspaceId,
+    ...bindingColumns(args),
     scope: args.scope,
     expiresAt,
   });
   return token;
 }
 
-export type ConsumedRefreshToken = {
+export type ConsumedRefreshToken = TokenBinding & {
   userId: string;
-  workspaceId: string;
   scope: string | null;
 };
 
@@ -175,7 +191,9 @@ export async function consumeRefreshToken(args: {
   if (row.expiresAt.getTime() < Date.now()) return { error: 'invalid_grant' };
   if (row.clientId !== args.clientId) return { error: 'invalid_grant' };
 
-  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+  const binding = bindingFromRow(row);
+  if (!binding) return { error: 'invalid_grant' };
+  return { ...binding, userId: row.userId, scope: row.scope };
 }
 
 /** True when the user has a team_members row on the workspace's team. */
