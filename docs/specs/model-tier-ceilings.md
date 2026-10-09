@@ -10,6 +10,35 @@ related: [model-policy, model-routing-and-tiers, usage-and-cost-accounting]
 keywords: [tier cap, tier ceiling, maximum tier, premium-plus, disable premium-plus, policy_denied, tier_policy, overCapAuto, model_tier_ceilings, personal maximum, member cap, spend band, Cap at this tier]
 verified_by: [packages/core/__tests__/model-tier-ceiling.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/tasks/route.test.ts, apps/web/src/app/api/tasks/[id]/route.test.ts, apps/web/src/lib/chat/turn.test.ts, apps/web/src/app/api/chat/route.test.ts, apps/web/src/app/api/chat/[id]/route.test.ts, apps/web/src/app/api/ai/plan/route.test.ts, packages/core/__tests__/inference-client.test.ts, apps/web/src/lib/model-ceilings-api.test.ts]
 supersedes: []
+assertions:
+  - id: resolve-tier-ceiling
+    type: symbol
+    name: resolveTierCeiling
+    path: packages/shared/src/model-tier-ceiling.ts
+  - id: enforce-tier-ceiling
+    type: symbol
+    name: enforceTierCeiling
+    path: packages/shared/src/model-tier-ceiling.ts
+  - id: enforce-model-ceiling
+    type: symbol
+    name: enforceModelCeiling
+    path: packages/core/model-tier-ceiling.ts
+  - id: load-tier-ceiling
+    type: symbol
+    name: loadTierCeiling
+    path: packages/core/model-tier-ceiling-store.ts
+  - id: claim-enforces-ceiling
+    type: symbol_reachable
+    symbol: tierCeilingLoader
+    entry: apps/web/src/app/api/workers/claim/route.ts
+    as: read
+  - id: denied-by-ceiling
+    type: symbol
+    name: deniedByCeiling
+    path: apps/web/src/lib/tier-ceiling-check.ts
+  - id: tier-ceiling-core-test
+    type: test_file
+    path: packages/core/__tests__/model-tier-ceiling.test.ts
 ---
 
 # Model Tier Ceilings
