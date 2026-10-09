@@ -122,6 +122,40 @@ describe('reads through the production githubReader', () => {
   });
 });
 
+describe('base retarget (24e1cfad)', () => {
+  test('PATCH base keeps the head and sends pull_request.edited with changes.base', async () => {
+    const { gh, pr, h1 } = world();
+    gh.createBranch(REPO, 'release');
+    gh.discardWebhooks();
+    await gh.request('PATCH', `/repos/${REPO}/pulls/${pr}`, { base: 'release' });
+    expect(await gh.reader().readPr(REPO, pr)).toMatchObject({ baseRef: 'release', headSha: h1, state: 'open' });
+    const edited = gh.pendingWebhooks().find((d) => d.name === 'pull_request' && (d.payload as { action?: string }).action === 'edited');
+    expect((edited?.payload as { changes?: unknown })?.changes).toMatchObject({ base: { ref: { from: 'dev' } } });
+  });
+
+  test('deleting a merged PR\'s head branch retargets the PRs stacked on it to that PR\'s base, not closes them', async () => {
+    const { gh, pr } = world();
+    gh.createBranch(REPO, 'feat/top', 'feat/x');
+    const hb = gh.push(REPO, 'feat/top', { 'c.ts': 'c1' });
+    const top = gh.openPr(REPO, { head: 'feat/top', base: 'feat/x' });
+    gh.mergePr(REPO, pr, { method: 'squash' });
+    gh.deleteBranch(REPO, 'feat/x');
+    expect(await gh.reader().readPr(REPO, top)).toMatchObject({ state: 'open', baseRef: 'dev', headSha: hb });
+  });
+
+  test('baseDiffEquivalent: a squash-landed parent leaves a stacked change equivalent; a base missing the parent does not', async () => {
+    const { gh, pr } = world();
+    gh.createBranch(REPO, 'release'); // the original dev: it lacks feat/x's change
+    gh.createBranch(REPO, 'feat/top', 'feat/x');
+    const head = gh.push(REPO, 'feat/top', { 'c.ts': 'c1' });
+    gh.mergePr(REPO, pr, { method: 'squash' });
+    const r = gh.reader();
+    expect(await r.baseDiffEquivalent!(REPO, 'feat/x', 'dev', head)).toBe(true);
+    expect(await r.baseDiffEquivalent!(REPO, 'feat/x', 'release', head)).toBe(false);
+    expect(await r.baseDiffEquivalent!(REPO, 'gone', 'dev', head)).toBe(false);
+  });
+});
+
 describe('writes through the production callers', () => {
   test('a pinned merge lands: the base advances to the merge commit and the PR reads merged', async () => {
     const { gh, h1, pr } = world();

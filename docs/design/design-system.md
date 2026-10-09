@@ -113,13 +113,16 @@ composition rule, including Home, detail pages and chat.
   default `font-sans`); their counts, IDs, SHAs, durations and lifecycle words
   are JetBrains Mono (`font-mono`). An object is an L2 card or an L1 row, and
   an L3 decision when, and only when, it asks the user to decide.
-- **Orange:** reserve it for action, decisions and live work, such as a primary
-  action, the send control, a decision frame or a live indicator. State labels
+- **Orange:** reserve it for decisions and live work: a decision frame, a
+  needs-you count, a live indicator, the chat send control. Never a button
+  fill and never a selected state. The primary action is ink (`.btn-primary`,
+  `PrimaryAction`), on cards and decision cards alike. State labels
   use their state hue or ink, never orange: a mission label is ink, a stalled
   one uses `--status-error` or `--status-warning`.
-- **Labels:** all-caps tracked labels are for section headers only. Chips,
-  state words, statistics and object metadata use sentence case or lowercase
-  without section-header tracking.
+- **Labels:** no all-caps tracked labels in product UI. Section headers are a
+  quiet sans label (`Eyebrow`, `.section-label`); chips, state words,
+  statistics and object metadata use sentence case or lowercase. Only
+  `display` type may be uppercase.
 
 The §2 tables describe what ships, including classes the shared-components
 work has not moved yet; a leftover 2px frame or uppercase chip in a component
@@ -189,7 +192,7 @@ the three below ink all resolve to `--sub` and are the floor for text.
 
 | Token | Night | Day | Tailwind | Use | Prototype |
 |---|---|---|---|---|---|
-| `--accent` / `--primary` | `#f4811f` | `#e07a2e` | `bg-accent`, `bg-primary` | The one accent fill: send, live, progress | `act-fill` |
+| `--accent` / `--primary` | `#f4811f` | `#e07a2e` | `bg-accent`, `bg-primary` | The one accent fill: send, live, progress, needs-you. Never a button fill | `act-fill` |
 | `--primary-hover` | `#d96e12` | `#c2611f` | `bg-primary-hover` | Accent fill hover | |
 | `--accent-soft` | `rgba(244,129,31,0.12)` | `#faeadb` | `bg-accent-soft` | Accent tint behind accent text | `act-tint` |
 | `--primary-subtle` | `rgba(244,129,31,0.10)` | `rgba(224,122,46,0.10)` | `bg-primary-subtle` | Faint accent fill | |
@@ -235,8 +238,9 @@ dots only.
 |---|---|---|
 | Radius | `--radius-cell` **3px** (Tailwind `sm`), `--radius-pill` **4px** (`DEFAULT`, `md`, `full`), `--radius-card` **6px** (`lg`, `xl`, `2xl`, `3xl`). `none` is 0 | `globals.css`, `tailwind.config.ts`; guarded by `radius-scale.test.ts` |
 | Card frame | **1px** `--border`, 6px radius; focused card **1.5px** `--text-primary`; decision **1.5px** `--dec-frame` on `--inset` | `.card` |
-| Control border | **1px** `--border-strong`, 4px radius | inputs/textareas/selects (forced `!important`), `.btn`, `.seg`, `.status-pill`, `.health-pill`, `.control-radio/.control-check` (3px) |
-| Hairlines | **1px** `--border`, or `--line-soft` inside a card | `.seg-item` dividers, `.inset-panel`, row dividers |
+| Control border | **1px** `--border-strong`, 4px radius | inputs/textareas/selects (forced `!important`), `.btn`, `.status-pill`, `.health-pill`, `.control-radio/.control-check` (3px) |
+| Hairlines | **1px** `--border`, or `--line-soft` inside a card | `.inset-panel`, row dividers, the chosen `.seg-item`'s ring |
+| Segmented | `--q-tint` trough, 6px radius, 3px inset, no frame; chosen option on `--card`, ink, 1px ring. Never orange | `.seg` / `.seg-item-active`, `components/ui/Segmented.tsx`; guarded by `chrome-refinement.test.ts` |
 | Shadows | **None.** `--card-shadow` and `--accent-shadow` are `none`; every Tailwind `boxShadow` step is `none` | `globals.css`, `tailwind.config.ts`; guarded by `card-shadow.test.ts` |
 | Focus | `2px solid var(--accent)`, offset 2px | `:focus-visible` |
 | Touch target | ≥ 44px on mobile | follow `BottomSheet` close button (`w-11 h-11`) |
@@ -264,11 +268,12 @@ scale. Recurring values worth matching: card/inset padding `10px 12px`
 | Outfit | `--font-outfit` | Loaded; long-form markdown |
 | Fraunces | `--font-fraunces` | Loaded; marketing only, never product UI |
 
-Type classes in `globals.css`: `.section-label` (sans, 11px/700, uppercase,
-2px tracking), `.section-label-missions` (sans, 10px/600), `.field-label` (sans,
-10px/600, uppercase, 1px tracking), `.btn` and `.seg-item` (sans, 12px/600);
-`.type-label` (mono, 9px/500), `.health-pill` and `.status-pill` (mono,
-10px/600, uppercase), the lifecycle words. Below `md` every one of the sub-11px
+Type classes in `globals.css`: `.section-label` and `.section-label-missions`
+(sans, `--type-eyebrow` 13px/600, `--text-muted`), `.field-label` (sans, 12px/600),
+`.btn` (sans, 12px/600), `.seg-item` (sans, 13px/500, 600 when chosen);
+`.type-label` (mono, 10px/500), `.health-pill` and `.status-pill` (mono,
+11px/600), the lifecycle words. None of them is uppercase or tracked
+(`chrome-refinement.test.ts`). Below `md` every one of the sub-11px
 classes is lifted to 11px (**the mobile type floor**, guarded by
 `mobile-type-floor.test.ts`). Form fields render at 16px below `md` so iOS
 Safari does not zoom.
@@ -299,8 +304,8 @@ by a wide margin) so most call sites move by 0–1px. Nothing on mobile is under
 
 | Role | Mobile | Desktop | Weight | Case / tracking | Line height | Use |
 |---|---|---|---|---|---|---|
-| `chip` | 11 | 10 | 600 | sentence / lowercase, normal | 1 | Status chips, pills, tags (= `.status-pill`) |
-| `eyebrow` | 11 | 11 | 700 | UPPERCASE, 2px | 1.2 | Section header only (= `.section-label`) |
+| `chip` | 12 | 11 | 600 | sentence / lowercase, normal | 1 | Status chips, pills, tags (= `.status-pill`) |
+| `eyebrow` | 13 | 13 | 600 | sentence, normal; sans, `--text-muted` in a Section | 1.2 | Section header only (= `.section-label`) |
 | `meta` | 12 | 12 | 400 | sentence | 1.4 | Timestamps, `role · model`, counts, captions. `--text-muted` |
 | `body` | 13 | 13 | 400 | sentence | 1.5 | Default UI text, rows, descriptions |
 | `title` | 14 | 14 | 600 | sentence | 1.35 | Card, row and sheet titles |
@@ -325,7 +330,10 @@ their exemptions in `mobile-type-floor.test.ts`.
 All seven are built in `apps/web/src/components/ui/` (`Chip`, `Eyebrow`,
 `Section`, `Lede`, `PrimaryAction`, `Disclosure`, `Sheet`), each with a unit or
 DOM test beside it. Only `Chip` and `Sheet` have been swapped in so far; the
-**Replaces** lists of the other five are follow-up migrations.
+**Replaces** lists of the other five are follow-up migrations. `Card` and
+`Notice` (below) are built the same way; so far only the planning-task status
+on the task page renders `Notice`, the rest of their **Replaces** lists are
+follow-ups too.
 
 Location: `apps/web/src/components/ui/`, next to `Dialog`, `Select`,
 `Combobox`, `Switch`. Tokens only, no raw hex, no `text-[Npx]`, square chrome,
@@ -333,8 +341,8 @@ touch targets ≥ 44px on mobile.
 
 ### Chip
 
-**Purpose:** the one way to show a state word. Square, 1px border, mono
-sentence case or lowercase, optional leading square dot. Existing uppercase
+**Purpose:** the one way to show a state word. 1px border on the 4px pill
+radius, mono in sentence case or lowercase, optional leading square dot. Existing uppercase
 styles are recorded in §2.7; new composition follows §1.1.
 
 **Built:** `components/ui/Chip.tsx`.
@@ -348,8 +356,7 @@ styles are recorded in §2.7; new composition follows §1.1.
 `HeartbeatStatusBadge` and `ReleaseSection`'s local badges now render
 `StatePill`; `Chip` stays for tags that are not a state.
 
-Later candidates (not the next task's scope): `StatusChip.tsx` (merge-policy
-tier), `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
+Later candidates (not the next task's scope): `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
 `.status-pill` classes themselves.
 
 ### StatePill and the state table
@@ -372,7 +379,14 @@ its own cell (pattern, frame) pair, so it reads in greyscale
 All in `components/ui/`, from the refined-UI prototype:
 
 - `Lifecycle`: `Build → Audit → Land` with the current step, and its repair /
-  recovering / needs-you variants.
+  recovering / needs-you variants. It is the only drawing of that track:
+  Activity rows and Home's delivery rows (`lifecycleState(kind)` maps a
+  delivery kind onto it), the mission drawer (with `notes`, one phrase per
+  step) and the task page's run strip (`runLifecycleState` reads the run
+  evidence; the nine phases sit behind its "Run evidence" disclosure).
+  **Props:** `state`, `repairs?` (`repair N` while repairing, `↻N` for rounds
+  already taken), `notes?: [build, audit, land]`, `className?`. Spans only, so
+  it can sit inside a link or a button row.
 - `TaskStrip`: `size="lg"` is the interactive strip (one button per task,
   ← → / Home / End, tick-row marks per spec §5, a mark never restyles a cell,
   cells capped at 56px on desktop); `size="sm"` replaces progress bars and,
@@ -384,9 +398,55 @@ All in `components/ui/`, from the refined-UI prototype:
 - L3: `.card-decision` (1.5px `--dec-frame` on `--inset`) and `.btn-ink` (the
   charcoal primary). The Home review cards wear them.
 
+### Card
+
+**Purpose:** the L2 card: one standalone object on a page (a release, a
+connector, a revision). Not for a decision (that is L3, `.card-decision` +
+`.btn-ink`) and not for a group inside a section (L1: a hairline divider, no
+frame).
+
+**Built:** `components/ui/Card.tsx`.
+
+**Props:** `as?` (element or component, default `div`), `padding?: 'sm' | 'md'`
+(12px / 16px, default `md`), `interactive?` (a linked card: hover fill and a
+2px ink focus ring), `bare?` (no frame, only the padding, for a card nested
+in a card), `className?`, and any prop of the element (`href`, `aria-*`,
+`data-testid`).
+
+**Look:** the `.card` class: `--card` fill, 1px `--border`, `--radius-card`
+(6px), no shadow (`card-shadow.test.ts`). `<Card>` and a hand-written `.card`
+are the same card; `.card-interactive` carries the hover and focus states.
+
+**Replaces:** the census's ad-hoc framed boxes: the retired 2px ink frame
+(`border-2 border-border-strong`), hairline square or rounded boxes with
+padding, and fill-only panels, wherever the box is a standalone object.
+
+### Notice
+
+**Purpose:** the one inline alert: saved, heads up, failed, for your
+information. A status line, not a decision; a notice that asks for a person's
+call is an L3 decision card instead.
+
+**Built:** `components/ui/Notice.tsx`.
+
+**Props:** `tone?: 'ok' | 'warn' | 'err' | 'info'` (default `info`), `title?`,
+`children` (the body), `action?: { label, href } | { label, onClick }` (at most
+one), `className?`, `data-testid?`.
+
+**Look:** the `.notice` / `.notice-<tone>` classes: a 1px frame in the tone's
+hue on `--radius-card`, text in the same hue, no tint fill (state colours never
+fill a card, §2.5). `info` is neutral: `--border-strong` frame, `--text-primary`
+text, never orange. The title leads with a glyph per tone (`✓ ! ✕ i`), so the
+tone never reads by colour alone. The action is a `.btn .btn-sm`, never a
+primary fill. `err` is `role="alert"`; every other tone is `role="status"`.
+
+**Replaces:** tinted alert boxes (`bg-status-*/N border-status-*/N`), 1px
+state-hue frames that only report a state, and the bare `.notice` markup.
+`.notice-warn` is new; the orange `.notice-info` is now neutral.
+
 ### Eyebrow
 
-**Purpose:** the small uppercase tracked section header (type role `eyebrow`).
+**Purpose:** the quiet sans section header (type role `eyebrow`), sentence case.
 Do not use it for card metadata or status labels (§1.1).
 
 **Props:** `children`, `as?: 'span' | 'p' | 'h2' | 'h3'` (default `span`),

@@ -45,7 +45,7 @@ import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from 
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observePrState } from '@/lib/workflow/seam';
+import { observeBase, observePrState } from '@/lib/workflow/seam';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -797,6 +797,14 @@ async function handlePullRequestEvent(event: {
         && retargetFrom !== settledBaseRef && !pr.merged && intentWorkspaceId
       ) {
         await emit({ type: 'pr.base_changed', workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase: settledBaseRef });
+      }
+      // A retarget the workflow kernel owns: T29 from a live read (24e1cfad). The
+      // approval reviewed the old diff, so it no longer covers the PR.
+      if (action === 'edited' && typeof retargetFrom === 'string' && retargetFrom && event.installation && intentWorkspaceId && !pr.merged) {
+        await observeBase({
+          workspaceId: intentWorkspaceId, repoFullName: repository.full_name, prNumber: pr.number,
+          installationId: event.installation.id, hintedFromBase: retargetFrom, source: 'webhook:edited',
+        }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the

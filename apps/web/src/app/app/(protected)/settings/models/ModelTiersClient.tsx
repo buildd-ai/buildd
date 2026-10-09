@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import ErrorState from '@/components/ErrorState';
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import type { ListProviderKeysResponse, ModelPolicyCell, ModelPolicyCellSurface, ModelPolicyCellsResponse } from '@buildd/shared';
 import Chip from '@/components/ui/Chip';
@@ -125,7 +126,11 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link>.
       </p>
 
-      {loadError && <div className="notice notice-err mt-3">{loadError}</div>}
+      {loadError && (
+        <div className="notice notice-err mt-3" data-testid="load-error">
+          <ErrorState message="We couldn't load your model tiers. Retry, and if it keeps failing, check back shortly." detail={loadError} onRetry={() => { void load(); }} />
+        </div>
+      )}
 
       {/* Desktop: one table, tier rows, Coding and Chat columns. */}
       {!isMobile && <div className="card mt-5 max-w-5xl" data-testid="tier-table">

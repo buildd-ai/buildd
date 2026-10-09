@@ -1,12 +1,14 @@
 /**
  * Home's "Moving toward delivery": 2–3 mission outcomes, each with its chip,
- * one evidence sentence, the Build › Audit › Land track, landed n of m and the
+ * one evidence sentence, the Build → Audit → Land track (`Lifecycle`), landed n of m and the
  * next milestone. Rendered from lib/delivery-projection.ts, the same
  * projection the other surfaces read; nothing here derives state.
  */
 import Link from 'next/link';
 import { DELIVERY_KIND, type MissionDelivery } from '@/lib/delivery-projection';
-import { DeliveryChip, DeliveryTrack, TONE_EDGE, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryChip, TONE_EDGE, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { lifecycleState } from '@/components/delivery/lifecycle-state';
+import Lifecycle from '@/components/ui/Lifecycle';
 
 export function DeliveryMilestones({ missions, openMissions }: { missions: readonly MissionDelivery[]; openMissions: number }) {
   if (missions.length === 0) return null;
@@ -33,7 +35,7 @@ export function DeliveryMilestones({ missions, openMissions }: { missions: reado
               </span>
               <span className="font-convo text-body text-text-secondary">{m.evidence}</span>
               <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <DeliveryTrack kind={m.kind} rounds={m.repairRounds} />
+                <Lifecycle state={lifecycleState(m.kind)} repairs={m.repairRounds} />
                 {m.total > 0 && <span className="font-mono text-meta text-text-muted">{m.landed} of {m.total} landed</span>}
               </span>
               {m.exception && <span className={`text-meta ${TONE_TEXT[m.exception.tone]}`}>{m.exception.text}</span>}
