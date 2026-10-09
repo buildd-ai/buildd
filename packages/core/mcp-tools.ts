@@ -4075,10 +4075,16 @@ export async function handleBuilddAction(
       const endpoint = missionId
         ? `/api/missions/${missionId}/notes`
         : `/api/tasks/${taskId}/notes`;
-      await api(endpoint, {
+      const posted = await api(endpoint, {
         method: 'POST',
         body: JSON.stringify(noteBody),
-      });
+      }) as { gate?: { disposition?: string; reason?: string } } | null;
+
+      // Needs You admission: a question describing a recoverable platform
+      // blocker is not shown to a person — a repair task owns it instead.
+      if (posted?.gate?.disposition === 'recovered') {
+        return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
+      }
 
       return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered on your next update_progress call.` : ''}`);
     }
