@@ -186,9 +186,9 @@ export default function TierLimitsSection({ teamId, isAdmin }: { teamId: string;
           <Limit id="team" label="Team maximum" caps={policy.team} disabled={busy}
             onPick={(k, v) => void write('', { team: withCap(policy.team, k, v) })} />
           <div className="flex items-center justify-between gap-3">
-            <span id="over-cap-label" className="text-body text-text-primary">If the router picks higher</span>
+            <span id="over-cap-label" className="text-body text-text-primary">Router picks higher: downgrade or hold?</span>
             <Select aria-labelledby="over-cap-label" testId="over-cap-auto" className="w-44 shrink-0" disabled={busy}
-              options={[{ value: 'downgrade', label: 'Use the maximum' }, { value: 'deny', label: 'Hold the task' }]}
+              options={[{ value: 'downgrade', label: 'Downgrade' }, { value: 'deny', label: 'Hold task' }]}
               value={policy.overCapAuto} onChange={(v: string) => void write('', { overCapAuto: v })} />
           </div>
           <p className="text-meta text-text-muted">Applies to automatic choices only. A task or chat that asks for a blocked tier is always refused.</p>
