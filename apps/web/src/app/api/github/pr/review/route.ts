@@ -42,18 +42,9 @@ import {
   MAX_REVIEW_WAIT_SECONDS,
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
+import { requestingPerson } from '@/lib/request-person';
 
 type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null };
-
-/**
- * The person behind a request, when there is one: an OAuth session (MCP or
- * chat) carries the signed-in user. An API key or a per-task token is never a
- * person, whatever its level.
- */
-function requestingPerson(account: Account): string | null {
-  if (account.taskScope) return null;
-  return typeof account.sessionUserId === 'string' && account.sessionUserId ? account.sessionUserId : null;
-}
 
 const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
@@ -245,7 +236,7 @@ export async function POST(req: NextRequest) {
   // A PR the workflow kernel owns is reviewed only in kernel rounds: the request
   // is T5 (ReviewRequested) against the live head. `force` re-reviews a head
   // that already has a verdict; it never stacks a second reviewer on a round.
-  const person = requestingPerson(account as Account);
+  const person = requestingPerson(null, account);
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
     forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
