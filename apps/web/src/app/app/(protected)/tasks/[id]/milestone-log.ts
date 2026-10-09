@@ -5,8 +5,12 @@
  * The log used to list every milestone newest-first with a relative "just now"
  * on each row — narration ("Now I'll run the tests") sat beside outcomes and
  * every row read the same age. Now:
- *  - narration milestones are dropped (their tool calls fold into the
- *    milestone before them);
+ *  - a tool-call preamble (a phase whose text was only a lead-in to its calls,
+ *    see tool-preamble.ts) is named by what it called — "Checked decision",
+ *    not "Now let me check the decision…" — with the raw text kept for the
+ *    expanded row; adjacent phases that did the same thing merge;
+ *  - other narration milestones are dropped (their tool calls fold into the
+ *    milestone before them) unless they carry a finding or decision;
  *  - tool-call milestones (`type: 'action'`, e.g. "Ran: bun test") never get a
  *    row of their own — they hang under the milestone they happened in, behind
  *    its "N tools" chip;
@@ -15,6 +19,7 @@
  */
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import { classifyAction } from './task-activity';
+import { isSubstantive, isToolPreamble, preambleActionLabel } from './tool-preamble';
 
 type Milestone = WorkerMilestone;
 
@@ -53,6 +58,13 @@ export function milestoneDurationLabel(startMs: number, endMs: number | null, no
 
 export interface LogEntry {
   milestone: Milestone & { label?: string };
+  /**
+   * What the feed shows instead of the milestone's own label: set when the
+   * milestone was a tool-call preamble, named by the operations it called.
+   */
+  actionLabel?: string;
+  /** The raw preamble text(s) `actionLabel` stands for, oldest first — for the expanded row. */
+  preambles?: string[];
   /** Tool-call milestones that happened while this entry was the latest, oldest first. */
   tools: Array<Extract<Milestone, { type: 'action' }>>;
   /** Tool calls under this entry: the phase's own count, or the sampled actions, whichever is larger. */
@@ -85,7 +97,23 @@ export function buildMilestoneLog(milestones: Milestone[], opts: { nowMs: number
       continue;
     }
     const phaseTools = m.type === 'phase' ? m.toolCount || 0 : 0;
-    if (isNarrationMilestone(m.label ?? '')) {
+    const label = m.label ?? '';
+    if (isToolPreamble(m)) {
+      const actionLabel = preambleActionLabel(m);
+      if (actionLabel) {
+        // The same thing again ("Saved knowledge" twice running) is one row.
+        if (current?.actionLabel === actionLabel) {
+          current.phaseTools += phaseTools;
+          current.preambles!.push(label.trim());
+          continue;
+        }
+        entries.push({ milestone: m, actionLabel, preambles: [label.trim()], tools: [], startMs: m.ts, phaseTools });
+        continue;
+      }
+      // An older runner recorded no ops to name it by: fall through to the
+      // lexical narration check below.
+    }
+    if (isNarrationMilestone(label) && !isSubstantive(label)) {
       if (current) current.phaseTools += phaseTools;
       else leadingPhaseTools += phaseTools;
       continue;
@@ -106,6 +134,7 @@ export function buildMilestoneLog(milestones: Milestone[], opts: { nowMs: number
     const actionCount = e.tools.reduce((s, t) => s + (classifyAction(t)?.count ?? 1), 0);
     return {
       milestone: e.milestone,
+      ...(e.actionLabel && { actionLabel: e.actionLabel, preambles: e.preambles }),
       tools: e.tools,
       toolCount: Math.max(e.phaseTools, actionCount),
       startMs: e.startMs,

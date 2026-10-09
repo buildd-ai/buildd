@@ -437,6 +437,7 @@ export class WorkerSync {
           toolCount: worker.phaseToolCount,
           ts: worker.phaseStart || Date.now(),
           pending: true,
+          ...(worker.phaseOps?.length ? { ops: [...worker.phaseOps] } : {}),
         });
       }
 
