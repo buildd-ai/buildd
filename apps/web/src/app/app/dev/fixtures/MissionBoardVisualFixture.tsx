@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * `?state=mission-board-visual`: the real mission Overview (`board`), Lanes or History (`feed`) with a
+ * `?state=mission-board-visual`: the real mission Overview (`board`) or History (`feed`) with a
  * visual review model, wired as the mission page wires them (one provider,
  * the footer's Screens row, the Settings toggle), over the in-memory fixture
  * transport. See mission-board-visual-fixtures.ts for the query.

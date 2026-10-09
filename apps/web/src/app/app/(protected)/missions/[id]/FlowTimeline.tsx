@@ -58,7 +58,7 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
   const hasP80 = timeline.order.some(id => timeline.tasks[id].p80End != null);
 
   if (timeline.order.length === 0) {
-    return <p data-testid="flow-timeline-empty" className="pt-6 text-body text-text-muted">No tasks yet.</p>;
+    return <p data-testid="flow-timeline-empty" className="pt-6 text-body text-text-muted">No tasks.</p>;
   }
 
   const inFlight = timeline.order.filter(id => timeline.tasks[id].kind === 'run' && timeline.tasks[id].state !== 'failed');
@@ -163,7 +163,7 @@ export default function FlowTimeline({ model: serverModel, sameFiles, expectedMi
         </div>
 
         <p className="font-mono text-chip text-text-muted">
-          solid = done or so far · hatched = still to come{hasP80 ? ' · thin line = if it runs long' : ''} · outline = sets the finish · select a task to light up what it waits on and unblocks
+          solid = done or so far · hatched = to come{hasP80 ? ' · line = if it runs long' : ''} · outline = sets the finish
         </p>
 
         <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-2.5 gap-y-1 border-t border-border-default pt-4 text-body">
@@ -202,19 +202,19 @@ function Bar({ bar, state }: { bar: FlowBarLayout; state: StripState }) {
   const s = STATES[state];
   const outline = bar.critical ? 'outline outline-[1.5px] outline-text-primary' : '';
   const solid = bar.kind === 'done'
-    ? <span data-segment="solid" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-[2px]" data-tone="ok" data-pattern="solid" style={{ left: `${bar.left}%`, width: `${bar.solid}%` }} />
+    ? <span data-segment="solid" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-[var(--radius-cell)]" data-tone="ok" data-pattern="solid" style={{ left: `${bar.left}%`, width: `${bar.solid}%` }} />
     : bar.solid > 0
-      ? <span data-segment="solid" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-l-[2px] opacity-85" data-tone={s.tone} style={{ left: `${bar.left}%`, width: `${bar.solid}%`, background: 'var(--cell-ink)' }} />
+      ? <span data-segment="solid" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-l-[var(--radius-cell)] opacity-85" data-tone={s.tone} style={{ left: `${bar.left}%`, width: `${bar.solid}%`, background: 'var(--cell-ink)' }} />
       : null;
   const forecast = bar.forecast > 0
-    ? <span data-segment="forecast" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-r-[2px]" data-tone="q" data-pattern={state === 'blocked' ? 'hatch-dense' : 'hatch-sparse'} style={{ left: `${bar.left + bar.solid}%`, width: `${bar.forecast}%` }} />
+    ? <span data-segment="forecast" className="state-cell absolute inset-y-[3px] min-w-[2px] rounded-r-[var(--radius-cell)]" data-tone="q" data-pattern={state === 'blocked' ? 'hatch-dense' : 'hatch-sparse'} style={{ left: `${bar.left + bar.solid}%`, width: `${bar.forecast}%` }} />
     : null;
   return (
     <span data-bar={bar.id} data-kind={bar.kind} data-critical={bar.critical || undefined} className="contents">
       {bar.p80 != null && <span data-segment="p80" className="absolute top-2 h-0.5 bg-border-strong" style={{ left: `${bar.left}%`, width: `${bar.p80}%` }} />}
       {solid}
       {forecast}
-      {bar.critical && <span className={`pointer-events-none absolute inset-y-[3px] rounded-[2px] ${outline}`} style={{ left: `${bar.left}%`, width: `${bar.solid + bar.forecast}%` }} />}
+      {bar.critical && <span className={`pointer-events-none absolute inset-y-[3px] rounded-[var(--radius-cell)] ${outline}`} style={{ left: `${bar.left}%`, width: `${bar.solid + bar.forecast}%` }} />}
     </span>
   );
 }
