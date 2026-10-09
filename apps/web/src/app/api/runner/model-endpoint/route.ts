@@ -47,8 +47,10 @@
  *   - an Anthropic API key, canonical (`inference_key`/anthropic) or legacy
  *     (`anthropic_api_key`) ⇒ `{ source: 'anthropic_api_key', key }`, so the
  *     dispatcher still ranks it ahead of `MODEL_PROXY_URL`;
- *   - an `agent_endpoint` ⇒ the endpoint (a gateway reference resolves its
- *     gateway at the same scope or broader, as `resolveAgentEndpoint` does);
+ *   - an `agent_endpoint` ⇒ the endpoint. A reference (a gateway, or an
+ *     `openrouter` row with no inline key) resolves what it points at, the
+ *     gateway or the stored OpenRouter key, at the same scope or broader, as
+ *     `resolveAgentEndpoint` does;
  *   - an OpenRouter key ⇒ an `openrouter` endpoint on OpenRouter's
  *     Anthropic-compatible root;
  *   - nothing ⇒ 404 with `reason` (`no_credential` | `no_personal_credential`).
@@ -61,6 +63,7 @@ import { db } from '@buildd/core/db';
 import { tasks, teams } from '@buildd/core/db/schema';
 import {
   OPENROUTER_AGENT_BASE_URL,
+  isEndpointReference,
   resolveAgentEndpoint,
   resolveAgentModelRoute,
   resolveEndpointFromBlob,
@@ -216,12 +219,14 @@ async function wireAnswer(result: ProviderCredentialResult, ws: { id: string; te
   }
   if (credential.endpoint) {
     const blob = credential.endpoint;
-    if (blob.kind === 'gateway') {
-      // A gateway reference needs its gateway, at the same scope or broader.
-      // resolveAgentEndpoint owns that lookup (the gateway module is not ours
-      // to import, scripts/module-boundaries.test.ts); it ranks endpoint rows
-      // exactly as the resolver does, so it lands on the same row. If it ever
-      // does not, nothing is served rather than a different endpoint.
+    if (isEndpointReference(blob)) {
+      // A reference needs what it points at, at the same scope or broader: a
+      // gateway reference its gateway, an OpenRouter reference the stored
+      // OpenRouter key. resolveAgentEndpoint owns that lookup (the gateway
+      // module is not ours to import, scripts/module-boundaries.test.ts); it
+      // ranks endpoint rows exactly as the resolver does, so it lands on the
+      // same row. If it ever does not, nothing is served rather than a
+      // different endpoint.
       const resolved = await resolveAgentEndpoint({ teamId: ws.teamId, workspaceId: ws.id });
       if (!resolved || resolved.secretId !== result.source.secretId) return { ok: false, reason: 'no_credential' };
       return { ok: true, body: endpointBody(resolved), resource: `agent_endpoint:${resolved.kind}` };

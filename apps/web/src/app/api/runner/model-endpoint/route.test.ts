@@ -318,6 +318,36 @@ describe('credential_policy set: the provider resolver decides, for this task’
     }
   });
 
+  it('an OpenRouter endpoint reference is served through resolveAgentEndpoint with the stored key, same row only', async () => {
+    withPolicy('team');
+    const ref = { kind: 'openrouter', baseUrl: realAgentEndpoint.OPENROUTER_AGENT_BASE_URL, authHeader: 'authorization' };
+    ROWS = [
+      row({ id: 'or-key', label: 'openrouter', value: 'sk-or-stored-fixture' }),
+      row({ id: 'or-ref', purpose: 'agent_endpoint', label: null, value: JSON.stringify(ref) }),
+    ];
+    const resolved = {
+      kind: 'openrouter', baseUrl: realAgentEndpoint.OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or-stored-fixture', authHeader: 'authorization',
+      models: {}, toolSearch: true, secretId: 'or-ref', scope: 'team',
+    };
+    mockGateway.mockResolvedValue(resolved);
+    try {
+      const res = await POST(req());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        kind: 'openrouter', baseUrl: realAgentEndpoint.OPENROUTER_AGENT_BASE_URL, key: 'sk-or-stored-fixture', authHeader: 'authorization', models: {},
+      });
+      expect(mockGateway).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
+      // Another row is never substituted for the resolver's winner.
+      mockGateway.mockResolvedValue({ ...resolved, secretId: 'some-other-row' });
+      expect((await POST(req())).status).toBe(404);
+      // Nothing stored behind the reference ⇒ nothing to serve.
+      mockGateway.mockResolvedValue(null);
+      expect((await POST(req())).status).toBe(404);
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
   it('an OpenRouter key is served on OpenRouter’s Anthropic-compatible root', async () => {
     withPolicy('team');
     ROWS = [row({ id: 'or', label: 'openrouter', value: 'sk-or-fixture' })];

@@ -29,10 +29,12 @@ import {
 import {
   AGENT_ENDPOINT_PURPOSE,
   effectiveToolSearch,
+  isOpenRouterReference,
   mapAgentModel,
   parseAgentEndpointBlob,
   parseAppliesTo,
   resolveEndpointFromBlob,
+  resolveStoredOpenRouterKey,
   serializeAgentEndpoint,
   validateAgentEndpointInput,
   verifyAgentEndpoint,
@@ -77,6 +79,20 @@ export interface MaskedAgentEndpoint {
   last4: string;
   /** `kind: gateway`: whether the referenced gateway currently resolves. */
   gatewayMissing: boolean;
+  /**
+   * `kind: openrouter`: where its key comes from. `stored` = a reference to the
+   * team's (or this workspace's) OpenRouter key; `inline` = a key saved with
+   * the endpoint itself (legacy). Null for other kinds.
+   */
+  keySource: 'stored' | 'inline' | null;
+  /** `stored`: no OpenRouter key resolves for it right now. */
+  storedKeyMissing: boolean;
+  /**
+   * The consolidation backfill found this row's inline key differs from the
+   * stored OpenRouter key at its scope: someone should pick one. Saving the
+   * row again (blank key = the stored one) clears it.
+   */
+  legacyInlineKey: boolean;
   health: EndpointHealth;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
@@ -169,6 +185,53 @@ function gatewayFor(teamId: string, workspaceId: string | null): Promise<LiteLLM
   return resolveLiteLLMGateway({ teamId, workspaceId }, { ignoreKeyPolicy: true });
 }
 
+/**
+ * The stored OpenRouter key an `openrouter` reference at this scope routes
+ * (same scope or broader). A lookup failure reads as none.
+ */
+async function storedOpenRouterKey(teamId: string, workspaceId: string | null): Promise<string | null> {
+  try {
+    return (await resolveStoredOpenRouterKey({ teamId, workspaceId }))?.key ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A blob as a route, with whatever it references looked up at the row's scope. */
+async function routeOf(teamId: string, blob: AgentEndpointBlob | null, workspaceId: string | null): Promise<{
+  route: AgentEndpointRoute | null; gateway: LiteLLMGateway | null;
+}> {
+  if (!blob) return { route: null, gateway: null };
+  const gateway = blob.kind === 'gateway' ? await gatewayFor(teamId, workspaceId) : null;
+  const openRouterKey = isOpenRouterReference(blob) ? await storedOpenRouterKey(teamId, workspaceId) : null;
+  return { route: resolveEndpointFromBlob(blob, gateway, openRouterKey), gateway };
+}
+
+/** Capabilities without the backfill's bookkeeping flag: saving a row is picking its key. */
+function withoutLegacyFlag(caps: unknown): unknown {
+  if (!caps || typeof caps !== 'object' || Array.isArray(caps)) return caps;
+  const { legacyInlineKey: _flag, ...rest } = caps as Record<string, unknown>;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+function blankKey(raw: Record<string, unknown>): boolean {
+  return raw.apiKey === undefined || raw.apiKey === null || (typeof raw.apiKey === 'string' && raw.apiKey.trim() === '');
+}
+
+/**
+ * An OpenRouter endpoint saved with no key becomes a reference to the stored
+ * OpenRouter key when one resolves at this scope: the key lives once, under
+ * Team keys, and every surface reads it there. Null when it is not that case
+ * (another kind, a typed key, or nothing stored), so the caller falls back to
+ * reusing the endpoint's own saved key as before.
+ */
+async function asOpenRouterReference(teamId: string, workspaceId: string | null, raw: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  if (raw.kind !== 'openrouter' || !blankKey(raw)) return null;
+  if (!(await storedOpenRouterKey(teamId, workspaceId))) return null;
+  const { apiKey: _blank, ...rest } = raw;
+  return rest;
+}
+
 function readBlob(encryptedValue: string): AgentEndpointBlob | null {
   try {
     return parseAgentEndpointBlob(decrypt(encryptedValue));
@@ -238,8 +301,7 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
   const tierModels = mine.length > 0 ? await agentTierModels(teamId) : { wanted: [], hints: {} };
   const read = await Promise.all(mine.map(async (r) => {
     const blob = readBlob(r.encryptedValue);
-    const gateway = blob?.kind === 'gateway' ? await gatewayFor(teamId, r.workspaceId) : null;
-    return { r, blob, gateway, route: blob ? resolveEndpointFromBlob(blob, gateway) : null };
+    return { r, blob, ...(await routeOf(teamId, blob, r.workspaceId)) };
   }));
   const teamRoute = read.find((x) => !x.r.workspaceId)?.route ?? null;
   for (const { r, blob, gateway, route } of read) {
@@ -259,6 +321,9 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
       toolSearchExplicit: typeof blob?.capabilities?.toolSearch === 'boolean',
       last4: route ? maskKeyLast4(route.apiKey) : '',
       gatewayMissing: blob?.kind === 'gateway' && !gateway,
+      keySource: blob?.kind === 'openrouter' ? (isOpenRouterReference(blob) ? 'stored' : 'inline') : null,
+      storedKeyMissing: !!blob && isOpenRouterReference(blob) && !route,
+      legacyInlineKey: blob?.kind === 'openrouter' && blob.capabilities?.legacyInlineKey === true,
       health: (r.healthStatus as EndpointHealth) ?? 'unknown',
       lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
       lastVerificationError: blob ? r.lastVerificationError ?? null : 'stored endpoint could not be read',
@@ -354,15 +419,15 @@ export async function previewAgentEndpointModels(
     return { ok: false, status: 400, error: 'An endpoint needs a kind.' };
   }
   const stored = await storedBlobAt(input.teamId, scope.workspaceId);
-  const raw = withStoredKey(input.endpoint as Record<string, unknown>, stored);
+  const endpointInput = input.endpoint as Record<string, unknown>;
+  const raw = await asOpenRouterReference(input.teamId, scope.workspaceId, endpointInput) ?? withStoredKey(endpointInput, stored);
   if (!raw) return { ok: false, status: 400, error: 'Enter the key to list this endpoint\'s models.' };
   const v = validateAgentEndpointInput(raw);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
-  const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, scope.workspaceId) : null;
+  const { route, gateway } = await routeOf(input.teamId, v.blob, scope.workspaceId);
   if (v.blob.kind === 'gateway' && !gateway) {
     return { ok: false, status: 400, error: 'Connect a LiteLLM gateway first: this option uses its URL and key.' };
   }
-  const route = resolveEndpointFromBlob(v.blob, gateway);
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
   const listed = await discoverModels(route, deps);
@@ -410,7 +475,9 @@ export async function setTeamAgentEndpoint(
     } else {
       appliesTo = stored?.appliesTo;
     }
-    const filled = withStoredKey(rest, stored);
+    // OpenRouter with a blank key: the stored OpenRouter key when there is
+    // one, else the endpoint's own saved key as before.
+    const filled = await asOpenRouterReference(input.teamId, workspaceId, rest) ?? withStoredKey(rest, stored);
     if (!filled) return { ok: false, status: 400, error: 'Enter the key for this endpoint.' };
     // Capabilities: the call's when it names them (null = the kind's
     // defaults), else the saved row's for the same kind, so re-saving never
@@ -418,16 +485,17 @@ export async function setTeamAgentEndpoint(
     if (filled.capabilities === undefined && stored?.capabilities && stored.kind === filled.kind) {
       filled.capabilities = stored.capabilities;
     }
+    // Saving is picking the key, so the backfill's "two different keys" flag goes.
+    filled.capabilities = withoutLegacyFlag(filled.capabilities);
     endpoint = filled;
   }
   const v = validateAgentEndpointInput(endpoint);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
 
-  const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, workspaceId) : null;
+  const { route, gateway } = await routeOf(input.teamId, v.blob, workspaceId);
   if (v.blob.kind === 'gateway' && !gateway) {
     return { ok: false, status: 400, error: 'Connect a LiteLLM gateway first: this option uses its URL and key.' };
   }
-  const route = resolveEndpointFromBlob(v.blob, gateway);
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
   // The endpoint's own list, when it has one: Verify probes a name this key
@@ -486,6 +554,9 @@ export async function setTeamAgentEndpoint(
       toolSearchExplicit: typeof blob.capabilities?.toolSearch === 'boolean',
       last4: maskKeyLast4(route.apiKey),
       gatewayMissing: false,
+      keySource: blob.kind === 'openrouter' ? (isOpenRouterReference(blob) ? 'stored' : 'inline') : null,
+      storedKeyMissing: false,
+      legacyInlineKey: false,
       health: check.health,
       lastVerifiedAt: now.toISOString(),
       lastVerificationError: check.error,
@@ -545,14 +616,12 @@ export async function setAgentEndpointAppliesTo(input: {
     .where(and(endpointRows(input.teamId), eq(secrets.id, teamRow.id)));
 
   const selected = new Set(a.appliesTo ?? [...a.names.keys()]);
-  const teamGateway = next.blob.kind === 'gateway' ? await gatewayFor(input.teamId, null) : null;
-  const teamRoute = resolveEndpointFromBlob(next.blob, teamGateway);
+  const { route: teamRoute } = await routeOf(input.teamId, next.blob, null);
   const copies: EndpointCopy[] = [];
   for (const r of rows) {
     if (!r.workspaceId || !selected.has(r.workspaceId)) continue;
-    const wsBlob = readBlob(r.encryptedValue);
-    const wsGateway = wsBlob?.kind === 'gateway' ? await gatewayFor(input.teamId, r.workspaceId) : null;
-    const matches = sameRoute(wsBlob ? resolveEndpointFromBlob(wsBlob, wsGateway) : null, teamRoute);
+    const { route: wsRoute } = await routeOf(input.teamId, readBlob(r.encryptedValue), r.workspaceId);
+    const matches = sameRoute(wsRoute, teamRoute);
     let removed = false;
     if (matches && input.consolidate === true) {
       await getSecretsProvider().delete(r.id);
@@ -588,11 +657,13 @@ export async function verifyAgentEndpointSecret(
   });
   if (!row || row.purpose !== AGENT_ENDPOINT_PURPOSE) return { health: 'unknown', error: 'Not an agent endpoint.' };
   const blob = readBlob(row.encryptedValue);
-  const gateway = blob?.kind === 'gateway' ? await gatewayFor(row.teamId, row.workspaceId) : null;
-  const route = blob ? resolveEndpointFromBlob(blob, gateway) : null;
+  const { route } = await routeOf(row.teamId, blob, row.workspaceId);
+  const missing = blob?.kind === 'gateway'
+    ? 'The team gateway this endpoint uses is not connected.'
+    : 'No OpenRouter key is stored for this endpoint.';
   const check = route
     ? await verifyAgentEndpoint(route, probeModelFor(route, await discoverModels(route, deps)), { fetcher: deps.fetcher, lookup: deps.lookup, wire: true })
-    : { health: 'unknown' as const, error: blob ? 'The team gateway this endpoint uses is not connected.' : 'Stored endpoint could not be read.' };
+    : { health: 'unknown' as const, error: blob ? missing : 'Stored endpoint could not be read.' };
   await recordHealth(row.id, check);
   return { health: check.health, error: check.error };
 }
