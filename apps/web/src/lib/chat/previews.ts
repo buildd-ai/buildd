@@ -134,10 +134,12 @@ const updateTask: Builder = async (input, env) => {
       : 'Edit task';
   const note = input.description !== undefined && live
     ? 'The running agent gets the new description as an urgent message.'
-    : input.status === 'cancelled' && live ? 'The running agent is stopped.' : undefined;
+    : input.status === 'cancelled' && live ? 'The running agent is stopped mid-run; anything it has not pushed is lost.' : undefined;
+  // Confirming this card is the explicit abort the server asks for.
+  const abort = input.status === 'cancelled' && live ? { abort: true } : {};
   return {
     ok: true,
-    input: { ...input, taskId: task.id },
+    input: { ...input, taskId: task.id, ...abort },
     preview: {
       v: 1, verb,
       target: { kind: 'task', id: task.id, label: taskLabel(task), detail: workerDetail(task, live), workspaceId: task.workspaceId ?? null },
