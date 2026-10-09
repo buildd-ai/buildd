@@ -245,7 +245,7 @@ describe('rawWorkerSerialisations (the guard itself)', () => {
     'Response.json({ worker: toPublicWorker(worker) }, { headers })',
     'Response.json({ workers: toPublicWorkers(workerManager!.getWorkers()) })',
     'Response.json({ checkpoints: worker.checkpoints || [] })',
-    'Response.json({ team: worker.teamState || null })',
+    'Response.json({ subagents: worker.subagentTasks || [] })',
     "Response.json({ error: 'Worker not found' }, { status: 404 })",
     'Response.json({ toolCalls: worker.toolCalls, messages: worker?.messages })',
     'JSON.stringify(toPublicEvent(event))',
