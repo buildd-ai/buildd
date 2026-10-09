@@ -1922,6 +1922,12 @@ const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
  *
  * A held mission's own ask ("arm it") does not count: arming is a start, not an
  * answer (§1.1). Anything else it is waiting on you for does.
+ *
+ * For a not-landed mission (`awaiting_merge`), the stored escalation gate
+ * verdict may override the default: if the verdict says the machine owns the
+ * next step (e.g., "Checking whether another PR carries it"), the mission is
+ * not needs-you, regardless of its state. Uses stored verdicts only; no model
+ * call on the page path.
  */
 export function missionNeedsYou(view: MissionStateView): boolean {
   if (view.kind === 'complete') return false;
