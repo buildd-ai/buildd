@@ -531,7 +531,9 @@ export async function buildModelPolicyCells(
       const cell: ModelPolicyCell = {
         tier,
         surface,
-        primary: { provider: entry.provider, model: incumbent?.model ?? entry.model },
+        // The registry row is the authority: it is what the claim route and chat serve.
+        // The incumbent arm only mirrors it, and may lag a save until synced.
+        primary: { provider: entry.provider, model: entry.model },
         alternates: alternates.map(a => ({ provider: a.route, model: a.model })),
         dial,
         state,

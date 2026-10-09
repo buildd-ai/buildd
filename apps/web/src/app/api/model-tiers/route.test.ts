@@ -56,6 +56,10 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+const mockSyncIncumbent = mock(() => Promise.resolve('synced' as 'none' | 'synced' | 'stale'));
+mock.module('@buildd/core/tier-pool-admin', () => ({ syncIncumbentToRegistry: mockSyncIncumbent }));
+mock.module('@buildd/core/tier-pool-source', () => ({ invalidateTierPoolCache: () => {} }));
+
 mock.module('@buildd/core/model-tier-registry', () => ({
   resolveAllTiers: mockResolveAllTiers,
   invalidateTierCache: mockInvalidateTierCache,
@@ -114,6 +118,8 @@ describe('/api/model-tiers workspace scoping', () => {
     mockDelete.mockClear();
     mockResolveAllTiers.mockClear();
     mockInvalidateTierCache.mockClear();
+    mockSyncIncumbent.mockClear();
+    mockSyncIncumbent.mockResolvedValue('synced');
 
     mockGetUserTeamRole.mockReset();
     mockResolveActiveTeamId.mockReset();
@@ -410,5 +416,44 @@ describe('/api/model-tiers surface', () => {
     const res = await DELETE(new NextRequest(`http://localhost/api/model-tiers?${qs}`, { method: 'DELETE' }));
     expect(res.status).toBe(400);
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  // ── pool incumbent sync ────────────────────────────────────────────────────
+
+  it('POST of a team-level pin re-points each surface pool incumbent at what that surface resolves to', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-admin' });
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    mockResolveAllTiers.mockResolvedValue({ budget: { provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash' } });
+
+    const res = await POST(postRequest({ tier: 'budget', provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', surface: 'chat', teamId: CALLER_TEAM_ID }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).poolSync).toBe('synced');
+    const calls = mockSyncIncumbent.mock.calls.map((c: any) => c[0]);
+    expect(calls.map((c: any) => c.surface).sort()).toEqual(['agent', 'chat']);
+    const chat = calls.find((c: any) => c.surface === 'chat');
+    expect(chat).toMatchObject({ teamId: CALLER_TEAM_ID, tier: 'budget', primary: { route: 'openrouter', model: 'deepseek/deepseek-v4.1-flash' } });
+  });
+
+  it('POST of a workspace override never touches the team pool', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-admin' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: VICTIM_TEAM_ID, role: 'admin' });
+    mockSyncIncumbent.mockClear();
+
+    const res = await POST(postRequest({ ...VALID_BODY, tier: 'budget' }));
+
+    expect(res.status).toBe(200);
+    expect(mockSyncIncumbent).not.toHaveBeenCalled();
+  });
+
+  it('POST surfaces a stale pool sync instead of hiding it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-admin' });
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    mockResolveAllTiers.mockResolvedValue({ standard: { provider: 'anthropic', model: 'claude-sonnet-5-5' } });
+    mockSyncIncumbent.mockResolvedValue('stale');
+
+    const res = await POST(postRequest({ tier: 'standard', provider: 'anthropic', model: 'claude-sonnet-5-5', teamId: CALLER_TEAM_ID }));
+
+    expect((await res.json()).poolSync).toBe('stale');
   });
 });
