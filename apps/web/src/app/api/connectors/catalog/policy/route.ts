@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { connectorCatalogTeamPolicies, connectors } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { CATALOG_POLICIES, normalizeConnectorUrl, type CatalogPolicy } from '@/lib/connector-catalog';
+import { CATALOG_POLICIES, connectorHostKey, type CatalogPolicy } from '@/lib/connector-catalog';
 import { loadTeamCatalog } from '@/lib/connector-catalog-store';
 import { preinstallForTeam, registrationRefusalBody } from '@/lib/connector-provision';
 import { resolveConnectorTeam, forbidden } from '@/lib/connector-team-auth';
@@ -58,9 +58,10 @@ export async function PUT(req: NextRequest) {
     });
 
   if (policy === 'blocked') {
-    const target = normalizeConnectorUrl(entry.url);
+    // Same host match the runtime block uses (connector-access-policy.ts).
+    const target = connectorHostKey(entry.url);
     const owned = await db.query.connectors.findMany({ where: eq(connectors.teamId, caller.teamId), columns: { id: true, url: true } });
-    const retainedConnectorIds = owned.filter(c => normalizeConnectorUrl(c.url) === target).map(c => c.id);
+    const retainedConnectorIds = owned.filter(c => target !== null && connectorHostKey(c.url) === target).map(c => c.id);
     return NextResponse.json({ slug, policy, connectorId, retainedConnectorIds });
   }
 

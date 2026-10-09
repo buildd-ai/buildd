@@ -214,22 +214,6 @@ mock.module('@/lib/heartbeat-circuit-breaker', () => ({
   resolveHeartbeatPlanningBackoffNote: mockResolvePlanningBackoffNote,
 }));
 
-// Heartbeat triage runs only for a mission with a teamId; the fixtures above
-// have none, so every other heartbeat test dispatches exactly as before.
-const shadowTriage = { v: 'ht1', pick: 'act', confidence: 0.8, skipped: false, reason: 'act', at: '2026-01-01T00:00:00.000Z' };
-const mockTriage = mock(() => Promise.resolve(shadowTriage as any));
-const mockTriageFacts = mock(() => Promise.resolve({ lastOrganizerAt: new Date(), dataClass: null }));
-mock.module('@/lib/heartbeat-triage', () => ({
-  triageHeartbeat: mockTriage,
-  loadHeartbeatTriageFacts: mockTriageFacts,
-  formatTriageLog: () => '[heartbeat-triage] test',
-}));
-const mockResolveTriageArm = mock(() => Promise.resolve(null as any));
-const mockRecordTriageLook = mock((_look: any) => Promise.resolve());
-mock.module('@buildd/core/heartbeat-triage-experiment-source', () => ({
-  resolveHeartbeatTriageArm: mockResolveTriageArm,
-  recordHeartbeatTriageLook: mockRecordTriageLook,
-}));
 
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
 mock.module('@/lib/mission-completion', () => ({
@@ -344,12 +328,6 @@ describe('GET /api/cron/schedules', () => {
     mockResolvePlanningBackoffNote.mockResolvedValue(undefined);
     mockCompleteMission.mockReset();
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
-    mockTriage.mockReset();
-    mockTriage.mockResolvedValue(shadowTriage as any);
-    mockResolveTriageArm.mockReset();
-    mockResolveTriageArm.mockResolvedValue(null);
-    mockRecordTriageLook.mockReset();
-    mockRecordTriageLook.mockResolvedValue(undefined);
     mockApplyCriteriaRearm.mockReset();
     mockApplyCriteriaRearm.mockResolvedValue({
       action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
@@ -1000,22 +978,6 @@ describe('GET /api/cron/schedules', () => {
       expect(body.created).toBe(0);
     });
 
-    it('never calls heartbeat triage, whether it dispatches or defers', async () => {
-      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
-      mockMissionsFindFirst.mockResolvedValue(mission);
-      await GET(makeRequest());
-      expect(tasksInsertValues).not.toBeNull();
-
-      tasksInsertValues = null;
-      mockPrepass.mockResolvedValue({ ...STUCK_PREPASS, lastOrganizerRunAt: minutesAgo(10) } as any);
-      await GET(makeRequest());
-      expect(tasksInsertValues).toBeNull();
-
-      expect(mockTriage).not.toHaveBeenCalled();
-      expect(mockResolveTriageArm).not.toHaveBeenCalled();
-      expect(mockRecordTriageLook).not.toHaveBeenCalled();
-    });
-
     it('does not gate a criteria re-arm on the stuck check (unchanged: once per verdict shape)', async () => {
       mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
       mockMissionsFindFirst.mockResolvedValue(mission);
@@ -1029,7 +991,6 @@ describe('GET /api/cron/schedules', () => {
       expect(tasksInsertValues).not.toBeNull();
       expect(body.criteriaRearmInvocations).toBe(1);
       expect(body.backstopDeferrals).toBe(0);
-      expect(mockTriage).not.toHaveBeenCalled();
     });
   });
 

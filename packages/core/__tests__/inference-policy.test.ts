@@ -49,8 +49,7 @@ describe('isInferenceAllowed', () => {
   });
 
   it('never gates the built-in decision calls', () => {
-    const gate = { featureModes: { task_classification: 'runner', task_category: 'runner' } };
-    expect(isInferenceAllowed('task_classification', gate)).toBe(true);
+    const gate = { featureModes: { task_category: 'runner' } };
     expect(isInferenceAllowed('task_category', gate)).toBe(true);
   });
 
@@ -99,7 +98,7 @@ describe('normalizeFeatureModes', () => {
   });
 
   it('drops built-ins, chat, unknown names and unknown modes', () => {
-    expect(normalizeFeatureModes({ chat: 'runner', task_classification: 'runner', nope: 'server', mission_summary: 'maybe' })).toBeNull();
+    expect(normalizeFeatureModes({ chat: 'runner', task_category: 'runner', nope: 'server', mission_summary: 'maybe' })).toBeNull();
   });
 
   it('treats "default" as clearing the override', () => {
@@ -122,7 +121,7 @@ describe('the capability registry', () => {
   it('shows only server-side features that have a call site', () => {
     // Visual QA judgment and mission summaries have no call site yet: a switch
     // for them would claim a behaviour that does not exist.
-    expect([...LIVE_SERVER_FEATURES]).toEqual(['criteria_grading', 'heartbeat_triage']);
+    expect([...LIVE_SERVER_FEATURES]).toEqual(['criteria_grading']);
     for (const f of LIVE_SERVER_FEATURES) expect(SERVER_FEATURES).toContain(f);
   });
 
@@ -130,7 +129,6 @@ describe('the capability registry', () => {
     expect([...SERVER_FEATURES]).toEqual(['criteria_grading', 'visual_qa', 'mission_summary', 'heartbeat_triage']);
     for (const f of SERVER_FEATURES) expect(INFERENCE_CAPABILITIES[f].kind).toBe('server_feature');
     expect(INFERENCE_CAPABILITIES.chat.kind).toBe('interactive');
-    expect(INFERENCE_CAPABILITIES.task_classification.kind).toBe('built_in');
     expect(INFERENCE_CAPABILITIES.task_category.kind).toBe('built_in');
   });
 

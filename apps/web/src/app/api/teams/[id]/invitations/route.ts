@@ -70,7 +70,8 @@ export async function POST(
     ),
   });
 
-  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
+  const overrides = await getTeamPermissionOverrides(teamId);
+  if (!membership || !roleHas(membership.role, 'manage_team_members', overrides)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -84,6 +85,11 @@ export async function POST(
 
     if (role !== 'admin' && role !== 'member') {
       return NextResponse.json({ error: 'role must be admin or member' }, { status: 400 });
+    }
+
+    // Widening manage_team_members must not let its holders mint admins.
+    if (role === 'admin' && !roleHas(membership.role, 'assign_team_roles', overrides)) {
+      return NextResponse.json({ error: 'Inviting an admin needs the assign_team_roles permission' }, { status: 403 });
     }
 
     // Check if email is already a team member

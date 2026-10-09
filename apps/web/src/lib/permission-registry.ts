@@ -48,8 +48,13 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   assign_team_owner: {
-    description: "Change a member's role, or add a member as owner.",
+    description: 'Make someone an owner, demote or remove an owner, or transfer ownership.',
     defaultRoles: OWNER_ONLY,
+    minKeyLevel: null,
+  },
+  assign_team_roles: {
+    description: 'Move a member between member and admin (never to or from owner).',
+    defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
   // ── Team settings ────────────────────────────────────────────────────────
@@ -93,6 +98,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: null,
   },
+  manage_team_notifications: {
+    description: "Change the team's notification settings (Pushover, notify webhook).",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   // ── API keys and runners ─────────────────────────────────────────────────
   manage_team_keys: {
     description: 'Regenerate API keys, flag host-runner keys, and mint or approve admin-level keys and admin scopes.',
@@ -102,6 +112,11 @@ export const PERMISSIONS = {
   // ── Model access and spend ───────────────────────────────────────────────
   manage_team_model_keys: {
     description: 'Manage the team model key in secrets.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
+  manage_team_credentials: {
+    description: 'Write or delete a team-wide or workspace-wide agent credential (any other secret, and workspace Claude/Codex credentials).',
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
@@ -126,6 +141,11 @@ export const PERMISSIONS = {
     minKeyLevel: null,
   },
   // ── Workspaces ───────────────────────────────────────────────────────────
+  create_workspace: {
+    description: 'Create a workspace in the team.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   manage_workspace_settings: {
     description: 'Edit workspace config, git/merge policy, access mode, data class, connector gate and webhook.',
     defaultRoles: OWNER_ADMIN,
@@ -183,19 +203,24 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  manage_agent_roles: {
+    description: 'Create, edit and delete agent roles and their workspace overrides, including operator grants, MCP servers, required env vars and connectors.',
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
 } as const satisfies Record<string, PermissionDef>;
 
 export type Permission = keyof typeof PERMISSIONS;
 
 /** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
 export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
-  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner'] },
-  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing'] },
+  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner', 'assign_team_roles'] },
+  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing', 'manage_team_notifications'] },
   { title: 'API keys and runners', permissions: ['manage_team_keys'] },
-  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
-  { title: 'Workspaces', permissions: ['manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
+  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_team_credentials', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
+  { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
   { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases'] },
-  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments'] },
+  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles'] },
 ];
 
 export function isTeamRole(value: unknown): value is TeamRole {

@@ -105,7 +105,23 @@ function normalize(url: string): string | null {
   }
 }
 
-const BY_URL = new Map(CONNECTOR_CATALOG.map(e => [normalize(e.url)!, e]));
+/**
+ * The server a connector URL points at, for catalog-policy matching: the
+ * lowercased hostname, trailing dot dropped. Scheme, port, path, query and
+ * case are ignored on purpose — `/mcp`, `/sse` and `/` on one host are the
+ * same provider, so a block must not be side-stepped by respelling the URL.
+ * Install/reuse matching stays on the exact `normalizeConnectorUrl` key.
+ */
+export function connectorHostKey(url: string): string | null {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
+const BY_URL =new Map(CONNECTOR_CATALOG.map(e => [normalize(e.url)!, e]));
 
 export function catalogEntryForUrl(url: string): ConnectorCatalogEntry | null {
   const key = normalize(url);

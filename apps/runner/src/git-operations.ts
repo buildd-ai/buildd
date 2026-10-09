@@ -20,6 +20,7 @@ import {
   type WorktreeOwnershipRecord,
 } from './worktree-utils';
 import { sessionLog as realSessionLog } from './session-logger';
+import { archiveWorktreeWork, archiveWorktreeWorkSync, type ArchiveResult } from './worktree-archive';
 import { isGeneratedPath } from '@buildd/shared';
 import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
@@ -50,6 +51,11 @@ let readdirSync = fs.readdirSync;
 // exercising the removal guard.
 let sessionLog: typeof realSessionLog = realSessionLog;
 // Optional spy for cleanupWorktree — set via __setGitOpsDeps to avoid mock.module pollution
+// Archive-before-remove. Real by default; __setGitOpsDeps swaps in no-ops unless
+// the test supplies its own (it is mocking fs/git already, so a real archive
+// would probe paths that only exist in the mock).
+let archiveAsync: typeof archiveWorktreeWork = archiveWorktreeWork;
+let archiveSync: typeof archiveWorktreeWorkSync = archiveWorktreeWorkSync;
 let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null = null;
 
 export interface GitOpsDeps {
@@ -65,6 +71,9 @@ export interface GitOpsDeps {
   /** Optional: keep session-log writes out of the host log dir in tests. */
   sessionLog?: typeof realSessionLog;
   // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
+  /** Optional: replace the archive step (default in tests: no-op). */
+  archive?: typeof archiveWorktreeWork;
+  archiveSync?: typeof archiveWorktreeWorkSync;
   cleanupSpy?: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null;
 }
 
@@ -79,6 +88,8 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   rmSync = mocks.rmSync;
   readdirSync = mocks.readdirSync ?? fs.readdirSync;
   sessionLog = mocks.sessionLog ?? realSessionLog;
+  archiveAsync = mocks.archive ?? (async () => ({ archived: false }));
+  archiveSync = mocks.archiveSync ?? (() => ({ archived: false }));
   if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
 
@@ -93,6 +104,8 @@ export function __resetGitOpsDeps(): void {
   rmSync = fs.rmSync;
   readdirSync = fs.readdirSync;
   sessionLog = realSessionLog;
+  archiveAsync = archiveWorktreeWork;
+  archiveSync = archiveWorktreeWorkSync;
   _cleanupSpy = null;
 }
 
@@ -1330,7 +1343,7 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
 /** Why a worktree removal was refused, when it was. */
 export type WorktreeRemovalOutcome =
   | { removed: true }
-  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' | 'primary_clone' };
+  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' | 'primary_clone' | 'archive_failed' };
 
 export interface RemoveWorktreeOptions {
   repoPath: string;
@@ -1342,6 +1355,8 @@ export interface RemoveWorktreeOptions {
   branch?: string;
   /** Default false. When true, also refuse a tree holding commits not on origin. */
   protectUnpushed?: boolean;
+  /** Where dirty/unpushed work is written before the tree goes. Default `~/.buildd/archive`. */
+  archiveDir?: string;
 }
 
 /**
@@ -1385,6 +1400,24 @@ function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | n
   return null;
 }
 
+function noteArchived(workerId: string, worktreePath: string, a: ArchiveResult): void {
+  const where = [a.bundle, a.patch].filter(Boolean).join(', ');
+  sessionLog(workerId, 'info', 'worktree_work_archived', `Archived work from ${worktreePath} before removal: ${where}`);
+}
+
+/**
+ * Archive failed: the tree may hold work that exists nowhere else, so it stays.
+ * Loud on purpose — a tree that cannot be archived is a leak the reaper retries,
+ * and the alternative is the quiet loss this gate exists to prevent.
+ */
+function archiveRefusal(opts: RemoveWorktreeOptions, err: unknown): WorktreeRemovalOutcome {
+  const why = err instanceof Error ? err.message.split('\n')[0] : String(err);
+  const msg = `Kept worktree ${opts.worktreePath}: could not archive its work before removal (${why})`;
+  sessionLog(opts.workerId, 'warn', 'worktree_removal_skipped_archive_failed', msg);
+  console.warn(`[Worker ${opts.workerId}] ${msg}`);
+  return { removed: false, reason: 'archive_failed' };
+}
+
 /**
  * THE removal entry point for runner-side worktree teardown.
  *
@@ -1400,6 +1433,14 @@ export async function removeWorktreeIfUnowned(
 ): Promise<WorktreeRemovalOutcome> {
   const refusal = removalRefusal(opts);
   if (refusal) return refusal;
+  if (existsSync(opts.worktreePath)) {
+    try {
+      const a = await archiveAsync(opts.worktreePath, opts.workerId, opts.archiveDir);
+      if (a.archived) noteArchived(opts.workerId, opts.worktreePath, a);
+    } catch (err) {
+      return archiveRefusal(opts, err);
+    }
+  }
   await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
   return { removed: true };
 }
@@ -1415,6 +1456,14 @@ export function removeWorktreeIfUnownedSync(
   const refusal = removalRefusal(opts);
   if (refusal) return refusal;
   const { repoPath, worktreePath, workerId } = opts;
+  if (existsSync(worktreePath)) {
+    try {
+      const a = archiveSync(worktreePath, workerId, opts.archiveDir);
+      if (a.archived) noteArchived(workerId, worktreePath, a);
+    } catch (err) {
+      return archiveRefusal(opts, err);
+    }
+  }
   try {
     console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
     execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, timeout: 5000 });

@@ -493,8 +493,8 @@ in `packages/core/task-classifier.ts`, which itself had no production caller and
 was deleted in v0.192.0 (#2006) — so `resolveModelName` now has none at all.
 `apps/web/src/app/api/tasks/route.ts` imports a same-named keyword classifier
 from `@/lib/task-category`, which is unrelated. The
-`task_classification` inference capability is declared
-(`packages/core/inference-policy.ts:78-84`) but nothing performs it. Nothing
+`task_classification` inference capability was declared but never performed,
+and has been removed. Nothing
 calls `updateModelAliases` except the admin route, contradicting the module
 docstring's claim that workers refresh it "automatically … via
 `supportedModels()`" (`packages/core/model-aliases.ts:15-18`).

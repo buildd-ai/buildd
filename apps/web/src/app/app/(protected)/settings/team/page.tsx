@@ -50,6 +50,7 @@ export default async function TeamSettingsPage({
   ]);
 
   const role = currentTeam.role as 'owner' | 'admin' | 'member';
+  const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
 
   return (
     <SettingsPage
@@ -70,7 +71,8 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members', await getTeamPermissionOverrides(team.id))}
+          canManage={roleHas(role, 'manage_team_members', permissionOverrides)}
+          permissionOverrides={permissionOverrides}
         />
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>

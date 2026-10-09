@@ -148,6 +148,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_decision_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_budget_forecast: one(read('GET /api/health/budget')),
   list_connectors: one(read('GET /api/connectors/mounted')),
+  resolve_capability: one(deferred('planner/agent discovery before routing; chat users see connectors on Settings')),
   get_usage_stats: one(deferred('its route scopes by the caller\'s teams and takes a workspace slug, so it can\'t be pinned to the conversation team yet')),
   // A runner row carries a workspaceIds array: the reach filter keeps a row
   // only if one of them is in reach, and strips the rest (in-process-api.ts).

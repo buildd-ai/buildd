@@ -49,12 +49,43 @@ describe('InteractiveSessions', () => {
     expect(html).not.toContain('—');
   });
 
-  it('a finished task no longer claims a slot line', () => {
+  it('a finished session is history: folded under "earlier", with no slot line', () => {
     const html = renderToStaticMarkup(
       <InteractiveSessions now={NOW} sessions={[view({ state: 'ended', endedAt: '2026-10-07T11:59:00Z', task: { id: 't1', title: 'Fix login', status: 'completed' }, workerLive: false, tasks: [{ id: 't1', title: 'Fix login', status: 'completed', workerId: 'w1', live: false }] })]} />,
     );
-    expect(html).toContain('Ended');
+    expect(html).toContain('1 earlier session');
+    expect(html).not.toContain('data-testid="interactive-session"');
     expect(html).not.toContain('release its slot');
+  });
+
+  it('collapses: working sessions shown, idle online ones and history folded into one line each', () => {
+    const idle = Array.from({ length: 5 }, (_, i) => view({ id: `idle-${i}`, state: 'online' }));
+    const earlier = [
+      view({ id: 'off', state: 'offline', lastSeenAt: '2026-10-07T08:00:00Z' }),
+      view({ id: 'e1', state: 'ended', endedAt: '2026-10-07T10:00:00Z' }),
+      view({ id: 'e2', state: 'ended', endedAt: '2026-10-07T09:00:00Z' }),
+    ];
+    const working = view({ id: 'w', state: 'bound', workerLive: true, task: { id: 't1', title: 'Fix login', status: 'in_progress' }, tasks: [{ id: 't1', title: 'Fix login', status: 'in_progress', workerId: 'w1', live: true }] });
+    const html = renderToStaticMarkup(<InteractiveSessions now={NOW} sessions={[working, ...idle, ...earlier]} />);
+    expect(html.match(/data-testid="interactive-session"/g)).toHaveLength(1);
+    expect(html).toContain('5 online with no task');
+    expect(html).toContain('3 earlier sessions');
+    // The count is sessions online now (working + idle), never agent capacity.
+    expect(html).toMatch(/Interactive sessions<span[^>]*>6</);
+  });
+
+  it('one or two idle online sessions are shown as rows, not folded', () => {
+    const html = renderToStaticMarkup(<InteractiveSessions now={NOW} sessions={[view({ id: 'a' }), view({ id: 'b' })]} />);
+    expect(html.match(/data-testid="interactive-session"/g)).toHaveLength(2);
+    expect(html).not.toContain('online with no task');
+  });
+
+  it('a session lists at most three tasks, live first, then "+N more"', () => {
+    const tasks = Array.from({ length: 6 }, (_, i) => ({ id: `t${i}`, title: `task ${i}`, status: 'completed', workerId: `w${i}`, live: i === 2 }));
+    const html = renderToStaticMarkup(<InteractiveSessions now={NOW} sessions={[view({ state: 'bound', workerLive: true, tasks, task: { id: 't2', title: 'task 2', status: 'in_progress' } })]} />);
+    expect(html.match(/href="\/app\/tasks\//g)).toHaveLength(3);
+    expect(html).toContain('href="/app/tasks/t2"');
+    expect(html).toContain('+3 more');
   });
 
   it('a session holding several tasks lists each of them, with one slot line', () => {

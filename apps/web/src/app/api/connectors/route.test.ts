@@ -24,6 +24,14 @@ const mockSecretsProviderSet = mock(() => Promise.resolve('secret-1'));
 const mockEncrypt = mock((v: string) => `enc:${v}`);
 const mockResolveConnectorIcon = mock(() => Promise.resolve(null as string | null));
 
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// can() runs against the registry defaults with the caller's role read from
+// the teamMembers mock; no row (undefined) = no membership, which holds nothing.
+mock.module('@/lib/permissions', () => ({
+  can: fakeCan(async (userId, teamId) =>
+    (await (mockTeamMembersFindFirst as any)({ where: { op: 'and', args: [{ a: 'userId', b: userId }, { a: 'teamId', b: teamId }] } }))?.role),
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
@@ -282,7 +290,7 @@ describe('POST /api/connectors', () => {
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockDiscoverOAuthMetadata.mockResolvedValue({ authMode: 'none' as const });
     mockConnectorsFindFirst.mockResolvedValue(null);
-    // Default: session user is an admin/owner of the team (no member row => personal team => allowed).
+    // Default: session user is an owner of the team.
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'owner' });
     mockSecretsProviderSet.mockResolvedValue('secret-1');
     mockResolveConnectorIcon.mockReset();
@@ -528,6 +536,14 @@ describe('POST /api/connectors', () => {
     mockTeamMembersFindFirst.mockResolvedValue({ role: 'member' });
     const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
     expect(res.status).toBe(403);
+  });
+
+  it('returns 403 and inserts nothing when the user has no membership row in the active team (fails closed)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTeamMembersFindFirst.mockResolvedValue(undefined);
+    const res = await POST(makePostReq({ name: 'Test', url: 'https://mcp.example.com', authMode: 'none' }));
+    expect(res.status).toBe(403);
+    expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 
   // Assertion-mode connector validation (spec §E.2 invariants)

@@ -14,9 +14,14 @@ mock.module('@/lib/auth-helpers', () => ({
   requireSessionUser: async () => ({ user: { id: 'caller' } }),
 }));
 
+// The real (pure) role check, so the role a caller may invite as is decided
+// the way the server decides it.
+import { roleHas } from '@/lib/permission-registry';
+let callerRole = 'owner';
+let overrides: any = null;
 mock.module('@/lib/permissions', () => ({
-  roleHas: () => true,
-  getTeamPermissionOverrides: async () => null,
+  roleHas,
+  getTeamPermissionOverrides: async () => overrides,
 }));
 
 let capacity: any = { ok: true };
@@ -41,7 +46,7 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      teamMembers: { findFirst: async () => ({ teamId: TEAM, userId: 'caller', role: 'owner' }) },
+      teamMembers: { findFirst: async () => ({ teamId: TEAM, userId: 'caller', role: callerRole }) },
       users: { findFirst: async () => undefined },
       teamInvitations: { findFirst: async () => undefined, findMany: async () => [] },
     },
@@ -68,6 +73,8 @@ beforeEach(() => {
   inserted.length = 0;
   capacityCalls.length = 0;
   capacity = { ok: true };
+  callerRole = 'owner';
+  overrides = null;
 });
 
 describe('POST /api/teams/[id]/invitations — plan member limit', () => {
@@ -83,6 +90,37 @@ describe('POST /api/teams/[id]/invitations — plan member limit', () => {
     const res = await post({ email: 'new@example.com', role: 'member' });
     expect(res.status).toBe(402);
     expect(await res.json()).toMatchObject({ error: 'full — see Settings → Billing', code: 'seats_exhausted' });
+    expect(inserted).toHaveLength(0);
+  });
+});
+
+describe('POST /api/teams/[id]/invitations — the role an invite carries', () => {
+  it('lets an admin invite an admin', async () => {
+    callerRole = 'admin';
+    expect((await post({ email: 'new@example.com', role: 'admin' })).status).toBe(200);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].role).toBe('admin');
+  });
+
+  it('a member granted manage_team_members may invite a member', async () => {
+    callerRole = 'member';
+    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
+    expect((await post({ email: 'new@example.com', role: 'member' })).status).toBe(200);
+    expect(inserted).toHaveLength(1);
+  });
+
+  it('…but not an admin, which takes assign_team_roles', async () => {
+    callerRole = 'member';
+    overrides = { manage_team_members: ['owner', 'admin', 'member'] };
+    const res = await post({ email: 'new@example.com', role: 'admin' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('assign_team_roles');
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('403s a plain member', async () => {
+    callerRole = 'member';
+    expect((await post({ email: 'new@example.com', role: 'member' })).status).toBe(403);
     expect(inserted).toHaveLength(0);
   });
 });
