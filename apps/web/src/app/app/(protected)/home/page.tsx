@@ -49,7 +49,7 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
-import { loadMissionVerdicts } from '@buildd/core/mission-helpers';
+import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
