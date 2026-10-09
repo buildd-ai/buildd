@@ -610,31 +610,30 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # Started by hand rather than as a `services:` container: service images
-      # are pulled once, anonymously, from Docker Hub, and the shared runner IPs
-      # hit its pull limit under load. Here we log in when a token exists and
-      # retry the pull, which a service container cannot do.
+      # Started by hand rather than as a `services:` container, and not from
+      # Docker Hub: shared runner IPs hit its anonymous pull limit under load,
+      # and a service container cannot retry. The official postgres image comes
+      # from the ECR Public mirror; pgvector is installed from the PGDG apt repo
+      # the image already has configured.
       - name: Start Postgres (pgvector)
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-          fi
+          IMAGE=public.ecr.aws/docker/library/postgres:17
           for attempt in 1 2 3 4 5; do
-            docker pull pgvector/pgvector:pg17 && break
-            if [ "$attempt" = 5 ]; then echo "::error::docker pull pgvector/pgvector:pg17 failed 5/5 times"; exit 1; fi
+            docker pull "$IMAGE" && break
+            if [ "$attempt" = 5 ]; then echo "::error::docker pull $IMAGE failed 5/5 times"; exit 1; fi
             sleep $((15 * attempt))
           done
           docker run -d --name postgres -p 5432:5432 \
             -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=buildd_test \
-            pgvector/pgvector:pg17
+            "$IMAGE"
+          docker exec postgres bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-17-pgvector >/dev/null'
           for i in $(seq 1 60); do
-            docker exec postgres pg_isready -U demo -d buildd_test && exit 0
+            docker exec postgres pg_isready -U demo -d buildd_test && break
             sleep 2
           done
-          echo "::error::Postgres did not become ready"; exit 1
+          docker exec postgres pg_isready -U demo -d buildd_test || { echo "::error::Postgres did not become ready"; exit 1; }
+          docker exec postgres psql -U demo -d buildd_test -c 'CREATE EXTENSION IF NOT EXISTS vector' \
+            || { echo "::error::pgvector did not install"; exit 1; }
       - name: Detect redundant run (release PR already covered by the dev push run)
         id: dedupe
         if: github.event_name == 'pull_request' && github.head_ref == 'dev' && github.event.pull_request.head.repo.full_name == github.repository
