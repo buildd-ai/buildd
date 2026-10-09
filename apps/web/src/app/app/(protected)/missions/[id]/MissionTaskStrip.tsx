@@ -343,6 +343,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             roleSlug={t.roleSlug}
             missionExecutor={executor}
             hideQueuedNote={!!why}
+            framed={false}
             onChanged={onChanged}
           />
         )}
@@ -388,7 +389,12 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.
  */
-export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
+/**
+ * `stages={false}`: the caller already draws where the task is on Build ›
+ * Audit › Land (the Overview's focus card has its Lifecycle line), so only
+ * the Audit and repair evidence is left to show.
+ */
+export function DrawerDelivery({ delivery, stages = true }: { delivery: TaskDeliveryDetail; stages?: boolean }) {
   const [open, setOpen] = useState(delivery.kind === 'repair');
   const id = useId();
   const summary = [
@@ -397,8 +403,12 @@ export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="landed-strip-drawer-delivery" className="flex flex-col gap-1.5">
-      <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
-      <DeliveryStages kind={delivery.kind} stages={delivery.stages} />
+      {stages && (
+        <>
+          <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
+          <DeliveryStages kind={delivery.kind} stages={delivery.stages} />
+        </>
+      )}
       {delivery.evidence.length > 0 && (
         <>
           <button
