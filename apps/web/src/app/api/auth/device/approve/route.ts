@@ -105,6 +105,7 @@ export async function POST(req: NextRequest) {
       apiKey: hashApiKey(plaintextKey),
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       teamId,
+      createdByUserId: session.user.id,
     }).returning({ id: accounts.id });
 
     // A personal team's workspace starts restricted; without a link this
