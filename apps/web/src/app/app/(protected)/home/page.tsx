@@ -49,7 +49,7 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
-import { loadMissionVerdicts } from '@/lib/load-mission-verdicts';
+import { loadMissionVerdicts } from '@buildd/core/mission-helpers';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
@@ -542,7 +542,7 @@ export default async function HomePage({
               missionByKey.set(key, m);
             }
           }
-          const verdicts = prKeys.length > 0 ? await loadMissionVerdicts(activeTeamScope.teamId, prKeys) : new Map();
+          const verdicts = prKeys.length > 0 && activeTeamId ? await loadMissionVerdicts(activeTeamId, prKeys) : new Map();
           for (const [key, verdict] of verdicts) {
             const mission = missionByKey.get(key);
             if (mission) (mission as any).escalationGateVerdict = verdict;

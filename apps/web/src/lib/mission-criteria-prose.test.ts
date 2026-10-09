@@ -40,6 +40,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: { missionId: 'mission_id', taskClass: 'task_class', id: 'id', createdAt: 'created_at', context: 'context' },
   workspaces: Symbol('workspaces'),
   secrets: { teamId: 'team_id', purpose: 'purpose', workspaceId: 'workspace_id' },
+  decisionRecords: { subjectId: 'subject_id', appliedAnswer: 'applied_answer', teamId: 'team_id', capability: 'capability', subjectType: 'subject_type' },
 }));
 
 mock.module('@buildd/core/db', () => ({

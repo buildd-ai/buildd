@@ -13,7 +13,7 @@ import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card
 import { projectMissionDelivery } from '@/lib/delivery-projection';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
-import { loadMissionVerdicts } from '@/lib/load-mission-verdicts';
+import { loadMissionVerdicts } from '@buildd/core/mission-helpers';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
   buildActiveMissionsQueryArgs,
