@@ -95,3 +95,32 @@ describe('resolveClaudeModelRoute', () => {
     expect(await resolveClaudeModelRoute({ ...base, teamId: null }, deps())).toBe('oauth_seat');
   });
 });
+
+// Provider parity: the team's Anthropic key may sit in canonical storage
+// (`inference_key` / `anthropic`) or the legacy `anthropic_api_key`. Either one
+// is delivered as ANTHROPIC_API_KEY (./credential-injection), so either one
+// means the run does not spend the seat.
+describe('resolveClaudeModelRoute: canonical and legacy key storage', () => {
+  const key = (extra: Record<string, unknown>) => ({ accountId: null, workspaceId: null, healthStatus: 'healthy', userId: null, ...extra });
+
+  it('counts a canonical team key', async () => {
+    const d = deps({ listAnthropicKeys: mock(async () => [key({ purpose: 'inference_key', label: 'anthropic' })]) });
+    expect(await resolveClaudeModelRoute(base, d)).toBe('anthropic_api_key');
+  });
+
+  it('counts a legacy team key', async () => {
+    const d = deps({ listAnthropicKeys: mock(async () => [key({ purpose: 'anthropic_api_key', label: null })]) });
+    expect(await resolveClaudeModelRoute(base, d)).toBe('anthropic_api_key');
+  });
+
+  it('does not count another provider’s chat key, or a personal key', async () => {
+    const d = deps({
+      listAnthropicKeys: mock(async () => [
+        key({ purpose: 'inference_key', label: 'openrouter' }),
+        key({ purpose: 'inference_key', label: 'openai' }),
+        key({ purpose: 'inference_key', label: 'anthropic', userId: 'user-1' }),
+      ]),
+    });
+    expect(await resolveClaudeModelRoute(base, d)).toBe('oauth_seat');
+  });
+});

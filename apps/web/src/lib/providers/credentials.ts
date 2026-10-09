@@ -39,7 +39,7 @@ import {
   servedSurfaces,
   storageServes,
   surfaceRefusal,
-  writePermission,
+  writePermissions,
   writeStorage,
   type ProviderApiScope,
   type ShapeId,
@@ -53,6 +53,7 @@ import type {
   ProviderRefusal,
   ProviderShapeListing,
 } from '@buildd/shared';
+import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
 import {
   removeAgentEndpoint,
   removeChatKey,
@@ -339,8 +340,8 @@ export function planProviderWrite(input: {
   const permissions = input.scope === 'mine'
     ? []
     : [...new Set(input.op === 'set'
-        ? [writePermission(shape, storage)]
-        : [shape.storage, ...shape.legacy].map(st => writePermission(shape, st)))];
+        ? writePermissions(shape, storage)
+        : [shape.storage, ...shape.legacy].flatMap(st => writePermissions(shape, st)))];
   return { ok: true, plan: { provider: input.provider, shape, scope: input.scope, storage, permissions } };
 }
 
@@ -364,6 +365,20 @@ const REQUIRED_PREFIX: Record<string, string> = {
   openai_api_key: 'sk-',
 };
 
+/**
+ * The prefix a team or workspace key must have. A canonical Anthropic or
+ * OpenAI key is read by agent runs too (provider parity), so it keeps the
+ * prefix its legacy alias always required: the form that used to write
+ * `anthropic_api_key` refused a pasted seat token, and still does.
+ */
+function requiredPrefix(provider: ProviderId, storage: CredentialStorage): string | undefined {
+  const own = REQUIRED_PREFIX[storage.purpose];
+  if (own) return own;
+  if (provider !== 'anthropic' && provider !== 'openai') return undefined;
+  if (!storageServes(providerDescriptor(provider), storage).some(s => s !== 'chat')) return undefined;
+  return REQUIRED_PREFIX[agentKeyPurposes(provider).find(p => p !== storage.purpose) ?? ''];
+}
+
 /** Route (chat key provider) of an API-key provider. */
 function chatProviderOf(provider: ProviderId): ChatProvider | null {
   const route = providerDescriptor(provider).route;
@@ -384,7 +399,7 @@ async function writeSharedKey(input: {
 }): Promise<{ ok: true; requeued: number } | { ok: false; status: number; error: string }> {
   const value = sanitize(input.value);
   if (!value || /\s/.test(value)) return { ok: false, status: 400, error: 'That doesn\'t look like a key.' };
-  const prefix = REQUIRED_PREFIX[input.storage.purpose];
+  const prefix = requiredPrefix(input.provider, input.storage);
   if (prefix && !value.startsWith(prefix)) return { ok: false, status: 400, error: `Token must start with ${prefix}…` };
 
   // API keys are checked with the provider before they are stored, like the chat key form.
@@ -416,7 +431,7 @@ async function writeSharedKey(input: {
       updatedAt: now,
     }).where(eq(secrets.id, id));
   }
-  return { ok: true, requeued: await requeueAfterAgentCredential(input.teamId, input.storage.purpose) };
+  return { ok: true, requeued: await requeueAfterAgentCredential(input.teamId, input.storage.purpose, input.storage.label) };
 }
 
 /** Store a credential per a plan. The caller has authorized it. */
@@ -447,9 +462,16 @@ export async function setProviderCredential(input: {
       const chat = chatProviderOf(plan.provider);
       const chatKey = chat && plan.storage.purpose === 'inference_key' && plan.storage.label === chat && !workspaceId;
       if (chatKey) {
+        if (plan.scope === 'team') {
+          const prefix = requiredPrefix(plan.provider, plan.storage);
+          const clean = sanitize(value);
+          if (prefix && !clean.startsWith(prefix)) return { ok: false, status: 400, error: `Token must start with ${prefix}…` };
+        }
         // The chat key's own function: policy check for a personal key, verify-before-store.
         const r = await writeChatKey({ teamId, userId: input.userId ?? '', provider: chat!, scope: plan.scope === 'mine' ? 'user' : 'team', value });
         if (!r.ok) return r;
+        // A team key agent runs read: put tasks that failed on the old one back.
+        if (plan.scope === 'team') requeued = await requeueAfterAgentCredential(teamId, plan.storage.purpose, plan.storage.label);
       } else {
         const r = await writeSharedKey({ teamId, workspaceId, provider: plan.provider, storage: plan.storage, value });
         if (!r.ok) return r;
