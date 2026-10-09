@@ -79,7 +79,6 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   codexThreadId: true,
   error: true,
   waitingFor: true,
-  teamState: true,
   subagentTasks: true,
   subagentTasksObservedCount: true,
   worktreePath: true,
