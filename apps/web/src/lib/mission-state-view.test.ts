@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   deriveMissionStateView,
   isGated,
+  missionNeedsYou,
   nextActionFor,
   type MissionStateInput,
   type MissionStateView,
@@ -792,5 +793,33 @@ describe('deriveMissionStateView — local executor', () => {
   it('a failed task still reads as failing on a local mission', () => {
     const view = deriveMissionStateView({ ...local, health: 'FAILING', failedTasks: [{ id: 't3', title: 'Broke' }] });
     expect(view.kind).toBe('failing');
+  });
+});
+
+describe('missionNeedsYou — not-landed mission with escalation-gate verdict', () => {
+  it('a mission PR open on the integration branch counts as needs-you even when escalation says Buildd checks next', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      progress: 100,
+      missionPr: { state: 'open', prNumber: 123, prUrl: 'https://example.invalid/pr/123' },
+      unmergedPrs: [], // No task PRs unmerged; only the mission PR is open
+      escalationGateVerdict: { owner: 'machine', reason: 'Checking whether another PR carries it' },
+    });
+    expect(view.kind).toBe('awaiting_merge');
+    expect(view.waitingOn?.kind).toBe('merge');
+    expect(missionNeedsYou(view)).toBe(true);
+  });
+
+  it('a mission PR open on the integration branch counts as needs-you when escalation says owner decides', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      progress: 100,
+      missionPr: { state: 'open', prNumber: 124, prUrl: 'https://example.invalid/pr/124' },
+      unmergedPrs: [],
+      escalationGateVerdict: { owner: 'person', reason: 'Merge this PR' },
+    });
+    expect(view.kind).toBe('awaiting_merge');
+    expect(view.waitingOn?.kind).toBe('merge');
+    expect(missionNeedsYou(view)).toBe(true);
   });
 });

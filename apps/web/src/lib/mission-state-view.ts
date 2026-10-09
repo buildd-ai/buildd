@@ -533,6 +533,13 @@ export interface MissionStateInput {
    */
   missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
   /**
+   * The escalation gate verdict for the mission PR, read from the decision
+   * ledger. Used to determine if the mission should be marked as needs-you
+   * even when Buildd's next step is to check something (e.g., whether another
+   * PR carries it). A caller that has not loaded the verdict omits this.
+   */
+  escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
+  /**
    * Open task PRs, read straight off the worker rows. For a caller that cannot
    * afford a `canCompleteMission` decision per subject — a list page renders
    * dozens — this is the same fact from a cheaper source, and without it a card
