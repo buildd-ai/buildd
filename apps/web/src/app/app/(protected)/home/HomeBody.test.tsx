@@ -156,9 +156,11 @@ describe('one decisions list at every width', () => {
   const html = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={7} />);
   const cards = html.match(/data-testid="needs-you-card"/g) ?? [];
 
-  it('the headline count, the list count and the cards are one number', () => {
+  it('the headline count is the list count: three cards and the rest as rows', () => {
     expect(items).toHaveLength(8);
-    expect(cards).toHaveLength(8);
+    expect(cards).toHaveLength(3);
+    // 4 reviews asking the same thing are one group row (its 3 members after the card).
+    expect(html.match(/data-testid="needs-you-row"/g)).toHaveLength(5);
     expect(html).toContain('8 things need you.');
     // The headline is the section's header: no second "Needs you · N open" count.
     expect(html).not.toContain('>8 open<');
@@ -168,8 +170,8 @@ describe('one decisions list at every width', () => {
   it('renders at every width: nothing in it is phone-only or desktop-only', () => {
     expect(html).not.toMatch(/class="[^"]*\bmd:hidden\b/);
     expect(html).not.toMatch(/class="[^"]*(^|\s)hidden md:/);
-    // Stacked on a phone, side by side from ~320px each on desktop.
-    expect(html).toContain('[grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))]');
+    // Stacked on a phone, three across on a wide screen.
+    expect(html).toContain('min-[1100px]:grid-cols-3');
   });
 
   it('every card is the L3 decision frame with a charcoal primary: no shadow, no 2px frame, no filled orange', () => {

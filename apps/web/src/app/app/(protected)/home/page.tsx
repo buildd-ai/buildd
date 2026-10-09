@@ -1923,7 +1923,7 @@ export default async function HomePage({
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
@@ -1985,6 +1985,7 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
+          inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
           lead={(attention.length > 0 || initFilter) && (

@@ -38,11 +38,14 @@ export interface HomeAttentionItem {
 /**
  * Work the platform is already recovering on its own: an agent-handled chip, a
  * fix or CI run in flight, or a conflict retry with attempts left. It is never
- * a Needs you card. A human review is exempt: protected paths need a person
- * whatever CI is doing.
+ * a Needs you card. A human review waits too while Buildd is still repairing or
+ * checking its PR (`machineActing`): reviewing a diff that is about to change is
+ * wasted. Once that settles, a protected-path review needs a person whatever CI says.
  */
 export function isAutoRecovering(i: ActionQueueItem, isActionable: (chip: ActionQueueItem['chip']) => boolean): boolean {
   if (!isActionable(i.chip)) return true;
+  // A review on a PR Buildd is still repairing or checking waits for that to settle.
+  if (i.humanReview && i.machineActing) return true;
   if (i.humanReview || i.chip !== 'BLOCKED') return false;
   if (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running') return true;
   return !!i.conflictRetryTaskId && !i.deadZoneExhausted;
@@ -275,6 +278,11 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   approve: ['approval', 'approvals'], reconnect: ['reconnect', 'reconnects'], resolve: ['blocker', 'blockers'], fix: ['failing PR', 'failing PRs'],
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
 };
+
+/** "review" / "reviews", the same nouns the headline sub-line uses. */
+export function actionNoun(type: AttentionActionType, n: number): string {
+  return ACTION_NOUN[type][n === 1 ? 0 : 1];
+}
 
 /**
  * `runnerConnected: false` (a team with no runner yet) changes only the empty

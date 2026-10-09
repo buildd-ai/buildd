@@ -3,11 +3,12 @@ import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import type { HomeAttentionItem } from '@/lib/home-needs-you';
-import { firstSentence } from '@/lib/attention-line';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import { ReviewDecision } from '@/components/ReviewDecision';
 import { MergeAdvice } from '@/components/MergeAdvice';
 import Eyebrow from '@/components/ui/Eyebrow';
+import { displayTaskTitle } from '@/lib/task-title';
+import { decisionLine } from './needs-you-layout';
 
 const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -78,7 +79,7 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
 
   // The decision line is one sentence; anything longer folds behind Details.
   const review = q?.humanReview;
-  const decision = review ? review.decision ?? firstSentence(review.reason) : firstSentence(item.sentence);
+  const decision = decisionLine(item);
   const detail = review ? review.reason
     : item.systemic && item.systemic.subjects.length > 2 ? `Affects ${item.systemic.subjects.join(', ')}.`
     : item.sentence;
@@ -88,7 +89,7 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
       <Eyebrow tone="accent">{sentenceCase(item.systemic ? `Systemic · ${item.label}` : item.label)}</Eyebrow>
       <span className="shrink-0 font-mono text-text-muted">{item.meta}</span>
     </div>
-    <h3 className="mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{item.title}</h3>
+    <h3 className="mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{displayTaskTitle(item.title)}</h3>
     <ReviewDecision decision={decision} detail={detail} blockers={review?.blockers ?? []} status={status} />
     {q?.mergeAdvice && <MergeAdvice slot={q.mergeAdvice} />}
     <div className="mt-auto flex flex-wrap gap-2 pt-3">{actions}</div>

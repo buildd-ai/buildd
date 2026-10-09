@@ -27,7 +27,8 @@ describe('human approval is independent of merge readiness', () => {
     expect(card(null, { prLifecycleStatus: 'ci_green', autoMerge: true }).chip).toBe('AUTO_MERGE');
   });
   it('an old machine-only duplicate cannot hide a current human review', () => {
-    const review = card(resolveHumanPrReview(base), { prLifecycleStatus: 'ci_running' });
+    // Checks settled on the review's own row (a running one waits: home-attention-machine-acting.test.ts).
+    const review = card(resolveHumanPrReview(base), { prLifecycleStatus: 'ci_green' });
     const pending = { ...review, chip: 'CI_RUNNING' as const, humanReview: null };
     for (const queue of [[review, pending], [pending, review]]) {
       expect(deriveHomeAttention({ queue, missions: [], questions: [], held: [], isActionable: isActionableChip })[0]?.queue?.humanReview).toEqual(review.humanReview);

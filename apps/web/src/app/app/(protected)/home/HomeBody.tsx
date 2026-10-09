@@ -8,6 +8,8 @@ import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
 import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { DecisionCard } from './DecisionCard';
+import { NeedsYouRows } from './NeedsYouRows';
+import { layoutNeedsYou } from './needs-you-layout';
 import { DeliveryMilestones } from './DeliveryMilestones';
 import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
 
@@ -17,6 +19,14 @@ const BODY_GRID = {
   side: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'landed'] min-[900px]:grid-cols-2 min-[900px]:[grid-template-areas:'agents_landed']",
   single: 'flex flex-col gap-8',
 } as const;
+
+/** "Also in progress: 2 reviews wait on a repair or checks." */
+export function inProgressLine(n: number): string {
+  return n === 1 ? 'Also in progress: 1 review waits on a repair or checks.' : `Also in progress: ${n} reviews wait on a repair or checks.`;
+}
+
+/** Card columns by how many there are, so a row of cards never leaves a hole. */
+const CARD_COLS = ['', '', 'md:grid-cols-2', 'min-[1100px]:grid-cols-3'] as const;
 
 /** "7 more missions are waiting on capacity or another mission." */
 export function quietMissionsLine(n: number): string {
@@ -28,12 +38,15 @@ export function quietMissionsLine(n: number): string {
  * lib/action-queue.ts via deriveHomeAttention), one quiet line naming what
  * else is moving (with the way to Activity), then Agents, Moving toward
  * delivery and Landed this week. The headline count is the list's length and
- * the number every nav badge shows; phones stack the cards, wider screens set
- * them side by side. Nothing here repeats another section: no counts line
+ * the number every nav badge shows. At most three decisions get the L3 card
+ * (side by side on wide screens, stacked on phones); the rest are hairline
+ * rows with one text action, grouped where they ask the same thing. Nothing here repeats another section: no counts line
  * (Agents and Moving carry them), no Just shipped (Landed lists it first).
  */
-export function HomeBody({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, setup = null, runnerConnected, lead = null, foot = null }: {
+export function HomeBody({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, inProgress = 0, setup = null, runnerConnected, lead = null, foot = null }: {
   items: HomeAttentionItem[]; ask: ReactNode;
+  /** Human reviews held back while Buildd still repairs or checks their PRs (`deriveHomeNeedsYou`). */
+  inProgress?: number;
   /** The Agents panel and Landed this week (null when nothing landed): after the decisions, Moving between them. */
   agents?: ReactNode; landed?: ReactNode;
   /** The getting-started checklist and chat setup while they apply: a new team's next step. */
@@ -60,8 +73,9 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open, { runnerConnected });
   useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
-  // Systemic causes first: one problem behind many tasks is not a per-task decision.
-  const ordered = [...items.filter(i => i.systemic), ...items.filter(i => !i.systemic)];
+  // A few decisions get the card; the rest are rows (systemic, failing, oldest first).
+  const { cards, rows } = layoutNeedsYou(items);
+  const doneLine = (item: HomeAttentionItem) => <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p>;
   const layout: keyof typeof BODY_GRID = milestones.length > 0
     ? (agents || landed ? 'split' : 'single')
     : agents && landed ? 'side' : 'single';
@@ -80,12 +94,14 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
       {/* The headline is this section's visible header and count. */}
       <h2 id="home-needs-you-h" className="sr-only">Needs you</h2>
       {lead}
-      {items.length > 0 && <div data-testid="needs-you-cards" className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))]">{ordered.map(item => done[item.key] ? <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p> : <DecisionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>}
+      {cards.length > 0 && <div data-testid="needs-you-cards" className={`grid gap-4 ${CARD_COLS[cards.length]}`}>{cards.map(item => done[item.key] ? doneLine(item) : <DecisionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>}
+      {rows.length > 0 && <NeedsYouRows rows={rows} />}
       {foot}
     </section>}
     {/* What is not listed, and where it is: one line, the only Activity link on Home. */}
     <p data-testid="home-also" className="mb-8 text-meta text-text-muted">
-      {quietMissions > 0 ? quietMissionsLine(quietMissions) : 'Everything else in motion is in Activity.'}{' '}
+      {inProgress > 0 && <>{inProgressLine(inProgress)}{' '}</>}
+      {quietMissions > 0 ? quietMissionsLine(quietMissions) : inProgress > 0 ? '' : 'Everything else in motion is in Activity.'}{' '}
       <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-text-secondary hover:text-text-primary md:min-h-0">Activity →</Link>
     </p>
     <div data-testid="home-body" data-layout={layout} className={BODY_GRID[layout]}>
