@@ -15,7 +15,7 @@ export interface Headline { lead: string; basis: string | null }
 /** The result first. Below the minimum it says so rather than guessing. */
 export function estimatesHeadline(overall: BacktestScore): Headline {
   if (overall.scored < MIN_SCORED_FOR_VERDICT || overall.withinP80 == null) {
-    return { lead: 'Too few finished tasks to judge the estimates.', basis: overall.scored > 0 ? `Based on ${overall.scored} ${overall.scored === 1 ? 'task' : 'tasks'} so far.` : null };
+    return { lead: 'Not enough finished tasks to judge the estimates.', basis: overall.scored > 0 ? `Based on ${overall.scored} ${overall.scored === 1 ? 'task' : 'tasks'} so far.` : null };
   }
   const inTen = Math.round(overall.withinP80 * 10);
   const basis = `Based on ${overall.scored} tasks.`;
