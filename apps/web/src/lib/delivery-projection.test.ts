@@ -104,6 +104,19 @@ describe('projectTaskDelivery: today\'s worker/PR fields', () => {
     expect(projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersededByPrNumber: 9 }] }).kind).toBe('landed');
   });
 
+  it('a closed PR stops reconciling once its scan ran: a suggestion needs a person, none is not landed', () => {
+    const w = (supersessionScan: any) => [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan }];
+    expect(projectTaskDelivery({ status: 'completed', workers: w(null) }).reconciling).toBe(true);
+    const none = projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-09-30T00:00:00Z', suggestion: null }) });
+    expect(none.kind).toBe('notlanded');
+    expect(none.reconciling).toBe(false);
+    const sug = projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-09-30T00:00:00Z', suggestion: { prNumber: 42 } }) });
+    expect(sug.kind).toBe('needs');
+    expect(sug.needsHuman).toBe(true);
+    expect(sug.reconciling).toBe(false);
+    expect(sug.confirmPrNumber).toBe(42);
+  });
+
   it('a closed PR is reconciling; an abandoned PR and a failed task are not', () => {
     const closedPr = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
     expect(closedPr.reconciling).toBe(true);

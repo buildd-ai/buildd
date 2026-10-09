@@ -155,6 +155,8 @@ export interface DeliveryWorker {
   prLifecycleStatus?: string | null;
   supersededByPrNumber?: number | null;
   abandonedAt?: string | Date | null;
+  /** `workers.supersessionScan`: stamped once the automatic scan of a closed PR has run. */
+  supersessionScan?: { scannedAt?: string | null; suggestion?: { prNumber: number } | null } | null;
 }
 
 export interface TaskDeliveryInput {
@@ -192,6 +194,8 @@ export interface TaskDelivery {
    * cancelled tasks are never reconciling: those are for a person.
    */
   reconciling: boolean;
+  /** A closed PR's unverified candidate that only a person can Confirm; null otherwise. */
+  confirmPrNumber: number | null;
 }
 
 /** The PR a task's delivery is about: a merged one wins, else the newest with a URL. */
@@ -218,12 +222,19 @@ export function projectTaskDelivery(input: TaskDeliveryInput): TaskDelivery {
     waitingOn: null,
     repairReason: null,
     reconciling: false,
+    confirmPrNumber: null,
     ...extra,
   });
 
   if (ship === 'merged' || ship === 'superseded') return make('landed');
   if (live.some(w => w.status === 'waiting_input') || verdict === 'escalated') return make('needs');
-  if (ship === 'closed_unsuperseded') return make('notlanded', { reconciling: true });
+  if (ship === 'closed_unsuperseded') {
+    // Reconciling only while the scan is still owed; once it ran, a person decides.
+    const scan = pr?.supersessionScan;
+    if (!scan?.scannedAt) return make('notlanded', { reconciling: true });
+    if (scan.suggestion) return make('needs', { confirmPrNumber: scan.suggestion.prNumber });
+    return make('notlanded');
+  }
   if (ship === 'abandoned') return make('notlanded');
 
   if (ship === 'open') {
@@ -487,13 +498,14 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'build':
       return { evidence: `An agent is building ${t}.`, next: `${t} opens a PR` };
     case 'needs':
+      if (d?.confirmPrNumber != null) return { evidence: `The PR for ${t} closed; #${d.confirmPrNumber} may carry it.`, next: `Confirm #${d.confirmPrNumber} carries it` };
       return { evidence: `${t} is waiting on a decision.`, next: 'Your answer' };
     case 'unavailable':
       return { evidence: `The audit for ${t} could not run.`, next: 'The audit retries on its own' };
     case 'notlanded':
       return d?.reconciling
         ? { evidence: `The PR for ${t} closed without merging.`, next: 'Checking whether another PR carries it' }
-        : { evidence: `${t} did not land: its PR was abandoned or the task failed.`, next: 'Open it to retry or drop it' };
+        : { evidence: `${t} did not land: its PR closed, was abandoned, or the task failed.`, next: 'Open it to retry or drop it' };
     case 'waiting':
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Starts when a slot frees up' };
     case 'held':
