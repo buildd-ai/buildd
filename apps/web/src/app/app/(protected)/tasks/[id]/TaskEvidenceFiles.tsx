@@ -40,7 +40,7 @@ interface ViewerState {
   error: string | null;
 }
 
-const LABEL = 'font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px]';
+const LABEL = 'font-mono text-meta';
 const BTN = 'font-mono text-xs px-3 min-h-[44px] md:min-h-0 md:py-1.5 border border-border-strong bg-surface-3 text-text-primary hover:bg-surface-4 disabled:opacity-50';
 
 function StateText({ label, testId }: { label: EvidenceStateLabel; testId: string }) {
@@ -142,7 +142,7 @@ export default function TaskEvidenceFiles({
   return (
     <div className="mb-6" id="task-evidence-files" data-testid="task-evidence-files">
       <details className="card" open={defaultOpen}>
-        <summary className={`cursor-pointer p-4 ${LABEL} text-text-muted hover:text-text-secondary select-none`}>
+        <summary className="cursor-pointer p-4 section-label hover:text-text-secondary select-none">
           Evidence files · {objects.length}
         </summary>
         <div className="px-4 pb-4 border-t border-border-default pt-3">
