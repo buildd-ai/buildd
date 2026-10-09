@@ -6,6 +6,10 @@
  * creation; outside a request scope it runs at once. It may fill or replace a
  * keyword category, never a filer's own. An attached filing is not a new task,
  * so there is nothing to look at.
+ *
+ * `pr.close_delivered`: merge readiness decisions on the PR get their outcome
+ * label (lib/merge-readiness-outcomes.ts). GitHub reads, so `after()`; the
+ * hourly pr-reconcile pass is the backstop for a lost delivery. Idempotent.
  */
 import { after } from 'next/server';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -26,5 +30,17 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
       callerSet: e.category.callerSet,
       dataClass: e.dataClass,
     }, after);
+  }),
+  subscriber('jev-decisions', 'pr.close_delivered', 'merge-readiness-outcome', e => {
+    if (e.installationId == null) return;
+    const run = () => import('@/lib/merge-readiness-outcomes-store')
+      .then(m => m.attachMergeReadinessOutcomesOnClose(e))
+      .then(() => undefined, err => console.warn('[merge-readiness-outcomes] close label failed (non-fatal):', err));
+    try {
+      after(run);
+    } catch {
+      // after() is unavailable outside a request scope (tests): run inline, unawaited.
+      void run();
+    }
   }),
 ];

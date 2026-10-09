@@ -64,6 +64,9 @@ const REDRIVE_ZERO = {
   enumerated: 0, redriven: 0, merged: 0, exhausted: 0, raced: 0, notRedrivable: 0, errors: 0, deferred: 0, outcomes: {},
 };
 const mockRefreshRedrive = mock(() => Promise.resolve<any>(REDRIVE_ZERO));
+mock.module('@/lib/merge-readiness-outcomes-store', () => ({
+  sweepMergeReadinessOutcomes: async () => ({ prs: 0, recorded: 0, errors: 0, reverts: { checked: 0, reverted: 0, notReverted: 0, errors: 0 } }),
+}));
 mock.module('@/lib/refresh-redrive', () => ({ redriveDeferredRefreshes: mockRefreshRedrive }));
 
 const CI_RED_ZERO = {
