@@ -30,10 +30,12 @@
  * ## Limits, deliberately
  *
  * - **Runner feature.** A personal key is delivered only to a runner that
- *   declares `PERSONAL_CREDENTIAL_RUNNER_FEATURE`. Today's runner caches
- *   `serverApiKey` per TEAM and reuses it for later workers of that team whose
+ *   declares `PERSONAL_CREDENTIAL_RUNNER_FEATURE`. Older runners cache
+ *   `serverApiKey` per TEAM and reuse it for later workers of that team whose
  *   claim carried none, which would hand one person's key to another person's
- *   task. A runner without the feature therefore never receives one: under
+ *   task. A runner that declares the feature keeps a `scope: personal` (or
+ *   `none`) credential out of that cache (apps/runner/src/workers.ts
+ *   startFromClaim). A runner without the feature never receives one: under
  *   `personal_first` it gets the team credentials, under `personal_only` the
  *   task is deferred for a runner that can take it.
  * - **API keys only.** Anthropic for Claude tasks, OpenAI for Codex tasks.
