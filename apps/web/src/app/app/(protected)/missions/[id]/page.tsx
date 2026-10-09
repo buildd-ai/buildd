@@ -278,7 +278,7 @@ export default async function MissionDetailPage({
     // The quick-add picker offers only roles a task in this mission's
     // workspace can carry (role-routing §1 row 3, §3.1).
     mission.workspaceId
-      ? resolveEffectiveRoles(mission.workspaceId).catch(() => [])
+      ? resolveEffectiveRoles(mission.workspaceId, user.id).catch(() => [])
       : Promise.resolve([]),
     // The visual review (docs/design/visual-qa-human-review.md): one loader,
     // the only read of audit shots, whenever an audit task exists (pending,

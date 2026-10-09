@@ -472,3 +472,23 @@ describe('runConnectorPreFilter — role resolution and opt-out', () => {
     expect(mockSkillsFindMany).not.toHaveBeenCalled();
   });
 });
+
+describe('runConnectorPreFilter — personal roles', () => {
+  // The old per-(team, slug, workspace) map let any team-level row with the
+  // slug stand for the team default, so another member's private role could
+  // gate (or ungate) this task. Each task now reads its own requester's winner.
+  it("gates each task on its requester's role, never another member's private one", async () => {
+    mockSkillsFindMany.mockResolvedValue([
+      role([]),
+      { ...role(['conn-gone']), id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' },
+    ]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+
+    const bobs = { ...task('t-bob'), createdByUserId: 'u-bob' };
+    const alices = { ...task('t-alice'), createdByUserId: 'u-alice' };
+    const r = await runConnectorPreFilter([bobs, alices]);
+
+    expect(r.connectorMismatchTaskIds.has('t-bob')).toBe(true);
+    expect(r.connectorMismatchTaskIds.has('t-alice')).toBe(false);
+  });
+});

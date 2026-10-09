@@ -174,6 +174,10 @@ interface Candidate {
   pathManifest: string[] | null;
   priority: number | null;
   kind: string | null;
+  // Who the task is for — decides which personal role the connector gate reads.
+  createdByUserId?: string | null;
+  parentTaskId?: string | null;
+  scheduleId?: string | null;
   workspace?: CandidateWorkspace | null;
 }
 
@@ -302,7 +306,7 @@ async function resolveStallGate(
   // ── Connector routing gate ────────────────────────────────────────────────
   const teamId = task.workspace?.teamId ?? null;
   if (task.roleSlug && teamId) {
-    const failures = await checkConnectorRouting(task.roleSlug, task.workspaceId, teamId);
+    const failures = await checkConnectorRouting(task.roleSlug, task.workspaceId, teamId, { task });
     if (failures && failures.length > 0) {
       const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
       return {
@@ -537,6 +541,9 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       pathManifest: true,
       priority: true,
       kind: true,
+      createdByUserId: true,
+      parentTaskId: true,
+      scheduleId: true,
     },
     with: {
       workspace: {

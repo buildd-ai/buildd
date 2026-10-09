@@ -33,6 +33,7 @@
 import { resolvedPromptVersion, resolvePromptValueEntry } from '@buildd/core/prompts';
 import { createHash } from 'node:crypto';
 import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
+import { effectiveVisibleRoles, TEAM_SCOPED_BY_QUERY } from '@buildd/core/role-visibility';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
 // lazily inside the run, so importing this module from the task route adds
 // nothing to that route's static import graph.
@@ -76,6 +77,10 @@ export interface RoleRow {
   allowedTools: string[] | null;
   connectorRefs: string[] | null;
   defaultBackend: string | null;
+  /** Personal roles: the owner (NULL = team role or override) and who may run it. */
+  ownerUserId?: string | null;
+  visibility?: string | null;
+  id?: string;
 }
 
 export interface RoleCandidate {
@@ -104,34 +109,44 @@ export interface CandidateTask {
   /** A pathManifest that names files (not only the advisory wildcard). */
   pathManifestIsConcrete: boolean;
   emitsPlan: boolean;
+  /**
+   * Who the task is for. Their own private roles are candidates; another
+   * member's never are. Omitted/null = no person: team and shared roles only.
+   */
+  requesterUserId?: string | null;
 }
 
 /**
- * The effective row per slug for one workspace (§3.1): the workspace override
- * wins, else the team default. `metadata.routing` is field-level (§2): an
- * override without its own `routing` inherits the team default's.
+ * The effective row per slug for one workspace (§3.1), by the shared role
+ * precedence (@buildd/core/role-visibility): the workspace override wins, then
+ * the requester's own personal role, then a shared personal role, else the
+ * team default. Another member's private role is never a candidate, so role
+ * inference cannot route work to it. `metadata.routing` is field-level (§2):
+ * an override without its own `routing` inherits the team default's.
  * Rows must already be the task's team's, workspace NULL or the task's.
  */
-export function resolveEffectiveRoles(rows: readonly RoleRow[], workspaceId: string): RoleRow[] {
-  const team = new Map<string, RoleRow>();
-  const override = new Map<string, RoleRow>();
-  for (const r of rows) {
-    if (!r.isRole) continue;
-    if (r.workspaceId === null) team.set(r.slug, r);
-    else if (r.workspaceId === workspaceId) override.set(r.slug, r);
-  }
-  const out: RoleRow[] = [];
-  for (const slug of new Set([...team.keys(), ...override.keys()])) {
-    const o = override.get(slug);
-    const t = team.get(slug);
-    if (!o) { out.push(t!); continue; }
+export function resolveEffectiveRoles(
+  rows: readonly RoleRow[],
+  workspaceId: string,
+  requesterUserId: string | null = null,
+): RoleRow[] {
+  const roles = rows.filter(r => r.isRole);
+  const teamDefault = new Map<string, RoleRow>();
+  for (const r of roles) if (r.workspaceId === null && r.ownerUserId == null) teamDefault.set(r.slug, r);
+  const winners = effectiveVisibleRoles(
+    roles.map(r => ({ ...r, teamId: '', ownerUserId: r.ownerUserId ?? null, visibility: r.visibility ?? 'team' })),
+    { teamId: TEAM_SCOPED_BY_QUERY, workspaceId, requesterUserId },
+  );
+  return winners.map(w => {
+    const { teamId: _scoped, ...o } = w;
+    void _scoped;
+    if (o.workspaceId === null) return o;
     const ownRouting = (o.metadata as { routing?: unknown } | null | undefined)?.routing;
-    const inherited = (t?.metadata as { routing?: unknown } | null | undefined)?.routing;
-    out.push(ownRouting == null && inherited != null
+    const inherited = (teamDefault.get(o.slug)?.metadata as { routing?: unknown } | null | undefined)?.routing;
+    return ownRouting == null && inherited != null
       ? { ...o, metadata: { ...((o.metadata as object | null) ?? {}), routing: inherited } }
-      : o);
-  }
-  return out;
+      : o;
+  });
 }
 
 const WRITE_TOOLS = ['Edit', 'Write', 'Bash'];
@@ -178,11 +193,11 @@ export function filterRoleCandidates(
  * `never_mounted`, `blocked_by_policy` or `expired_or_revoked`, as `checkConnectorRouting` classifies
  * them, without its HTTP probe (§3.3).
  */
-export type ConnectorsUnusable = (slug: string, workspaceId: string, teamId: string) => Promise<boolean>;
+export type ConnectorsUnusable = (slug: string, workspaceId: string, teamId: string, requesterUserId?: string | null) => Promise<boolean>;
 
-async function dbConnectorsUnusable(slug: string, workspaceId: string, teamId: string): Promise<boolean> {
+async function dbConnectorsUnusable(slug: string, workspaceId: string, teamId: string, requesterUserId: string | null = null): Promise<boolean> {
   const { checkConnectorRouting } = await import('@/app/api/workers/claim/connector-gate');
-  const failures = await checkConnectorRouting(slug, workspaceId, teamId, { probe: false });
+  const failures = await checkConnectorRouting(slug, workspaceId, teamId, { probe: false, requesterUserId });
   return !!failures?.some(f => f.mode === 'never_mounted' || f.mode === 'blocked_by_policy' || f.mode === 'expired_or_revoked');
 }
 
@@ -201,8 +216,9 @@ async function dbLoadRoles(teamId: string, workspaceId: string): Promise<RoleRow
       or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
     ),
     columns: {
-      slug: true, name: true, workspaceId: true, enabled: true, isRole: true,
+      id: true, slug: true, name: true, workspaceId: true, enabled: true, isRole: true,
       metadata: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
+      ownerUserId: true, visibility: true,
     },
   });
   return rows as RoleRow[];
@@ -214,12 +230,13 @@ export async function buildRoleCandidates(
   deps: { loadRoles?: LoadRoles; connectorsUnusable?: ConnectorsUnusable } = {},
 ): Promise<{ candidates: RoleCandidate[]; excluded: Record<string, RoleExclusion> }> {
   const rows = await (deps.loadRoles ?? dbLoadRoles)(task.teamId, task.workspaceId);
-  const { candidates, excluded } = filterRoleCandidates(resolveEffectiveRoles(rows, task.workspaceId), task);
+  const requesterUserId = task.requesterUserId ?? null;
+  const { candidates, excluded } = filterRoleCandidates(resolveEffectiveRoles(rows, task.workspaceId, requesterUserId), task);
   const unusable = deps.connectorsUnusable ?? dbConnectorsUnusable;
   const kept: RoleCandidate[] = [];
   for (const c of candidates) {
     if (c.connectorRefs.length > 0) {
-      const bad = await unusable(c.slug, task.workspaceId, task.teamId).catch(() => true);
+      const bad = await unusable(c.slug, task.workspaceId, task.teamId, requesterUserId).catch(() => true);
       if (bad) { excluded[c.slug] = 'connectors'; continue; }
     }
     kept.push(c);
