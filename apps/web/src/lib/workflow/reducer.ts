@@ -74,6 +74,11 @@ export const DEAD_EFFECT_OWED_IN: Partial<Record<EffectSpec['kind'], DeliverySta
   post_review: 'any',
 };
 
+/** An escalation a further review round answers (T5 from ESCALATED without a person). */
+export function isReviewEscalation(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && reason.startsWith('review_');
+}
+
 /** `push_recovery` backoff (§9): 2m, 10m, 30m, then T22. */
 export const PUSH_RECOVERY_BACKOFF_MS = [120_000, 600_000, 1_800_000] as const;
 
@@ -431,7 +436,13 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state === 'WORKING' && dd.prNumber == null) return c.rejected('pr_not_bound');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.rejected('round_head_not_current');
       if (c.openRoundAt(cmd.headSha)) return c.rejected('review_in_flight');
-      if (cmd.forced && !(isHumanActor(cmd.actor) || cmd.actor === 'force')) return c.rejected('force_requires_human');
+      // A forced round (a second look at a head that already has a verdict) is a person's call.
+      if (cmd.forced && !isHumanActor(cmd.actor)) return c.rejected('force_requires_human');
+      // ESCALATED is a person's (§4). Anyone may ask again after a review escalation; every
+      // other reason (unpushed work, a policy finding, a dead effect, landing) waits for a person.
+      if (dd.state === 'ESCALATED' && !isHumanActor(cmd.actor) && !isReviewEscalation(dd.stateReason)) {
+        return c.rejected('escalation_needs_human');
+      }
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
       const r = c.startRound(cmd.headSha);
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
