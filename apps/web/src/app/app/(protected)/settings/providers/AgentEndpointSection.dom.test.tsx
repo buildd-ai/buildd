@@ -11,11 +11,13 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: AgentEndpointSection, parseAliasLines, aliasLines } = await import('./AgentEndpointSection');
+const { default: AgentEndpointSection, parseAliasLines, aliasLines, teamOpenRouterKeyLast4 } = await import('./AgentEndpointSection');
 
 const KEY = 'sk-agent-example-1234';
 let endpoints: unknown[] = [];
 let gateway: unknown = null;
+/** `GET /api/inference-keys` reply; null = the default (no keys). */
+let inferenceKeys: unknown = null;
 const writes: Array<{ url: string; method: string; body: unknown }> = [];
 const previews: unknown[] = [];
 const suggests: unknown[] = [];
@@ -38,6 +40,7 @@ beforeEach(() => {
   suggests.length = 0;
   endpoints = [];
   gateway = null;
+  inferenceKeys = null;
   modelsReply = { available: false, listed: [], rows: [] };
   suggestReply = { status: 200, body: { suggestions: [] } };
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
@@ -47,6 +50,7 @@ beforeEach(() => {
     if (url.endsWith('/agent-endpoint/models/suggest')) { suggests.push(body); return new Response(JSON.stringify(suggestReply.body), { status: suggestReply.status }); }
     if (method !== 'GET') { writes.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null }); return new Response('{}', { status: 200 }); }
     if (url.endsWith('/litellm-gateway')) return new Response(JSON.stringify({ gateway }), { status: 200 });
+    if (url.startsWith('/api/inference-keys')) return new Response(JSON.stringify(inferenceKeys ?? { providers: [] }), { status: 200 });
     return new Response(JSON.stringify({ endpoints }), { status: 200 });
   }) as unknown as typeof fetch;
 });
@@ -340,6 +344,49 @@ describe('AgentEndpointSection', () => {
     await click(kindRadio(2));
     expect((host.querySelector('#agent-endpoint-key') as HTMLInputElement).placeholder).toBe('sk-…');
     expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('OpenRouter with a key in Team keys: no key field, says which key, and saves no key', async () => {
+    inferenceKeys = { providers: [{ provider: 'openrouter', team: { last4: '7777' }, mine: null }] };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    expect(host.querySelector('#agent-endpoint-key')).toBeNull();
+    expect(text('agent-endpoint-stored-key')).toContain('OpenRouter key in Team keys (…7777)');
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(false);
+    await click(button('Save'));
+    expect(writes[0].body).toEqual({ kind: 'openrouter' });
+  });
+
+  it('OpenRouter with nothing in Team keys still asks for a key', async () => {
+    inferenceKeys = { providers: [{ provider: 'anthropic', team: { last4: '1111' }, mine: null }] };
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(2));
+    expect(host.querySelector('#agent-endpoint-key')).not.toBeNull();
+    expect(host.querySelector('[data-testid="agent-endpoint-stored-key"]')).toBeNull();
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a saved OpenRouter reference names Team keys; a missing key and two different keys say so', async () => {
+    const or = { ...teamEndpoint, kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', models: {}, mapping: [], last4: '7777' };
+    endpoints = [{ ...or, keySource: 'stored' }];
+    await mount();
+    expect(text('agent-endpoint-detail')).toBe('With the OpenRouter key in Team keys (…7777)');
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...or, keySource: 'stored', storedKeyMissing: true, last4: '' }];
+    await mount();
+    expect(host.textContent).toContain('Key missing');
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...or, keySource: 'inline', legacyInlineKey: true, last4: '8888' }];
+    await mount();
+    expect(text('agent-endpoint-two-keys')).toContain('Two different OpenRouter keys');
+  });
+
+  it('teamOpenRouterKeyLast4 reads only the team-wide OpenRouter key', () => {
+    expect(teamOpenRouterKeyLast4(null)).toBeNull();
+    expect(teamOpenRouterKeyLast4({ providers: [{ provider: 'openrouter', team: null, mine: { last4: '1' } }] })).toBeNull();
+    expect(teamOpenRouterKeyLast4({ providers: [{ provider: 'openrouter', team: { last4: 'abcd' } }] })).toBe('abcd');
   });
 
   it('is read-only for a member', async () => {
