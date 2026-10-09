@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/src/lib/self-origin.test.ts, apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -528,6 +528,12 @@ deprecated.
 - Every `buildd` action is served by every transport (`/api/mcp` group and
   legacy surfaces, `/api/mcp-oauth/[workspace]`) through the one shared
   handler, and has a token scope.
+- The self-calls both transports make carry the caller's bearer, so they go
+  to this server only. The origin comes from its own configuration:
+  `VERCEL_URL` on Vercel, else `NEXTAUTH_URL` / `AUTH_URL`, else, outside
+  production only, the request's own origin when its host is loopback. There
+  is no hardcoded fallback host: when none resolves, the route answers 500
+  `self_origin_unconfigured` before any outbound call.
 
 **Acceptance criteria**:
 - AC-33: GIVEN no credential, or one that does not authenticate, WHEN
@@ -559,6 +565,12 @@ deprecated.
   works and the response carries the deprecation headers and notice; GIVEN a
   `bldt_` token sending another workspace's binding THEN it stays bound to its
   own task's workspace.
+- AC-61: GIVEN a production server with no `VERCEL_URL`, `NEXTAUTH_URL` or
+  `AUTH_URL` WHEN either MCP transport serves a call THEN it answers 500
+  `self_origin_unconfigured` and makes no outbound request; GIVEN
+  `NEXTAUTH_URL` THEN every self-call goes to that origin, whatever host the
+  request named; GIVEN a non-loopback request host and no configuration THEN
+  the request's host is never used.
 
 **Code surface**:
 - Transport: `apps/web/src/app/api/mcp/route.ts` — `handleGrantMcpRequest()`
@@ -568,9 +580,12 @@ deprecated.
 - Binding: `apps/web/src/lib/api-auth.ts` — `authenticateGrantSession()`,
   `GRANT_WORKSPACE_HEADER`
 - Action: `packages/core/mcp-tools.ts` — `list_workspaces`
+- Self-call origin: `apps/web/src/lib/self-origin.ts` — `resolveSelfOrigin()`
 - Tests: `apps/web/tests/db/mcp-canonical-transport.test.ts` (real Postgres),
   `apps/web/src/lib/mcp-grant-session.test.ts`,
-  `apps/web/src/app/api/mcp/transport-parity.test.ts`
+  `apps/web/src/app/api/mcp/transport-parity.test.ts`,
+  `apps/web/src/lib/self-origin.test.ts`,
+  `apps/web/src/app/api/mcp/route.scope.test.ts` (self-call origin)
 
 **Not covered here**: what a grant session may reach on REST is the next
 section.

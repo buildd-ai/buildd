@@ -35,11 +35,14 @@ is accepted but deliberately not listed (see "Kinds" below).
   production domain on Vercel production. Every metadata URL, the token audience
   and the challenge use it. Clients cache it, so it must be the stable public
   origin.
-- **Self-call base URL.** The MCP route calls its own REST API over HTTP, at
-  `https://$VERCEL_URL` on Vercel and `NEXTAUTH_URL` elsewhere. **On any
-  deployment that is not Vercel, set `NEXTAUTH_URL` to the deployment's own
-  origin.** Otherwise the fallback is the public buildd.dev host, and the MCP
-  route sends the caller's bearer token there.
+- **Self-call base URL.** The MCP route calls its own REST API over HTTP and
+  forwards the caller's bearer token, so it only ever calls this server. The
+  origin is `https://$VERCEL_URL` on Vercel, else `NEXTAUTH_URL`, else
+  `AUTH_URL`. A local dev server (not `NODE_ENV=production`) reached on a
+  loopback host also falls back to the request's own origin. There is no
+  hardcoded fallback host: **on a deployment that is not Vercel, set
+  `NEXTAUTH_URL` to the deployment's own origin**, or every MCP call answers
+  500 `self_origin_unconfigured` and nothing is sent anywhere.
 - **Signing secret.** `OAUTH_JWT_SECRET`, else `AUTH_SECRET`. Rotating it ends
   every access token at once (clients refresh; refresh tokens are stored hashed
   and are not affected).
