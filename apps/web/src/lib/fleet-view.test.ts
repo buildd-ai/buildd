@@ -56,6 +56,10 @@ describe('buildFleetSnapshot', () => {
     expect(atlas.slots[1].worker).toBeNull();
   });
 
+  it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
+    expect(snap.runners[0].slots[0].lane.bars.map(b => b.missionId)).toEqual(['m1', 'm1']);
+  });
+
   it('never gives an adopted PR\'s placeholder worker a slot or a role-less bar', () => {
     // role-routing §1 row 7: the adopted row is bookkeeping with no role. Its
     // worker ran on no buildd runner, so it must not surface as a `?` agent.

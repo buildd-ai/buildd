@@ -6,9 +6,10 @@ import type { FlowSeries, FlowWindow } from '@/lib/insights-flow';
 import { FLOW_WINDOWS } from '@/lib/insights-flow';
 import { FlowChart } from '@/components/insights/FlowChart';
 import { formatHours } from '@/components/insights/flow-chart-model';
-import { usageByBasis, usageByRole } from '@/components/insights/usage-model';
-import { CostByBasis } from '@/components/insights/CostByBasis';
+import Link from 'next/link';
+import { usageByRole } from '@/components/insights/usage-model';
 import { InsightsStats } from '@/components/insights/InsightsStats';
+import Segmented from '@/components/ui/Segmented';
 
 interface Props {
   series: FlowSeries & { truncated: boolean };
@@ -24,7 +25,7 @@ export function InsightsClient({ series, window }: Props) {
   const empty = series.tasks.length === 0;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="insights-page">
+    <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="insights-page">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="hidden md:block text-heading font-bold">Insights</h1>
@@ -51,15 +52,16 @@ export function InsightsClient({ series, window }: Props) {
         )}
       </section>
 
-      <CostByBasis split={usageByBasis(series.usage ?? [])} />
+      {/* Cost by billing basis lives on Usage, once. */}
+      <p className="mt-5 text-meta text-text-muted">
+        <Link href="/app/health/usage" data-testid="insights-cost-link" className="text-text-secondary hover:underline">Cost by billing basis is on Usage ›</Link>
+      </p>
 
       {roles.length > 0 && (
         <section className="mt-5 card p-4" data-testid="insights-roles">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-title font-semibold">Usage by role</h2>
-            <div role="group" aria-label="Usage measure" className="flex">
-              {(['tokens', 'hours'] as const).map(m => <button key={m} className="btn min-h-[44px] text-meta" aria-pressed={measure === m} onClick={() => setMeasure(m)}>{m === 'tokens' ? 'Tokens' : 'Time'}</button>)}
-            </div>
+            <Segmented label="Usage measure" items={[{ value: 'tokens', label: 'Tokens' }, { value: 'hours', label: 'Time' }]} value={measure} onChange={setMeasure} />
           </div>
           <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_4rem_4rem] gap-2 text-meta text-text-muted"><span>Role / tier</span><span className="text-right">{measure === 'tokens' ? 'Tokens' : 'Time'}</span><span className="text-right">Real ($)</span><span className="text-right">Plan ($)</span></div>
           <ul className="mt-2 space-y-4">
@@ -84,24 +86,15 @@ function WindowPicker({ window: current }: { window: FlowWindow }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [pending, startTransition] = useTransition();
+  const select = (value: FlowWindow) => {
+    if (value === current) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('window', value);
+    startTransition(() => router.replace(`${pathname}?${params.toString()}`, { scroll: false }));
+  };
   return (
-    <div role="group" aria-label="Window" data-testid="insights-window-picker" className={`flex shrink-0 border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}>
-      {FLOW_WINDOWS.map(value => (
-        <button
-          key={value}
-          type="button"
-          aria-pressed={current === value}
-          onClick={() => {
-            if (value === current) return;
-            const params = new URLSearchParams(searchParams.toString());
-            params.set('window', value);
-            startTransition(() => router.replace(`${pathname}?${params.toString()}`, { scroll: false }));
-          }}
-          className={`px-3 min-h-[44px] md:min-h-[28px] text-chip uppercase tracking-widest ${current === value ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:text-text-secondary'}`}
-        >
-          {value}
-        </button>
-      ))}
+    <div data-testid="insights-window-picker" className={`shrink-0 ${pending ? 'opacity-60' : ''}`}>
+      <Segmented label="Window" items={FLOW_WINDOWS.map(value => ({ value, label: value }))} value={current} onChange={select} />
     </div>
   );
 }

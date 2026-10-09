@@ -197,7 +197,7 @@ export function buildFleetSnapshot(
       scope: taskLabel && label !== taskLabel.split(/\s+/)[0]?.toLowerCase() ? label : null,
       title: t?.title ?? null,
       color: role?.color ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null,
-      prNumber: w.prNumber ?? null, state: barState(w.status),
+      prNumber: w.prNumber ?? null, state: barState(w.status), missionId: t?.missionId ?? null,
       href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
     });
     if (LIVE.has(w.status)) {

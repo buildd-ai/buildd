@@ -3568,6 +3568,8 @@ export interface LaneBar {
   prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
+  /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
+  missionId?: string | null;
 }
 
 export interface Lane {
