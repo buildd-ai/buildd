@@ -19,6 +19,7 @@ import {
   loadActivity, loadLiveRootIds, ACTIVITY_CHILD_LIMIT, ACTIVITY_ROOT_LIMIT, ACTIVITY_WINDOW_DAYS, type ActivityData,
 } from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
+import { localHoldsByWorker } from '@/lib/local-session-display';
 import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
 
@@ -141,6 +142,7 @@ export default async function TasksPage({
           const localClientByTaskId = new Map(
             localSessions.flatMap(s => s.tasks.filter(t => t.live).map(t => [t.id, `${s.clientLabel} · local`] as const)),
           );
+          const localHolds = localHoldsByWorker(localSessions);
           const bandIds = taskListFilter?.ids ?? null;
           const taskColumns = {
             id: true,
@@ -241,7 +243,7 @@ export default async function TasksPage({
               if (initiativeId) return !!t.missionId && initiativeMissionIds.includes(t.missionId);
               return true;
             });
-            activity = await loadActivity({ tasks: inView, missionTitles: missionTitleMap, localClientByTaskId, now: Date.now(), rules: missionHelpers });
+            activity = await loadActivity({ tasks: inView, missionTitles: missionTitleMap, localHolds, now: Date.now(), rules: missionHelpers });
           } else {
           // Query active workers to enrich task status and timestamps
           const taskIds = allTasks.map(t => t.id);

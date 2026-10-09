@@ -15,7 +15,7 @@ import StatePill from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
-  filterEpisodes, filterNow, pageEpisodes, HISTORY_PAGE_SIZE,
+  age, filterEpisodes, filterNow, pageEpisodes, HISTORY_PAGE_SIZE,
   type ActivityNow, type ActivityOutcome, type ActivityScope, type EvidenceEntry, type Episode, type LatestTask, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
@@ -55,13 +55,7 @@ const OUTCOMES: Record<ActivityMode, ReadonlyArray<{ key: ActivityOutcome; label
   history: [{ key: 'any', label: 'Any outcome' }, { key: 'landed', label: 'Landed' }, { key: 'retries', label: 'Had retries' }, { key: 'exceptions', label: 'Exceptions' }],
 };
 
-export function age(ms: number, nowMs: number): string {
-  const min = Math.max(0, Math.round((nowMs - ms) / 60_000));
-  if (min < 1) return 'now';
-  if (min < 60) return `${min}m`;
-  if (min < 1440) return `${Math.round(min / 60)}h`;
-  return `${Math.round(min / 1440)}d`;
-}
+export { age };
 
 export default function ActivityView({ mode, now, history, latest, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, initialFilters }: ActivityViewProps) {
   const [scope, setScope] = useState<ActivityScope>(initialFilters?.scope ?? 'all');
@@ -260,6 +254,7 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
         <DeliveryStatePill kind={row.delivery.kind} />
         <DeliveryTrack kind={row.delivery.kind} rounds={rounds} />
         {row.live && <span className="inline-flex items-center gap-1.5 text-meta text-text-muted"><span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />agent live</span>}
+        {row.quietHold && <span data-testid="activity-quiet-hold" className="text-meta text-text-muted">session {row.quietHold.state === 'ended' ? 'ended' : 'quiet'} · slot held</span>}
         {row.prNumber && <span className="font-mono text-meta text-text-muted">#{row.prNumber}</span>}
       </span>
       <span className="col-span-2 font-convo text-body text-text-secondary">{row.line}</span>
@@ -272,6 +267,9 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
         <button type="button" aria-expanded={open} aria-controls={`ev-${row.id}`} onClick={() => setOpen(o => !o)} className={grid}>{head}</button>
       ) : (
         <Link href={row.href} className={grid}>{head}</Link>
+      )}
+      {row.quietHold && (
+        <Link href={row.href} data-testid="activity-release-slot" className="mb-2 inline-flex min-h-11 items-center font-mono text-meta text-accent-text md:min-h-0">Release slot ›</Link>
       )}
       {repairs.length > 0 && (
         <ul data-testid="activity-repairs" aria-label="Repair attempts" className="mb-2 ml-3 border-l border-border-strong pl-3">

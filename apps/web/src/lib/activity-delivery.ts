@@ -18,6 +18,7 @@ import {
   type MissionDelivery, type MissionTaskRules, type ReviewEvidence, type TaskDelivery,
 } from './delivery-projection';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { isQuietHold, type LocalHold } from './local-session-display';
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface ActivityWorker extends DeliveryWorker {
   updatedAt?: string | null;
   /** The last commit this worker pushed: the PR head after its run. */
   lastCommitSha?: string | null;
+  /** A local interactive session holds this worker, in the state Activity's session card reads. */
+  local?: LocalHold | null;
 }
 
 /** A task row as Activity loads it: roots and their attempts alike. */
@@ -73,7 +76,10 @@ export interface NowRow {
   title: string;
   href: string;
   delivery: TaskDelivery;
+  /** An agent is visibly working it: a live worker whose holder is not a quiet local session. */
   live: boolean;
+  /** No agent is live, but a local session that went quiet or ended still holds its slot. */
+  quietHold: { client: string; state: 'offline' | 'ended'; at: number } | null;
   runnerName: string | null;
   prNumber: number | null;
   /** One sentence: what is happening to it right now. */
@@ -154,6 +160,29 @@ const ms = (v: string | null | undefined): number | null => (v ? new Date(v).get
 const short = (sha: string | null | undefined) => (sha ? sha.trim().slice(0, 7) : null);
 const taskHref = (id: string) => `/app/tasks/${id}`;
 
+/** Relative age, as Activity prints it: `now`, `12m`, `3h`, `2d`. */
+export function age(atMs: number, nowMs: number): string {
+  const min = Math.max(0, Math.round((nowMs - atMs) / 60_000));
+  if (min < 1) return 'now';
+  if (min < 60) return `${min}m`;
+  if (min < 1440) return `${Math.round(min / 60)}h`;
+  return `${Math.round(min / 1440)}d`;
+}
+
+/**
+ * A live worker held by a local session that went quiet or ended. It still
+ * holds its slot, but nobody is working it: never an agent live.
+ */
+const quietHeld = (w: ActivityWorker) => LIVE.has(w.status) && isQuietHold(w.local);
+/** An agent is working: live, and not a quiet session's leftover hold. */
+const agentLive = (w: ActivityWorker) => LIVE.has(w.status) && !isQuietHold(w.local);
+/**
+ * When a worker last moved. A quiet session's worker moves only when its
+ * client was last heard: server writes (reaper, webhooks, usage) bump
+ * `updated_at` without anyone working it.
+ */
+const workerAt = (w: ActivityWorker) => (isQuietHold(w.local) ? ms(w.local!.seenAt) : ms(w.updatedAt ?? w.completedAt ?? w.startedAt));
+
 /** What a repair attempt was dispatched for, from its title (`[builder · after CI #1]`). */
 export function repairReasonOf(title: string): RepairReason | null {
   if (/after\s+(?:ci\b|ci\s|check)/i.test(title) || /^\[ci retry/i.test(title)) return 'ci';
@@ -224,7 +253,7 @@ function prOf(d: Delivery) {
 }
 
 function latestAt(d: Delivery): number {
-  const times = [d.root, ...d.reviews, ...d.repairs].flatMap(t => [ms(t.updatedAt), ...t.workers.map(w => ms(w.updatedAt ?? w.completedAt ?? w.startedAt))]);
+  const times = [d.root, ...d.reviews, ...d.repairs].flatMap(t => [ms(t.updatedAt), ...t.workers.map(workerAt)]);
   return Math.max(0, ...times.filter((n): n is number => n != null));
 }
 
@@ -364,9 +393,12 @@ function currentHeadPassed(evidence: readonly EvidenceEntry[]): boolean {
   return counted.some(g => g.name === 'CI') && counted.some(g => g.name.startsWith('Code review')) && counted.every(g => g.result === 'passed');
 }
 
-function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null, evidence: readonly EvidenceEntry[]): string {
+function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null, evidence: readonly EvidenceEntry[], hold: NowRow['quietHold'], now: number): string {
   const pr = prNumber ? `PR #${prNumber}` : 'The PR';
   const rounds = delivery.repairRounds;
+  if (hold && (delivery.kind === 'build' || delivery.kind === 'repair')) {
+    return `A ${hold.client} session ${hold.state === 'ended' ? 'ended' : 'went quiet'} ${age(hold.at, now)} ago and still holds this task's slot. Release it from the task page.`;
+  }
   switch (delivery.kind) {
     case 'build': return runner ? `An agent is building it on ${runner}.` : 'An agent is building it.';
     case 'audit':
@@ -374,7 +406,7 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
       return delivery.verdict === 'stale' ? `${pr} is open. A verdict arrived for an older head; review runs again on the latest.` : `${pr} is open; review and CI have not both passed on its latest revision.`;
     case 'repair': {
       const why = delivery.repairReason ? { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' }[delivery.repairReason] : 'An audit failed';
-      return `${why}. An automatic fix ${d.workers.some(w => LIVE.has(w.status)) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
+      return `${why}. An automatic fix ${d.workers.some(agentLive) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
     }
     case 'landing': return 'Approved and green on its latest revision. Merging.';
     case 'unavailable': return 'The audit could not run. It retries on its own.';
@@ -385,21 +417,24 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
   }
 }
 
-function toRow(d: Delivery, delivery: TaskDelivery): NowRow {
+function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
   const { owner } = prOf(d);
-  const liveWorker = d.workers.find(w => LIVE.has(w.status)) ?? null;
+  const liveWorker = d.workers.find(agentLive) ?? null;
   const runnerName = liveWorker?.name ?? null;
   const prNumber = owner?.prNumber ?? null;
   const evidence = buildEvidence(d);
+  const held = liveWorker ? null : d.workers.find(quietHeld) ?? null;
+  const quietHold = held?.local ? { client: held.local.client, state: held.local.state as 'offline' | 'ended', at: workerAt(held) ?? 0 } : null;
   return {
     id: d.root.id,
     title: d.root.title,
     href: taskHref(d.root.id),
     delivery,
     live: !!liveWorker,
+    quietHold,
     runnerName,
     prNumber,
-    line: lineFor(d, delivery, prNumber, runnerName, evidence),
+    line: lineFor(d, delivery, prNumber, runnerName, evidence, quietHold, now),
     updatedAt: latestAt(d),
     evidence,
   };
@@ -417,8 +452,9 @@ export function buildActivityNow(input: {
   let liveAgents = 0;
 
   for (const d of foldDeliveries(input.tasks, input.rules)) {
-    liveAgents += d.workers.filter(w => LIVE.has(w.status)).length;
+    // A cancelled delivery is nobody's work, whatever its workers still read.
     if (d.root.status === 'cancelled') continue;
+    liveAgents += d.workers.filter(agentLive).length;
     const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
     // A mission task reads the mission's own task projection, never a second one.
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
@@ -426,7 +462,7 @@ export function buildActivityNow(input: {
     if (!isInMotionKind(delivery.kind)) continue;
     const key = d.root.missionId;
     const g = groups.get(key) ?? { rows: [], title: d.root.missionTitle ?? null };
-    g.rows.push(toRow(d, delivery));
+    g.rows.push(toRow(d, delivery, input.now));
     groups.set(key, g);
   }
 
