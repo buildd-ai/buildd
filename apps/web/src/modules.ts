@@ -33,6 +33,8 @@ import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
+import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
 import { releaseSubscribers } from '@/lib/release/subscribers';
@@ -88,6 +90,13 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The kill-switch hand-off slot (lib/workflow/legacy-handoff.ts): a delivery
+ * the switch released before its first kernel round gets legacy's first
+ * review from the reviews module, so the PR is never left with no reviewer.
+ */
+export const LEGACY_FIRST_REVIEW: LegacyFirstReview = legacyFirstReview;
 
 /** Review-backed read hooks for core's run-progress projection. */
 export const RUN_PROGRESS_READERS: RunProgressReaders = {

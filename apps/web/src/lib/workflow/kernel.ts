@@ -200,6 +200,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     ];
     const where: SQL[] = [
       sql`id = ${ref.deliveryId}::uuid`,
+      // A release that lands between the read and this write wins (§14).
+      sql`authority = 'kernel'`,
       sql`version = ${d.guard.version}::bigint`,
       sql`state IN (SELECT jsonb_array_elements_text(${jsonb(d.guard.states)}))`,
     ];
@@ -404,6 +406,9 @@ export async function applyCommand(
 
   for (let pass = 0; pass < 2; pass++) {
     const d = view.delivery;
+    // §14: a delivery released to legacy is never decided by the kernel again,
+    // whoever asks (a draining effect's report, a sweep, a door that raced the release).
+    if (d?.authority === 'legacy') return { result: 'rejected', reason: 'legacy_owns', current: currentOf(view) };
     const key = stableIdempotencyKey(cmd, d);
     if (d && key) {
       const hit = ((await exec(findTransitionSql(d.id, key))).rows ?? [])[0] as { id: string } | undefined;
