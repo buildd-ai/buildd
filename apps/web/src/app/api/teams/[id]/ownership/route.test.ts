@@ -60,6 +60,15 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+const clamps: Array<{ teamId: string; userId: string; role: string | null }> = [];
+let clampResult = 0;
+mock.module('@/lib/creator-key-clamp', () => ({
+  clampCreatorKeys: async (opts: { teamId: string; userId: string; role: string | null }) => {
+    clamps.push({ teamId: opts.teamId, userId: opts.userId, role: opts.role });
+    return clampResult;
+  },
+}));
+
 import { POST } from './route';
 
 function transfer(body: unknown) {
@@ -78,6 +87,8 @@ beforeEach(() => {
   team = { slug: 'acme' };
   batches = [];
   batchResult = [[{ userId: TARGET }], [{ userId: 'caller' }]];
+  clamps.length = 0;
+  clampResult = 0;
 });
 
 describe('POST /api/teams/[id]/ownership', () => {
@@ -105,12 +116,31 @@ describe('POST /api/teams/[id]/ownership', () => {
     expect(guard.values).toContain(TARGET);
   });
 
+  it('clamps the demoted caller\'s keys to admin and reports the count', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships[TARGET] = { role: 'member' };
+    clampResult = 1;
+    const res = await transfer({ userId: TARGET });
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 1 });
+    expect(clamps).toEqual([{ teamId: TEAM, userId: 'caller', role: 'admin' }]);
+  });
+
+  it('does not clamp when the demote matched nothing', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships[TARGET] = { role: 'member' };
+    batchResult = [[{ userId: TARGET }], []];
+    const res = await transfer({ userId: TARGET });
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 0 });
+    expect(clamps).toHaveLength(0);
+  });
+
   it('409s and reports nothing changed when the target left mid-request', async () => {
     memberships.caller = { role: 'owner' };
     memberships[TARGET] = { role: 'member' };
     batchResult = [[], []];
     const res = await transfer({ userId: TARGET });
     expect(res.status).toBe(409);
+    expect(clamps).toHaveLength(0);
   });
 
   it('403s an admin, and writes nothing', async () => {

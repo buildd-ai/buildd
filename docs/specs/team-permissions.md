@@ -109,7 +109,11 @@ it (or none).
   permission check.
 - Key-level clamping by role (`maxKeyLevelForRole`, `levelForTeamRole`): the
   ceiling on a key a role may mint. Covered by `manage_team_keys` only in that
-  owner/admin may mint admin keys.
+  owner/admin may mint admin keys. The same ceiling follows the person who
+  minted a key (`accounts.created_by_user_id`): a role change, removal, leave
+  or ownership transfer lowers their keys in that team to what they may now
+  mint (`apps/web/src/lib/creator-key-clamp.ts`; never raised, never revoked,
+  keys with no recorded creator untouched).
 - Platform admin (`apps/web/src/lib/platform-admin.ts`), a cross-team operator
   allowlist, not a team role.
 
@@ -202,6 +206,7 @@ Rules that need no permission, enforced in the same routes:
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
+| `apps/web/src/app/api/accounts/[id]/route.ts:84` | delete someone else's key (a key you created is yours to delete) | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/[id]/regenerate-key/route.ts:54` | regenerate a key | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/[id]/host-runner/route.ts:50` | flag a host-runner key | owner, admin | — | `manage_team_keys` |
 | `apps/web/src/app/api/accounts/route.ts:108` | mint an admin-level key | owner, admin | — | `manage_team_keys` |
@@ -323,8 +328,7 @@ route moves onto the permission. All are overridable.
    team the API key's team owner belongs to. That is reach, not a permission,
    so it is not in the registry; noted because it reads `role = 'owner'`.
 6. **Writes with no role gate.** For a session, these need only membership:
-   deleting an API key (`apps/web/src/app/api/accounts/[id]/route.ts`), editing
-   or deleting a connector, deleting a memory, a workspace's
+   editing or deleting a connector, deleting a memory, a workspace's
    name/repo/branch/concurrency cap, and the mission, task and schedule admin
    routes (those hold API keys to admin, but not sessions). Skill CRUD is in
    this list only for plain skills (`isRole` false); a role needs

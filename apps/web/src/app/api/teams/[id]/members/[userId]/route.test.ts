@@ -51,8 +51,26 @@ mock.module('@buildd/core/db', () => ({
           Object.entries(memberships).filter(([, m]) => m?.role === 'owner').map(([userId]) => ({ userId })),
       },
     },
-    update: () => ({ set: (v: any) => ({ where: async () => { updates.push(v); } }) }),
-    delete: () => ({ where: async () => { deletes++; } }),
+    update: () => ({ set: (v: any) => ({ where: () => ({ returning: async () => {
+      updates.push(v);
+      return writeMatches ? [{ userId: 'target' }] : [];
+    } }) }) }),
+    delete: () => ({ where: () => ({ returning: async () => {
+      deletes++;
+      return writeMatches ? [{ userId: 'target' }] : [];
+    } }) }),
+  },
+}));
+
+// Whether the membership write matched a row (false = the member vanished mid-request).
+let writeMatches = true;
+// Every clamp the route asked for, and how many keys the clamp reports changing.
+const clamps: Array<{ teamId: string; userId: string; role: string | null }> = [];
+let clampResult = 0;
+mock.module('@/lib/creator-key-clamp', () => ({
+  clampCreatorKeys: async (opts: { teamId: string; userId: string; role: string | null }) => {
+    clamps.push({ teamId: opts.teamId, userId: opts.userId, role: opts.role });
+    return clampResult;
   },
 }));
 
@@ -84,6 +102,9 @@ beforeEach(() => {
   deletes = 0;
   team = { slug: 'acme', permissionOverrides: null };
   ownerRows = null;
+  writeMatches = true;
+  clamps.length = 0;
+  clampResult = 0;
 });
 
 describe('PATCH /api/teams/[id]/members/[userId] — change a role', () => {
@@ -204,6 +225,79 @@ describe('PATCH /api/teams/[id]/members/[userId] — change a role', () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/last owner/i);
     expect(updates).toHaveLength(0);
+  });
+});
+
+describe('PATCH /api/teams/[id]/members/[userId] — clamps the target\'s keys', () => {
+  it('clamps to the new role once the role is written, and reports the count', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships.target = { role: 'admin' };
+    clampResult = 2;
+    const res = await patch('target', { role: 'member' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 2 });
+    expect(updates).toEqual([{ role: 'member' }]);
+    expect(clamps).toEqual([{ teamId: TEAM, userId: 'target', role: 'member' }]);
+  });
+
+  it('passes the new role on a promotion too (the clamp never raises; it no-ops)', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships.target = { role: 'member' };
+    const res = await patch('target', { role: 'admin' });
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 0 });
+    expect(clamps).toEqual([{ teamId: TEAM, userId: 'target', role: 'admin' }]);
+  });
+
+  it('does not clamp when the role change is refused', async () => {
+    memberships.caller = { role: 'member' };
+    memberships.target = { role: 'admin' };
+    expect((await patch('target', { role: 'member' })).status).toBe(403);
+    expect(clamps).toHaveLength(0);
+  });
+
+  it('does not clamp when the member vanished before the write', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships.target = { role: 'admin' };
+    writeMatches = false;
+    expect((await patch('target', { role: 'member' })).status).toBe(404);
+    expect(clamps).toHaveLength(0);
+  });
+});
+
+describe('DELETE /api/teams/[id]/members/[userId] — clamps the person\'s keys', () => {
+  it('removal clamps to no role (member ceiling) and reports the count', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships.target = { role: 'admin' };
+    clampResult = 3;
+    const res = await del('target');
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 3 });
+    expect(deletes).toBe(1);
+    expect(clamps).toEqual([{ teamId: TEAM, userId: 'target', role: null }]);
+  });
+
+  it('leaving clamps the leaver', async () => {
+    memberships.caller = { role: 'admin' };
+    memberships.owner = { role: 'owner' };
+    clampResult = 1;
+    const res = await del('caller');
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 1 });
+    expect(clamps).toEqual([{ teamId: TEAM, userId: 'caller', role: null }]);
+  });
+
+  it('does not clamp when removal is refused', async () => {
+    memberships.caller = { role: 'member' };
+    memberships.target = { role: 'admin' };
+    expect((await del('target')).status).toBe(403);
+    expect(clamps).toHaveLength(0);
+  });
+
+  it('does not clamp when nothing was deleted', async () => {
+    memberships.caller = { role: 'owner' };
+    memberships.target = { role: 'admin' };
+    writeMatches = false;
+    const res = await del('target');
+    expect(await res.json()).toEqual({ success: true, clampedKeys: 0 });
+    expect(clamps).toHaveLength(0);
   });
 });
 
