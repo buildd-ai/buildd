@@ -15,7 +15,6 @@
   "apps/web/src/app/app/(protected)/home/page.tsx": 2,
   "apps/web/src/app/app/(protected)/missions/[id]/page.tsx": 2,
   "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx": 4,
-  "apps/web/src/app/app/(protected)/tasks/page.tsx": 5,
   "apps/web/src/lib/chat-objects/load-mission-object.ts": 1,
   "apps/web/src/lib/ci-failure-retry.ts": 1,
   "apps/web/src/lib/deployments/cloudflare.ts": 1,

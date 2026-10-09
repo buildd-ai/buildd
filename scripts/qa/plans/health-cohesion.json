@@ -1,0 +1,53 @@
+[
+  {
+    "route": "/app/health"
+  },
+  {
+    "route": "/app/health/runners"
+  },
+  {
+    "route": "/app/health/runners?state=sample",
+    "states": [
+      {
+        "key": "selected-run",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "css:[data-testid=\"runner-lanes-chart\"] a[data-bar-id]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:lane-bar-card",
+            "state": "hidden"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/health/failures"
+  },
+  {
+    "route": "/app/health/usage",
+    "states": [
+      {
+        "key": "role-tiers",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "css:[data-testid=\"usage-roles\"] button[aria-expanded]"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/health/insights"
+  },
+  {
+    "route": "/app/tasks"
+  },
+  {
+    "route": "/app/dev/fixtures?state=task-shipped&variant=open"
+  }
+]

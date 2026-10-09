@@ -2,6 +2,9 @@
 
 import { useTransition } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+import { MonthlySpend } from './MonthlySpend';
+import { RoleUsage, type RoleUsageData } from './RoleUsage';
+import type { MonthlyBudgetForecast } from '@/lib/budget-forecast';
 import { MetricStat, Stat } from '@/components/StatTile';
 import Segmented from '@/components/ui/Segmented';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
@@ -38,6 +41,8 @@ interface Props {
   wsFilter: string | null;
   /** The active team's month on the hosted runner; null hides the section. */
   hostedRunner?: HostedRunnerProps | null;
+  roleUsage?: RoleUsageData | null;
+  monthly?: MonthlyBudgetForecast | null;
 }
 
 /**
@@ -46,7 +51,7 @@ interface Props {
  * TASK-KEYED throughout, which is what the header denominator claims and what
  * every section below honours.
  */
-export function UsageClient({ view, hostedRunner = null }: Props) {
+export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -100,7 +105,7 @@ export function UsageClient({ view, hostedRunner = null }: Props) {
           {/* 1. What a task costs. */}
           <section data-testid="usage-section-per-task" className="mb-6">
             <h2 className="section-label mb-3">Per task</h2>
-            <div className="card p-4">
+            <div className="border-y border-border-default py-4">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <MetricStat<Distribution>
                   label="Tokens / task"
@@ -147,6 +152,9 @@ export function UsageClient({ view, hostedRunner = null }: Props) {
           <CostBasisSection byBasis={view.byBasis} />
         </>
       )}
+
+      {roleUsage && <RoleUsage {...roleUsage} window={window} />}
+      {monthly && <MonthlySpend monthly={monthly} />}
 
       {/* Hosted runner time is month-scoped, so it follows the windowed figures
           instead of sitting between the window control and what it controls. */}
@@ -543,7 +551,7 @@ function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
   return (
     <section data-testid="usage-cost-basis" className="mb-6">
       <h2 className="section-label mb-3">Cost</h2>
-      <div className="card p-4 text-sm">
+      <div className="border-y border-border-default py-4 text-body">
         <div className={`${cols} text-[11px] text-text-muted`}>
           <span />
           <span className="text-right">Runners</span>

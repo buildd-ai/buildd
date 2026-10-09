@@ -176,9 +176,12 @@ export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
   const hidden = idleSlotCount(fleet);
   return (
     <div data-testid="runner-lanes">
-      <h3 data-testid="runner-lanes-caption" aria-live="polite" className="mb-3 line-clamp-2 text-body font-semibold text-text-primary">
+      <h3 data-testid="runner-lanes-caption" aria-live="polite" className="mb-1 text-body font-semibold text-text-primary">
         {caption.href ? <Link href={caption.href} className="text-inherit hover:underline">{caption.text} →</Link> : caption.text}
       </h3>
+      <p data-testid="runner-lanes-hint" className="mb-3 text-meta text-text-muted">
+        {selected?.href ? 'Tap the highlighted run again to open it.' : selected ? 'Tap empty space to clear.' : 'Tap a run to highlight it.'}
+      </p>
       <div className="card overflow-hidden">
         <SlotLanes
           testId="runner-lanes-chart"
