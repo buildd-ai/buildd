@@ -82,7 +82,7 @@ describe('short text', () => {
   });
 
   it('derived signatures keep required markers and sub-action values', () => {
-    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?}');
+    expect(actionSignature('get_task')).toBe('{taskId, include?, fullDescription?, all?}');
     expect(actionSignature('manage_secrets')).toContain('action: list|set|delete');
     expect(actionSignature('explain')).toContain('taskId?|missionId?');
   });
