@@ -45,6 +45,7 @@
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
     "./providers/manage": "./providers/manage.ts",
+    "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",
