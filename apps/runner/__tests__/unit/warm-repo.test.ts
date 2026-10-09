@@ -691,7 +691,8 @@ describe('refresh rules', () => {
     await s.refresh('completed');
     expect(store.manifests).toHaveLength(2);
     expect(lines).toContain('BUILDD_WARM_REFRESH=cache_growth');
-  });
+    // Writes, copies and tars ~800 MiB; slow disks under a parallel run need headroom.
+  }, 120_000);
 
   test('another refresh in flight (begin 409): nothing uploaded, no throw', async () => {
     store.busy = true;
