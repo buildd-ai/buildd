@@ -123,6 +123,67 @@ describe('buildMilestoneLog', () => {
   });
 });
 
+describe('buildMilestoneLog — tool-call preambles', () => {
+  const T0 = 2_000_000;
+
+  test('text + tool call in the same turn collapses to one tool-derived entry', () => {
+    const log = buildMilestoneLog([
+      { type: 'phase', label: 'Now let me check the decision', toolCount: 1, ops: ['get_decision'], ts: T0 },
+    ], { nowMs: T0 + 5_000, live: true });
+    expect(log).toHaveLength(1);
+    expect(log[0].actionLabel).toBe('Checked decision');
+    // The raw text is kept, on the entry and on the milestone itself.
+    expect(log[0].preambles).toEqual(['Now let me check the decision']);
+    expect(log[0].milestone.label).toBe('Now let me check the decision');
+    expect(log[0].toolCount).toBe(1);
+  });
+
+  test('adjacent phases that did the same thing merge into one entry', () => {
+    const log = buildMilestoneLog([
+      { type: 'phase', label: 'Now let me save a knowledge entry', toolCount: 1, ops: ['learn'], ts: T0 },
+      { type: 'phase', label: 'And one more for the gotcha', toolCount: 1, ops: ['learn'], ts: T0 + 1_000 },
+    ], { nowMs: T0 + 5_000, live: false });
+    expect(log.map(e => e.actionLabel)).toEqual(['Saved knowledge']);
+    expect(log[0].preambles).toHaveLength(2);
+    expect(log[0].toolCount).toBe(2);
+  });
+
+  test('substantive prose followed by a tool call stays as written', () => {
+    const label = 'Found the cause: the claim route does not filter by role';
+    const log = buildMilestoneLog([
+      { type: 'phase', label, toolCount: 2, ops: ['Edit'], ts: T0 },
+    ], { nowMs: T0 + 5_000, live: true });
+    expect(log[0].actionLabel).toBeUndefined();
+    expect(log[0].milestone.label).toBe(label);
+  });
+
+  test('narration that carries a finding is no longer dropped', () => {
+    const log = buildMilestoneLog([
+      { type: 'status', label: "Let me fix it — the fixture is stale because the seed changed", ts: T0 },
+    ], { nowMs: T0 + 5_000, live: true });
+    expect(log).toHaveLength(1);
+  });
+
+  test('an older runner (no ops) keeps the lexical narration fallback', () => {
+    const log = buildMilestoneLog([
+      { type: 'phase', label: 'Tests pass', toolCount: 1, ts: T0 },
+      { type: 'phase', label: 'Now let me open the PR', toolCount: 2, ts: T0 + 1_000 },
+    ], { nowMs: T0 + 5_000, live: true });
+    expect(log.map(e => e.milestone.label)).toEqual(['Tests pass']);
+    expect(log[0].toolCount).toBe(3);
+  });
+
+  test('order and timing are preserved around tool-derived entries', () => {
+    const log = buildMilestoneLog([
+      { type: 'status', label: 'Plan ready', ts: T0 },
+      { type: 'phase', label: 'Let me get error traces', toolCount: 1, ops: ['get_error_traces'], ts: T0 + 10_000 },
+      { type: 'status', label: 'Root cause found', ts: T0 + 25_000 },
+    ], { nowMs: T0 + 30_000, live: false });
+    expect(log.map(e => e.actionLabel ?? e.milestone.label)).toEqual(['Root cause found', 'Checked error traces', 'Plan ready']);
+    expect(log[1].durationLabel).toBe('15s');
+  });
+});
+
 describe('showTokenCount', () => {
   test('a real count shows', () => {
     expect(showTokenCount(1200, 4)).toBe(true);

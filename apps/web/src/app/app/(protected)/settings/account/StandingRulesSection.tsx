@@ -4,12 +4,14 @@
  * Settings -> Profile -> "Standing rules": the rules chat loads into every one
  * of your turns (knowledge-base: buildd/design/memory-done-right.md, "Chat"). Saved from a card
  * in the thread ("Remember this") or added here; edited and removed here.
- * Yours only: nobody else on the team sees them. Square and mobile-first: one
- * rule per row, the rule in Newsreader, its scope in mono under it.
+ * Yours only: nobody else on the team sees them. Mobile-first: one rule per
+ * hairline row, the rule in Newsreader, its scope in mono under it. One add
+ * control: the section action, or the inline link in the empty sentence.
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ChatDirectiveDTO, ListChatDirectivesResponse } from '@buildd/shared';
 import { Select } from '@/components/ui/Select';
+import Section from '@/components/ui/Section';
 
 const EVERYWHERE = '__everywhere__';
 const MAX = 280;
@@ -61,7 +63,7 @@ function RuleEditor({
         rows={2}
         onChange={e => setText(e.target.value)}
         placeholder="Never force-push to dev."
-        className="block w-full resize-y border border-border-strong bg-surface-1 px-3 py-2 font-voice text-[16px] leading-[1.4] text-text-primary placeholder:text-text-muted"
+        className="block w-full resize-y border border-border-strong bg-surface-1 px-3 py-2 font-voice text-lede leading-[1.4] text-text-primary placeholder:text-text-muted"
       />
       <div className="flex flex-wrap items-center gap-2">
         <Select
@@ -76,7 +78,7 @@ function RuleEditor({
         <button type="submit" disabled={busy || !trimmed} data-testid={`${testId}-submit`} className="btn btn-lg btn-primary">{submitLabel}</button>
         {onCancel && <button type="button" onClick={onCancel} disabled={busy} className="btn btn-lg btn-quiet">Cancel</button>}
       </div>
-      <p className="font-mono text-[11px] text-text-muted">{trimmed.length} / {MAX}</p>
+      <p className="font-mono text-chip text-text-muted">{trimmed.length} / {MAX}</p>
     </form>
   );
 }
@@ -117,22 +119,24 @@ export default function StandingRulesSection() {
   const rules = data?.directives ?? [];
   const workspaces = data?.workspaces ?? [];
 
+  const startAdding = () => { setAdding(true); setEditing(null); };
+  const empty = !!data && rules.length === 0;
+
   return (
-    <section id="standing-rules" aria-labelledby="standing-rules-h" className="scroll-mt-20" data-testid="standing-rules">
-      <div className="mb-3 flex min-h-8 items-center justify-between gap-3">
-        <h2 id="standing-rules-h" className="section-label">Standing rules</h2>
-        {!adding && (
-          <button type="button" onClick={() => { setAdding(true); setEditing(null); }} className="btn btn-lg" data-testid="standing-rules-add">
+    <div id="standing-rules" className="scroll-mt-20" data-testid="standing-rules">
+      <Section
+        title="Standing rules"
+        action={!adding && !empty ? (
+          <button type="button" onClick={startAdding} className="btn h-11 md:h-8" data-testid="standing-rules-add">
             Add a rule
           </button>
-        )}
-      </div>
-      <div className="card">
-        <p className="border-b border-border-default px-4 py-3 text-xs leading-relaxed text-text-secondary">
+        ) : undefined}
+      >
+        <p className="mb-2 text-sm text-text-muted">
           Chat follows these in every reply. Only you can edit them. Tasks chat files carry the matching rules, visible to the workspace.
         </p>
         {adding && (
-          <div className="border-b border-border-default px-4 py-3">
+          <div className="border-t border-border-default py-3">
             <RuleEditor
               testId="standing-rule-new"
               initialText=""
@@ -145,52 +149,59 @@ export default function StandingRulesSection() {
             />
           </div>
         )}
-        {data && rules.length === 0 && !adding && (
-          <p data-testid="standing-rules-empty" className="px-4 py-5 text-sm text-text-secondary">No rules.</p>
+        {empty && !adding && (
+          <p className="text-sm text-text-muted">
+            <span data-testid="standing-rules-empty">No rules.</span>{' '}
+            <button type="button" onClick={startAdding} className="min-h-11 md:min-h-0 font-medium text-text-primary underline underline-offset-2" data-testid="standing-rules-add">
+              Add a rule
+            </button>
+          </p>
         )}
-        {!data && !error && <p className="px-4 py-5 font-mono text-[12px] text-text-muted">Loading…</p>}
-        <ul className="divide-y divide-border-default">
-          {rules.map(d => (
-            <li key={d.id} data-testid="standing-rule" className="px-4 py-3">
-              {editing === d.id ? (
-                <RuleEditor
-                  testId="standing-rule-edit"
-                  initialText={d.text}
-                  initialScope={d.workspaceId}
-                  workspaces={workspaces}
-                  busy={busy}
-                  submitLabel="Save"
-                  onSubmit={(text, workspaceId) => { void act(() => send(`/api/chat/directives/${d.id}`, 'PATCH', { text, workspaceId })); }}
-                  onCancel={() => setEditing(null)}
-                />
-              ) : (
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="font-voice text-[16.5px] leading-[1.4] text-text-primary [overflow-wrap:anywhere]">{d.text}</p>
-                    <p data-testid="standing-rule-scope" className="mt-1 font-mono text-[11px] uppercase tracking-[.12em] text-text-secondary">{scopeLabel(d)}</p>
+        {!data && !error && <p className="font-mono text-meta text-text-muted">Loading…</p>}
+        {rules.length > 0 && (
+          <ul className="divide-y divide-border-default border-y border-border-default">
+            {rules.map(d => (
+              <li key={d.id} data-testid="standing-rule" className="py-3">
+                {editing === d.id ? (
+                  <RuleEditor
+                    testId="standing-rule-edit"
+                    initialText={d.text}
+                    initialScope={d.workspaceId}
+                    workspaces={workspaces}
+                    busy={busy}
+                    submitLabel="Save"
+                    onSubmit={(text, workspaceId) => { void act(() => send(`/api/chat/directives/${d.id}`, 'PATCH', { text, workspaceId })); }}
+                    onCancel={() => setEditing(null)}
+                  />
+                ) : (
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-voice text-lede leading-[1.4] text-text-primary [overflow-wrap:anywhere]">{d.text}</p>
+                      <p data-testid="standing-rule-scope" className="mt-1 font-mono text-meta text-text-muted">{scopeLabel(d)}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button type="button" disabled={busy} onClick={() => { setEditing(d.id); setAdding(false); }} className="btn btn-lg btn-quiet" data-testid="standing-rule-edit-open">
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label={`Remove rule: ${d.text}`}
+                        onClick={() => { void act(() => send(`/api/chat/directives/${d.id}`, 'DELETE')); }}
+                        className="btn btn-lg btn-quiet text-status-error"
+                        data-testid="standing-rule-remove"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button type="button" disabled={busy} onClick={() => { setEditing(d.id); setAdding(false); }} className="btn btn-lg btn-quiet" data-testid="standing-rule-edit-open">
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      aria-label={`Remove rule: ${d.text}`}
-                      onClick={() => { void act(() => send(`/api/chat/directives/${d.id}`, 'DELETE')); }}
-                      className="btn btn-lg btn-quiet text-status-error"
-                      data-testid="standing-rule-remove"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-        {error && <p role="alert" className="border-t border-border-default px-4 py-3 text-xs text-status-error">{error}</p>}
-      </div>
-    </section>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <p role="alert" className="mt-2 text-sm text-status-error">{error}</p>}
+      </Section>
+    </div>
   );
 }

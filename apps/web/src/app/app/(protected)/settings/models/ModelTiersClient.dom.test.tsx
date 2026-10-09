@@ -262,12 +262,11 @@ describe('ModelTiersClient: load failure', () => {
     await mount();
     const err = q('[data-testid="load-error"]')!;
     expect(err).not.toBeNull();
-    expect(err.textContent).toContain("couldn't load");
+    expect(err.textContent).toContain("Couldn't load the model tiers.");
     expect(err.textContent).toContain('Retry');
-    expect(err.textContent).toContain('HTTP 500'); // only inside Details
-    const summary = err.querySelector('details > summary');
-    expect(summary?.textContent).toBe('Details');
-    expect(err.textContent!.replace(err.querySelector('details')!.textContent!, '')).not.toContain('HTTP 500');
+    // Never a raw status code, not even folded.
+    expect(err.textContent).not.toContain('HTTP');
+    expect(err.textContent).not.toContain('500');
     globalThis.fetch = ok;
     await click([...err.querySelectorAll('button')].find((b) => b.textContent === 'Retry'));
     expect(q('[data-testid="load-error"]')).toBeNull();

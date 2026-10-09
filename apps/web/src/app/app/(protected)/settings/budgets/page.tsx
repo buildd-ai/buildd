@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
+import Link from 'next/link';
+import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import CapsForm from './CapsForm';
@@ -50,23 +52,25 @@ export default async function BudgetsSettingsPage() {
 
   return (
     <SettingsPage title="Budgets">
-      <section aria-labelledby="my-spend-h">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h2 id="my-spend-h" className="section-label">Your spend</h2>
-          <span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>
-        </div>
+      <Section
+        title="Your spend"
+        action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}
+      >
         {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
-      </section>
+        <p className="mt-2 text-xs text-text-secondary">
+          Spend in detail is in{' '}
+          <Link href="/app/health/usage" className="underline hover:text-text-primary" data-testid="budgets-usage-link">Health › Usage</Link>.
+        </p>
+      </Section>
 
+      {/* Kept here pending an owner decision on whether it moves to Health › Usage. */}
       {perms.view_team_usage && spend && spend.people.length > 1 && (
-        <section aria-labelledby="people-spend-h">
-          <h2 id="people-spend-h" className="section-label mb-3">By person · this month</h2>
+        <Section title="By person this month">
           <PeopleSpend people={spend.people} unattributed={spend.unattributedAgent} />
-        </section>
+        </Section>
       )}
 
-      <section aria-labelledby="caps-h">
-        <h2 id="caps-h" className="section-label mb-3">Interactive caps</h2>
+      <Section title="Interactive caps">
         <CapsForm
           teamId={currentTeam.id}
           canManage={perms.manage_team_settings}
@@ -74,7 +78,7 @@ export default async function BudgetsSettingsPage() {
           defaultTeamUsd={DEFAULT_CHAT_DAILY_BUDGET_USD}
           defaultUserShare={DEFAULT_CHAT_USER_SHARE}
         />
-      </section>
+      </Section>
     </SettingsPage>
   );
 }

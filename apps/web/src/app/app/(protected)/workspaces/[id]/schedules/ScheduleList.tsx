@@ -6,6 +6,7 @@ import { isValidTaskId } from '@/lib/task-id';
 import { isScheduleErrorLive } from '@/lib/schedule-health';
 import { useConfirm } from '@/components/useConfirm';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
+import { TonePill } from '@/components/ui/StatePill';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -134,33 +135,29 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
 
   if (schedules.length === 0) {
     return (
-      <div className="text-center py-12 text-text-muted">
-        <p className="text-lg">No schedules</p>
-      </div>
+      <p className="text-sm text-text-muted">No schedules.</p>
     );
   }
 
   return (
-    <div className="border border-border-default rounded-lg divide-y divide-border-default">
+    <div className="border-y border-border-default divide-y divide-border-default">
       {schedules.map((schedule) => (
-        <div key={schedule.id} className="p-4">
+        <div key={schedule.id} className="py-4">
           <div data-testid="schedule-row" className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-0">
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-medium min-w-0 [overflow-wrap:anywhere]">{schedule.name}</h3>
                 {!schedule.enabled && (
-                  <span className="px-2 py-0.5 text-xs rounded-full bg-surface-3 text-text-secondary">
-                    Paused
-                  </span>
+                  <TonePill tone="q">Paused</TonePill>
                 )}
                 {schedule.consecutiveFailures > 0 && (
-                  <span className="px-2 py-0.5 text-xs rounded-full bg-status-error/10 text-status-error">
+                  <TonePill tone="bad">
                     {schedule.consecutiveFailures} failure{schedule.consecutiveFailures !== 1 ? 's' : ''}
-                  </span>
+                  </TonePill>
                 )}
               </div>
               <p className="text-sm text-text-muted mt-0.5">
-                <code className="text-xs bg-surface-3 px-1 py-0.5 rounded">{schedule.cronExpression}</code>
+                <code className="font-mono text-xs">{schedule.cronExpression}</code>
                 {' '}{schedule.timezone}
               </p>
               <p className="text-sm text-text-muted mt-0.5 [overflow-wrap:anywhere]">
@@ -168,7 +165,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
               </p>
               {schedule.taskTemplate.trigger && (
                 <p className="text-sm text-text-muted mt-0.5 flex items-center gap-1.5">
-                  <span className="px-1.5 py-0.5 text-xs rounded bg-primary/10 text-primary font-mono">
+                  <span className="text-xs text-text-secondary">
                     {schedule.taskTemplate.trigger.type}
                   </span>
                   <span className="truncate text-xs font-mono opacity-70" title={schedule.taskTemplate.trigger.url}>
@@ -191,7 +188,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 {isValidTaskId(schedule.lastTaskId) && (
                   <a
                     href={`/app/tasks/${schedule.lastTaskId}`}
-                    className="text-primary hover:underline"
+                    className="underline hover:text-text-primary"
                   >
                     Last task
                   </a>
@@ -201,7 +198,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                 <p className="text-xs text-status-error mt-1 truncate">{schedule.lastError}</p>
               )}
               {schedule.pendingSuggestion && (
-                <div className="mt-2 p-3 rounded-lg bg-status-warning/10 border border-status-warning/20">
+                <div className="notice notice-warn mt-2">
                   <div className="flex items-start gap-2">
                     <svg className="w-4 h-4 text-status-warning shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                       <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -220,23 +217,25 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                       </p>
                       <div className="flex items-center gap-2 mt-2">
                         <button
+                          type="button"
                           onClick={() => handleSuggestionAction(schedule.id, 'approve')}
                           disabled={suggestionLoading === schedule.id}
-                          className="px-2.5 py-1 text-xs font-medium bg-status-success/15 text-status-success border border-status-success/25 rounded-md hover:bg-status-success/25 transition-colors disabled:opacity-50"
+                          className="btn btn-sm"
                         >
                           Approve
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleSuggestionAction(schedule.id, 'dismiss')}
                           disabled={suggestionLoading === schedule.id}
-                          className="px-2.5 py-1 text-xs font-medium bg-surface-3 text-text-secondary border border-border-default rounded-md hover:bg-surface-4 transition-colors disabled:opacity-50"
+                          className="btn btn-sm btn-quiet"
                         >
                           Dismiss
                         </button>
                         {isValidTaskId(schedule.pendingSuggestion.suggestedByTaskId) && (
                           <a
                             href={`/app/tasks/${schedule.pendingSuggestion.suggestedByTaskId}`}
-                            className="text-[11px] md:text-[10px] text-primary hover:underline ml-auto"
+                            className="text-xs underline hover:text-text-primary ml-auto"
                           >
                             View task
                           </a>

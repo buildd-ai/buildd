@@ -916,7 +916,8 @@ export interface QuestionRecommendation {
 }
 
 export interface WaitingFor {
-  type: 'question' | 'permission' | 'confirmation';
+  /** `pause`: a person paused a running agent; answering it (Resume) continues the same session. */
+  type: 'question' | 'permission' | 'confirmation' | 'pause';
   prompt: string;
   options?: (string | WaitingForOption)[];
   /**
@@ -3682,6 +3683,8 @@ export interface PrListItem {
   // Present only when they matter (apps/web/src/lib/pr-list.ts prSignals):
   /** Why a person is needed: the escalation inbox's decision. */
   waitingOnYou?: string;
+  /** The escalation gate kept it from you: the next step Buildd is taking, in words. */
+  builddOwns?: string;
   /** An agent is already on it. */
   resolving?: 'conflict' | 'ci' | 'review';
   /** CI fix tasks buildd has dispatched for this PR (red only). */

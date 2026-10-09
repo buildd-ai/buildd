@@ -1153,7 +1153,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -1226,7 +1226,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -1310,7 +1310,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber: prNumber ?? null }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

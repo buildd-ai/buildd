@@ -76,6 +76,7 @@ import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
+import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -216,6 +217,13 @@ export interface LandPrDeps {
    * `needs_fix` with no `taskId` and a ledger row saying so.
    */
   dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string; /** Nothing was filed, and why. */ skipped?: string } | null>;
+  /**
+   * With no `dispatchFix` wired (every door today), red CI and a migration
+   * collision still get their fix: lib/pr-landing-fix-dispatch.ts hands them to
+   * the CI retry and the collision renumber that already decide those. These
+   * are its dependencies, for tests.
+   */
+  landingFix?: LandingFixDispatchDeps;
   /**
    * Sends a reviewer for a stale approval (the diff changed after the approve,
    * so carry-forward could not keep it). Used for the `re_review` fix of a
@@ -647,6 +655,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     });
   };
 
+  // a90fc99b: what a door with no `dispatchFix` of its own files for red CI and a collision.
+  const defaultFix: NonNullable<LandPrDeps['dispatchFix']> = (fi) => dispatchLandingFix(fi, deps.landingFix);
+
   const needsFix = async (
     fix: Exclude<FixKind, 'conflict'>,
     reason: string,
@@ -815,7 +826,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
         // unfinished run, or a non-passing commit status, is a wait.
         const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
-        return red ? needsFix('ci_fix', reason) : waiting(reason);
+        return red ? needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix) : waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
@@ -823,7 +834,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'deny_path':
         return human('deny_path', reason);
       case 'migration':
-        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason);
+        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
         return /^could not /.test(reason) ? waiting(reason) : human('migration', reason);
       case 'size':
         return human('size_cap', reason);

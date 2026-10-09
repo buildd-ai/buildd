@@ -66,6 +66,9 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
   }
 
   const abort = () => post(`/api/workers/${workerId}/cmd`, { action: 'abort' }, 'Failed to abort worker');
+  // Pause keeps the session: Resume (answering the pause) continues it (lib/worker-pause.ts).
+  const pause = () => post(`/api/workers/${workerId}/pause`, {}, 'Failed to pause');
+  const canPause = status === 'running';
   // Same path and priority as the steer form: queued for this run's next turn.
   const resend = (message: string) => post(`/api/workers/${workerId}/instruct`, { message, priority: 'urgent' }, 'Failed to resend');
 
@@ -147,19 +150,48 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         <div className="flex items-center justify-end gap-2">
           {confirm ? (
             <>
+              {canPause && (
+                <span data-testid="worker-stop-confirm-copy" className="mr-auto text-meta text-text-muted">
+                  Stopping loses work it hasn’t pushed. Pause keeps it.
+                </span>
+              )}
+              {canPause && (
+                <button
+                  type="button"
+                  data-testid="worker-pause-instead-btn"
+                  onClick={pause}
+                  disabled={loading}
+                  className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3 disabled:opacity-50"
+                >
+                  Pause instead
+                </button>
+              )}
               <button
                 type="button"
                 onClick={abort}
                 disabled={loading}
                 className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-status-error text-status-error hover:bg-status-error/10 disabled:opacity-50"
               >
-                {loading ? 'Stopping…' : 'Confirm stop'}
+                {loading ? 'Stopping…' : 'Abort now'}
               </button>
               <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-meta text-text-muted hover:text-text-primary">
                 Cancel
               </button>
             </>
           ) : (
+            <>
+            {canPause && (
+              <button
+                type="button"
+                data-testid="worker-pause-btn"
+                onClick={pause}
+                disabled={loading}
+                title="Stops at the next safe point and keeps the session. Resume continues it."
+                className="min-h-11 md:min-h-9 px-3 text-meta font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary disabled:opacity-50"
+              >
+                {loading ? 'Pausing…' : 'Pause'}
+              </button>
+            )}
             <button
               type="button"
               data-testid="worker-abort-btn"
@@ -168,6 +200,7 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
             >
               Stop agent
             </button>
+            </>
           )}
         </div>
       )}

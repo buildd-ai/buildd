@@ -4,84 +4,85 @@ import PersonalProviderKeys from './PersonalProviderKeys';
 import KeyboardHintsSetting from './KeyboardHintsSetting';
 import StandingRulesSection from './StandingRulesSection';
 import SettingsPage from '../_components/SettingsPage';
+import Section from '@/components/ui/Section';
+import { TonePill } from '@/components/ui/StatePill';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { getInitials } from './initials';
 
 export const dynamic = 'force-dynamic';
 
-/** Settings → Account → Profile (was /app/you; next.config redirects the old path). */
+const ROWS = 'divide-y divide-border-default border-y border-border-default';
+
+/** Settings → Profile (was /app/you; next.config redirects the old path). */
 export default async function AccountSettingsPage() {
   const { user, teams, currentTeamId, perms } = await loadSettingsContext();
   const initials = getInitials(user.name, user.email);
 
   return (
     <SettingsPage title="Profile">
-      <section aria-labelledby="profile-h">
-        <h2 id="profile-h" className="section-label mb-3">Signed in as</h2>
-        <div className="card p-4">
-          <div className="flex items-center gap-4">
-            {user.image ? (
-              <img src={user.image} alt={user.name || 'Avatar'} className="w-12 h-12 object-cover border border-border-default" />
-            ) : (
-              <div className="w-12 h-12 bg-accent-soft border border-border-default flex items-center justify-center">
-                <span className="text-sm font-medium text-accent-text">{initials}</span>
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-[15px] font-medium text-text-primary truncate">{user.name || 'Unnamed'}</p>
-              <p className="text-xs text-text-secondary break-all">{user.email}</p>
-            </div>
-            <SignOutButton />
-          </div>
+      {/* Who is signed in: one row, sign out beside it. */}
+      <div data-testid="profile-identity" className="flex min-h-14 items-center gap-3 border-y border-border-default py-2.5">
+        {user.image ? (
+          <img src={user.image} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover" />
+        ) : (
+          <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm font-medium text-text-secondary">
+            {initials}
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-text-primary">{user.name || 'Unnamed'}</p>
+          <p className="break-words text-sm text-text-secondary">{user.email}</p>
         </div>
-      </section>
+        <SignOutButton />
+      </div>
 
       <KeyboardHintsSetting initial={user.showKeyboardHints === true} />
 
       {/* The rules chat loads into every one of your turns; yours only. */}
       <StandingRulesSection />
 
-      {/* What chat uses for you (links to Providers); your own keys, for chat and your agent tasks, only when the team's policy allows them. */}
-      <PersonalProviderKeys teamId={currentTeamId} isAdmin={perms.manage_inference_providers} />
-
-      <section aria-labelledby="teams-h">
-        <div className="flex justify-between items-center mb-3">
-          <h2 id="teams-h" className="section-label">Your teams</h2>
-          <Link href="/app/teams/new" className="text-sm text-text-secondary hover:text-text-primary transition-colors">
-            New team
-          </Link>
-        </div>
-        {teams.length === 0 ? (
-          <div className="card p-6 text-center">
-            <p className="text-text-muted text-sm mb-3">No teams</p>
-            <Link href="/app/teams/new" className="text-sm text-primary hover:underline">Create a team</Link>
+      {/* What chat runs on for you; your own keys are managed on Models. */}
+      {currentTeamId && (
+        <Section title="Models">
+          <div className="border-y border-border-default">
+            <PersonalProviderKeys teamId={currentTeamId} isAdmin={perms.manage_inference_providers} />
           </div>
+        </Section>
+      )}
+
+      <Section
+        title="Your teams"
+        action={teams.length > 0 ? <Link href="/app/settings/team/new" className="btn btn-sm h-11 md:h-6">New team</Link> : undefined}
+      >
+        {teams.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            No teams.{' '}
+            <Link href="/app/settings/team/new" className="font-medium text-text-primary underline underline-offset-2">Create a team</Link>
+          </p>
         ) : (
-          <div className="card divide-y divide-border-default">
-            {teams.map((team) => {
-              const isPersonal = team.slug.startsWith('personal-');
-              return (
-                <Link
-                  key={team.id}
-                  href={`/app/teams/${team.id}`}
-                  className="flex justify-between items-center gap-3 px-4 py-3 min-h-12 hover:bg-surface-3 transition-colors"
-                >
-                  <span className="flex items-center gap-2 min-w-0">
-                    <span className="font-medium truncate">{team.name}</span>
-                    {isPersonal && <span className="status-pill status-pill-idle shrink-0">personal</span>}
+          <div data-testid="profile-teams" className={ROWS}>
+            {teams.map((team) => (
+              <Link
+                key={team.id}
+                // The active team is the Team page as it stands; another opens on its own members.
+                href={team.id === currentTeamId ? '/app/settings/team' : `/app/settings/team?team=${encodeURIComponent(team.id)}`}
+                className="flex min-h-14 items-center justify-between gap-3 py-2.5 hover:bg-surface-3 transition-colors"
+              >
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium text-text-primary">{team.name}</span>
+                    {team.slug.startsWith('personal-') && <TonePill tone="q">Personal</TonePill>}
                   </span>
-                  <span className="flex items-center gap-3 text-xs shrink-0">
-                    <span className="text-text-muted">
-                      {team.memberCount} {team.memberCount === 1 ? 'member' : 'members'}
-                    </span>
-                    <span className="status-pill status-pill-idle">{team.role}</span>
+                  <span className="block text-sm text-text-muted">
+                    {team.role} · <span className="font-mono">{team.memberCount}</span> {team.memberCount === 1 ? 'member' : 'members'}
                   </span>
-                </Link>
-              );
-            })}
+                </span>
+                <span aria-hidden="true" className="shrink-0 text-text-muted">→</span>
+              </Link>
+            ))}
           </div>
         )}
-      </section>
+      </Section>
     </SettingsPage>
   );
 }

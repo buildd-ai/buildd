@@ -41,7 +41,7 @@ describe('splitTeamLevelRows', () => {
 
 describe('personalRoleEditorPath', () => {
   it('carries the id, since a personal slug is not unique in the team', () => {
-    expect(personalRoleEditorPath({ id: 'abc', slug: 'reviewer' })).toBe('/app/team/reviewer/settings?id=abc');
+    expect(personalRoleEditorPath({ id: 'abc', slug: 'reviewer' })).toBe('/app/settings/roles/reviewer/edit?id=abc');
   });
 });
 

@@ -44,7 +44,8 @@ async function mount(hash = '') {
 }
 
 const row = (id: string) => host.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
-const chips = (id: string) => [...row(id).querySelectorAll('.status-pill')].map((c) => c.textContent);
+// Status chips are TonePills (StatusChip), the one span carrying a tone.
+const chips = (id: string) => [...row(id).querySelectorAll('span[data-tone]')].map((c) => c.textContent);
 
 describe('AgentBackendsSection rows', () => {
   it('folds every row and shows status chips', async () => {
@@ -131,7 +132,7 @@ describe('Claude: the model key is the primary path, the subscription sign-in is
     expect(text).not.toContain('Connect with Claude');
     expect(text.indexOf('API key')).toBeLessThan(text.indexOf('self-hosted runner only'));
     // OpenRouter and LiteLLM are named with where they live.
-    expect(row('claude-row').querySelector('a[href="/app/settings/providers#agent-endpoint-h"]')).not.toBeNull();
+    expect(row('claude-row').querySelector('a[href="/app/settings/models#agent-endpoint-h"]')).not.toBeNull();
   });
 
   it('the sign-in is still there, one tap away', async () => {
@@ -246,7 +247,8 @@ describe('read-only for a member without manage_team_credentials', () => {
     }
     const note = host.querySelector('[data-testid="credentials-read-only"]')!;
     expect(note.textContent).toContain('Admins can change these.');
-    expect(note.querySelector('a')!.getAttribute('href')).toBe('/app/settings/account#provider-keys');
+    // Your own key is under Keys on the same page (scope Mine): no second link here.
+    expect(note.querySelector('a')).toBeNull();
   });
 
   it('#agent-key does not open a read-only Claude row', async () => {

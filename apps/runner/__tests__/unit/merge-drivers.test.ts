@@ -17,6 +17,7 @@ import {
   formatDerivedFinishFallback,
   canFinishWithoutAgent,
   formatPreMergeMilestone,
+  dedupeImportLines,
 } from '../../src/merge-drivers';
 
 function git(cwd: string, ...args: string[]): string {
@@ -485,5 +486,20 @@ describe('formatPreMergeMilestone', () => {
     expect(formatPreMergeMilestone({ ...base, status: 'up_to_date' })).toBe('Pre-merge: already up to date with the base');
     expect(formatPreMergeMilestone({ ...base, status: 'error', error: 'git merge timed out after 600s\nmore' }))
       .toBe('Pre-merge: failed, agent merges instead (git merge timed out after 600s)');
+  });
+});
+
+describe('dedupeImportLines', () => {
+  test('drops a repeated top-level import line, keeps the first', () => {
+    const src = "import a from 'a';\nimport { displayTaskTitle } from '@/lib/t';\nimport b from 'b';\nimport { displayTaskTitle } from '@/lib/t';\nconst x = 1;\n";
+    const out = dedupeImportLines(src);
+    expect(out).toBe("import a from 'a';\nimport { displayTaskTitle } from '@/lib/t';\nimport b from 'b';\nconst x = 1;\n");
+  });
+  test('leaves distinct imports and indented/non-import repeats alone', () => {
+    const src = "import a from 'a';\nimport b from 'b';\nfoo();\n  import('x');\n  import('x');\nfoo();\n";
+    expect(dedupeImportLines(src)).toBe(src);
+  });
+  test('returns null-safe identity when nothing to do', () => {
+    expect(dedupeImportLines('')).toBe('');
   });
 });
