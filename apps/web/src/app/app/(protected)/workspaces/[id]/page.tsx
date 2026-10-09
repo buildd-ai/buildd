@@ -15,6 +15,7 @@ import Lede from '@/components/ui/Lede';
 import Section from '@/components/ui/Section';
 import { StatusPill } from '@/components/ui/StatePill';
 import { taskCountLede } from './overview-lede';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -185,13 +186,8 @@ export default async function WorkspaceDetailPage({
             <ul className="divide-y divide-border-default border-y border-border-default">
               {workspace.tasks.map((task) => (
                 <li key={task.id}>
-                  <Link href={`/app/tasks/${task.id}`} className="flex items-start justify-between gap-3 py-3 hover:bg-surface-2">
-                    <div className="min-w-0">
-                      <p className="font-medium text-text-primary truncate">{task.title}</p>
-                      {task.description && (
-                        <p className="text-sm text-text-muted line-clamp-1">{task.description}</p>
-                      )}
-                    </div>
+                  <Link href={`/app/tasks/${task.id}`} className="flex min-h-11 items-center justify-between gap-3 py-2 hover:bg-surface-2">
+                    <p className="min-w-0 font-medium text-text-primary truncate">{displayTaskTitle(task.title)}</p>
                     <StatusPill status={task.status} />
                   </Link>
                 </li>
