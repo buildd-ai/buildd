@@ -243,6 +243,15 @@ jobs:
         with:
           bun-version: "1.4.2"
 
+      # The dependency handover fixture exercises a real frozen pnpm install.
+      - name: Setup Node for pnpm
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install pnpm for dependency handover tests
+        run: npm install --global pnpm@12.10.1
+
       - name: Cache bun install cache
         uses: actions/cache@v6
         with:

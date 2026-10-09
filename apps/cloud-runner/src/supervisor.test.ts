@@ -213,11 +213,11 @@ describe('dispatch', () => {
     expect(h.state.error).toContain('task-token');
   });
 
-  test('telemetry: no OTLP endpoint means the container env is exactly buildContainerEnv (pinned)', async () => {
+  test('telemetry: no OTLP endpoint adds only the warm handover policy to buildContainerEnv', async () => {
     const h = harness({ config: { OTEL_LOG_TOOL_DETAILS: '1', OTEL_TRACES_BETA: '1', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json' } });
     h.sup.dispatch();
     await h.until(() => h.state.status === 'running');
-    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'));
+    expect(h.fc.starts[0]!.env).toEqual({ ...buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'), BUILDD_WARM_HANDOVER: 'off' });
   });
 
   test('telemetry: an OTLP endpoint adds the Claude Code vars with this dispatch\'s task and attempt, never auth', async () => {

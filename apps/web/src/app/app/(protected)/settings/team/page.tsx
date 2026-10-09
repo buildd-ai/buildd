@@ -1,3 +1,4 @@
+import WarmHandoverSection from '@/components/WarmHandoverSection';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
@@ -77,6 +78,8 @@ export default async function TeamSettingsPage({
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>
       )}
+
+      <WarmHandoverSection teamId={currentTeam.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
 
       <TimezoneSection
         teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}

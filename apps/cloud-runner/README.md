@@ -554,7 +554,14 @@ anything further is left to the sweep), and the agent wakes itself:
 
 ### Container reuse
 
-Off unless `CONTAINER_REUSE=1`. A task that follows another in the same
+Off unless `CONTAINER_REUSE=1` and the team or workspace opts into warm
+handover. Workspace `gitConfig.warmHandover` overrides the team's setting;
+the default is `off` (fresh containers). `repo` keeps verified git packs and
+the scrubbed dependency cache. `deps` also keeps dependency files after
+verification against a runner manifest whose digest the Durable Object holds.
+The platform variable remains the kill switch for both reuse modes.
+
+A task that follows another in the same
 workspace and size class (a reviewer right after its builder) runs in the
 container the first one left warm, instead of a fresh container, snapshot
 restore and dependency cache. One task at a time per container, always.
@@ -585,6 +592,17 @@ restore and dependency cache. One task at a time per container, always.
   `buildd-once --upload-warm` (no task token; the snapshot host is authorised
   by the lease's workspace) and only then destroys the container; the lease
   is busy meanwhile.
+- **Dependencies.** In `deps` mode the runner completes the frozen install
+  before the session and records inode, size, nanosecond ctime, mode and
+  symlink targets. Reset removes regenerable shims and package-manager
+  metadata, checks changed entries against the content-addressed store, and
+  hashes the retained store. Changed generated files and invalid store files
+  and their links are removed. An unexplained change wipes dependencies and
+  the store and restores the normal cache. Tracked fixtures are reconstructed
+  from the verified git checkout. The next frozen install regenerates deleted
+  entries; a new manifest protects the next handover. The report's `handover`
+  section records mode, verification and store-hash time, changed/explained/
+  deleted entries, fallback reason, and install time.
 - **Reset.** Before the next task, `buildd-once --reset-container`
   (`apps/runner/src/container-reset.ts`) runs with no task token and before
   the new task's egress is installed. It kills every process but the
