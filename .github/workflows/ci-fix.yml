@@ -51,7 +51,14 @@ jobs:
           # Detect infrastructure errors that should not trigger code fixes:
           # 1. Test machine unreachable over Tailscale (network/host infra issue)
           # 2. Error message explicitly says to run 'sudo tailscale up --ssh' on host
-          if echo "$LOGS" | grep -qE "Test machine.*is unreachable over Tailscale|sudo tailscale up --ssh"; then
+          # 3. Registry pull rate limit (Docker Hub throttles shared runner IPs)
+          if echo "$LOGS" | grep -qE "toomanyrequests|reached your (unauthenticated )?pull rate limit"; then
+            echo "error_type=registry_rate_limit" >> $GITHUB_OUTPUT
+            echo "is_infrastructure_error=true" >> $GITHUB_OUTPUT
+            echo "::warning::Infrastructure error detected: container registry pull rate limit — will auto-retry instead of attempting code fix"
+            FAILED_JOB=$(gh run view $RUN_ID --json jobs -q '.jobs[] | select(.conclusion=="failure") | .name' | head -1)
+            echo "failed_job=$FAILED_JOB" >> $GITHUB_OUTPUT
+          elif echo "$LOGS" | grep -qE "Test machine.*is unreachable over Tailscale|sudo tailscale up --ssh"; then
             echo "error_type=tailscale_unreachable" >> $GITHUB_OUTPUT
             echo "is_infrastructure_error=true" >> $GITHUB_OUTPUT
             echo "::warning::Infrastructure error detected: test machine unreachable via Tailscale — will auto-retry instead of attempting code fix"

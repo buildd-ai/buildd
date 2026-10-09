@@ -16,7 +16,7 @@ import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
@@ -273,7 +273,9 @@ export function preflightEscalationCheck(
 ): { shouldEscalate: true; reason: string } | { shouldEscalate: false } {
   // The inspector loads the complete paginated file list, so honor an unsafe
   // result even if GitHub's initial files response was truncated.
-  if (migrationSafety && !migrationSafety.safe) {
+  // A data migration is the reviewer's call when the workspace says so
+  // (mergePolicy.dataMigrations); the risk-class check below still applies.
+  if (migrationSafety && !migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
     return { shouldEscalate: true, reason: migrationSafety.reason };
   }
   if (prFiles.some((file) => isSchemaTouchingFile(file.filename))) {
@@ -403,6 +405,12 @@ export interface CreateReviewerTaskParams {
    * is told the verdict rather than asked to assess schema risk itself.
    */
   migrationSafety?: MigrationSafety;
+  /**
+   * The workspace lets the reviewer agent decide data migrations
+   * (`agentReviewsDataMigrations`). The prompt then asks the reviewer to judge
+   * the data change instead of saying a person will.
+   */
+  agentDecidesDataMigrations?: boolean;
   /** The PR's files, when the caller already fetched them. See BuildContextParams. */
   prFiles?: GithubPrFile[];
   /** The PR's body, when the caller already has it. Read for its lede only. */
@@ -621,6 +629,7 @@ export async function createReviewerTask(
         policyConfig: params.policyConfig,
         confidenceThreshold: params.confidenceThreshold,
         migrationSafety: params.migrationSafety,
+        agentDecidesDataMigrations: params.agentDecidesDataMigrations,
         prFiles: params.prFiles,
         prBody: params.prBody,
         baseRef: params.baseRef,
@@ -852,6 +861,8 @@ interface BuildContextParams {
   confidenceThreshold?: number;
   /** See `CreateReviewerTaskParams.migrationSafety`. */
   migrationSafety?: MigrationSafety;
+  /** See `CreateReviewerTaskParams.agentDecidesDataMigrations`. */
+  agentDecidesDataMigrations?: boolean;
   /**
    * The PR's files, when the caller already fetched them. The webhook fetches
    * this exact endpoint for the policy override and the pre-flight check, so
@@ -1010,10 +1021,13 @@ function securityEscalationRules(): string {
  * classification + risk-class resolution), which is the whole point of
  * splitting it out of reviewer discretion.
  */
-function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined): string {
+function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined, agentDecidesDataMigrations?: boolean): string {
   if (!migrationSafety) return '';
   if (migrationSafety.operationClass === 'EXPAND') {
     return '\nMigration classifier verdict: EXPAND (additive-only) — this PR\'s schema change already passed the mechanical migration classifier. Do not re-assess schema risk yourself; judge the diff on its other merits.';
+  }
+  if (!migrationSafety.safe && migrationSafety.kind === 'data' && agentDecidesDataMigrations) {
+    return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. It moves data, and this workspace lets you decide data migrations: approve it only if every statement targets exactly the rows it should (check each WHERE clause), is safe to run twice, and matches what the task describes. Escalate if you can't tell what rows it touches.`;
   }
   return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. This is a non-additive schema change; a human-review escalation for it is enforced server-side regardless of your verdict.`;
 }
@@ -1319,7 +1333,7 @@ async function buildReviewerContextWithMeta(
   // (see PR #1809 AC-5). The mechanical migration classifier verdict — when the
   // caller computed one — is appended so the reviewer is told the schema-risk
   // discriminator's answer instead of being asked to judge it itself.
-  const classifierNote = renderMigrationClassifierNote(params.migrationSafety);
+  const classifierNote = renderMigrationClassifierNote(params.migrationSafety, params.agentDecidesDataMigrations);
   const thresholdText = renderConfidenceThreshold(params.confidenceThreshold);
   let policySection: string;
   let uncoveredSection = '';

@@ -45,7 +45,7 @@ export default async function InsightsPage({
   if (qaState === 'not-admin' || !(await can({ kind: 'user', userId: user.id }, 'view_team_usage', teamId))) {
     return (
       <Shell>
-        <div className="card p-4" data-testid="insights-not-allowed">
+        <div className="py-3" data-testid="insights-not-allowed">
           <p className="text-body text-text-primary">Team admins only.</p>
 
         </div>

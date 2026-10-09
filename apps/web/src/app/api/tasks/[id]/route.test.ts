@@ -142,6 +142,12 @@ mock.module('@/lib/path-claim-release', () => ({
 }));
 
 // Mock Pusher
+const mockRequestWorkerPause = mock(async (_id: string) => true);
+mock.module('@/lib/worker-pause', () => ({
+  ...require('@/lib/worker-pause-policy'),
+  requestWorkerPause: mockRequestWorkerPause,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
@@ -921,6 +927,64 @@ describe('PATCH /api/tasks/[id]', () => {
       setup(planning, { ...planning, status: 'failed' });
       await patch({ status: 'failed' });
       expect(mockResolveCompletedTask).not.toHaveBeenCalled();
+    });
+
+    // Honest cancel: cancelling stops a live agent mid-run and loses its
+    // unpushed work, so the caller has to say so (abort: true).
+    it('cancel with a live worker and no abort flag is refused, says why, and writes nothing', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'running' });
+      const res = await patch({ status: 'cancelled' });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('live_worker');
+      expect(body.workerId).toBe('w-1');
+      expect(body.error).toMatch(/abort: true/);
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+      expect(mockReleaseAndNotify).not.toHaveBeenCalled();
+    });
+
+    it('cancel with a live worker and abort: true goes through', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'waiting_input' });
+      const res = await patch({ status: 'cancelled', abort: true });
+      expect(res.status).toBe(200);
+      expect(mockTasksUpdate).toHaveBeenCalled();
+      expect(mockResolveCompletedTask).toHaveBeenCalledWith(TASK_ID, 'ws-1');
+    });
+
+    // Pause instead of cancel (task baf3809a): keeps the session for Resume.
+    it('pause: true pauses the running agent and changes nothing else on the task', async () => {
+      setup(baseTask, baseTask);
+      mockRequestWorkerPause.mockClear();
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'running', runner: 'coder', waitingFor: null });
+      const res = await patch({ pause: true });
+      expect(res.status).toBe(200);
+      expect((await res.json()).paused).toBe('requested');
+      expect(mockRequestWorkerPause).toHaveBeenCalledWith('w-1');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('pause with no running agent, or mixed with other fields, is refused', async () => {
+      setup(baseTask, baseTask);
+      mockRequestWorkerPause.mockClear();
+      mockWorkersFindFirst.mockResolvedValue(null);
+      expect((await patch({ pause: true })).status).toBe(409);
+      expect((await patch({ pause: true, title: 'x' })).status).toBe(400);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'waiting_input', runner: 'coder', waitingFor: { type: 'question' } });
+      expect((await patch({ pause: true })).status).toBe(409);
+      expect(mockRequestWorkerPause).not.toHaveBeenCalled();
+    });
+
+    it('the live_worker refusal offers pause', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'running' });
+      expect((await (await patch({ status: 'cancelled' })).json()).error).toMatch(/pause: true/);
+    });
+
+    it('abort must be a boolean', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      expect((await patch({ status: 'cancelled', abort: 'yes' })).status).toBe(400);
     });
 
     it('cancel with no missionId still runs resolveCompletedTask', async () => {
@@ -1711,7 +1775,7 @@ describe('PATCH /api/tasks/[id]', () => {
     expect(mockReleaseAndNotify).toHaveBeenCalledWith(TASK_ID, 'abandoned');
   });
 
-  it('pushes abort command to active worker on cancel', async () => {
+  it('pushes abort command to active worker on cancel (abort: true)', async () => {
     const mockTask = {
       id: TASK_ID,
       title: 'Test Task',
@@ -1733,7 +1797,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
     const request = createMockRequest({
       method: 'PATCH',
-      body: { status: 'cancelled' },
+      body: { status: 'cancelled', abort: true },
     });
     const response = await callHandler(PATCH, request, TASK_ID);
 
@@ -1933,6 +1997,80 @@ describe('PATCH /api/tasks/[id]', () => {
       expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: 'yes' } }), TASK_ID)).status).toBe(400);
       mockTasksFindFirst.mockResolvedValue({ ...openTask(), status: 'completed' });
       expect((await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { held: true } }), TASK_ID)).status).toBe(400);
+    });
+  });
+
+  // Reschedule: move a queued task's start later (or back to ASAP) without
+  // cancelling it. Only before a worker has it; a started task is refused.
+  describe('reschedule (startAt / startIn)', () => {
+    const queued = (over: Record<string, unknown> = {}) => ({
+      id: TASK_ID, title: 'checkout', status: 'pending', claimedBy: null, workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context: { model: 'x' }, ...over,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('startAt (ISO) defers a pending task and records who and how', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const at = new Date(Date.now() + 3_600_000).toISOString();
+      const res = await patch({ startAt: at });
+      expect(res.status).toBe(200);
+      expect(sets[0].startAt).toEqual(new Date(at));
+      expect(sets[0].context).toMatchObject({ model: 'x', startResolution: 'explicit' });
+      expect(sets[0].context.rescheduledBy).toMatchObject({ userId: 'user-123' });
+    });
+
+    it('startIn resolves relative to now', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const before = Date.now();
+      expect((await patch({ startIn: '4h' })).status).toBe(200);
+      const t = (sets[0].startAt as Date).getTime();
+      expect(t).toBeGreaterThanOrEqual(before + 4 * 3_600_000);
+      expect(t).toBeLessThan(before + 4 * 3_600_000 + 60_000);
+      expect(sets[0].context.startResolution).toBe('relative');
+    });
+
+    it('startAt: null means start as soon as possible', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued({ startAt: new Date(Date.now() + 3_600_000) }));
+      const sets = capture();
+      expect((await patch({ startAt: null })).status).toBe(200);
+      expect(sets[0].startAt).toBeNull();
+      expect(sets[0].context.startResolution).toBeUndefined();
+    });
+
+    it('refuses a past time, a bad duration, and both at once', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      capture();
+      expect((await patch({ startAt: new Date(Date.now() - 60_000).toISOString() })).status).toBe(400);
+      expect((await patch({ startIn: 'soon' })).status).toBe(400);
+      expect((await patch({ startAt: new Date(Date.now() + 60_000).toISOString(), startIn: '1h' })).status).toBe(400);
+    });
+
+    it.each([
+      ['claimed', { status: 'pending', claimedBy: 'worker-1' }],
+      ['assigned', { status: 'assigned' }],
+      ['in_progress', { status: 'in_progress' }],
+      ['completed', { status: 'completed' }],
+    ])('refuses a task that is %s, saying why', async (_label, over) => {
+      mockTasksFindFirst.mockResolvedValue(queued(over));
+      const sets = capture();
+      const res = await patch({ startIn: '1h' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/start time/i);
+      expect(sets).toHaveLength(0);
     });
   });
 
@@ -2301,6 +2439,7 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
     ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
     ['held', { held: false }],
     ['tier', { tier: 'premium' }],
+    ['startIn', { startIn: '1h' }],
   ])('refuses %s, naming it, and writes nothing', async (field, body) => {
     const res = await patch(body);
     expect(res.status).toBe(403);

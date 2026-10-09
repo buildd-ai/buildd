@@ -6,10 +6,11 @@
  *
  * A failing test here is a probe finding, not a regression in the suite.
  *
- * Every finding test asserts the CORRECT behaviour and is marked `test.failing`
- * because it fails on dev today (probe task e769323f). Bun reports a
- * `test.failing` that starts passing as a failure, so the PR that fixes a
- * finding must turn its test(s) back into plain `test`.
+ * Every finding test asserts the CORRECT behaviour. One that still fails on dev
+ * is marked `test.failing` (probe task e769323f); Bun reports a `test.failing`
+ * that starts passing as a failure, so the PR that fixes a finding turns its
+ * test(s) back into plain `test` (the transient merge-call and draft findings
+ * were fixed that way: tasks 9bfe0d23, e89035b6).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
@@ -17,6 +18,7 @@ import { q } from './harness';
 import { seam, world, type World, type OpenedPr } from './workflow-scenarios-world';
 
 const { landPr } = await import('../../src/lib/pr-landing');
+const { listApprovedKernelPrs } = await import('../../src/lib/workflow/landing');
 
 let w: World;
 afterEach(() => w?.dispose());
@@ -167,7 +169,7 @@ describe('merge-call refusals that are transient', () => {
     [500, 'Server Error'],
   ];
   for (const [status, message] of cases) {
-    test.failing(`approved at H; PUT /merge answers ${status} "${message.slice(0, 40)}" → not a person's problem: the delivery stays landable (not ESCALATED)`, async () => {
+    test(`approved at H; PUT /merge answers ${status} "${message.slice(0, 40)}" → not a person's problem: the delivery stays landable (not ESCALATED)`, async () => {
       w = await world();
       const pr = await w.openPr({ branch: `feat/ratelimit-${status}-${message.length}`, files: { 'src/a.ts': 'export const a = 2;\n' } });
       await w.approve(pr);
@@ -181,24 +183,76 @@ describe('merge-call refusals that are transient', () => {
       expect(await w.land(pr, pr.head)).toMatchObject({ merged: true });
     });
   }
+
+  test('a 403 that is not a rate limit is still a person\'s problem (ESCALATED)', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/forbidden-merge', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.approve(pr);
+    w.gh.failNext(/^PUT \/repos\/.*\/pulls\/\d+\/merge$/, 403, 'Resource not accessible by integration');
+    expect((await w.land(pr, pr.head)).merged).toBe(false);
+    const d = await w.delivery(pr);
+    expect({ state: d.state, reason: d.stateReason }).toEqual({ state: 'ESCALATED', reason: 'landing_needs_human' });
+  });
+
+  // GitHub: retry-after (seconds) on a secondary limit; x-ratelimit-remaining: 0 with
+  // x-ratelimit-reset (epoch seconds) on a primary one. Retrying before then is another strike.
+  for (const [label, status, headers] of [
+    ['429 with retry-after', 429, { 'retry-after': '600' }],
+    ['403 with x-ratelimit-reset', 403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 600) }],
+  ] as Array<[string, number, Record<string, string>]>) {
+    test(`approved at H; PUT /merge answers ${label} → the landing sweep waits until GitHub's reset before it calls again`, async () => {
+      w = await world({ gitConfig: { landing: { mode: 'enforce' } } });
+      const pr = await w.openPr({ branch: `feat/retry-after-${status}`, files: { 'src/a.ts': 'export const a = 2;\n' } });
+      await w.approve(pr);
+      w.gh.failNext(/^PUT \/repos\/.*\/pulls\/\d+\/merge$/, status, 'You have exceeded a secondary rate limit.', headers);
+      expect((await w.land(pr, pr.head)).merged).toBe(false);
+      expect((await w.delivery(pr)).state).toBe('APPROVED');
+      const [mcr] = await q<{ retry_at: string | null }>(sql`SELECT evidence->>'retryAt' AS retry_at FROM workflow_transitions
+        WHERE delivery_id = ${pr.deliveryId}::uuid AND command = 'MergeCallResult' ORDER BY to_version DESC LIMIT 1`);
+      const waitMs = Date.parse(String(mcr.retry_at)) - Date.now();
+      expect(waitMs).toBeGreaterThan(9 * 60_000);
+      expect(waitMs).toBeLessThanOrEqual(10 * 60_000 + 5_000);
+      const candidates = async () => (await listApprovedKernelPrs(500)).filter((c) => c.workspaceId === w.workspaceId).map((c) => c.prNumber);
+      expect(await candidates()).toEqual([]);
+      // GitHub's reset passes.
+      await q(sql`UPDATE workflow_transitions SET evidence = jsonb_set(evidence, '{retryAt}', to_jsonb((now() - interval '1 second')::text))
+        WHERE delivery_id = ${pr.deliveryId}::uuid AND command = 'MergeCallResult'`);
+      expect(await candidates()).toEqual([pr.prNumber]);
+      expect((await sweep(w, pr)).kind).toBe('merged');
+    });
+  }
 });
 
 describe('draft PRs', () => {
   // GitHub: a draft PR cannot be merged (PUT /merge → 405); converted_to_draft / ready_for_review
   // are pull_request actions. https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request
-  test.failing('approved at H; a person converts the PR to draft to hold it, then marks it ready → the PR lands without a person resolving an escalation', async () => {
+  test('approved at H; a person converts the PR to draft to hold it, then marks it ready → the PR lands without a person resolving an escalation', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/draft-hold', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.approve(pr);
-    (w.gh.pr(w.repo, pr.prNumber) as { draft: boolean }).draft = true;
+    w.gh.setDraft(w.repo, pr.prNumber, true);
+    await w.deliver();
     const held = await sweep(w, pr);
     expect(w.gh.pr(w.repo, pr.prNumber).merged).toBe(false);
-    const [mcr] = await q<{ outcome: string; detail: string }>(sql`SELECT evidence->>'outcome' AS outcome, evidence->>'detail' AS detail FROM workflow_transitions
-      WHERE delivery_id = ${pr.deliveryId}::uuid AND command = 'MergeCallResult' ORDER BY to_version DESC LIMIT 1`);
-    (w.gh.pr(w.repo, pr.prNumber) as { draft: boolean }).draft = false;
+    // The hold is a wait, not a refusal: no merge call, and the approval stands.
+    expect({ calls: w.mergeCalls(pr).length, state: (await w.delivery(pr)).state }).toEqual({ calls: 0, state: 'APPROVED' });
+    w.gh.setDraft(w.repo, pr.prNumber, false);
+    await w.deliver();
     const after = await sweep(w, pr);
-    expect({ mcr, calls: w.mergeCalls(pr).map((c) => c.status), held: held.kind, after: after.kind, state: (await w.delivery(pr)).state, merged: w.gh.pr(w.repo, pr.prNumber).merged })
+    expect({ calls: w.mergeCalls(pr).map((c) => c.status), held: held.kind, after: after.kind, state: (await w.delivery(pr)).state, merged: w.gh.pr(w.repo, pr.prNumber).merged })
       .toMatchObject({ after: 'merged', state: 'MERGED', merged: true });
+  });
+
+  test('a door asked to land a draft is told it waits for ready_for_review, and nothing escalates', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/draft-door', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.approve(pr);
+    w.gh.setDraft(w.repo, pr.prNumber, true);
+    await w.deliver();
+    const landed = await w.land(pr, pr.head);
+    expect({ merged: landed.merged, outcome: landed.outcome, reason: landed.reason }).toEqual({ merged: false, outcome: 'rejected', reason: 'pr_is_draft' });
+    expect(landed.message).toMatch(/draft/i);
+    expect({ calls: w.mergeCalls(pr).length, state: (await w.delivery(pr)).state }).toEqual({ calls: 0, state: 'APPROVED' });
   });
 });
 
@@ -206,7 +260,7 @@ describe('base retarget', () => {
   // GitHub: deleting a merged PR's head branch retargets open PRs based on it to the merged
   // PR's base (pull_request.edited with changes.base). It does NOT close them.
   // https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-base-branch-of-a-pull-request
-  test.failing('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
+  test('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
     w = await world();
     const a = await w.openPr({ branch: 'feat/stack-a', files: { 'src/a.ts': 'export const a = 2;\n' } });
     const b = await w.openPr({ branch: 'feat/stack-b', base: 'feat/stack-a', files: { 'src/c.ts': 'export const c = 2;\n' } });
@@ -233,7 +287,7 @@ describe('base retarget changes the diff under an approval', () => {
   // GitHub: PATCH /pulls/{n} {base} (or the UI's "Edit" base) keeps the head SHA and recomputes
   // the PR's diff against the new base; it sends pull_request.edited with changes.base.ref.from.
   // https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
-  test.failing('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
+  test('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
     w = await world();
     w.gh.createBranch(w.repo, 'release');
     // dev moves on with someone else's change; the PR branches from dev after it.

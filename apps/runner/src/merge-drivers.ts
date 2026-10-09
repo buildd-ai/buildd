@@ -240,6 +240,48 @@ function mergirafResolvedPaths(worktreePath: string, before: string, stderr: str
   return [...out].sort();
 }
 
+const IMPORT_LINE = /^import\s[^;]*;?\s*$/;
+
+/**
+ * Drop exact repeats of a top-level single-line `import` statement. A semantic
+ * (mergiraf) merge can keep the same import that both sides added at different
+ * positions; the first occurrence wins, so both sides' other changes survive.
+ */
+export function dedupeImportLines(text: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    if (IMPORT_LINE.test(line) && line.startsWith('import')) {
+      const key = line.trim();
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+const DEDUPE_EXT = /\.(?:[cm]?[jt]sx?)$/;
+
+/** Dedupe imports in files mergiraf resolved; returns the paths actually changed. */
+function dedupeResolvedImports(worktreePath: string, paths: string[]): string[] {
+  const changed: string[] = [];
+  for (const rel of paths) {
+    if (!DEDUPE_EXT.test(rel)) continue;
+    const file = join(worktreePath, rel);
+    if (!existsSync(file)) continue;
+    const before = readFileSync(file, 'utf-8');
+    // A file still carrying conflict markers is the agent's to resolve.
+    if (/^(<{7}|>{7}) /m.test(before)) continue;
+    const after = dedupeImportLines(before);
+    if (after !== before) {
+      writeFileSync(file, after);
+      changed.push(rel);
+    }
+  }
+  return changed;
+}
+
 /**
  * Merge `baseRef` into the checked-out branch with the drivers in place. Never
  * pushes. On any unexpected failure the merge is aborted and the branch is left
@@ -282,6 +324,8 @@ export function mergeBaseWithDerivedFiles(
 
   if (!merge.ok && conflicted.length === 0) return abort(merge.out);
 
+  const dedupedImports = dedupeResolvedImports(worktreePath, structurallyResolved.filter(p => !conflicted.includes(p)));
+
   if (conflicted.length > 0) {
     return { ...result, status: 'conflicts', conflicted, structurallyResolved, pendingRegenerate: takePendingCommands(worktreePath, rules) };
   }
@@ -295,7 +339,7 @@ export function mergeBaseWithDerivedFiles(
   } catch (err) {
     return abort(`regenerate failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (commands.length > 0) {
+  if (commands.length > 0 || dedupedImports.length > 0) {
     const add = tryGit(worktreePath, ['add', '-u']);
     const dirty = tryGit(worktreePath, ['diff', '--cached', '--quiet']);
     if (add.ok && !dirty.ok) {

@@ -45,7 +45,7 @@ import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from 
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observePrState } from '@/lib/workflow/seam';
+import { observeBase, observePrState } from '@/lib/workflow/seam';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -798,6 +798,14 @@ async function handlePullRequestEvent(event: {
       ) {
         await emit({ type: 'pr.base_changed', workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase: settledBaseRef });
       }
+      // A retarget the workflow kernel owns: T29 from a live read (24e1cfad). The
+      // approval reviewed the old diff, so it no longer covers the PR.
+      if (action === 'edited' && typeof retargetFrom === 'string' && retargetFrom && event.installation && intentWorkspaceId && !pr.merged) {
+        await observeBase({
+          workspaceId: intentWorkspaceId, repoFullName: repository.full_name, prNumber: pr.number,
+          installationId: event.installation.id, hintedFromBase: retargetFrom, source: 'webhook:edited',
+        }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
+      }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
       // next pull_request event for this PR, and a null/stale value degrades to
@@ -1075,7 +1083,7 @@ async function handlePullRequestEvent(event: {
     // A kernel-owned merge's work already ran (or is durably owed) as effects of T17.
     if (!kernelOwned) {
       await runMergedPrWork({
-        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null },
+        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null, runner: worker.runner },
         task: worker.task
           ? {
               id: worker.task.id,

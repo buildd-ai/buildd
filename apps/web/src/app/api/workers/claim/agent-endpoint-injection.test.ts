@@ -152,6 +152,40 @@ describe('attachAgentEndpoints', () => {
   });
 });
 
+describe('attachAgentEndpoints: an endpoint that needs headers (Cloudflare AI Gateway)', () => {
+  const cf = {
+    kind: 'cloudflare' as const, upstream: 'anthropic' as const,
+    baseUrl: 'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/buildd/anthropic',
+    apiKey: 'sk-ant-api03-example', authHeader: 'x-api-key' as const, models: {}, toolSearch: true,
+    headers: { 'cf-aig-authorization': 'Bearer cf-run-token-example' }, secretId: 's-cf', scope: 'team' as const,
+  };
+  const winCf: AgentModelDecision = { winner: 'endpoint', endpoint: cf };
+
+  it('a runner that applies headers gets them, with the upstream', async () => {
+    const { workers, tasks } = claim();
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true, runnerSupportsHeaders: true }, { resolve: async () => winCf });
+    expect([...won]).toEqual(['worker-1']);
+    expect(workers[0].modelEndpoint).toEqual({
+      kind: 'cloudflare', baseUrl: cf.baseUrl, authToken: cf.apiKey, authHeader: 'x-api-key', models: {},
+      upstream: 'anthropic', headers: cf.headers, toolSearch: true,
+    });
+  });
+
+  it('a runner that does not apply headers is not given the endpoint, and keeps its own credentials', async () => {
+    const { workers, tasks } = claim();
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => winCf });
+    expect(won.size).toBe(0);
+    expect(workers[0].modelEndpoint).toBeUndefined();
+  });
+
+  it('a Codex task never carries headers', async () => {
+    const { workers, tasks } = claim('codex');
+    await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => winCf });
+    expect(workers[0].modelEndpoint.headers).toBeUndefined();
+    expect(workers[0].modelEndpoint.openAiBaseUrl).toBeUndefined();
+  });
+});
+
 describe('attachCloudToolSearchHint', () => {
   it('endpoint wins without tool search: marks the worker, never attaches the endpoint', async () => {
     const { workers, tasks } = claim();

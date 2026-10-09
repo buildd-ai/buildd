@@ -20,7 +20,14 @@ import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
 const realReviewer = await import('../../src/lib/reviewer');
 mock.module('../../src/lib/reviewer', () => ({
   ...realReviewer,
-  createReviewerTask: async (p: { workflowRound: { deliveryId: string; roundId: string; round: number }; headSha: string }) => {
+  createReviewerTask: async (p: { workspaceId: string; prNumber: number; workflowRound?: { deliveryId: string; roundId: string; round: number }; headSha: string }) => {
+    if (!p.workflowRound) {
+      // Legacy's reviewer (the kill-switch hand-off, §14): no delivery, the legacy context keys.
+      const taskId = await seedTask(p.workspaceId, { status: 'pending', title: `legacy review #${p.prNumber}` });
+      await q(sql`UPDATE tasks SET category = 'review',
+        context = jsonb_build_object('prNumber', ${p.prNumber}::int, 'headSha', ${p.headSha}::text) WHERE id = ${taskId}::uuid`);
+      return { id: taskId };
+    }
     const [d] = await q<{ workspace_id: string }>(sql`SELECT workspace_id FROM workflow_deliveries WHERE id = ${p.workflowRound.deliveryId}::uuid`);
     const taskId = await seedTask(d.workspace_id, { status: 'pending', title: `review r${p.workflowRound.round}` });
     await q(sql`UPDATE tasks SET delivery_id = ${p.workflowRound.deliveryId}::uuid, delivery_role = 'review', category = 'review',
@@ -141,6 +148,10 @@ export async function world(o: { seed?: number; files?: Record<string, string>; 
       }
       case 'synchronize':
         await seam.observeHead({ ...base, prNumber, hintedHeadSha: String(p.after ?? p.pull_request.head.sha), source: 'webhook:synchronize' });
+        return;
+      case 'edited':
+        // The webhook route's kernel door for a retarget (pull_request.edited with changes.base).
+        if (p.changes?.base) await seam.observeBase({ ...base, prNumber, hintedFromBase: String(p.changes.base.ref?.from ?? ''), source: 'webhook:edited' });
         return;
       case 'closed':
       case 'reopened':

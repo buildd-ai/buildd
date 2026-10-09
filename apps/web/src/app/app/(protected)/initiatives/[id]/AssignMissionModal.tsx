@@ -80,10 +80,11 @@ export default function AssignMissionModal({ initiativeId, initiativeTitle, assi
   return (
     <>
       <button
+        type="button"
         onClick={handleOpen}
-        className="px-2.5 py-1 text-[11px] font-medium bg-surface-3 text-text-secondary border border-border-default rounded-sm hover:border-border-strong hover:text-text-primary transition-colors"
+        className="btn btn-sm h-11 md:h-6"
       >
-        + Add mission
+        + Add existing
       </button>
 
       {open && (

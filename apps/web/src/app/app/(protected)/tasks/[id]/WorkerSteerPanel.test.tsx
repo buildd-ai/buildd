@@ -109,6 +109,17 @@ describe('WorkerSteerPanel', () => {
     expect(html).not.toContain('worker-instruct-form');
   });
 
+  test('a running runner-backed agent can be paused instead of stopped', () => {
+    const html = render({ runner: 'runner-abc', status: 'running' });
+    expect(html).toContain('worker-pause-btn');
+    expect(html).toContain('>Pause<');
+  });
+
+  test('no Pause for a local session, or an agent already waiting', () => {
+    expect(render({ runner: 'mcp' })).not.toContain('worker-pause-btn');
+    expect(render({ runner: 'runner-abc', status: 'waiting_input' })).not.toContain('worker-pause-btn');
+  });
+
   test('an idle local session still holds a slot, so it still gets Release slot', () => {
     expect(render({ runner: 'mcp', status: 'idle' })).toContain('worker-release-slot-btn');
   });

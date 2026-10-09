@@ -430,6 +430,22 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).toContain('409');
     });
 
+    it('generic conflict brief routes the push to the bound PR head, not create_pr', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'mission/m-1', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('Bound PR lineage');
+      expect(result!.description).toContain('Push the resolved merge to `mission/m-1`');
+      expect(result!.description).toContain('409');
+    });
+
+    it('generic conflict brief is unchanged when the PR head is the worker branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).not.toContain('Bound PR lineage');
+    });
+
     it('omits the lineage note when the PR head is the worker branch', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect(result!.description).not.toContain('Bound PR lineage');
@@ -960,10 +976,10 @@ describe('dispatchConflictRetry', () => {
     const pathManifest = ['packages/core/drizzle'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'task-id', pathManifest },
-      { id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
-      { id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
-      { id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
+      { status: 'in_progress', id: 'task-id', pathManifest },
+      { status: 'in_progress', id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
+      { status: 'in_progress', id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
+      { status: 'in_progress', id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
     ]);
     const result = await dispatchConflictRetry({
       ...BASE_PARAMS,
@@ -981,7 +997,7 @@ describe('dispatchConflictRetry', () => {
     });
     // Sibling declares a file inside that directory — prefix overlap only
     mockTaskFindMany.mockResolvedValue([
-      { id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -996,7 +1012,7 @@ describe('dispatchConflictRetry', () => {
 
   it('a sibling declaring the same file is soft same_file evidence, decided at claim', async () => {
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib/foo.ts'], missionId: 'mission-1' });
-    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
+    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['apps/web/src/lib/foo.ts'] }]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
@@ -1007,7 +1023,7 @@ describe('dispatchConflictRetry', () => {
 
   it('populates dependsOn when a sibling task declares the same migration file', async () => {
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle/0400_x.sql'], missionId: 'mission-1' });
-    mockTaskFindMany.mockResolvedValue([{ id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
+    mockTaskFindMany.mockResolvedValue([{ status: 'in_progress', id: 'sibling-task-id', pathManifest: ['packages/core/drizzle/0400_x.sql'] }]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
@@ -1024,7 +1040,7 @@ describe('dispatchConflictRetry', () => {
     });
     // Sibling is in a completely separate area — no overlap
     mockTaskFindMany.mockResolvedValue([
-      { id: 'other-task-id', pathManifest: ['apps/runner/src/workers.ts'] },
+      { status: 'in_progress', id: 'other-task-id', pathManifest: ['apps/runner/src/workers.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -1086,8 +1102,8 @@ describe('dispatchConflictRetry', () => {
     //
     // MOCK_TASK already has: pathManifest: null, missionId: 'mission-1'
     mockTaskFindMany.mockResolvedValue([
-      { id: 'sibling-mission-task', pathManifest: ['**'] },
-      { id: 'sibling-concrete-task', pathManifest: ['apps/web/src/lib/other.ts'] },
+      { status: 'in_progress', id: 'sibling-mission-task', pathManifest: ['**'] },
+      { status: 'in_progress', id: 'sibling-concrete-task', pathManifest: ['apps/web/src/lib/other.ts'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -1106,8 +1122,8 @@ describe('dispatchConflictRetry', () => {
       missionId: 'mission-1',
     });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'wildcard-sibling', pathManifest: ['**'] },
-      { id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
+      { status: 'in_progress', id: 'wildcard-sibling', pathManifest: ['**'] },
+      { status: 'in_progress', id: 'overlapping-sibling', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
@@ -1121,20 +1137,49 @@ describe('dispatchConflictRetry', () => {
     const pathManifest = ['packages/core/drizzle/foo.sql', 'packages/core/drizzle/bar.sql', 'packages/core/drizzle/baz.sql'];
     mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
     mockTaskFindMany.mockResolvedValue([
-      { id: 'task-id', pathManifest, dependsOn: [] },
+      { status: 'in_progress', id: 'task-id', pathManifest, dependsOn: [] },
       // S: overlaps and already depends directly on the original task.
-      { id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
+      { status: 'in_progress', id: 'downstream-direct', pathManifest: ['packages/core/drizzle/foo.sql'], dependsOn: ['task-id'] },
       // S2: overlaps and depends on the original task transitively, through X.
-      { id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
-      { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
+      { status: 'in_progress', id: 'downstream-transitive', pathManifest: ['packages/core/drizzle/bar.sql'], dependsOn: ['intermediate'] },
+      { status: 'in_progress', id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
       // U: overlaps but has no relationship to the original task.
-      { id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
+      { status: 'in_progress', id: 'unrelated-overlap', pathManifest: ['packages/core/drizzle/baz.sql'], dependsOn: [] },
     ]);
 
     const result = await dispatchConflictRetry(BASE_PARAMS);
 
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-overlap']);
+  });
+
+  for (const collision of [false, true]) {
+    it(`excludes pending work blocked by the subject PR without a stored dependency (collision=${collision})`, async () => {
+      const pathManifest = ['packages/core/db/schema.ts', 'packages/core/drizzle'];
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest, dependsOn: ['caller-edge'] });
+      mockTaskFindMany.mockResolvedValue([
+        { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'], dependsOn: [] },
+        { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'], dependsOn: [] },
+      ]);
+      const result = await dispatchConflictRetry({
+        ...BASE_PARAMS,
+        ...(collision ? { migrationCollision: { file: '0400_x.sql', otherFile: '0400_y.sql', otherPrNumber: 80 } } : {}),
+      });
+      expect(result.dispatched).toBe(true);
+      expect(capturedInsertValues.dependsOn).toEqual(['running-holder']);
+      expect(capturedInsertValues.pathDeclaration.inferredDependsOn).toEqual(['running-holder']);
+      expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
+    });
+  }
+
+  it('does not store even soft evidence against pending work held by the subject PR', async () => {
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['apps/web/src/lib'] });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'pending-holder', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    await dispatchConflictRetry(BASE_PARAMS);
+    expect(capturedInsertValues.dependsOn).toBeUndefined();
+    expect(capturedInsertValues.pathDeclaration.softOverlaps).toBeUndefined();
   });
 
   it('returns dispatched=false when workspace is not found', async () => {
@@ -1216,6 +1261,25 @@ describe('dispatchConflictRetry', () => {
       expect(flat).toContain('or');
       expect(mockInsert).not.toHaveBeenCalled();
       expect(mockWakeTask).not.toHaveBeenCalled();
+    });
+
+    it('reconciles a pending v2 repair in place before waking it, preserving explicit and active-work edges', async () => {
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest: ['packages/core/drizzle'] });
+      mockLiveConflictRetryProbe.mockResolvedValue({
+        id: 'pending-repair', taskClass: 'attempt', status: 'pending', conflictRetryPrNumber: 99,
+        dependsOn: ['pending-holder', 'running-holder', 'explicit-holder'],
+        pathDeclaration: { overlapPolicy: 'v2', inferredDependsOn: ['pending-holder', 'running-holder'] },
+      });
+      mockTaskFindMany.mockResolvedValue([
+        { id: 'pending-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0400_x.sql'] },
+        { id: 'running-holder', status: 'in_progress', pathManifest: ['packages/core/drizzle/0401_y.sql'] },
+        { id: 'explicit-holder', status: 'pending', pathManifest: ['packages/core/drizzle/0402_z.sql'] },
+      ]);
+      expect(await dispatchConflictRetry(BASE_PARAMS)).toEqual({ dispatched: false, inFlightTaskId: 'pending-repair' });
+      expect(capturedUpdateSet.dependsOn).toEqual(['running-holder', 'explicit-holder']);
+      expect(capturedUpdateSet.pathDeclaration.inferredDependsOn).toEqual(['running-holder']);
+      expect(mockWakeTask).toHaveBeenCalledWith('pending-repair', 'conflict.retry');
+      expect(mockInsert).not.toHaveBeenCalled();
     });
 
     it('wakes a conflict repair that is still waiting to start instead of filing another', async () => {

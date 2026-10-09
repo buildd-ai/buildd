@@ -141,7 +141,7 @@ describe('stacked PRs', () => {
     expect(await w.land(a, a.head)).toMatchObject({ merged: true });
     await w.deliver();
 
-    // GitHub retargets the top PR when its base merges (here: by hand, as the fake does not).
+    // GitHub retargets the top PR when its base merges (here: by hand; the fake's PATCH sends `edited` with `changes.base`).
     await w.gh.request('PATCH', `/repos/${w.repo}/pulls/${b.prNumber}`, { base: 'dev' });
     expect(await w.taskStatus(b.ownerTaskId)).toBe('in_progress');
     const landed = await w.land(b, b.head);
@@ -225,11 +225,14 @@ describe('a round queued just before a not-needed repair (a6cbd241)', () => {
 
     let v = await w.view(pr);
     expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: h2, currentRound: 2 });
-    expect(v.rounds.find((r) => r.round === 2)).toMatchObject({ status: 'queued', headSha: h2, reviewerTaskId: null });
+    expect(v.rounds.find((r) => r.round === 2)).toMatchObject({ status: 'queued', headSha: h2 });
     expect(await w.commands(pr)).toEqual(expect.arrayContaining(['ConflictObserved', 'RepairNotNeeded']));
-    expect((await w.effects(pr)).find((e) => e.dedupe_key === `dispatch_review:${pr.deliveryId}:2`)).toMatchObject({ status: 'done', outcome: expect.stringMatching(/^skipped:/) });
+    expect((await w.effects(pr)).find((e) => e.dedupe_key === `dispatch_review:${pr.deliveryId}:2`)).toMatchObject({ status: 'done' });
+    // Round 2's dispatch_review shares a batch with the repair check that moves the delivery
+    // REPAIRING → AWAITING_REVIEW. §10.4 is checked when its turn comes (625449c7), so it either
+    // dispatched (its turn came after the move) or acked skipped:superseded (before it).
 
-    // The floor owes the open round's exit: a reviewer for round 2 at H2.
+    // Either way the floor owes the open round's exit, at most once: a reviewer for round 2 at H2.
     await w.floor(pr);
     await w.deliver();
     v = await w.view(pr);

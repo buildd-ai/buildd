@@ -66,34 +66,12 @@ const cardSource = await Bun.file(
   new URL('../../../../components/TaskCard.tsx', import.meta.url),
 ).text();
 
-describe('mission-budget plumbing — tasks/page.tsx', () => {
-  it('selects missions.status so the flag is not silently undefined', () => {
-    const missionQuery = pageSource.slice(
-      pageSource.indexOf('const misns = await db.query.missions.findMany'),
-      pageSource.indexOf('// Query active workers'),
-    );
-    expect(missionQuery.length).toBeGreaterThan(0);
-    expect(missionQuery).toContain('status: true');
-  });
-
-  it('computes missionBudgetExhausted on every grid row', () => {
-    expect(pageSource).toContain('missionBudgetExhausted:');
-  });
-
-  it('declares missionBudgetExhausted on the gridTasks row type', () => {
-    const rowType = pageSource.slice(
-      pageSource.indexOf('let gridTasks: Array<{'),
-      pageSource.indexOf('}> = [];'),
-    );
-    expect(rowType).toContain('missionBudgetExhausted');
-  });
-
-  it('honours the operator bypass so a force-started task is not re-flagged', () => {
-    // /start writes context.bypassMissionBudget on forceOverride; the claim loop
-    // then claims the task. Rendering it as BUDGET EXHAUSTED would contradict
-    // the gate that is actually in force.
-    expect(pageSource).toContain('BYPASS_MISSION_BUDGET_KEY');
-    expect(pageSource).toContain('hasBypassFlag');
+describe('Activity page', () => {
+  it('uses Activity for all list views without the retired ids branch', () => {
+    expect(pageSource).not.toContain('TaskGrid');
+    expect(pageSource).not.toContain('parseTaskListSelection');
+    expect(pageSource).toContain('gte(tasks.updatedAt, thirtyDaysAgo)');
+    expect(pageSource).toContain('activity = await loadActivity');
   });
 });
 

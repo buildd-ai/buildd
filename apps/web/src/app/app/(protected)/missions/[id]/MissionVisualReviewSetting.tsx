@@ -71,7 +71,7 @@ export default function MissionVisualReviewSetting({
   }
 
   return (
-    <section data-testid="mission-visual-review-setting" className="card p-4">
+    <section data-testid="mission-visual-review-setting">
       <h2 className="section-label mb-3">Visual review</h2>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">

@@ -193,7 +193,7 @@ export class FakeGithub {
   private faults: Faults;
   private seed: number;
   private streams = new Map<FaultName, () => number>();
-  private oneShots: Array<{ match: RegExp; status: number; message: string }> = [];
+  private oneShots: Array<{ match: RegExp; status: number; message: string; headers?: Record<string, string> }> = [];
   private seq = 0;
   private clock: number;
 
@@ -213,9 +213,12 @@ export class FakeGithub {
     this.streams.clear();
   }
 
-  /** The next call matching `match` (against `METHOD /path`) answers `status` with `message`, before anything applies. */
-  failNext(match: RegExp, status: number, message = 'injected'): void {
-    this.oneShots.push({ match, status, message });
+  /**
+   * The next call matching `match` (against `METHOD /path`) answers `status` with `message`, before
+   * anything applies. `headers` ride along, e.g. a rate limit's `retry-after` or `x-ratelimit-reset`.
+   */
+  failNext(match: RegExp, status: number, message = 'injected', headers?: Record<string, string>): void {
+    this.oneShots.push({ match, status, message, ...(headers ? { headers } : {}) });
   }
 
   private fires(name: FaultName): boolean {
@@ -304,10 +307,24 @@ export class FakeGithub {
     if (!was) throw new HttpError(422, 'Reference does not exist');
     repo.branches.delete(branch);
     this.emitPush(repo, branch, was, '0'.repeat(40), { deleted: true, forced: false, pusher: 'dev' });
-    // GitHub closes PRs whose base branch is deleted.
+    // GitHub retargets PRs stacked on the head branch of a merged PR to that PR's base
+    // (pull_request.edited, changes.base); any other PR whose base is deleted is closed.
+    const merged = [...repo.pulls.values()].find((p) => p.merged && p.headRef === branch);
     for (const pr of repo.pulls.values()) {
-      if (pr.state === 'open' && pr.baseRef === branch) this.closeInternal(repo, pr, 'dev');
+      if (pr.state !== 'open' || pr.baseRef !== branch) continue;
+      if (merged && repo.branches.has(merged.baseRef)) this.retargetInternal(repo, pr, merged.baseRef, 'dev');
+      else this.closeInternal(repo, pr, 'dev');
     }
+  }
+
+  /** Change a PR's base: the head stays, the diff is recomputed, `edited` carries `changes.base`. */
+  private retargetInternal(repo: Repo, pr: Pr, base: string, by: string): void {
+    if (pr.baseRef === base) return;
+    const snap = this.prJson(repo, pr, false);
+    const from = { ref: pr.baseRef, sha: repo.branches.get(pr.baseRef) ?? null };
+    pr.baseRef = base;
+    pr.updatedAt = this.tick();
+    this.emitPr(repo, pr, 'edited', snap, { changes: { base: { ref: { from: from.ref }, sha: { from: from.sha } } } }, by);
   }
 
   /** A fast-forward push of one commit to `branch` (created from the default branch if missing). */
@@ -468,6 +485,21 @@ export class FakeGithub {
     if (branchHead && branchHead !== pr.headSha) { pr.previousHeads.push(pr.headSha); pr.headSha = branchHead; }
     pr.updatedAt = this.tick();
     this.emitPr(repo, pr, 'reopened', snap, {}, by);
+  }
+
+  /**
+   * A person converts the PR to draft, or marks it ready for review (GitHub does this through
+   * GraphQL or the UI only; REST has no field for it). Sends `converted_to_draft` / `ready_for_review`.
+   */
+  setDraft(repoName: string, number: number, draft: boolean, by = 'dev'): void {
+    const repo = this.repo(repoName);
+    const pr = this.pullOf(repo, number);
+    if (pr.state !== 'open') throw new HttpError(422, 'Validation Failed: pull request is closed');
+    if (pr.draft === draft) return;
+    const snap = this.prJson(repo, pr, false);
+    pr.draft = draft;
+    pr.updatedAt = this.tick();
+    this.emitPr(repo, pr, draft ? 'converted_to_draft' : 'ready_for_review', snap, {}, by);
   }
 
   /** A person merges in the GitHub UI: same rules as the API, no pinned sha. */
@@ -819,7 +851,7 @@ export class FakeGithub {
     let res: FakeResponse;
     if (shot >= 0) {
       const o = this.oneShots.splice(shot, 1)[0];
-      res = { status: o.status, body: { message: o.message } };
+      res = { status: o.status, body: { message: o.message }, ...(o.headers ? { headers: o.headers } : {}) };
     } else if (callFault && this.fires('rateLimit')) {
       res = { status: 403, body: { message: `API rate limit exceeded for installation ID ${this.installationId}.`, documentation_url: 'https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting' }, headers: { 'x-ratelimit-remaining': '0' } };
     } else if (callFault && this.fires('serverError')) {
@@ -912,7 +944,7 @@ export class FakeGithub {
         else if (b.state === 'open') this.reopenPr(repo.fullName, pr.number, this.appLogin);
         if (typeof b.title === 'string') pr.title = b.title;
         if (typeof b.body === 'string') pr.body = b.body;
-        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); pr.baseRef = b.base; pr.updatedAt = this.tick(); }
+        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); this.retargetInternal(repo, pr, b.base, this.appLogin); }
         return { body: this.prJson(repo, pr, false) };
       }
       if (c === 'merge' && method === 'PUT') {

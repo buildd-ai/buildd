@@ -1,50 +1,23 @@
 /**
- * The delivery chip, the Build › Audit › Land track and the audit evidence
- * cards, shared by every surface that renders lib/delivery-projection.ts
+ * The delivery chip and the audit evidence cards, shared by every surface that renders lib/delivery-projection.ts
  * (Home, Activity, mission detail). One vocabulary, one rendering: glyph and
- * word, never colour alone.
+ * word, never colour alone. The Build → Audit → Land track is the shared
+ * `Lifecycle` (components/ui), fed by `lifecycleState`.
  */
-import type { EvidenceEntry, StageNotes } from '@/lib/activity-delivery';
-import {
-  DELIVERY_KIND, DELIVERY_STAGES, deliveryStageIndex, repairBadge,
-  type DeliveryKind, type DeliveryTone,
-} from '@/lib/delivery-projection';
+import type { EvidenceEntry } from '@/lib/activity-delivery';
+import { DELIVERY_KIND, type DeliveryKind, type DeliveryTone } from '@/lib/delivery-projection';
 
 export const TONE_TEXT: Record<DeliveryTone, string> = {
   success: 'text-status-success', info: 'text-status-info', warning: 'text-status-warning',
   ink: 'text-text-primary', muted: 'text-text-muted', error: 'text-status-error',
 };
-export const TONE_EDGE: Record<DeliveryTone, string> = {
-  success: 'border-l-status-success', info: 'border-l-status-info', warning: 'border-l-status-warning',
-  ink: 'border-l-accent', muted: 'border-l-border-default', error: 'border-l-status-error',
-};
 
+/** Glyph and word in the kind's tone, unframed: a status, not a button. */
 export function DeliveryChip({ kind }: { kind: DeliveryKind }) {
   const k = DELIVERY_KIND[kind];
   return (
-    <span data-testid="delivery-chip" data-kind={kind} className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap border border-border-default px-1.5 font-mono text-meta ${TONE_TEXT[k.tone]}`}>
+    <span data-testid="delivery-chip" data-kind={kind} className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-meta ${TONE_TEXT[k.tone]}`}>
       <span aria-hidden="true">{k.glyph}</span>{k.label}
-    </span>
-  );
-}
-
-/** Build › Audit › Land in words: ✓ for passed stages, the current one underlined. Repair shows as `Audit ↻N`. */
-export function DeliveryTrack({ kind, rounds }: { kind: DeliveryKind; rounds: number }) {
-  const at = deliveryStageIndex(kind);
-  const current = DELIVERY_STAGES[Math.max(0, Math.min(2, at))];
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1 font-mono text-meta" aria-label={at < 0 ? 'Not started' : at > 2 ? 'Landed' : `Stage: ${current}`}>
-      {DELIVERY_STAGES.map((name, i) => {
-        const done = at > i;
-        const cur = at === i;
-        const text = done ? `✓ ${name}` : cur && i === 1 && rounds > 0 ? `${name} ${repairBadge(rounds)}` : name;
-        return (
-          <span key={name} className="inline-flex items-center gap-1">
-            {i > 0 && <span aria-hidden="true" className="text-text-muted">›</span>}
-            <span className={done ? 'text-text-secondary' : cur ? 'font-semibold text-text-primary underline underline-offset-4' : 'text-text-muted'}>{text}</span>
-          </span>
-        );
-      })}
     </span>
   );
 }
@@ -89,43 +62,3 @@ export function DeliveryEvidence({ entry }: { entry: EvidenceEntry }) {
     </div>
   );
 }
-
-/**
- * Build | Audit | Land as three labelled cells with one phrase each: passed
- * stages ✓, the current one underlined, later ones muted. Repair is Audit with
- * its round in the phrase, never a fourth cell.
- */
-export function DeliveryStages({ kind, stages }: { kind: DeliveryKind; stages: StageNotes }) {
-  const at = deliveryStageIndex(kind);
-  const tone = DELIVERY_KIND[kind].tone;
-  const notes = [stages.build, stages.audit, stages.land];
-  return (
-    <div data-testid="delivery-stages" data-kind={kind} role="list" aria-label="Delivery stages" className="grid grid-cols-3 border border-border-default">
-      {DELIVERY_STAGES.map((name, i) => {
-        const done = at > i;
-        const cur = at === i;
-        return (
-          <div
-            key={name}
-            role="listitem"
-            data-testid="delivery-stage"
-            data-stage={name.toLowerCase()}
-            data-state={done ? 'done' : cur ? 'current' : 'later'}
-            aria-current={cur ? 'step' : undefined}
-            className={`min-w-0 px-2.5 py-2 ${i > 0 ? 'border-l border-border-default' : ''} ${cur ? `border-b-[3px] ${TONE_UNDERLINE[tone]}` : ''}`}
-          >
-            <div className={`font-mono text-chip font-semibold uppercase tracking-[1.4px] ${done ? 'text-status-success' : cur ? 'text-text-primary' : 'text-text-muted'}`}>
-              {done && <span aria-hidden="true">✓ </span>}{name}
-            </div>
-            <div className={`font-mono text-meta [overflow-wrap:anywhere] ${at < i ? 'text-text-muted' : 'text-text-secondary'}`}>{notes[i]}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-const TONE_UNDERLINE: Record<DeliveryTone, string> = {
-  success: 'border-b-status-success', info: 'border-b-status-info', warning: 'border-b-status-warning',
-  ink: 'border-b-text-primary', muted: 'border-b-border-strong', error: 'border-b-status-error',
-};

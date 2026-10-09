@@ -49,7 +49,13 @@ mock.module('@buildd/core/agent-endpoint', () => ({
     const key = (opts.workspaceId ? storedOpenRouter[opts.workspaceId] : undefined) ?? storedOpenRouter[''];
     return key ? { key, secretId: 'or-key', scope: opts.workspaceId && storedOpenRouter[opts.workspaceId] ? 'workspace' : 'team' } : null;
   },
+  // A `cloudflare` reference: the team's gateway ids and the upstream's key.
+  resolveEndpointRefs: async (blob: any) => ({
+    gateway: null, openRouterKey: null,
+    cloudflare: blob.kind === 'cloudflare' && cloudflareRef ? { ...cloudflareRef, upstreamKey: cloudflareRef.keys[blob.upstream] ?? null } : null,
+  }),
 }));
+let cloudflareRef: { accountId: string; gatewayId: string | null; keys: Record<string, string> } | null = null;
 
 const { setTeamAgentEndpoint, listTeamAgentEndpoints, verifyAgentEndpointSecret, previewAgentEndpointModels, VERIFY_MODEL } = await import('./agent-endpoint-settings');
 
@@ -62,7 +68,7 @@ const custom = { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example
 beforeEach(() => {
   stored.length = 0; updates.length = 0; gatewayCalls.length = 0;
   secretRows = []; secretRow = null; workspaceRow = null; gateway = null; registryRows = [];
-  storedOpenRouter = {}; openRouterLookups.length = 0;
+  storedOpenRouter = {}; openRouterLookups.length = 0; cloudflareRef = null;
 });
 
 describe('setTeamAgentEndpoint', () => {
@@ -580,5 +586,58 @@ describe('verifyAgentEndpointSecret', () => {
     secretRow = { id: 's-1', teamId: 't', workspaceId: null, purpose: 'anthropic_api_key', encryptedValue: 'x' };
     expect((await verifyAgentEndpointSecret('s-1', { lookup: publicLookup, fetcher: ok })).error).toMatch(/Not an agent endpoint/);
     expect(updates).toHaveLength(0);
+  });
+});
+
+
+describe('cloudflare agent endpoint', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const GW_TOKEN = 'cf-gateway-run-token-abcdefghijk';
+  const cfInput = (o: Record<string, unknown> = {}) => ({ kind: 'cloudflare', upstream: 'anthropic', ...o });
+
+  it("refuses to save without the team's AI Gateway, or without the upstream's key", async () => {
+    let r = await setTeamAgentEndpoint({ teamId: 't', endpoint: cfInput() }, { lookup: publicLookup, fetcher: ok });
+    expect(r).toMatchObject({ ok: false, status: 400 });
+    expect(!r.ok && r.error).toContain('AI Gateway ID');
+    cloudflareRef = { accountId: ACCOUNT, gatewayId: 'buildd', keys: {} };
+    r = await setTeamAgentEndpoint({ teamId: 't', endpoint: cfInput() }, { lookup: publicLookup, fetcher: ok });
+    expect(!r.ok && r.error).toContain('Anthropic API key');
+    expect(stored).toHaveLength(0);
+  });
+
+  it('verifies through the gateway with the gateway header, stores the reference, never echoes the token', async () => {
+    cloudflareRef = { accountId: ACCOUNT, gatewayId: 'buildd', keys: { anthropic: 'sk-ant-api03-team-9876' } };
+    const seen: Array<{ url: string; headers: Headers }> = [];
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: cfInput({ gatewayToken: GW_TOKEN }) }, {
+      lookup: publicLookup,
+      fetcher: async (url, init) => { seen.push({ url, headers: new Headers(init?.headers) }); return new Response('{}'); },
+    });
+    expect(r).toMatchObject({ ok: true, endpoint: {
+      kind: 'cloudflare', upstream: 'anthropic', gatewayTokenSet: true, last4: '9876', authHeader: 'x-api-key',
+      baseUrl: `https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/anthropic`,
+    } });
+    expect(JSON.stringify(r)).not.toContain(GW_TOKEN);
+    expect(seen.at(-1)!.url).toBe(`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/anthropic/v1/messages`);
+    expect(seen.at(-1)!.headers.get('cf-aig-authorization')).toBe(`Bearer ${GW_TOKEN}`);
+    expect(JSON.parse(stored[0].value)).toEqual({ kind: 'cloudflare', upstream: 'anthropic', gatewayToken: GW_TOKEN });
+  });
+
+  it('a blank gateway token keeps the saved one; null removes it', async () => {
+    cloudflareRef = { accountId: ACCOUNT, gatewayId: 'buildd', keys: { anthropic: 'sk-ant-api03-team-9876' } };
+    secretRows = [{ id: 's-1', workspaceId: null, accountId: null, userId: null, purpose: 'agent_endpoint', encryptedValue: JSON.stringify({ kind: 'cloudflare', upstream: 'anthropic', gatewayToken: GW_TOKEN }) }];
+    await setTeamAgentEndpoint({ teamId: 't', endpoint: cfInput({ gatewayToken: '' }) }, { lookup: publicLookup, fetcher: ok });
+    expect(JSON.parse(stored.at(-1)!.value).gatewayToken).toBe(GW_TOKEN);
+    await setTeamAgentEndpoint({ teamId: 't', endpoint: cfInput({ gatewayToken: null }) }, { lookup: publicLookup, fetcher: ok });
+    expect(JSON.parse(stored.at(-1)!.value).gatewayToken).toBeUndefined();
+  });
+
+  it('lists a saved row with its upstream and whether the gateway resolves, never the token', async () => {
+    secretRows = [{ id: 's-1', workspaceId: null, accountId: null, userId: null, purpose: 'agent_endpoint', healthStatus: 'unknown', updatedAt: new Date('2026-10-01'), encryptedValue: JSON.stringify({ kind: 'cloudflare', upstream: 'openrouter', gatewayToken: GW_TOKEN }) }];
+    let [row] = await listTeamAgentEndpoints('t');
+    expect(row).toMatchObject({ kind: 'cloudflare', upstream: 'openrouter', gatewayTokenSet: true, gatewayMissing: true });
+    cloudflareRef = { accountId: ACCOUNT, gatewayId: 'buildd', keys: {} };
+    [row] = await listTeamAgentEndpoints('t');
+    expect(row).toMatchObject({ gatewayMissing: false, storedKeyMissing: true });
+    expect(JSON.stringify(row)).not.toContain(GW_TOKEN);
   });
 });

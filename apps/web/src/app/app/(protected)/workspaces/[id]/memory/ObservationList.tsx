@@ -2,6 +2,9 @@
 
 import { useState, useMemo } from 'react';
 import { Select } from '@/components/ui/Select';
+import Segmented from '@/components/ui/Segmented';
+import { TonePill } from '@/components/ui/StatePill';
+import type { StateTone } from '@/components/ui/states';
 import CreateObservationForm from './CreateObservationForm';
 import { useConfirm } from '@/components/useConfirm';
 import {
@@ -36,13 +39,13 @@ const STATE_LABELS: Record<MemoryDisplayState, string> = {
   expired: 'Expired',
 };
 
-// Square chips; color only where the state asks for attention.
-const STATE_CHIP: Record<MemoryDisplayState, string> = {
-  candidate: 'text-status-warning border-status-warning',
-  active: 'text-accent-text border-primary',
-  superseded: 'text-text-muted border-border-strong',
-  invalidated: 'text-status-error border-status-error',
-  expired: 'text-text-muted border-border-strong',
+// Colour only where the state asks for attention: a candidate waits on a review.
+const STATE_TONE: Record<MemoryDisplayState, StateTone> = {
+  candidate: 'dec',
+  active: 'ok',
+  superseded: 'q',
+  invalidated: 'bad',
+  expired: 'q',
 };
 
 const REVIEW_LABELS: Record<MemoryReviewAction, string> = {
@@ -77,15 +80,6 @@ function toObservation(m: any, workspaceId: string): Observation {
     reverifyRef: m.reverifyRef ?? null,
   };
 }
-
-const TYPE_COLORS: Record<string, string> = {
-  discovery: 'bg-primary/10 text-primary',
-  decision: 'bg-primary/10 text-primary',
-  gotcha: 'bg-status-error/10 text-status-error',
-  pattern: 'bg-status-success/10 text-status-success',
-  architecture: 'bg-status-warning/10 text-status-warning',
-  summary: 'bg-surface-3 text-text-primary',
-};
 
 const TYPES = ['all', 'discovery', 'decision', 'gotcha', 'pattern', 'architecture', 'summary'];
 const EDITABLE_TYPES = ['gotcha', 'pattern', 'decision', 'discovery', 'architecture', 'summary'] as const;
@@ -308,20 +302,17 @@ export default function ObservationList({
 
     if (isEditing && editForm) {
       return (
-        <div key={obs.id} className="border border-primary/30 rounded-lg p-4 bg-primary/5">
+        <div key={obs.id} className="py-4">
           <div className="space-y-3">
             {/* Type selector */}
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Type">
               {EDITABLE_TYPES.map(t => (
                 <button
                   key={t}
                   type="button"
+                  aria-pressed={editForm.type === t}
                   onClick={() => setEditForm({ ...editForm, type: t })}
-                  className={`px-2 py-1 text-xs rounded ${
-                    editForm.type === t
-                      ? 'bg-primary text-white'
-                      : 'bg-surface-3 text-text-secondary'
-                  }`}
+                  className={`filter-pill ${editForm.type === t ? 'filter-pill-active' : ''}`}
                 >
                   {t}
                 </button>
@@ -333,7 +324,7 @@ export default function ObservationList({
               type="text"
               value={editForm.title}
               onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Title"
             />
 
@@ -342,7 +333,7 @@ export default function ObservationList({
               value={editForm.content}
               onChange={(e) => setEditForm({ ...editForm, content: e.target.value })}
               rows={4}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm resize-y"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm resize-y"
               placeholder="Content"
             />
 
@@ -351,7 +342,7 @@ export default function ObservationList({
               type="text"
               value={editForm.filesInput}
               onChange={(e) => setEditForm({ ...editForm, filesInput: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Files (comma-separated)"
             />
 
@@ -360,7 +351,7 @@ export default function ObservationList({
               type="text"
               value={editForm.conceptsInput}
               onChange={(e) => setEditForm({ ...editForm, conceptsInput: e.target.value })}
-              className="w-full px-3 py-2 border border-border-default rounded bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Concepts (comma-separated)"
             />
 
@@ -370,15 +361,17 @@ export default function ObservationList({
                 <span role="alert" className="mr-auto text-sm text-status-error">{saveError}</span>
               )}
               <button
+                type="button"
                 onClick={cancelEditing}
-                className="px-3 py-1 text-sm text-text-secondary hover:text-text-primary"
+                className="btn btn-quiet"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={() => saveEdit(obs.id)}
                 disabled={saving}
-                className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
+                className="btn"
               >
                 {saving ? 'Saving…' : 'Save'}
               </button>
@@ -395,33 +388,30 @@ export default function ObservationList({
     const recheckRef = formatReverifyRef(obs.reverifyRef);
 
     return (
-      <div key={obs.id} className="border border-border-default rounded-lg p-4">
+      <div key={obs.id} className="py-4">
         {/* Meta + actions on one line, title on its own full-width line so a
             long title wraps normally instead of one word per line. */}
         <div className="flex justify-between items-center gap-2 mb-1">
           <div className="flex items-center gap-2 min-w-0">
-            <span
-              data-testid="memory-state-chip"
-              className={`health-pill flex-shrink-0 ${STATE_CHIP[displayState]}`}
-            >
-              {STATE_LABELS[displayState]}
+            <span data-testid="memory-state-chip" className="flex-shrink-0">
+              <TonePill tone={STATE_TONE[displayState]}>{STATE_LABELS[displayState]}</TonePill>
             </span>
-            <span className={`px-2 py-0.5 text-xs flex-shrink-0 ${TYPE_COLORS[obs.type] || TYPE_COLORS.summary}`}>
-              {obs.type}
-            </span>
+            <span className="text-xs text-text-secondary flex-shrink-0">{obs.type}</span>
             <span className="text-xs text-text-muted truncate">{timeAgo(obs.createdAt)}</span>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0 -mr-2 md:mr-0 md:gap-2">
             <button
+              type="button"
               onClick={() => startEditing(obs)}
-              className="inline-flex items-center justify-center min-h-11 min-w-11 px-2 md:min-h-0 md:min-w-0 md:px-0 text-xs text-primary hover:text-primary-hover"
+              className="btn btn-sm min-h-11 md:min-h-0"
               aria-label={`Edit ${obs.title}`}
             >
               Edit
             </button>
             <button
+              type="button"
               onClick={() => handleDelete(obs.id)}
-              className="inline-flex items-center justify-center min-h-11 min-w-11 px-2 md:min-h-0 md:min-w-0 md:px-0 text-xs text-status-error hover:opacity-80"
+              className="btn btn-sm btn-danger min-h-11 md:min-h-0"
               aria-label={`Delete ${obs.title}`}
             >
               Delete
@@ -430,7 +420,7 @@ export default function ObservationList({
         </div>
         <h3 className="font-medium mb-2 [overflow-wrap:anywhere]">{obs.title}</h3>
         {obs.reverifyFlaggedAt && displayState !== 'superseded' && (
-          <p data-testid="memory-recheck-note" className="font-mono text-xs text-status-warning mb-2">
+          <p data-testid="memory-recheck-note" className="text-xs text-status-warning mb-2">
             Needs re-check: {recheckRef ? `${recheckRef} touched its files` : 'a merged PR touched its files'}, {timeAgo(obs.reverifyFlaggedAt)}
           </p>
         )}
@@ -442,27 +432,27 @@ export default function ObservationList({
             ? obs.content
             : obs.content.slice(0, 300) + '...'}
           {obs.content.length > 300 && (
-            <span className="text-primary ml-1">
+            <span className="text-text-muted underline ml-1">
               {isExpanded ? '(collapse)' : '(expand)'}
             </span>
           )}
         </div>
         {obs.files && Array.isArray(obs.files) && obs.files.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
+          <div className="flex flex-wrap gap-x-2 gap-y-1 mt-2">
             {obs.files.slice(0, 8).map((f, i) => (
-              <span key={i} className="px-2 py-0.5 text-xs bg-surface-3 rounded">
+              <span key={i} className="font-mono text-xs text-text-muted">
                 {f.split('/').pop()}
               </span>
             ))}
             {obs.files.length > 8 && (
-              <span className="px-2 py-0.5 text-xs text-text-muted">+{obs.files.length - 8} more</span>
+              <span className="text-xs text-text-muted">+{obs.files.length - 8} more</span>
             )}
           </div>
         )}
         {obs.concepts && Array.isArray(obs.concepts) && obs.concepts.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
+          <div className="flex flex-wrap gap-x-2 gap-y-1 mt-2">
             {obs.concepts.map((c, i) => (
-              <span key={i} className="px-2 py-0.5 text-xs bg-primary/10 text-primary rounded">
+              <span key={i} className="text-xs text-text-secondary">
                 #{c}
               </span>
             ))}
@@ -476,11 +466,7 @@ export default function ObservationList({
                 type="button"
                 onClick={() => handleReview(obs, a)}
                 disabled={reviewingId === obs.id}
-                className={`min-h-11 md:min-h-0 px-3 py-1 font-mono text-xs border disabled:opacity-50 ${
-                  a === 'promote'
-                    ? 'bg-primary text-white border-primary hover:bg-primary-hover'
-                    : 'bg-surface-3 text-text-primary border-border-strong hover:bg-surface-4'
-                }`}
+                className={`btn btn-sm min-h-11 md:min-h-0 ${a === 'dismiss' ? 'btn-danger' : ''}`}
                 aria-label={`${REVIEW_LABELS[a]} ${obs.title}`}
               >
                 {reviewingId === obs.id ? '…' : REVIEW_LABELS[a]}
@@ -511,70 +497,53 @@ export default function ObservationList({
         />
         <input
           type="text"
-          placeholder="Search observations…"
+          placeholder="Search memories…"
           value={search}
           onChange={(e) => handleSearch(e.target.value)}
-          className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+          className="flex-1 min-w-[200px] px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
         />
         <button
           type="button"
           onClick={handleRecheckToggle}
           aria-pressed={recheckOnly}
           data-testid="memory-recheck-filter"
-          className={`px-3 py-2 font-mono text-sm border ${
-            recheckOnly
-              ? 'border-primary text-accent-text bg-surface-3 font-medium'
-              : 'border-border-default bg-surface-1 hover:bg-surface-3'
-          }`}
+          className={`filter-pill self-center ${recheckOnly ? 'filter-pill-active' : ''}`}
         >
           Needs re-check
         </button>
-        <div className="flex rounded-lg border border-border-default overflow-hidden">
-          <button
-            onClick={() => setViewMode('list')}
-            className={`px-3 py-2 text-sm ${
-              viewMode === 'list'
-                ? 'bg-surface-3 font-medium'
-                : 'bg-surface-1 hover:bg-surface-3'
-            }`}
-          >
-            List
-          </button>
-          <button
-            onClick={() => setViewMode('files')}
-            className={`px-3 py-2 text-sm border-l border-border-default ${
-              viewMode === 'files'
-                ? 'bg-surface-3 font-medium'
-                : 'bg-surface-1 hover:bg-surface-3'
-            }`}
-          >
-            By File
-          </button>
-        </div>
+        <Segmented
+          label="View"
+          value={viewMode}
+          onChange={setViewMode}
+          items={[
+            { value: 'list', label: 'List' },
+            { value: 'files', label: 'By file' },
+          ]}
+        />
       </div>
 
       {/* List */}
       {loading ? (
-        <div className="text-center py-8 text-text-muted">Loading…</div>
+        <p className="text-sm text-text-muted">Loading…</p>
       ) : observations.length === 0 ? (
-        <div className="text-center py-8 text-text-muted">
+        <p className="text-sm text-text-muted">
           {recheckOnly
             ? 'Nothing needs a re-check. A memory is flagged here when a merged PR touches its files.'
-            : 'No observations. Workers add them as they finish tasks.'}
-        </div>
+            : 'No memories. Workers add them as they finish tasks.'}
+        </p>
       ) : viewMode === 'list' ? (
-        <div className="space-y-3">
+        <div className="divide-y divide-border-default border-y border-border-default">
           {observations.map(obs => renderObservationCard(obs))}
         </div>
       ) : (
         <div className="space-y-6">
           {fileGrouped.map(([file, obs]) => (
-            <div key={file} className="border border-border-default rounded-lg overflow-hidden">
-              <div className="px-4 py-2 bg-surface-3 border-b border-border-default">
-                <code className="text-sm font-mono">{file}</code>
-                <span className="text-xs text-text-muted ml-2">({obs.length})</span>
-              </div>
-              <div className="p-3 space-y-3">
+            <div key={file}>
+              <h3 className="mb-1 flex items-baseline gap-2 text-sm">
+                <code className="font-mono text-text-primary break-all">{file}</code>
+                <span className="font-mono text-xs text-text-muted">{obs.length}</span>
+              </h3>
+              <div className="divide-y divide-border-default border-y border-border-default">
                 {obs.map(o => renderObservationCard(o))}
               </div>
             </div>

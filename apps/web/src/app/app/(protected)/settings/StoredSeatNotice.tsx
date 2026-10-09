@@ -1,5 +1,7 @@
 'use client';
 
+import Notice from '@/components/ui/Notice';
+
 /**
  * Settings → Agent backends: tells a team that still stores a subscription
  * login in buildd (a Claude setup token or sign-in, a ChatGPT login for Codex)
@@ -35,22 +37,19 @@ export default function StoredSeatNotice({ kinds }: { kinds: StoredSeatKind[] })
     ? 'a Claude login and a ChatGPT (Codex) login'
     : kinds[0] === 'claude' ? 'a Claude login' : 'a ChatGPT (Codex) login';
   return (
-    <div className="inset-panel border border-status-warning/40 space-y-2" data-testid="stored-seat-notice" role="status">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="status-pill status-pill-warn">Moving to your runner</span>
-      </div>
+    <Notice tone="warn" title="Moving to your runner" className="mx-4 my-3" data-testid="stored-seat-notice">
       <p className="text-xs text-text-secondary">
         This team stores {what} in buildd. Buildd will stop storing subscription logins, and
         stored ones will be removed. Your runners keep working until then.
       </p>
-      <p className="text-xs text-text-secondary">
+      <p className="mt-2 text-xs text-text-secondary">
         Sign in on each runner ({kinds.map((k, i) => (
           <span key={k}>{i > 0 ? ' and ' : ''}<code>{k === 'claude' ? 'claude login' : 'codex login'}</code></span>
         ))}), then set <code>BUILDD_HOST_SEAT=prefer</code>. API keys are not affected.
       </p>
-      <a href={RUNNER_LOGIN_DOCS_URL} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+      <a href={RUNNER_LOGIN_DOCS_URL} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs underline hover:text-text-primary">
         How to set up a login on the runner
       </a>
-    </div>
+    </Notice>
   );
 }

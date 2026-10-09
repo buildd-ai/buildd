@@ -18,7 +18,11 @@ export interface MigrationCollision {
 /**
  * Why a migration verdict is unsafe. Callers route on this, never on `reason`:
  *  - `destructive`: the SQL itself is CONTRACT (drop, rename, type change,
- *    data migration, ambiguous). A person decides.
+ *    ambiguous). A person decides.
+ *  - `data`: the only CONTRACT statements move data (INSERT/UPDATE/DELETE/
+ *    MERGE). A person decides unless the workspace merge policy lets the
+ *    reviewer agent decide (`mergePolicy.dataMigrations`, see
+ *    `agentReviewsDataMigrations` in @buildd/shared).
  *  - `lineage`: the PR deletes, rewrites or reorders existing migrations.
  *  - `mixed`: safe EXPAND plus CONTRACT in one PR; an agent splits it.
  *  - `collision`: a mechanical renumber (see `MigrationSafety.collision`).
@@ -27,7 +31,7 @@ export interface MigrationCollision {
  * Absent means `destructive` (see `unsafeKind`), so a verdict without one
  * still fails closed.
  */
-export type MigrationUnsafeKind = 'destructive' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
+export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
 
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }
@@ -147,6 +151,10 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     return { safe: false, operationClass: 'CONTRACT', reason: 'generated migration contains no SQL statements' };
   }
 
+  // A data statement doesn't end the scan: a later destructive statement in
+  // the same file must win, so a backfill can't hide a DROP behind it.
+  let firstData: Extract<MigrationSafety, { safe: false }> | null = null;
+
   for (const raw of parsed) {
     const statement = unwrapIdempotentDoBlock(raw) ?? raw;
     let match: RegExpExecArray | null;
@@ -236,11 +244,13 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
       statement,
     );
     if (match) {
-      return {
+      firstData ??= {
         safe: false,
         operationClass: 'CONTRACT',
         reason: `runs data migration ${match[1].split(/\s/)[0].toUpperCase()} on ${identifier(match[2])}`,
+        kind: 'data',
       };
+      continue;
     }
 
     if (/^CREATE\s+TABLE\b/i.test(statement)) continue;
@@ -285,6 +295,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     };
   }
 
+  if (firstData) return firstData;
   return { safe: true, operationClass: 'EXPAND' };
 }
 
@@ -352,7 +363,9 @@ export function classifyPullRequestMigrations(
     }
   }
 
-  const firstContract = results.find((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
+  // A destructive file outranks a data one, whatever the file order.
+  const contracts = results.filter((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
+  const firstContract = contracts.find((r) => r.kind !== 'data') ?? contracts[0];
   const hasExpand = results.some((r) => r.safe);
 
   // Reject PRs that mix EXPAND and CONTRACT migrations. Each operation class must
@@ -372,7 +385,9 @@ export function classifyPullRequestMigrations(
   // A migration whose own SQL is genuinely destructive always escalates on
   // its own merits — a collision on the same slot doesn't make it MORE
   // destructive, and it doesn't make it any safer either.
-  if (firstContract) return firstContract;
+  // Data-only SQL with a colliding number: the renumber is mechanical, so it
+  // goes first; the data verdict applies again on the renumbered head.
+  if (firstContract && !(firstContract.kind === 'data' && collision)) return firstContract;
 
   if (collision) {
     return {

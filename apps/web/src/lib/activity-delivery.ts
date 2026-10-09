@@ -97,6 +97,8 @@ export interface NowGroup {
   rows: NowRow[];
   /** Waiting rows past the cap, summarised as a count. */
   moreWaiting: number;
+  /** Hidden waiting rows (past the cap) for expansion. */
+  hiddenWaitingRows: NowRow[];
 }
 
 export interface ActivityNow {
@@ -126,8 +128,6 @@ export interface Episode {
   /** Chronological, in the order they happened. Never re-sorted by kind. */
   steps: EpisodeStep[];
 }
-
-export interface LatestTask { id: string; title: string; href: string; at: number }
 
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 const VERDICTS = new Set(['approve', 'request-changes', 'escalate']);
@@ -207,7 +207,9 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
  */
 function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery {
   // The root stands as the deliverable even when it is an attempt whose parent is not loaded.
-  const root = { ...d.root, parentTaskId: null, taskClass: 'work' };
+  // The mission projection drops cancelled roots, so a cancelled one is projected as
+  // failed; History names it "not landed" and adds a Cancelled step.
+  const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
   const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
   return m.tasks.find(t => t.id === d.root.id)!.delivery;
@@ -422,8 +424,11 @@ export function buildActivityNow(input: {
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
     if (!delivery.open || delivery.kind === 'landed') continue;
     if (delivery.kind === 'notlanded' && input.now - latestAt(d) > NOT_LANDED_NOW_WINDOW_MS) continue;
-    const key = d.root.missionId;
-    const g = groups.get(key) ?? { rows: [], title: d.root.missionTitle ?? null };
+    // Open tasks of a completed mission are regrouped as standalone.
+    const isMissionCompleted = mission?.kind === 'landed';
+    const key = isMissionCompleted ? null : d.root.missionId;
+    const title = isMissionCompleted ? null : (d.root.missionTitle ?? null);
+    const g = groups.get(key) ?? { rows: [], title };
     g.rows.push(toRow(d, delivery));
     groups.set(key, g);
   }
@@ -444,6 +449,7 @@ export function buildActivityNow(input: {
       next: m?.next ?? null,
       rows: [...moving, ...waiting.slice(0, WAITING_ROWS_PER_GROUP)],
       moreWaiting: Math.max(0, waiting.length - WAITING_ROWS_PER_GROUP),
+      hiddenWaitingRows: waiting.slice(WAITING_ROWS_PER_GROUP),
     };
   });
   // Missions by their chip's attention, then id: an order that only changes when a state does.
@@ -609,36 +615,16 @@ export function buildActivityHistory(input: {
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
 
-/** The task touched most recently: one tap from the top of either view. */
-export function latestTask(tasks: readonly ActivityTaskInput[], rules: MissionTaskRules): LatestTask | null {
-  let best: LatestTask | null = null;
-  for (const d of foldDeliveries(tasks, rules)) {
-    const at = latestAt(d);
-    if (!best || at > best.at || (at === best.at && d.root.id < best.id)) best = { id: d.root.id, title: d.root.title, href: taskHref(d.root.id), at };
-  }
-  return best;
-}
-
 // ── Filters (client) ────────────────────────────────────────────────────────
 
 export type ActivityScope = 'all' | 'missions' | 'tasks';
-export type ActivityOutcome = 'any' | 'landed' | 'retries' | 'exceptions';
+/** `you`: deliveries that came to a person (History's "Sent to you"). */
+export type ActivityOutcome = 'any' | 'landed' | 'retries' | 'exceptions' | 'you';
 
 const EXCEPTION: ReadonlySet<DeliveryKind> = new Set(['notlanded', 'unavailable', 'needs']);
 
 const inScope = (missionId: string | null, scope: ActivityScope) =>
   scope === 'all' || (scope === 'missions' ? missionId != null : missionId == null);
-
-export function filterNow(now: ActivityNow, f: { scope: ActivityScope; outcome: ActivityOutcome }): NowGroup[] {
-  return now.groups
-    .filter(g => inScope(g.missionId, f.scope))
-    .map(g => {
-      if (f.outcome === 'any') return g;
-      const rows = g.rows.filter(r => (f.outcome === 'retries' ? r.delivery.repairRounds > 0 : f.outcome === 'exceptions' ? EXCEPTION.has(r.delivery.kind) : r.delivery.kind === 'landed'));
-      return { ...g, rows, moreWaiting: 0 };
-    })
-    .filter(g => g.rows.length > 0);
-}
 
 export function filterEpisodes(episodes: readonly Episode[], f: { scope: ActivityScope; outcome: ActivityOutcome; missionId?: string | null }): Episode[] {
   return episodes.filter(e =>
@@ -647,5 +633,6 @@ export function filterEpisodes(episodes: readonly Episode[], f: { scope: Activit
     && (f.outcome === 'any'
       || (f.outcome === 'landed' && e.kind === 'landed')
       || (f.outcome === 'retries' && e.repairRounds > 0)
-      || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))));
+      || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))
+      || (f.outcome === 'you' && e.kind === 'needs')));
 }
