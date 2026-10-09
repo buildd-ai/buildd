@@ -271,6 +271,9 @@ export interface MissionTaskRow {
   category?: string | null;
   parentTaskId?: string | null;
   dependsOn?: readonly string[] | null;
+  /** The platform's integration-branch refresh chore (`context.requireMergeCommit`); see MISSION_TASK_REFRESH_EXTRAS. */
+  isIntegrationRefresh?: boolean | null;
+  createdAt?: Date | string | number | null;
   workers?: readonly DeliveryWorker[] | null;
 }
 
@@ -356,6 +359,24 @@ const isRepairAttempt = (rules: MissionTaskRules) => (t: MissionTaskRow) => {
 /** Platform signals filed by agents; never the face of a mission outcome. */
 const isFriction = (t: { title: string }) => /^\[friction\]/i.test(t.title.trim());
 
+const stamp = (t: { createdAt?: Date | string | number | null }) => (t.createdAt ? new Date(t.createdAt).getTime() : 0);
+
+/**
+ * Refresh chores that failed but whose branch a later refresh did land: the
+ * branch is current, so the failure carries no decision. A failed refresh with
+ * no later success is not here; it stays visible as the platform's recovery.
+ */
+function supersededRefreshIds(tasks: readonly MissionTaskRow[]): Set<string> {
+  const refreshes = tasks.filter(t => t.isIntegrationRefresh === true);
+  const landed = refreshes.filter(t => (t.workers ?? []).some(w => !!w.mergedAt));
+  const out = new Set<string>();
+  for (const t of refreshes) {
+    if (landed.includes(t) || (t.workers ?? []).some(w => LIVE.has(w.status))) continue;
+    if (landed.some(l => stamp(l) >= stamp(t))) out.add(t.id);
+  }
+  return out;
+}
+
 const auditRound = (t: { title: string }) => Number(/^\[surface audit\] round (\d+): /.exec(t.title)?.[1] ?? 1);
 
 /**
@@ -375,7 +396,10 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   const { computeMissionProgress, isAttempt } = rules;
   const auditIds = new Set(input.tasks.filter(t => t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)).map(t => t.id));
   const audits = input.tasks.filter(t => auditIds.has(t.id));
-  const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !auditIds.has(t.id) && !(t.parentTaskId && auditIds.has(t.parentTaskId))) };
+  const superseded = supersededRefreshIds(input.tasks);
+  const refreshIds = new Set(input.tasks.filter(t => t.isIntegrationRefresh === true).map(t => t.id));
+  const hidden = (id: string) => auditIds.has(id) || superseded.has(id);
+  const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !hidden(t.id) && !(t.parentTaskId && hidden(t.parentTaskId))) };
   const visual = visualAuditState(audits, input.visualFindings);
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
@@ -405,6 +429,8 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
   });
   // Second pass: an unclaimed task whose in-mission dependency has not landed waits on it.
   for (const d of deliveries) {
+    // A refresh chore that did not land is the platform's own to retry, not a person's decision.
+    if (refreshIds.has(d.t.id) && d.delivery.kind === 'notlanded') d.delivery = { ...d.delivery, reconciling: true };
     if (d.delivery.kind !== 'waiting') continue;
     const blocker = (d.t.dependsOn ?? []).find(id => byId.has(id) && !landedIds.has(id));
     if (blocker) d.delivery = { ...d.delivery, waitingOn: 'dependency' };
@@ -441,7 +467,9 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
 
   if (!exception && focus) {
     if (focus.delivery.kind === 'notlanded') {
-      exception = focus.delivery.reconciling
+      exception = refreshIds.has(focus.id)
+        ? { tone: 'warning', text: 'The integration branch refresh has not landed; the platform is retrying it' }
+        : focus.delivery.reconciling
         ? { tone: 'warning', text: `The PR for ${focus.title} closed; checking automatically whether another PR carries it` }
         : { tone: 'error', text: `${focus.title} did not land and needs your decision` };
     }
@@ -453,7 +481,9 @@ export function projectMissionDelivery(input: MissionDeliveryInput, rules: Missi
 
   const repairRounds = deliveries.reduce((n, d) => n + d.repairRounds, 0);
   const inAudit = tasks.filter(t => ['audit', 'repair', 'landing', 'unavailable'].includes(t.delivery.kind)).length;
-  const described = describe(kind, focus, m, repairRounds);
+  const described = kind === 'notlanded' && focus && refreshIds.has(focus.id)
+    ? { evidence: 'The integration branch has not been refreshed from trunk yet.', next: 'The platform retries the refresh' }
+    : describe(kind, focus, m, repairRounds);
   const evidence = described.evidence;
   const next = visual && (kind === 'landed' || kind === 'landing') ? visual.next : described.next;
 

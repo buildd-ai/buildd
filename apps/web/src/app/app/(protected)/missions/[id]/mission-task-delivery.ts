@@ -7,6 +7,7 @@
  * The missions module's task rules arrive as `rules` (`@buildd/core/mission-helpers`),
  * as they do for every other caller of the projection.
  */
+import { integrationRefreshOf } from '@/lib/integration-refresh';
 import { projectMissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
 import { buildTaskDeliveryDetails, reviewOf, type ActivityTaskInput, type TaskDeliveryDetail } from '@/lib/activity-delivery';
 
@@ -37,6 +38,7 @@ export interface MissionDeliveryTaskRow {
   category?: string | null;
   creationSource?: string | null;
   dependsOn?: readonly string[] | null;
+  isIntegrationRefresh?: boolean | null;
   createdAt: When;
   updatedAt?: When;
   workers?: readonly MissionDeliveryWorkerRow[] | null;
@@ -58,7 +60,7 @@ export function missionTaskDeliveries(input: {
   const mission = projectMissionDelivery({
     id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
     isHeld: m.isHeld ?? false, integrationBranch: m.integrationBranch === true,
-    tasks: input.tasks.map(t => ({ ...t, workers: workersOf(t).map(w => ({ ...w, mergedAt: iso(w.mergedAt), abandonedAt: iso(w.abandonedAt) })) })),
+    tasks: input.tasks.map(t => ({ ...t, isIntegrationRefresh: t.isIntegrationRefresh ?? integrationRefreshOf(input.digestOf(t.id).context) !== null, workers: workersOf(t).map(w => ({ ...w, mergedAt: iso(w.mergedAt), abandonedAt: iso(w.abandonedAt) })) })),
   }, rules);
   const tasks: ActivityTaskInput[] = input.tasks.map(t => {
     const type = rules.deriveTaskType(t);

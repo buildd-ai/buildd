@@ -258,6 +258,32 @@ describe('projectMissionDelivery', () => {
     expect(m.visual?.text).toBe('Visual audit could not run');
   });
 
+  it('a failed branch refresh followed by a landed one is not a deliverable: not counted, not Needs you', () => {
+    const failed = task({ title: 'chore(mission): merge dev into the branch', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-08T10:00:00Z' });
+    const landed = task({ title: 'chore(mission): merge dev into the branch', status: 'completed', isIntegrationRefresh: true, createdAt: '2026-10-09T00:20:00Z', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'merged', mergedAt: '2026-10-09T01:00:00Z' }] });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), failed, landed] }));
+    expect(m.tasks.map(x => x.id)).not.toContain(failed.id);
+    expect(m.kind).not.toBe('notlanded');
+    expect(m.exception?.text ?? '').not.toContain('did not land');
+  });
+
+  it('a failed branch refresh with no later success is the platform\'s recovery, not a decision', () => {
+    const failed = task({ title: 'chore(mission): merge dev into the branch', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-08T10:00:00Z' });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), failed] }));
+    expect(m.kind).toBe('notlanded');
+    expect(m.reconciling).toBe(true);
+    expect(m.exception?.text).toContain('refresh');
+    expect(m.exception?.text).not.toContain('needs your decision');
+    expect(m.next).not.toContain('retry or drop');
+  });
+
+  it('a refresh that failed after the last landed one is not hidden', () => {
+    const landed = task({ title: 'refresh', status: 'completed', isIntegrationRefresh: true, createdAt: '2026-10-08T00:00:00Z', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'merged', mergedAt: '2026-10-08T01:00:00Z' }] });
+    const failed = task({ title: 'refresh', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-09T00:00:00Z' });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), landed, failed] }));
+    expect(m.tasks.map(x => x.id)).toContain(failed.id);
+  });
+
   it('a failed visual audit with findings reads as the mission\'s Visual state', () => {
     const audit = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
     const m = projectMissionDelivery(mission({ visualFindings: 2, tasks: [merged('One'), audit] }));
