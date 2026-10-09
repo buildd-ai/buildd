@@ -1376,7 +1376,7 @@ export default async function HomePage({
                 const verdicts = await gateEscalations(unique, ESCALATION_GATE_READ_DEPS());
                 const byWorker = new Map(gateSubjects.flatMap(g => {
                   const v = verdicts.get(g.subject.key);
-                  return v ? [[g.workerId, { owner: v.owner, reason: v.reason }] as const] : [];
+                  return v ? [[g.workerId, { owner: v.owner, reason: v.reason, rail: v.owner === 'person' ? v.rail ?? null : null, teamId: g.subject.teamId ?? null }] as const] : [];
                 }));
                 escalationInbox = escalationInbox.map(e => ({ ...e, gate: byWorker.get(e.workerId) ?? null }));
               } catch (err) {
