@@ -113,3 +113,43 @@ describe('History and What ran on a phone', () => {
     expect(sheet.querySelector('[data-testid="what-ran-recent"] a')!.textContent).toBe('Fix flaky date test');
   });
 });
+
+describe('tier maximum on the tier cards', () => {
+  async function mountWith(max: { agent: string | null; chat: string | null } | 'fail') {
+    const base = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/model-ceilings')) {
+        if (max === 'fail') return new Response('{"error":"nope"}', { status: 500 });
+        return Response.json({ effective: { agent: { max: max.agent }, chat: { max: max.chat } } });
+      }
+      return base(url, init);
+    }) as unknown as typeof fetch;
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await flush(); await flush();
+  }
+  const note = (tier: string) => document.querySelector(`[data-testid="tier-blocked-${tier}"]`);
+
+  it('marks premium-plus as set-but-not-served under a Premium maximum; the card stays visible', async () => {
+    await mountWith({ agent: 'premium', chat: 'premium' });
+    expect(note('premium-plus')!.textContent).toContain('Can be set, not served');
+    expect(document.querySelector('[data-testid="tier-card-premium-plus"]')).not.toBeNull();
+    expect(note('premium')).toBeNull();
+    expect(note('standard')).toBeNull();
+  });
+
+  it('names the surface when only one is limited', async () => {
+    await mountWith({ agent: 'standard', chat: null });
+    expect(note('premium')!.textContent).toContain('for Coding');
+  });
+
+  it('shows no marks when there is no limit or the read model fails', async () => {
+    await mountWith({ agent: null, chat: null });
+    expect(document.querySelector('[data-testid^="tier-blocked-"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mountWith('fail');
+    expect(document.querySelector('[data-testid^="tier-blocked-"]')).toBeNull();
+  });
+});
