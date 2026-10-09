@@ -13,6 +13,7 @@ import {
   effectIsCurrent,
   failEffectSql,
   insertFollowupEffectSql,
+  renewEffectLeaseSql,
   runEffects,
   EFFECT_MAX_ATTEMPTS,
   KERNEL_ONLY_EFFECTS,
@@ -37,15 +38,25 @@ describe('SQL', () => {
     expect(text).toContain('AND delivery_id = $1::uuid');
     expect(params).toEqual(['d1', 10, 120_000]);
   });
+  test('a row\'s lease is renewed only while this attempt holds it, and re-reads what §10.4 checks', () => {
+    const { sql: text, params } = render(renewEffectLeaseSql('e1', 2));
+    expect(text).toContain("WHERE e.id = $2::uuid AND e.status = 'delivering' AND e.attempt_count = $3::int");
+    expect(text).toContain("jsonb_build_object('state', d.state, 'version', d.version)");
+    expect(text).toContain("jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version)");
+    expect(params.slice(0, 3)).toEqual([120_000, 'e1', 2]);
+  });
   test('a follow-up effect is idempotent on its own dedupe key and rides the same transition', () => {
     const { sql: text, params } = render(insertFollowupEffectSql({ deliveryId: 'd1', transitionId: 't1', kind: 'push_recovery', dedupeKey: 'push_recovery:d1:L2:2', payload: { try: 2 }, delayMs: 600_000 }));
     expect(text).toContain('ON CONFLICT (dedupe_key) DO NOTHING');
     expect(params).toEqual(['d1', 't1', 'push_recovery', 'push_recovery:d1:L2:2', '{"try":2}', 600_000]);
   });
-  test('ack and fail only touch a row this drain holds', () => {
-    expect(render(ackEffectSql('e1', 'ok')).sql).toContain("WHERE id = $2::uuid AND status = 'delivering'");
+  test('ack and fail only touch the attempt this drain holds', () => {
+    const ack = render(ackEffectSql('e1', 3, 'ok'));
+    expect(ack.sql).toContain("WHERE id = $2::uuid AND status = 'delivering' AND attempt_count = $3::int");
+    expect(ack.params).toEqual(['ok', 'e1', 3]);
     const pending = render(failEffectSql('e1', 'boom', 1));
-    expect(pending.params).toEqual(['pending', 'boom', 15_000, 'e1']);
+    expect(pending.sql).toContain("WHERE id = $4::uuid AND status = 'delivering' AND attempt_count = $5::int");
+    expect(pending.params).toEqual(['pending', 'boom', 15_000, 'e1', 1]);
     expect(render(failEffectSql('e1', 'x'.repeat(900), EFFECT_MAX_ATTEMPTS)).params.slice(0, 2)).toEqual(['dead', 'x'.repeat(500)]);
   });
 });
@@ -70,7 +81,7 @@ describe('runEffects', () => {
     id: 'e1', delivery_id: 'd1', transition_id: 't1', kind: 'dispatch_fix', dedupe_key: 'k', payload: {}, attempt_count: 1,
     delivery: { state: 'CHANGES_REQUESTED', version: 4 }, transition: { to_state: 'CHANGES_REQUESTED', to_version: 4 }, ...o,
   });
-  function exec(rows: unknown[], failStatus = 'pending'): { exec: Exec; seen: Array<{ tag: string; params: unknown[] }> } {
+  function exec(rows: Array<Record<string, unknown>>, failStatus = 'pending', lostIds: string[] = []): { exec: Exec; seen: Array<{ tag: string; params: unknown[] }> } {
     const seen: Array<{ tag: string; params: unknown[] }> = [];
     return {
       seen,
@@ -79,6 +90,8 @@ describe('runEffects', () => {
         const tag = text.split('\n')[0].replace('-- workflow:', '');
         seen.push({ tag, params });
         if (tag === 'claim_effects') return { rows };
+        // The renewal re-reads the row's snapshot; a lost row (re-claimed elsewhere) returns nothing.
+        if (tag === 'renew_effect') return { rows: lostIds.includes(params[1] as string) ? [] : rows.filter((r) => r.id === params[1]) };
         if (tag === 'fail_effect') return { rows: [{ id: params[3], status: failStatus }] };
         return { rows: [{ id: params[1] }] };
       },
@@ -97,7 +110,7 @@ describe('runEffects', () => {
     const s = await runEffects({ exec: x.exec, handlers: { dispatch_fix: async () => { ran = true; } } });
     expect(ran).toBe(false);
     expect(s.skipped).toBe(1);
-    expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:superseded', 'e1'] });
+    expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:superseded', 'e1', 1] });
   });
   test('failures back off; dead critical effects are reported for escalation', async () => {
     const f = exec([claimed({})]);
@@ -111,6 +124,31 @@ describe('runEffects', () => {
     expect(d.seen.find((q) => q.tag === 'fail_effect')!.params[1]).toBe('no handler for merge_call');
   });
 
+  // 625449c7: a batch shares one claim lease; each row is renewed, fenced to its attempt, before it runs.
+  test('a row another drain re-claimed after the batch lease ran out is not run, acked or failed here', async () => {
+    let ran = 0;
+    const x = exec([claimed({}), claimed({ id: 'e2' })], 'pending', ['e2']);
+    const s = await runEffects({ exec: x.exec, handlers: { dispatch_fix: async () => { ran++; } } });
+    expect(ran).toBe(1);
+    expect(s).toMatchObject({ claimed: 2, done: 1, lost: 1 });
+    expect(x.seen.filter((q) => q.tag === 'ack_effect').map((q) => q.params[1])).toEqual(['e1']);
+  });
+  test('§10.4 is checked against the delivery as it is when the row\'s turn comes, not at claim time', async () => {
+    let ran = false;
+    const rows = [claimed({})];
+    const x = exec(rows);
+    const inner = x.exec;
+    // The delivery moved on between the batch claim and this row's renewal.
+    const moved: Exec = async (q) => {
+      const r = await inner(q);
+      if (render(q).sql.startsWith('-- workflow:renew_effect')) return { rows: (r.rows ?? []).map((row) => ({ ...(row as object), delivery: { state: 'AWAITING_REVIEW', version: 5 } })) };
+      return r;
+    };
+    const s = await runEffects({ exec: moved, handlers: { dispatch_fix: async () => { ran = true; } } });
+    expect(ran).toBe(false);
+    expect(s.skipped).toBe(1);
+  });
+
   // §14 kill switch (task 8a0571d8).
   test('a delivery the kernel no longer owns never runs a kernel-only effect: acked skipped:legacy_owns', async () => {
     for (const authority of ['legacy', 'switched_off']) {
@@ -119,7 +157,7 @@ describe('runEffects', () => {
         const x = exec([claimed({ kind, authority })]);
         const s = await runEffects({ exec: x.exec, handlers: { [kind]: async () => { ran = true; } } });
         expect({ authority, kind, ran, skipped: s.skipped }).toEqual({ authority, kind, ran: false, skipped: 1 });
-        expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:legacy_owns', 'e1'] });
+        expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:legacy_owns', 'e1', 1] });
       }
     }
     expect([...KERNEL_ONLY_EFFECTS].sort()).toEqual(['merge_call', 'push_recovery', 'refresh_branch', 'renumber_migration']);

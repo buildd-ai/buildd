@@ -82,7 +82,7 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
     for (let pass = 0; pass < 3; pass++) {
       const s = await runEffects({ handlers: kernelEffectHandlers, deliveryId, limit: 10, exec: deps.exec });
       total = total
-        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, dead: [...total.dead, ...s.dead] }
+        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, lost: total.lost + s.lost, dead: [...total.dead, ...s.dead] }
         : s;
       if (s.claimed === 0) break;
     }
