@@ -835,6 +835,24 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Task 163b59e7: the kill switch is written as a boolean, never a string some readers took for "on".
+  it('accepts gitConfig.workflowKernel true/false/null and rejects any other form (returns 400)', async () => {
+    for (const value of [true, false, null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { workflowKernel: value } } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, workflowKernel: value });
+    }
+    for (const value of ['false', 'off', 'true', 0]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { workflowKernel: value } } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/workflowKernel/);
+    }
+  });
+
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

@@ -171,6 +171,20 @@ describe('applyCommand (§7.2)', () => {
     expect(seen).toEqual(['-- workflow:load_view', '-- workflow:find_transition', '-- workflow:transition']);
   });
 
+  // §14 kill switch (task 8a0571d8): nothing the kernel is asked after a release becomes a transition.
+  test('a delivery released to legacy is refused (legacy_owns) before any lookup or write', async () => {
+    const { exec, seen } = scripted([loaded({ authority: 'legacy' })]);
+    expect(await applyCommand(verdictCmd, { ref: { deliveryId: 'd1' }, exec })).toMatchObject({ result: 'rejected', reason: 'legacy_owns' });
+    expect(seen).toEqual(['-- workflow:load_view']);
+  });
+
+  test('the transition write is guarded on authority, so a release between read and write wins', async () => {
+    let text = '';
+    const { exec } = scripted([loaded(), none, (q) => { text = q; return { rows: [{ transition_id: 'tr1', delivery_id: 'd1', version: '6' }] }; }]);
+    await applyCommand(verdictCmd, { ref: { deliveryId: 'd1' }, exec });
+    expect(text).toContain("authority = 'kernel'");
+  });
+
   test('duplicate: a seen stable key returns the first transition without writing', async () => {
     const { exec, seen } = scripted([loaded(), () => ({ rows: [{ id: 'tr0' }] })]);
     expect(await applyCommand(verdictCmd, { ref: { deliveryId: 'd1' }, exec })).toMatchObject({ result: 'duplicate', transitionId: 'tr0' });
