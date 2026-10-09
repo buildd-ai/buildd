@@ -916,7 +916,8 @@ export interface QuestionRecommendation {
 }
 
 export interface WaitingFor {
-  type: 'question' | 'permission' | 'confirmation';
+  /** `pause`: a person paused a running agent; answering it (Resume) continues the same session. */
+  type: 'question' | 'permission' | 'confirmation' | 'pause';
   prompt: string;
   options?: (string | WaitingForOption)[];
   /**
