@@ -7822,6 +7822,17 @@ export async function handleRecallAction(
 
   if (results.length === 0) {
     if (scope === 'code' || scope === 'docs') {
+      // Empty results don't mean an empty index: the session hint counts the
+      // same namespace, so only claim "no index" when that count is zero.
+      let indexed = 0;
+      try {
+        indexed = (await ks.countNamespace?.(ns)) ?? 0;
+      } catch {
+        // fall through to the not-indexed message
+      }
+      if (indexed > 0) {
+        return text(`No ${scope} match for: "${query}"${filterNote} (${indexed.toLocaleString()} chunks are indexed — try different terms or a symbol name).`);
+      }
       return text(`No ${scope} index found. Run ingestion first: WORKSPACE_ID=<id> bun packages/core/scripts/ingest-knowledge.ts <repo-dir>`);
     }
     return text(`No knowledge found for: "${query}"${filterNote}`);
