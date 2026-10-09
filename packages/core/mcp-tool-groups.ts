@@ -364,6 +364,7 @@ const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
+  merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */

@@ -51,8 +51,8 @@ export interface ChatOpSpec {
   deferredReason?: string;
   /**
    * Always gets an approval card, whatever the person's "Allow": the op starts
-   * recurring or unattended work (a schedule, an armed mission). Unlike
-   * `admin`, a member may still propose it.
+   * recurring or unattended work (a schedule, an armed mission), or cannot be
+   * undone (a merge). Unlike `admin`, a member may still propose it.
    */
   alwaysAsk?: true;
 }
@@ -74,6 +74,8 @@ const deferred = (reason: string): ChatOpSpec => ({ class: 'deferred', routes: [
 const self = (target: TargetDecl, ...routes: RouteRef[]): ChatOpSpec => ({ class: 'self', target, routes: [WS, ...routes] });
 /** A write that starts recurring or unattended work: never skips its card. */
 const startsWork = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
+/** A write that cannot be undone (a merge): never skips its card either. */
+const irreversible = (op: ChatOpSpec): ChatOpSpec => ({ ...op, alwaysAsk: true });
 const single = (group: ToolGroup, op: ChatOpSpec): ChatToolSpec => ({ group, ops: { '': op } });
 /** A single-op spec for an MCP action; its group is the action's ACTION_AREA. */
 const one = (op: ChatOpSpec): Omit<ChatToolSpec, 'group'> => ({ ops: { '': op } });
@@ -160,7 +162,10 @@ export const CHAT_TOOL_SPECS = withAreas({
   get_pr: one(read('GET /api/github/pr')),
   list_prs: one(read('GET /api/prs')),
   get_pr_review: one(read('GET /api/github/pr/review')),
-  merge_pr: one(deferred(`${KEY_ONLY} (and needs the green-CI + merge-safety gate from the design)`)),
+  // The signed-in person's merge, through the dashboard's own merge route (the landing
+  // page's rails: CI, deny paths, verdict, size, freshness). Its overrides (freshness /
+  // size) are the spent-treadmill escape hatch. Irreversible, so it always asks.
+  merge_pr: one(irreversible(write({ param: 'workspaceId', is: 'workspace' }, 'POST /api/prs/:prNumber/merge'))),
   close_pr: one(deferred(KEY_ONLY)),
   update_pr: one(deferred(KEY_ONLY)),
   request_pr_review: one(deferred(KEY_ONLY)),
