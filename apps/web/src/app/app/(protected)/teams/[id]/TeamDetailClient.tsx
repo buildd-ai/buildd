@@ -1,11 +1,12 @@
 'use client';
 
+import { clampedKeysNotice } from './clamped-keys-notice';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
-import { QA_FIXTURE_MEMBER_ID } from '../../settings/team/qa-state';
+import { isQaFixtureMemberId } from '../../settings/team/qa-state';
 
 interface TeamMember {
   userId: string;
@@ -55,6 +56,8 @@ export default function TeamDetailClient({
   const [editSlug, setEditSlug] = useState(team.slug);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Set when a role change, removal or transfer lowered someone's API keys.
+  const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'admin' | 'member'>('member');
@@ -155,8 +158,8 @@ export default function TeamDetailClient({
   }
 
   async function handleRoleChange(userId: string, newRole: string) {
-    // The ?state=multi-member row isn't a real member: never write for it.
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    // Fixture rows (?state=multi-member, dev fixtures) aren't real members: never write for them.
+    if (isQaFixtureMemberId(userId)) return;
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
         method: 'PATCH',
@@ -169,6 +172,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to update role');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -179,7 +183,7 @@ export default function TeamDetailClient({
     if (!(await confirm({ title: 'Remove member?', message: `Remove ${memberName || 'this member'} from the team?`, confirmLabel: 'Remove', variant: 'danger' }))) {
       return;
     }
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    if (isQaFixtureMemberId(userId)) return;
 
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
@@ -191,6 +195,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to remove member');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -207,7 +212,7 @@ export default function TeamDetailClient({
     }))) {
       return;
     }
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    if (isQaFixtureMemberId(userId)) return;
 
     try {
       const res = await fetch(`/api/teams/${team.id}/ownership`, {
@@ -221,6 +226,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to transfer ownership');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'you'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -231,6 +237,7 @@ export default function TeamDetailClient({
     if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Someone with member access has to add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
       return;
     }
+    if (isQaFixtureMemberId(currentUserId)) return;
 
     setLeaving(true);
     try {
@@ -257,6 +264,12 @@ export default function TeamDetailClient({
         <div className="mb-4 p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
           {error}
           <button onClick={() => setError('')} className="ml-2 text-sm underline">dismiss</button>
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="mb-4 p-4 bg-status-info/10 border border-status-info/30 rounded-lg text-text-primary text-sm">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-2 text-sm underline">dismiss</button>
         </div>
       )}
 
@@ -345,13 +358,16 @@ export default function TeamDetailClient({
 
       {/* Members */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">
+        <h2 className="text-xl font-semibold mb-1">
           Members ({members.length})
         </h2>
+        <p className="text-xs text-text-muted mb-4">
+          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
+        </p>
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
-            <div key={member.userId} className="p-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-2">
-              <div className="flex items-center gap-3 min-w-0 flex-1 basis-48">
+            <div key={member.userId} className="p-4 flex flex-col gap-2 md:flex-row md:flex-wrap md:justify-between md:items-center md:gap-x-3">
+              <div className="flex items-center gap-3 min-w-0 md:flex-1 md:basis-48">
                 {member.image ? (
                   <img
                     src={member.image}
@@ -373,7 +389,7 @@ export default function TeamDetailClient({
                   <div className="text-sm text-text-secondary [overflow-wrap:anywhere]">{member.email}</div>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-3 flex-shrink-0 ml-auto">
+              <div data-testid="member-controls" className="flex flex-wrap items-center gap-x-3 gap-y-1 md:justify-end md:flex-shrink-0 md:ml-auto">
                 {(() => {
                   const options = roleOptionsFor(member);
                   return options ? (
@@ -390,22 +406,32 @@ export default function TeamDetailClient({
                     </span>
                   );
                 })()}
-                {canAssignOwner && !isPersonal && member.role !== 'owner' && member.userId !== currentUserId && (
-                  <button
-                    onClick={() => handleTransferOwnership(member.userId, member.name)}
-                    className="min-h-11 md:min-h-0 px-1 text-xs text-text-secondary hover:text-text-primary whitespace-nowrap"
-                  >
-                    Transfer ownership
-                  </button>
-                )}
-                {canManage && member.userId !== currentUserId && (member.role !== 'owner' || canAssignOwner) && (
-                  <button
-                    onClick={() => handleRemoveMember(member.userId, member.name)}
-                    className="min-h-11 md:min-h-0 px-1 text-xs text-status-error hover:text-status-error/80"
-                  >
-                    Remove
-                  </button>
-                )}
+                {(() => {
+                  const canTransfer = canAssignOwner && !isPersonal && member.role !== 'owner' && member.userId !== currentUserId;
+                  const canRemove = canManage && member.userId !== currentUserId && (member.role !== 'owner' || canAssignOwner);
+                  if (!canTransfer && !canRemove) return null;
+                  // The text actions wrap as one unit; -ml-3 lines their text up with the select above on phones.
+                  return (
+                    <div className="flex items-center -ml-3 md:ml-0 md:gap-3">
+                      {canTransfer && (
+                        <button
+                          onClick={() => handleTransferOwnership(member.userId, member.name)}
+                          className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-text-secondary hover:text-text-primary whitespace-nowrap"
+                        >
+                          Transfer ownership
+                        </button>
+                      )}
+                      {canRemove && (
+                        <button
+                          onClick={() => handleRemoveMember(member.userId, member.name)}
+                          className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-status-error hover:text-status-error/80"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))}

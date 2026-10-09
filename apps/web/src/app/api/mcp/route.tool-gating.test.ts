@@ -80,6 +80,10 @@ mock.module('@/lib/memory-helper', () => ({
   getMemoryStoreForTeam: mockGetMemoryStoreForTeam,
 }));
 
+// The real handler, captured before the module is mocked (the namespace
+// binding follows the mock), for the tests whose gate lives inside it.
+const realHandleBuilddAction = realMcpTools.handleBuilddAction;
+
 // Keep the real action lists and tool descriptors — only the handlers are stubbed,
 // so tool names and level filtering are asserted against production data.
 mock.module('@buildd/core/mcp-tools', () => ({
@@ -591,5 +595,251 @@ describe('MCP tool gating — lazily resolved workspace', () => {
     const ctx: any = (mockHandleBuilddAction.mock.calls[0] as any[])[3];
     expect(await ctx.getMemoryClient(CLAIMED_WS)).toBeNull();
     expect(mockGetMemoryStoreForTeam).not.toHaveBeenCalled();
+  });
+});
+
+describe('MCP tool gating — personal roles (skill actions with { personal: true })', () => {
+  // The real handler for these: the gate under test lives in it, and the
+  // route must hand it who is behind the call (ctx.principal).
+  const realFetch = globalThis.fetch;
+  const fetched: Array<{ url: string; method: string; body: any }> = [];
+  const OWN_WORKER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  function asPerson(level: 'worker' | 'admin' = 'worker') {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level, teamId: TEAM_ID, authType: 'oauth', scopes: null, workspaceIds: null, sessionUserId: 'user-1' });
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID, repo: 'owner/repo', name: 'workspace' });
+    mockWorkersFindFirst.mockReset();
+    mockHandleBuilddAction.mockReset();
+    mockHandleBuilddAction.mockImplementation(realHandleBuilddAction as any);
+    fetched.length = 0;
+    globalThis.fetch = mock(async (url: string, init: RequestInit = {}) => {
+      fetched.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined });
+      return new Response(JSON.stringify({ skill: { id: 'role-1', name: 'Helper', slug: 'helper', visibility: 'private' } }), { status: 201 });
+    }) as any;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    mockHandleBuilddAction.mockReset();
+    mockHandleBuilddAction.mockImplementation(async () => ({ content: [{ type: 'text', text: '{"dispatched":true}' }] }));
+  });
+
+  it('offers the personal-path skill actions to a worker-level session on buildd_admin, but no team-wide admin action', async () => {
+    asPerson('worker');
+    const res = await POST(makeRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, `?workspace=${WORKSPACE_ID}`));
+    const tools: any[] = ((await res.json()) as any).result.tools;
+    const admin = tools.find(t => t.name === 'buildd_admin');
+    const actions: string[] = admin.inputSchema.properties.action.enum;
+    for (const a of ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill']) expect(actions).toContain(a);
+    for (const a of ['manage_secrets', 'manage_workspaces']) expect(actions).not.toContain(a);
+  });
+
+  it('lets a worker-level OAuth member list their own and shared personal roles, through GET /api/roles', async () => {
+    asPerson('worker');
+    globalThis.fetch = mock(async (url: string, init: RequestInit = {}) => {
+      fetched.push({ url: String(url), method: init.method ?? 'GET', body: undefined });
+      return new Response(JSON.stringify({ roles: [
+        { id: 'team-role', slug: 'builder', name: 'Builder' },
+        { id: 'role-1', slug: 'helper', name: 'Helper', personal: true, mine: true, visibility: 'private' },
+      ] }), { status: 200 });
+    }) as any;
+    const result = await callTool('buildd_admin', { action: 'list_skills', params: { personal: true } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('1 personal role(s)');
+    expect(result.content[0].text).not.toContain('Builder');
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0].method).toBe('GET');
+    expect(new URL(fetched[0].url).pathname).toBe('/api/roles');
+  });
+
+  it('refuses a worker-level team list_skills / get_skill as forbidden, without any API call', async () => {
+    asPerson('worker');
+    for (const [action, params] of [['list_skills', {}], ['get_skill', { slug: 'helper' }]] as const) {
+      const result = await callTool('buildd_admin', { action, params }, `?workspace=${WORKSPACE_ID}`);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ error: 'forbidden', tokenLevel: 'worker', requiredLevel: 'admin' });
+    }
+    expect(fetched).toHaveLength(0);
+  });
+
+  it('lets a worker-level OAuth member create a personal role, through POST /api/roles', async () => {
+    asPerson('worker');
+    const result = await callTool('buildd_admin', { action: 'register_skill', params: { personal: true, name: 'Helper', content: 'You help me' } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Personal role created');
+    expect(fetched).toHaveLength(1);
+    expect(new URL(fetched[0].url).pathname).toBe('/api/roles');
+    expect(fetched[0]).toMatchObject({ method: 'POST', body: { personal: true, name: 'Helper' } });
+  });
+
+  it('refuses a worker-level team-role create as forbidden, without any API call', async () => {
+    asPerson('worker');
+    const result = await callTool('buildd_admin', { action: 'register_skill', params: { name: 'Helper', content: 'x' } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ error: 'forbidden', tokenLevel: 'worker', requiredLevel: 'admin' });
+    expect(fetched).toHaveLength(0);
+  });
+
+  it('refuses a personal list from a bld_ key (no person behind it), without any API call', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
+    const result = await callTool('buildd', { action: 'list_skills', params: { personal: true } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('API key has no person');
+    expect(fetched).toHaveLength(0);
+  });
+
+  it('refuses a personal create from a bld_ key (no person behind it), without any API call', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
+    const result = await callTool('buildd', { action: 'register_skill', params: { personal: true, name: 'Helper', content: 'x' } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('API key has no person');
+    expect(fetched).toHaveLength(0);
+  });
+
+  for (const level of ['worker', 'admin'] as const) {
+    it(`refuses a personal create from a ${level}-level per-task token: it never creates one for its requester`, async () => {
+      mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', taskId: 'task-own', workspaceId: WORKSPACE_ID });
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'acc-1', level, teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null,
+        taskScope: { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 },
+      });
+      const result = await callTool('buildd', { action: 'register_skill', params: { personal: true, name: 'Helper', content: 'x' } }, `?worker=${OWN_WORKER}`);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('per-task token has no person');
+      expect(fetched).toHaveLength(0);
+    });
+
+    it(`refuses a personal get_skill from a ${level}-level per-task token`, async () => {
+      mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', taskId: 'task-own', workspaceId: WORKSPACE_ID });
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'acc-1', level, teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null,
+        taskScope: { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 },
+      });
+      const result = await callTool('buildd', { action: 'get_skill', params: { personal: true, slug: 'helper' } }, `?worker=${OWN_WORKER}`);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('per-task token has no person');
+      expect(fetched).toHaveLength(0);
+    });
+  }
+});
+
+describe('MCP tool gating — manage_providers', () => {
+  // The real handler: the gates live in it, keyed on ctx.principal and level.
+  const realFetch = globalThis.fetch;
+  const fetched: Array<{ url: string; method: string; body: any }> = [];
+  const OWN_WORKER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const VALUE = 'sk-ant-api03-FIXTURE-mcp-provider-value-1234';
+
+  function asPerson(level: 'worker' | 'admin' = 'worker') {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level, teamId: TEAM_ID, authType: 'oauth', scopes: null, workspaceIds: null, sessionUserId: 'user-1' });
+  }
+  function asKey(level: 'worker' | 'admin') {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level, teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null });
+  }
+  function asTaskToken(level: 'worker' | 'admin') {
+    mockWorkersFindFirst.mockResolvedValue({ accountId: 'acc-1', taskId: 'task-own', workspaceId: WORKSPACE_ID });
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'acc-1', level, teamId: TEAM_ID, authType: 'api', scopes: null, workspaceIds: null,
+      taskScope: { taskId: 'task-own', workspaceId: WORKSPACE_ID, expiresAt: Date.now() + 60_000 },
+    });
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard', teamId: TEAM_ID, repo: 'owner/repo', name: 'workspace' });
+    mockWorkersFindFirst.mockReset();
+    mockHandleBuilddAction.mockReset();
+    mockHandleBuilddAction.mockImplementation(realHandleBuilddAction as any);
+    fetched.length = 0;
+    globalThis.fetch = mock(async (url: string, init: RequestInit = {}) => {
+      fetched.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined });
+      return new Response(JSON.stringify({
+        provider: 'anthropic', scope: 'mine', workspaceId: null,
+        credentials: [{ shape: 'api_key', scope: 'mine', purpose: 'inference_key', label: 'anthropic', legacy: false, last4: '1234', health: 'healthy', lastVerifiedAt: null, servesToday: ['chat'] }],
+      }), { status: 200 });
+    }) as any;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    mockHandleBuilddAction.mockReset();
+    mockHandleBuilddAction.mockImplementation(async () => ({ content: [{ type: 'text', text: '{"dispatched":true}' }] }));
+  });
+
+  it('is offered to a worker-level session on buildd_admin', async () => {
+    asPerson('worker');
+    const res = await POST(makeRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, `?workspace=${WORKSPACE_ID}`));
+    const tools: any[] = ((await res.json()) as any).result.tools;
+    expect(tools.find(t => t.name === 'buildd_admin').inputSchema.properties.action.enum).toContain('manage_providers');
+  });
+
+  it('a worker-level OAuth member sets their own key (default scope mine); the value is never echoed', async () => {
+    asPerson('worker');
+    const result = await callTool('buildd_admin', { action: 'manage_providers', params: { action: 'set', provider: 'anthropic', value: VALUE } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(fetched).toHaveLength(1);
+    expect(new URL(fetched[0].url).pathname).toBe('/api/providers');
+    expect(fetched[0]).toMatchObject({ method: 'PUT', body: { provider: 'anthropic', scope: 'mine', value: VALUE } });
+    expect(result.content[0].text).toContain('…1234');
+    expect(result.content[0].text).not.toContain(VALUE);
+  });
+
+  it('a worker-level member cannot set a team key or the policy: forbidden, no API call', async () => {
+    asPerson('worker');
+    for (const params of [
+      { action: 'set', provider: 'anthropic', scope: 'team', value: VALUE },
+      { action: 'delete', provider: 'anthropic', scope: 'workspace' },
+      { action: 'set_policy', policy: 'personal_first' },
+    ]) {
+      const result = await callTool('buildd_admin', { action: 'manage_providers', params }, `?workspace=${WORKSPACE_ID}`);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ error: 'forbidden', tokenLevel: 'worker', requiredLevel: 'admin' });
+    }
+    expect(fetched).toHaveLength(0);
+  });
+
+  it('an admin key sets a team key (default scope team for a key)', async () => {
+    asKey('admin');
+    const result = await callTool('buildd', { action: 'manage_providers', params: { action: 'set', provider: 'anthropic', value: VALUE } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBeUndefined();
+    expect(fetched[0]).toMatchObject({ method: 'PUT', body: { scope: 'team' } });
+  });
+
+  it('a bld_ key cannot write mine (no person), without any API call', async () => {
+    asKey('admin');
+    const result = await callTool('buildd', { action: 'manage_providers', params: { action: 'set', provider: 'anthropic', scope: 'mine', value: VALUE } }, `?workspace=${WORKSPACE_ID}`);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('API key has no person');
+    expect(fetched).toHaveLength(0);
+  });
+
+  for (const level of ['worker', 'admin'] as const) {
+    it(`a ${level}-level per-task token never writes, at any scope`, async () => {
+      asTaskToken(level);
+      for (const scope of ['mine', 'team', 'workspace']) {
+        const result = await callTool('buildd', { action: 'manage_providers', params: { action: 'set', provider: 'anthropic', scope, value: VALUE } }, `?worker=${OWN_WORKER}`);
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('per-task token');
+      }
+      const policy = await callTool('buildd', { action: 'manage_providers', params: { action: 'set_policy', policy: 'team' } }, `?worker=${OWN_WORKER}`);
+      expect(policy.isError).toBe(true);
+      expect(fetched).toHaveLength(0);
+    });
+  }
+
+  it('a per-task token can list (its own workspace)', async () => {
+    asTaskToken('worker');
+    globalThis.fetch = mock(async (url: string) => {
+      fetched.push({ url: String(url), method: 'GET', body: undefined });
+      return new Response(JSON.stringify({ policy: {}, caller: { principal: 'task_token' }, providers: [] }), { status: 200 });
+    }) as any;
+    const result = await callTool('buildd', { action: 'manage_providers', params: { action: 'list' } }, `?worker=${OWN_WORKER}`);
+    expect(result.isError).toBeUndefined();
+    expect(new URL(fetched[0].url).pathname).toBe('/api/providers');
   });
 });

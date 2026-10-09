@@ -1,36 +1,24 @@
 ---
 title: Mission Structure View
-status: active
+status: superseded
+superseded_by: mission-flow-timeline
 owner: builder
-last_verified: 2026-08-30
+last_verified: 2026-10-09
 summary: The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 domain: surfaces
-surfaces: [apps/web/src/lib/structure-layout.ts, apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionTabs.tsx, apps/web/src/lib/condensed-timeline.ts]
-verified_by: [apps/web/src/lib/structure-layout.test.ts]
-related: [timeline-dependency-geometry, missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives]
+surfaces: [apps/web/src/lib/condensed-timeline.ts]
+verified_by: []
+related: [timeline-dependency-geometry, missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives, mission-flow-timeline]
 keywords: [dag, graph, structure view, canvas, topology, layout, dependency, blocked, stranded, contention edge]
 supersedes: []
-# Structural conformance only; passing does not certify every prose invariant.
-assertions:
-  - id: "structure-layout"
-    type: "symbol"
-    name: "computeStructureLayout"
-    path: "apps/web/src/lib/structure-layout.ts"
-  - id: "shared-chain-detection"
-    type: "symbol"
-    name: "identifyChains"
-    path: "apps/web/src/lib/condensed-timeline.ts"
-  - id: "structure-layout-tests"
-    type: "test_file"
-    path: "apps/web/src/lib/structure-layout.test.ts"
-  - id: "view-computes-layout"
-    type: "symbol_reachable"
-    symbol: "computeStructureLayout"
-    entry: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx"
-    as: "read"
 ---
 
 # Mission Structure View
+
+> **Superseded by `mission-flow-timeline.md`.** The Structure graph and its
+> layout engine were removed when the Flow tab replaced both it and the Lanes
+> tab: one row per task on a time axis, every gate an edge. This document is
+> kept as history; the files it names no longer exist.
 
 **Capability statement**: The mission detail page MUST offer a Structure tab that renders
 the full mission task DAG as a stable, left-to-right layered graph with topology-correct

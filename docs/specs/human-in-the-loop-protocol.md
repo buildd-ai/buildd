@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts, packages/core/human-attention.ts, apps/web/src/lib/recoverable-blocker-repair.ts, apps/web/src/lib/home-attention.ts]
+surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts, packages/core/human-attention.ts, apps/web/src/lib/recoverable-blocker-repair.ts, apps/web/src/lib/home-attention.ts, packages/core/needs-you.ts, apps/web/src/lib/park-disposition.ts, apps/web/src/lib/note-question-disposition.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts, packages/core/__tests__/human-attention.test.ts, apps/web/src/lib/home-attention.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/question-hero.test.ts]
+verified_by: [apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts, packages/core/__tests__/human-attention.test.ts, apps/web/src/lib/home-attention.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/question-hero.test.ts, packages/core/__tests__/needs-you.test.ts, apps/web/src/lib/note-question-disposition.test.ts, apps/web/src/app/api/tasks/waiting-input/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -303,6 +303,29 @@ path unchanged.
   context or the worker's `needs_input:` error WHEN Home, task detail or chat
   render it THEN the card shows that context, not just the question and a
   generic line.
+- AC-HITL-44 (Needs You admission, `packages/core/needs-you.ts`):
+  a card appears in Needs You — Home's fleet questions and action queue, the
+  `/api/tasks/waiting-input` feed behind the needs-input banner, the DECIDE
+  chip — and the needs-input notification fires, only when a human-attention
+  disposition says a person owns the next move: `ask`, or `hold` once its
+  `resurfaceAt` passed. `recovered` (a repair task owns it) and a park with no
+  disposition are never admitted. GIVEN any `waitingFor` WHEN the worker PATCH
+  stores it (`apps/web/src/lib/park-disposition.ts`) THEN it carries one: a
+  permission/confirmation prompt is `ask`; a gate-tagged `ask`/`hold` keeps the
+  gate's disposition (a hold the server will not honour becomes `ask`); a
+  runner-tagged `recovered` stands only when its `repairTaskId` is a task in the
+  workspace; an untagged question (a runner without the `question_gate`
+  feature, a failed gate call) is re-checked server-side — kill switch, hard
+  rails, stage 0 — with no model call, and a recoverable blocker files or
+  reuses its repair task and is stored `recovered`, nobody notified. A
+  sensitive workspace keeps the disposition fields and drops the prose.
+- AC-HITL-45: GIVEN an agent or outside caller posts a `question` note
+  (`post_note`) WHEN the notes route stores it
+  (`apps/web/src/lib/note-question-disposition.ts`) THEN it carries
+  `mission_notes.disposition`: `recovered` (stored answered, the agent told
+  which repair task owns it) for a recoverable blocker with no hard rail and a
+  task to name, else `ask`; only `ask` reaches the DECIDE chip. A person's or
+  the system's notes carry none and are unaffected.
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact,

@@ -216,3 +216,60 @@ describe('"All my teams"', () => {
     expect(text).toContain('can’t be copied to all your teams');
   });
 });
+
+/**
+ * Team credentials are manage_team_credentials (the secrets and credential
+ * routes refuse anyone else); provider routing is manage_team_settings. A
+ * member sees each connection's status and the own-key path, and nothing the
+ * API would refuse.
+ */
+describe('read-only for a member without manage_team_credentials', () => {
+  async function mountWith(props: { canManage?: boolean; canManageRouting?: boolean }, hash = '') {
+    window.location.hash = hash;
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(<AgentBackendsSection workspaces={[{ id: 'w1', name: 'Workspace 1', teamId: 't1' }]} currentTeamId="t1" {...props} />);
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+
+  it('member: status chips stay, no row opens, no button, and the own-key path is named', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: false, canManageRouting: false });
+    expect(chips('claude-row')).toEqual(['Connected']);
+    expect(chips('codex-row')).toEqual(['Not connected']);
+    for (const id of ['claude-row', 'codex-row', 'openai-key-row', 'routing-row']) {
+      expect(row(id).getAttribute('data-readonly')).toBe('true');
+      expect(row(id).querySelectorAll('button, input').length).toBe(0);
+    }
+    const note = host.querySelector('[data-testid="credentials-read-only"]')!;
+    expect(note.textContent).toContain('Admins can change these.');
+    expect(note.querySelector('a')!.getAttribute('href')).toBe('/app/settings/account#provider-keys');
+  });
+
+  it('#agent-key does not open a read-only Claude row', async () => {
+    installFetch({ claude: false, codex: false });
+    await mountWith({ canManage: false }, '#agent-key');
+    expect(row('claude-row').getAttribute('data-open')).toBe('false');
+    expect(host.querySelector('input')).toBeNull();
+  });
+
+  it('admin: every row is interactive and there is no read-only note', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: true, canManageRouting: true });
+    expect(host.querySelector('[data-testid="credentials-read-only"]')).toBeNull();
+    for (const id of ['claude-row', 'codex-row', 'openai-key-row', 'routing-row']) {
+      expect(row(id).getAttribute('data-readonly')).toBeNull();
+      expect(row(id).querySelector('button[aria-expanded]')).not.toBeNull();
+    }
+  });
+
+  it('credentials and routing are separate permissions', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: true, canManageRouting: false });
+    expect(row('claude-row').getAttribute('data-readonly')).toBeNull();
+    expect(row('routing-row').getAttribute('data-readonly')).toBe('true');
+  });
+});

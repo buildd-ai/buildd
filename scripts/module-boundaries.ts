@@ -42,7 +42,7 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
   ['jev-decisions', /decision|recoverable-blocker|prompted-decision|\/api\/decisions|question-gate-decision|strand-choice|inference-(client|route|policy|key)|\/api\/inference-keys|model-inference/],
   ['chat', /\/chat|chat-|conversation-title|\/api\/ai\/|\/lib\/ai\/|\/share\//],
   ['releases', /(?<!path-claim-)release|\/api\/deploy-identity|health-watcher-vercel|deploy-identity/],
-  ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)/],
+  ['missions', /(?<!per)mission|initiative|heartbeat-(triage|prepass|wait|circuit)|approve-plan|goal-criteri|criteria-|orchestrat|loop-(dispatcher|webhook|config)|mission-loop|plan-first|surface-ordering|change-intent|action-queue|action-card|action-events|coordination-intent|subject-(intake|sweep|anchor|gate-contract)|flow-timeline/],
   ['knowledge', /knowledge|memory|evidence|linked-knowledge|retrieval|feedback-digest|\/api\/feedback|recall|learn|embed|entity-|scip|prior-work|insight/],
   // `presence-token` is the agent plugin hooks' auth credential (core), not chat/notification presence.
   ['notifications', /notif|pushover|away-delivery|subscription|watch-|watched-project|artifact-notify|presence(?!-token)|stall-notify|connector-block-notify|personal-workspace-links/],
@@ -59,6 +59,18 @@ export type Owner = ModuleId | 'core';
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/bash-failure-trace.ts',
   'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
+  // The team credential policy (teams.credentialPolicy): it governs agent runs
+  // and every provider (packages/core/providers/policy.ts), not just decision
+  // and inference calls, so `inference-(…policy…)` misfiles it.
+  'packages/core/inference-key-policy.ts',
+  // Model-credential storage and resolution for every surface (provider
+  // registry, packages/core/providers): the chat-key resolver, and the LiteLLM
+  // gateway credential and its settings. `inference-(…key…)` and `litellm`
+  // misfile them as the decision and model-tier modules; the one provider write
+  // path (apps/web/src/lib/providers/write-path.ts) is core and writes them.
+  'packages/core/inference-keys.ts',
+  'packages/core/litellm-gateway.ts',
+  'apps/web/src/lib/litellm-gateway-settings.ts',
 ]);
 
 export function moduleOf(path: string): Owner {

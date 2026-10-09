@@ -5,6 +5,8 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { admitsToNeedsYou } from '@buildd/core/needs-you';
+import type { WaitingFor } from '@buildd/shared';
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -25,9 +27,14 @@ export async function GET() {
       columns: { taskId: true, waitingFor: true, workspaceId: true },
     });
 
-    // Filter to user's workspaces
+    // Filter to user's workspaces. Needs You admission: a worker still holding
+    // a question counts only when its disposition hands it to a person (not a
+    // hold before its deadline, not a recovered blocker, not undisposed). One
+    // whose answer was already sent (waitingFor cleared) is kept as answerSent.
+    const now = Date.now();
     const relevantWorkers = waitingWorkers.filter(
       w => w.taskId && w.workspaceId && wsIds.includes(w.workspaceId)
+        && (!w.waitingFor || admitsToNeedsYou(w.waitingFor as Record<string, unknown>, now))
     );
 
     if (relevantWorkers.length === 0) {
@@ -55,7 +62,7 @@ export async function GET() {
           workspaceId: t.workspaceId,
           // Lets the banner open the task in its mission (mission-task-href.ts).
           missionId: t.missionId ?? null,
-          waitingFor: worker?.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+          waitingFor: worker?.waitingFor as WaitingFor | null,
           // Answered on the resume path: `waitingFor` is cleared at once, but
           // the worker stays waiting_input until the runner resumes it. The
           // answer is on its way, so this no longer needs the person.

@@ -259,6 +259,9 @@ export default function StorageSection({ workspaces, fixture }: {
       onClick={() => { setAdding(true); setMessage(null); }}>
       Add backend
     </button>
+  ) : !canManage && !loading && !loadError ? (
+    // The API answers canManage from manage_evidence_backends with the team's overrides.
+    <span data-testid="storage-read-only" className="text-xs text-text-muted">Admins can change this.</span>
   ) : undefined;
 
   return (

@@ -89,6 +89,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['BudgetExtended', V(D({ state: 'ESCALATED', stateReason: 'ci_exhausted' }), [], [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }))), { type: 'BudgetExtended', actor: 'human:u', family: 'ci', headSha: 'H1', signature: 'sig', maxAttempts: 3, reason: 'one more try' }, 'REPAIRING'],
   ['MechanicalRepairFailed', V(D({ state: 'REPAIRING', stateReason: 'behind', boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', taskId: null, triggerReason: 'behind' })]), { type: 'MechanicalRepairFailed', actor: 'effect:refresh_branch', attemptId: 'm1', reason: 'update-branch refused' }, 'ESCALATED'],
   ['RepairNotNeeded', V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig' })]), { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'c1', reason: 'ci_green' }, 'APPROVED'],
+  ['TreadmillCycleRestarted', V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [1, 2, 3].map((n) => A({ id: `m${n}`, family: 'conflict', mode: 'mechanical', attemptNo: n, boundHeadSha: `B${n}`, triggerReason: 'behind', status: 'ended', taskId: null }))), { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle' }, 'APPROVED'],
 ];
 
 describe('generic: every applied transition is a version CAS (§7)', () => {
@@ -921,6 +922,25 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     // Without an override, a person lands only what is approved at this head.
     expectResult(land(V(D({ state: 'ESCALATED' })), { actor: 'human:owner', door: 'dashboard' }), 'rejected', 'state_not_allowed');
   });
+  test('a freshness or size override lifts only a landing escalation, never a review one; the kinds are recorded', () => {
+    const fresh = { reason: 'base keeps moving', kinds: ['freshness' as const] };
+    const esc = (stateReason: string) => V(D({ state: 'ESCALATED', stateReason, approvedHeads: ['H1'], approvalBasis: 'verdict' }));
+    const ok = applied(land(esc('landing_needs_human'), { actor: 'human:owner', door: 'merge_pr', override: fresh }));
+    expect(ok.toState).toBe('LANDING');
+    expect(ok.bypass).toMatchObject({ actor: 'human:owner', door: 'merge_pr', reason: 'base keeps moving', kinds: ['freshness'], overrodeState: 'ESCALATED' });
+    // A freshness override is not a verdict override in disguise.
+    expectResult(land(esc('review_escalated'), { actor: 'human:owner', door: 'merge_pr', override: fresh }), 'rejected', 'override_does_not_cover_state');
+    expectResult(land(V(D({ state: 'CHANGES_REQUESTED' })), { actor: 'human:owner', door: 'merge_pr', override: { reason: 'x', kinds: ['size'] } }), 'rejected', 'override_does_not_cover_state');
+    // Kinds absent = the verdict override it always was.
+    expect(applied(land(esc('review_escalated'), { actor: 'human:owner', door: 'dashboard', override: { reason: 'x' } })).toState).toBe('LANDING');
+  });
+  test('an agent run gets the override door only under a grant a person set on its task, recorded with who granted it', () => {
+    const esc = V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }));
+    expectResult(land(esc, { actor: 'agent:w1', door: 'merge_pr', override: { reason: 'x', kinds: ['freshness'] } }), 'rejected', 'state_not_allowed');
+    expectResult(land(esc, { actor: 'agent:w1', door: 'merge_pr', override: { reason: 'x', kinds: ['freshness'], grantedBy: 'agent:w0' } }), 'rejected', 'state_not_allowed');
+    const granted = applied(land(esc, { actor: 'agent:w1', door: 'merge_pr', override: { reason: 'task goal', kinds: ['freshness'], grantedBy: 'human:owner' } }));
+    expect(granted.bypass).toMatchObject({ actor: 'agent:w1', grantedBy: 'human:owner', kinds: ['freshness'] });
+  });
   test('S20: a stale version from a person is answered stale with the current view; nothing applies', () => {
     const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', version: 9 }));
     const dec = land(v, { actor: 'human:owner', door: 'dashboard', expectedVersion: 8 });
@@ -1047,6 +1067,12 @@ describe('T25/T26 trunk breaker (S24)', () => {
     expect(a.patch.resumeState).toBe('APPROVED');
     expect(applied(tr(V(D({ state: 'REPAIRING', stateReason: 'ci' })))).patch.resumeState).toBe('AWAITING_REVIEW');
     expect(applied(tr(V(D({ state: 'REPAIRING', stateReason: 'ci', approvedHeads: ['H1'] })))).patch.resumeState).toBe('APPROVED');
+  });
+  test('the dispatch key is the incident, never the base: a new incident after recovery owes a dispatch of its own', () => {
+    // workflow_effects dedupes on this key forever; a base-scoped key would swallow every later red on that base.
+    const key = (incidentId: string) => applied(tr(V(D({ state: 'AWAITING_REVIEW' })), { incidentId })).effects.find((e) => e.kind === 'dispatch_trunk_fix')!.dedupeKey;
+    expect(key('i1')).toBe('dispatch_trunk_fix:i1');
+    expect(key('i2')).not.toBe(key('i1'));
   });
   test('guards', () => {
     expectResult(tr(V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1' }))), 'duplicate');
@@ -1353,6 +1379,57 @@ describe('S9, S12, S15 kernel rules', () => {
     expect(capped.toState).toBe('ESCALATED');
     expect(capped.patch.stateReason).toBe('landing_needs_human');
     expect(capped.attempts).toEqual([]);
+    // The escalation names itself a treadmill one, so the cycle sweep can tell it from a merge refusal.
+    expect(capped.evidence).toMatchObject({ treadmill: true, cycle: 1, refreshes: 3 });
+  });
+});
+
+describe('S15 cycles: a spent treadmill gets a fresh refresh budget after the cooldown, a bounded number of times', () => {
+  const behind = (from: number, n: number) => Array.from({ length: n }, (_, i) => A({ id: `m${from + i}`, family: 'conflict', mode: 'mechanical', attemptNo: from + i, boundHeadSha: `B${from + i}`, triggerReason: 'behind', status: 'ended', taskId: null }));
+  const marker = (no: number) => A({ id: `cyc${no}`, family: 'conflict', mode: 'mechanical', attemptNo: no, boundHeadSha: null, triggerReason: 'treadmill_cycle', status: 'skipped', taskId: null });
+  const esc = (rows: AttemptSnapshot[], o: Partial<DeliverySnapshot> = {}) =>
+    V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict', ...o }), [], rows);
+  const restart = (v: KernelView) => run(v, { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle' });
+
+  test('restart returns the escalated delivery to APPROVED and opens a new cycle with a marker row', () => {
+    const dec = applied(restart(esc(behind(1, 3))));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.stateReason).toBeNull();
+    const ins = dec.attempts.find((a) => a.op === 'insert') as { triggerReason: string; status: string; boundHeadSha: string | null; attemptNo: number };
+    expect(ins).toMatchObject({ triggerReason: 'treadmill_cycle', status: 'skipped', boundHeadSha: null, attemptNo: 4 });
+    expect(dec.evidence).toMatchObject({ cycle: 2 });
+  });
+
+  test('refreshes before the newest marker do not count: the new cycle refreshes again', () => {
+    const rows = [...behind(1, 3), marker(4)];
+    const mc = run(V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], rows), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'behind' });
+    expect(applied(mc).toState).toBe('REPAIRING');
+    // …until the new cycle spends its own budget.
+    const spent = run(V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], [...rows, ...behind(5, 3)]), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'behind' });
+    expect(applied(spent).toState).toBe('ESCALATED');
+    expect(applied(spent).evidence).toMatchObject({ treadmill: true, cycle: 2 });
+  });
+
+  test('the last cycle stays escalated for a person, and its notice says so', () => {
+    const rows = [...behind(1, 3), marker(4), ...behind(5, 3), marker(8), ...behind(9, 3)];
+    expectResult(restart(esc(rows)), 'rejected', 'treadmill_cycles_exhausted');
+    const last = applied(run(V(D({ state: 'LANDING', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], rows), { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'behind' }));
+    expect(last.evidence).toMatchObject({ treadmill: true, cycle: 3, finalCycle: true });
+    expect(String(last.effects.find((e) => e.kind === 'notify')?.payload.detail)).toContain('a person');
+  });
+
+  test('a restart is refused unless the current cycle is actually spent, the head is approved and the state is a landing escalation', () => {
+    expectResult(restart(esc(behind(1, 2))), 'rejected', 'treadmill_cycle_not_spent');
+    expectResult(restart(esc(behind(1, 3), { approvedHeads: [], approvalBasis: null })), 'rejected', 'head_not_approved');
+    expectResult(restart(esc(behind(1, 3), { stateReason: 'review_escalated' })), 'stale', 'state_not_allowed');
+    expectResult(restart(V(D({ state: 'APPROVED', approvedHeads: ['H1'] }), [], behind(1, 3))), 'stale', 'state_not_allowed');
+  });
+
+  test('a marker row never counts against the per-head mechanical cap', () => {
+    const rows = [marker(1), marker(2)];
+    const dec = applied(run(V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], rows), { type: 'ConflictObserved', actor: 'sweep:x', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3 }));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(effectKinds(dec)).toContain('refresh_branch');
   });
 });
 

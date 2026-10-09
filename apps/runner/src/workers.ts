@@ -34,7 +34,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -55,7 +55,7 @@ import {
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
-import { CredentialCache, authBackoffMs } from './credential-cache';
+import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
@@ -90,7 +90,7 @@ import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
-import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import {
   resolveBypassPermissions,
@@ -151,7 +151,7 @@ import {
 } from './bwrap-mount-allowlist';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { gateTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
 import {
@@ -1960,7 +1960,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number }; credentialDecision?: ClaimCredentialDecision },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -1988,14 +1988,21 @@ export class WorkerManager {
     // wins. Capturing them unconditionally just guarantees a working fallback.
     const fromClaim = selectServerCredentials(claimedWorker);
     const teamKey = teamKeyOf(fullTask);
-    this.workerTeamKeys.set(claimedWorker.id, teamKey);
+    // A personal (or deliberately withheld) model credential is this worker's
+    // alone: never written to the per-team cache, never filled from it, and an
+    // auth failure on it says nothing about the team's credential. Read
+    // defensively: an older server sends no credentialDecision at all.
+    const workerScoped = isWorkerScopedCredential(claimedWorker.credentialDecision);
+    if (!workerScoped) this.workerTeamKeys.set(claimedWorker.id, teamKey);
 
     // Populate/refresh the in-memory per-team cred cache from this claim's
     // payload (the common path — no extra endpoint needed).
-    this.credCache.set(teamKey, {
-      oauthToken: fromClaim.serverOauthToken,
-      apiKey: fromClaim.serverApiKey,
-    });
+    if (!workerScoped) {
+      this.credCache.set(teamKey, {
+        oauthToken: fromClaim.serverOauthToken,
+        apiKey: fromClaim.serverApiKey,
+      });
+    }
 
     // Prefer the freshly-delivered claim credential; otherwise fall back to a
     // fresh cached entry for this team (e.g. the server didn't re-inject on this
@@ -2004,7 +2011,7 @@ export class WorkerManager {
     let serverOauthToken = fromClaim.serverOauthToken;
     // A team agent model endpoint won the claim's ranking: it is the only model
     // credential for this worker, so no cached Anthropic credential is reused.
-    if (!serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
+    if (!workerScoped && !serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
@@ -2095,6 +2102,11 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.credentialDecision && typeof claimedWorker.credentialDecision === 'object') {
+      // No secret in it; startSession reads runnerLocalAllowed from here.
+      worker.credentialDecision = claimedWorker.credentialDecision;
+      if (workerScoped) console.log(`[Worker ${claimedWorker.id}] Model credential scope: ${claimedWorker.credentialDecision.scope} (this worker only, not cached for the team)`);
+    }
     if (claimedWorker.toolSearchDisabled) worker.toolSearchDisabled = true;
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
@@ -2309,18 +2321,13 @@ export class WorkerManager {
               const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
               console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
               worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (merged.status === 'merged') derivedMerge = { result: merged, baseRef: worker.prBaseRef };
-              if (merged.status === 'merged' || merged.status === 'conflicts') {
-                this.addMilestone(worker, {
-                  type: 'status',
-                  label: merged.status === 'merged'
-                    ? `Base merged by the runner${merged.regenerated.length ? `; regenerated ${merged.regenerated.length} derived file command(s)` : ''}`
-                    : `Base merge started; ${merged.conflicted.length} file(s) left for the agent`,
-                  ts: Date.now(),
-                });
-              }
+              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              // Synced to the server, so the outcome (and what mergiraf did) is
+              // readable from get_task without access to the runner's log.
+              this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -2928,7 +2935,7 @@ export class WorkerManager {
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
+    const question = gateTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
@@ -3052,14 +3059,19 @@ export class WorkerManager {
     label: SessionEndLabel,
     disposition: 'ask' | 'hold',
     note: string,
+    gateReply?: QuestionGateReply,
   ): Promise<void> {
-    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${disposition}`, worker.taskId);
-    const question: WaitingFor = {
+    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
+    const base: WaitingFor = {
       type: 'question',
       prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
       context: `Classified as: ${label}. ${note}`.trim(),
-      ...(disposition === 'hold' ? { disposition: 'hold' as const, holdReason: note } : {}),
     };
+    // The gate's own disposition when it answered (so a recovered blocker is
+    // not admitted to Needs You); with no reply the server re-checks the park.
+    const question: WaitingFor = gateReply
+      ? gateTagged(base, gateReply)
+      : disposition === 'hold' ? { ...base, disposition: 'hold', holdReason: note } : base;
     worker.waitingFor = question;
     worker.status = 'waiting';
     worker.currentAction = 'Needs a person';
@@ -3090,7 +3102,7 @@ export class WorkerManager {
     task: BuilddTask,
   ): Promise<
     | { action: 'retry' | 'fail'; text: string }
-    | { action: 'park'; disposition: 'ask' | 'hold'; text: string }
+    | { action: 'park'; disposition: 'ask' | 'hold'; text: string; reply?: QuestionGateReply }
   > {
     const diagnosis = (worker.lastAssistantMessage || '').trim().slice(0, 300);
     const input = genuinelyBlockedQuestionInput(diagnosis || undefined);
@@ -3122,10 +3134,12 @@ export class WorkerManager {
     // error, or a `decide` on neither offered option) fails open to a
     // human-facing park — the only gate reply this mechanism ever treats as
     // "apply the decision without a person" is an actual `decide` on one of
-    // the two options above.
+    // the two options above. A `recovered` reply still parks, but tagged
+    // with its repair task (`gateTagged`), so it never reaches Needs You.
     return {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
+      reply,
       text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
     };
   }
@@ -3580,9 +3594,17 @@ export class WorkerManager {
       // The machine's own Claude login (host-seat.ts): used when the claim
       // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
       // With a stored seat under the default, the env is the pre-passthrough one.
+      // credentialDecision.runnerLocalAllowed=false (the requester's own key
+      // under personal_only): the machine's seat, login and provider must not
+      // displace it. Absent on older servers and teams without a policy.
+      const runnerLocalAllowed = runnerLocalCredentialsAllowed(worker.credentialDecision);
+      if (!runnerLocalAllowed) {
+        console.log(`[Worker ${worker.id}] This machine's own model credentials are not used: the claim carries the requester's own key and the team policy is personal keys only`);
+      }
       const seatDecision = applyHostSeatPolicy(cleanEnv, {
         serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
         isCodexTask,
+        runnerLocalAllowed,
       });
       const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
@@ -3597,6 +3619,7 @@ export class WorkerManager {
         teamEndpointWithheld: worker.modelEndpointIgnored,
         toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
+        runnerLocalAllowed,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
@@ -3618,7 +3641,7 @@ export class WorkerManager {
       if (modelEnv.teamEndpointIgnored) {
         console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
-      if (this.config.llmProvider?.provider === 'openrouter') {
+      if (runnerLocalAllowed && this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
       }
       if (modelEnv.injected.includes('serverApiKey')) {
@@ -3705,6 +3728,7 @@ export class WorkerManager {
           serverCredentialType: worker.codexCredential?.credentialType ?? null,
           localAuthPath: machineCodexAuth,
           explicitCodexHome: !!process.env.CODEX_HOME,
+          runnerLocalAllowed,
         });
         (worker as any).codexSeatSource = codexSeat;
 
@@ -5018,7 +5042,7 @@ export class WorkerManager {
             if (label === 'genuinely_blocked') {
               const routed = await this.routeGenuinelyBlocked(worker, task);
               if (routed.action === 'park') {
-                await this.parkSessionEnd(worker, label, routed.disposition, routed.text);
+                await this.parkSessionEnd(worker, label, routed.disposition, routed.text, routed.reply);
                 return;
               }
               if (routed.action === 'retry') {

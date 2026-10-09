@@ -81,11 +81,20 @@ export default function ConnectionsClient({
   connectedId,
   errorMsg,
   embedded = false,
+  teamId = null,
+  canManage = true,
 }: {
   connectedId?: string;
   errorMsg?: string;
   /** Rendered inside Settings → MCP connectors: no page padding, a section label instead of an h1. */
   embedded?: boolean;
+  /** The team whose connectors are listed (the page's active team). Omitted = the API's choice. */
+  teamId?: string | null;
+  /**
+   * Holds `manage_connectors` in that team (overrides applied). False: the
+   * list with each connector's status, and no add, connect, sharing or delete.
+   */
+  canManage?: boolean;
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,7 +125,7 @@ export default function ConnectionsClient({
 
   const loadConnectors = useCallback(async () => {
     try {
-      const res = await fetch('/api/connectors');
+      const res = await fetch(teamId ? `/api/connectors?teamId=${teamId}` : '/api/connectors');
       if (res.ok) {
         const data = await res.json();
         setConnectors(data.connectors || []);
@@ -126,7 +135,7 @@ export default function ConnectionsClient({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [teamId]);
 
   useEffect(() => {
     loadConnectors();
@@ -379,12 +388,16 @@ export default function ConnectionsClient({
         {embedded
           ? <h2 className="section-label">Your connectors</h2>
           : <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>}
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="btn btn-primary"
-        >
-          Add connector
-        </button>
+        {canManage ? (
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="btn btn-primary"
+          >
+            Add connector
+          </button>
+        ) : (
+          <span data-testid="connectors-read-only" className="text-xs text-text-muted">Admins can change this.</span>
+        )}
       </div>
 
       {message && (
@@ -401,13 +414,15 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
-          <p className="text-text-muted text-sm mb-4">No connectors.</p>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="btn"
-          >
-            Add connector
-          </button>
+          <p className={`text-text-muted text-sm ${canManage ? 'mb-4' : ''}`}>No connectors.</p>
+          {canManage && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="btn"
+            >
+              Add connector
+            </button>
+          )}
         </div>
       ) : (
         <div className="card divide-y divide-border-default">
@@ -454,8 +469,9 @@ export default function ConnectionsClient({
                   )}
                 </div>
                 {/* Grantees only enable per workspace / opt roles in — no config,
-                    credential, or sharing controls on a shared-in connector (spec §1b). */}
-                <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
+                    credential, or sharing controls on a shared-in connector (spec §1b).
+                    Without manage_connectors there are no controls at all. */}
+                {canManage && <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
                   {!connector.shared && !connector.blockedByPolicy && connector.authMode === 'oauth' && connector.status === 'expired' && (
                     <button
                       onClick={() => handleConnect(connector)}
@@ -508,14 +524,14 @@ export default function ConnectionsClient({
                       Delete
                     </button>
                   )}
-                </div>
+                </div>}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {showAddModal && (
+      {canManage && showAddModal && (
         <AddConnectionModal
           onClose={() => setShowAddModal(false)}
           onAdded={handleAdded}

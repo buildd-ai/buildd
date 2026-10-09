@@ -7,8 +7,8 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
-import { roleHas } from '@/lib/permission-registry';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { getTeamsPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
+import { NO_PERMISSIONS, settingsPermissions, type SettingsPermissions } from './settings-permissions';
 
 export interface SettingsWorkspace {
   id: string;
@@ -22,8 +22,14 @@ export interface SettingsContext {
   teams: UserTeam[];
   currentTeamId: string | null;
   currentTeam: UserTeam | null;
-  /** Owner or admin of the active team (a personal team counts as owner). */
-  isTeamAdmin: boolean;
+  /**
+   * What the person may do in the active team, one flag per named permission,
+   * with the team's overrides applied: exactly what the API would accept from
+   * this session. A personal team counts as owned. All false with no team.
+   */
+  perms: SettingsPermissions;
+  /** The same flags for every team the person is in, by team id. */
+  permsByTeam: Readonly<Record<string, SettingsPermissions>>;
   workspaces: SettingsWorkspace[];
 }
 
@@ -51,9 +57,19 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const teamCookie = (await cookies()).get('buildd-team')?.value;
   const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
-  const isTeamAdmin = !!currentTeam && (
-    roleHas(currentTeam.role, 'manage_team_settings', await getTeamPermissionOverrides(currentTeam.id)) || currentTeam.slug === `personal-${user.id}`
-  );
+  // Overrides are read once per request for every team (cached). A failed read
+  // holds nothing: an override can take a permission away, so guessing the
+  // defaults could offer a control the API would refuse.
+  const overrides = await getTeamsPermissionOverrides(teams.map((t) => t.id)).catch((e) => {
+    console.error('Settings: permission overrides query error:', e);
+    return null as Map<string, PermissionOverrides> | null;
+  });
+  const permsByTeam: Record<string, SettingsPermissions> = {};
+  for (const t of teams) {
+    const o = overrides?.get(t.id);
+    permsByTeam[t.id] = o ? settingsPermissions(t, user.id, o) : NO_PERMISSIONS;
+  }
+  const perms = (currentTeam && permsByTeam[currentTeam.id]) || NO_PERMISSIONS;
 
   const rows = wsIds.length > 0
     ? await db.query.workspaces.findMany({
@@ -67,7 +83,8 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
     teams,
     currentTeamId,
     currentTeam,
-    isTeamAdmin,
+    perms,
+    permsByTeam,
     workspaces: (rows as SettingsWorkspace[]).filter((ws) => !isSystemWorkspace(ws.name)),
   };
 });

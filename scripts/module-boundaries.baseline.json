@@ -156,7 +156,6 @@
     },
     "apps/web/src/app/api/teams/[id]/route.ts": {
       "packages/core/decision-model.ts": "jev-decisions",
-      "packages/core/inference-key-policy.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions"
     },
     "apps/web/src/app/api/version/route.ts": {
@@ -293,8 +292,6 @@
       "apps/web/src/lib/retry-pr-supersession.ts": "reviews-merge"
     },
     "apps/web/src/lib/agent-endpoint-settings.ts": {
-      "packages/core/inference-keys.ts": "jev-decisions",
-      "packages/core/litellm-gateway.ts": "model-tiers",
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
     "apps/web/src/lib/approval-carry-forward.ts": {
@@ -364,6 +361,7 @@
       "apps/web/src/lib/early-release-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-quality-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-rubric.ts": "missions",
+      "apps/web/src/lib/merge-readiness-decision.ts": "jev-decisions",
       "apps/web/src/lib/mission-criteria-eval.ts": "missions",
       "apps/web/src/lib/mission-criteria-worker-eval.ts": "missions",
       "apps/web/src/lib/mission-prompts.ts": "missions",
@@ -375,10 +373,6 @@
     },
     "apps/web/src/lib/prompt-fallback-alert.ts": {
       "apps/web/src/lib/pushover.ts": "notifications"
-    },
-    "apps/web/src/lib/provider-keys.ts": {
-      "packages/core/inference-key-policy.ts": "jev-decisions",
-      "packages/core/inference-keys.ts": "jev-decisions"
     },
     "apps/web/src/lib/question-gate-check.ts": {
       "apps/web/src/lib/memory-decisions.ts": "jev-decisions",
@@ -443,9 +437,6 @@
     },
     "apps/web/src/lib/workspace-state-context.ts": {
       "packages/core/mission-helpers.ts": "missions"
-    },
-    "packages/core/agent-endpoint.ts": {
-      "packages/core/litellm-gateway.ts": "model-tiers"
     },
     "packages/core/branch-names.ts": {
       "packages/core/mission-integration.ts": "missions"
@@ -643,16 +634,11 @@
       "packages/core/inference-policy.ts": "jev-decisions"
     },
     "apps/web/src/app/app/(protected)/settings/ai/page.tsx": {
-      "apps/web/src/lib/chat-retro/ChatRetroSection.tsx": "chat",
-      "packages/core/inference-keys.ts": "jev-decisions"
+      "apps/web/src/lib/chat-retro/ChatRetroSection.tsx": "chat"
     },
     "apps/web/src/app/app/(protected)/settings/budgets/page.tsx": {
       "apps/web/src/lib/chat/limits.ts": "chat",
-      "apps/web/src/lib/spend-summary.ts": "health-quality",
-      "packages/core/inference-key-policy.ts": "jev-decisions"
-    },
-    "apps/web/src/app/app/(protected)/settings/providers/page.tsx": {
-      "apps/web/src/lib/chat-availability.ts": "chat"
+      "apps/web/src/lib/spend-summary.ts": "health-quality"
     },
     "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"

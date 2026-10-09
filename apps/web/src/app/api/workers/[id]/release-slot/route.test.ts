@@ -86,4 +86,32 @@ describe('POST /api/workers/[id]/release-slot', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, released: false });
   });
+
+  // Not an owner route: a team admin frees the slot of a session whoever
+  // claimed it. It has no bearer path at all.
+  describe("— role path acts on another member's session-claimed worker", () => {
+    it('a dashboard admin releases a slot user-a claimed', async () => {
+      workerRow = { id: WORKER_ID, workspaceId: 'ws-1', runner: 'mcp', accountId: 'account-1', claimedByUserId: 'user-a' };
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-b', name: 'Bo' });
+
+      const res = await call(req());
+
+      expect(res.status).toBe(200);
+      expect(mockHolds).toHaveBeenCalledWith('user-b', 'ws-1', 'force_reassign_task');
+      expect(mockDetach).toHaveBeenCalledTimes(1);
+    });
+
+    it('a bearer header without a cookie session is 401', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      const r = new NextRequest(`http://localhost/api/workers/${WORKER_ID}/release-slot`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer bld_admin' },
+        body: '{}',
+      });
+
+      expect((await call(r)).status).toBe(401);
+      expect(mockHolds).not.toHaveBeenCalled();
+      expect(mockDetach).not.toHaveBeenCalled();
+    });
+  });
 });

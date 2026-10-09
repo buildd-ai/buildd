@@ -3,16 +3,16 @@
 import { useState } from 'react';
 import { useAnswerSubmit, type AnswerSubmitState } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import AnswerRecorded from './AnswerRecorded';
-import { normalizeOptions } from '@/app/app/(protected)/tasks/[id]/question-hero';
-import type { WaitingForOption } from '@buildd/shared';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 interface WorkerRespondInputProps {
   workerId: string;
   /** The worker's task: marks the global banner answered. */
   taskId?: string | null;
   question: string;
-  /** Canonical rich options, or legacy plain strings. */
-  options?: (string | WaitingForOption)[] | null;
+  /** The row's options as stored: option objects, or plain strings on older rows. */
+  options?: WaitingFor['options'];
   /** Question brief: the task and the exact decision. */
   context?: string;
   /**
@@ -27,7 +27,7 @@ export default function WorkerRespondInput({
   workerId,
   taskId = null,
   question,
-  options,
+  options: rawOptions,
   context,
   answer: hosted,
 }: WorkerRespondInputProps) {
@@ -36,7 +36,7 @@ export default function WorkerRespondInput({
   const own = useAnswerSubmit({ workerId, taskId, resetKey: `${workerId}:${question}` });
   const { submit, sending, outcome, error } = hosted ?? own;
   const busy = sending !== null;
-  const choices = normalizeOptions(options as WaitingForOption[] | null | undefined);
+  const options = waitingForOptionLabels(rawOptions);
 
   if (outcome) return <AnswerRecorded outcome={outcome} className="mt-2" />;
 
@@ -64,15 +64,13 @@ export default function WorkerRespondInput({
       )}
 
       {/* Quick option buttons */}
-      {choices.length > 0 && (
+      {options.length > 0 && (
         <div className="flex flex-wrap gap-1.5 ml-[18px]">
-          {choices.map((choice) => {
-            const opt = choice.label;
+          {options.map((opt) => {
             const pending = sending === opt.trim();
             return (
               <button
                 key={opt}
-                title={choice.description}
                 type="button"
                 data-testid="respond-option"
                 data-pending={pending ? 'true' : undefined}
@@ -85,7 +83,6 @@ export default function WorkerRespondInput({
                 }`}
               >
                 {pending ? `Sending… ${opt}` : opt}
-                {!pending && choice.recommended && <span className="sr-only"> (recommended)</span>}
               </button>
             );
           })}

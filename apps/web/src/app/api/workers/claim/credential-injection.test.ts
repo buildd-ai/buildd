@@ -271,6 +271,72 @@ describe('attachServerManagedSecrets', () => {
     expect(workers[0].mcpSecrets).toEqual({ CUE_API_KEY: 'val:sec-ws-key', CUE_TENANT_ID: 'val:sec-team-tenant' });
   });
 
+  // docs/credentials-architecture.md: the most specific scope wins
+  // (workspace > account > team-wide). Recency only breaks a tie within one
+  // scope; sorting on updatedAt alone let a newer team-wide key shadow the
+  // workspace's own key.
+  it('a newer team-wide row does not beat an older workspace row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team', accountId: null, workspaceId: null, updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws', accountId: null, workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => (id === 'sec-ws' ? 'ws-key' : 'team-key'));
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('ws-key');
+  });
+
+  it('an account row beats a newer team-wide row, and a workspace row beats both', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team', purpose: 'oauth_token', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-acct', purpose: 'oauth_token', accountId: 'acct-1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team-key', purpose: 'anthropic_api_key', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-acct-key', purpose: 'anthropic_api_key', accountId: 'acct-1', updatedAt: new Date('2026-09-04T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws-key', purpose: 'anthropic_api_key', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverOauthToken).toBe('val:sec-acct');
+    expect(workers[0].serverApiKey).toBe('val:sec-ws-key');
+  });
+
+  it('never picks a personal row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-personal', userId: 'user-1', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-09T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team' }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-team');
+    // And the query itself excludes personal rows as a top-level conjunct.
+    expect(predicate(mockSecretsFindMany.mock.calls[0]?.[0], 'isNull', 'userId')).toEqual({ field: 'userId', type: 'isNull' });
+  });
+
+  // mcp_credential is many rows (one per env-var label), so precedence applies
+  // per label: a workspace override of one label must win over the team-wide
+  // value of that label without dropping the other labels.
+  it('resolves mcp_credential per label with the most specific scope winning', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team-key', purpose: 'mcp_credential', label: 'CUE_API_KEY', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws-key', purpose: 'mcp_credential', label: 'CUE_API_KEY', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team-tenant', purpose: 'mcp_credential', label: 'CUE_TENANT_ID' }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].mcpSecrets).toEqual({ CUE_API_KEY: 'val:sec-ws-key', CUE_TENANT_ID: 'val:sec-team-tenant' });
+  });
+
   it('picks per purpose — a revoked api key does not affect the oauth pick', async () => {
     mockSecretsFindMany.mockResolvedValue([
       secretRow({ id: 'sec-key-revoked', purpose: 'anthropic_api_key', healthStatus: 'revoked' }),
@@ -293,8 +359,10 @@ describe('attachServerManagedSecrets', () => {
 
     const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
     expect(predicate(args, 'eq', 'teamId')).toEqual({ field: 'teamId', value: 'team-9', type: 'eq' });
+    // `inference_key` is the Anthropic key's canonical storage (provider parity);
+    // `anthropic_api_key` its legacy alias.
     expect(predicate(args, 'inArray', 'purpose').values)
-      .toEqual(['anthropic_api_key', 'oauth_token', 'mcp_credential']);
+      .toEqual(['inference_key', 'anthropic_api_key', 'oauth_token', 'mcp_credential']);
     // Account-scoped rows are visible only to their own account; team-wide rows
     // (accountId NULL) to everyone on the team.
     expect(orBranches(args, 'accountId')).toEqual([
@@ -861,5 +929,127 @@ describe('endpointWorkers: the endpoint is the only model credential', () => {
     await attachCodexCredentials(workers, [task('t1', 'codex'), task('t2', 'codex')], 'acct-1', new Set(['w-t1']));
     expect(workers[0].codexCredential).toBeUndefined();
     expect(workers[1].codexCredential).toBeDefined();
+  });
+});
+
+/**
+ * Provider parity: a team's Anthropic API key is one stored credential that
+ * chat and agent runs both read. Its canonical storage is `inference_key` /
+ * label `anthropic`; `anthropic_api_key` is the legacy alias, still read and
+ * ranked below canonical within the same scope.
+ */
+describe('attachServerManagedSecrets: canonical and legacy Anthropic key storage', () => {
+  function swWorker(id: string) {
+    return { id: `w-${id}`, taskId: id, task: { id, workspaceId: `ws-${id}`, backend: 'claude', workspace: { teamId: 'team-1' } } } as any;
+  }
+  const at = (day: number) => new Date(`2026-09-0${day}T00:00:00.000Z`);
+  const row = (extra: Record<string, unknown>) => ({
+    id: 'sec-1', purpose: 'anthropic_api_key', label: null,
+    accountId: null, workspaceId: null, userId: null,
+    healthStatus: 'ok', updatedAt: at(1), ...extra,
+  });
+  const canonical = (extra: Record<string, unknown> = {}) => row({ purpose: 'inference_key', label: 'anthropic', ...extra });
+
+  beforeEach(() => {
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+  });
+
+  // The safety property of this change: a team that has only the legacy row
+  // gets exactly the claim payload it got before canonical storage was read.
+  it('a team with only a legacy row gets a byte-identical claim payload', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      row({ id: 'sec-legacy' }),
+      row({ id: 'sec-oauth', purpose: 'oauth_token' }),
+      row({ id: 'sec-mcp', purpose: 'mcp_credential', label: 'CUE_API_KEY' }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(JSON.stringify(workers[0])).toBe(JSON.stringify({
+      id: 'w-t1',
+      taskId: 't1',
+      task: { id: 't1', workspaceId: 'ws-t1', backend: 'claude', workspace: { teamId: 'team-1' } },
+      serverApiKey: 'val:sec-legacy',
+      serverOauthToken: 'val:sec-oauth',
+      mcpSecrets: { CUE_API_KEY: 'val:sec-mcp' },
+    }));
+  });
+
+  it('a team with only a canonical row gets that key on agent runs', async () => {
+    mockSecretsFindMany.mockResolvedValue([canonical({ id: 'sec-canonical' })]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-canonical');
+  });
+
+  it('canonical beats legacy in the same scope, even when the legacy row is newer', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      row({ id: 'sec-legacy', updatedAt: at(5) }),
+      canonical({ id: 'sec-canonical', updatedAt: at(1) }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-canonical');
+  });
+
+  it('the more specific scope still wins: a workspace legacy row beats a team canonical row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      canonical({ id: 'sec-team-canonical', updatedAt: at(5) }),
+      row({ id: 'sec-ws-legacy', workspaceId: 'ws-t1' }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-ws-legacy');
+  });
+
+  it('a live legacy row beats a revoked canonical row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      canonical({ id: 'sec-canonical', healthStatus: 'revoked' }),
+      row({ id: 'sec-legacy' }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-legacy');
+  });
+
+  it('another provider’s chat key is never delivered as the Anthropic key', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      row({ id: 'sec-openrouter', purpose: 'inference_key', label: 'openrouter' }),
+      row({ id: 'sec-openai', purpose: 'inference_key', label: 'openai' }),
+      row({ id: 'sec-litellm', purpose: 'inference_key', label: 'litellm' }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBeUndefined();
+  });
+
+  // Personal rows are the requester's alone and reach a claim only through
+  // ./personal-credential-injection under the team's policy. The team path must
+  // not pick one up now that it reads `inference_key`, the purpose a personal
+  // key is stored under.
+  it('never delivers a personal canonical row on the team path', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      canonical({ id: 'sec-personal', userId: 'user-1', workspaceId: 'ws-t1', updatedAt: at(9) }),
+    ]);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBeUndefined();
+    const args = mockSecretsFindMany.mock.calls[0]?.[0] as any;
+    expect(predicate(args, 'isNull', 'userId')).toEqual({ field: 'userId', type: 'isNull' });
+    expect(predicate(args, 'inArray', 'purpose').values)
+      .toEqual(['inference_key', 'anthropic_api_key', 'oauth_token', 'mcp_credential']);
   });
 });

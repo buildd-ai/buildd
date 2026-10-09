@@ -29,6 +29,7 @@
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, tasks, workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
 import { wakeTask } from '@/lib/dispatch-authority';
 
@@ -93,8 +94,14 @@ export async function diagnoseScheduleSkills(workspaceId: string, slugs: string[
   const scopes = [eq(workspaceSkills.workspaceId, workspaceId)];
   if (accountIds.length > 0) scopes.push(inArray(workspaceSkills.accountId, accountIds));
   // Team-level rows: read only to explain a miss (see the module header).
+  // Someone's private personal row is not "team level" — it is nobody else's
+  // to use — so it never explains a miss (@buildd/core/role-visibility).
   if (workspace?.teamId) {
-    scopes.push(and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, workspace.teamId))!);
+    scopes.push(and(
+      isNull(workspaceSkills.workspaceId),
+      eq(workspaceSkills.teamId, workspace.teamId),
+      personalRoleVisibleSql(null),
+    )!);
   }
 
   const rows = await db.query.workspaceSkills.findMany({

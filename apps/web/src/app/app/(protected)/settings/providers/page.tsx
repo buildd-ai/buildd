@@ -1,35 +1,27 @@
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
-import { getChatAvailability } from '@/lib/chat-availability';
 import ModelProvidersClient from './ModelProvidersClient';
 import { PROVIDERS_DESCRIPTION } from './provider-copy';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Connections → Model providers: a core connection next to Runners.
- * Was split across /app/settings/models#provider-keys and the You page.
+ * Settings → Connections → Providers: every model provider, at team, workspace
+ * or personal scope, and the team's credential policy (ModelProvidersClient).
  */
 export default async function ModelProvidersPage() {
-  const { user, currentTeam, isTeamAdmin, workspaces } = await loadSettingsContext();
-  const availability = currentTeam
-    ? await getChatAvailability(user.id, currentTeam.id).catch(() => null)
-    : null;
+  const { currentTeam, perms, workspaces } = await loadSettingsContext();
 
   return (
     <SettingsPage
-      title="Model providers"
+      title="Providers"
       description={PROVIDERS_DESCRIPTION}
     >
       {currentTeam ? (
         <ModelProvidersClient
           teamId={currentTeam.id}
-          isAdmin={isTeamAdmin}
+          isAdmin={perms.manage_inference_providers}
           workspaces={workspaces.filter((w) => w.teamId === currentTeam.id).map((w) => ({ id: w.id, name: w.name }))}
-          availability={{
-            available: availability?.available === true,
-            reason: availability?.available ? null : 'no_key',
-          }}
         />
       ) : (
         <p className="text-sm text-text-secondary">Join or create a team to connect a model provider.</p>

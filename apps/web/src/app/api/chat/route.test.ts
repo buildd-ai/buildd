@@ -14,7 +14,11 @@ mock.module('@/lib/chat/session', () => ({
   isSensitiveWorkspace: async (ws: string) => ws === 'ws-sensitive',
 }));
 mock.module('@/lib/team-access', () => ({
-  verifyWorkspaceAccess: async (_u: string, ws: string) => (ws === 'ws-1' || ws === 'ws-sensitive' ? { teamId: 't-1', role: 'member' } : null),
+  verifyWorkspaceAccess: async (_u: string, ws: string) => (ws === 'ws-1' || ws === 'ws-sensitive' || ws === 'ws-gated' ? { teamId: 't-1', role: 'member' } : null),
+}));
+mock.module('@/lib/member-repo-access', () => ({
+  assertMemberRepoAccess: async (_u: string | null, ws: string | null) =>
+    ws === 'ws-gated' ? Response.json({ error: 'member_repo_access', reason: 'no_github_link' }, { status: 403 }) : null,
 }));
 mock.module('@/lib/chat/store', () => ({
   createConversation: async (input: any) => {
@@ -39,6 +43,13 @@ describe('POST /api/chat', () => {
     const res = await post({ workspaceId: 'ws-1' });
     expect(res.status).toBe(201);
     expect(created[0]).toMatchObject({ teamId: 't-1', workspaceId: 'ws-1', userId: 'u-1' });
+  });
+
+  it('refuses a workspace the member fails the GitHub repo check on', async () => {
+    const res = await post({ workspaceId: 'ws-gated' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).reason).toBe('no_github_link');
+    expect(created).toEqual([]);
   });
 
   it('chat is always on: there is no team switch that refuses a new conversation', async () => {

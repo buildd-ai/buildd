@@ -71,7 +71,8 @@ describe('HealthClient viewport parity', () => {
     expect(healthClientSrc).toContain('data-testid="health-section-trend"');
     // … plus the panels nested inside them.
     expect(healthClientSrc).toContain('data-testid="health-section-runners"');
-    expect(healthClientSrc).toContain('data-testid="health-section-schedules"');
+    // Schedules live on /app/schedules, not on Health.
+    expect(healthClientSrc).not.toContain('data-testid="health-section-schedules"');
     expect(healthClientSrc).toContain('data-testid="health-section-task-outcomes"');
   });
 

@@ -12,6 +12,11 @@ interface Workspace {
 interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
+  /**
+   * Holds `manage_team_notifications` in the team (overrides applied). False:
+   * which channels are set and which events fire, read-only. Defaults to true.
+   */
+  canManage?: boolean;
 }
 
 type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
@@ -34,7 +39,7 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
  * event type can be toggled. Teams with no channel get nothing. Mirrors the
  * AgentBackendsSection team selector conventions.
  */
-export default function NotificationsSection({ workspaces, currentTeamId }: Props) {
+export default function NotificationsSection({ workspaces, currentTeamId, canManage = true }: Props) {
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
@@ -142,7 +147,26 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
           <div className="text-sm text-text-tertiary">Loading…</div>
         ) : (
           <>
+            {!canManage && (
+              <p data-testid="notifications-read-only" className="text-xs text-text-muted">Admins can change this.</p>
+            )}
+
             {/* Channels */}
+            {!canManage ? (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-text-primary">Channels</h3>
+              <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
+                <dt className="text-text-secondary">Pushover</dt>
+                <dd>
+                  <span className={`status-pill ${hasPushover ? 'status-pill-ok' : 'status-pill-idle'}`}>{hasPushover ? 'Configured' : 'Not set'}</span>
+                </dd>
+                <dt className="text-text-secondary">Webhook</dt>
+                <dd>
+                  <span className={`status-pill ${hasWebhook ? 'status-pill-ok' : 'status-pill-idle'}`}>{hasWebhook ? 'Configured' : 'Not set'}</span>
+                </dd>
+              </dl>
+            </div>
+            ) : (
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-text-primary">Channels</h3>
 
@@ -206,6 +230,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                 {busy ? 'Saving…' : 'Save channel'}
               </button>
             </div>
+            )}
 
             <div className="border-t border-border-default" />
 
@@ -214,7 +239,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
               <h3 className="text-sm font-medium text-text-primary">Events</h3>
               <div className="space-y-2">
                 {EVENT_LABELS.map(({ key, label, hint }) => (
-                  <label key={key} className="flex items-start justify-between gap-3 inset-panel cursor-pointer">
+                  <label key={key} className={`flex items-start justify-between gap-3 inset-panel ${canManage ? 'cursor-pointer' : ''}`}>
                     <div className="min-w-0">
                       <div className="text-sm text-text-primary">{label}</div>
                       <div className="text-xs text-text-muted">{hint}</div>
@@ -222,7 +247,7 @@ export default function NotificationsSection({ workspaces, currentTeamId }: Prop
                     <input
                       type="checkbox"
                       checked={state?.preferences[key] ?? true}
-                      disabled={busy}
+                      disabled={busy || !canManage}
                       onChange={(e) => toggle(key, e.target.checked)}
                       className="mt-1 h-4 w-4 flex-shrink-0"
                     />

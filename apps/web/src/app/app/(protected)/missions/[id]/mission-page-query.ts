@@ -62,8 +62,8 @@ export const MISSION_WORKER_COLUMNS = {
   currentAction: true,
   commitCount: true,
   filesChanged: true,
-  // Board and Lanes (MissionBoard / MissionLanes): the runner a worker ran on
-  // (lanes, fleet slots), its milestones (a tile's notches), and its diff size
+  // Board (MissionBoard): the runner a worker ran on
+  // (fleet slots), its milestones (a tile's notches), and its diff size
   // (landed rows, completion record).
   runner: true,
   // With runner, joins the runner's heartbeat for its hostname (runner-display).
@@ -72,6 +72,9 @@ export const MISSION_WORKER_COLUMNS = {
   milestones: true,
   linesAdded: true,
   linesRemoved: true,
+  // The Landed drawer's audit evidence: the head this worker pushed, which a
+  // review verdict must match to count (lib/activity-delivery.ts).
+  lastCommitSha: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -89,6 +92,8 @@ export const MISSION_TASK_COLUMNS = {
   // Read only to class Lane-2 rail edges as advisory ordering
   // (docs/specs/timeline-mobile-rail.md Rule D3-2).
   pathManifest: true,
+  // Flow: the same-files waits Buildd added (`softOverlaps`), which gate like dependencies.
+  pathDeclaration: true,
   category: true,
   taskClass: true,
   loopConfig: true,
@@ -110,7 +115,7 @@ export const MISSION_TASK_COLUMNS = {
   kind: true,
   // Board: which tasks the "PRs merged" criterion counts before they open one.
   outputRequirement: true,
-  // Board / Lanes: the short label a tile and a bar draw (taskDisplayLabel).
+  // Board / Flow: the short label a tile and a row draw (taskDisplayLabel).
   label: true,
   // Board: the Landed drawer's task actions (Retry on / Switch to).
   backend: true,
@@ -160,10 +165,12 @@ export {
 /**
  * `tasks.result` keys the page reads: the completion summary
  * (`selectMissionCompletionSummary` → `authoredSummary`) and the heartbeat
- * status and summary (`getHeartbeatStatus`, `HeartbeatTimeline`).
+ * status and summary (`getHeartbeatStatus`, `HeartbeatTimeline`), and a
+ * reviewer run's verdict (`reviewOf`: `effectiveVerdict`, else
+ * `structuredOutput.verdict`) for the Landed drawer's audit evidence.
  */
-export const RESULT_DIGEST_KEYS = ['summary', 'summarySource', 'reaperAutoCompleted'] as const;
-export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
+export const RESULT_DIGEST_KEYS = ['summary', 'summarySource', 'reaperAutoCompleted', 'effectiveVerdict'] as const;
+export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary', 'verdict'] as const;
 
 /**
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
@@ -189,6 +196,8 @@ export const CONTEXT_DIGEST_KEYS = [
   // Organizer runs timeline: what started each run (lib/mission-checkins.ts).
   'triggerSource',
   'triggerTaskId',
+  // The head a reviewer run read (`reviewOf`): binds its verdict to a commit.
+  'headSha',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 

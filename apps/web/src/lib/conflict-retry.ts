@@ -287,7 +287,9 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
           }
         : migrationCollision
         ? {
-            summary: `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
+            summary: migrationCollision.otherPrNumber == null
+              ? `PR #${worker.prNumber}'s migration ${migrationCollision.file} is at or below ${migrationCollision.otherFile}, already on its base. Merge the base in and renumber past it.`
+              : `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
             errorType: 'migration_collision' as const,
             prNumber: worker.prNumber,
             headSha,
@@ -444,9 +446,18 @@ function buildMigrationCollisionDescription(
     ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force), then request re-review so the collision flag clears.`
     : `Push to the existing branch, then request re-review so the collision flag clears.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
-  const otherPrUrl = `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
+  // A slot already taken on the base itself (the base merged a migration with
+  // this number after the branch forked) has no other PR to look at.
+  const onBase = collision.against === 'base' || collision.otherPrNumber == null;
+  const otherPrUrl = onBase ? null : `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
+  const opening = onBase
+    ? `PR #${worker.prNumber} for "${task.title}" adds \`${collision.file}\`, but its base already has \`${collision.otherFile}\` at or above that number — the base merged a migration after this branch forked. This is a mechanical renumber, not a decision.`
+    : `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.`;
+  const regenerateStep = onBase
+    ? `4. Regenerate at an index past the base's newest migration (\`${collision.otherFile}\` or later):`
+    : `4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.${lineageNote}
+  return `${opening}${lineageNote}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -459,7 +470,7 @@ function buildMigrationCollisionDescription(
    git merge origin/dev   # or the PR's actual base branch
    \`\`\`
 3. Take dev's \`packages/core/drizzle/meta/_journal.json\` and snapshots wholesale, then drop this PR's colliding \`${collision.file}\` (and its snapshot). Do NOT hand-edit the journal or a snapshot.
-4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):
+${regenerateStep}
    \`\`\`bash
    cd packages/core && bun db:generate
    \`\`\`
@@ -468,7 +479,7 @@ function buildMigrationCollisionDescription(
 7. ${pushStep}
 
 PR: ${prUrl}
-Colliding PR: ${otherPrUrl}
+${otherPrUrl ? `Colliding PR: ${otherPrUrl}` : `Colliding migration on the base: \`${collision.otherFile}\``}
 
 ${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }

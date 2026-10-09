@@ -144,6 +144,8 @@ export interface SetProviderKeyRequest {
 /** `PUT /api/inference-keys` → the stored key, checked against the provider. */
 export interface SetProviderKeyResponse {
   key: MaskedProviderKey;
+  /** Team scope only: auth-failed tasks put back in the queue (0 for a chat-only key). */
+  requeued?: number;
 }
 
 /** `DELETE /api/inference-keys?teamId=&provider=&scope=` → `{ deleted: boolean }` */
@@ -315,6 +317,7 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   promote_discrepancy: [''],
   send_agent_message: [''],
   trigger_release: [''],
+  merge_pr: [''],
   consolidate_knowledge: [''],
   memory_delete: [''],
   create_schedule: [''],
@@ -333,6 +336,8 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   learn: [''],
   watch: [''],
   unwatch: [''],
+  create_personal_role: [''],
+  share_personal_role: [''],
 };
 
 /**

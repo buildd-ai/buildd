@@ -84,14 +84,16 @@ export default async function RoleProfilePage({
   const { getUserTeamIds } = await import('@/lib/team-access');
   const teamIds = await getUserTeamIds(user.id);
 
-  // Find role by slug — prefer workspace-override, fall back to team default
+  // Find role by slug — prefer workspace-override, fall back to team default.
+  // Team roles only: a personal row is team-level too, and another member's
+  // private one must never resolve here (personal roles open by id instead).
   const role = await db.query.workspaceSkills.findFirst({
     where: and(
       eq(workspaceSkills.slug, slug),
       eq(workspaceSkills.isRole, true),
       or(
         wsIds.length > 0 ? inArray(workspaceSkills.workspaceId, wsIds) : undefined,
-        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
+        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), isNull(workspaceSkills.ownerUserId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
     ),

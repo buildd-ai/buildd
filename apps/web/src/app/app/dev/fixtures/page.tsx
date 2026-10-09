@@ -32,8 +32,13 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
+import TeamMembersFixture from './TeamMembersFixture';
+import RefinedComponentsFixture from './RefinedComponentsFixture';
+import MissionFlowFixture from './MissionFlowFixture';
 import {
+    ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
@@ -59,6 +64,9 @@ import {
     DELIVERY_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     SURFACE_AUDIT_WAIVER_FIXTURE_STATE,
+    TEAM_MEMBERS_FIXTURE_STATE,
+    REFINED_COMPONENTS_FIXTURE_STATE,
+    MISSION_FLOW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -87,6 +95,10 @@ export default function DevFixturesPage() {
     }, []);
 
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
+
+    if (state === ACTIVITY_DELIVERY_FIXTURE_STATE) {
+        return <ActivityDeliveryFixture />;
+    }
 
     if (state === MISSION_BOARD_VISUAL_FIXTURE_STATE) {
         return (
@@ -182,6 +194,18 @@ export default function DevFixturesPage() {
         return <OperatorAccessFixture />;
     }
 
+    if (state === TEAM_MEMBERS_FIXTURE_STATE) {
+        return <TeamMembersFixture />;
+    }
+
+    if (state === REFINED_COMPONENTS_FIXTURE_STATE) {
+        return <RefinedComponentsFixture />;
+    }
+
+    if (state === MISSION_FLOW_FIXTURE_STATE) {
+        return <MissionFlowFixture />;
+    }
+
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
         return (
             <KeyHintsProvider value={hints}>
@@ -193,7 +217,7 @@ export default function DevFixturesPage() {
     return (
         <KeyHintsProvider value={hints}>
         <div className="min-h-screen bg-surface-1 p-8">
-            <div className="max-w-4xl mx-auto">
+            <div className="max-w-4xl mx-auto min-w-0">
                 <div className="mb-6">
                     <h1 className="text-2xl font-bold mb-2">Dev Fixtures: Worker States</h1>
                     <p className="text-text-secondary mb-4">
@@ -236,9 +260,10 @@ export default function DevFixturesPage() {
                             />
                         </div>
 
-                        <div className="mt-6 p-4 bg-surface-3 rounded-lg">
+                        <div className="mt-6 p-4 bg-surface-3 rounded-lg min-w-0">
                             <h3 className="font-medium mb-2">Raw Worker Data</h3>
-                            <pre className="text-xs overflow-auto max-h-64 p-2 bg-surface-1 text-status-success rounded">
+                            {/* Wrap long lines (the prompt) so the block never widens the page at phone width. */}
+                            <pre className="text-xs overflow-auto max-h-64 min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] p-2 bg-surface-1 text-status-success rounded">
                                 {JSON.stringify(worker, null, 2)}
                             </pre>
                         </div>

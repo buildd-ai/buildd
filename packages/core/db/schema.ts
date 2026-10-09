@@ -385,6 +385,13 @@ export interface WorkspaceGitConfig {
   // anyway — same team, not sensitive, token restriction respected.
   linkedKnowledgeWorkspaces?: string[];
 
+  // Opt-in: a person (dashboard or OAuth session, never an API key or runner)
+  // must also hold read or higher on the linked GitHub repo before Buildd
+  // shows them code, files tasks for them, or lets chat work over this
+  // workspace. Absent ⇒ 'off': team membership is the whole check. Read only
+  // through resolveMemberRepoAccessMode (apps/web/src/lib/member-repo-access-shared.ts).
+  memberRepoAccess?: 'off' | 'require_read';
+
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
   commitPrefix?: string;              // '[JIRA-123]', null
@@ -2770,6 +2777,10 @@ export const missionNotes = pgTable('mission_notes', {
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Human-attention disposition of an agent/outside-caller question note
+  // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
+  // 'recovered' means a repair task owns it. NULL on every other note.
+  disposition: text('disposition').$type<'ask' | 'recovered'>(),
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
@@ -3037,7 +3048,10 @@ export const workspaceSkills = pgTable('workspace_skills', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND ${t.ownerUserId} IS NULL`),
+  // Team-level namespace: one (team, slug) across team roles AND shared
+  // personal roles, so two concurrent shares of one slug cannot both land.
+  // Private personal rows are outside it (ownerSlugIdx covers them).
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND (${t.ownerUserId} IS NULL OR ${t.visibility} = 'team')`),
   // Personal roles: one (team, owner, slug)
   ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL

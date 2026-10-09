@@ -482,7 +482,7 @@ describe('GET /api/cron/schedules', () => {
 
     await GET(makeRequest());
 
-    expect(mockResolveEffectiveRoleSlugs).toHaveBeenCalledWith('ws-1');
+    expect(mockResolveEffectiveRoleSlugs).toHaveBeenCalledWith('ws-1', null);
     expect(tasksInsertValues.roleSlug).toBe('researcher');
   });
 

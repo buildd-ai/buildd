@@ -80,7 +80,20 @@ export interface ModelEnvInput {
    * injected and no claim-delivered Claude credential is materialized.
    */
   hostSeat?: 'env' | 'login' | null;
+  /**
+   * The claim's `credentialDecision.runnerLocalAllowed` (absent = true). With
+   * `false` (the requester's own key under personal_only) nothing of the
+   * machine's may displace the claim's credential: the per-machine provider
+   * and host seat are ignored, and inherited model auth variables (and a
+   * machine OPENAI_BASE_URL) are removed before anything is applied. An
+   * operator ANTHROPIC_BASE_URL is kept, so an untrusted origin still gets no
+   * server credential: the run fails closed rather than sending the key there.
+   */
+  runnerLocalAllowed?: boolean;
 }
+
+/** Machine model variables removed from the agent env when runnerLocalAllowed is false. */
+const MACHINE_MODEL_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const;
 
 export interface ModelEnvResult {
   env: Record<string, string>;
@@ -160,7 +173,13 @@ export function shouldUseClaudeCredential(
 export const TOOL_SEARCH_ENV = 'ENABLE_TOOL_SEARCH';
 
 export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput): ModelEnvResult {
-  const { llmProvider, serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
+  const { serverApiKey, serverOauthToken, tenantOauthToken, isCodexTask } = input;
+  const localAllowed = input.runnerLocalAllowed !== false;
+  // Machine config is simply not there for this run: no provider, no seat,
+  // no inherited key. Everything below then behaves as on a bare machine.
+  const llmProvider = localAllowed ? input.llmProvider : undefined;
+  const inputHostSeat = localAllowed ? input.hostSeat : null;
+  if (!localAllowed) for (const k of MACHINE_MODEL_VARS) delete env[k];
 
   // Only the team endpoint branch below may turn deferred tool loading on.
   delete env[TOOL_SEARCH_ENV];
@@ -243,7 +262,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
     }
     // The machine's own seat (an env token, or `claude login` on the host)
     // wins: a server-delivered seat only fills in when the machine has none.
-    const hostSeat = !isCodexTask && !tenantOauthToken && (input.hostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
+    const hostSeat = !isCodexTask && !tenantOauthToken && (inputHostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
     if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN && !hostSeat) {
       env.CLAUDE_CODE_OAUTH_TOKEN = serverOauthToken;
       injected.push('serverOauthToken');

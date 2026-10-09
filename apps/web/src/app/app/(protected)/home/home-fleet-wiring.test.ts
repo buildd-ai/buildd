@@ -21,28 +21,26 @@ describe('Home live workers', () => {
     expect(loader).toContain('.orderBy(desc(workers.startedAt))');
   });
 
-  it('on a phone the ticker comes last, never between the asks and the fleet', () => {
+  it('the decisions come first, then Agents / Moving / Landed in grid areas, the ticker last', () => {
+    const stack = home.indexOf('<NeedsYouStack');
+    const body = home.indexOf('data-testid="home-body"');
     const ticker = home.indexOf('<ActivityTicker');
-    const wrapper = home.lastIndexOf('<div className="order-last', ticker);
-    expect(wrapper).toBeGreaterThan(home.indexOf('<NeedsYouStack'));
-    expect(ticker - wrapper).toBeLessThan(120);
+    expect(stack).toBeGreaterThan(-1);
+    expect(body).toBeGreaterThan(stack);
+    expect(ticker).toBeGreaterThan(body);
+    expect(home).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']");
+    expect(home).toContain("[grid-template-areas:'agents'_'moving'_'landed']");
   });
 
-  it('operators get the fleet panel up top; members get it as a compact line after their missions', () => {
-    // The role is read alongside chat availability (one wait), then mapped.
+  it('the fleet lanes and role legend are off Home; Agents replaces them', () => {
+    expect(home).toContain('<AgentsPanel');
+    expect(home).not.toContain('<FleetStrip');
+    expect(home).not.toContain('<StatStrip');
     expect(home).toContain('getUserTeamRole(user.id, activeTeamId)');
-    expect(home).toContain('audience = homeAudience(role, overrides)');
-    const operator = home.indexOf("audience === 'operator' && fleetData && <FleetStrip");
-    const missions = home.indexOf('<HomeMissionsSummary');
-    const member = home.indexOf("audience === 'member' && fleetData");
-    expect(operator).toBeGreaterThan(-1);
-    expect(operator).toBeLessThan(missions);
-    expect(member).toBeGreaterThan(missions);
-    expect(home.slice(member, member + 300)).toContain('compact');
   });
 
   it('renders the redesigned sections with stable test ids', () => {
-    for (const id of ['home-headline', 'home-right-now']) expect(home).toContain(`data-testid="${id}"`);
-    for (const c of ['<StatStrip', '<FleetStrip', '<NeedsYouStack', '<ActivityTicker', '<HomeMissionsSummary']) expect(home).toContain(c);
+    for (const id of ['home-headline', 'home-right-now', 'home-body']) expect(home).toContain(`data-testid="${id}"`);
+    for (const c of ['<AgentsPanel', '<NeedsYouStack', '<ActivityTicker', '<LandedThisWeek', '<DeliveryMilestones']) expect(home).toContain(c);
   });
 });

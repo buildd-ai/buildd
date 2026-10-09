@@ -16,8 +16,12 @@ import { join, relative } from 'node:path';
 const WEB_SRC = join(import.meta.dir, '..', '..');
 const API_DIR = join(WEB_SRC, 'app', 'api');
 
-/** The helper itself is the only module allowed to read accounts by key hash. */
-const ALLOWED = new Set(['lib/api-auth.ts']);
+/**
+ * The helper itself is the only module allowed to read accounts by key hash.
+ * creator-key-clamp.ts names the column only in RETURNING, to drop the keys it
+ * just lowered from the helper's caches; it never filters by it.
+ */
+const ALLOWED = new Set(['lib/api-auth.ts', 'lib/creator-key-clamp.ts']);
 
 function collectSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

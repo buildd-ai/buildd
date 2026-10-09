@@ -21,7 +21,8 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveClaudeCredential } from '@/lib/claude-credential';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
-import { pickMostSpecificCredential, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { pickMostSpecificCredential, pickTeamAgentApiKey, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -29,6 +30,12 @@ type ClaimedTask = { id: string; workspaceId: string };
 /**
  * Attach inline decrypted server-managed credentials (Anthropic API key and/or
  * OAuth token, plus flat mcp_credential values).
+ *
+ * The Anthropic key is read from its canonical storage (`inference_key` /
+ * `anthropic`, the key chat uses) and its legacy alias (`anthropic_api_key`);
+ * within one scope the canonical row wins (`pickTeamAgentApiKey`). Personal
+ * rows are excluded in SQL (`teamCredentialWhere`) and again in the pick: a
+ * requester's own key reaches a claim only via ./personal-credential-injection.
  *
  * Secrets are scoped by the task's workspace team to prevent cross-team leakage.
  */
@@ -54,7 +61,7 @@ export async function attachServerManagedSecrets(
 
       const workerSecrets = await db.query.secrets.findMany({
         where: teamCredentialWhere(
-          { teamId: workspaceTeamId, purpose: ['anthropic_api_key', 'oauth_token', 'mcp_credential'] },
+          { teamId: workspaceTeamId, purpose: [...agentKeyPurposes('anthropic'), 'oauth_token', 'mcp_credential'] },
           or(
             isNull(secrets.accountId),
             eq(secrets.accountId, accountId),
@@ -85,7 +92,7 @@ export async function attachServerManagedSecrets(
       // The endpoint is the only model credential for its workers; MCP secrets
       // below are not model credentials and are still delivered.
       const endpointWon = endpointWorkers.has(cw.id);
-      const apiKeySecret = endpointWon ? undefined : pickBest('anthropic_api_key');
+      const apiKeySecret = endpointWon ? undefined : pickTeamAgentApiKey(workerSecrets, scopeTarget, 'anthropic');
       const oauthSecret = endpointWon ? undefined : pickBest('oauth_token');
 
       const [decryptedApiKey, decryptedOauthToken] = await Promise.all([

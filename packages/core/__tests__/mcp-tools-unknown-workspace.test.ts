@@ -52,6 +52,8 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['list_prs', {}],
   ['list_discrepancies', {}],
   ['manage_experiments', { action: 'list' }],
+  ['manage_providers', { action: 'list' }],
+  ['manage_providers', { action: 'explain', surface: 'chat' }],
   ['manage_model_tiers', { action: 'list' }],
   ['manage_evidence_backends', { action: 'list' }],
   ['manage_evidence_backends', { action: 'create', provider: 's3', bucket: 'b' }],
