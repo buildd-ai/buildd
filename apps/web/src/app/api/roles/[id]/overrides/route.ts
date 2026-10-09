@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
 import { can } from '@/lib/permissions';
+import { canSeeRole, isPersonalRole } from '@/lib/personal-roles';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -66,6 +67,18 @@ export async function POST(
       return NextResponse.json(
         { error: 'Team-level role not found or not accessible' },
         { status: 404 }
+      );
+    }
+
+    // Personal roles have no workspace overrides; another member's private
+    // role is not even visible.
+    if (isPersonalRole(teamDefault)) {
+      if (!canSeeRole(teamDefault, user.id)) {
+        return NextResponse.json({ error: 'Team-level role not found or not accessible' }, { status: 404 });
+      }
+      return NextResponse.json(
+        { error: 'Personal roles have no workspace overrides; edit the role itself with PATCH /api/roles/[id]' },
+        { status: 400 }
       );
     }
 

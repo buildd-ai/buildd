@@ -10,6 +10,7 @@ const mockGetWorkspaceRoles = mock(() => Promise.resolve([] as any[]));
 const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsInsert = mock(() => null as any);
+const mockWorkspaceSkillsFindMany = mock(async (_args?: any) => [] as any[]);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -23,6 +24,7 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   getUserTeamIds: mockGetUserTeamIds,
+  resolveActiveTeamId: async () => ((await mockGetUserTeamIds()) as string[])[0] ?? null,
   getAccountWorkspacePermissions: mock(() => Promise.resolve([])),
 }));
 
@@ -45,7 +47,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       accounts: { findFirst: mock(() => null) },
       workspaces: { findMany: mockWorkspacesFindMany },
-      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
+      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
+      users: { findMany: mock(async () => []) },
     },
     insert: mockWorkspaceSkillsInsert,
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) })),
@@ -57,6 +60,8 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ c }),
   or: (...c: any[]) => ({ c }),
   isNull: (f: any) => ({ f }),
+  isNotNull: (f: any) => ({ f, not: true }),
+  ne: (f: any, v: any) => ({ f, v, ne: true }),
   inArray: (f: any, v: any) => ({ f, v }),
   desc: (f: any) => ({ f }),
   sql: Object.assign((s: any, ...v: any[]) => ({ s, v }), { empty: '' }),
@@ -68,7 +73,9 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: {
     id: 'id', workspaceId: 'workspace_id', teamId: 'team_id',
     slug: 'slug', name: 'name', isRole: 'is_role', enabled: 'enabled', accountId: 'account_id',
+    ownerUserId: 'owner_user_id', visibility: 'visibility',
   },
+  users: { id: 'id', name: 'name' },
 }));
 
 mock.module('@/lib/storage', () => ({ isStorageConfigured: () => false }));
@@ -92,6 +99,8 @@ describe('GET /api/roles', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockGetWorkspaceRoles.mockReset();
     mockWorkspacesFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 if not authenticated', async () => {
@@ -114,6 +123,11 @@ describe('GET /api/roles', () => {
   it('returns deduplicated roles across workspaces', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1', 'ws2']));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    // 1st read: personal roles (none); 2nd: slugs backed by a team role.
+    mockWorkspaceSkillsFindMany
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [{ slug: 'builder' }]);
     mockGetWorkspaceRoles
       .mockImplementationOnce(() => Promise.resolve([{ slug: 'builder', name: 'Builder', workspaceId: 'ws1' }]))
       .mockImplementationOnce(() => Promise.resolve([{ slug: 'builder', name: 'Builder', workspaceId: 'ws2' }]));
