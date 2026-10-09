@@ -66,7 +66,7 @@ describe('ActivityView filters across Now and History', () => {
     // Now → History: the same component re-renders, so the filter is kept and History shows the retried delivery.
     await show({ mode: 'history', ...d });
     expect(button('Had retries').getAttribute('aria-pressed')).toBe('true');
-    expect([...container.querySelectorAll('[data-testid="activity-episode"]')].map(e => e.textContent)).toEqual([expect.stringContaining('fix: landed after a retry')]);
+    expect([...container.querySelectorAll('[data-testid="activity-episode"]')].map(e => e.textContent)).toEqual([expect.stringContaining('Landed after a retry')]);
 
     // And back: still filtered, still honest; Clear filters brings the rows back.
     await show({ mode: 'now', ...d });
@@ -128,7 +128,8 @@ describe('ActivityView filters across Now and History', () => {
     await show({ mode: 'now', now: d.now, history: d.history, initialFilters: { outcome: 'retries' } });
     expect(q('activity-counts')?.textContent).toMatch(/^[1-9]\d* deliver(y|ies) in motion · 3 agents working$/);
     const rows = [...container.querySelectorAll('[data-testid="activity-now-row"]')].map(r => r.textContent ?? '');
-    expect(rows.some(t => t.includes('fix: long-running migration backfill'))).toBe(true);
+    expect(rows.some(t => t.includes('Long-running migration backfill'))).toBe(true);
+    expect(container.querySelector('[title="fix: long-running migration backfill"]')).not.toBeNull();
     await show({ mode: 'history', now: d.now, history: d.history, initialFilters: { outcome: 'retries' } });
     expect(container.querySelectorAll('[data-testid="activity-episode"]').length).toBeGreaterThan(10);
   });
