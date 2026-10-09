@@ -24,7 +24,7 @@ export function appliesToLabel(appliesTo: readonly AppliesToWorkspace[] | null |
 
 async function errorText(res: Response): Promise<string> {
   const body = await res.json().catch(() => ({} as Record<string, unknown>));
-  return typeof body.error === 'string' ? body.error : `Request failed (HTTP ${res.status})`;
+  return typeof body.error === 'string' ? body.error : "That didn’t go through. Try again.";
 }
 
 /**

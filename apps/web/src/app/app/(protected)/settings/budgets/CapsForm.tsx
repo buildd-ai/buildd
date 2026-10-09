@@ -76,7 +76,7 @@ export default function CapsForm({
     id: string, label: string, value: string, set: (v: string) => void, fallback: string,
     parsed: ReturnType<typeof parseBudgetInput>,
   ) => (
-    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 px-4 py-3">
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 py-3">
       <span>
         <label htmlFor={id} className="block text-sm text-text-primary">{label}</label>
         <span className="block text-xs text-text-muted" data-testid={`${id}-default`}>{fallback}</span>
@@ -97,7 +97,8 @@ export default function CapsForm({
 
   return (
     <div className="space-y-5">
-      <div className="card divide-y divide-border-default" data-testid="caps">
+      {/* L1 rows on hairlines: two fields are not an object to frame. */}
+      <div className="divide-y divide-border-default border-y border-border-default" data-testid="caps">
         {!own && field('cap-team', 'Team', team, setTeam, `Default ${perDay(defaultTeamUsd)}`, teamParsed)}
         {field('cap-user', 'Each person', user, setUser, own ? 'No cap' : `Default ${perDay(effectiveTeam * defaultUserShare)}`, userParsed)}
       </div>
@@ -109,7 +110,7 @@ export default function CapsForm({
           {msg && <span role="status" className={`text-xs ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>}
         </div>
       ) : (
-        <p className="text-xs text-text-muted">Only a team owner or admin can change caps.</p>
+        <p className="text-xs text-text-muted">Admins can change this.</p>
       )}
     </div>
   );

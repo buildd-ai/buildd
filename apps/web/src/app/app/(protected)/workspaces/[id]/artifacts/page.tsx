@@ -92,20 +92,15 @@ export default async function WorkspaceArtifactsPage({
   });
 
   return (
-    <main className="min-h-screen p-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
-        <Link href={`/app/workspaces/${id}`} className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-          &larr; {workspace.name}
-        </Link>
-
-        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Artifacts</h1>
-            <p className="text-text-muted mt-1">
-              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-        </div>
+    <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+      <div className="max-w-4xl space-y-8">
+        <header>
+          <h1 className="hidden md:block text-xl font-semibold text-text-primary">Artifacts</h1>
+          <p className="text-sm text-text-secondary md:mt-1.5">
+            <span className="font-mono">{deliverableArtifacts.length}</span> artifact{deliverableArtifacts.length !== 1 ? 's' : ''} in{' '}
+            <Link href={`/app/workspaces/${id}`} className="underline hover:text-text-primary">{workspace.name}</Link>
+          </p>
+        </header>
 
         <ArtifactList
           artifacts={artifactItems}

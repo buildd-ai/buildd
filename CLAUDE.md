@@ -127,7 +127,7 @@ Roles are skills with `isRole: true` on the `workspaceSkills` table. They define
 - **Task routing**: `tasks.roleSlug` → claim route filters by runner's `availableSkills`
 - **Config packaging**: `apps/web/src/lib/role-config.ts` bundles CLAUDE.md + .mcp.json + env mapping → R2
 - **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
-- **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
+- **Roles page**: `apps/web/src/app/app/(protected)/settings/roles/page.tsx` (the old `/app/team` redirects here)
 
 ## Issues & Friction
 
