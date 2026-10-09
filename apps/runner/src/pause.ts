@@ -36,6 +36,9 @@ export const PAUSED_ERROR = `${PAUSED_ERROR_PREFIX} paused by a person; Resume c
 export const PAUSE_UNAVAILABLE_MESSAGE =
   "Pause isn't available on this runner (resumable runs are off), so the agent keeps running. Stop it, or let it finish.";
 
+export const PAUSE_UNAVAILABLE_CODEX_MESSAGE =
+  "Pause isn't available for a Codex run on a cloud runner yet (its session can't be saved with the run), so the agent keeps running. Stop it, or let it finish.";
+
 export const PAUSED_PROMPT =
   'Paused. Resume to continue the same session where it stopped. The first turn after a long pause costs more, because the prompt cache has expired.';
 
@@ -47,7 +50,7 @@ export function pauseModeFor(opts: { singleTask?: boolean; parkingEnabled?: bool
 export type PauseDecision =
   | { action: 'apply' }
   | { action: 'defer' }
-  | { action: 'refuse'; reason: 'unavailable' | 'not_running' | 'no_session' | 'already_paused' };
+  | { action: 'refuse'; reason: 'unavailable' | 'unavailable_backend' | 'not_running' | 'no_session' | 'already_paused' };
 
 /** Whether a pause can happen now, must wait for the running tool, or is refused. */
 export function decidePause(input: {
@@ -56,9 +59,12 @@ export function decidePause(input: {
   hasLiveSession: boolean;
   toolInFlight: boolean;
   waitingFor?: Pick<WaitingFor, 'type'> | null;
+  /** The backend the session runs on. A park bundle carries Claude transcripts only. */
+  backend?: 'claude' | 'codex';
 }): PauseDecision {
   if (input.status === 'waiting' && input.waitingFor?.type === 'pause') return { action: 'refuse', reason: 'already_paused' };
   if (input.mode === 'none') return { action: 'refuse', reason: 'unavailable' };
+  if (input.mode === 'park' && input.backend === 'codex') return { action: 'refuse', reason: 'unavailable_backend' };
   if (input.status !== 'working' && input.status !== 'stale') return { action: 'refuse', reason: 'not_running' };
   if (!input.hasLiveSession) return { action: 'refuse', reason: 'no_session' };
   return input.toolInFlight ? { action: 'defer' } : { action: 'apply' };

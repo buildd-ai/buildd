@@ -579,7 +579,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
-import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
@@ -1431,14 +1431,18 @@ export class WorkerManager {
       hasLiveSession: this.sessions.has(workerId),
       toolInFlight: !!worker.toolInFlight,
       waitingFor: worker.waitingFor,
+      backend: worker.taskBackend,
     });
     const decision = decide();
     if (decision.action === 'refuse') {
       console.log(`[Worker ${workerId}] Pause refused: ${decision.reason}`);
       const lastLabel = (worker.milestones[worker.milestones.length - 1] as { label?: string } | undefined)?.label;
-      if (decision.reason === 'unavailable' && lastLabel !== PAUSE_UNAVAILABLE_MESSAGE) {
-        this.addMilestone(worker, { type: 'status', label: PAUSE_UNAVAILABLE_MESSAGE, ts: Date.now() });
-        this.buildd.updateWorker(worker.id, { currentAction: PAUSE_UNAVAILABLE_MESSAGE, milestones: worker.milestones }).catch(() => {});
+      const unavailable = decision.reason === 'unavailable' ? PAUSE_UNAVAILABLE_MESSAGE
+        : decision.reason === 'unavailable_backend' ? PAUSE_UNAVAILABLE_CODEX_MESSAGE
+        : null;
+      if (unavailable && lastLabel !== unavailable) {
+        this.addMilestone(worker, { type: 'status', label: unavailable, ts: Date.now() });
+        this.buildd.updateWorker(worker.id, { currentAction: unavailable, milestones: worker.milestones }).catch(() => {});
         this.emit({ type: 'worker_update', worker });
       }
       return 'refuse';
