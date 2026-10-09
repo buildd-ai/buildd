@@ -382,12 +382,17 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
-    box-shadow: var(--card-shadow);
     transition: background 150ms ease, transform 150ms ease;
   }
+  /* A linked card (components/ui/Card.tsx `interactive`): hover fill, and a
+     keyboard focus ring in ink, never orange. */
   .card-interactive:hover {
     background: var(--card-hover);
     transform: translateY(-0.5px);
+  }
+  .card-interactive:focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
   }
   /* L3: a genuine decision. The frame and the charcoal primary button are the
      only loud things on the card; everything else stays sub. */
@@ -676,7 +681,9 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .seg-item:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ── Inline notice ──
-   * Status banner at the top of a section (saved / failed / needs action). */
+   * The one inline alert (components/ui/Notice.tsx): saved / heads up /
+   * failed / for your information. A 1px frame in the tone's hue, no tint
+   * fill. info is neutral ink on the strong border, never orange. */
   .notice {
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-card);
@@ -684,8 +691,9 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     font-size: 13px;
   }
   .notice-ok   { border-color: var(--status-success); color: var(--status-success); }
+  .notice-warn { border-color: var(--status-warning); color: var(--status-warning); }
   .notice-err  { border-color: var(--status-error);   color: var(--status-error); }
-  .notice-info { border-color: var(--accent);         color: var(--accent-text); }
+  .notice-info { border-color: var(--border-strong);  color: var(--text-primary); }
 
   /* ── Field label ──
    * The small caption above an input or select in a settings form. */
