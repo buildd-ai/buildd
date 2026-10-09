@@ -12,7 +12,7 @@ import {
   resolveIncidentSql, unresolvedIncidentsSql,
   DEFAULT_TRUNK_WINDOW_MINUTES, UNKNOWN_CI_SIGNATURE, ciSignature, signatureChecks, trunkBreakerConfig, trunkExplains, trunkRecovered,
 } from './trunk';
-import { trunkFixDescription, trunkFixTitle } from './ci-red-trunk-effects';
+import { trunkFixAnchorSql, trunkFixDescription, trunkFixTitle } from './ci-red-trunk-effects';
 
 describe('trunkBreakerConfig', () => {
   test('absent = on with the base-red rule only; false turns it off; the multi-delivery rule is opt-in', () => {
@@ -89,6 +89,16 @@ describe('incident SQL (rendered through PgDialect)', () => {
     expect(rep).toContain("wa.status IN ('queued', 'running')");
     expect(render(unresolvedIncidentsSql(5))).toContain("WHERE status <> 'resolved' ORDER BY updated_at LIMIT $1::int");
     expect(render(blockedOnResolvedSql(5))).toContain("d.state = 'BLOCKED_ON_TRUNK' AND d.authority = 'kernel' AND i.status = 'resolved'");
+  });
+  test('the trunk-fix anchor: one fixer per unresolved base, never a resolved incident or a finished fixer', () => {
+    const s = render(trunkFixAnchorSql(D));
+    expect(s).toContain('SELECT COALESCE(o.trunk_fix_task_id, o.id) AS task_id');
+    expect(s).toContain("o.base_ref = me.base_ref AND o.status <> 'resolved'");
+    expect(s).toContain('o.workspace_id = me.workspace_id AND o.repo_full_name = me.repo_full_name');
+    // An unlinked incident anchors only the incidents opened after it, so two drains in either order agree.
+    expect(s).toContain('(o.trunk_fix_task_id IS NULL AND (o.first_seen_at, o.id) < (me.first_seen_at, me.id))');
+    expect(s).toMatch(/t\.status NOT IN \(\$\d+::text, \$\d+::text, \$\d+::text\)/);
+    expect(s).toContain('ORDER BY (o.first_seen_at, o.id) LIMIT 1');
   });
   test('resolve is a CAS: only an unresolved incident resolves, once', () => {
     expect(render(resolveIncidentSql(D))).toContain("SET status = 'resolved', resolved_at = now(), updated_at = now() WHERE id = $1::uuid AND status <> 'resolved' RETURNING id");
