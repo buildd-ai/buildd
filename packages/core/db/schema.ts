@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -6291,3 +6291,59 @@ export const postSessionFindings = pgTable('post_session_findings', {
 
 export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
 export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;
+
+/**
+ * Failure Pattern Sentinel: one durable incident per systemic failure pattern.
+ *
+ * NOT a raw event table — the events stay in workers, worker_terminal_records
+ * and gate_events. A row here is keyed by the rule engine's stable pattern
+ * `signature` + `detector_version` (apps/web/src/lib/failure-pattern-sentinel.ts)
+ * and carries only bounded pointers back to those rows. Written by
+ * apps/web/src/lib/failure-incident-store.ts: insert is ON CONFLICT DO NOTHING
+ * on the unique key and every update is a compare-and-swap on `version`, so two
+ * sweeps racing on one pattern converge on one row (neon-http has no
+ * interactive transactions).
+ */
+export const failureIncidents = pgTable('failure_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // `<rule>|ws=<id>|<discriminators>` — identity of the pattern, never of one occurrence.
+  signature: text('signature').notNull(),
+  // Bump instead of reshaping a signature in place; a new version is a new incident.
+  detectorVersion: text('detector_version').notNull(),
+  rule: text('rule').notNull().$type<FailureIncidentRule>(),
+  reasonCode: text('reason_code').notNull(),
+  title: text('title').notNull(),
+  // Only ever raised on update; a reopen restarts from the rule's minimum.
+  severity: text('severity').notNull().$type<FailureIncidentSeverity>(),
+  status: text('status').notNull().default('open').$type<FailureIncidentStatus>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  occurrenceCount: integer('occurrence_count').notNull().default(0),
+  // Times it came back after `resolved`.
+  recurrenceCount: integer('recurrence_count').notNull().default(0),
+  affectedRefs: jsonb('affected_refs').$type<FailureIncidentAffectedRefs>().notNull().default({ taskIds: [], workerIds: [], prNumbers: [] }),
+  evidenceRefs: jsonb('evidence_refs').$type<FailureIncidentEvidenceRef[]>().notNull().default([]),
+  // Latest impact counters from the rule (a snapshot, overwritten per detection).
+  impact: jsonb('impact').$type<Record<string, number>>().notNull().default({}),
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  lastAlertSeverity: text('last_alert_severity').$type<FailureIncidentSeverity>(),
+  linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Optimistic-lock counter for the compare-and-swap update.
+  version: integer('version').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  signatureVersionIdx: uniqueIndex('failure_incidents_signature_version_idx').on(t.signature, t.detectorVersion),
+  workspaceStatusSeenIdx: index('failure_incidents_workspace_status_seen_idx').on(t.workspaceId, t.status, t.lastSeenAt),
+}));
+
+export const failureIncidentsRelations = relations(failureIncidents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [failureIncidents.workspaceId], references: [workspaces.id] }),
+  linkedFixTask: one(tasks, { fields: [failureIncidents.linkedFixTaskId], references: [tasks.id] }),
+}));
+
+export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
+export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;

@@ -42,6 +42,7 @@ import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
@@ -1315,6 +1316,10 @@ export async function dispatchConflictRetry(
   if (installationId) {
     schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
   }
+
+  // Bounded, deferred — a new conflict-retry child is exactly what the
+  // retry-fork / lineage rules watch for.
+  scheduleFailurePatternSentinel(workspaceId);
 
   return { dispatched: true, taskId: newTask.id };
 }
