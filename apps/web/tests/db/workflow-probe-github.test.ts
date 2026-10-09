@@ -70,7 +70,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
   // treats only success/neutral/skipped as passing.
   // https://docs.github.com/en/rest/checks/runs#get-a-check-run
   for (const conclusion of ['timed_out', 'cancelled', 'startup_failure', 'action_required']) {
-    test.failing(`approved at H; the test job ends ${conclusion} → the landing sweep must not merge H`, async () => {
+    test(`approved at H; the test job ends ${conclusion} → the landing sweep must not merge H`, async () => {
       w = await world();
       const pr = await approvedThenCheck(w, `feat/concl-${conclusion}`, { conclusion });
       const o = await sweep(w, pr);
@@ -83,7 +83,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
   // ("waiting", "requested" and "pending" are GitHub Actions only: a job waiting on an
   // environment protection rule or a concurrency group). https://docs.github.com/en/rest/checks/runs
   for (const status of ['waiting', 'pending', 'requested']) {
-    test.failing(`approved at H; the test job is ${status} (not started) → the landing sweep must not merge H`, async () => {
+    test(`approved at H; the test job is ${status} (not started) → the landing sweep must not merge H`, async () => {
       w = await world();
       const pr = await approvedThenCheck(w, `feat/status-${status}`, { status });
       const o = await sweep(w, pr);
@@ -96,7 +96,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
 describe('check-runs pagination', () => {
   // GitHub: GET /commits/{ref}/check-runs pages at per_page (default 30, max 100).
   // https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
-  test.failing('approved at H with 31 check runs, the one that failed is on page 2 → the landing sweep must not merge H', async () => {
+  test('approved at H with 31 check runs, the one that failed is on page 2 → the landing sweep must not merge H', async () => {
     w = await world();
     const gh = w.gh as unknown as { request: (m: string, p: string, b?: unknown) => Promise<{ status: number; body: any }> };
     const original = gh.request.bind(gh);
@@ -132,7 +132,7 @@ describe('legacy commit statuses', () => {
   // status contexts) never creates check runs; GET /commits/{ref}/status is the combined state,
   // and a failing non-required context makes mergeable_state "unstable" (merge still allowed).
   // https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
-  test.failing('approved at H; CI reports only a failing commit status (no check runs) → the landing sweep must not merge H', async () => {
+  test('approved at H; CI reports only a failing commit status (no check runs) → the landing sweep must not merge H', async () => {
     w = await world();
     const gh = w.gh as unknown as { request: (m: string, p: string, b?: unknown) => Promise<{ status: number; body: any }> };
     const original = gh.request.bind(gh);
