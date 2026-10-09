@@ -146,6 +146,8 @@ export interface MissionCardRow {
   primaryPrNumber?: number | null;
   workingBranch?: string | null;
   integrationBranchEnabled?: boolean | null;
+  /** The escalation gate verdict for the mission PR, if available. */
+  escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
   schedule?: MissionCardScheduleRow | null;
   tasks?: MissionCardTaskRow[] | null;
 }
@@ -354,7 +356,7 @@ export function summarizeMissionForCard(
   // The card's state — chip, situation, and whether the next step is yours —
   // is derived once, here, so the group the header counts and the chip the
   // card shows cannot come from two derivations (F1, D2).
-  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced });
+  const state = deriveCardState(row, { liveWorkers, progress, healthState, hasPendingDeliverableWork: pending, now, replaced, escalationGateVerdict: row.escalationGateVerdict });
   const health = deriveMissionHealth({
     status: row.status,
     activeAgents: liveWorkers,
@@ -465,7 +467,7 @@ export function cardLocalStrand(row: MissionCardRow, now: number): LocalStrand |
  */
 function deriveCardState(
   row: MissionCardRow,
-  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string> },
+  s: { liveWorkers: number; progress: number; healthState: Health; hasPendingDeliverableWork: boolean; now: number; replaced: ReadonlySet<string>; escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null },
 ): MissionStateView {
   const tasks = row.tasks ?? [];
   const deliverables = tasks.filter(t => isDeliverableTask(t as any));
@@ -519,6 +521,7 @@ function deriveCardState(
       : null,
     unmergedPrs,
     ciRed: deriveCiRedChains(unmergedPrs, tasks),
+    escalationGateVerdict: s.escalationGateVerdict,
   });
 }
 
