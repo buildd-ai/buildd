@@ -115,6 +115,7 @@ import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } f
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { attentionCount, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
+import StartTimeControl from '@/components/StartTimeControl';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -1384,6 +1385,12 @@ export default async function TaskDetailPage({
                     status: task.status,
                     backend: (task.backend as 'claude' | 'codex' | null) ?? null,
                   }}
+                />
+                <StartTimeControl
+                  taskId={task.id}
+                  status={task.status}
+                  claimedBy={task.claimedBy ?? null}
+                  startAt={task.startAt?.toISOString() ?? null}
                 />
                 {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
                 {task.externalUrl && (
