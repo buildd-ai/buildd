@@ -381,13 +381,22 @@ async function resolveCloudflareDecisionRoute(
   config: DecisionModelConfig,
   scope: DecisionKeyScope,
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
-  const { resolveCloudflareAiGateway, clefBaseURL, jevGatewayBaseURL, gatewayAuthHeaders } = await import('./cloudflare-ai-gateway');
+  const { resolveCloudflareAiGateway, clefBaseURL, jevGatewayBaseURL } = await import('./cloudflare-ai-gateway');
   const cf = await resolveCloudflareAiGateway({ teamId: scope.teamId });
+  // A minted run-only token, the acting person's before the team's
+  // (cloudflare-gateway-tokens.ts); else the team credential, as before.
+  let runToken = cf?.apiToken ?? null;
+  if (cf) {
+    const { resolveGatewayRunToken } = await import('./cloudflare-gateway-tokens');
+    const minted = await resolveGatewayRunToken({ teamId: scope.teamId, userId: scope.userId ?? null, accountId: cf.accountId });
+    if (minted) runToken = minted.token.token;
+  }
+  const gatewayHeaders: Record<string, string> = runToken ? { 'cf-aig-authorization': `Bearer ${runToken}` } : {};
   if (isClefModel(config.model)) {
-    if (!cf) return { apiKey: null, model: config.model };
+    if (!cf || !runToken) return { apiKey: null, model: config.model };
     return {
-      apiKey: cf.apiToken,
-      endpoint: { kind: 'workers-ai', baseURL: clefBaseURL(cf), ...(cf.gatewayId ? { headers: gatewayAuthHeaders(cf) } : {}) },
+      apiKey: runToken,
+      endpoint: { kind: 'workers-ai', baseURL: clefBaseURL(cf), ...(cf.gatewayId ? { headers: gatewayHeaders } : {}) },
       model: config.model,
     };
   }
@@ -395,7 +404,7 @@ async function resolveCloudflareDecisionRoute(
   if (credential?.source === 'platform') return platformDecisionRoute(credential.key);
   const baseURL = cf ? jevGatewayBaseURL(cf) : null;
   if (!cf || !baseURL || !credential) return { apiKey: null, model: config.model };
-  return { apiKey: credential.key, endpoint: { kind: 'systemone', baseURL, headers: gatewayAuthHeaders(cf) }, model: config.model };
+  return { apiKey: credential.key, endpoint: { kind: 'systemone', baseURL, headers: gatewayHeaders }, model: config.model };
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
