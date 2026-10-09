@@ -10,7 +10,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import type { ReleaseReadinessItem } from '@/lib/release-readiness';
+import { computeReleaseWidgetDecision, type ReleaseReadinessItem } from '@/lib/release-readiness';
 import { ReleaseWidget } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -124,6 +124,17 @@ function timeAgo(date: Date | string): string {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+
+/**
+ * Home's body grid. split: Moving left (~1.5fr), Agents over Landed right (min
+ * 300px). side: nothing is moving, so Agents and Landed share the row. single:
+ * one column. Below 900px every layout reads Agents, Moving, Landed.
+ */
+const HOME_BODY_GRID = {
+  split: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'landed'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']",
+  side: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'landed'] min-[900px]:grid-cols-2 min-[900px]:[grid-template-areas:'agents_landed']",
+  single: 'flex flex-col gap-8',
+} as const;
 
 export default async function HomePage({
   searchParams,
@@ -2215,6 +2226,16 @@ export default async function HomePage({
     ? <GettingStartedChecklist checklist={gettingStarted} headingId="getting-started-phone-h" chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null} />
     : null;
 
+  // Moving (left) holds delivery, in flight, reviews, suggestions and releases.
+  // With none of those, Agents sits beside Landed instead of beside an empty column.
+  const movingEmpty = milestones.length === 0 && inFlightItems.length === 0
+    && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0
+    && rightNow !== 'create-workspace' && pendingSuggestions.length === 0
+    && !releaseReadinessItems.some(i => computeReleaseWidgetDecision(i.queueDepth, i.ciState, i.commitsAheadAtDispatch) !== 'hide');
+  const bodyLayout: keyof typeof HOME_BODY_GRID = !movingEmpty
+    ? (agentsModel || landedWeek.length > 0 ? 'split' : 'single')
+    : agentsModel && landedWeek.length > 0 ? 'side' : 'single';
+
   return (
     <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
@@ -2238,7 +2259,6 @@ export default async function HomePage({
               {homeHeadlineSentence(needsYouCount)}
             </h1>
             <p data-testid="home-subline" className="mt-1 font-voice text-lede italic text-text-secondary">{homeSubline(needsYouCount, repairingMissions)}</p>
-            {arcHeadline && <p className="mt-1 font-mono text-[13px] text-text-secondary">{arcHeadline}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="hidden min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-[12.5px] text-text-secondary md:flex">
@@ -2276,63 +2296,63 @@ export default async function HomePage({
         )}
 
 
-        {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
         {/* The decisions come first at every width: full width, side by side. */}
         <NeedsYouStack
-              count={needsYouCount}
-              questions={questions}
-              held={heldMissions}
-              shipped={shippedMissions}
-              timeZone={teamTz}
-            >
-              {actionQueue.length > 0 && (
-                <div data-testid="home-action-queue" className="contents">
-                  {/* Initiative scoping chips — SCOPE the queue, never group it. */}
-                  <div className="[grid-column:1/-1]"><InitiativeFilterChips
-                    initiatives={actionQueueInitiatives}
-                    selectedId={initFilter ?? null}
-                    workspaceFilter={wsFilter ?? null}
-                  /></div>
-                  {filteredActionQueue.length === 0 && (
-                    <p className="text-[13px] text-text-muted mb-2 [grid-column:1/-1]">Nothing waiting for this initiative.</p>
-                  )}
-                  {queueNeedsYou.length > 0 && (
-                    <div data-testid="waiting-needs-you" className="contents">
-                      {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
-                    </div>
-                  )}
-                  {inFlightItems.length > 0 && (
-                    <div data-testid="waiting-in-flight" className="[grid-column:1/-1]">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
-                        <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
-                      </div>
-                      <div className="space-y-2">
-                        {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
-                        {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
-                          ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
-                          : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
-                      </div>
-                    </div>
-                  )}
-                  {/* §12: overflow past the top-10-per-workspace cap is never
-                      silently dropped — a clean-looking queue must not be able
-                      to hide a growing backlog the way the Schedules page did. */}
-                  {discrepancyOverflowCount > 0 && (
-                    <p className="text-[11px] text-text-muted [grid-column:1/-1]">
-                      +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
-                    </p>
-                  )}
-                </div>
+          count={needsYouCount}
+          questions={questions}
+          held={heldMissions}
+          shipped={shippedMissions}
+          timeZone={teamTz}
+          lead={(queueNeedsYou.length > 0 || initFilter) && (
+            // Initiative scoping chips — SCOPE the queue, never group it.
+            <div className="mb-3">
+              <InitiativeFilterChips
+                initiatives={actionQueueInitiatives}
+                selectedId={initFilter ?? null}
+                workspaceFilter={wsFilter ?? null}
+              />
+              {filteredActionQueue.length === 0 && (
+                <p className="text-[13px] text-text-muted">Nothing waiting for this initiative.</p>
+              )}
+            </div>
+          )}
+          foot={(discrepancyOverflowCount > 0 || resolvedEscalations.length > 0) && (
+            <div className="mt-3 space-y-3">
+              {/* §12: overflow past the top-10-per-workspace cap is never
+                  silently dropped — a clean-looking queue must not be able
+                  to hide a growing backlog the way the Schedules page did. */}
+              {discrepancyOverflowCount > 0 && (
+                <p className="text-[11px] text-text-muted">
+                  +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
+                </p>
               )}
               {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
+            </div>
+          )}
+        >
+          {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
         </NeedsYouStack>
 
         {/* Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */}
-        <div data-testid="home-body" className="grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'landed'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']">
+        <div data-testid="home-body" data-layout={bodyLayout} className={HOME_BODY_GRID[bodyLayout]}>
           {agentsModel && <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} />}
-          <div style={{ gridArea: 'moving' }} className="min-w-0">
+          <div style={{ gridArea: 'moving' }} className={movingEmpty ? 'hidden' : 'min-w-0'}>
             <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
+            {/* In flight is the platform's next move, not yours: it reads with the missions moving. */}
+            {inFlightItems.length > 0 && (
+              <section data-testid="waiting-in-flight" className="mb-8">
+                <div className="mb-2 flex items-baseline justify-between gap-3">
+                  <h2 className="section-label">In flight</h2>
+                  <span className="font-mono text-meta text-text-muted">{inFlightItems.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
+                  {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
+                    ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
+                    : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
+                </div>
+              </section>
+            )}
             <div data-testid="home-right-now">
               {rightNow === 'get-started' ? null : rightNow === 'create-workspace' ? (
                 <div className="mb-8">
