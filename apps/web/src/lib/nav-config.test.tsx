@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
+import { SETTINGS_ROUTE_MOVES } from '../../next.config.mjs';
 
 describe('NAV_ITEMS', () => {
   // Owner decision (Oct 9): five primary destinations, the same on a phone and
@@ -13,9 +14,12 @@ describe('NAV_ITEMS', () => {
   });
 
   it('Releases, Initiatives and Team leave the nav but their pages still resolve', () => {
+    // Team resolves through a redirect into Settings › Roles (next.config SETTINGS_ROUTE_MOVES).
+    const redirected = new Map(SETTINGS_ROUTE_MOVES.map((m) => [m.source, m.destination]));
     for (const href of ['/app/releases', '/app/initiatives', '/app/team']) {
       expect(NAV_ITEMS.map((i) => i.href)).not.toContain(href);
-      expect(existsSync(resolve(import.meta.dir, `../app/app/(protected)${href.replace('/app', '')}/page.tsx`))).toBe(true);
+      const target = redirected.get(href) ?? href;
+      expect(`${href}: ${existsSync(resolve(import.meta.dir, `../app/app/(protected)${target.replace('/app', '')}/page.tsx`))}`).toBe(`${href}: true`);
     }
   });
 
