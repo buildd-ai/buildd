@@ -407,3 +407,18 @@ describe('UsageClient — 390pt', () => {
     expect(html).not.toMatch(/min-w-\[\d{3,}px\]/);
   });
 });
+
+it('owns role costs and calendar-month spend even when no terminal task has usage', () => {
+  const html = renderToStaticMarkup(<UsageClient view={view({ rows: [] })} wsFilter={null}
+    roleUsage={{ rows: [{ role: 'Builder', tier: 'standard', tokens: 100, costUsd: 2, hours: 1, basis: 'real', executor: 'runner' }], truncated: true }}
+    monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
+  expect(html).toContain('Usage by role');
+  expect(html).toContain('Builder');
+  expect(html).toContain('Real ($)');
+  expect(html).toContain('Plan ($)');
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain('Partial window');
+  expect(html).toContain('$12.50 est.');
+  expect(html).toContain('since Sep 1');
+  expect(html).toContain('depletes in 4.3d · from 24h burn');
+});

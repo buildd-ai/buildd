@@ -30,12 +30,10 @@ import ToolBreakdownList from './_components/ToolBreakdownList';
 import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
   coverageLabel,
-  depletionProjection,
   failureStreak,
   freshness,
   groupFailuresBySignature,
   lifetimeRuns,
-  monthlyAnchor,
   observedAgo,
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
@@ -536,14 +534,14 @@ export function HealthClient({
           )}
         </div>
         {!hasProblems ? (
-          <div className="card px-4 py-3 flex items-center gap-2">
+          <div className="border-y border-border-default px-4 py-3 flex items-center gap-2">
             <span className="glow-dot glow-dot-success" />
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
           <>
           {(page !== 'overview' || nonFailureProblems || overviewFailureGroups > 0) && (
-          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
+          <div className={`border-y border-border-default divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
               const purposeLabel = backendCredentialLabel(cred.purpose);
@@ -792,7 +790,7 @@ export function HealthClient({
             <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
           )}
         </div>
-        <div className="card">
+        <div className="border-y border-border-default">
           {runners.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
@@ -1508,7 +1506,6 @@ function ProviderWallRow({ label, state, resetsAt, now }: {
 function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
-    forecast.monthly !== null ||
     // Wall rows only render while exhausted; an elapsed pause alone must not
     // leave an empty card.
     !!forecast.codex?.isExhausted ||
@@ -1524,11 +1521,11 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
     <div data-testid="health-section-budget-forecast" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <h3 className="text-xs font-medium text-text-secondary">Budget</h3>
-        {/* Pinned to each provider's own usage period and the calendar month,
+        {/* Pinned to each provider's own usage period,
             never to a page window; this page has no window control. */}
-        <span className="text-[11px] text-text-muted text-right">usage limits and monthly spend</span>
+        <span className="text-[11px] text-text-muted text-right">provider usage limits</span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
 
         {/* Active OAuth session rows — labeled by account name */}
         {activeSessions.map((s) => (
@@ -1580,58 +1577,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
               {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
             </span>
-          </div>
-        )}
-
-        {/* Monthly dollar budget */}
-        {forecast.monthly && (
-          <div className="px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
-              <span className="text-sm text-text-primary">Monthly budget</span>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
-                    labelled with that anchor rather than left to look windowed. */}
-                <span className="tabular-nums font-medium text-text-primary" title={ESTIMATED_COST_TITLE}>
-                  {formatEstimatedUsd(forecast.monthly.spentUsd)} / ${forecast.monthly.budgetUsd.toFixed(0)}
-                </span>
-                <span className="text-text-muted">·</span>
-                <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
-                <span className="text-text-muted">·</span>
-                <span>{formatReset(forecast.monthly.resetsAt, now)}</span>
-                {/* PROJECTION: the runway and the window its burn rate came from
-                    are ONE string, so the value can never be read as windowed by
-                    the page control. */}
-                {depletionProjection(forecast.monthly.daysToDepletion, '24h') && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span data-testid="budget-runway">
-                      {depletionProjection(forecast.monthly.daysToDepletion, '24h')}
-                    </span>
-                  </>
-                )}
-                {forecast.monthly.confidence !== 'low' && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span
-                      className={confidenceClass(forecast.monthly.confidence)}
-                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence means a stable reading. It is not a guarantee.' : undefined}
-                    >
-                      {forecast.monthly.confidence === 'high' ? 'burn rate est.' : `confidence: ${forecast.monthly.confidence}`}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  forecast.monthly.pctUsed >= 90 ? 'bg-status-error' :
-                  forecast.monthly.pctUsed >= 70 ? 'bg-status-warning' :
-                  'bg-primary'
-                }`}
-                style={{ width: `${Math.min(100, forecast.monthly.pctUsed)}%` }}
-              />
-            </div>
           </div>
         )}
 
@@ -1728,7 +1673,7 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
             <span className="text-sm text-text-primary truncate">
@@ -1917,7 +1862,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
             {([
               ['Rejected', totals.rejected, 'Requests buildd refused with a 4xx the caller had to act on.'],
@@ -1928,7 +1873,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
-                  className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  className="text-meta font-medium text-text-muted"
                   title={title}
                 >
                   {label}
@@ -1943,7 +1888,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </div>
 
           <div className="px-4 py-3">
-            <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            <p className="text-meta font-medium text-text-muted mb-2">
               By gate
             </p>
             <ul className="space-y-1.5">
@@ -1984,7 +1929,7 @@ function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
 
   return (
     <div className="px-4 py-3" data-testid="gate-claim-deferrals">
-      <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+      <p className="text-meta font-medium text-text-muted mb-2">
         Claim-loop deferrals by reason
       </p>
       <ul className="space-y-1.5">
@@ -2034,12 +1979,12 @@ function FailureAnalyticsSection({
           <p className="text-sm text-text-muted">No workers ran in this window.</p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           {/* Headline stat tiles */}
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failed / finished workers in the window. In-flight workers are excluded."
               >
                 Failure rate
@@ -2056,7 +2001,7 @@ function FailureAnalyticsSection({
             </div>
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failures that used 2 turns or fewer at $0 cost. They took a slot and produced nothing. A high count points at a platform bug."
               >
                 Died early
@@ -2078,7 +2023,7 @@ function FailureAnalyticsSection({
                 window cannot make it more true). One tile could only lie about
                 one of them. */}
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Completed
               </span>
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
@@ -2089,7 +2034,7 @@ function FailureAnalyticsSection({
               </p>
             </div>
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Still running
               </span>
               <p
@@ -2105,7 +2050,7 @@ function FailureAnalyticsSection({
           {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
           {byExitCause.length > 0 && (
             <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 By exit cause
               </span>
               {byExitCause.map((c) => (
@@ -2131,7 +2076,7 @@ function FailureAnalyticsSection({
           {signatures.length > 0 && (
             <div className="py-1" data-testid="failure-signatures">
               <div className="px-4 pt-2 pb-1">
-                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                <span className="text-meta font-medium text-text-muted">
                   Failure signatures
                 </span>
               </div>
@@ -2226,7 +2171,7 @@ function FailureAnalyticsSection({
                 <div className="mt-3 space-y-4" data-testid="failure-breakdown">
                   {byRole.length > 0 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By role
                       </span>
                       {byRole.slice(0, 6).map((r) => (
@@ -2243,7 +2188,7 @@ function FailureAnalyticsSection({
 
                   {byWorkspace.length > 1 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By workspace
                       </span>
                       {byWorkspace.slice(0, 6).map((w) => (
@@ -2261,7 +2206,7 @@ function FailureAnalyticsSection({
                   {repeatFailureTasks.length > 0 && (
                     <div className="space-y-1">
                       <span
-                        className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        className="text-meta font-medium text-text-muted"
                         title="Tasks that burned more than one worker inside the window"
                       >
                         Repeat-failure tasks

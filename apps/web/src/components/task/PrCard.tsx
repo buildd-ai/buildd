@@ -311,10 +311,10 @@ export default function PrCard(props: PrCardProps) {
 function BigNumber({ value, label, tone }: { value: React.ReactNode; label: string; tone?: 'add' | 'rem' }) {
   return (
     <div className="min-w-0">
-      <div className={`font-mono text-[28px] md:text-[40px] font-semibold leading-none tracking-[-1px] tabular-nums ${tone === 'add' ? 'text-status-success' : tone === 'rem' ? 'text-status-error' : 'text-text-primary'}`}>
+      <div className={`font-mono text-display font-semibold tabular-nums ${tone === 'add' ? 'text-status-success' : tone === 'rem' ? 'text-status-error' : 'text-text-primary'}`}>
         {value}
       </div>
-      <div className="mt-2 font-mono text-[11px] uppercase tracking-[2px] text-text-muted">{label}</div>
+      <div className="mt-2 text-meta text-text-muted">{label}</div>
     </div>
   );
 }
@@ -556,7 +556,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, prState, ciChecks, 
 
   return (
     <div data-testid="pr-outcome" className="space-y-8">
-      <section className="bg-card border-2 border-border-strong shadow-[var(--card-shadow)] p-5 md:p-8">
+      <section className="card p-4 md:p-5">
         {/* Stacked below md: beside the action the summary wrapped at ~20 characters. */}
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
           <div className="min-w-0 flex-1">

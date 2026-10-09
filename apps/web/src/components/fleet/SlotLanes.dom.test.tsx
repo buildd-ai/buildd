@@ -120,3 +120,10 @@ describe('SlotLanes without selectable', () => {
     expect(focused()).toEqual([]);
   });
 });
+
+it('a selected bar has no hover card covering the chart', () => {
+  act(() => root.render(<SlotLanes lanes={lanes} from={m(0)} to={m(100)} selectable hoverCard />));
+  act(() => { bar('a').dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+  tap(bar('a'));
+  expect(container.querySelector('[data-testid="lane-bar-card"]')).toBeNull();
+});

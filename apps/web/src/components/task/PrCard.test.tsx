@@ -209,3 +209,10 @@ describe('PrCard primary action when the PR cannot merge yet', () => {
     expect(html).not.toContain('Review &amp; merge');
   });
 });
+
+it('uses a single card frame and sentence-case diff labels', () => {
+  const html = render({ outcome: outcome([{ add: 1, rem: 2, files: 1 }]) });
+  expect(html).toContain('class="card ');
+  expect(html).not.toContain('uppercase tracking-[2px]');
+  expect(html).toContain('>Added<');
+});
