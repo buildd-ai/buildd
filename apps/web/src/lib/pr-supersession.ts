@@ -296,10 +296,16 @@ export type SimpleWriteResult = { ok: true } | { ok: false; error: string; statu
 export async function recordPrAbandonment(params: {
   workerId: string;
   reason: string;
+  /** Label written to `abandonedRecordedBy` on a legacy (non-kernel) PR. */
   recordedBy: string;
+  /** Who decided: `human:<userId>` for a person; anything else is refused. */
+  actor: string;
 }): Promise<SimpleWriteResult> {
   const reason = params.reason?.trim();
   if (!reason) return { ok: false, error: 'A reason is required to mark a PR abandoned', status: 400 };
+  // T21 is a person's call on every PR, kernel-owned or not (the kernel's own
+  // isHumanActor test; this module reaches the kernel only through its seam).
+  if (!params.actor?.startsWith('human:')) return { ok: false, error: 'only a person can mark a PR abandoned', status: 403 };
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, params.workerId),
@@ -317,7 +323,7 @@ export async function recordPrAbandonment(params: {
     const { abandonDelivery } = await import('@/lib/workflow/seam');
     const kernel = await abandonDelivery({
       workspaceId: worker.workspaceId, repoFullName: repo, prNumber: worker.prNumber, installationId,
-      actor: `human:${params.recordedBy}`, reason,
+      actor: params.actor, reason,
     });
     if (kernel.handled) return kernelAnswer(kernel.result, worker.prNumber, { ok: true as const });
   }
