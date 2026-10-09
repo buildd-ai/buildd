@@ -28,6 +28,7 @@ import {
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
+import { memberHasRepoAccess, memberRepoAccessMessage } from '@/lib/member-repo-access';
 import {
   handleBuilddAction,
   handleMemoryAction,
@@ -116,7 +117,7 @@ function forbiddenForLevel(action: string, level: SessionLevel) {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, linkedDocsWorkspaceIds: string[] = []) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, linkedDocsWorkspaceIds: string[] = [], codeAccessRefusal?: () => Promise<string | null>) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -251,6 +252,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           project,
           isSensitive,
           ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
+          ...(codeAccessRefusal ? { codeAccessRefusal } : {}),
         });
       }
       if (name === 'recall' || name === 'learn') {
@@ -266,7 +268,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         // No multi-workspace guard here (unlike /api/mcp): this endpoint pins the
         // workspace in its URL path and the JWT claim is checked against it, so
         // the workspace can never be ambiguous.
-        const memCtx = { ...ctx, project, isSensitive, ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}) };
+        const memCtx = { ...ctx, project, isSensitive, ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}), ...(codeAccessRefusal ? { codeAccessRefusal } : {}) };
         const memArgs = (args || {}) as Record<string, unknown>;
         return name === 'recall'
           ? await handleRecallAction(memClient, memArgs, memCtx)
@@ -339,7 +341,16 @@ async function handle(req: Request, workspace: string): Promise<Response> {
           sessionUser: !!(account as { sessionUserId?: string }).sessionUserId,
         },
       });
-  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, linkedDocsWorkspaceIds);
+  // The opt-in GitHub repo check for the person behind this session
+  // (lib/member-repo-access.ts): closes the code corpus when they fail it.
+  const repoAccessUserId = (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null;
+  const codeAccessRefusal = repoAccessUserId
+    ? async () => {
+        const r = await memberHasRepoAccess(repoAccessUserId, ws.id);
+        return r.allowed ? null : memberRepoAccessMessage(r);
+      }
+    : undefined;
+  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, linkedDocsWorkspaceIds, codeAccessRefusal);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
