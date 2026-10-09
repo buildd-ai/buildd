@@ -7,7 +7,7 @@
  * Fixture values only: made-up ids and last4s.
  */
 import { PROVIDER_REGISTRY, SURFACES, type ProviderId } from '@buildd/core/providers';
-import { PROVIDER_API_SCOPES, scopeRefusal, servedSurfaces, storageServes, writeStorage } from '@buildd/core/providers/manage';
+import { PROVIDER_API_SCOPES, scopeRefusal, servedSurfaces, shapeWritesTo, storageServes, writeStorage } from '@buildd/core/providers/manage';
 import type {
   ListProvidersResponse,
   ProviderApiScope,
@@ -73,15 +73,9 @@ export function fixtureListings(rows: readonly FixtureRow[], o: { workspace: boo
         connectFlow: p.settingsCard.connectFlow,
         surfaces,
         scopes,
-        shapes: p.shapes.map((shape) => {
-          const writesTo = {} as ProviderListing['shapes'][number]['writesTo'];
-          for (const scope of PROVIDER_API_SCOPES) {
-            if (scopeRefusal(p.id, scope)) { writesTo[scope] = null; continue; }
-            const st = writeStorage(p.id, shape, scope);
-            writesTo[scope] = { purpose: st.purpose, label: st.label ?? null };
-          }
-          return { id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo };
-        }),
+        shapes: p.shapes.map((shape) => ({
+          id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo: shapeWritesTo(p.id, shape),
+        })),
         set: {
           team: mine.filter((s) => s.scope === 'team'),
           workspace: o.workspace ? mine.filter((s) => s.scope === 'workspace') : null,

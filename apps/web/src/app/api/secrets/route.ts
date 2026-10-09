@@ -9,7 +9,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { requeueAfterAgentCredential, writeSharedSecret } from '@/lib/providers/write-path';
+import { requeueAfterAgentCredential, sharedKeyPrefixRefusal, sharedWritePermissions, writeSharedSecret } from '@/lib/providers/write-path';
 import { modelCredentialPurposes } from '@buildd/core/providers/manage';
 import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
 import { isTaskToken } from '@/lib/task-token';
@@ -62,15 +62,6 @@ const RAW_STRING_PURPOSES = new Set([
  */
 const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inference_key', 'role_env_secret']);
 
-/** Required prefixes for Claude credential purposes. */
-const REQUIRED_PREFIXES: Record<string, string> = {
-  oauth_token: 'sk-ant-oat',
-  anthropic_api_key: 'sk-ant-api',
-  // Loose on purpose: OpenAI keys come in several live shapes (`sk-...`,
-  // `sk-proj-...`, `sk-svcacct-...`), unlike Anthropic's single fixed prefix.
-  openai_api_key: 'sk-',
-};
-
 /**
  * Sanitize a raw secret value before encryption: trim whitespace, and for raw-string
  * purposes strip a single pair of wrapping quotes (single or double). Enforced
@@ -113,20 +104,27 @@ type SecretsCaller = {
  * refused on POST and never listed, so DELETE cannot reach one. Writing a shared
  * credential therefore always takes a named permission in the target team —
  * `manage_team_model_keys` for model keys and the Cloudflare token,
- * `manage_team_credentials` for everything else — resolved through `can`, so a
+ * `manage_team_credentials` for everything else, and both for an Anthropic or
+ * OpenAI key in canonical storage (agent runs read it as well as chat; the
+ * rule `/api/providers` applies) — resolved through `can`, so a
  * team's permission overrides apply. An API key needs the permission's key level.
  */
-function permissionFor(purpose: string): Permission {
-  return TEAM_MODEL_KEY_PURPOSES.has(purpose) ? 'manage_team_model_keys' : 'manage_team_credentials';
+function permissionsFor(purpose: string, label?: string | null): Permission[] {
+  // A model credential the registry covers takes the one write path's rule:
+  // a key agent runs read that is also a chat key needs both permissions.
+  const shared = MODEL_PURPOSES.has(purpose) ? sharedWritePermissions(purpose, label) : null;
+  if (shared) return shared;
+  return [TEAM_MODEL_KEY_PURPOSES.has(purpose) ? 'manage_team_model_keys' : 'manage_team_credentials'];
 }
 
-function permissionDenied(purpose: string): string {
+function permissionDenied(purpose: string, label?: string | null): string {
   if (purpose === CLOUDFLARE_PURPOSE) return 'Only a team owner or admin can manage the Cloudflare token.';
+  if (permissionsFor(purpose, label).length > 1) return 'Only a team owner or admin can manage a key agent runs use (it needs both the model-key and the team-credential permission).';
   if (TEAM_MODEL_KEY_PURPOSES.has(purpose)) return 'Only a team owner or admin can manage the team model key.';
   return TEAM_CREDENTIALS_FORBIDDEN;
 }
 
-async function mayWriteSharedSecret(auth: SecretsCaller, purpose: string, teamId: string): Promise<boolean> {
+async function mayWriteSharedSecret(auth: SecretsCaller, purpose: string, label: string | null | undefined, teamId: string): Promise<boolean> {
   let caller: TeamScopeCaller;
   if (auth.accountId) {
     if (!auth.teamIds.includes(teamId)) return false;
@@ -136,7 +134,10 @@ async function mayWriteSharedSecret(auth: SecretsCaller, purpose: string, teamId
   } else {
     return false;
   }
-  return can(caller, permissionFor(purpose), teamId);
+  for (const permission of permissionsFor(purpose, label)) {
+    if (!(await can(caller, permission, teamId))) return false;
+  }
+  return true;
 }
 
 /**
@@ -239,14 +240,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value is required' }, { status: 400 });
   }
 
-  // Validate format for Claude credential purposes so we fail loudly instead of
-  // silently storing a token that will 401 hours later.
-  const requiredPrefix = REQUIRED_PREFIXES[purpose];
-  if (requiredPrefix && !sanitizedValue.startsWith(requiredPrefix)) {
-    return NextResponse.json(
-      { error: `Token must start with ${requiredPrefix}…` },
-      { status: 400 },
-    );
+  // Validate the format of a key agent runs read (the legacy agent purposes,
+  // and an Anthropic/OpenAI key in canonical storage) so we fail loudly instead
+  // of silently storing a token that will 401 hours later.
+  const prefixRefusal = sharedKeyPrefixRefusal(purpose, label, sanitizedValue);
+  if (prefixRefusal) {
+    return NextResponse.json({ error: prefixRefusal }, { status: 400 });
   }
 
   // Verify the requested team belongs to the caller
@@ -265,8 +264,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
   }
-  if (!(await mayWriteSharedSecret(auth, purpose, targetTeamId))) {
-    return NextResponse.json({ error: permissionDenied(purpose) }, { status: 403 });
+  if (!(await mayWriteSharedSecret(auth, purpose, label, targetTeamId))) {
+    return NextResponse.json({ error: permissionDenied(purpose, label) }, { status: 403 });
   }
 
   try {
@@ -353,8 +352,8 @@ export async function DELETE(req: NextRequest) {
       if (target) {
         // The list holds team-visible rows only, so a member who cannot manage
         // them sees the row exists (as GET shows) but gets 403, not 404.
-        if (!(await mayWriteSharedSecret(auth, target.purpose, teamId))) {
-          return NextResponse.json({ error: permissionDenied(target.purpose) }, { status: 403 });
+        if (!(await mayWriteSharedSecret(auth, target.purpose, target.label, teamId))) {
+          return NextResponse.json({ error: permissionDenied(target.purpose, target.label) }, { status: 403 });
         }
         await provider.delete(id);
         return NextResponse.json({ success: true });

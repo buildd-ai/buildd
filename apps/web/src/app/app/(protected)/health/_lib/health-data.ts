@@ -42,6 +42,7 @@ import { getDispatchHealth } from '@/lib/dispatch-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';
+import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
@@ -396,18 +397,22 @@ export async function loadHealth({
     // health as a STATE with its own freshness, which needs the healthy rows.
     need('credentials')
       ? (async (): Promise<CredentialHealthItem[]> => {
-      const credRows = await db.query.secrets.findMany({
+      // Claude credentials in every storage agent runs read (the Anthropic
+      // key's canonical `inference_key` row too), plus Codex. `inference_key`
+      // also holds other providers' and personal keys: isBackendHealthRow drops them.
+      const credRows = (await db.query.secrets.findMany({
         where: and(
           eq(secrets.teamId, activeTeamId),
           or(
-            eq(secrets.purpose, 'oauth_token'),
-            eq(secrets.purpose, 'anthropic_api_key'),
+            ...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p)),
             eq(secrets.purpose, 'codex_credential'),
           ),
         ),
         columns: {
           id: true,
           purpose: true,
+          label: true,
+          userId: true,
           healthStatus: true,
           consecutiveAuthFailures: true,
           lastFailureAt: true,
@@ -415,7 +420,7 @@ export async function loadHealth({
           lastSuccessAt: true,
           lastVerifiedAt: true,
         },
-      });
+      })).filter(isBackendHealthRow);
       return (credRows as any[]).map((r: any) => ({
         id: r.id,
         purpose: r.purpose,

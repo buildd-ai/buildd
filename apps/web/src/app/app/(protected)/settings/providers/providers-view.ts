@@ -18,6 +18,7 @@ import type {
   ProviderPolicySummary,
   ProviderShapeId,
   ProviderSurfaceId,
+  ProviderWritePermission,
 } from '@buildd/shared';
 
 export const SURFACE_ORDER: readonly ProviderSurfaceId[] = ['chat', 'agent-claude', 'agent-codex', 'cloud-egress'];
@@ -56,14 +57,14 @@ type Can = ListProvidersResponse['caller']['can'];
 export type WritePermission = keyof Can;
 
 /**
- * The permission a team or workspace write needs. Mirrors
- * `writePermission` in `@buildd/core/providers/manage` (a test holds them
- * together): gateways and endpoints are inference providers; chat-key storage
- * is a model key; every other agent credential is a team credential.
+ * Every permission a write of this shape at this scope needs, as the server
+ * reports it (`writesTo[scope].permissions`, from `writePermissions` in
+ * `@buildd/core/providers/manage`; a test holds them together). An Anthropic
+ * or OpenAI key that agent runs read needs both the model-key and the
+ * team-credential permission.
  */
-export function writePermissionFor(shape: ProviderShapeId, purpose: string): Exclude<WritePermission, 'manage_team_settings'> {
-  if (shape === 'gateway' || shape === 'endpoint') return 'manage_inference_providers';
-  return purpose === 'inference_key' || purpose === 'decision_key' ? 'manage_team_model_keys' : 'manage_team_credentials';
+export function writePermissionsFor(shape: Pick<ProviderListing['shapes'][number], 'writesTo'>, scope: ProviderApiScope): ProviderWritePermission[] {
+  return shape.writesTo[scope]?.permissions ?? [];
 }
 
 /** Surfaces the provider serves, and each one it can't with the registry's reason. */
@@ -133,8 +134,7 @@ export function cardView(p: ProviderListing, scope: ProviderApiScope, res: Pick<
     return { ...base, closed: null, edit, readOnly: null };
   }
   const shape = pasteShape ?? formShape!;
-  const perm = writePermissionFor(shape.id, shape.writesTo[scope]?.purpose ?? '');
-  if (!res.caller.can[perm]) return { ...base, closed: null, edit: { kind: 'none' }, readOnly: ADMINS_ONLY };
+  if (!writePermissionsFor(shape, scope).every((perm) => res.caller.can[perm])) return { ...base, closed: null, edit: { kind: 'none' }, readOnly: ADMINS_ONLY };
   return { ...base, closed: null, edit, readOnly: null };
 }
 
