@@ -261,6 +261,45 @@ describe('resolveAgentModelRoute: backend: "codex" ranks against the Codex-side 
   });
 });
 
+// Provider parity: the team's API key competes with the endpoint wherever it
+// is stored, canonical (`inference_key` + provider label) or legacy.
+describe('resolveAgentModelRoute: canonical API-key storage competes like the legacy one', () => {
+  const route = (backend: 'claude' | 'codex') => resolveAgentModelRoute({ teamId: 't', workspaceId: WS, accountId: ACC, backend });
+  const key = (label: string, o: Partial<Row> = {}) => cred('inference_key', { id: `inference_key-${label}-${o.workspaceId ?? o.userId ?? 'team'}`, label, userId: null, ...o });
+
+  it('a workspace canonical Anthropic key keeps that workspace off a team endpoint (Claude)', async () => {
+    rows = [endpointRow({ id: 'team' }), key('anthropic', { workspaceId: WS })];
+    const d = await route('claude');
+    expect(d?.winner).toBe('anthropic');
+    expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+
+  it('a workspace canonical OpenAI key keeps that workspace off a team endpoint (Codex)', async () => {
+    rows = [endpointRow({ id: 'team' }), key('openai', { workspaceId: WS })];
+    expect((await route('codex'))?.winner).toBe('anthropic');
+    expect((await route('claude'))?.winner).toBe('endpoint');
+  });
+
+  it('a team canonical key ties a team endpoint, and the endpoint wins the tie', async () => {
+    rows = [endpointRow({ id: 'team' }), key('anthropic'), key('openai')];
+    expect((await route('claude'))?.winner).toBe('endpoint');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+
+  it('another provider’s chat key and a personal key never compete', async () => {
+    rows = [
+      endpointRow({ id: 'team' }),
+      key('openrouter', { workspaceId: WS }),
+      key('litellm', { workspaceId: WS }),
+      key('anthropic', { workspaceId: WS, userId: 'user-1' }),
+      key('openai', { workspaceId: WS, userId: 'user-1' }),
+    ];
+    expect((await route('claude'))?.winner).toBe('endpoint');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+});
+
 describe('hasOpenAiCompatibleAgentEndpoint', () => {
   it('false with no endpoint row', async () => {
     rows = [];

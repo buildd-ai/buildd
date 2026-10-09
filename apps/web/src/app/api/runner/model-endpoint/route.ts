@@ -72,7 +72,7 @@ import {
 import { surfacePolicy, type TeamPolicyColumns } from '@buildd/core/providers';
 import { resolveProviderCredential, type ProviderCredentialResult } from '@buildd/core/providers/resolve';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
-import { resolveAnthropicAuth } from '@/lib/claude-credential';
+import { isAnthropicApiKeyAuth, resolveAnthropicAuth } from '@/lib/claude-credential';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
     // API key reaches cloud egress from here — an OAuth seat or Claude
     // credential winning still falls through to 404, same as before.
     const auth = await resolveAnthropicAuth({ teamId: ws.teamId, workspaceId: ws.id });
-    if (auth && auth.purpose === 'anthropic_api_key') {
+    if (auth && isAnthropicApiKeyAuth(auth)) {
       void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: 'anthropic_api_key' });
       return NextResponse.json({ source: 'anthropic_api_key', key: auth.headers['x-api-key'] }, { headers: NO_STORE });
     }
