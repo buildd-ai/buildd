@@ -3,7 +3,10 @@
  * knowledge-base: buildd/design/role-routing.md §3.1 prescribes, the same scoping
  * `checkConnectorRouting` uses: rows of the workspace's team whose
  * `workspaceId` is NULL (team default) or this workspace (override), keyed by
- * slug, the workspace row winning.
+ * slug, the workspace row winning — plus personal roles, by the shared rule
+ * in @buildd/core/role-visibility: shared ones always, a private one only when
+ * the task is for its owner (`requesterUserId`). With no requester a private
+ * role is never effective, so system-filed work cannot pick one up.
  *
  * Used where code sets a role on a task it creates from a slug something else
  * wrote earlier (a plan step, a schedule template). A slug that no longer
@@ -13,30 +16,31 @@
 
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import {
+  effectiveVisibleRoles,
+  ROLE_VISIBILITY_COLUMNS,
+  roleRowsVisibleTo,
+  type RoleVisibilityContext,
+  type VisibleRoleRow,
+} from '@buildd/core/role-visibility';
 
-export interface RoleScopeRow {
-  slug: string;
-  workspaceId: string | null;
+export interface RoleScopeRow extends VisibleRoleRow {
   enabled: boolean | null;
 }
 
-/** Pure: the effective rows — team defaults and overrides of one workspace, one per slug. */
-export function effectiveRoleRows<T extends RoleScopeRow>(rows: T[], workspaceId: string): T[] {
-  const bySlug = new Map<string, T>();
-  for (const row of rows) {
-    const seen = bySlug.get(row.slug);
-    // The workspace override wins, including an override that disables the role.
-    if (!seen || (row.workspaceId === workspaceId && seen.workspaceId !== workspaceId)) {
-      bySlug.set(row.slug, row);
-    }
-  }
-  return [...bySlug.values()].filter(r => r.enabled !== false);
+/**
+ * Pure: the effective rows — one per slug by role-visibility precedence
+ * (override > own personal > shared personal > team default), then dropping
+ * a winner that is disabled (an override can disable a team role).
+ */
+export function effectiveRoleRows<T extends RoleScopeRow>(rows: T[], ctx: RoleVisibilityContext): T[] {
+  return effectiveVisibleRoles(rows, ctx).filter(r => r.enabled !== false);
 }
 
-/** Pure: effective slugs from the team-default and override rows of one workspace. */
-export function effectiveRoleSlugs(rows: RoleScopeRow[], workspaceId: string): Set<string> {
-  return new Set(effectiveRoleRows(rows, workspaceId).map(r => r.slug));
+/** Pure: effective slugs from the team-default, override and personal rows of one workspace. */
+export function effectiveRoleSlugs(rows: RoleScopeRow[], ctx: RoleVisibilityContext): Set<string> {
+  return new Set(effectiveRoleRows(rows, ctx).map(r => r.slug));
 }
 
 export interface EffectiveRole {
@@ -49,7 +53,10 @@ export interface EffectiveRole {
  * The roles a task in `workspaceId` may carry, for a picker (name and colour
  * from the winning row). Empty when the workspace is unknown.
  */
-export async function resolveEffectiveRoles(workspaceId: string): Promise<EffectiveRole[]> {
+export async function resolveEffectiveRoles(
+  workspaceId: string,
+  requesterUserId: string | null = null,
+): Promise<EffectiveRole[]> {
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     columns: { teamId: true },
@@ -58,20 +65,22 @@ export async function resolveEffectiveRoles(workspaceId: string): Promise<Effect
 
   const rows = await db.query.workspaceSkills.findMany({
     where: and(
-      eq(workspaceSkills.teamId, ws.teamId),
+      roleRowsVisibleTo({ teamId: ws.teamId, workspaceId, requesterUserId }),
       eq(workspaceSkills.isRole, true),
-      or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
     ),
-    columns: { slug: true, workspaceId: true, enabled: true, name: true, color: true },
+    columns: { ...ROLE_VISIBILITY_COLUMNS, enabled: true, name: true, color: true },
   });
-  return effectiveRoleRows(rows, workspaceId)
+  return effectiveRoleRows(rows, { teamId: ws.teamId, workspaceId, requesterUserId })
     .map(r => ({ slug: r.slug, name: r.name ?? r.slug, color: r.color ?? '' }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** The role slugs a task in `workspaceId` may carry. Empty when the workspace is unknown. */
-export async function resolveEffectiveRoleSlugs(workspaceId: string): Promise<Set<string>> {
-  return new Set((await resolveEffectiveRoles(workspaceId)).map(r => r.slug));
+export async function resolveEffectiveRoleSlugs(
+  workspaceId: string,
+  requesterUserId: string | null = null,
+): Promise<Set<string>> {
+  return new Set((await resolveEffectiveRoles(workspaceId, requesterUserId)).map(r => r.slug));
 }
 
 /**
@@ -86,11 +95,12 @@ export async function resolveEffectiveRoleSlugs(workspaceId: string): Promise<Se
 export async function pickEffectiveRole(
   workspaceId: string,
   candidates: ReadonlyArray<string | null | undefined>,
+  opts: { requesterUserId?: string | null } = {},
 ): Promise<string | null> {
   const wanted = candidates.filter((c): c is string => typeof c === 'string' && c.length > 0);
   if (wanted.length === 0) return null;
   try {
-    const known = await resolveEffectiveRoleSlugs(workspaceId);
+    const known = await resolveEffectiveRoleSlugs(workspaceId, opts.requesterUserId ?? null);
     return wanted.find(slug => known.has(slug)) ?? null;
   } catch (err) {
     console.warn(`[effective-roles] role lookup failed for workspace ${workspaceId}; filing role-less:`, err);
