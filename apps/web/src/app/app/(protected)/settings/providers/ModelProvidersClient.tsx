@@ -10,7 +10,7 @@ import CredentialPolicySelector from './CredentialPolicySelector';
 import ProviderCard from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { ADVANCED_ANCHOR, SCOPE_TABS, isScopeTab } from './providers-view';
+import { ADVANCED_ANCHOR, SCOPE_TABS, coverageText, coverageView, isScopeTab } from './providers-view';
 
 /**
  * Settings → Providers. Every model provider in registry order, one card each,
@@ -106,6 +106,22 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [] 
             </div>
           )}
         </div>
+
+        {data && (
+          <dl className="inset-panel mb-3 space-y-1 text-meta" data-testid="provider-coverage" aria-label="What is covered">
+            {coverageView(data).map((l) => (
+              <div key={l.surface} className="flex flex-wrap gap-x-2" data-testid={`coverage-${l.surface}`} data-covered={l.usedBy.length > 0 ? 'true' : 'false'}>
+                <dt className="w-44 shrink-0 text-text-secondary">{l.label}</dt>
+                <dd className={`min-w-0 break-words ${l.usedBy.length ? 'text-text-primary' : 'text-text-muted'}`}>{coverageText(l)}</dd>
+              </div>
+            ))}
+            <p className="pt-1 text-text-muted">
+              A provider key picks the route, not the model: an OpenAI key runs OpenAI models in chat and Codex.
+              Claude Code and cloud coding need an Anthropic-compatible route (Anthropic, OpenRouter or a gateway).
+              A ChatGPT login is a separate seat that signs in Codex only; it never serves chat.
+            </p>
+          </dl>
+        )}
 
         <div className="space-y-2.5" role="tabpanel">
           {data

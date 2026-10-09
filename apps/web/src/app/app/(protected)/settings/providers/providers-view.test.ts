@@ -9,6 +9,8 @@ import {
   POLICY_OPTIONS,
   POLICY_UNSET,
   cardView,
+  coverageText,
+  coverageView,
   explainAs,
   explainLine,
   explainUrl,
@@ -189,5 +191,37 @@ describe('explain', () => {
     expect(explainAs('team', true)).toBe('team');
     expect(explainUrl({ teamId: 't', provider: 'openai', surface: 'chat', workspaceId: 'w', as: 'team' }))
       .toBe('/api/providers/explain?teamId=t&provider=openai&surface=chat&as=team&workspaceId=w');
+  });
+});
+
+describe('coverageView', () => {
+  const line = (res: ReturnType<typeof fixtureResponse>, s: string) => coverageView(res).find((l) => l.surface === s)!;
+
+  it('only an OpenAI key: serves chat and Codex, and names what cloud and Claude Code need instead', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'team' }] });
+    expect(line(res, 'chat').usedBy.map((u) => u.provider)).toEqual(['openai']);
+    expect(line(res, 'agent-codex').usedBy.map((u) => u.provider)).toEqual(['openai']);
+    for (const s of ['agent-claude', 'cloud-egress']) {
+      expect(line(res, s).usedBy).toEqual([]);
+      const ids = line(res, s).couldUse.map((c) => c.provider);
+      expect(ids).not.toContain('openai');
+      expect(ids).toContain('openrouter');
+    }
+    expect(coverageText(line(res, 'cloud-egress'))).toMatch(/^Not set up\. Add .*OpenRouter/);
+    expect(coverageText(line(res, 'chat'))).toBe('OpenAI (team)');
+  });
+
+  it('a personal key shows as yours; a ChatGPT seat serves Codex but never chat', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'mine' }, { provider: 'codex-subscription', scope: 'team', shape: 'oauth_managed' }] });
+    expect(coverageText(line(res, 'chat'))).toBe('OpenAI (yours)');
+    expect(line(res, 'agent-codex').usedBy.map((u) => u.provider).sort()).toEqual(['codex-subscription', 'openai']);
+  });
+
+  it('nothing set: every surface lists the providers that could serve it', () => {
+    const res = fixtureResponse({});
+    for (const l of coverageView(res)) {
+      expect(l.usedBy).toEqual([]);
+      expect(l.couldUse.length).toBeGreaterThan(0);
+    }
   });
 });
