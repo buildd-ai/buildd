@@ -238,7 +238,7 @@ export function ProviderKeyCard({
           <p className="text-text-secondary">
             {removeNote ?? (mode === 'team'
               ? 'Chat and model features stop using this provider.'
-              : 'Your chats go back to the team key, if the team has one.')}
+              : 'Your chats and tasks go back to the team key, if the team has one.')}
           </p>
         )}
 

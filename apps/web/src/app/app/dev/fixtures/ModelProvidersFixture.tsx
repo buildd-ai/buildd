@@ -1,8 +1,10 @@
 'use client';
 
 /**
- * `?state=model-providers`: Settings → Model providers with a connected
- * LiteLLM gateway, a team agent endpoint on two of three workspaces, and two
+ * `?state=model-providers`: Settings → Providers with team keys (one revoked),
+ * a Claude seat, a workspace override, a personal key and no credential policy
+ * chosen yet; under Advanced a connected LiteLLM gateway, a team agent
+ * endpoint on two of three workspaces, and two
  * workspace overrides (one a copy of the team endpoint, one different). The
  * real page needs a team with all of that configured, so a route screenshot of
  * a fresh team shows only the empty state. Fixture values only: example.com
@@ -11,6 +13,9 @@
 import { Suspense, useState } from 'react';
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
 import ModelProvidersClient from '../../(protected)/settings/providers/ModelProvidersClient';
+import { PROVIDERS_DESCRIPTION } from '../../(protected)/settings/providers/provider-copy';
+import type { CredentialPolicyValue, ExplainProviderResponse } from '@buildd/shared';
+import { fixturePolicy, fixtureResponse, fixtureRow, type FixtureRow } from './providers-fixture-data';
 
 const TEAM = 'fixture-team';
 const WORKSPACES = [
@@ -62,12 +67,47 @@ function endpoints() {
   ];
 }
 
+const ROWS: FixtureRow[] = [
+  { provider: 'anthropic', scope: 'team', last4: 'a1b2', lastVerifiedAt: ago(2 * 3600 * 1000) },
+  { provider: 'claude-subscription', scope: 'team', shape: 'oauth_managed', lastVerifiedAt: ago(DAY) },
+  { provider: 'openai', scope: 'team', last4: 'k9q4', health: 'revoked', lastVerificationError: 'OpenAI rejected the key (401).', lastVerifiedAt: ago(3 * DAY) },
+  { provider: 'litellm', scope: 'team', last4: 'abcd', lastVerifiedAt: ago(3 * DAY) },
+  { provider: 'custom-endpoint', scope: 'team', last4: 'abcd' },
+  { provider: 'openrouter', scope: 'workspace', workspaceId: 'ws-a', last4: 'r7s8', lastVerifiedAt: ago(5 * DAY) },
+  { provider: 'anthropic', scope: 'mine', last4: 'm3n4' },
+];
+
+function explain(url: URL): ExplainProviderResponse {
+  const surface = url.searchParams.get('surface') as ExplainProviderResponse['surface'];
+  const provider = url.searchParams.get('provider') ?? 'anthropic';
+  const as = url.searchParams.get('as') === 'self' ? 'self' : 'team';
+  const workspaceId = url.searchParams.get('workspaceId');
+  const row = ROWS.find((r) => r.provider === provider && (r.scope === 'team' || (as === 'self' && r.scope === 'mine')) && r.health !== 'revoked');
+  if (!row) return { surface, as, workspaceId, result: { resolved: false, reason: `No usable ${provider} credential for this.` }, why: [`team ${provider}: none set`] };
+  const scope = row.scope === 'mine' ? 'personal' : row.scope;
+  return {
+    surface, as, workspaceId,
+    result: { resolved: true, provider, shape: fixtureRow(row).shape, scope, source: { scope, secretId: 'fixture', purpose: fixtureRow(row).purpose, label: null, legacy: false } },
+    why: as === 'self' ? ['personal key: used, the team policy puts yours first'] : ['team key: used'],
+  };
+}
+
 function installStub() {
   if (typeof window === 'undefined') return;
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
   const real = window.fetch.bind(window);
+  let credentialPolicy: CredentialPolicyValue | null = null;
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
+    const parsed = new URL(url, window.location.origin);
+    if (parsed.pathname === '/api/providers/explain') return Promise.resolve(json(explain(parsed)));
+    if (parsed.pathname === '/api/providers') {
+      if (init?.method === 'PATCH') {
+        credentialPolicy = JSON.parse(String(init.body)).credentialPolicy;
+        return Promise.resolve(json({ policy: fixturePolicy(credentialPolicy) }));
+      }
+      return Promise.resolve(json(fixtureResponse({ rows: ROWS, workspaceId: parsed.searchParams.get('workspaceId'), credentialPolicy, teamId: TEAM })));
+    }
     if (url.startsWith('/api/inference-keys')) return Promise.resolve(json({ canManageTeamKeys: true, providers: [], keyPolicy: 'team' }));
     if (!url.startsWith(`/api/teams/${TEAM}`)) return real(input, init);
     if (url.endsWith('/litellm-gateway')) {
@@ -88,9 +128,9 @@ export default function ModelProvidersFixture() {
   useState(() => installStub());
   return (
     <div className="min-h-screen bg-surface-1">
-      <SettingsPage title="Model providers">
+      <SettingsPage title="Providers" description={PROVIDERS_DESCRIPTION}>
         <Suspense>
-          <ModelProvidersClient teamId={TEAM} isAdmin workspaces={WORKSPACES} availability={{ available: true, reason: null }} />
+          <ModelProvidersClient teamId={TEAM} isAdmin workspaces={WORKSPACES} />
         </Suspense>
       </SettingsPage>
     </div>
