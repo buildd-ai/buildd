@@ -237,8 +237,8 @@ neither.
   scrolling? Headers, banners and filters that push it below the fold are a finding.
 - **Tap targets.** Roughly 44px or more, not crowded, nothing that only works on hover.
 - **Overflow.** No horizontal scroll, no clipped text, no table forced wider than the viewport.
-- **Both themes, if the change touches colour.** Capture has no theme switch, so
-  check the other theme by hand, or say you didn't.
+- **Both themes, if the change touches colour.** `QA_THEME=light` (or `dark`) sets the
+  theme before the page loads; shoot both. `QA_TEAM_ID=<team uuid>` renders as that team.
 - **Redirects and error states.** If a shot is the login page or an error boundary,
   you didn't review the page.
 
