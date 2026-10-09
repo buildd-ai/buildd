@@ -113,17 +113,18 @@ describe('out-of-band rows are not the step’s decision', () => {
   const synthetic = () => readCorpus(FIXTURE);
 
   /**
-   * A fix that ends with no local head reported, its push already observed mid-fix:
-   * FIXING → AWAITING_PUSH(local_head_unknown) owes `push_recovery:<d>:none:1`. The
-   * drain later hangs try 2 on the same transition, and the floor a chain for the
-   * attempt's reported head: neither is reducer output.
+   * A fix that ends unproven with commits but no local head reported, its push already
+   * observed mid-fix: FIXING → AWAITING_PUSH(local_head_unknown) owes
+   * `push_recovery:<d>:none:1` (an unreported commit may be missing from that push,
+   * so it is not proof). The drain later hangs try 2 on the same transition, and the
+   * floor a chain for the attempt's reported head: neither is reducer output.
    */
-  function awaitingPush() {
+  function awaitingPush(o: { outcome: 'success' | 'unproven'; commitCount: number } = { outcome: 'unproven', commitCount: 1 }) {
     const c = synthetic().find((x) => x.transitions.some((t) => t.command === 'AttemptEnded' && t.fromState === 'FIXING'))!;
     const t = c.transitions.find((x) => x.command === 'AttemptEnded' && x.fromState === 'FIXING')!;
     const live = t.evidence.live as Record<string, unknown>;
     t.toState = 'AWAITING_PUSH';
-    t.evidence = { actor: t.actor, live, outcome: 'success', commitCount: 0, localHeadSha: null, proof: { holds: false, reason: 'local_head_unknown' } };
+    t.evidence = { actor: t.actor, live, outcome: o.outcome, commitCount: o.commitCount, localHeadSha: null, proof: { holds: false, reason: 'local_head_unknown' } };
     c.transitions = c.transitions.filter((x) => x.toVersion <= t.toVersion);
     const kept = new Set(c.transitions.map((x) => x.id));
     c.facts = c.facts.filter((f) => f.tUs < t.tUs && (!f.appliedTransitionId || kept.has(f.appliedTransitionId)));
@@ -164,6 +165,16 @@ describe('out-of-band rows are not the step’s decision', () => {
     c.effects.push(fx(`push_recovery:${did}:none:2`, { localHeadSha: null, try: 2, maxTries: 3 }, t.tUs, 'ok:retry_3'));
     expect(await replayDelivery(c, { exec })).toMatchObject({
       result: 'diverged', divergence: { field: `effects[push_recovery:${did}:none:2]`, recorded: 'push_recovery', replayed: null },
+    });
+  }, 60_000);
+
+  test('abe42d1b: a recording of the old decision (a successful fix, nothing local, its own push live) is reported as diverged, never tolerated', async () => {
+    // Before abe42d1b the kernel parked this end in AWAITING_PUSH; the attempt's attributed push is
+    // its delivery (§9, §6.9), so the current kernel starts the next round. A different to-state is
+    // a different decision, which no known evolution may rewrite.
+    const { c } = awaitingPush({ outcome: 'success', commitCount: 0 });
+    expect(await replayDelivery(c, { exec })).toMatchObject({
+      result: 'diverged', divergence: { field: 'transition.toState', recorded: 'AWAITING_PUSH', replayed: 'AWAITING_REVIEW' }, tolerated: [],
     });
   }, 60_000);
 

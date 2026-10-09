@@ -557,6 +557,19 @@ const cancelOpenAttempts: EffectHandler = async (e) => {
 
 // ── push_recovery (§9): bounded re-reads, then a person ─────────────────────
 
+/**
+ * The next try's key, in the chain `key` belongs to. A chain is its first key's
+ * prefix plus the try number: `push_recovery:{d}:{L}:{n}` for the chain the
+ * attempt's end started, `push_recovery:{d}:{L}:head:{H}:{n}` for the one an
+ * unproven head restarted (its first key carries no number). 9e27996d: numbering
+ * the restart's follow-ups in the original chain collided with tries that chain
+ * had already spent, so the insert was a no-op and recovery ended silently.
+ */
+export function pushRecoveryFollowupKey(key: string, tryNo: number): string {
+  const own = `:${tryNo}`;
+  return key.endsWith(own) ? `${key.slice(0, -own.length)}:${tryNo + 1}` : `${key}:${tryNo + 1}`;
+}
+
 const pushRecovery: EffectHandler = async (e) => {
   const view = await viewFor(e);
   const d = view.delivery;
@@ -576,12 +589,15 @@ const pushRecovery: EffectHandler = async (e) => {
   const local = (e.payload.localHeadSha as string | null) ?? null;
   if (tryNo < maxTries) {
     const { PUSH_RECOVERY_BACKOFF_MS } = await import('./reducer');
-    await dbExec(insertFollowupEffectSql({
+    const ins = await dbExec(insertFollowupEffectSql({
       deliveryId: d.id, transitionId: e.transitionId, kind: 'push_recovery',
-      dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:${tryNo + 1}`,
+      dedupeKey: pushRecoveryFollowupKey(e.dedupeKey, tryNo),
       payload: { ...e.payload, try: tryNo + 1 },
       delayMs: PUSH_RECOVERY_BACKOFF_MS[Math.min(tryNo, PUSH_RECOVERY_BACKOFF_MS.length - 1)],
     }));
+    // The next try already exists (a redelivery of this one): this run scheduled nothing, so it
+    // must not read as the chain moving on. A chain left with no live try is the floor's (§11).
+    if (!ins.rows?.length) return { outcome: `skipped:retry_${tryNo + 1}_exists` };
     return { outcome: `ok:retry_${tryNo + 1}` };
   }
   await applyCommand({ type: 'PushRecoveryExhausted', actor: 'effect:push_recovery', localHeadSha: local }, { ref: { deliveryId: d.id }, exec: dbExec });

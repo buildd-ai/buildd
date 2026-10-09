@@ -11,6 +11,8 @@ let view: KernelView;
 const applied: any[] = [];
 const ingested: any[] = [];
 const executed: string[] = [];
+/** Rows `db.execute` answers with: a follow-up insert that wrote a row returns one. */
+let executeRows: unknown[] = [];
 const inserted: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
@@ -63,7 +65,7 @@ mock.module('@buildd/core/db', () => ({
       },
     }),
     update: () => ({ set: () => chain([]) }),
-    execute: async (q: any) => { executed.push(JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat())); return { rows: [] }; },
+    execute: async (q: any) => { executed.push(JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat())); return { rows: executeRows }; },
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
@@ -93,7 +95,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewer, s
 const mockEscalateExhaustion = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/auto-merge', () => ({ escalateReviewerExhaustion: mockEscalateExhaustion }));
 
-const { __handlers, reviewEffectHandlers } = await import('./review-effects');
+const { __handlers, pushRecoveryFollowupKey, reviewEffectHandlers } = await import('./review-effects');
 
 const D = (o: any = {}) => ({
   id: 'd1', workspaceId: 'ws1', ownerTaskId: 'owner-1', repoFullName: 'acme/w', prNumber: 7, baseRef: 'dev', state: 'CHANGES_REQUESTED',
@@ -106,6 +108,7 @@ const E = (kind: string, payload: Record<string, unknown>) => ({ id: 'e1', deliv
 
 beforeEach(() => {
   view = { delivery: D() as any, rounds: [round1], attempts: [] };
+  executeRows = [];
   applied.length = 0; ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
   existingTask = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
@@ -321,8 +324,22 @@ describe('push_recovery (§9)', () => {
   });
   test('nothing pushed yet: the next bounded try is scheduled', async () => {
     view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
+    executeRows = [{ id: 'e2' }];
     expect(await __handlers.pushRecovery(E('push_recovery', { localHeadSha: 'L2', try: 1, maxTries: 3 }))).toEqual({ outcome: 'ok:retry_2' });
     expect(applied).toHaveLength(0);
+  });
+  test('9e27996d: a next try that already exists scheduled nothing, and is not reported as the chain moving on', async () => {
+    view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
+    executeRows = [];
+    expect(await __handlers.pushRecovery(E('push_recovery', { localHeadSha: 'L2', try: 1, maxTries: 3 }))).toEqual({ outcome: 'skipped:retry_2_exists' });
+  });
+  test('9e27996d: follow-ups stay in their own chain: the head-keyed restart numbers its own tries', () => {
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:1', 1)).toBe('push_recovery:d1:L2:2');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:2', 2)).toBe('push_recovery:d1:L2:3');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:none:1', 1)).toBe('push_recovery:d1:none:2');
+    // The restart's first key carries no number; its follow-ups never land on the original chain's keys.
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:head:H2', 1)).toBe('push_recovery:d1:L2:head:H2:2');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:head:H2:2', 2)).toBe('push_recovery:d1:L2:head:H2:3');
   });
   test('the last try exhausts recovery: a person is told (T22)', async () => {
     view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
