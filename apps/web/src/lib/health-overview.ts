@@ -19,6 +19,8 @@ export interface OverviewAttention {
   strandedBackends: number;
   failingSchedules: number;
   failureGroups: number;
+  /** Runs that could not get the access they need, by workspace and cause. */
+  accessProblems?: number;
 }
 
 export interface OverviewState {
@@ -45,7 +47,7 @@ const RUNNERS_HREF = '/app/health/runners';
 
 export function attentionCount(a: OverviewAttention): number {
   return (a.noRunners ? 1 : 0) + a.offlineRunners + a.unsandboxedRunners + a.brokenCredentials
-    + a.strandedBackends + a.failingSchedules + a.failureGroups;
+    + a.strandedBackends + a.failingSchedules + a.failureGroups + (a.accessProblems ?? 0);
 }
 
 export function overviewHeadline(a: OverviewAttention): { tone: 'ok' | 'attention'; count: number; text: string } {
