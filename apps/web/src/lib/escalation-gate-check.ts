@@ -48,6 +48,12 @@ import type { FileRepairInput } from './question-gate-check';
 
 /** A Buildd-owned state that has not changed for this long is the person's again. */
 export const ESCALATION_STUCK_MS = 6 * 60 * 60_000;
+/**
+ * Shorter for a policy merge: the rule says it should land, and until the
+ * kernel lands it by policy (task a90fc99b) nothing else will, so the person
+ * gets it back sooner.
+ */
+export const POLICY_MERGE_STUCK_MS = 2 * 60 * 60_000;
 /** Model calls one gate pass may make; the rest ask this time and get their look on the next read. */
 export const ESCALATION_MAX_MODEL_CALLS = 6;
 export const ESCALATION_SUBJECT_TYPE = 'pr';
@@ -128,7 +134,8 @@ const stuck = (since: Date, nowMs: number): EscalationVerdict => ({
 function reuse(stored: StoredVerdict, nowMs: number): EscalationVerdict | null {
   const v = verdictFromCode(stored.appliedAnswer);
   if (!v) return null;
-  if (v.owner === 'buildd' && v.action !== 'hold' && nowMs - stored.createdAt.getTime() >= ESCALATION_STUCK_MS) {
+  const ceiling = v.owner === 'buildd' && v.action === 'policy_merge' ? POLICY_MERGE_STUCK_MS : ESCALATION_STUCK_MS;
+  if (v.owner === 'buildd' && v.action !== 'hold' && nowMs - stored.createdAt.getTime() >= ceiling) {
     return stuck(stored.createdAt, nowMs);
   }
   return verdictAt(v, nowMs);
@@ -280,7 +287,6 @@ export function escalationActionFiler(fileRepair: (input: FileRepairInput) => Pr
       address_review: `Make the changes the reviewer asked for on PR #${s.prNumber}, push them to that PR's own branch, and request a fresh review.`,
       ci_fix: `Fix the failing checks on PR #${s.prNumber} and push to that PR's own branch.`,
       conflict_fix: `Resolve PR #${s.prNumber}'s conflict with its base branch on that PR's own branch.`,
-      retry_landing: `Bring PR #${s.prNumber} up to date with its base and let landing merge it again.`,
     };
     await fileRepair({
       workspaceId: s.workspaceId,

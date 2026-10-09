@@ -21,7 +21,7 @@ export const ESCALATION_GATE_QUESTIONS = {
   disposition: choice(
     {
       question: 'A pull request opened by an AI agent has stopped moving and is about to be sent to the team owner as "needs you". You are the team\'s standing decision-maker for this. Can the platform move it on by itself, should it wait, or does a person have to decide?',
-      rule: 'Judge only what is written in `pr`. Pick "ask" whenever the next step needs a person\'s judgment about the product, the risk or the scope, or getting it wrong would be hard to undo. Pick "act" only when one of the listed platform actions is plainly the next step and needs no judgment. Pick "hold" when nothing needs doing right now and the situation will likely change on its own.',
+      rule: 'Judge only what is written in `pr`. You never merge or approve: the actions are fixes only. Pick "ask" whenever the next step needs a person\'s judgment about the product, the risk or the scope, or getting it wrong would be hard to undo. Pick "act" only when one of the listed platform actions is plainly the next step and needs no judgment. Pick "hold" when nothing needs doing right now and the situation will likely change on its own.',
     },
     {
       act: 'The platform takes one of the listed actions itself; nobody is notified.',
@@ -39,7 +39,6 @@ export const ESCALATION_GATE_QUESTIONS = {
       address_review: 'Send a builder agent to make the changes the reviewer asked for, then review again.',
       ci_fix: 'Send a builder agent to fix the failing checks.',
       conflict_fix: 'Send a builder agent to resolve the merge conflict with the base branch.',
-      retry_landing: 'Retry the automatic merge once the base branch settles.',
     } satisfies Record<JevAction, string>,
   ),
 };
