@@ -4562,6 +4562,26 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       expect(response.status).toBe(409);
     });
 
+    it('refuses an organizer create on a decomposition-none mission even before any sibling is filed', async () => {
+      organizerCallSetup({ missionRow: { decompositionSkipped: true } });
+      mockTasksFindMany.mockResolvedValue([]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Organizer decomposed task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.error).toMatch(/coordinate-only/i);
+    });
+
     it('allows a retry child even when sibling tasks exist, as long as parentTaskId is explicit', async () => {
       organizerCallSetup();
       mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
