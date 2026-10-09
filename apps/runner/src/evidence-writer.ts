@@ -137,7 +137,7 @@ export interface WorkerSecretChannels {
     apiKey?: string;
     [k: string]: unknown;
   };
-  modelEndpoint?: { authToken?: string; [k: string]: unknown };
+  modelEndpoint?: { authToken?: string; headers?: Record<string, string>; [k: string]: unknown };
   roleInstructions?: { slug?: string; content?: string } | null;
   skillBundles?: Array<{ slug?: string; content?: string; files?: Array<{ path?: string; content?: string; encoding?: string }> }>;
   /** The packaged role bundle held in memory (not a claim field; carries the same kind of text). */
@@ -199,6 +199,11 @@ export function buildWorkerSecretValues(
     { label: 'codexIdToken', value: cx?.idToken },
     { label: 'codexApiKey', value: cx?.apiKey },
     { label: 'modelEndpointAuthToken', value: worker.modelEndpoint?.authToken },
+    // Header values (an AI Gateway token), whole and without their `Bearer ` scheme.
+    ...Object.entries(worker.modelEndpoint?.headers ?? {}).flatMap(([name, value]) => [
+      { label: `modelEndpointHeader:${name}`, value },
+      { label: `modelEndpointHeader:${name}`, value: typeof value === 'string' ? value.replace(/^Bearer\s+/i, '') : undefined },
+    ]),
     ...promptTextValues(worker),
   ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
 }

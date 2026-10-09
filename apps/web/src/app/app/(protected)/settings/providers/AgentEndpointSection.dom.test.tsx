@@ -177,6 +177,32 @@ describe('AgentEndpointSection', () => {
     expect(host.querySelector('#agent-endpoint-key')).toBeNull();
   });
 
+  it('Cloudflare: picks the upstream, sends a typed gateway token, and no URL or key', async () => {
+    await mount();
+    await click(button('Set up an endpoint'));
+    await click(kindRadio(4));
+    expect(host.querySelector('#agent-endpoint-key')).toBeNull();
+    expect(host.querySelector('#agent-endpoint-url')).toBeNull();
+    await click(host.querySelectorAll('input[name="agent-endpoint-upstream"]')[1]);
+    await setValue(host.querySelector('#agent-endpoint-gateway-token') as HTMLInputElement, 'cf-gateway-run-token-example');
+    await click(button('Save'));
+    expect(writes[0]).toEqual({
+      url: '/api/teams/t/agent-endpoint', method: 'PUT',
+      body: { kind: 'cloudflare', upstream: 'openrouter', gatewayToken: 'cf-gateway-run-token-example' },
+    });
+    expect(host.querySelector('#agent-endpoint-gateway-token')).toBeNull();
+  });
+
+  it('a saved Cloudflare endpoint says where it goes, that a token is saved, and what is missing', async () => {
+    endpoints = [{ ...teamEndpoint, kind: 'cloudflare', upstream: 'anthropic', gatewayTokenSet: true, last4: '9876', mapping: [], gatewayMissing: false, storedKeyMissing: false }];
+    await mount();
+    expect(text('agent-endpoint-detail')).toContain("Cloudflare AI Gateway to Anthropic, with the Anthropic key in Team keys (…9876). Gateway token saved.");
+    act(() => root.unmount()); host.remove();
+    endpoints = [{ ...teamEndpoint, kind: 'cloudflare', upstream: 'anthropic', mapping: [], gatewayMissing: true }];
+    await mount();
+    expect(text('agent-endpoint-cf-missing')).toContain('no AI Gateway ID');
+  });
+
   it('the gateway option is disabled without a gateway, and sends only the kind with one', async () => {
     await mount();
     await click(button('Set up an endpoint'));

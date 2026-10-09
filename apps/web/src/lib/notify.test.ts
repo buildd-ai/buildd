@@ -76,7 +76,9 @@ mock.module('@buildd/core/secrets', () => ({
 // The escalation gate's push check (lib/escalation-notify.ts): PR 9 is Buildd's.
 const pageChecks: Array<{ workspaceId: string; prNumber: number }> = [];
 mock.module('./escalation-notify', () => ({
-  mayPageEscalation: async (s: { workspaceId: string; prNumber: number }) => { pageChecks.push(s); return s.prNumber !== 9; },
+  loadEscalationVerdicts: async (s: { workspaceId: string; prNumber: number }) => { pageChecks.push(s); return [{ owner: s.prNumber === 9 ? 'buildd' : 'person', reason: 'x' }]; },
+  verdictsAllowPage: (v: Array<{ owner: string }>) => !v.every(x => x.owner === 'buildd'),
+  planEscalationPage: () => ({ action: 'send' }),
 }));
 
 const { notifyTeamOf } = await import('./notify');

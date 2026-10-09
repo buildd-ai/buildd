@@ -324,6 +324,18 @@ export const reportOpsIncidentSender: IncidentAlertSender = async alert => {
 };
 
 /**
+ * Paging is off until a deployment opts in with `FAILURE_INCIDENT_PAGING=1`.
+ * The Sentinel's pages are meant to reach a person through the escalation gate
+ * (one owner, rules first, Jev only on concern), and that adapter is a
+ * follow-up; until then a claimed page is recorded on the incident and not sent.
+ */
+const ledgerOnlyIncidentSender: IncidentAlertSender = async () => false;
+
+export function defaultIncidentSender(env: Record<string, string | undefined> = process.env): IncidentAlertSender {
+  return env.FAILURE_INCIDENT_PAGING === '1' ? reportOpsIncidentSender : ledgerOnlyIncidentSender;
+}
+
+/**
  * Claim the page on the row: CAS the alert state, re-planning from the row as
  * read each round, so exactly one writer claims a given transition. Returns the
  * plan and the row after the claim, or `claimed: false` with the fresh row when
@@ -488,7 +500,7 @@ export interface IncidentActionDeps {
   port?: IncidentStorePort;
   /** Default: the shared decision policy. `null`: never ask a model (floor only). */
   decide?: IncidentDecider | null;
-  /** Default: `reportOps`. */
+  /** Default: `defaultIncidentSender()` (recorded only, unless FAILURE_INCIDENT_PAGING=1). */
   send?: IncidentAlertSender;
   /** Default: the database. `null`: never file fix tasks. */
   fixTasks?: FixTaskPort | null;
@@ -527,7 +539,7 @@ export async function actOnIncidentResults(
     return [];
   }
   const decide = deps.decide === undefined ? createBuilddIncidentDecider() : deps.decide;
-  const send = deps.send ?? reportOpsIncidentSender;
+  const send = deps.send ?? defaultIncidentSender();
   const fixTasks = deps.fixTasks === undefined ? createDbFixTaskPort() : deps.fixTasks;
   const now = deps.now ?? (() => new Date().toISOString());
 

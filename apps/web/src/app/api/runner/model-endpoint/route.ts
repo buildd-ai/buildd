@@ -205,7 +205,13 @@ type WireAnswer =
   | { ok: false; reason: string };
 
 function endpointBody(route: AgentEndpointRoute) {
-  return { kind: route.kind, baseUrl: route.baseUrl, key: route.apiKey, authHeader: route.authHeader, models: route.models };
+  return {
+    kind: route.kind, baseUrl: route.baseUrl, key: route.apiKey, authHeader: route.authHeader, models: route.models,
+    // `cloudflare`: which provider its gateway forwards to (model naming), and
+    // the gateway's own header. The egress handler adds both to each call.
+    ...(route.upstream ? { upstream: route.upstream } : {}),
+    ...(route.headers ? { headers: route.headers } : {}),
+  };
 }
 
 /** The resolver's winner as the dispatcher's egress handler reads it. */

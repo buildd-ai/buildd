@@ -293,3 +293,37 @@ describe('gateEscalations: a rule verdict\'s step runs once per state (a90fc99b)
   });
 });
 
+
+describe('gateEscalations: a Buildd-owned verdict says what is running (c06dedf5)', () => {
+  const collided = (over: Partial<GatedSubject> = {}) => subject({
+    why: 'reviewer_escalated', ci: 'green', migrationCollision: true, headSha: 'h1',
+    detail: 'migration number collision: 0280_a.sql conflicts with open PR #9 migration 0280_b.sql', ...over,
+  });
+
+  it('the look that files a rule verdict dispatches it with its record id, and the label names the task', async () => {
+    const seen: Array<{ action: string; recordId: string | null | undefined }> = [];
+    const h = harness({ actRule: async (_s, action, recordId) => { seen.push({ action, recordId }); return { kind: 'dispatched', taskId: 'abcdef0123456789' }; } });
+    const v = (await gateEscalations([collided()], h.deps)).get('pr:ws:7');
+    expect(seen).toEqual([{ action: 'renumber_migration', recordId: 'row' }]);
+    expect(v).toMatchObject({ owner: 'buildd', action: 'renumber_migration' });
+    expect(v?.reason).toContain('(task abcdef01)');
+  });
+
+  it('a step that could not start is the person\'s on that same look', async () => {
+    const h = harness({ actRule: async () => ({ kind: 'skipped', cause: 'conflict_fixes_spent' }) });
+    expect((await gateEscalations([collided()], h.deps)).get('pr:ws:7')).toMatchObject({ owner: 'person' });
+  });
+
+  it('a read of a stored, dispatched verdict names the task; one never dispatched past the grace period is the person\'s', async () => {
+    const s = collided();
+    const base = { fingerprint: escalationFingerprint(s), appliedAnswer: 'buildd:rule:renumber_migration:' };
+    const running = new Map<string, StoredVerdict>([[s.key, { ...base, createdAt: new Date(NOW - 60_000), dispatch: { label: 'dispatched', metadata: { taskId: '0123456789abcdef' } } }]]);
+    expect((await gateEscalations([s], { ...harness({}, running).deps, decide: false })).get(s.key)?.reason).toContain('(task 01234567)');
+
+    const never = new Map<string, StoredVerdict>([[s.key, { ...base, createdAt: new Date(NOW - 2 * 60 * 60_000), dispatch: null }]]);
+    expect((await gateEscalations([s], { ...harness({}, never).deps, decide: false })).get(s.key)).toMatchObject({ owner: 'person' });
+
+    const young = new Map<string, StoredVerdict>([[s.key, { ...base, createdAt: new Date(NOW - 60_000), dispatch: null }]]);
+    expect((await gateEscalations([s], { ...harness({}, young).deps, decide: false })).get(s.key)?.reason).toContain('(queued)');
+  });
+});

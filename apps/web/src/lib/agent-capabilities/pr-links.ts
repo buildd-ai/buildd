@@ -32,7 +32,7 @@ export interface PrReachGrant {
 export function readPrReachGrant(context: unknown): PrReachGrant | null {
   const raw = (context as { prReach?: Partial<PrReachGrant> } | null | undefined)?.prReach;
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.prNumbers)) return null;
-  if (typeof raw.grantedBy !== 'string' || !/^(human|task):./.test(raw.grantedBy)) return null;
+  if (typeof raw.grantedBy !== 'string' || !/^(human|task|system):./.test(raw.grantedBy)) return null;
   return { prNumbers: raw.prNumbers.filter((n): n is number => Number.isInteger(n) && n > 0), grantedBy: raw.grantedBy, grantedAt: String(raw.grantedAt ?? '') };
 }
 

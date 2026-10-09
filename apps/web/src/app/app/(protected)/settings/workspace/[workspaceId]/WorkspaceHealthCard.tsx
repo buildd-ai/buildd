@@ -4,11 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
 import type { HealthItem } from '@/lib/workspace-health';
-import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
 
 interface Props {
-    workspace: { id: string; name: string; teamId: string };
-    teams: Array<{ id: string; name: string }>;
+    workspace: { id: string; name: string };
     items: HealthItem[];
 }
 
@@ -16,7 +14,6 @@ const BUTTON = 'btn min-h-11 shrink-0';
 
 const DOT: Record<HealthItem['severity'], string> = {
     warning: 'bg-status-warning',
-    action: 'bg-text-muted',
     info: 'bg-status-info',
 };
 
@@ -29,15 +26,12 @@ const DOT: Record<HealthItem['severity'], string> = {
  *                     (the scan behind MCP manage_workspaces action=init), shown
  *                     as a diff, then on Apply PATCH /api/workspaces/[id]/config
  *                     { policyConfig }
- *   move-team       → MoveToTeamDialog (/migrate/precheck → /migrate/execute)
  */
-export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
+export function WorkspaceHealthCard({ workspace, items }: Props) {
     const router = useRouter();
     const [policyOpen, setPolicyOpen] = useState(false);
 
     if (items.length === 0) return null;
-
-    const onlyOffers = items.every(i => i.severity !== 'warning');
 
     function actionButton(item: HealthItem) {
         if (!item.action) return null;
@@ -48,17 +42,12 @@ export function WorkspaceHealthCard({ workspace, teams, items }: Props) {
                         {item.action.label}
                     </button>
                 );
-            case 'move-team':
-                return <MoveToTeamButton workspace={workspace} teams={teams} className={BUTTON} />;
         }
     }
 
     return (
         <div className="py-4 first:pt-0 last:pb-0" data-testid="workspace-health-card">
             <h3 className="text-sm font-medium text-text-primary">Workspace health</h3>
-            {onlyOffers && items.some(i => i.severity === 'action') && (
-                <p className="text-xs text-text-muted mt-0.5">No legacy settings.</p>
-            )}
             <ul className="divide-y divide-border-default">
                 {items.map(item => (
                     <li

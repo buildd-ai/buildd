@@ -64,7 +64,7 @@ assertions:
     as: "read"
   - id: "escalation-gate-read-by-pushes"
     type: "symbol_reachable"
-    symbol: "mayPageEscalation"
+    symbol: "loadEscalationVerdicts"
     entry: "apps/web/src/lib/notify.ts"
     as: "read"
   # Jev never runs while a page loads: surfaces read stored verdicts and queue

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { keyHealthPill, keyHealthTone, type KeyHealth } from '@/lib/provider-keys-client';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { StatusChip } from '../_components/ConnectionRow';
+import { Select } from '@/components/ui/Select';
 
 /**
  * Settings → Model providers: the team's LiteLLM gateway and which model
@@ -21,7 +22,17 @@ interface MaskedGateway {
 /** The gateway's health in a provider key's words, so its card reads like theirs. */
 const GATEWAY_HEALTH: Record<MaskedGateway['health'], KeyHealth> = { healthy: 'ok', revoked: 'failing', unknown: 'unknown' };
 
-type DecisionModel = { endpoint: 'systemone' | 'chat'; model: string; via: 'openrouter' | 'litellm' } | null;
+type DecisionVia = 'openrouter' | 'litellm' | 'cloudflare';
+type DecisionModel = { endpoint: 'systemone' | 'chat'; model: string; via: DecisionVia } | null;
+
+/** The System One models Cloudflare serves: Clef on Workers AI, Jev through the AI Gateway. */
+const CLOUDFLARE_MODELS = [
+  { id: 'clef', label: 'Clef' },
+  { id: 'clef-flash', label: 'Clef Flash' },
+  { id: 'typesafe/jev-1.13', label: 'Jev (through the AI Gateway)' },
+] as const;
+
+const VIA_LABEL: Record<DecisionVia, string> = { openrouter: 'OpenRouter', litellm: 'LiteLLM', cloudflare: 'Cloudflare' };
 
 const INPUT = 'w-full h-10 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs';
 
@@ -194,14 +205,14 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
 }) {
   const [custom, setCustom] = useState(false);
   const [model, setModel] = useState('');
-  const [via, setVia] = useState<'openrouter' | 'litellm'>('openrouter');
+  const [via, setVia] = useState<DecisionVia>('openrouter');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (value === undefined) return;
     setCustom(value !== null);
-    setModel(value?.model ?? '');
+    setModel(value?.model ?? (value?.via === 'cloudflare' ? CLOUDFLARE_MODELS[0].id : ''));
     setVia(value?.via ?? (hasGateway ? 'litellm' : 'openrouter'));
   }, [value, hasGateway]);
 
@@ -223,7 +234,13 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
     }
   }
 
-  const current = value ? `${value.model} via ${value.via === 'litellm' ? 'LiteLLM' : 'OpenRouter'}` : 'Jev (default)';
+  const current = value ? `${value.model} via ${VIA_LABEL[value.via]}` : 'Jev (default)';
+  const onCloudflare = via === 'cloudflare';
+  const pickVia = (v: DecisionVia) => {
+    setVia(v);
+    if (v === 'cloudflare' && !CLOUDFLARE_MODELS.some((m) => m.id === model)) setModel(CLOUDFLARE_MODELS[0].id);
+    if (v !== 'cloudflare' && CLOUDFLARE_MODELS.some((m) => m.id === model)) setModel('');
+  };
 
   return (
     <section aria-labelledby="decision-model-h" data-testid="decision-model">
@@ -248,18 +265,33 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
             </label>
             {custom && (
               <div className="pl-6 space-y-2">
-                <label className="field-label" htmlFor="decision-model-id">Model id</label>
-                <input id="decision-model-id" value={model} onChange={(e) => setModel(e.target.value)} placeholder="qwen3-8b" className={INPUT} spellCheck={false} />
                 <div className="flex flex-wrap gap-4">
-                  {(['openrouter', 'litellm'] as const).map((v) => (
+                  {(['openrouter', 'litellm', 'cloudflare'] as const).map((v) => (
                     <label key={v} className="flex items-center gap-2 cursor-pointer">
                       <input type="radio" name="decision-via" className="control-radio appearance-none" checked={via === v} disabled={busy || (v === 'litellm' && !hasGateway)}
-                        onChange={() => setVia(v)} />
-                      <span>{v === 'litellm' ? 'LiteLLM gateway' : 'OpenRouter'}</span>
+                        onChange={() => pickVia(v)} />
+                      <span>{v === 'litellm' ? 'LiteLLM gateway' : v === 'cloudflare' ? 'Cloudflare' : 'OpenRouter'}</span>
                     </label>
                   ))}
                 </div>
-                <button className="btn btn-primary" disabled={busy || !model.trim()} onClick={() => save({ endpoint: 'chat', model: model.trim(), via })}>Save</button>
+                {onCloudflare ? (
+                  <>
+                    <label className="field-label" htmlFor="decision-model-cf">Model</label>
+                    <Select id="decision-model-cf" testId="decision-model-cf" value={model} onChange={setModel} disabled={busy}
+                      options={CLOUDFLARE_MODELS.map((m) => ({ value: m.id, label: m.label }))} />
+                    <p className="text-text-muted">
+                      Uses the team&apos;s Cloudflare credential. Clef runs on Workers AI, through the AI Gateway when one is set.
+                      Jev needs the AI Gateway and still spends the team&apos;s OpenRouter key.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <label className="field-label" htmlFor="decision-model-id">Model id</label>
+                    <input id="decision-model-id" value={model} onChange={(e) => setModel(e.target.value)} placeholder="qwen3-8b" className={INPUT} spellCheck={false} />
+                  </>
+                )}
+                <button className="btn btn-primary" disabled={busy || !model.trim()}
+                  onClick={() => save({ endpoint: onCloudflare ? 'systemone' : 'chat', model: model.trim(), via })}>Save</button>
               </div>
             )}
           </div>
