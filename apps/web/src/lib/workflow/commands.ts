@@ -283,6 +283,13 @@ export type Command =
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
       reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
       maxContractRetries: number;
+      /**
+       * The reviewer task whose run failed. The failure is counted once per
+       * reviewer (key `roundfail:{round}:{reviewerTaskId}`), and a reviewer that
+       * is not the round's current one is stale. Absent only when the kernel
+       * itself could not serve the round (no reviewer was ever asked).
+       */
+      reviewerTaskId?: string;
     })
   | (Base & {
       /**
