@@ -59,10 +59,11 @@ describe('PUT /api/connectors/catalog/policy', () => {
   it('blocking reports the installed connectors it kept (and revoked from agents)', async () => {
     teamConnectors = [
       { id: 'conn-neon', url: 'https://MCP.neon.tech/mcp/' },
+      { id: 'conn-neon-sse', url: 'https://mcp.neon.tech/sse' },
       { id: 'conn-other', url: 'https://mcp.example.com' },
     ];
     const res = await put({ slug: 'neon', policy: 'blocked' });
-    expect(await res.json()).toEqual({ slug: 'neon', policy: 'blocked', connectorId: null, retainedConnectorIds: ['conn-neon'] });
+    expect(await res.json()).toEqual({ slug: 'neon', policy: 'blocked', connectorId: null, retainedConnectorIds: ['conn-neon', 'conn-neon-sse'] });
   });
 
   it("returns needs_approved_client when the provider won't register buildd", async () => {

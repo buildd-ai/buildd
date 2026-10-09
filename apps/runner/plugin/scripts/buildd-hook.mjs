@@ -116,7 +116,10 @@ function normalizeClaudeLike(client, p, env) {
       return { ...base, event: 'start', interactive: attended(client, env) };
     case 'UserPromptSubmit':
     case 'Stop':
-      return { ...base, event: 'touch' };
+      // Every event that can create the presence carries the flag: a session
+      // outside a workspace repo sends no start, so its first event is a bind
+      // (or a touch healing a missed start).
+      return { ...base, event: 'touch', interactive: attended(client, env) };
     case 'PostToolUse': {
       if (!isBuilddTool(p.tool_name)) return null;
       const workerId = claimedWorkerId(p.tool_input, p.tool_response);
@@ -125,7 +128,7 @@ function normalizeClaudeLike(client, p, env) {
       // kept in this machine's session state to know which subagent holds which
       // claim. Never sent.
       const agentId = typeof p.agent_id === 'string' && /^[\w-]{1,64}$/.test(p.agent_id) ? p.agent_id : null;
-      return { ...base, event: 'bind', workerId, ...(agentId ? { agentId } : {}) };
+      return { ...base, event: 'bind', workerId, interactive: attended(client, env), ...(agentId ? { agentId } : {}) };
     }
     case 'SessionEnd': {
       // Claude: clear | resume | logout | prompt_input_exit | other. Codex: always other.
@@ -442,6 +445,8 @@ export function sessionCostBasis(env = process.env, home = homedir(), cwd = proc
 export const USAGE_READ_CAP = 8 * 1024 * 1024;
 const SEEN_CAP = 5000;
 const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
+/** A tool name as sent (`Bash`, `mcp__buildd__buildd`); anything else counts as `other`. */
+export const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** A session's transcript and each of its subagents' (Claude Code's layout). */
 export function sessionTranscriptFiles(transcriptPath) {
@@ -509,7 +514,14 @@ export function usageRecord(line) {
     cacheWrite5m: w5m + Math.max(0, written - w1h - w5m),
     cacheWrite1h: w1h,
     output: count(u.output_tokens),
-    toolCalls: Array.isArray(m.content) ? m.content.filter(b => b?.type === 'tool_use').length : 0,
+    // Tool names only (`Bash`, `mcp__buildd__buildd`), never inputs or results;
+    // a block's own id dedupes a record Claude Code writes more than once.
+    tools: Array.isArray(m.content)
+      ? m.content.filter(b => b?.type === 'tool_use').map(b => ({
+          id: typeof b.id === 'string' ? b.id : null,
+          name: typeof b.name === 'string' && TOOL_NAME_RE.test(b.name) ? b.name : 'other',
+        }))
+      : [],
     at: Number.isFinite(at) ? at : null,
   };
 }
@@ -546,10 +558,18 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
       const rec = usageRecord(line);
       if (!rec) continue;
       if (!claimedBySubagent && rec.at !== null && rec.at < earliest) continue;
-      const t = (usage.perWorker[worker] ??= { models: {}, toolCalls: 0, agents: [], firstAt: null, lastAt: null });
-      // One API call is written once per content block: its tool calls add up,
-      // its usage is the same on every copy and counts once.
-      t.toolCalls += rec.toolCalls;
+      const t = (usage.perWorker[worker] ??= { models: {}, toolCalls: 0, toolCounts: {}, agents: [], firstAt: null, lastAt: null });
+      t.toolCounts ??= {};
+      // One API call is written once per content block: each tool_use block
+      // counts once (by its own id), its usage is the same on every copy and
+      // counts once (by the message id, below).
+      for (const tool of rec.tools) {
+        const toolKey = tool.id ? `t:${f.agentId ?? ''}:${tool.id}` : null;
+        if (toolKey && seen.has(toolKey)) continue;
+        if (toolKey) { seen.add(toolKey); usage.seen.push(toolKey); }
+        t.toolCalls += 1;
+        t.toolCounts[tool.name] = (t.toolCounts[tool.name] ?? 0) + 1;
+      }
       if (f.agentId && !t.agents.includes(f.agentId)) t.agents.push(f.agentId);
       if (rec.at !== null) {
         t.firstAt = t.firstAt === null ? rec.at : Math.min(t.firstAt, rec.at);
@@ -571,6 +591,7 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
       workerId,
       models: Object.entries(t.models).map(([model, b]) => ({ model, ...b })),
       toolCalls: t.toolCalls,
+      toolCounts: { ...(t.toolCounts ?? {}) },
       subagents: t.agents.length,
       ...(t.firstAt !== null ? { firstAt: new Date(t.firstAt).toISOString() } : {}),
       ...(t.lastAt !== null ? { lastAt: new Date(t.lastAt).toISOString() } : {}),

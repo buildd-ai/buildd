@@ -22,7 +22,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A running agent MUST get a brokered decision-model answer only under a live task-scoped model.inference grant and a reserved budget, never seeing a key or choosing an endpoint, and failing closed.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
-- [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
+- [Team Permissions](./team-permissions.md) · @max — verified 2026-10-08
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 
 ### billing (2)

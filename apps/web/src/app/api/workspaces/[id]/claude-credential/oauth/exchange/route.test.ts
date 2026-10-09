@@ -12,6 +12,9 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
   getUserTeamIds: async () => ['team-1', 'team-2'],
 }));
+// The caller holds manage_team_credentials; the gate itself is covered in
+// ../../../credential-write-permission.test.ts.
+mock.module('@/lib/permissions', () => ({ can: async () => true }));
 mock.module('@/lib/claude-oauth-login', () => ({ exchangeClaudeOAuthCode: mockExchange }));
 mock.module('@/lib/claude-credential', () => ({ storeClaudeCredential: mockStore, getClaudeStatus: mockStatus }));
 mock.module('@/lib/credential-recovery', () => ({ requeueAuthFailedTasks: async () => {} }));

@@ -7,6 +7,7 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 // POST /api/workspaces/[id]/codex-credential/verify?scope=team|workspace
 // Smoke-tests the stored credential against the real provider API and persists the result.
+// Open to any member: it records the result of a check, it does not change the credential.
 export async function POST(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
 

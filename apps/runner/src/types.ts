@@ -266,6 +266,8 @@ export interface LocalWorker {
    * left in progress with the real conflicts). Appended to the system prompt.
    */
   derivedMergeNote?: string;
+  /** Where a usage-limit death's work went: `origin/<branch>@<sha>` or `archive:<path>`. */
+  recoveryRef?: string;
   /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,

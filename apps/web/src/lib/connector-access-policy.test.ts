@@ -38,19 +38,52 @@ beforeEach(() => {
 });
 
 describe('blockedUrlIndex', () => {
-  it('indexes only blocked entries, by normalized URL', () => {
+  it('indexes only blocked entries, by host', () => {
     const idx = blockedUrlIndex([entry('axiom', AXIOM + '/', 'blocked'), entry('vercel', VERCEL, 'preinstalled')]);
-    expect([...idx.keys()]).toEqual([AXIOM]);
-    expect(idx.get(AXIOM)).toEqual({ slug: 'axiom', name: 'AXIOM' });
+    expect([...idx.keys()]).toEqual(['mcp.axiom.co']);
+    expect(idx.get('mcp.axiom.co')).toEqual({ slug: 'axiom', name: 'AXIOM' });
   });
 });
 
 describe('connectorBlock', () => {
-  const blocked = new Map([['team-a', new Map([[AXIOM, { slug: 'axiom', name: 'Axiom' }]])]]);
+  const blocked = new Map([['team-a', blockedUrlIndex([entry('axiom', AXIOM, 'blocked')])]]);
+  const block = (url: string, teamId = 'team-a', consumer = 'team-a') => connectorBlock({ url, teamId }, consumer, blocked);
 
   it('blocks a connector whose URL matches an entry the consuming team blocked', () => {
     expect(connectorBlock({ url: 'https://MCP.axiom.co/mcp/', teamId: 'team-a' }, 'team-a', blocked))
-      .toEqual({ slug: 'axiom', name: 'Axiom', blockedByTeamId: 'team-a' });
+      .toEqual({ slug: 'axiom', name: 'AXIOM', blockedByTeamId: 'team-a' });
+  });
+
+  // A block covers the entry's server, not one spelling of its URL: a
+  // connector on the same host under another path is the same provider.
+  it.each([
+    ['trailing slash', 'https://mcp.axiom.co/mcp/'],
+    ['host case', 'https://MCP.AXIOM.CO/mcp'],
+    ['path case', 'https://mcp.axiom.co/MCP'],
+    ['sse path', 'https://mcp.axiom.co/sse'],
+    ['root path', 'https://mcp.axiom.co'],
+    ['nested path', 'https://mcp.axiom.co/mcp/v2/'],
+    ['query string', 'https://mcp.axiom.co/mcp?x=1'],
+    ['explicit port', 'https://mcp.axiom.co:8443/mcp'],
+    ['plain http', 'http://mcp.axiom.co/mcp'],
+    ['trailing-dot host', 'https://mcp.axiom.co./mcp'],
+  ])('blocks a path/spelling variant on the blocked host (%s)', (_label, url) => {
+    expect(block(url)?.slug).toBe('axiom');
+  });
+
+  it('does not block a different host that merely shares a suffix or path', () => {
+    expect(block('https://axiom.co/mcp')).toBeNull();
+    expect(block('https://evil-mcp.axiom.co/mcp')).toBeNull();
+    expect(block('https://mcp.axiom.co.example.com/mcp')).toBeNull();
+    expect(block('https://example.com/mcp.axiom.co/mcp')).toBeNull();
+  });
+
+  it('blocks a path variant shared in from an owner team that blocked it', () => {
+    expect(block('https://mcp.axiom.co/sse', 'team-a', 'team-b')?.blockedByTeamId).toBe('team-a');
+  });
+
+  it('blocks a path variant a grantee team shares in when the consuming team blocked it', () => {
+    expect(block('https://mcp.axiom.co/sse/', 'team-c', 'team-a')?.blockedByTeamId).toBe('team-a');
   });
 
   it("blocks a connector shared in from an owner team that blocked it", () => {
@@ -80,7 +113,7 @@ describe('loadBlockedCatalogs', () => {
     mockLoadTeamCatalog.mockResolvedValue([entry('axiom', AXIOM, 'blocked')]);
     const out = await loadBlockedCatalogs(['team-a', 'team-b']);
     expect(mockLoadTeamCatalog.mock.calls.map(c => c[0])).toEqual(['team-a']);
-    expect(out.get('team-a')?.has(AXIOM)).toBe(true);
+    expect(out.get('team-a')?.has('mcp.axiom.co')).toBe(true);
     expect(out.has('team-b')).toBe(false);
   });
 
@@ -93,5 +126,6 @@ describe('loadBlockedCatalogs', () => {
     mockPolicyFindMany.mockResolvedValue([{ teamId: 'team-a' }]);
     mockLoadTeamCatalog.mockResolvedValue([entry('axiom', AXIOM, 'blocked')]);
     expect((await checkConnectorBlocked({ url: AXIOM, teamId: 'team-a' }, 'team-a'))?.slug).toBe('axiom');
+    expect((await checkConnectorBlocked({ url: 'https://mcp.axiom.co/sse', teamId: 'team-a' }, 'team-a'))?.slug).toBe('axiom');
   });
 });

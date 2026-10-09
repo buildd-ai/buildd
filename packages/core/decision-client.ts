@@ -84,7 +84,7 @@ import {
   type UsageSink,
 } from '@builddai/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, isInferenceAllowed, type InferenceCapability } from './inference-policy';
-import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
+import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
 import { normalizeDecisionModel, readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
 import { entitlements, isBillingEnforced, type EntitlementTeam } from './entitlements';
 import { loadTeamEntitlements } from './billing-limits';
@@ -262,6 +262,8 @@ export interface TeamDecisionRow {
   decisionModel: unknown;
   /** The key policy the key resolver enforces; absent ⇒ it reads it. */
   inferenceKeyPolicy?: unknown;
+  /** `teams.credentialPolicy`; when known it wins over inferenceKeyPolicy. */
+  credentialPolicy?: unknown;
   /** Plan columns, for the platform-key check; absent ⇒ that check reads them itself. */
   plan?: string | null;
   paidSeats?: number | null;
@@ -279,13 +281,13 @@ async function loadTeamDecisionSettings(teamId: string, capability: InferenceCap
       const { db } = await import('./db');
       team = await db.query.teams.findFirst({
         where: eq(teams.id, teamId),
-        columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true, plan: true, paidSeats: true },
+        columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, decisionModel: true, inferenceKeyPolicy: true, credentialPolicy: true, plan: true, paidSeats: true },
       }) ?? null;
     }
     return {
       allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null),
       model: readDecisionModel(team?.decisionModel),
-      ...(isInferenceKeyPolicy(team?.inferenceKeyPolicy) ? { keyPolicy: team.inferenceKeyPolicy } : {}),
+      ...(effectiveKeyPolicy(team) ? { keyPolicy: effectiveKeyPolicy(team)! } : {}),
       // Only a row that carries the plan column answers for it; a caller's
       // partial row leaves the platform-key check to read the plan itself.
       ...(team && 'plan' in team ? { billing: { plan: team.plan ?? null, paidSeats: team.paidSeats ?? null } } : {}),
