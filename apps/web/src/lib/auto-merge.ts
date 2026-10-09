@@ -28,6 +28,12 @@ import {
   type ModelApproveBound,
 } from '@/lib/auto-merge-bound';
 import {
+  isPassingCheckRun,
+  isPassingStatus,
+  listAllCheckRuns,
+  listAllCommitStatuses,
+} from '@/lib/ci-verdict';
+import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
@@ -211,22 +217,44 @@ export async function evaluateAutoMergeSafety(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
 
-  // CI completeness check — verify no check runs are still pending or failing.
+  // CI completeness check (ci-verdict.ts): every check run on every page, and
+  // every commit status, must have finished and passed. Allow-list, fail closed:
+  // only success/neutral/skipped pass; timed_out, cancelled, startup_failure,
+  // action_required, an unfinished run (queued, in_progress, waiting,
+  // requested, pending) or a status that is not `success` all refuse.
   try {
-    const checkRunsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-runs`,
-    );
-    checkRuns = latestRunPerName(checkRunsData?.check_runs ?? []);
+    const read = await listAllCheckRuns<CheckRunState>(githubApi, installationId, repoFullName, headSha);
+    checkRuns = latestRunPerName(read.items);
     if (opts?.observed) opts.observed.checkRuns = checkRuns;
+    if (!read.complete) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: could not read every check run (${read.items.length} read)`,
+      };
+    }
 
-    const pendingOrFailed = checkRuns.filter(
-      (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
-    );
+    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
-        reason: `CI checks still pending or failed: ${pendingOrFailed.map((r) => r.name).join(', ')}`,
+        reason: `CI checks still pending or failed: ${pendingOrFailed
+          .map((r) => `${r.name} (${r.status === 'completed' ? r.conclusion ?? 'no conclusion' : r.status})`)
+          .join(', ')}`,
+      };
+    }
+
+    // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
+    // Vercel contexts) never creates check runs.
+    const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
+    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    if (!statuses.complete || notPassing.length > 0) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: ${
+          statuses.complete
+            ? notPassing.map((st) => `${st.context ?? 'unnamed status'} (${st.state ?? 'unknown'})`).join(', ')
+            : `could not read every commit status (${statuses.items.length} read)`
+        }`,
       };
     }
 
@@ -247,10 +275,10 @@ export async function evaluateAutoMergeSafety(
     // merge when it fails means a GitHub API blip silently becomes a merge with
     // no CI verification at all. Refusing parks the PR for a human instead,
     // which is recoverable — an unverified merge into dev is not.
-    console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+    console.warn(`Could not verify check runs / commit statuses for ${repoFullName}@${headSha}:`, err);
     return {
       ok: false,
-      reason: `could not verify CI status — GitHub check-runs lookup failed: ${
+      reason: `could not verify CI status — GitHub check-runs or commit-status lookup failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
     };
