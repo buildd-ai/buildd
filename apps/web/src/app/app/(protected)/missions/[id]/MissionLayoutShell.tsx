@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Board · Flow · Feed. The shell mounts one layout at a time and switches on
+ * Overview · Flow · History. The shell mounts one layout at a time and switches on
  * the client: the tab writes `?layout=` with `replaceState` (never the router,
  * so the `force-dynamic` render does not re-run and the task sheet's own
  * history entries are left alone).
@@ -11,7 +11,7 @@
  */
 import Link from 'next/link';
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-import { MISSION_LAYOUTS, MISSION_LAYOUT_LABEL, missionLayoutHref, type MissionLayout } from '@/lib/mission-layout';
+import { MISSION_LAYOUT_TABS, MISSION_LAYOUT_LABEL, missionLayoutHref, type MissionLayout } from '@/lib/mission-layout';
 import type { MastheadChip } from '@/components/missions/MissionMasthead';
 import { formatClock } from '@/lib/mission-board';
 import { describeMissionDuration, formatDuration } from '@/lib/mission-duration';
@@ -24,8 +24,8 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
   const ctx = useContext(LayoutContext);
   if (!ctx) return null;
   return (
-    <div role="tablist" aria-label="Mission layout" data-testid="mission-layout-tabs" className={`flex shrink-0 border-[1.5px] border-border-strong ${className}`}>
-      {MISSION_LAYOUTS.map(l => {
+    <div role="tablist" aria-label="Mission layout" data-testid="mission-layout-tabs" className={`inline-flex shrink-0 gap-0.5 rounded-[var(--radius-card)] bg-[var(--q-tint)] p-[3px] ${className}`}>
+      {MISSION_LAYOUT_TABS.map(l => {
         const on = ctx.layout === l;
         return (
           <button
@@ -35,7 +35,7 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
             aria-selected={on}
             data-layout={l}
             onClick={() => ctx.setLayout(l)}
-            className={`min-h-8 px-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.6px] ${on ? 'bg-text-primary text-surface-1' : 'text-text-muted hover:text-text-primary'}`}
+            className={`min-h-11 rounded-[var(--radius-pill)] px-3 text-body md:min-h-8 ${on ? 'bg-card font-semibold text-text-primary outline outline-1 outline-[var(--border)]' : 'font-medium text-text-muted hover:text-text-primary'}`}
           >
             {MISSION_LAYOUT_LABEL[l]}
           </button>
@@ -128,7 +128,7 @@ export function MissionBoardHeader({ back, title, chip, verified, actions, goal,
   const now = useNow(serverNow, 1_000, endedAt == null);
   const done = endedAt != null;
   return (
-    <div data-testid="mission-detail" className="px-4 pb-12 pt-4 md:px-8 md:pt-[22px]">
+    <div data-testid="mission-detail" className="max-w-[1120px] px-4 pb-12 pt-4 md:px-8 md:pt-[22px]">
       <header data-testid="mission-board-header" className="flex flex-wrap items-center gap-x-3.5 gap-y-2">
         <Link href={back.href} className="font-mono text-[13px] text-text-muted hover:text-text-primary">{`‹ ${back.label}`}</Link>
         <h1 className="min-w-0 truncate font-mono text-[20px] font-semibold tracking-[-0.2px] text-text-primary md:text-[22px]">{title}</h1>

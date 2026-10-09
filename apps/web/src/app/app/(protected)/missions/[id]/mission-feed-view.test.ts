@@ -69,8 +69,8 @@ describe('mission page wiring (source shape)', () => {
     expect(src).toMatch(/<TaskPanelWrapper[\s\S]*?feedTasks=\{feedTasks\}/);
   });
 
-  it('every layout reads the one board model: Board, Flow and the Feed', () => {
-    expect(src).toMatch(/<MissionBoard model=\{boardModel\}/);
+  it('every layout reads the one board model: Overview, Flow and History', () => {
+    expect(src).toMatch(/<MissionOverview model=\{boardModel\}/);
     expect(src).toMatch(/<FlowTimeline model=\{boardModel\}/);
     expect(src).toMatch(/<MissionFeedLayout\s+model=\{boardModel\}/);
     expect(src).toMatch(/criteriaReachable=\{criteriaReachable\}/);

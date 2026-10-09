@@ -1,5 +1,5 @@
 /**
- * Board · Flow · Feed: one layout mounted at a time, tabs in the header.
+ * Overview · Flow · History: one layout mounted at a time, tabs in the header.
  */
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -25,6 +25,12 @@ describe('MissionLayoutShell', () => {
     const html = renderToStaticMarkup(<MissionLayoutShell initial="board" {...slots} />);
     expect(html).toMatch(/aria-selected="true" data-layout="board"/);
     expect(html).toMatch(/aria-selected="false" data-layout="flow"/);
+    expect(html).toMatch(/aria-selected="false" data-layout="feed"/);
+    expect(html).toContain('>Overview<');
+    expect(html).toContain('>Flow<');
+    expect(html).toContain('>History<');
+    // Flow replaced Lanes: there is no Lanes tab.
+    expect(html).not.toContain('data-layout="lanes"');
   });
 
   it('tabs outside the shell render nothing', () => {

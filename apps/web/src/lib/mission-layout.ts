@@ -1,17 +1,20 @@
 /**
- * The mission page's three layouts: Board (default), Flow and Feed. `?layout=`
- * names one. Old links still land where they pointed: `?layout=lanes` and
- * `?view=structure` open Flow (it replaced Lanes and the Structure graph), and
- * `?view=timeline` (the Feed's old disclosure) opens the Feed.
+ * The mission page's three layouts: Overview (`board`, default), Flow and
+ * History (`feed`). `?layout=` names one. Old links still land where they
+ * pointed: `?layout=lanes` and `?view=structure` open Flow (it replaced Lanes
+ * and the Structure graph), and `?view=timeline` opens History.
  */
 export const MISSION_LAYOUTS = ['board', 'flow', 'feed'] as const;
 export type MissionLayout = (typeof MISSION_LAYOUTS)[number];
 
 export const MISSION_LAYOUT_LABEL: Record<MissionLayout, string> = {
-  board: 'Board',
+  board: 'Overview',
   flow: 'Flow',
-  feed: 'Feed',
+  feed: 'History',
 };
+
+/** The tabs, in order: Overview · Flow · History. */
+export const MISSION_LAYOUT_TABS: readonly MissionLayout[] = ['board', 'flow', 'feed'];
 
 export function parseMissionLayout(layout: string | null | undefined, view?: string | null): MissionLayout {
   if ((MISSION_LAYOUTS as readonly string[]).includes(layout ?? '')) return layout as MissionLayout;

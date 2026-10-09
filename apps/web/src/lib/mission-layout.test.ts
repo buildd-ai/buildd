@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { MISSION_LAYOUT_LABEL, missionLayoutHref, parseMissionLayout } from './mission-layout';
+import { MISSION_LAYOUT_LABEL, MISSION_LAYOUT_TABS, missionLayoutHref, parseMissionLayout } from './mission-layout';
 
 describe('parseMissionLayout', () => {
   it('defaults to the Board', () => {
@@ -17,13 +17,13 @@ describe('parseMissionLayout', () => {
     expect(parseMissionLayout(undefined, 'structure')).toBe('flow');
   });
 
-  it('a Timeline link still opens the Feed it pointed into', () => {
+  it('a Timeline link still opens History (the Feed) it pointed into', () => {
     expect(parseMissionLayout(undefined, 'timeline')).toBe('feed');
     expect(parseMissionLayout('flow', 'timeline')).toBe('flow');
   });
 
-  it('there is no Lanes or Structure tab, and no Graph/Timeline toggle', () => {
-    expect(Object.values(MISSION_LAYOUT_LABEL)).toEqual(['Board', 'Flow', 'Feed']);
+  it('the tabs are Overview · Flow · History: no Lanes or Structure tab, no Graph/Timeline toggle', () => {
+    expect(MISSION_LAYOUT_TABS.map(l => MISSION_LAYOUT_LABEL[l])).toEqual(['Overview', 'Flow', 'History']);
   });
 });
 

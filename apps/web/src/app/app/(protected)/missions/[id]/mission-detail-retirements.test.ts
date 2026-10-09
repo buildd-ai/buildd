@@ -116,8 +116,8 @@ describe('Visual review retirements (docs/design/visual-qa-human-review.md, "Whe
     expect(src).toContain('loadVisualReview(');
     expect(src).not.toMatch(/visualRun\.length\s*>\s*0/);
     expect(src).not.toMatch(/run\.length\s*>\s*0/);
-    // The Board and the Feed get the one model, and so does the review provider.
-    expect(src).toMatch(/<MissionBoard [^>]*visual=\{boardVisual\}/);
+    // The Overview and History get the one model, and so does the review provider.
+    expect(src).toMatch(/<MissionOverview [^>]*visual=\{boardVisual\}/);
     expect(src).toMatch(/<MissionFeedLayout[^>]*visual=\{boardVisual\}/s);
     expect(src.match(/visual=\{boardVisual\}/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   });

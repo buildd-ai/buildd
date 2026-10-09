@@ -55,9 +55,9 @@ import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
-import MissionBoard from './MissionBoard';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
+import MissionOverview from './MissionOverview';
 import MissionFeedLayout from './MissionFeedLayout';
 import MissionSheetRow from './MissionSheetRow';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
@@ -1324,7 +1324,7 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
         flow={boardHeader(<FlowTimeline model={boardModel} sameFiles={flowSameFiles} expectedMinutes={flowExpectedMinutes} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout
