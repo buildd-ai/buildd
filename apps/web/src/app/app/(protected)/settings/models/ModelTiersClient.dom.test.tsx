@@ -204,7 +204,7 @@ describe('ModelTiersClient: the cell editor', () => {
 });
 
 describe('ModelTiersClient: what ran and history', () => {
-  it('a routing tier\'s name opens what ran with share, merged, review ok and cost per run', async () => {
+  it('a routing tier\'s name opens what ran with share, changes merged, passed review and cost per run', async () => {
     await mount();
     expect(q('[data-testid="tier-name-premium-plus"]')!.tagName).toBe('SPAN');
     await click(q('[data-testid="tier-name-standard"]'));
@@ -215,7 +215,18 @@ describe('ModelTiersClient: what ran and history', () => {
     expect(rows[0].textContent).toContain('60%');
     expect(rows[0].textContent).toContain('80%');
     expect(rows[0].textContent).toContain('$0.42');
-    expect(sheet.querySelector('[data-testid="what-ran-recent"]')!.textContent).toContain('merged');
+    expect(rows[0].textContent).toContain('80% (20 of 25)');
+    expect(rows[0].textContent).toContain('$0.42 per run');
+    // too few graded runs for a percentage: counts, not 75%
+    expect(rows[1].textContent).toContain('Changes merged3 of 4');
+    expect(rows[1].textContent).toContain('Passed reviewnot measured');
+    expect(sheet.querySelector('[data-testid="what-ran-denominator"]')!.textContent).toContain('Share of 50 runs');
+    const recent = sheet.querySelector('[data-testid="what-ran-recent"]')!;
+    expect(recent.textContent).toContain('Add retry to webhook sender');
+    expect(recent.textContent).toContain('Changes merged');
+    expect(recent.textContent).toContain('Not merged');
+    expect(recent.textContent).not.toContain('not graded');
+    expect(recent.querySelector('a')!.getAttribute('href')).toBe('/app/tasks/task-b');
   });
 
   it('the chat variant shows satisfied, thumbs, re-asked and cost per conversation', async () => {
@@ -223,7 +234,7 @@ describe('ModelTiersClient: what ran and history', () => {
     await click(q('[data-testid="tier-name-premium"]'));
     const chat = q('[data-testid="what-ran-chat"]')!;
     expect(chat.textContent).toContain('Satisfied');
-    expect(chat.textContent).toContain('$/conversation');
+    expect(chat.textContent).toContain('per conversation');
     expect(chat.textContent).toContain('9 up · 1 down');
     expect(chat.textContent).not.toContain('Merged');
   });
@@ -232,9 +243,10 @@ describe('ModelTiersClient: what ran and history', () => {
     await mount();
     await click(q('[data-testid="tiers-history"]'));
     const list = q('[data-testid="history-changes"]')!;
-    expect(list.textContent).toContain('Back to primary');
+    expect(list.textContent).toContain('Returned to primary');
     expect(list.textContent).toContain('merged rate 40% vs primary 75% over 30 runs');
-    expect(list.textContent).toContain('Dial changed · 4');
+    expect(list.textContent).toContain('Changed how far traffic may move');
+    expect(list.textContent).not.toContain('system:succession');
     await click(q('[data-testid="history-what-ran-standard"]'));
     expect(q('[data-testid="what-ran-sheet"]')).not.toBeNull();
   });
