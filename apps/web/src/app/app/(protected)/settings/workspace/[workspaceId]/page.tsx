@@ -26,6 +26,7 @@ import SettingsPage from '../../_components/SettingsPage';
 import SettingsSection from '../../SettingsSection';
 import { moveTargets } from '../../workspaces/rows';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
+import { readinessNotices } from './readiness-notices';
 import { ReadinessCard } from './ReadinessCard';
 import { RepoAccessCard } from './RepoAccessCard';
 import { GitConfigForm } from './GitConfigForm';
@@ -134,8 +135,6 @@ export default async function WorkspaceSettingsPage({
     console.error('[workspace-settings] repo access view failed:', err);
     return null;
   });
-  // Members see what is missing and who to ask; only admins get Check connection.
-  const showRepoAccess = Boolean(repoAccessView && (!repoAccessView.ok || canManageSettings));
 
   // Opt-in GitHub repo check (lib/member-repo-access.ts): the setting, and the
   // viewer's own result while it is on.
@@ -158,38 +157,46 @@ export default async function WorkspaceSettingsPage({
 
   const canDelete = roleHas(access.role, 'delete_workspace', overrides);
 
+  // One notice per problem above the settings (readiness-notices.ts). Every
+  // health action, the scaffold and the spec routes are admin writes, so
+  // members only see the repo access row, and only when it is broken.
+  const notices = readinessNotices({
+    canManage: canManageSettings,
+    repoAccessView,
+    healthItems: checkWorkspaceHealth({
+      name: workspace.name,
+      repo: workspace.repo,
+      configStatus: workspace.configStatus,
+      accessMode: workspace.accessMode,
+      gitConfig: workspace.gitConfig as Record<string, unknown> | null,
+    }),
+  });
+
   return (
     <SettingsPage
       title={workspace.name}
+      titleOnMobile
       description={
         <>
           {workspace.repo
             ? <span className="font-mono text-text-primary break-all">{workspace.repo}</span>
             : 'No repository linked.'}
-          {' '}How agents work in this workspace: git, merging, releases and where tasks run.
+          {/* The phone header says "Workspaces"; the h1 and repo carry it there. */}
+          <span className="hidden md:inline">{' '}How agents work in this workspace: git, merging, releases and where tasks run.</span>
         </>
       }
     >
-      {/* Every health action, the scaffold and the spec routes are admin
-          writes, so members only see the repo access row, and only when it
-          is broken. */}
-      <Section title="Readiness" id="readiness">
-        {(canManageSettings || showRepoAccess) && (
+      {(notices.health.length > 0 || notices.readiness || notices.repoAccess) && (
+        <Section title="Readiness" id="readiness">
           <div className={ROWS}>
-            {canManageSettings && (
+            {notices.health.length > 0 && (
               <WorkspaceHealthCard
                 workspace={{ id: workspace.id, name: workspace.name }}
-                items={checkWorkspaceHealth({
-                  name: workspace.name,
-                  repo: workspace.repo,
-                  configStatus: workspace.configStatus,
-                  accessMode: workspace.accessMode,
-                  gitConfig: workspace.gitConfig as Record<string, unknown> | null,
-                })}
+                items={notices.health}
               />
             )}
-            {canManageSettings && <ReadinessCard workspaceId={workspace.id} />}
-            {showRepoAccess && repoAccessView && (
+            {notices.readiness && <ReadinessCard workspaceId={workspace.id} />}
+            {notices.repoAccess && repoAccessView && (
               <RepoAccessCard
                 workspaceId={workspace.id}
                 initialView={repoAccessView}
@@ -197,8 +204,8 @@ export default async function WorkspaceSettingsPage({
               />
             )}
           </div>
-        )}
-      </Section>
+        </Section>
+      )}
 
       <Section title="Repository" id="repository">
         <div className={ROWS}>
