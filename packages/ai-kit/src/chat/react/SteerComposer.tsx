@@ -15,7 +15,12 @@
  */
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
-export type SteerDelivery = 'sent' | 'delivered';
+/**
+ * sent: queued, waiting for the agent's next turn. delivered: in the agent's
+ * session, not read yet. acknowledged: the agent's turn read it. undelivered:
+ * the run ended before it was read.
+ */
+export type SteerDelivery = 'sent' | 'delivered' | 'acknowledged' | 'undelivered';
 
 export interface SteerMessage {
   id?: string;
@@ -54,9 +59,9 @@ export interface SteerComposerProps {
   className?: string;
 }
 
-const DELIVERY_LABEL: Record<SteerDelivery, string> = { sent: 'Sent', delivered: 'Delivered' };
+const DELIVERY_LABEL: Record<SteerDelivery, string> = { sent: 'Sent', delivered: 'Delivered', acknowledged: 'Read', undelivered: 'Not delivered' };
 
-/** "Sent" / "Delivered". */
+/** "Sent" / "Delivered" / "Read" / "Not delivered". */
 export function steerStatusLabel(s: SteerDelivery): string {
   return DELIVERY_LABEL[s];
 }

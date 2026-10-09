@@ -12,7 +12,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalWorkerStatus, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -469,6 +469,9 @@ export const workerActions = [
   // read-only over rows the caller's workspace access already covers.
   'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
+  // The agent's own read of messages sent to it (interactive / local-plugin
+  // sessions; a runner-managed worker gets them from its runner instead).
+  'receive_messages',
   'create_pr', 'close_pr', 'update_pr', 'merge_pr', 'get_pr', 'list_prs', 'request_pr_review', 'get_pr_review',
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
@@ -814,7 +817,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
-    update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
+    receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
+    update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
       + 'head must be the branch claim_task assigned this worker — a mismatch is refused as head_not_owned. The one exception: a worker claimed from your own interactive session (claim_task called from this session, not a background runner) may instead use any other branch it actually pushed to, as long as no other worker already holds that exact name (refused as head_claimed, naming the other task, when one does).\n\n'
@@ -828,9 +832,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), supersedingRepo? (owner/name), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist (same repo, or supersedingRepo: another repo of this workspace or mission) and already be MERGED, and must differ from the PR being superseded; a 403/404/409 names which check failed. buildd auto-records this when a closed PR\'s content verifies in a merged PR; an unverified candidate is a mission-card suggestion. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
-    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
+    update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. pathManifest is NOT updatable here (rejected): it is set at create_task and grows only via check_path_claim. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller, except for [friction] tasks, which stay on trunk and only record context.relatedMissionId), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
+    manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
@@ -887,7 +891,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
-    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
+    post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply, and write it as a self-contained decision brief: the reader has not seen the task or the code, so the body says which task this is and what is being decided (one or two sentences), then one line per option of the form "<option>: what it leads to", and why you chose the default. User replies are delivered at your next turn boundary (or call receive_messages). missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
@@ -1412,8 +1416,63 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 function resolveWorkerId(param: unknown, ctx: ActionContext): string {
   const workerId = (param as string) || ctx.workerId;
-  if (!workerId) throw new Error('workerId is required — pass it explicitly or ensure the MCP server has worker context');
+  if (!workerId) throw new Error('workerId is required — pass it explicitly, or connect with ?worker=<workerId> in the MCP URL. A connector authenticated as a different account than the worker owner is refused with Forbidden; use the worker-pinned endpoint.');
   return workerId;
+}
+
+/**
+ * Render what a `consumer: 'agent'` check-in was served (human messages,
+ * mission-note replies, worker→worker messages) into tool-result text, then
+ * acknowledge it. The text is in the result the agent reads this turn, so it
+ * is delivered AND read at once: one PATCH carries `instructionsDelivered` /
+ * `instructionIdsDelivered` and `instructionsAcknowledged`. Unconfirmed
+ * (the ack PATCH failed) means it stays queued and is served again.
+ *
+ * Returns null when nothing was served.
+ */
+async function renderAndAckMessages(api: ApiFn, workerId: string, response: any): Promise<string | null> {
+  const parts: string[] = [];
+
+  if (response?.instructions) {
+    parts.push(`**ADMIN INSTRUCTION:** ${response.instructions}`);
+    const ids = Array.isArray(response.instructionIds)
+      ? (response.instructionIds as unknown[]).filter((v): v is string => typeof v === 'string')
+      : [];
+    if (typeof response.instructionsAck === 'string' || ids.length > 0) {
+      try {
+        await api(`/api/workers/${workerId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            ...(typeof response.instructionsAck === 'string' ? { instructionsDelivered: response.instructionsAck } : {}),
+            ...(ids.length > 0 ? { instructionIdsDelivered: ids, instructionsAcknowledged: ids } : {}),
+          }),
+        });
+      } catch {
+        // Unconfirmed: it stays queued and is served again next time.
+      }
+    }
+  }
+
+  // Worker→worker messages: same protocol, acked by id.
+  const pendingMessages = Array.isArray(response?.pendingMessages)
+    ? (response.pendingMessages as WorkerMessage[])
+    : [];
+  if (pendingMessages.length > 0) {
+    parts.push(formatWorkerMessages(pendingMessages));
+    const deliveredIds = pendingMessages.map(m => m?.id).filter((v): v is string => !!v);
+    if (deliveredIds.length > 0) {
+      try {
+        await api(`/api/workers/${workerId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ workerMessagesDelivered: deliveredIds }),
+        });
+      } catch {
+        // Unconfirmed: they stay queued and are served again next time.
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : null;
 }
 
 /**
@@ -2542,26 +2601,31 @@ export async function handleBuilddAction(
         const appendMilestones = [
           ...(params.plan ? [{
             type: 'plan',
+            origin: 'agent',
             label: params.plan,
-            progress: params.progress || 0,
+            ...(typeof params.progress === 'number' && { progress: params.progress }),
             ts: milestoneTs,
           }] : []),
           ...(params.message ? [{
             type: 'status',
+            origin: 'agent',
             label: params.message,
-            progress: params.progress || 0,
+            ...(typeof params.progress === 'number' && { progress: params.progress }),
             ts: milestoneTs,
           }] : []),
         ];
 
         const progressBody: Record<string, unknown> = {
           status: 'running',
-          progress: params.progress || 0,
+          ...(typeof params.progress === 'number' && { progress: params.progress }),
           ...(appendMilestones.length > 0 && { appendMilestones }),
-          // This call surfaces `response.instructions` to the agent below, so it
-          // is a real consumer of the instruction queue and says so. Undeclared
-          // callers get a read-only copy and never move the queue.
-          consumeInstructions: true,
+          // The agent consumer. The server serves it messages only on an
+          // interactive worker (no runner exists to deliver them); on a
+          // runner-managed worker the runner delivers at the next turn boundary
+          // and this call gets nothing, so the two never race for one queue.
+          // Nothing depends on this call any more: receive_messages is the
+          // dedicated read.
+          consumer: 'agent',
         };
         if (params.message) progressBody.currentAction = params.message;
         // Worker self-classification. The server writes it only when the task
@@ -2589,50 +2653,31 @@ export async function handleBuilddAction(
         throw err;
       }
 
-      let resultText = `Progress updated: ${params.progress}%${params.message ? ` - ${params.message}` : ''}`;
+      const resultText = `Progress updated${params.message ? ` - ${params.message}` : ''}`;
+      // Back-compat for interactive sessions whose hooks predate
+      // receive_messages: whatever the server served is rendered and acked here.
+      const messages = await renderAndAckMessages(api, workerId, response);
+      return text(messages ? `${resultText}\n\n${messages}` : resultText);
+    }
 
-      const instructions = response.instructions;
-      if (instructions) {
-        resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
-        // The instruction is in the tool result the agent is about to read, so
-        // delivery is real: confirm it. Without this the queue stays pending and
-        // the same instruction is repeated on every progress update.
-        if (typeof response.instructionsAck === 'string') {
-          try {
-            await api(`/api/workers/${workerId}`, {
-              method: 'PATCH',
-              body: JSON.stringify({ instructionsDelivered: response.instructionsAck }),
-            });
-          } catch {
-            // Unconfirmed: it stays queued and is served again next time.
-          }
+    case 'receive_messages': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      let response;
+      try {
+        // Nothing but the consumer declaration: this is a read, not progress.
+        response = await api(`/api/workers/${workerId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ consumer: 'agent' }),
+        });
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('409')) {
+          return errorResult('**ABORT: Your worker has been terminated.** STOP working on this task immediately.');
         }
+        throw err;
       }
-
-      // Worker→worker messages ride the same check-in. Same protocol as the
-      // instruction queue: render into the tool result the agent is about to
-      // read, then ack by id. This call is the only consumer of the queue — the
-      // runner does not subscribe to the workspace channel and nothing else
-      // reads `pendingMessages`, so an unrendered message is a lost one.
-      const pendingMessages = Array.isArray(response.pendingMessages)
-        ? (response.pendingMessages as WorkerMessage[])
-        : [];
-      if (pendingMessages.length > 0) {
-        resultText += `\n\n${formatWorkerMessages(pendingMessages)}`;
-        const deliveredIds = pendingMessages.map(m => m?.id).filter((v): v is string => !!v);
-        if (deliveredIds.length > 0) {
-          try {
-            await api(`/api/workers/${workerId}`, {
-              method: 'PATCH',
-              body: JSON.stringify({ workerMessagesDelivered: deliveredIds }),
-            });
-          } catch {
-            // Unconfirmed: they stay queued and are served again next time.
-          }
-        }
-      }
-
-      return text(resultText);
+      const messages = await renderAndAckMessages(api, workerId, response);
+      return text(messages ?? 'No messages for you right now.');
     }
 
     case 'complete_task': {
@@ -3317,6 +3362,10 @@ export async function handleBuilddAction(
           throw new Error(`maxLoops must be an integer between ${LOOP_MAX_LOOPS_MIN} and ${LOOP_MAX_LOOPS_MAX}`);
         }
         updateFields.maxLoops = params.maxLoops;
+      }
+
+      if (params.pathManifest !== undefined) {
+        throw new Error('pathManifest cannot be changed via update_task — it is set at create_task and only grows through check_path_claim (which takes the path locks).');
       }
 
       if (Object.keys(updateFields).length === 0) {
@@ -4469,7 +4518,13 @@ export async function handleBuilddAction(
         return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
       }
 
-      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered on your next update_progress call.` : ''}`);
+      // Needs You admission: a question describing a recoverable platform
+      // blocker is not shown to a person — a repair task owns it instead.
+      if (posted?.gate?.disposition === 'recovered') {
+        return text(`Note posted: "${params.title}" (question, not shown to a person)\n${posted.gate.reason ?? 'A repair task owns this blocker.'}`);
+      }
+
+      return text(`Note posted: "${params.title}" (${params.type})${params.type === 'question' ? `\nDefault choice: ${params.defaultChoice || 'none'}\nUser reply will be delivered at your next turn boundary (or call receive_messages).` : ''}`);
     }
 
     case 'create_artifact': {
@@ -6523,22 +6578,42 @@ export async function handleBuilddAction(
       requireFullUuid(params.taskId, 'taskId');
 
       const data = await api(`/api/tasks/${params.taskId}/messages`);
-      const messages: Array<{ type: string; message: string; timestamp: number; deliveryState?: 'pending' | 'delivered' }> = data.messages || [];
+      // `state` is derived server-side (messageDeliveryStatus); `deliveryState`
+      // is the stored field, read only as a fallback for an older server.
+      const messages: Array<{
+        type: string;
+        message?: string;
+        timestamp: number;
+        state?: 'queued' | 'delivered' | 'acknowledged' | 'undelivered';
+        deliveryState?: 'pending' | 'delivered' | 'acknowledged';
+      }> = data.messages || [];
 
       if (messages.length === 0) {
         return text(`No messages for task ${params.taskId}. Messages appear when instructions are sent to or responses received from the running agent.`);
       }
 
+      const stateOf = (m: typeof messages[number]) =>
+        m.state ?? (m.deliveryState === 'pending' ? 'queued' : m.deliveryState ?? 'queued');
+      const TAG: Record<string, string> = {
+        queued: '⏳ QUEUED (waits for the agent\'s next turn)',
+        delivered: '📨 DELIVERED (in the session, not read yet)',
+        acknowledged: '✓ ACKNOWLEDGED (read by the agent)',
+        undelivered: '✗ UNDELIVERED (the run ended first)',
+      };
+
       const lines = messages.map((m) => {
         const when = new Date(m.timestamp).toISOString();
         const label = m.type === 'instruction' ? '→ [human→agent]' : '← [agent→human]';
-        const deliveryTag = m.type === 'instruction' && m.deliveryState === 'pending' ? ' ⏳ UNDELIVERED' : '';
-        return `${when} ${label}${deliveryTag}\n  ${m.message}`;
+        const deliveryTag = m.type === 'instruction' ? ` ${TAG[stateOf(m)] ?? stateOf(m).toUpperCase()}` : '';
+        return `${when} ${label}${deliveryTag}\n  ${m.message ?? '(hidden in a sensitive workspace)'}`;
       });
 
-      const hasUndelivered = messages.some(m => m.type === 'instruction' && m.deliveryState === 'pending');
-      const header = hasUndelivered
-        ? `⚠️  ${messages.length} message(s) for task ${params.taskId} — some are undelivered (agent has not checked in):`
+      const unread = messages.filter(m => m.type === 'instruction' && stateOf(m) !== 'acknowledged');
+      const undelivered = unread.filter(m => stateOf(m) === 'undelivered').length;
+      const header = undelivered > 0
+        ? `⚠️  ${messages.length} message(s) for task ${params.taskId} — ${undelivered} never reached the agent (the run ended first):`
+        : unread.length > 0
+        ? `${messages.length} message(s) for task ${params.taskId} — ${unread.length} not yet read by the agent:`
         : `${messages.length} message(s) for task ${params.taskId}:`;
 
       return text(`${header}\n\n${lines.join('\n\n')}`);
@@ -6554,14 +6629,17 @@ export async function handleBuilddAction(
       // so checking task.status causes false-negatives for tasks that are actively
       // being worked on.
       const task = await api(`/api/tasks/${params.taskId}?include=workers`);
-      const allWorkers: any[] = Array.isArray(task.workers) ? task.workers : [];
-      // 'error' is terminal for the check-in route: it rejects that worker's next
-      // PATCH, so a queued message would never be collected. Selecting an errored
-      // worker as "the active one" produced a cheerful "queued for delivery on
-      // next worker check-in" for a check-in that can never happen.
-      const liveWorker = allWorkers.find(
-        (w) => w.status !== 'completed' && w.status !== 'failed' && w.status !== 'error',
-      );
+      // Newest first by (createdAt, id), whatever order the API listed them in:
+      // with two live rows created in the same instant the pick must not flip.
+      const workerTime = (w: any) => { const t = Date.parse(w?.createdAt ?? ''); return Number.isFinite(t) ? t : 0; };
+      const allWorkers: any[] = (Array.isArray(task.workers) ? task.workers.slice() : [])
+        .sort((a: any, b: any) => workerTime(b) - workerTime(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+      // Every terminal status is terminal here, superseded included. 'error' in
+      // particular: the check-in route rejects that worker's next PATCH, so a
+      // queued message would never be collected. Selecting an errored worker as
+      // "the active one" produced a cheerful "queued for delivery on next worker
+      // check-in" for a check-in that can never happen.
+      const liveWorker = allWorkers.find((w) => !isTerminalWorkerStatus(w.status));
       const erroredWorker = allWorkers.find((w) => w.status === 'error');
       const isUrgent = params.priority === 'urgent';
       // Urgent goes over Pusher, which can still reach a session the runner holds
@@ -6589,9 +6667,9 @@ export async function handleBuilddAction(
 
       // Do not restate delivery here: the server owns that claim, and delivery is
       // only confirmed once the agent actually receives the text. get_task_messages
-      // marks anything still unconfirmed as UNDELIVERED.
+      // shows each message as QUEUED / DELIVERED / ACKNOWLEDGED / UNDELIVERED.
       const stateNote = result.deliveryState === 'pending'
-        ? 'Delivery is confirmed by the agent, not by this call — check get_task_messages for ⏳ UNDELIVERED.'
+        ? "Queued: it reaches the agent at its next turn boundary. get_task_messages shows when it is DELIVERED and ACKNOWLEDGED (read)."
         : '';
       return text([
         `Message sent to worker ${workerId} (status: ${activeWorker.status}).`,

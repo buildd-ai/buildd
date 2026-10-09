@@ -79,7 +79,7 @@ describe('countToolCalls', () => {
 });
 
 describe('buildTape', () => {
-  test('places ticks and progress flags on a 0..1 axis from start to now', () => {
+  test('places ticks and narration flags on a 0..1 axis from start to now', () => {
     const tape = buildTape(
       [
         { type: 'action', label: 'Read a', tool: 'Read', path: 'a', ts: T0 + 25_000 },
@@ -93,7 +93,7 @@ describe('buildTape', () => {
       { pos: 0.25, kind: 'read', label: 'Read a' },
       { pos: 0.75, kind: 'edit', label: 'Edited b' },
     ]);
-    expect(tape.flags).toEqual([{ pos: 0.5, pct: 50, label: 'Halfway', at: '0:50' }]);
+    expect(tape.flags).toEqual([{ pos: 0.5, label: 'Halfway', at: '0:50' }, { pos: 0.6, label: 'No pct', at: '1:00' }]);
     expect(tape.axis).toEqual(['0:00', '0:25', '0:50', '1:15']);
   });
 
@@ -130,24 +130,18 @@ describe('deriveNow', () => {
     { type: 'action' as const, label: 'Edited Footnote.tsx', tool: 'Edit' as const, path: 'pkg/Footnote.tsx', ts: T0 + 250_000 },
   ];
 
-  test('headline is the latest progress message, pct its progress, detail the latest file action', () => {
+  test('headline keeps narration and detail without a percentage', () => {
     const now = deriveNow(ms, { status: 'running', currentAction: 'Editing /w/pkg/Footnote.tsx', prUrl: null, startMs: T0, nowMs: T0 + 261_000 });
     expect(now.headline).toBe('PDF footnote: base amount and the rate used');
-    expect(now.pct).toBe(45);
+    expect(now).not.toHaveProperty('pct');
     expect(now.detail).toEqual({ verb: 'Writing', target: 'Footnote.tsx', recentEdits: 2 });
     expect(now.updatedTs).toBe(T0 + 250_000);
   });
 
-  test('step rail marks done steps with their offset and the first missing one current', () => {
+  test('evidence phases preserve first observation time without inventing commits', () => {
     const now = deriveNow(ms, { status: 'running', currentAction: null, prUrl: null, startMs: T0, nowMs: T0 + 261_000 });
-    expect(now.steps.map(s => [s.key, s.state, s.at])).toEqual([
-      ['started', 'done', '0:00'],
-      ['read', 'done', '0:04'],
-      ['edit', 'done', '3:20'],
-      ['commit', 'current', null],
-      ['pr', 'todo', null],
-      ['done', 'todo', null],
-    ]);
+    expect(now.evidence.phases.find(s => s.key === 'changed')).toMatchObject({ state: 'done', at: T0 + 200_000 });
+    expect(now.evidence.phases.find(s => s.key === 'committed')?.state).toBe('unknown');
   });
 
   test('PR step is done when the worker has a PR url; done step when completed', () => {
@@ -155,14 +149,15 @@ describe('deriveNow', () => {
       [...ms, { type: 'status', label: 'Commit: x', ts: T0 + 300_000 }, { type: 'checkpoint', event: 'task_completed', label: 'Task completed', ts: T0 + 400_000 }],
       { status: 'completed', currentAction: null, prUrl: 'https://example.test/pr/1', startMs: T0, nowMs: T0 + 400_000 },
     );
-    expect(now.steps.map(s => s.state)).toEqual(['done', 'done', 'done', 'done', 'done', 'done']);
+    expect(now.evidence.phases.find(s => s.key === 'pr_open')?.state).toBe('done');
+    expect(now.evidence.phases.find(s => s.key === 'committed')?.state).toBe('unknown');
   });
 
   test('falls back to currentAction when no progress message exists', () => {
     const now = deriveNow([], { status: 'running', currentAction: 'Reading /x/y.ts', prUrl: null, startMs: T0, nowMs: T0 + 1 });
     expect(now.headline).toBe('Reading /x/y.ts');
-    expect(now.pct).toBeNull();
-    expect(now.steps[0].state).toBe('current');
+    expect(now).not.toHaveProperty('pct');
+    expect(now.evidence.phases[0].state).toBe('done');
   });
 
   test('ignores question/answer bookkeeping when picking the headline', () => {

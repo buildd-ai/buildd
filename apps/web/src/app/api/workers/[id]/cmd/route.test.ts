@@ -234,6 +234,32 @@ describe('POST /api/workers/[id]/cmd', () => {
       expect(entry.message).toBeUndefined();
     });
 
+    // B-5: the message is durable. It used to go out over Pusher only, so a
+    // missed event lost it while history said pending forever.
+    it('queues the text and wakes an ack-capable runner with a text-free deliver_pending', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: WORKER_ID,
+        accountId: 'account-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: 'earlier',
+        supportsInstructionAck: true,
+      });
+
+      const res = await POST(createMockRequest({ action: 'message', text: 'Try the device flow' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(workersUpdateSets[0].pendingInstructions).toBe('earlier\n\nTry the device flow');
+      expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+      const payload = (mockTriggerEvent.mock.calls[0] as any)[2];
+      expect(payload.action).toBe('deliver_pending');
+      expect(payload.text).toBeUndefined();
+      const data = await res.json();
+      expect(data.deliveryState).toBe('pending');
+      expect(typeof data.messageId).toBe('string');
+    });
+
     it('records delivered for a runner that cannot confirm delivery', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({

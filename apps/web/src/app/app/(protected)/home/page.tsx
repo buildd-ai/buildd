@@ -2125,14 +2125,6 @@ export default async function HomePage({
             }),
           ]);
           if (queueHistory) idleStretches = idleWhileQueued({ ...queueHistory, from: renderNow - 24 * 3_600_000, to: renderNow });
-          // Running cells in the missions rows fill to their worker's progress.
-          const progressByTask = new Map<string, number>();
-          for (const r of fleetData?.fleet.runners ?? []) for (const sl of r.slots) {
-            if (sl.worker?.taskId && sl.worker.progress != null) progressByTask.set(sl.worker.taskId, sl.worker.progress);
-          }
-          for (const row of homeMissionRows) for (const p of row.model.phases) for (const c of p.cells) {
-            if (c.state === 'running' && progressByTask.has(c.taskId)) c.fill = progressByTask.get(c.taskId)! / 100;
-          }
         }
 
         teamRoles = allRoles.map(r => ({

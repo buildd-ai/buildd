@@ -26,7 +26,7 @@ const min = (m: number) => new Date(NOW - m * 60_000);
 const fleet = buildFleetSnapshot(
   [{ id: 'h1', accountId: 'a', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) }],
   [
-    { id: 'w1', accountId: 'a', runner: 'http://atlas.local:8766', status: 'running', startedAt: min(5), progress: 40, task: { id: 't1', title: 'feat(api): currency on invoices', roleSlug: 'builder', missionId: 'm1' } },
+    { id: 'w1', accountId: 'a', runner: 'http://atlas.local:8766', status: 'running', startedAt: min(5), phase: 'Changes', task: { id: 't1', title: 'feat(api): currency on invoices', roleSlug: 'builder', missionId: 'm1' } },
     { id: 'w2', accountId: 'a', runner: 'http://atlas.local:8766', status: 'waiting_input', startedAt: min(3), waitingFor: { prompt: 'Per line or total?' }, task: { id: 't2', title: 'feat(checkout): pay', roleSlug: 'builder', missionId: 'm1' } },
   ],
   { now: NOW, roles: new Map([['builder', { name: 'Builder', color: '#0C72CB' }]]) },
@@ -294,7 +294,7 @@ describe('FleetStrip on a real-shaped fleet (1 runner x 10 slots)', () => {
   const idleFleet = buildFleetSnapshot([hb], [done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push')], { now: NOW });
   const busyFleet = buildFleetSnapshot([hb], [
     done('d1', 25, 'fix(pr): keep the PR body in sync after a force-push'),
-    { id: 'w1', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(30), progress: 55, task: { id: 't1', title: 'feat(onboarding): checklist survives reload', roleSlug: 'builder', missionId: 'm1' } },
+    { id: 'w1', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(30), phase: 'Pushed', task: { id: 't1', title: 'feat(onboarding): checklist survives reload', roleSlug: 'builder', missionId: 'm1' } },
   ], { now: NOW });
 
   it('a fully idle fleet is one summary line naming the last run, not ten idle rows', () => {
@@ -321,11 +321,12 @@ describe('FleetStrip on a real-shaped fleet (1 runner x 10 slots)', () => {
   // "55% · 2856m". Elapsed time uses the same compact durations as the lists.
   it('a long-running slot shows hours or days, not thousands of minutes', () => {
     const longFleet = buildFleetSnapshot([hb], [
-      { id: 'w2', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(2856), progress: 55, task: { id: 't2', title: 'docs: runnable examples', roleSlug: 'builder', missionId: 'm1' } },
+      { id: 'w2', accountId: 'a', runner: 'http://q.local:1', status: 'running', startedAt: min(2856), phase: 'Pushed', task: { id: 't2', title: 'docs: runnable examples', roleSlug: 'builder', missionId: 'm1' } },
     ], { now: NOW });
     const html = renderToStaticMarkup(<FleetStrip fleet={longFleet} roles={[]} now={NOW} timeZone="UTC" />);
     expect(html).not.toContain('2856m');
-    expect(html).toContain('55% · 2d');
+    expect(html).toContain('Pushed · 2d');
+    expect(html).not.toContain('>55%');
   });
 
   it('the runner name is never cut without its full form in a title', () => {
@@ -406,7 +407,7 @@ describe('FleetStrip — demo polish regressions', () => {
   // X ran first (slot 0) and finished; Y overlapped it (slot 1) and is still running.
   const f = buildFleetSnapshot([hb], [
     { id: 'x', accountId: 'a', runner: 'http://cedar.local:1', status: 'completed', startedAt: min(20), completedAt: min(4), task: { id: 'tx', title: 'feat(fx): rates service', missionId: 'm1' } },
-    { id: 'y', accountId: 'a', runner: 'http://cedar.local:1', status: 'running', startedAt: min(15), progress: 20, task: { id: 'ty', title: 'feat(invoices): render in currency', missionId: 'm1' } },
+    { id: 'y', accountId: 'a', runner: 'http://cedar.local:1', status: 'running', startedAt: min(15), phase: 'Started', task: { id: 'ty', title: 'feat(invoices): render in currency', missionId: 'm1' } },
   ], { now: NOW });
   const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
 

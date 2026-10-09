@@ -12,7 +12,7 @@ function slot(index: number, busy: boolean, question: string | null = null): Fle
     index,
     worker: busy ? {
       workerId: `w${index}`, taskId: `t${index}`, missionId: null, label: 'task', rest: '', roleSlug: null,
-      roleName: null, roleColor: null, status: question ? 'waiting_input' : 'running', progress: null,
+      roleName: null, roleColor: null, status: question ? 'waiting_input' : 'running', phase: null,
       startedAt: null, question,
     } : null,
     last: null,
