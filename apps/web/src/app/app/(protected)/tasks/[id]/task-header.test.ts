@@ -29,3 +29,15 @@ describe('taskHeading', () => {
     expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'after CI #1']);
   });
 });
+
+describe('taskHeading delegates to displayTaskTitle', () => {
+  test('a mission refresh title reads the same as on every other surface', () => {
+    expect(taskHeading({ title: 'chore(mission): merge dev into the Widget Polish integration branch', label: null }, null).heading)
+      .toBe('Refresh Widget Polish from dev');
+  });
+
+  test('a ship title behind a retry wrap', () => {
+    expect(taskHeading({ title: '[builder · after review #2] Ship mission: Widget Polish', label: null }, null).heading)
+      .toBe('Ship Widget Polish');
+  });
+});

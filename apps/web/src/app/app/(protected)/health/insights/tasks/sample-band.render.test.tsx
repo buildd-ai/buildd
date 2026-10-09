@@ -9,14 +9,15 @@ mock.module('next/navigation', () => ({
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { default: TaskGrid, BAND_ROW_PAGE } = await import('../../../tasks/TaskGrid');
 const { sampleBandSelection } = await import('./sample-band');
+const { displayTaskTitle } = await import('@/lib/task-title');
 
 const now = Date.UTC(2026, 9, 6, 12);
 const render = (state: 'sample' | 'large') => {
   const s = sampleBandSelection(state, undefined, now);
   return { s, html: renderToStaticMarkup(<TaskGrid key={s.label} bandFilterLabel={s.label} tasks={s.tasks} workspaces={[]} />) };
 };
-/** Fixture titles end in a unique `(n)`, so a title present in the markup is a rendered row. */
-const shownRows = (html: string, titles: string[]) => titles.filter(t => html.includes(`${t}<`)).length;
+/** Fixture titles end in a unique `(n)`, so a display title present in the markup is a rendered row. */
+const shownRows = (html: string, titles: string[]) => titles.filter(t => html.includes(`${displayTaskTitle(t)}<`)).length;
 
 describe('band drill-down fixture renders through the real TaskGrid', () => {
   for (const state of ['sample', 'large'] as const) {
