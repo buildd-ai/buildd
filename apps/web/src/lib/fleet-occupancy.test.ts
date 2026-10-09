@@ -4,9 +4,10 @@ import {
   occupancyBucketMs,
   occupancyWindowMs,
   isOccupancyWindow,
+  MAX_UNENDED_RUN_MS,
   type OccupancyWorkerRow,
 } from './fleet-occupancy';
-import { MAX_UNENDED_RUN_MS } from './insights-flow';
+import { MAX_UNENDED_RUN_MS as INSIGHTS_UNENDED_CAP } from './insights-flow';
 
 const MIN = 60_000;
 const H = 60 * MIN;
@@ -191,6 +192,10 @@ describe('runner slots vs sessions', () => {
 });
 
 describe('when a worker stops holding its slot', () => {
+  it('uses the same unended-run cap as Insights', () => {
+    expect(INSIGHTS_UNENDED_CAP).toBe(MAX_UNENDED_RUN_MS);
+  });
+
   it('a live worker (running, waiting on a person, starting) holds its slot until now', () => {
     for (const status of ['running', 'waiting_input', 'starting', 'idle']) {
       const s = series([row({ status, startedAt: NOW - 30 * MIN, updatedAt: NOW - 25 * MIN })]);

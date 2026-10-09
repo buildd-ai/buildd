@@ -5,12 +5,16 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { workers, workspaces } from '@buildd/core/db/schema';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { buildOccupancySeries, occupancyBuckets, type OccupancySeries, type OccupancyWindow, type OccupancyWorkerRow } from './fleet-occupancy';
 
-export { teamWorkspaceIds } from './insights-flow-query';
+/** The team's workspace ids: the scope every occupancy read is limited to. */
+export async function teamWorkspaceIds(teamId: string): Promise<string[]> {
+  const rows = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, teamId));
+  return (rows as { id: string }[]).map(r => r.id);
+}
 
 /** Cap on worker rows per request; newest first, so a cut drops the oldest work. */
 export const OCCUPANCY_ROW_LIMIT = 20_000;

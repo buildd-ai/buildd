@@ -45,16 +45,17 @@ describe('OccupancyPlot', () => {
     expect(render(w, '24h')).not.toContain('occupancy-peak-line');
   });
 
-  it('sessions get their own strip and scale, never a line on the runner axis', () => {
+  it('interactive sessions are their own chart with their own numbers, never a line on the runner axis', () => {
     const html = render([run('http://r', NOW - 3 * H, NOW - 2 * H), run('mcp', NOW - 3 * H, NOW - H)], '24h');
-    expect(html).toContain('data-testid="occupancy-sessions-strip"');
-    expect(html).toContain('Your sessions, own scale');
+    expect(html).toContain('data-testid="occupancy-sessions"');
+    expect(html).toContain('>Interactive sessions<');
+    expect(html).not.toContain('own scale');
   });
 
   it('only sessions in the window: says there was no runner work, still shows the sessions', () => {
     const html = render([run('mcp', NOW - 3 * H, NOW - H)], '7d');
     expect(html).toContain('No runner work in the past 7 days.');
-    expect(html).toContain('occupancy-sessions-strip');
+    expect(html).toContain('data-testid="occupancy-sessions"');
   });
 });
 

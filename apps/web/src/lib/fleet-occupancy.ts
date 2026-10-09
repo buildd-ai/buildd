@@ -5,8 +5,8 @@
  *   - `completedAt`, when it finished with one;
  *   - now, while it is live (running, starting, or parked on a person's answer:
  *     a parked worker still holds its runner slot);
- *   - otherwise its last update, capped at MAX_UNENDED_RUN_MS, the same rule
- *     Insights uses (its row keeps being touched by PR refreshes, so the last
+ *   - otherwise its last update, capped at MAX_UNENDED_RUN_MS (shared with
+ *     Insights) (its row keeps being touched by PR refreshes, so the last
  *     update is not when it stopped).
  *
  * Two series, never summed: runner slots, and interactive sessions (claimed
@@ -24,7 +24,6 @@
 
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { executorOf } from './executor';
-import { MAX_UNENDED_RUN_MS } from './insights-flow';
 
 export type OccupancyWindow = '24h' | '7d' | '30d';
 export const OCCUPANCY_WINDOWS: readonly OccupancyWindow[] = ['24h', '7d', '30d'];
@@ -81,6 +80,13 @@ export interface OccupancySeries {
 }
 
 const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
+
+/**
+ * Longest a finished worker with no recorded end is counted as running. Shared
+ * with Insights (lib/insights-flow.ts imports it from here, so the two charts
+ * agree on how long an unended run lasted).
+ */
+export const MAX_UNENDED_RUN_MS = 8 * HOUR;
 
 /** When a started worker stopped holding its slot. */
 export function occupancyEnd(w: OccupancyWorkerRow, now: number): number {

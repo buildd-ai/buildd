@@ -7,8 +7,8 @@
  * of one on a ten-slot fleet is still visible; slots online is stated as a
  * number, and drawn as a reference line only when it fits the scale. The area
  * is the time-weighted average per bucket, the thin line the peak in it.
- * Interactive sessions use no runner slot, so they get their own strip and
- * scale below rather than a line on the same axis. A window with no work says
+ * Interactive sessions use no runner slot, so they are a separate chart below,
+ * with their own numbers, never a line on the runner axis. A window with no work says
  * so in one line instead of drawing zeros.
  *
  * Fetches /api/fleet/occupancy itself, so switching window doesn't reload the
@@ -22,7 +22,7 @@ import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sampl
 
 const DEFAULT_W = 640;
 const PLOT_H = 140;
-const SESSIONS_H = 32;
+const SESSIONS_H = 64;
 const AXIS_H = 20;
 const LEFT = 24;
 /** Room above the top gridline for its label and the "slots online" label. */
@@ -95,7 +95,7 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
   return (
     <div data-testid="health-section-occupancy" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-xs font-medium text-text-secondary">Runner slots in use</h3>
+        <h3 className="text-xs font-medium text-text-secondary">Runner slots</h3>
         <div role="group" aria-label="Slots busy window" data-testid="occupancy-window-picker" className={`flex shrink-0 border border-border-default ${loading ? 'opacity-60' : ''}`}>
           {OCCUPANCY_WINDOWS.map(value => (
             <button
@@ -130,52 +130,50 @@ function Metric({ label, value, testId }: { label: string; value: string; testId
   );
 }
 
-/** The chart for one loaded window; no fetching, so it renders in a test. */
-export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded; capacityNow: number; busyNow: number }) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const [W, setW] = useState(DEFAULT_W);
+function useWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(DEFAULT_W);
   useEffect(() => {
-    const el = boxRef.current;
+    const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(([entry]) => {
-      const w = Math.round(entry.contentRect.width);
-      if (w > 0) setW(w);
+      const next = Math.round(entry.contentRect.width);
+      if (next > 0) setW(next);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const [hover, setHover] = useState<number | null>(null);
+  return [ref, w] as const;
+}
 
+/**
+ * One series over the window: average as a filled area, optionally the peak as
+ * a thin line and slots online as a dotted reference. Hover is shared, so the
+ * runner and session charts point at the same time.
+ */
+function LevelChart({ series, avg, peak, height, capacity, hover, setHover, label, tone }: {
+  series: OccupancySeries;
+  avg: number[];
+  peak: number[] | null;
+  height: number;
+  capacity: number | null;
+  hover: number | null;
+  setHover: (i: number | null) => void;
+  label: string;
+  tone: 'accent' | 'muted';
+}) {
+  const [ref, W] = useWidth();
   const plotW = Math.max(1, W - LEFT - RIGHT);
-  const avg = useMemo(() => series.buckets.map(b => b.runner.avg), [series]);
-  const peak = useMemo(() => series.buckets.map(b => b.runner.peak), [series]);
-  const sessions = useMemo(() => series.buckets.map(b => b.sessions.avg), [series]);
-  const max = niceScaleMax(peak, avg);
-  const sessionsMax = niceScaleMax(sessions);
-  const runnerIdle = series.summary.runner.peak === 0;
-  const hasSessions = series.summary.sessions.peak > 0;
-  const capacityFits = capacityNow > 0 && capacityNow <= max;
+  const max = niceScaleMax(peak ?? avg, avg);
   const n = series.buckets.length;
   const step = plotW / Math.max(1, n);
   const ticks = xTicks(series);
-  const words = WINDOW_WORDS[series.windowKey];
-
-  const metrics = (
-    <div data-testid="occupancy-metrics" className="mb-4 flex flex-wrap gap-x-6 gap-y-2">
-      <Metric label="Peak" value={String(series.summary.runner.peak)} />
-      <Metric label="Average" value={fmtLevel(series.summary.runner.avg)} />
-      <Metric label="In use now" value={String(busyNow)} />
-      <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
-    </div>
-  );
-
-  if (runnerIdle && !hasSessions) {
-    return (
-      <div ref={boxRef}>
-        <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>
-      </div>
-    );
-  }
+  const a = levelPaths(avg, max, plotW, height);
+  const p = peak ? levelPaths(peak, max, plotW, height) : null;
+  const capacityFits = capacity != null && capacity > 0 && capacity <= max;
+  const crossX = hover != null ? hover * step + step / 2 : null;
+  const stroke = tone === 'accent' ? 'var(--accent)' : 'var(--text-secondary)';
+  const fill = tone === 'accent' ? 'var(--accent-soft)' : 'var(--surface-3)';
 
   const indexAt = (e: PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -188,28 +186,14 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
     const cur = hover ?? n - 1;
     setHover(Math.max(0, Math.min(n - 1, cur + (e.key === 'ArrowLeft' ? -1 : 1))));
   };
-  const b = hover != null ? series.buckets[hover] : null;
-  const readout = b
-    ? `${fmtBucket(b.t, series.windowKey)} · average ${fmtLevel(b.runner.avg)} · peak ${b.runner.peak}${hasSessions ? ` · sessions peak ${b.sessions.peak}` : ''}`
-    : `Runner slots in use, ${words}`;
-
-  const avgPaths = levelPaths(avg, max, plotW, PLOT_H);
-  const peakPaths = levelPaths(peak, max, plotW, PLOT_H);
-  const sessPaths = levelPaths(sessions, sessionsMax, plotW, SESSIONS_H);
-  const sessionsTop = TOP + PLOT_H + AXIS_H + 10;
-  const totalH = runnerIdle ? SESSIONS_H + 4 : hasSessions ? sessionsTop + SESSIONS_H + 4 : TOP + PLOT_H + AXIS_H;
-  const crossX = hover != null ? hover * step + step / 2 : null;
 
   return (
-    <div ref={boxRef}>
-      {metrics}
-      <p data-testid="occupancy-readout" className="mb-1 min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]" aria-live="polite">{readout}</p>
-      {runnerIdle && <p data-testid="occupancy-runner-idle" className="py-2 text-body text-text-muted">No runner work in the {words}.</p>}
+    <div ref={ref}>
       <svg
-        viewBox={`0 0 ${W} ${totalH}`}
+        viewBox={`0 0 ${W} ${TOP + height + AXIS_H}`}
         className="block h-auto w-full touch-pan-y select-none"
         role="img"
-        aria-label={`Runner slots in use over the ${words}: peak ${series.summary.runner.peak}, average ${fmtLevel(series.summary.runner.avg)}; ${capacityNow} slots online now. Use left and right arrows to read each point.`}
+        aria-label={`${label} Use left and right arrows to read each point.`}
         tabIndex={0}
         onPointerMove={e => setHover(indexAt(e))}
         onPointerDown={e => setHover(indexAt(e))}
@@ -217,51 +201,93 @@ export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded
         onKeyDown={onKey}
         onBlur={() => setHover(null)}
       >
-        {!runnerIdle && (
-          <>
-            {scaleTicks(max).map(v => (
-              <g key={v}>
-                <line x1={LEFT} x2={W - RIGHT} y1={TOP + levelY(v, max, PLOT_H)} y2={TOP + levelY(v, max, PLOT_H)} stroke="var(--border-default)" strokeWidth={1} />
-                <text x={LEFT - 6} y={TOP + levelY(v, max, PLOT_H) + 4} textAnchor="end" fontSize={11} fill="var(--text-muted)">{v}</text>
-              </g>
-            ))}
-            <g transform={`translate(${LEFT},${TOP})`}>
-              <path d={avgPaths.area} fill="var(--accent-soft)" />
-              <path d={avgPaths.line} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeLinejoin="round" />
-              {series.windowKey !== '24h' && (
-                <path data-testid="occupancy-peak-line" d={peakPaths.line} fill="none" stroke="var(--accent-text)" strokeWidth={1} strokeLinejoin="round" opacity={0.55} />
-              )}
-              {capacityFits && (
-                <g data-testid="occupancy-capacity-line">
-                  <line x1={0} x2={plotW} y1={levelY(capacityNow, max, PLOT_H)} y2={levelY(capacityNow, max, PLOT_H)} stroke="var(--text-secondary)" strokeWidth={1} strokeDasharray="2 3" />
-                  <text x={plotW - 2} y={levelY(capacityNow, max, PLOT_H) - 4} textAnchor="end" fontSize={11} fill="var(--text-secondary)">{capacityNow} slots online</text>
-                </g>
-              )}
-              {crossX != null && <line x1={crossX} x2={crossX} y1={0} y2={PLOT_H} stroke="var(--text-primary)" strokeWidth={1} opacity={0.35} />}
-              {ticks.map(t => (
-                <text key={t.i} x={t.i * step + step / 2} y={PLOT_H + 15} textAnchor={tickAnchor(t.i * step + step / 2, plotW)} fontSize={11} fill="var(--text-muted)">{t.label}</text>
-              ))}
-            </g>
-          </>
-        )}
-        {hasSessions && (
-          <g data-testid="occupancy-sessions-strip" transform={`translate(${LEFT},${runnerIdle ? 0 : sessionsTop})`}>
-            <text x={0} y={9} fontSize={11} fill="var(--text-muted)">Your sessions</text>
-            <path d={sessPaths.line} fill="none" stroke="var(--text-muted)" strokeWidth={1.25} strokeLinejoin="round" />
-            {crossX != null && <line x1={crossX} x2={crossX} y1={0} y2={SESSIONS_H} stroke="var(--text-primary)" strokeWidth={1} opacity={0.35} />}
+        {scaleTicks(max).map(v => (
+          <g key={v}>
+            <line x1={LEFT} x2={W - RIGHT} y1={TOP + levelY(v, max, height)} y2={TOP + levelY(v, max, height)} stroke="var(--border-default)" strokeWidth={1} />
+            <text x={LEFT - 6} y={TOP + levelY(v, max, height) + 4} textAnchor="end" fontSize={11} fill="var(--text-muted)">{v}</text>
           </g>
-        )}
+        ))}
+        <g transform={`translate(${LEFT},${TOP})`}>
+          <path d={a.area} fill={fill} />
+          <path d={a.line} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinejoin="round" />
+          {p && <path data-testid="occupancy-peak-line" d={p.line} fill="none" stroke={tone === 'accent' ? 'var(--accent-text)' : 'var(--text-muted)'} strokeWidth={1} strokeLinejoin="round" opacity={0.55} />}
+          {capacityFits && (
+            <g data-testid="occupancy-capacity-line">
+              <line x1={0} x2={plotW} y1={levelY(capacity!, max, height)} y2={levelY(capacity!, max, height)} stroke="var(--text-secondary)" strokeWidth={1} strokeDasharray="2 3" />
+              <text x={plotW - 2} y={levelY(capacity!, max, height) - 4} textAnchor="end" fontSize={11} fill="var(--text-secondary)">{capacity} slots online</text>
+            </g>
+          )}
+          {crossX != null && <line x1={crossX} x2={crossX} y1={0} y2={height} stroke="var(--text-primary)" strokeWidth={1} opacity={0.35} />}
+          {ticks.map(t => (
+            <text key={t.i} x={t.i * step + step / 2} y={height + 15} textAnchor={tickAnchor(t.i * step + step / 2, plotW)} fontSize={11} fill="var(--text-muted)">{t.label}</text>
+          ))}
+        </g>
       </svg>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-meta text-text-muted">
-        {!runnerIdle && <span className="flex items-center gap-1.5"><i className="inline-block h-2.5 w-2.5 bg-accent" />Average in use</span>}
-        {!runnerIdle && series.windowKey !== '24h' && <span className="flex items-center gap-1.5"><i className="inline-block h-0 w-3 border-t border-accent-text opacity-60" />Peak</span>}
-        {capacityFits && !runnerIdle && <span className="flex items-center gap-1.5"><i className="inline-block h-0 w-3 border-t border-dotted border-text-secondary" />Slots online now</span>}
-        {hasSessions && (
-          <span data-testid="occupancy-sessions-label" className="flex items-center gap-1.5">
-            <i className="inline-block h-0 w-3 border-t border-text-muted" />Your sessions, own scale · peak {series.summary.sessions.peak} · average {fmtLevel(series.summary.sessions.avg)}
-          </span>
-        )}
+    </div>
+  );
+}
+
+/** The charts for one loaded window; no fetching, so it renders in a test. */
+export function OccupancyPlot({ series, capacityNow, busyNow }: { series: Loaded; capacityNow: number; busyNow: number }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const avg = useMemo(() => series.buckets.map(b => b.runner.avg), [series]);
+  const peak = useMemo(() => series.buckets.map(b => b.runner.peak), [series]);
+  const sessAvg = useMemo(() => series.buckets.map(b => b.sessions.avg), [series]);
+  const sessPeak = useMemo(() => series.buckets.map(b => b.sessions.peak), [series]);
+  const runnerIdle = series.summary.runner.peak === 0;
+  const hasSessions = series.summary.sessions.peak > 0;
+  const words = WINDOW_WORDS[series.windowKey];
+  const showPeak = series.windowKey !== '24h';
+
+  if (runnerIdle && !hasSessions) {
+    return <p data-testid="occupancy-empty" className="py-2 text-body text-text-muted">No agents ran in the {words}.</p>;
+  }
+
+  const b = hover != null ? series.buckets[hover] : null;
+  const readout = (kind: 'runner' | 'sessions') => b
+    ? `${fmtBucket(b.t, series.windowKey)}: average ${fmtLevel(b[kind].avg)}, peak ${b[kind].peak}`
+    : '';
+
+  return (
+    <div>
+      <div data-testid="occupancy-metrics" className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
+        <Metric label="Peak" value={String(series.summary.runner.peak)} />
+        <Metric label="Average" value={fmtLevel(series.summary.runner.avg)} />
+        <Metric label="In use now" value={String(busyNow)} />
+        <Metric label="Slots online" value={String(capacityNow)} testId="occupancy-slots-online" />
       </div>
+      {runnerIdle ? (
+        <p data-testid="occupancy-runner-idle" className="py-2 text-body text-text-muted">No runner work in the {words}.</p>
+      ) : (
+        <>
+          <p data-testid="occupancy-readout" className="min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]" aria-live="polite">{readout('runner')}</p>
+          <LevelChart
+            series={series} avg={avg} peak={showPeak ? peak : null} height={PLOT_H} capacity={capacityNow}
+            hover={hover} setHover={setHover} tone="accent"
+            label={`Runner slots in use over the ${words}: peak ${series.summary.runner.peak}, average ${fmtLevel(series.summary.runner.avg)}.`}
+          />
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-meta text-text-muted">
+            <span className="flex items-center gap-1.5"><i className="inline-block h-2.5 w-2.5 bg-accent" />Average</span>
+            {showPeak && <span className="flex items-center gap-1.5"><i className="inline-block h-0 w-3 border-t border-accent-text opacity-60" />Peak</span>}
+          </div>
+        </>
+      )}
+
+      {hasSessions && (
+        <div data-testid="occupancy-sessions" className="mt-8">
+          <h3 className="mb-3 text-xs font-medium text-text-secondary">Interactive sessions</h3>
+          <div className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
+            <Metric label="Peak" value={String(series.summary.sessions.peak)} />
+            <Metric label="Average" value={fmtLevel(series.summary.sessions.avg)} />
+          </div>
+          <p className="min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]">{readout('sessions')}</p>
+          <LevelChart
+            series={series} avg={sessAvg} peak={showPeak ? sessPeak : null} height={SESSIONS_H} capacity={null}
+            hover={hover} setHover={setHover} tone="muted"
+            label={`Interactive sessions over the ${words}: peak ${series.summary.sessions.peak}, average ${fmtLevel(series.summary.sessions.avg)}.`}
+          />
+        </div>
+      )}
       {series.truncated && <p className="mt-2 text-meta text-status-warning">Partial window: only the newest workers were read.</p>}
     </div>
   );
