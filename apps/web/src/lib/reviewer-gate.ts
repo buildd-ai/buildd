@@ -34,6 +34,7 @@ import { reviewDecisionLine, type ReviewBlocker } from './attention-line';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import type { LandingOwnership } from './pr-landing-ownership';
+import type { MergeReviewState } from './merge-advice';
 export { resolveLandingOwnership, landingModeOf } from './pr-landing-ownership';
 
 /**
@@ -397,6 +398,29 @@ export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'r
   const threshold = input.queuedThresholdMinutes ?? DEFAULT_QUEUED_THRESHOLD_MINUTES;
   if (minutesSince(rt.createdAt, input.now) > threshold) return null;
   return status.state === 'queued' ? 'queued' : 'reviewing';
+}
+
+/**
+ * The review as the merge-readiness advice reads it (lib/merge-advice.ts):
+ * the verdict's state, its confidence and the head it read. Off the same
+ * reviewer task row as the gate, so the advice and the card agree.
+ */
+export function reviewFactsForAdvice(input: {
+  reviewerTask: StoredVerdictFallbackInput['reviewerTask'];
+  inFlight: boolean;
+}): { review: MergeReviewState; confidence: number | null; reviewHeadSha: string | null } {
+  if (input.inFlight) return { review: 'in_flight', confidence: null, reviewHeadSha: null };
+  const status = derivePrReviewStatus({
+    reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null,
+    worker: null,
+  });
+  const review: MergeReviewState = status.state === 'approved' ? 'approved'
+    : status.state === 'escalated' ? 'escalated'
+    : status.state === 'changes_requested' ? 'changes_requested'
+    : status.state === 'queued' || status.state === 'reviewing' ? 'in_flight'
+    : status.state === 'review_failed' ? 'failed'
+    : 'none';
+  return { review, confidence: status.confidence, reviewHeadSha: status.reviewHeadSha ?? null };
 }
 
 /** A review is an independent human action, never permission to merge. */

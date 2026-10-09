@@ -1,5 +1,6 @@
 import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
+import type { MergeAdviceSlot } from './merge-advice';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
 import { readGithubAccessBlock, repoAccessSettingsPath } from './github-repo-access';
@@ -611,6 +612,12 @@ export interface ActionQueueItem {
   refreshFirst?: { prNumber: number | null; prUrl: string | null; taskId: string | null; chip: ActionChip } | null;
   /** Carried from {@link EscalationRawItem.missionPrRole}; drives the fold above. */
   missionPrRole?: 'ship' | 'refresh' | null;
+  /**
+   * Human-review cards only: Jev's stored "can this merge now?" answer and the
+   * token to ask for one (merge-advice-server.ts `attachMergeAdvice`). Advice
+   * only; nothing in the queue reads it.
+   */
+  mergeAdvice?: MergeAdviceSlot | null;
 }
 
 // Chip display order: lower index = shown first.
