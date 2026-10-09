@@ -150,11 +150,6 @@ export default async function ReleasesPage({
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
       <div className="flex items-baseline justify-between mb-6">
         <h1 className="text-xl font-semibold text-text-primary">Releases</h1>
-        {allReleases.length > 0 && (
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-text-secondary font-light">{allReleases.length} release{allReleases.length !== 1 ? 's' : ''}</span>
-          </div>
-        )}
       </div>
 
       {allReleases.length === 0 ? (
@@ -190,7 +185,7 @@ export default async function ReleasesPage({
                 stateBadge={stateBadge}
                 archetypeBadge={archetypeBadge}
                 supersededByVersion={supersededByVersion}
-                supersededByReleaseId={supersededByReleaseId}
+                supersededByReleaseId={supersededByReleaseId && supersededReleaseMap.has(supersededByReleaseId) ? supersededByReleaseId : null}
               />
             );
           })}

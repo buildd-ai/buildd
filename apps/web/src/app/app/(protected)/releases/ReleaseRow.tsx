@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import StatePill from '@/components/ui/StatePill';
 
 interface ReleaseRowProps {
   release: {
@@ -50,6 +51,7 @@ export function ReleaseRow({
   supersededByVersion,
   supersededByReleaseId,
 }: ReleaseRowProps) {
+  const superseded = release.state === 'failed' && /^superseded by release \S+/.test(release.failureReason ?? '');
   return (
     // The card is a <div>, not the <Link>, for two reasons. `.card` sets
     // background/border but no `display`, so an inline <a> host collapses the
@@ -72,9 +74,13 @@ export function ReleaseRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-2">
             <h2 className="font-medium text-text-primary truncate">{workspaceName}</h2>
-            <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
-              {stateBadge.label}
-            </span>
+            {superseded ? (
+              <StatePill state="queued" label="Superseded" title="A newer release replaces this release" />
+            ) : (
+              <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
+                {stateBadge.label}
+              </span>
+            )}
             <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${archetypeBadge.cls}`}>
               {archetypeBadge.label}
             </span>
@@ -116,19 +122,19 @@ export function ReleaseRow({
             </div>
           )}
 
-          {supersededByVersion && supersededByReleaseId && (
+          {superseded && supersededByReleaseId && (
             <div className="mt-2 text-[11px] text-text-muted font-mono">
               Superseded by{' '}
               <Link
                 href={`/app/releases/${supersededByReleaseId}`}
                 className="relative text-primary hover:underline"
               >
-                {supersededByVersion}
+                {supersededByVersion || 'a newer release'}
               </Link>
             </div>
           )}
 
-          {release.failureReason && !supersededByVersion && (
+          {release.failureReason && !superseded && (
             <div className="mt-2 text-[11px] text-status-error font-mono">{release.failureReason}</div>
           )}
         </div>

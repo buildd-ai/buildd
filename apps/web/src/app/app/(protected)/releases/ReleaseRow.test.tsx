@@ -89,7 +89,8 @@ describe('ReleaseRow superseded state', () => {
         supersededByReleaseId="r1"
       />,
     );
-    expect(html).toContain('text-text-muted border-border-default');
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('data-tone="q"');
     expect(html).not.toContain('text-status-error');
   });
 
@@ -107,6 +108,37 @@ describe('ReleaseRow superseded state', () => {
       />,
     );
     expect(html).toContain('href="/app/releases/r1"');
+  });
+});
+
+describe('ReleaseRow successor fallbacks', () => {
+  it('keeps a neutral linked fallback when the successor version is null', () => {
+    const html = render({ release: supersededRelease, supersededByReleaseId: 'r1', supersededByVersion: null });
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('Superseded by');
+    expect(html).toContain('href="/app/releases/r1"');
+    expect(html).toContain('>a newer release</a>');
+    expect(html).not.toContain('superseded by release r1');
+    expect(html).not.toContain('text-status-error');
+    expect(maxAnchorDepth(html)).toBe(1);
+  });
+
+  it('stays neutral when the successor cannot be resolved', () => {
+    const html = render({ release: supersededRelease });
+    expect(html).toContain('data-state="queued"');
+    expect(html).toContain('Superseded');
+    expect(html).not.toContain('superseded by release r1');
+    expect(html).not.toContain('text-status-error');
+  });
+
+  it('preserves the error tone and reason for an ordinary failure', () => {
+    const html = render({
+      release: { ...supersededRelease, failureReason: 'Deployment failed' },
+      stateBadge: { label: 'Failed', cls: 'text-status-error' },
+    });
+    expect(html).toContain('Deployment failed');
+    expect(html).toContain('text-status-error');
+    expect(html).not.toContain('data-state="queued"');
   });
 });
 
