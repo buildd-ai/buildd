@@ -77,7 +77,7 @@ export function ChatUnavailable({ reason, canManage, policy, teamId = null, form
         ? <ConnectOwnKeyCard teamId={teamId} returnTo="/app/chat" />
         : <ChatSetupCard reason={reason} canManage={canManage} policy={policy} />}
       <Link href={formHref} className="inline-flex min-h-11 items-center justify-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-        {formHref.startsWith('/app/tasks/new') ? 'File a task instead →' : 'File a mission instead →'}
+        File a mission instead →
       </Link>
     </div>
   );

@@ -27,10 +27,12 @@ export interface ChatEntry {
 
 export const EMPTY_CHAT_ENTRY: ChatEntry = { intent: null, about: null, workspaceId: null };
 
-/** The fallback forms. API/MCP callers and old links still use them. */
-export function formHref(kind: NewWorkKind, workspaceId?: string | null): string {
-  if (kind === 'mission') return '/app/missions/new';
-  return workspaceId ? `/app/tasks/new?workspaceId=${encodeURIComponent(workspaceId)}` : '/app/tasks/new';
+/**
+ * The fallback form when chat is unavailable. There is no task form (the old
+ * URL redirects to chat), so a task falls back to the mission form.
+ */
+export function formHref(_kind: NewWorkKind, _workspaceId?: string | null): string {
+  return '/app/missions/new';
 }
 
 function entryQuery(entry: Partial<ChatEntry>): string {
