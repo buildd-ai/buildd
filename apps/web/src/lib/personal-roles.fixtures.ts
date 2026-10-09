@@ -166,13 +166,14 @@ export function installPersonalRoleMocks() {
     getTeamPermissionOverrides: async () => ({}),
   }));
   mock.module('@/lib/mission-context', () => ({
-    // Reproduces the workspace view's reach: workspace rows + every team-level
-    // row of the workspace's team, personal ones included.
+    // Reproduces the workspace view's reach with no requester: workspace rows,
+    // team defaults and shared personal rows of the workspace's team.
     getWorkspaceRoles: async (wsId: string) => {
       const ws = store.workspaces.find(w => w.id === wsId);
       return store.workspaceSkills
         .filter(r => r.isRole && r.enabled && (r.workspaceId === wsId || (r.workspaceId == null && r.teamId === ws?.teamId)))
-        .map(r => ({ slug: r.slug, name: r.name, workspaceId: r.workspaceId, currentLoad: 0 }));
+        .filter(r => r.ownerUserId == null || r.visibility === 'team')
+        .map(r => ({ id: r.id, slug: r.slug, name: r.name, workspaceId: r.workspaceId, ownerUserId: r.ownerUserId, visibility: r.visibility, currentLoad: 0 }));
     },
   }));
   mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: async () => [] }));
