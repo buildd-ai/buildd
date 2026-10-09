@@ -334,6 +334,8 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   learn: [''],
   watch: [''],
   unwatch: [''],
+  create_personal_role: [''],
+  share_personal_role: [''],
 };
 
 /**

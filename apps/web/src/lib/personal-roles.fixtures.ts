@@ -18,6 +18,12 @@ export const store: Record<string, Row[]> = {};
 /** userId -> teamId -> team role. */
 export const teamRoles: Record<string, Record<string, string>> = {};
 export const session: { user: { id: string } | null; cookieTeam?: string } = { user: null };
+/**
+ * What a bearer token resolves to (lib/roles-caller.ts): an OAuth session is
+ * `{ teamId, sessionUserId }`, a bld_ key has no sessionUserId, a per-task
+ * token carries `taskScope`. null: the token is invalid.
+ */
+export const bearer: { account: Row | null } = { account: null };
 
 const SKILL_DEFAULTS: Row = {
   workspaceId: null, accountId: null, ownerUserId: null, visibility: 'team', enabled: true,
@@ -31,6 +37,7 @@ export function resetStore() {
   for (const t of ['workspaceSkills', 'secrets', 'connectors', 'connectorShares', 'users', 'workspaces']) store[t] = [];
   session.user = null;
   session.cookieTeam = undefined;
+  bearer.account = null;
 }
 resetStore();
 
@@ -138,7 +145,8 @@ export function installPersonalRoleMocks() {
     connectorCatalogTeamPolicies: table('connectorCatalogTeamPolicies'),
   }));
   mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => session.user }));
-  mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => null }));
+  mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => (bearer.account?.taskScope ? null : bearer.account) }));
+  mock.module('@/lib/task-token-auth', () => ({ authenticateTaskScopedCaller: async () => bearer.account }));
   const teamIdsOf = async (userId: string) => Object.keys(teamRoles[userId] ?? {});
   mock.module('@/lib/team-access', () => ({
     getUserTeamIds: teamIdsOf,
@@ -186,12 +194,13 @@ export function installPersonalRoleMocks() {
   }));
 }
 
-export function jsonReq(url: string, method: string, body?: unknown) {
+export function jsonReq(url: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
   // Lazy import keeps next/server out of the module graph until a test runs.
   const { NextRequest } = require('next/server') as typeof import('next/server');
   return new NextRequest(url, {
     method,
-    ...(body !== undefined ? { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } } : {}),
+    headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
 

@@ -669,6 +669,7 @@ export function turnGroups(args: {
       if (g) groups.add(g);
     }
   }
-  if (!args.canAdmin) groups.delete('admin');
+  // A member asking about roles gets their own (create/share_personal_role, in workers) instead.
+  if (!args.canAdmin && groups.delete('admin')) groups.add('workers');
   return groups;
 }
