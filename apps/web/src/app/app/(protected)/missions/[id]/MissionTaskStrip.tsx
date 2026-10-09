@@ -251,18 +251,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
 }
 
 const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone, caret, compact, link, workspaceId, executor, reason, selectionReason, now, delivery }: StripDrawerProps & { ref: React.Ref<HTMLDivElement> }) {
-  const router = useRouter();
-  const onChanged = useCallback(() => router.refresh(), [router]);
   const landed = state === 'landed';
-  // |blockers(T)|, off-strip included: every one of them is marked or named (SEL-3).
-  const blockedByCount = stripBlockerCount(t);
-  const { phase, isBlocked } = taskActionPhase({
-    taskStatus: t.taskStatus,
-    taskMode: t.taskMode,
-    workerStatus: t.workerStatus,
-    workerWaitingFor: t.waitingFor,
-    blockedByCount,
-  });
   const why = landed ? null : reason ?? selectionReason ?? stripReason(t, executor);
   const pill = stripDrawerPill(t, state, executor);
   const meta = [
@@ -273,8 +262,6 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
   // One column at every width: the title and reason take the drawer's full
   // width, and the actions sit below them (a side column squeezed the title
   // to a word or two per line in the band's half-width Landed cell).
-  const action = !landed && t.delivery?.action ? t.delivery.action : null;
-
   return (
     <div
       ref={ref}
@@ -306,6 +293,38 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
+      <StripTaskActions task={t} state={state} link={link} workspaceId={workspaceId} executor={executor} why={why} />
+    </div>
+  );
+});
+
+/**
+ * The selected task's actions: the task sheet's own renderer, the delivery's
+ * next move, and a way into the task. Shared by the strip drawer and the
+ * Overview's focus card.
+ */
+export function StripTaskActions({ task: t, state, link, workspaceId, executor, why }: {
+  task: BoardTask;
+  state: StripState;
+  link: BoardLinkContext;
+  workspaceId: string;
+  executor: MissionExecutor | null;
+  why: string | null;
+}) {
+  const router = useRouter();
+  const onChanged = useCallback(() => router.refresh(), [router]);
+  const landed = state === 'landed';
+  // |blockers(T)|, off-strip included: every one of them is marked or named (SEL-3).
+  const blockedByCount = stripBlockerCount(t);
+  const { phase, isBlocked } = taskActionPhase({
+    taskStatus: t.taskStatus,
+    taskMode: t.taskMode,
+    workerStatus: t.workerStatus,
+    workerWaitingFor: t.waitingFor,
+    blockedByCount,
+  });
+  const action = !landed && t.delivery?.action ? t.delivery.action : null;
+  return (
       <div className="mt-3 flex min-w-0 flex-col gap-2">
         {!landed && (
           <TaskActionZone
@@ -358,9 +377,8 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
           </a>
         </div>
       </div>
-    </div>
   );
-});
+}
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
@@ -370,7 +388,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.
  */
-function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
+export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
   const [open, setOpen] = useState(delivery.kind === 'repair');
   const id = useId();
   const summary = [

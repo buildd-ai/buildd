@@ -58,7 +58,7 @@ import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
-import MissionBoard from './MissionBoard';
+import MissionOverview from './MissionOverview';
 import MissionLanes from './MissionLanes';
 import MissionFeedLayout from './MissionFeedLayout';
 import MissionSheetRow from './MissionSheetRow';
@@ -1566,7 +1566,7 @@ export default async function MissionDetailPage({
       <MissionSurfaceAuditWaiverProvider {...auditWaiverProps}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<MissionOverview model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
         lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout
