@@ -83,9 +83,9 @@ import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
 import { reconcileEarlyReleases, type ReconcileEarlyReleasesResult } from '@/lib/early-release-reconciler';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
-import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
+import { LANDING_CYCLE_COOLDOWN_MS, PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
 import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
-import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents } from '@/lib/workflow/seam';
+import { drainDueEffects, reconcileKernelDeliveries, reconcileTrunkIncidents, restartTreadmillCycles } from '@/lib/workflow/seam';
 import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
@@ -116,7 +116,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -201,11 +201,23 @@ export async function GET(req: NextRequest) {
       reconcileKernelDeliveries().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
+      // S15 cycles: a delivery the behind-refresh treadmill escalated gets a fresh refresh
+      // budget once the landing cooldown has passed (bounded by the reducer's cycle cap), the
+      // kernel's counterpart of the legacy marker's cycle. The landing sweep then lands it.
+      // Isolated.
+      restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
     ]);
     if ('error' in kernelFloor) {
       console.error('[KernelFloor] error:', kernelFloor.error);
     } else {
       console.log(`[KernelFloor] checked=${kernelFloor.checked} imported=${kernelFloor.imported} enqueued=${kernelFloor.enqueued} errors=${kernelFloor.errors}`);
+    }
+    if ('error' in treadmillCycles) {
+      console.error('[TreadmillCycles] error:', treadmillCycles.error);
+    } else {
+      console.log(`[TreadmillCycles] checked=${treadmillCycles.checked} restarted=${treadmillCycles.restarted} refused=${treadmillCycles.refused} errors=${treadmillCycles.errors}`);
     }
     // subjectsReconciled is NOT folded into `changed` below: the subject sweep
     // only runs on the merged/closed branches, each of which already increments
@@ -310,12 +322,14 @@ export async function GET(req: NextRequest) {
         + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
         + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
+        + ('error' in treadmillCycles ? 0 : treadmillCycles.restarted)
         + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
-        + ('error' in kernelFloor ? 1 : kernelFloor.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor },
+        + ('error' in kernelFloor ? 1 : kernelFloor.errors)
+        + ('error' in treadmillCycles ? 1 : treadmillCycles.errors),
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles },
     });
 
     return NextResponse.json({
@@ -335,6 +349,7 @@ export async function GET(req: NextRequest) {
       kernelOutbox,
       trunk,
       kernelFloor,
+      treadmillCycles,
       earlyRelease,
     });
   });
