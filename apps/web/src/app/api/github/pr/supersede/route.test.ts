@@ -15,7 +15,7 @@ mock.module('@buildd/core/db', () => ({
   db: { query: { workers: { findFirst: mockWorkersFindFirst }, tasks: { findFirst: mockTasksFindFirst } } },
 }));
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'id' } }));
-mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }) }));
+mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ type: 'eq', a, b }), and: (...c: any[]) => ({ type: 'and', c }) }));
 
 import { POST } from './route';
 
@@ -284,6 +284,93 @@ describe('S21: the supersede authorization matrix (§17.1)', () => {
     mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve({ ...ownerWorker, accountId: 'acc-x', workspace: { id: 'ws-1', teamId: 'team-2' } } as any));
     const res = await call({ id: 'acc-9', teamId: 'team-1', name: 'owner@example.com' });
     expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+});
+
+// An agent run on its runner's key (no per-task token) names itself with workerId,
+// as close_pr and update_pr do. It may record a supersession only for a PR its own
+// task owns: its own worker's PR, or one its task names. People keep full reach.
+describe('agent run on its runner key: the PR must be its own', () => {
+  const RUNNER = { id: 'acc-1', teamId: 'team-1', name: 'Runner', level: 'worker' };
+  const callerWorker = (over: Record<string, unknown> = {}) => ({
+    id: 'w-caller', taskId: 't-caller', accountId: 'acc-1', prNumber: null, workspaceId: 'ws-1',
+    workspace: { id: 'ws-1', teamId: 'team-1' },
+    task: { id: 't-caller', title: 'unrelated work', description: null, context: null, roleSlug: 'builder', mode: 'execution', missionId: null, reviewerRetryPrNumber: null, ciRetryPrNumber: null, conflictRetryPrNumber: null },
+    ...over,
+  });
+  /** PR #2287, opened by another task's run on the same runner account. */
+  const otherRunsWorker = { id: 'w-other', taskId: 't-other', accountId: 'acc-1', prNumber: 2287, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+
+  function actingWorkerIs(worker: unknown) {
+    mockWorkersFindFirst.mockImplementation((opts: any) => Promise.resolve(
+      opts?.where?.a === 'id' && opts?.where?.b === 'w-caller' ? worker as any : null,
+    ));
+  }
+
+  beforeEach(() => {
+    reset();
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve(RUNNER as any));
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(otherRunsWorker as any));
+  });
+
+  it('refuses a PR another task\'s run opened, before writing', async () => {
+    actingWorkerIs(callerWorker());
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('only its own PR');
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+
+  it('looks up the acting run by the workerId it named', async () => {
+    actingWorkerIs(callerWorker());
+    await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    const lookup = mockWorkersFindFirst.mock.calls.map((c: any) => c[0]).find((o: any) => o?.where?.b === 'w-caller');
+    expect(lookup?.where).toEqual({ type: 'eq', a: 'id', b: 'w-caller' });
+    expect(lookup?.with?.task).toBeTruthy();
+  });
+
+  it('allows a PR its own task names', async () => {
+    actingWorkerIs(callerWorker({ task: { ...callerWorker().task, description: 'The work landed in #2293; record #2287 as superseded.' } }));
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-other' }));
+  });
+
+  it('allows its own worker\'s PR', async () => {
+    const own = callerWorker({ prNumber: 2287 });
+    actingWorkerIs(own);
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(own as any));
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-caller' }));
+  });
+
+  it('allows a person session on the shared account', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ ...RUNNER, sessionUserId: 'user-1' } as any));
+    actingWorkerIs(callerWorker());
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('allows a teammate on another account', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ id: 'acc-9', teamId: 'team-1', name: 'teammate' } as any));
+    actingWorkerIs(callerWorker());
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a named acting worker from another team', async () => {
+    actingWorkerIs(callerWorker({ accountId: 'acc-x', workspace: { id: 'ws-9', teamId: 'team-2' }, workspaceId: 'ws-9' }));
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+
+  it('404s when the named acting worker does not exist', async () => {
+    actingWorkerIs(null);
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(404);
     expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 });
