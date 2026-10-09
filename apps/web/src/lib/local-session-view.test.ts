@@ -1,8 +1,9 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
-const { classifyLocalSession, sortLocalSessions, countInteractiveSessions, shownInSessionList, groupSessionsForDisplay, sessionTaskPreview, SESSION_TASK_PREVIEW } = await import('./local-session-view');
+const { recentLocalSessionWhere, classifyLocalSession, sortLocalSessions, countInteractiveSessions, shownInSessionList, groupSessionsForDisplay, sessionTaskPreview, SESSION_TASK_PREVIEW } = await import('./local-session-view');
 type Row = import('./local-session-view').LocalSessionRow;
 type Held = Row['held'][number];
 
@@ -35,9 +36,11 @@ describe('classifyLocalSession', () => {
     expect(v.workerLive).toBe(true);
   });
 
-  it('MCP activity on the bound worker keeps a quiet presence online', () => {
+  it('a write to the bound worker does not keep a silent presence online', () => {
+    // workers.updated_at is bumped by the reaper, webhooks, usage and any MCP
+    // call of the account's other sessions: none of them is this client.
     const v = classifyLocalSession(row({ lastSeenAt: minsAgo(40), held: [held({ workerId: 'w1', workerStatus: 'running', workerUpdatedAt: minsAgo(3), taskId: 't1', taskTitle: null, taskStatus: null })] }), NOW);
-    expect(v.state).toBe('bound');
+    expect(v.state).toBe('offline');
   });
 
   it('no activity for ten minutes: offline', () => {
@@ -101,12 +104,24 @@ describe('a session holding several tasks', () => {
     expect(v.workerId).toBe('w3');
   });
 
-  it('any live held worker keeps a quiet presence online', () => {
+  it('live held workers do not keep a quiet presence online: the seats stay listed, the session reads offline', () => {
     const v = classifyLocalSession(row({ lastSeenAt: minsAgo(40), held: [
       held({ workerId: 'w1', workerStatus: 'completed', workerUpdatedAt: minsAgo(1) }),
       held({ workerId: 'w2', workerUpdatedAt: minsAgo(3) }),
     ] }), NOW);
+    expect(v.state).toBe('offline');
+    // Still holding a seat: repairable from the task page ("Release slot").
+    expect(v.workerLive).toBe(true);
+  });
+
+  it('a client heartbeat with several live claims (subagents) works on all of them', () => {
+    const v = classifyLocalSession(row({ lastSeenAt: minsAgo(2), held: [
+      held({ workerId: 'w1', taskId: 't1', workerUpdatedAt: minsAgo(30) }),
+      held({ workerId: 'w2', taskId: 't2', workerUpdatedAt: minsAgo(25) }),
+      held({ workerId: 'w3', taskId: 't3', workerUpdatedAt: minsAgo(20) }),
+    ] }), NOW);
     expect(v.state).toBe('bound');
+    expect(v.tasks.filter(t => t.live).map(t => t.id)).toEqual(['t1', 't2', 't3']);
   });
 
   it('all held tasks finished: presence only, tasks still listed', () => {
@@ -118,6 +133,78 @@ describe('a session holding several tasks', () => {
     expect(v.workerLive).toBe(false);
     expect(v.tasks).toHaveLength(2);
     expect(v.task?.id).toBe('t2');
+  });
+});
+
+// The ghost: Activity read "Claude Code · Working · 3m" holding a long list of
+// tasks while no client was running. Its presence had stopped hearing from
+// the client long before; a held worker that nothing had released was still
+// being written server-side, and that write was read as the session's own.
+describe('a session whose client is gone', () => {
+  const ghostHeld = [
+    ...Array.from({ length: 24 }, (_, i) => held({ workerId: `done-${i}`, taskId: `done-${i}`, workerStatus: i % 2 ? 'completed' : 'failed', taskStatus: 'completed', workerUpdatedAt: minsAgo(600 + i) })),
+    held({ workerId: 'stuck-1', taskId: 'stuck-1', workerStatus: 'running', workerUpdatedAt: minsAgo(3) }),
+    held({ workerId: 'stuck-2', taskId: 'stuck-2', workerStatus: 'idle', workerUpdatedAt: minsAgo(1) }),
+    held({ workerId: 'stuck-3', taskId: 'stuck-3', workerStatus: 'waiting_input', workerUpdatedAt: minsAgo(8) }),
+  ];
+
+  it('no client heartbeat since it went quiet: not Working, not online, not counted', () => {
+    const v = classifyLocalSession(row({ startedAt: minsAgo(900), lastSeenAt: minsAgo(180), held: ghostHeld }), NOW);
+    expect(v.state).toBe('offline');
+    expect(v.state).not.toBe('bound');
+    expect(countInteractiveSessions([v])).toBe(0);
+    expect(groupSessionsForDisplay([v]).working).toHaveLength(0);
+    expect(groupSessionsForDisplay([v]).earlier.map(s => s.id)).toEqual(['p1']);
+  });
+
+  it('its clock is the client\'s last heartbeat, not the last server write to a held worker', () => {
+    const v = classifyLocalSession(row({ lastSeenAt: minsAgo(180), held: ghostHeld }), NOW);
+    expect(v.lastSeenAt).toBe(minsAgo(180).toISOString());
+  });
+
+  it('a held worker updated after the client vanished does not revive it', () => {
+    const vanished = row({ lastSeenAt: minsAgo(11), held: [held({ workerUpdatedAt: minsAgo(0) })] });
+    expect(classifyLocalSession(vanished, NOW).state).toBe('offline');
+  });
+
+  it('pre-reboot: the client process may still exist but is silent: offline until it speaks, never Working', () => {
+    // A long local command fires no hook until it returns. Buildd has no
+    // current signal from the client, so it does not claim one.
+    const v = classifyLocalSession(row({ lastSeenAt: minsAgo(25), held: [held({ workerUpdatedAt: minsAgo(4) })] }), NOW);
+    expect(v.state).toBe('offline');
+    // The next hook (the command returning) brings it straight back.
+    const back = classifyLocalSession(row({ lastSeenAt: NOW, held: [held({ workerUpdatedAt: minsAgo(4) })] }), NOW);
+    expect(back.state).toBe('bound');
+  });
+
+  it('detached tasks: every held worker released, the session holds no live work', () => {
+    const v = classifyLocalSession(row({ lastSeenAt: minsAgo(180), held: [
+      held({ workerId: 'w1', workerStatus: 'failed', taskStatus: 'pending', workerUpdatedAt: minsAgo(2) }),
+      held({ workerId: 'w2', workerStatus: 'completed', taskStatus: 'completed', workerUpdatedAt: minsAgo(2) }),
+    ] }), NOW);
+    expect(v.state).toBe('offline');
+    expect(v.workerLive).toBe(false);
+  });
+
+  it('explicitly ended but a held worker is still live (/clear, or not yet released): ended, never Working', () => {
+    const v = classifyLocalSession(row({ lastSeenAt: minsAgo(1), endedAt: minsAgo(1), held: [held({ workerUpdatedAt: minsAgo(0) })] }), NOW);
+    expect(v.state).toBe('ended');
+    expect(countInteractiveSessions([v])).toBe(0);
+  });
+
+  it('online is decided by the age of the client heartbeat alone', () => {
+    const at = (m: number) => classifyLocalSession(row({ lastSeenAt: minsAgo(m), held: [held({ workerUpdatedAt: minsAgo(0) })] }), NOW).state;
+    expect(at(9.9)).toBe('bound');
+    expect(at(10)).toBe('offline');
+  });
+});
+
+describe('which sessions are listed', () => {
+  it('only those whose own client was heard from recently; a held worker\'s writes never relist one', () => {
+    const q = new PgDialect().sqlToQuery(recentLocalSessionWhere(minsAgo(60 * 24)));
+    expect(q.sql).toContain('"local_sessions"."last_seen_at" >');
+    expect(q.sql).not.toContain('workers');
+    expect(q.sql).not.toContain('updated_at');
   });
 });
 

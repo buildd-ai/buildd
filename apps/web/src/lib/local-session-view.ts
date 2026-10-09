@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { localSessions, localSessionWorkers, tasks, workers } from '@buildd/core/db/schema';
-import { and, asc, desc, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, or, type SQL } from 'drizzle-orm';
 import {
   LIVE_WORKER_STATUSES,
   LOCAL_SESSION_ONLINE_MS,
@@ -17,8 +17,14 @@ import {
  * - `offline`: no hook or MCP activity for LOCAL_SESSION_ONLINE_MS, never ended.
  * - `ended`: the client reported the session closed.
  *
- * "Seen" is the later of the presence's own last hook event and its live held
- * workers' last MCP activity: any of them keeps the session online.
+ * "Seen" is the presence's own last client event (`last_seen_at`: a hook
+ * touch, start, bind or end), and nothing else. A held worker's `updated_at`
+ * is not a client signal: the reaper, webhooks, usage writes and MCP calls
+ * from the account's other sessions all bump it, and reading it as this
+ * session's heartbeat is what showed a session as Working after its client
+ * was gone. A session that holds live workers but has gone quiet reads
+ * `offline` with `workerLive` true: those seats are still held (and
+ * releasable), but nobody is visibly working them.
  *
  * A session can hold several tasks (its subagents each claim one). `tasks`
  * lists them all, oldest claim first; `task` / `workerId` are the primary one:
@@ -83,7 +89,7 @@ const isLive = (status: string | null) => !!status && (LIVE_WORKER_STATUSES as r
 export function classifyLocalSession(row: LocalSessionRow, now: Date): LocalSessionView {
   const live = row.held.filter(h => isLive(h.workerStatus));
   const workerLive = live.length > 0;
-  const seen = Math.max(row.lastSeenAt.getTime(), ...live.map(h => h.workerUpdatedAt?.getTime() ?? 0));
+  const seen = row.lastSeenAt.getTime();
   const primary = live[live.length - 1] ?? row.held[row.held.length - 1] ?? null;
   const tasks: LocalSessionTaskView[] = row.held
     .filter(h => h.taskId)
@@ -124,6 +130,15 @@ export function sortLocalSessions(views: LocalSessionView[]): LocalSessionView[]
 // Activity's collapse rules live in a client-safe module (this one imports db).
 export { SESSION_TASK_PREVIEW, groupSessionsForDisplay, sessionTaskPreview, type SessionDisplayGroups } from './local-session-display';
 
+/**
+ * Which presences the list reads: heard from by their own client since
+ * `since` (`end` stamps last_seen_at too). A server write to a held worker
+ * never brings an old session back into the list.
+ */
+export function recentLocalSessionWhere(since: Date): SQL {
+  return gt(localSessions.lastSeenAt, since);
+}
+
 /** Sessions with any activity in the last day, in these workspaces or of these accounts. */
 export async function listLocalSessions(opts: {
   workspaceIds: string[];
@@ -138,13 +153,6 @@ export async function listLocalSessions(opts: {
     opts.workspaceIds.length > 0 ? inArray(localSessions.workspaceId, opts.workspaceIds) : undefined,
     opts.accountIds?.length ? inArray(localSessions.accountId, opts.accountIds) : undefined,
   );
-  // Recent: the presence's own hooks, or any worker it holds (join rows or the legacy column).
-  const heldRecently = sql`EXISTS (
-    SELECT 1 FROM ${localSessionWorkers} lsw JOIN ${workers} hw ON hw.id = lsw."worker_id"
-    WHERE lsw."local_session_id" = ${localSessions.id} AND hw."updated_at" > ${since.toISOString()}::timestamptz
-  ) OR EXISTS (
-    SELECT 1 FROM ${workers} lw WHERE lw.id = ${localSessions.boundWorkerId} AND lw."updated_at" > ${since.toISOString()}::timestamptz
-  )`;
   const presences = await db
     .select({
       id: localSessions.id,
@@ -158,7 +166,7 @@ export async function listLocalSessions(opts: {
       endedAt: localSessions.endedAt,
     })
     .from(localSessions)
-    .where(and(scope, or(gt(localSessions.lastSeenAt, since), heldRecently)))
+    .where(and(scope, recentLocalSessionWhere(since)))
     .orderBy(desc(localSessions.lastSeenAt))
     .limit(opts.limit ?? 50);
   if (presences.length === 0) return [];
