@@ -86,56 +86,6 @@ export function FactSheet({ rows, testId = 'task-fact-sheet' }: { rows: FactRow[
   );
 }
 
-export interface PeerTask {
-  taskId: string;
-  /** Scope chip ("checkout"), from taskDisplayLabel. */
-  scope?: string | null;
-  /** Short display label, from taskDisplayLabel. */
-  title: string;
-  /** The raw title, for the hover tooltip. */
-  fullTitle?: string;
-  phase: string;
-  href: string;
-  waiting?: boolean;
-}
-
-/** Other live agents in the same mission (or workspace), with their lifecycle phase. */
-export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { title: string; peers: PeerTask[]; testId?: string }) {
-  if (peers.length === 0) return null;
-  return (
-    <section data-testid={testId}>
-      <div className="section-label border-b border-border-default pb-2 mb-1">{title}</div>
-      <ul>
-        {peers.map(p => (
-          <li key={p.taskId} className="border-b border-border-default">
-            <Link href={p.href} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
-              <span className={`w-[9px] h-[9px] shrink-0 ${p.waiting ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
-              <span className="flex-1 min-w-0 flex items-center gap-2 font-mono text-[13px] text-text-primary" title={p.fullTitle ?? p.title}>
-                {p.scope && <span className="shrink-0 px-1.5 border border-border-strong text-[11px] text-text-secondary">{p.scope}</span>}
-                <span className="min-w-0 truncate">{p.title}</span>
-              </span>
-              <span className="shrink-0 font-mono text-chip uppercase text-text-muted">{p.phase}</span>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/** Mobile stand-in for AlsoRunning: one line, so the question stays the first screen. */
-export function AlsoRunningCompact({ count, href }: { count: number; href: string }) {
-  if (count <= 0) return null;
-  return (
-    <Link href={href} data-testid="task-also-running-compact" className="lg:hidden flex items-center gap-3 min-h-11 mt-5 font-mono text-[13px] text-text-secondary">
-      <span className="flex gap-[4px]" aria-hidden="true">
-        {Array.from({ length: Math.min(count, 6) }, (_, i) => <span key={i} className="w-[14px] h-[14px] bg-accent" />)}
-      </span>
-      {count} other agent{count === 1 ? '' : 's'} running
-    </Link>
-  );
-}
-
 /** Collapsed-by-default description in the side panel. */
 export function SideDescription({ children, preview }: { children: ReactNode; preview: string }) {
   return (
