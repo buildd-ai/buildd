@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries]
 keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, permission registry, permission overrides, rbac]
-verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
+verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts, apps/web/src/app/api/roles/personal.test.ts, apps/web/src/app/api/roles/[id]/personal.test.ts, apps/web/src/app/api/roles/[id]/share/route.test.ts, apps/web/src/app/api/roles/[id]/promote/route.test.ts]
 supersedes: []
 assertions:
   - id: "permission-registry"
@@ -77,7 +77,8 @@ it (or none).
 - AC-2: GIVEN a user who is `admin` of team T WHEN `can` is asked for
   `delete_team` in T THEN it returns false.
 - AC-3: GIVEN a user who is `member` of team T WHEN `roleHas` is asked for any
-  registered permission THEN it returns false.
+  registered permission other than `create_personal_roles` THEN it returns
+  false.
 - AC-4: GIVEN an `admin`-level key of team K WHEN `can` is asked for
   `manage_releases` in another team THEN it returns false.
 - AC-5: GIVEN an `admin`-level key WHEN `can` is asked for a permission whose
@@ -99,6 +100,8 @@ it (or none).
   `apps/web/src/lib/team-access-team-scope.test.ts` fails if a hard-coded
   owner/admin helper is reintroduced.
 - `packages/core/db/schema.ts` — `teamMembers.role`, `accounts.level`.
+- `apps/web/src/lib/personal-roles.ts` — who may see, edit and share a
+  personal agent role, and what config it may carry (see Personal roles).
 
 **Out of scope**:
 - Workspace reach (`verifyWorkspaceAccess` without a role,
@@ -281,16 +284,44 @@ Rules that need no permission, enforced in the same routes:
 | `apps/web/src/app/api/connectors/[id]/shares/route.ts:75` | manage connector shares | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/connectors/[id]/transfer/route.ts:83` | transfer a connector (both teams) | owner, admin (oddity 1) | admin (route policy, oddity 2) | `manage_connectors` |
 | `apps/web/src/app/api/workspaces/[id]/connectors/route.ts:136` | enable or disable a connector in a workspace | owner, admin | admin (in-route) | `manage_connectors` |
-| `apps/web/src/app/api/roles/route.ts:108` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/[id]/route.ts:47` | edit or delete a role, or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
-| `apps/web/src/app/api/roles/[id]/overrides/route.ts:81` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/route.ts:185` | create a team-level role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/route.ts:55` | edit or delete a role, or make a skill one | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/overrides/route.ts:94` | write a role's workspace override | owner, admin, personal team | — (session only) | `manage_agent_roles` |
 | `apps/web/src/app/api/workspaces/[id]/skills/route.ts:57` | create or upsert a workspace role (skill CRUD, `isRole`) | owner, admin | admin (in-route) | `manage_agent_roles` |
 | `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts:55` | edit or delete a workspace role, or make a skill one | owner, admin | admin (in-route) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/route.ts:177` | create a personal role (`personal: true`) | owner, admin, member | — (session only) | `create_personal_roles` |
+| `apps/web/src/lib/personal-roles.ts:67` | edit, delete or re-share another member's **shared** personal role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
+| `apps/web/src/app/api/roles/[id]/promote/route.ts:34` | promote a shared personal role to a team role | owner, admin, personal team | — (session only) | `manage_agent_roles` |
 | `apps/web/src/app/api/evidence-backends/route.ts:56` | create a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:56` | edit a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/route.ts:99` | delete a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/app/api/evidence-backends/[id]/verify/route.ts:34` | verify a backend | owner, admin | admin | `manage_evidence_backends` |
 | `apps/web/src/lib/experiments.ts:48` | `isExperimentAdmin`: create/start/pause/conclude, see admin-only | owner, admin | admin (`apps/web/src/lib/experiment-access.ts:72`) | `run_experiments` |
+
+### Personal roles
+
+A personal role is a `workspace_skills` row with `owner_user_id` set: always
+team-level, `visibility` `private` (its owner only) or `team` (shared).
+
+- Any member holding `create_personal_roles` creates one for themselves with
+  `POST /api/roles { personal: true }`; it starts private. The target team is
+  `body.teamId` (one of the caller's teams, else 404) or the active team — never
+  an arbitrary first membership.
+- Its owner may always edit, delete and share it. Once shared, a
+  `manage_agent_roles` holder may too. Another member's private role is
+  invisible to everyone else (404), admins included, and is never listed.
+- `POST /api/roles/[id]/share { visibility }` refuses `team` with a 409 when a
+  team role or another shared personal role in the team has the slug. A private
+  personal role may share a team role's slug; a new team role may not take a
+  shared personal role's slug.
+- `POST /api/roles/[id]/promote` (`manage_agent_roles`) turns a shared personal
+  role into a team role, keeping the slug.
+- A personal role never holds an operator grant, carries no raw `mcpServers`,
+  maps `requiredEnvVars` only to secrets with `user_id` = its owner (runner
+  provided vars excepted), and mounts only connectors its team owns or was
+  shared (catalog policy is enforced at claim time, as for team roles). Each refusal is a 400 naming
+  the field. It has no workspace overrides (400), and the workspace skills
+  routes neither create nor list it.
 
 ### Registered ahead of their call sites
 

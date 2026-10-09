@@ -64,6 +64,7 @@ const EXPECTED: Record<Permission, Row> = {
   manage_team_notifications: { roles: OA, keys: ADMIN_KEY },
   create_workspace: { roles: OA, keys: ADMIN_KEY },
   manage_agent_roles: { roles: OA, keys: ADMIN_KEY },
+  create_personal_roles: { roles: ['owner', 'admin', 'member'], keys: ['worker', 'admin'] },
 };
 
 const ALL = Object.keys(PERMISSIONS) as Permission[];
@@ -84,8 +85,8 @@ describe('registry', () => {
     for (const p of ALL) expect(PERMISSIONS[p].description.length).toBeGreaterThan(0);
   });
 
-  it('a member holds no permission by default', () => {
-    for (const p of ALL) expect(roleHas('member', p, null)).toBe(false);
+  it('a member holds no permission by default except creating their own roles', () => {
+    for (const p of ALL) expect(roleHas('member', p, null)).toBe(p === 'create_personal_roles');
   });
 });
 
