@@ -24,7 +24,7 @@ import { hasCodexCredential } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
-import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleModelRow } from '@buildd/core/role-model-routing';
 import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
@@ -37,7 +37,10 @@ import {
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
-import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import { isTaskTier, readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import { bandExceedsLabel, claimTierRequest, enforceModelCeiling, enforceTierCeiling } from '@buildd/core/model-tier-ceiling';
+import { tierCeilingLoader } from '@buildd/core/model-tier-ceiling-store';
+import { tierWithin, type TierCeiling } from '@buildd/shared';
 import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
@@ -1215,6 +1218,7 @@ export async function POST(req: NextRequest) {
     managed_runner_hours: 0,
     hosted_runner_hours: 0,
     no_personal_credential: 0,
+    tier_policy: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1226,6 +1230,8 @@ export async function POST(req: NextRequest) {
   // steps below then run exactly as they always have.
   const personalCredentialDecisions = new Map<string, PersonalCredentialDecision>();
   const personalCredentialDeps = perRequestPersonalCredentialDeps();
+  // Model-tier ceilings, read once per (team, workspace[, requester]) per claim.
+  const loadClaimCeiling = tierCeilingLoader();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
   // deferred in the dispatch loop below. It already passed every SQL-level
@@ -2449,13 +2455,57 @@ export async function POST(req: NextRequest) {
     const tierModelSource = (s: string | undefined): DispatchModelSource =>
       s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
-    if (routingDecision.reason === 'explicit_override' && !pinTier) {
+    // Model-tier ceiling (docs/specs/model-tier-ceilings.md): the most
+    // restrictive of the team, workspace and — when the task has a known
+    // requester — that person's admin-set and own maximum for coding agents.
+    // An explicit request (pin, tasks.tier, role model) above it is held with
+    // the structured policy_denied error; the router's own pick is downgraded
+    // to it unless the team chose deny. Checked on every claim, so a lowered
+    // ceiling also holds already-queued tasks, retries and failovers (each is
+    // a task that comes through here). No ceiling: nothing below changes.
+    let ceiling: TierCeiling;
+    try {
+      ceiling = await loadClaimCeiling({ teamId: taskTeamId, workspaceId: task.workspaceId, userId: lazyRequester(task) }, 'agent');
+    } catch (err) {
+      console.error(`[claim] task ${task.id}: model-tier ceiling unreadable, holding the task`, err);
+      deferTask(task, 'tier_policy', { error: 'ceiling_unavailable', message: 'The model-tier maximum for this task could not be read.' });
+      continue;
+    }
+    const exactPinPath = routingDecision.reason === 'explicit_override' && !pinTier;
+    let ceilingTier: RegistryTier | null = null;
+    let ceilingDowngrade: { from: RegistryTier; to: RegistryTier } | null = null;
+    if (ceiling.max) {
+      const request = claimTierRequest({
+        pin: explicit,
+        exactModel: exactPinPath ? routingDecision.model : null,
+        pinTier,
+        taskTier: taskTier ?? null,
+        roleTierOverride,
+        roleFloor: roleFloorTier(roleModel),
+        routerTier: mapRouterAlias(routingDecision.model),
+      });
+      const verdict = request.kind === 'model'
+        ? enforceModelCeiling({ ceiling, model: request.model, origin: request.origin, catalog: dispatchCatalog })
+        : enforceTierCeiling({ ceiling, tier: request.tier, origin: request.origin });
+      if (!verdict.ok) {
+        deferTask(task, 'tier_policy', { ...verdict.denied });
+        continue;
+      }
+      if (request.kind === 'tier') ceilingTier = verdict.tier;
+      if (verdict.downgradedFrom) ceilingDowngrade = { from: verdict.downgradedFrom, to: verdict.tier };
+    }
+    // A model a treatment, pool arm or registry row would serve must also sit
+    // inside the ceiling by what it costs, not just by its tier label.
+    const withinCeiling = (m: string) =>
+      !ceiling.max || enforceModelCeiling({ ceiling, model: m, origin: 'auto', catalog: dispatchCatalog }).ok;
+
+    if (exactPinPath) {
       resolvedModel = routingDecision.model;
     } else {
       // Determine the tier to look up: a shorthand pin, then task.tier, then a
       // premium-plus role floor (above the router's opus ceiling), then the
-      // router alias.
-      const derivedTier = pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      // router alias — or the ceiling, when it downgraded an automatic pick.
+      const derivedTier = ceilingTier ?? pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
       guardTier = derivedTier;
 
       if (taskTeamId) {
@@ -2478,7 +2528,12 @@ export async function POST(req: NextRequest) {
             resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId, 'agent'),
             clientCanServe: clientCanServe('routing_experiment'),
           });
-          if (treatment) {
+          if (treatment && (!tierWithin(treatment.tier, ceiling.max) || !withinCeiling(treatment.model))) {
+            // The treatment arm would cross the ceiling: serve the control.
+            experimentDraw.served = false;
+            experimentDraw.assignedModel = entry.model;
+            experimentDraw.eligibility = { ...experimentDraw.eligibility, fallback: 'tier_ceiling' };
+          } else if (treatment) {
             resolvedModel = treatment.model;
             resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
             modelSource = 'routing_experiment';
@@ -2497,7 +2552,7 @@ export async function POST(req: NextRequest) {
         if (poolDraw) {
           const served = applyAgentPoolArm(poolDraw, {
             incumbentModel: entry.model, backend: task.backend,
-            clientCanServe: clientCanServe('tier_pool_arm'),
+            clientCanServe: (m) => withinCeiling(m) && clientCanServe('tier_pool_arm')(m),
           });
           if (served) {
             resolvedModel = served.model;
@@ -2561,6 +2616,23 @@ export async function POST(req: NextRequest) {
     const claimModelRejections: DispatchModelRejection[] = modelRejections.map((r) => ({ ...r, fallback: resolvedModel }));
     for (const r of claimModelRejections) {
       console.warn(`[claim] task ${task.id}: ${describeDispatchModelRejection(r)}`);
+    }
+
+    // The model finally served, by what it costs. A tier label is only a name:
+    // a registry row can put a premium-priced model behind `standard`. Under a
+    // ceiling that re-map is refused here (nothing was asked for above the
+    // cap, so this is the team's own mapping crossing it); with no ceiling it
+    // is only logged.
+    if (ceiling.max) {
+      const served = enforceModelCeiling({ ceiling, model: resolvedModel, origin: 'auto', catalog: dispatchCatalog });
+      if (!served.ok) {
+        deferTask(task, 'tier_policy', { ...served.denied, labelTier: resolvedTierMeta?.tier ?? null });
+        continue;
+      }
+      if (served.unknownBand) console.warn(`[claim] task ${task.id}: model ${resolvedModel} has no known price; ceiling ${ceiling.max} checked by tier label only`);
+    } else if (resolvedTierMeta?.tier && isTaskTier(resolvedTierMeta.tier)) {
+      const over = bandExceedsLabel(resolvedModel, resolvedTierMeta.tier, dispatchCatalog);
+      if (over) console.warn(`[claim] task ${task.id}: tier ${resolvedTierMeta.tier} served ${resolvedModel}, which is priced as ${over}`);
     }
 
     // Refuse a task whose resolved model needs a newer Claude Code client than
@@ -2633,7 +2705,10 @@ export async function POST(req: NextRequest) {
       modelPinned: explicit !== null,
       routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
+      // Why an automatic pick ran cheaper than routed: the ceiling and who set it.
+      ...(ceilingDowngrade && ceiling.binding ? { tierCeiling: { ...ceilingDowngrade, max: ceiling.max, binding: ceiling.binding } } : {}),
     };
+    if (!ceilingDowngrade) delete (patchedContext as Record<string, unknown>).tierCeiling;
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];

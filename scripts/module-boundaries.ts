@@ -71,6 +71,14 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/inference-keys.ts',
   'packages/core/litellm-gateway.ts',
   'apps/web/src/lib/litellm-gateway-settings.ts',
+  // Model-tier ceilings (docs/specs/model-tier-ceilings.md): an authorization
+  // and spend control the claim route, task routes, chat turn and inference
+  // client all enforce, not part of the tier-mapping module. `tier-` misfiles
+  // them as model-tiers.
+  'packages/shared/src/model-tier-ceiling.ts',
+  'packages/core/model-tier-ceiling.ts',
+  'packages/core/model-tier-ceiling-store.ts',
+  'apps/web/src/lib/tier-ceiling-check.ts',
 ]);
 
 export function moduleOf(path: string): Owner {
