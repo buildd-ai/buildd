@@ -334,6 +334,24 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(re.test('Ship mission: Real mission title')).toBe(false);
   });
 
+  // `hasMemberScopedDeps` recognises surface audits by their title prefix.
+  // A scrub that loses the prefix makes platform operator missions appear
+  // as needing a decision on the clone when they actually don't.
+  test('tasks.title keeps the [surface audit] prefix, and the guard accepts it', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("[surface audit]");
+    expect(titleExpr).toContain("LIKE '[surface audit] %'");
+    const guard = readFileSync(join(__dirname, 'scrub-guard.sql'), 'utf8');
+    const pattern = /\('tasks', 'title', '([^']*)'\)/.exec(guard)?.[1];
+    expect(pattern).toBeDefined();
+    const re = new RegExp(pattern!);
+    expect(re.test('[surface audit] Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 1: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 2: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] Real audit name')).toBe(false);
+    expect(re.test('Task 12: lorem ipsum')).toBe(true);
+  });
+
   test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {
     expect(sqlSrc).toContain('\\set ON_ERROR_STOP on');
     expect(sqlSrc).toContain('\\set QUIET on');
