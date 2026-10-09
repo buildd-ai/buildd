@@ -166,6 +166,40 @@ describe('buildRoleCandidates — connectors', () => {
   });
 });
 
+describe('role inference — personal roles', () => {
+  const rows = () => [
+    role('builder'),
+    role('builder', { id: 'r-alice', ownerUserId: 'u-alice', visibility: 'private', name: 'Alice builder' }),
+    role('bobs', { id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' }),
+    role('shared', { id: 'r-shared', ownerUserId: 'u-bob', visibility: 'team' }),
+  ];
+
+  it("never offers another member's private role as a candidate", async () => {
+    const { candidates } = await buildRoleCandidates({ ...TASK, teamId: 'team-1', requesterUserId: 'u-alice' }, {
+      loadRoles: async () => rows(),
+    });
+    expect(candidates.map(c => c.slug)).toEqual(['builder', 'shared']);
+    // The requester's own private row wins its slug over the team default.
+    expect(candidates.find(c => c.slug === 'builder')?.name).toBe('Alice builder');
+  });
+
+  it('with no requester, offers team and shared roles only', async () => {
+    const { candidates } = await buildRoleCandidates({ ...TASK, teamId: 'team-1' }, { loadRoles: async () => rows() });
+    expect(candidates.map(c => c.slug)).toEqual(['builder', 'shared']);
+    expect(candidates.find(c => c.slug === 'builder')?.name).toBe('Builder');
+  });
+
+  it('a workspace override still inherits routing from the team default, not from a personal row', () => {
+    const effective = resolveEffectiveRoles([
+      role('builder', { metadata: routed('Team default routing text here') }),
+      role('builder', { ownerUserId: 'u-alice', visibility: 'private', metadata: routed('Alice routing text here') }),
+      role('builder', { workspaceId: 'ws-1', metadata: {} }),
+    ], 'ws-1', 'u-alice');
+    expect(effective).toHaveLength(1);
+    expect((effective[0].metadata as any).routing.whenToUse).toBe('Team default routing text here');
+  });
+});
+
 describe('buildRoleQuestion', () => {
   it('needs at least two candidates', () => {
     expect(buildRoleQuestion([])).toBeNull();

@@ -4,12 +4,13 @@ let workspace: { teamId: string } | undefined;
 let rows: Array<{ workspaceId: string | null; enabled: boolean | null; metadata: unknown }> = [];
 let reads = 0;
 let fail = false;
+let lastSkillsWhere: any = null;
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workspaces: { findFirst: async () => { reads++; if (fail) throw new Error('db down'); return workspace; } },
-      workspaceSkills: { findMany: async () => { reads++; return rows; } },
+      workspaceSkills: { findMany: async (args: any) => { reads++; lastSkillsWhere = args?.where; return rows; } },
     },
   },
 }));
@@ -37,6 +38,13 @@ describe('loadOperatorGrant', () => {
     expect(g.enabled).toBe(true);
     expect(g.scope.environments).toEqual(['production']);
     expect(authorizeAgent(g, 'deployment_secrets:use', target)).toEqual({ allowed: true });
+  });
+
+  it("never reads a member's personal role as the team row (rendered SQL)", async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    await loadOperatorGrant('ws-1', 'operator');
+    const { sql } = new PgDialect().sqlToQuery(lastSkillsWhere);
+    expect(sql).toContain('"workspace_skills"."owner_user_id" is null');
   });
 
   it('a team default alone does not enable the workspace', async () => {

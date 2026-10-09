@@ -64,3 +64,19 @@ export async function resolveTaskRequesterUserId(task: RequesterTaskFields): Pro
 
   return null;
 }
+
+const requesterMemo = new WeakMap<object, Promise<string | null>>();
+
+/**
+ * `resolveTaskRequesterUserId`, memoized on the task object: the claim route
+ * hands the same row to several role lookups, and the walk should run once.
+ * Errors resolve to null (team roles only) rather than failing a claim.
+ */
+export function requesterOf(task: RequesterTaskFields & object): Promise<string | null> {
+  let p = requesterMemo.get(task);
+  if (!p) {
+    p = resolveTaskRequesterUserId(task).catch(() => null);
+    requesterMemo.set(task, p);
+  }
+  return p;
+}
