@@ -21,7 +21,7 @@ import { kernelInboxMembership, missionPrRoleOf } from '@/lib/action-queue';
 import { resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 import type { EscalationVerdict } from '@buildd/core/escalation-gate';
 import { gateEscalations, type EscalationGateDeps } from '@/lib/escalation-gate-check';
-import { escalationGateDeps } from '@/lib/escalation-decision';
+import { escalationGateReadDeps } from '@/lib/escalation-decision';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string; teamId?: string | null; dataClass?: string | null };
@@ -335,7 +335,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
       });
       // Several workers can share one PR: one look per PR.
       const unique = [...new Map(subjects.map(s => [s.subject.key, s.subject])).values()];
-      const verdicts = await gateEscalations(unique, { ...escalationGateDeps(), ...opts.gate });
+      const verdicts = await gateEscalations(unique, { ...escalationGateReadDeps(), ...opts.gate });
       for (const { workerId, subject } of subjects) {
         const v = verdicts.get(subject.key);
         if (v) gateVerdicts.set(workerId, v);
