@@ -30,7 +30,9 @@ export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | 
   const busy = fleet.runners.filter(r => r.online).reduce((n, r) => n + busyOn(r), 0);
   const stale = offline.reduce((n, r) => n + busyOn(r), 0);
   if (offline.length === fleet.runners.length) {
-    return [{ text: stale > 0 ? `All runners offline. ${runs(stale)} were on them at their last check-in.` : 'All runners offline.' }];
+    if (stale === 0) return [{ text: 'All runners offline.' }];
+    const where = offline.length === 1 ? 'it at its' : 'them at their';
+    return [{ text: `All runners offline. ${runs(stale)} ${stale === 1 ? 'was' : 'were'} on ${where} last check-in.` }];
   }
   const tail: HeadlinePart[] = offline.length === 0 ? []
     : [{ text: stale > 0 ? ` ${offline.length} offline, with ${runs(stale)} at ${offline.length === 1 ? 'its' : 'their'} last check-in.` : ` ${offline.length} offline.` }];

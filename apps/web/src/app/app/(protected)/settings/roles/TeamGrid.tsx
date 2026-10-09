@@ -8,6 +8,7 @@ import Section from '@/components/ui/Section';
 import PrimaryAction from '@/components/ui/PrimaryAction';
 import StatePill, { TonePill } from '@/components/ui/StatePill';
 import { personalRoleEditorPath } from '@/lib/personal-roles-shared';
+import { displayTaskTitle } from '@/lib/task-title';
 
 interface Props {
   activeRoles: RoleWithActivity[];
@@ -74,7 +75,7 @@ function ActiveRoleCard({ role }: { role: RoleWithActivity }) {
 
       {role.currentTask && (
         <div className="mt-3 border-t border-border-default pt-3">
-          <p className="truncate text-sm font-medium text-text-primary">{role.currentTask.title}</p>
+          <p className="truncate text-sm font-medium text-text-primary">{displayTaskTitle(role.currentTask.title)}</p>
           <p className="mt-0.5 truncate text-sm text-text-muted">
             {role.currentTask.workspaceName}
             {role.currentTask.missionTitle && <> · {role.currentTask.missionTitle}</>}

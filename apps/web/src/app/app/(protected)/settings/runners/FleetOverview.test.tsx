@@ -65,7 +65,9 @@ describe('FleetOverview', () => {
     // An offline runner whose last heartbeat still listed workers: those runs
     // are not in the online slots, so "3 of 0 slots busy" is impossible.
     const f = fleet([runner('a', 'runner-1', 3, 4, false)]);
-    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('All runners offline. 3 runs were on them at their last check-in.');
+    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('All runners offline. 3 runs were on it at its last check-in.');
+    const one = fleet([runner('a', 'runner-1', 1, 4, false), runner('b', 'runner-2', 0, 4, false)]);
+    expect(fleetOverviewHeadline(one).map(p => p.text).join('')).toBe('All runners offline. 1 run was on them at their last check-in.');
     const mixed = fleet([runner('a', 'runner-1', 1, 4), runner('b', 'runner-2', 2, 4, false)]);
     expect(fleetOverviewHeadline(mixed).map(p => p.text).join('')).toBe('1 of 4 slots busy. 1 offline, with 2 runs at its last check-in.');
   });

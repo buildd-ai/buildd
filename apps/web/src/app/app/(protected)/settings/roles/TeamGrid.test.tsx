@@ -14,6 +14,25 @@ import { TeamGrid } from './TeamGrid';
 import type { PersonalRoleEntry } from './page';
 
 describe('TeamGrid', () => {
+  it("names a working role's task by its display title, without the commit prefix", () => {
+    const html = renderToStaticMarkup(
+      <TeamGrid
+        activeRoles={[{
+          id: 'role-1', teamId: 'team-1', workspaceId: null, scopeLabel: 'All workspaces', overrideCount: 0, overrides: [],
+          slug: 'builder', name: 'Builder', description: null, color: '#4F46E5', model: 'premium', allowedTools: [],
+          canDelegateTo: [], enabled: true, isRole: true, stats: null, activeWorkerCount: 1,
+          currentTask: { id: 't-1', title: 'refactor(missions): one settings sheet', workspaceName: 'Workspace 1', workerStatus: 'running', startedAt: new Date(0).toISOString() },
+        }]}
+        idleRoles={[]}
+        workspaceIds={['ws-1']}
+        teamId="team-1"
+        totalActiveWorkerCount={1}
+      />
+    );
+    expect(html).toContain('One settings sheet');
+    expect(html).not.toContain('refactor(missions):');
+  });
+
   describe('idle state on mobile', () => {
     it('does not duplicate "Idle" state when all roles are idle and zero workers running', () => {
       const html = renderToStaticMarkup(
