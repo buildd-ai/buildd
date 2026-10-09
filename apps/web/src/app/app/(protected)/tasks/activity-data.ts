@@ -20,6 +20,7 @@ import {
   buildActivityHistory, buildActivityNow, latestTask, reviewOf,
   type ActivityNow, type ActivityTaskInput, type Episode, type LatestTask,
 } from '@/lib/activity-delivery';
+import type { LocalHold } from '@/lib/local-session-display';
 
 export interface ActivityTaskRow {
   id: string;
@@ -97,8 +98,11 @@ export function missionDeliveryOf(obj: { id: string; title: string; status: stri
 export async function loadActivity(input: {
   tasks: readonly ActivityTaskRow[];
   missionTitles: ReadonlyMap<string, string>;
-  /** Live task id → `<client> · local`, for work a local session is doing. */
-  localClientByTaskId: ReadonlyMap<string, string>;
+  /**
+   * Worker id → the local session holding it (`localHoldsByWorker`). Names the
+   * client, and a quiet or ended session's worker reads as a held slot, not an agent live.
+   */
+  localHolds: ReadonlyMap<string, LocalHold>;
   now: number;
   /** `@buildd/core/mission-helpers`, passed by the page. */
   rules: MissionTaskRules;
@@ -111,7 +115,7 @@ export async function loadActivity(input: {
     ids.length === 0 ? [] : db.query.workers.findMany({
       where: inArray(workers.taskId, ids),
       columns: {
-        taskId: true, status: true, name: true, startedAt: true, completedAt: true, updatedAt: true,
+        id: true, taskId: true, status: true, name: true, startedAt: true, completedAt: true, updatedAt: true,
         prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true,
         abandonedAt: true, lastCommitSha: true, waitingFor: true,
       },
@@ -145,7 +149,6 @@ export async function loadActivity(input: {
     const type = rules.deriveTaskType(t);
     const isReview = type === 'review' || type === 'review-retry';
     const waiting = ws.find(w => w.status === 'waiting_input')?.waitingFor;
-    const local = input.localClientByTaskId.get(t.id);
     return {
       id: t.id,
       title: t.title,
@@ -159,9 +162,10 @@ export async function loadActivity(input: {
       updatedAt: t.updatedAt.toISOString(),
       waitingPrompt: waiting ? waiting.prompt || 'Needs input' : null,
       review: isReview ? reviewOf(t.result, t.context) : null,
-      workers: ws.map((w, i) => ({
+      workers: ws.map(w => ({
         status: w.status,
-        name: i === 0 && local ? local : w.name,
+        name: input.localHolds.get(w.id)?.client ?? w.name,
+        local: input.localHolds.get(w.id) ?? null,
         startedAt: iso(w.startedAt),
         completedAt: iso(w.completedAt),
         updatedAt: iso(w.updatedAt),
