@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-09
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
-surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
+surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/lib/grant-scope.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -38,6 +38,13 @@ assertions:
   - id: "account-consent-tests"
     type: "test_file"
     path: "apps/web/tests/db/mcp-oauth-consent.test.ts"
+  - id: "assert-granted-workspace"
+    type: "symbol"
+    name: "assertGrantedWorkspace"
+    path: "apps/web/src/lib/grant-scope.ts"
+  - id: "grant-scope-matrix-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/grant-scope-matrix.test.ts"
 ---
 # Auth & OAuth Boundaries
 
@@ -557,9 +564,100 @@ deprecated.
   `apps/web/src/lib/mcp-grant-session.test.ts`,
   `apps/web/src/app/api/mcp/transport-parity.test.ts`
 
-**Not covered here**: REST routes that act team-wide from `account.teamId`
-without consulting `account.workspaceIds` are grant-limited by a separate
-task.
+**Not covered here**: what a grant session may reach on REST is the next
+section.
+
+## Grant sessions on REST
+
+**Capability statement**: A grant session MUST reach, on every REST surface,
+exactly the workspaces it was granted that the user still belongs to, and
+nothing its team's shared session account, that account's links or the
+team's other workspaces would otherwise allow.
+
+**Invariants**:
+- A grant session authenticates as its team's shared session account, so
+  `account.teamId`, the account's `account_workspaces` links and "the worker
+  is on my account" say nothing about which workspace it may touch. Its
+  reach is `account.workspaceIds` (grant ∩ current membership, this request;
+  one workspace under the `x-buildd-workspace` binding), checked by one rule:
+  `assertGrantedWorkspace(account, workspaceId, 'read' | 'write')` in
+  `apps/web/src/lib/grant-scope.ts`. A write needs the grant's `write` scope.
+- Restricted mode: a grant session reaches a granted workspace whatever its
+  `access_mode`, with no `account_workspaces` link. A grant is an explicit
+  per-workspace consent by a current member of that workspace's team, so it
+  does not also need the shared account to be linked. This exception is for
+  grant sessions only: `bld_` keys, legacy OAuth tokens and `bldt_` task
+  tokens keep the restricted-mode rule (a restricted workspace admits only
+  linked accounts), and a same-team key with no link still cannot reach a
+  restricted workspace.
+- A write grant carries no scopes (it acts at the member's role level) and
+  is still workspace-confined on every route, exactly as a scoped token is: a
+  path, query or body naming another workspace is no session; a team-wide
+  collection (`/api/tasks`, `/api/missions`, `/api/prs`, analytics) must name
+  a granted workspace; `/api/artifacts`, `/api/workers/active` and
+  `/api/roles` are refused; a mission, initiative or release create must name
+  its workspace.
+- Team administration is refused to a grant session whatever the user's role:
+  secrets, providers, accounts and keys, team settings and members,
+  connectors, model tiers, experiments, evidence backends and workspace
+  creation. So is runner plumbing: `/api/runner/*` (credential and token
+  minting), heartbeats, local-session presence, Quality Scout and knowledge
+  ingest job claims, inbound webhooks, and the team-wide stale-worker sweep.
+  Reading a Scout run's command log stays open (it is `read_evidence`).
+- Every handler that picks a workspace for the caller (a PR number, a worker,
+  a repo URL, a default when none is named) picks among the granted
+  workspaces only: PR-number resolution, PR review, explain, worker
+  ownership, `workers/mine`, repo matching, bulk task edits, and a task create
+  with no `workspaceId` (the one granted workspace, never a link of the shared
+  account).
+- `verifyAccountWorkspaceAccess` is handed the authenticated session, not its
+  id: the id alone judges the shared account. A unit test fails any production
+  call that passes `<account>.id`.
+- Claims: a grant session claims only from its granted workspaces.
+  `claimAcrossAccessible` is honoured only as the literal `true`, and then
+  spans the granted workspaces only; without it, a session granted more than
+  one workspace and naming none is refused (the multi-workspace guard, counted
+  over the grant).
+
+**Acceptance criteria**:
+- AC-42: GIVEN a grant to a `restricted` workspace with no account link WHEN
+  the session creates a task there THEN it succeeds; GIVEN a `bld_` key of the
+  same team with no link THEN it is refused 403.
+- AC-43: GIVEN a session granted one workspace of team A WHEN it names an
+  open sibling in A, or a workspace of team B the user also belongs to, in a
+  path, query or body THEN there is no session; the sibling's task, mission,
+  memory, schedules, skills and artifacts are unreachable.
+- AC-44: GIVEN the same PR number in the granted workspace and in an
+  ungranted sibling WHEN it is resolved THEN only the granted one is found;
+  GIVEN a worker of the shared account in the sibling THEN the session may not
+  act on it, and `workers/mine` does not list it.
+- AC-45: GIVEN a same-named repo in another team, or a sibling renamed to the
+  granted workspace's name WHEN listing, repo matching or name resolution
+  runs THEN only the granted workspace comes back.
+- AC-46: GIVEN a team owner's write grant WHEN it calls a team-administration
+  or runner-plumbing route THEN there is no session.
+- AC-47: GIVEN a grant revoked, a membership removed, or the granted
+  workspace moved to a team the user is not in WHEN the next call arrives
+  THEN it reaches nothing and writes nothing.
+- AC-48: GIVEN a one-team grant of two workspaces and a pending task in each
+  and in an ungranted sibling WHEN it claims with no workspace THEN it is
+  refused, also with `claimAcrossAccessible: "true"`; WITH
+  `claimAcrossAccessible: true` THEN it claims the two granted tasks and not
+  the sibling's.
+
+**Code surface**:
+- Rule: `apps/web/src/lib/grant-scope.ts` — `assertGrantedWorkspace()`,
+  `constrainToGranted()`, `isGrantSession()`
+- Route confinement: `apps/web/src/lib/token-route-policy.ts` —
+  `canAccessTokenRoute()`
+- Reach: `apps/web/src/lib/workspace-reach.ts`, `apps/web/src/lib/team-access.ts`
+  (`verifyAccountWorkspaceAccess`), `apps/web/src/lib/workspace-access.ts`
+- Confinement helpers: `apps/web/src/lib/task-token-auth.ts`
+  (`taskScopeAllowsWorkspace`, `taskScopeAllowsWorker`),
+  `apps/web/src/lib/worker-pr-access.ts`, `apps/web/src/lib/pr-resolve.ts`
+- Claims: `apps/web/src/app/api/workers/claim/route.ts`
+- Tests: `apps/web/tests/db/grant-scope-matrix.test.ts` (real Postgres),
+  `apps/web/src/lib/grant-scope.test.ts`
 ---
 
 ## CLI Device-Code Auth

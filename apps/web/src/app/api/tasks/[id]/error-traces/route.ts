@@ -36,7 +36,7 @@ export async function GET(
 
   const canAccess = async (workspaceId: string): Promise<boolean> =>
     apiAccount && !user
-      ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+      ? taskScopeAllowsWorkspace(apiAccount, workspaceId) && verifyAccountWorkspaceAccess(apiAccount, workspaceId)
       : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
 
   const resolved = await resolveTaskIdForCaller(rawId, canAccess);

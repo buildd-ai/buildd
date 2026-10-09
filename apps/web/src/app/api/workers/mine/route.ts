@@ -1,4 +1,5 @@
 import { type WorkerStatusValue } from '@buildd/shared';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
@@ -21,6 +22,9 @@ export async function GET(req: NextRequest) {
   const status = url.searchParams.get('status');
 
   const conditions = [eq(workers.accountId, account.id)];
+  // A grant session shares its team's session account: list only workers in
+  // the workspaces it was granted (lib/grant-scope.ts).
+  if (isGrantSession(account)) conditions.push(inArray(workers.workspaceId, constrainToGranted(account, account.workspaceIds ?? [])));
   if (status) {
     conditions.push(inArray(workers.status, status.split(',') as WorkerStatusValue[]));
   }

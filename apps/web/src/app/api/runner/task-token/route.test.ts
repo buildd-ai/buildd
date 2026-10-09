@@ -53,7 +53,7 @@ describe('POST /api/runner/task-token', () => {
     expect(verifyTaskToken(data.token)).toMatchObject({
       accountId: 'acct-1', taskId: TASK_ID, workspaceId: WORKSPACE_ID, keyBinding: taskTokenKeyBinding('hash-1'),
     });
-    expect(mockVerifyAccess).toHaveBeenCalledWith('acct-1', WORKSPACE_ID, 'canClaim');
+    expect(mockVerifyAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-1' }), WORKSPACE_ID, 'canClaim');
   });
 
   it('echoes the stored role and ignores caller-provided browser authority', async () => {
