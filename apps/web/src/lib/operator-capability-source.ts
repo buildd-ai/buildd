@@ -35,6 +35,9 @@ export async function loadOperatorGrant(workspaceId: string, roleSlug: string): 
         eq(schema.workspaceSkills.slug, roleSlug),
         eq(schema.workspaceSkills.isRole, true),
         or(isNull(schema.workspaceSkills.workspaceId), eq(schema.workspaceSkills.workspaceId, workspaceId)),
+        // A capability grant is a team decision: a member's personal role of
+        // the same slug never stands in for the team row (role-visibility.ts).
+        isNull(schema.workspaceSkills.ownerUserId),
       ),
       columns: { workspaceId: true, enabled: true, metadata: true },
     });
