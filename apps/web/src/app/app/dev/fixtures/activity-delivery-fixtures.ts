@@ -6,7 +6,7 @@
  */
 import * as rules from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
-import { buildActivityHistory, buildActivityNow, latestTask, type ActivityTaskInput, type ActivityWorker } from '@/lib/activity-delivery';
+import { buildActivityHistory, buildActivityNow, type ActivityTaskInput, type ActivityWorker } from '@/lib/activity-delivery';
 
 export const ACTIVITY_FIXTURE_NOW = Date.parse('2026-10-08T11:10:00.000Z');
 const at = (hhmm: string) => `2026-10-08T${hhmm}:00.000Z`;
@@ -89,6 +89,5 @@ export function activityFixture(step: number) {
     step: s,
     now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
     history: buildActivityHistory(args),
-    latest: latestTask(tasks, rules),
   };
 }

@@ -647,7 +647,7 @@ describe('WorkerManager — lifecycle', () => {
         id: 'w-hook-post', lastActivity: Date.now() - 100_000, toolInFlight: true,
       } as unknown as LocalWorker;
 
-      const hook = (manager as any).hookFactory.createTeamTrackingHook(worker);
+      const hook = (manager as any).hookFactory.createToolActivityHook(worker);
       await hook({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} });
 
       expect(worker.toolInFlight).toBe(false);

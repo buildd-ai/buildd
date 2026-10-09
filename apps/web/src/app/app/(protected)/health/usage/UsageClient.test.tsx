@@ -127,9 +127,9 @@ describe('UsageClient — header', () => {
     expect(html).toContain('8 tasks · last 7 days');
   });
 
-  it('sends you back to Health at 24h, unclamped — the clamp does not follow you out', () => {
+  it('has no back link: the Health sub-nav already leads back', () => {
     const html = render({ window: '24h' }, 'ws-1');
-    expect(html).toContain('href="/app/health?window=24h&amp;workspace=ws-1"');
+    expect(html).not.toContain('data-testid="usage-back-link"');
   });
 
   it('offers 7d and 30d only — there is no 24h control to mislead with', () => {

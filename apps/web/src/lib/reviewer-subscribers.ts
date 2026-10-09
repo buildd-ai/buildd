@@ -234,7 +234,7 @@ async function maybeDispatchReviewer(
           message: `${task.title} — ${reason}`,
         });
       }
-      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
+      void notifyTeamOf({ workspaceId: workspace.id, prNumber: pr.number }, 'needsAttention', {
         title: `PR #${pr.number} escalated`,
         message: reason,
         url: pr.html_url,

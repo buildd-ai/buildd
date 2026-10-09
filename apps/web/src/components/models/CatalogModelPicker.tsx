@@ -424,7 +424,7 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
           <span className="ml-auto shrink-0 text-[11px]">
             {g.route.key === 'set' && <span className="text-status-success">● key set</span>}
             {g.route.key === 'missing' && (
-              <Link href="/app/settings/providers" className="text-status-warning underline hover:no-underline">no key · add</Link>
+              <Link href="/app/settings/models#keys" className="text-status-warning underline hover:no-underline">no key · add</Link>
             )}
           </span>
         </div>

@@ -38,7 +38,7 @@ async function send(url: string, init: RequestInit): Promise<{ ok: boolean; erro
   if (!res) return { ok: false, error: 'Network error' };
   if (res.ok) return { ok: true };
   const body = await res.json().catch(() => ({}));
-  return { ok: false, error: body?.error ?? `HTTP ${res.status}` };
+  return { ok: false, error: body?.error ?? "That didn’t save. Try again." };
 }
 
 /** The cell's pool as it is right now: versions move with every write. */
@@ -221,7 +221,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
                 <span className="text-text-secondary" data-testid="cell-dial-label">{DIAL_LABEL[dial]}</span>
                 <span>Savings</span>
               </div>
-              <div className="grid grid-cols-5 border-2 border-border-strong" role="group" aria-label="Quality to savings">
+              <div className="grid grid-cols-5 border border-border-default rounded-[var(--radius-card)] overflow-hidden" role="group" aria-label="Quality to savings">
                 {MODEL_POLICY_DIALS.map((d) => (
                   <button key={d} type="button" aria-pressed={dial === d} aria-label={`${d}, ${DIAL_LABEL[d]}`} disabled={busy}
                     onClick={() => setDial(d)} data-testid={`cell-dial-${d}`}

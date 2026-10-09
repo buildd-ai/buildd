@@ -21,6 +21,13 @@
 #    session: whether the earlier turns (the transcript) and the answer were
 #    in the conversation, and the output of the diff.
 #
+# Case 3, a person pauses a running agent (task baf3809a): the fake serves
+# `pauseRequested` on the worker's PATCH while the model holds its second turn
+# (so no tool is executing); the runner reports waiting_input with a `pause`
+# waitingFor and parks. Answering it (Resume) and task.resume continue the SAME
+# session: the resumed conversation carries a marker the first turn printed,
+# and the model sees the same Claude Code session id on both sides.
+#
 # Case 2, the orphan park: a second task's session is left hanging on the
 # model after its edit; the smoke then restarts the Worker's Durable Objects by
 # touching src/index.ts (wrangler dev reloads). If the container survives the
@@ -40,8 +47,12 @@ BASE="http://127.0.0.1:$PORT"
 TOKEN="smoke-token-$RANDOM$RANDOM"
 TASK="smoke-resume-$RANDOM$RANDOM"
 ORPHAN_TASK="$TASK-orphan"
+PAUSE_TASK="$TASK-pause"
 WORKER="smoke-worker-resume"
 ORPHAN_WORKER="smoke-worker-orphan"
+PAUSE_WORKER="smoke-worker-pause"
+PAUSE_ANSWER="Resume (SMOKE-RESUME)"
+RECALL="SMOKE-RECALL-$RANDOM$RANDOM"
 WS="smoke-ws-resume"
 ANSWER="SMOKE-ANSWER: make it green"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-2400}"
@@ -72,16 +83,23 @@ cd "$DIR"
 )
 
 echo "== fake buildd + model on :$FAKE_PORT"
-TASKS="$TASK,$ORPHAN_TASK" WORKERS="$WORKER,$ORPHAN_WORKER" WS="$WS" ANSWER="$ANSWER" ORPHAN_TASK="$ORPHAN_TASK" \
+TASKS="$TASK,$ORPHAN_TASK,$PAUSE_TASK" WORKERS="$WORKER,$ORPHAN_WORKER,$PAUSE_WORKER" WS="$WS" ANSWER="$ANSWER" ORPHAN_TASK="$ORPHAN_TASK" \
+PAUSE_TASK="$PAUSE_TASK" PAUSE_WORKER="$PAUSE_WORKER" PAUSE_ANSWER="$PAUSE_ANSWER" RECALL="$RECALL" \
 GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" FAKE_PORT="$FAKE_PORT" bun -e '
   const tasks = process.env.TASKS.split(","), workers = process.env.WORKERS.split(",");
   const ws = process.env.WS, ANSWER = process.env.ANSWER;
   const repo = `http://${process.env.HOST_ADDR}:${process.env.FAKE_PORT}/git/widget.git`;
   const taskOf = (id) => ({ id, title: "smoke resume",
-    description: id === process.env.ORPHAN_TASK ? "orphan-marker: edit the README and keep working." : "Edit the README, then ask which colour to use.", workspaceId: ws,
+    description: id === process.env.ORPHAN_TASK ? "orphan-marker: edit the README and keep working."
+      : id === process.env.PAUSE_TASK ? "pause-marker: edit the README and keep working until paused."
+      : "Edit the README, then ask which colour to use.", workspaceId: ws,
     status: "pending", workspace: { id: ws, name: "smoke-resume", repo } });
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const answered = new Set(), reattached = new Set(), delivered = new Set();
+  const { PAUSE_WORKER, PAUSE_ANSWER, RECALL } = process.env;
+  let pauseArmed = false, pausedSeen = false;
+  // Claude Code names its session in a header and in metadata.user_id (JSON).
+  const sessionOf = (req, body) => req.headers.get("x-claude-code-session-id") ?? (/"session_id":"([0-9a-f-]{36})"/.exec(String(body?.metadata?.user_id ?? "")) ?? [])[1] ?? "none";
   let reattachCount = {};
   const log = (m) => console.log(m);
 
@@ -121,6 +139,26 @@ GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" FAKE_PORT="$FAKE_PORT" bun -
     const all = [system, ...msgs.map(textOf)].join("\n");
     const orphan = all.includes("orphan-marker");
     const used = toolUses(msgs);
+    if (all.includes("pause-marker")) {
+      if (!used.includes("toolu_pause_edit")) {
+        log(`MODEL_TURN pause edit session=${sessionOf(req, body)}`);
+        return reply([{ type: "tool_use", id: "toolu_pause_edit", name: "Bash", input: { command: `echo "uncommitted pause change" >> README.md && echo ${RECALL}`, description: "Edit the README" } }], "tool_use");
+      }
+      if (!all.includes(PAUSE_ANSWER)) {
+        // Hold the turn (no tool executing) and ask buildd to pause the run.
+        log("MODEL_TURN pause hold");
+        pauseArmed = true;
+        await Promise.race([Bun.sleep(300_000), new Promise((r) => req.signal?.addEventListener?.("abort", r))]);
+        return reply([{ type: "text", text: "late" }], "end_turn");
+      }
+      if (!used.includes("toolu_pause_check")) {
+        log(`MODEL_RESUMED pause has_edit_turn=true recall=${all.includes(RECALL)} answers=${msgs.filter((m) => m.role === "user").map(textOf).filter((t) => t.includes(PAUSE_ANSWER)).length} session=${sessionOf(req, body)}`);
+        return reply([{ type: "tool_use", id: "toolu_pause_check", name: "Bash", input: { command: "git status --porcelain; git diff", description: "Check" } }], "tool_use");
+      }
+      const result = toolResult(msgs, "toolu_pause_check");
+      if (result !== null) log(`MODEL_CHECK pause ${Buffer.from(result).toString("base64")}`);
+      return reply([{ type: "text", text: "Done." }], "end_turn");
+    }
     const tag = orphan ? "orphan" : "main";
     if (!used.includes(`toolu_${tag}_edit`)) {
       log(`MODEL_TURN ${tag} edit`);
@@ -159,13 +197,40 @@ GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" FAKE_PORT="$FAKE_PORT" bun -
   Bun.serve({ port: Number(process.env.FAKE_PORT), hostname: "0.0.0.0", idleTimeout: 0, async fetch(req) {
     const url = new URL(req.url), path = url.pathname, m = req.method;
     if (path.startsWith("/model/")) return model(req, path);
-    if (m === "GET" && path.startsWith("/git/") && !path.includes("..")) {
-      const f = Bun.file(`${process.env.GIT_DIR_ROOT}/${path.slice(5)}`);
-      return (await f.exists()) ? new Response(f) : new Response("nf", { status: 404 });
+    // Smart HTTP through `git http-backend` (CGI): the runner clones shallow,
+    // which the dumb HTTP transport of git refuses.
+    if (path.startsWith("/git/") && !path.includes("..")) {
+      const body = m === "POST" ? new Uint8Array(await req.arrayBuffer()) : null;
+      const proc = Bun.spawn(["git", "http-backend"], {
+        env: { ...process.env, GIT_PROJECT_ROOT: process.env.GIT_DIR_ROOT, GIT_HTTP_EXPORT_ALL: "1",
+          PATH_INFO: path.slice(4), REQUEST_METHOD: m, QUERY_STRING: url.search.slice(1),
+          CONTENT_TYPE: req.headers.get("content-type") ?? "", CONTENT_LENGTH: body ? String(body.length) : "0",
+          HTTP_CONTENT_ENCODING: req.headers.get("content-encoding") ?? "", GIT_PROTOCOL: req.headers.get("git-protocol") ?? "",
+          REMOTE_ADDR: "127.0.0.1" },
+        stdin: body ? new Blob([body]) : "ignore", stdout: "pipe", stderr: "ignore",
+      });
+      const out = new Uint8Array(await new Response(proc.stdout).arrayBuffer());
+      let cut = -1, sep = 4;
+      for (let i = 0; i + 3 < out.length; i++) { if (out[i] === 13 && out[i + 1] === 10 && out[i + 2] === 13 && out[i + 3] === 10) { cut = i; break; } }
+      if (cut < 0) { sep = 2; for (let i = 0; i + 1 < out.length; i++) { if (out[i] === 10 && out[i + 1] === 10) { cut = i; break; } } }
+      if (cut < 0) return new Response("bad cgi", { status: 500 });
+      const headers = new Headers(); let status = 200;
+      for (const line of new TextDecoder().decode(out.slice(0, cut)).split(/\r?\n/)) {
+        const k = line.indexOf(":"); if (k < 0) continue;
+        const name = line.slice(0, k).trim(), value = line.slice(k + 1).trim();
+        if (name.toLowerCase() === "status") status = parseInt(value, 10) || 200; else headers.set(name, value);
+      }
+      return new Response(out.slice(cut + sep), { status, headers });
     }
     if (m === "POST" && path === "/smoke/answer") { answered.add(url.searchParams.get("worker")); log(`ANSWERED ${url.searchParams.get("worker")}`); return json({ ok: true }); }
     const t = tasks.find((x) => path === `/api/tasks/${x}`);
     if (m === "GET" && t) return json(taskOf(t));
+    // The agent mints a per-task token before every attempt (lifecycle.ts taskTokenRequest).
+    if (m === "POST" && path === "/api/runner/task-token") {
+      const body = await req.json().catch(() => ({}));
+      if (!tasks.includes(body.taskId)) return json({ error: "no" }, 409);
+      return json({ token: `bldt_smoke_${body.taskId}`, taskId: body.taskId });
+    }
     if (m === "POST" && path === "/api/runner/github-token") {
       const body = await req.json().catch(() => ({}));
       if (!tasks.includes(body.taskId)) return json({ error: "no" }, 409);
@@ -191,8 +256,12 @@ GIT_DIR_ROOT="$GIT_DIR_ROOT" HOST_ADDR="$HOST_ADDR" FAKE_PORT="$FAKE_PORT" bun -
       if (m === "PATCH") {
         const body = await req.json().catch(() => ({}));
         if (body.status) log(`PATCH ${id} status=${body.status}`);
+        if (id === PAUSE_WORKER && body.status === "waiting_input" && body.waitingFor?.type === "pause" && !pausedSeen) { pausedSeen = true; log(`PAUSED ${id}`); }
         if (typeof body.instructionsDelivered === "string") { delivered.add(id); log(`DELIVERED ${id}`); }
-        if (answered.has(id) && reattached.has(id) && !delivered.has(id)) return json({ instructions: ANSWER, instructionsAck: ANSWER });
+        const answer = id === PAUSE_WORKER ? PAUSE_ANSWER : ANSWER;
+        if (answered.has(id) && reattached.has(id) && !delivered.has(id)) return json({ instructions: answer, instructionsAck: answer });
+        // The durable pause: served on every PATCH until the runner parks (no Pusher here).
+        if (id === PAUSE_WORKER && pauseArmed && !pausedSeen) return json({ status: "running", pauseRequested: true });
         return json({});
       }
     }
@@ -294,6 +363,36 @@ echo "   git status/diff seen by the resumed agent:"; printf '%s\n' "$diff_text"
 check "the uncommitted change is intact, still uncommitted" yes "$(printf '%s' "$diff_text" | grep -q '^ M README.md' && printf '%s' "$diff_text" | grep -q '+uncommitted main change' && echo yes || echo no)"
 check "attempt 2 outcome" done "$(jf "$s" outcome)"
 
+echo "== case 3: a person pauses a running agent; it parks between turns and Resume continues the SAME session"
+echo "   $(dispatch "$PAUSE_TASK")"
+s="$(wait_exited "$PAUSE_TASK" 1)" || { echo "   FAIL pause attempt 1 never exited: $s"; fail=1; }
+echo "   attempt 1 tail: $(bun -e 'const t=JSON.parse(process.argv[1]).outputTail??[]; console.log(JSON.stringify(t.filter(l=>/\[once\]|BUILDD_PARKED|aus/.test(l)).slice(-5)))' "$s")"
+check "pause attempt 1 exit code" 4 "$(jf "$s" exitCode)"
+check "pause attempt 1 outcome" parked "$(jf "$s" outcome)"
+check "no crash report for a pause" "" "$(jf "$s" crashReport)"
+check "the pause landed while the model held its turn (no tool executing)" 1 "$(fakelog 'MODEL_TURN pause hold')"
+check "the runner reported waiting_input with a pause, once" 1 "$(fakelog "PAUSED $PAUSE_WORKER")"
+check "never reported failed" 0 "$(fakelog "PATCH $PAUSE_WORKER status=failed")"
+check "the runner marked the worker parked" 1 "$(fakelog "PARK $PAUSE_WORKER")"
+sleep 2
+check "the paused container is gone (its slot is free)" 0 "$(task_containers | grep -c . || true)"
+echo "   Resume, then task.resume"
+curl -s -X POST "http://127.0.0.1:$FAKE_PORT/smoke/answer?worker=$PAUSE_WORKER" >/dev/null
+r1="$(dispatch "$PAUSE_TASK" "$PAUSE_WORKER")"; echo "   $r1"
+check "pause resume accepted" true "$(jf "$r1" accepted)"
+s="$(wait_exited "$PAUSE_TASK" 2)" || { echo "   FAIL pause attempt 2 never exited: $s"; fail=1; }
+check "resumed on the same worker" "$PAUSE_WORKER true" "$(jf "$s" report.workerId) $(jf "$s" report.resume.resumed)"
+check "report: layer 1 (the transcript resumed, not a text rebuild)" 1 "$(jf "$s" report.resume.layer)"
+check "exactly one re-attach" 1 "$(fakelog "REATTACH $PAUSE_WORKER")"
+check "the resumed conversation recalls what came before the pause, and the Resume, once" 1 "$(fakelog 'MODEL_RESUMED pause has_edit_turn=true recall=true answers=1')"
+first_sid="$(sed -n 's/^MODEL_TURN pause edit session=//p' "$LOG.fake" | head -1)"
+resumed_sid="$(sed -n 's/^MODEL_RESUMED pause .* session=//p' "$LOG.fake" | tail -1)"
+echo "   session id before the pause: $first_sid, after: $resumed_sid"
+check "the SAME session id before and after the pause" yes "$([ -n "$first_sid" ] && [ "$first_sid" != none ] && [ "$first_sid" = "$resumed_sid" ] && echo yes || echo no)"
+pdiff="$(sed -n 's/^MODEL_CHECK pause //p' "$LOG.fake" | tail -1 | base64 -d 2>/dev/null || true)"
+check "the uncommitted change is intact after the pause" yes "$(printf '%s' "$pdiff" | grep -q '+uncommitted pause change' && echo yes || echo no)"
+check "pause attempt 2 outcome" done "$(jf "$s" outcome)"
+
 echo "== case 2: kill the agent mid-run (orphan park), the resume continues with the change intact"
 echo "   $(dispatch "$ORPHAN_TASK")"
 for ((k = 0; k < 600; k++)); do [ "$(fakelog 'MODEL_TURN orphan hang')" -ge 1 ] && break; sleep 1; done
@@ -308,7 +407,19 @@ else
   alive="$(docker ps --format '{{.Names}}' | grep -c -x -F "$before" || true)"
   # The agent recovers on its next start; a status read wakes it.
   s="$(curl -s "${auth[@]}" "$BASE/tasks/$ORPHAN_TASK")"
-  if [ "$alive" = 0 ] && [ "$(fakelog "PARK $ORPHAN_WORKER")" = 0 ]; then
+  # Since #3779 a restarted agent re-adopts a runner that is still alive
+  # (--attach-orphan) instead of parking it, so a session hanging on the model
+  # is waited on, not parked. Give it a moment to choose.
+  for ((k = 0; k < 30; k++)); do
+    s="$(curl -s "${auth[@]}" "$BASE/tasks/$ORPHAN_TASK")"
+    { printf '%s' "$s" | grep -q 'attached to runner' || [ "$(fakelog "PARK $ORPHAN_WORKER")" != 0 ]; } && break
+    sleep 2
+  done
+  if printf '%s' "$s" | grep -q 'attached to runner' && [ "$(fakelog "PARK $ORPHAN_WORKER")" = 0 ]; then
+    echo "   note: SKIPPED. The restarted agent re-adopted the still-running runner (#3779), so there was no orphan to park;"
+    echo "         the orphan park is covered by supervisor.test.ts and run-once.test.ts. Stopping the hanging container."
+    docker rm -f "$before" >/dev/null 2>&1 || true
+  elif [ "$alive" = 0 ] && [ "$(fakelog "PARK $ORPHAN_WORKER")" = 0 ]; then
     echo "   note: SKIPPED. wrangler dev took the container down with the reload, so no container outlived its agent;"
     echo "         the orphan park is covered by supervisor.test.ts and run-once.test.ts, and needs a real account to exercise."
   else

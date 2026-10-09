@@ -363,7 +363,8 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
     }
     case 'Abandon': return ok({ type: 'Abandon', actor, reason: str(E.reason) ?? '' });
     case 'PushRecoveryExhausted': {
-      const local = keyParts(t.idempotencyKey, 'pushdead')?.[1] ?? 'none';
+      // A later visit's chain names its entry version (`{L}@v{N}`, 10658a4c); the local head is before it.
+      const local = (keyParts(t.idempotencyKey, 'pushdead')?.[1] ?? 'none').replace(/@v\d+$/, '');
       return ok({ type: 'PushRecoveryExhausted', actor, localHeadSha: local === 'none' ? null : local });
     }
     case 'EffectDead': {
