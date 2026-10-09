@@ -119,7 +119,7 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
 
       {accounts.length === 0 ? (
         <div className="flex flex-wrap items-center gap-3" data-testid="runner-tokens-empty">
-          <p className="text-sm text-text-muted">No runner tokens yet.</p>
+          <p className="text-sm text-text-muted">No runner tokens.</p>
           <PrimaryAction href={NEW_TOKEN_HREF}>Create a runner token</PrimaryAction>
         </div>
       ) : (

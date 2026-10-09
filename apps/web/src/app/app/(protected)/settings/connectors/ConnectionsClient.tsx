@@ -387,7 +387,7 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <p className="text-sm text-text-muted" data-testid="connectors-empty">
-          No connectors yet.{canManage && ' Add one to give your agents an outside tool.'}
+          No connectors.{canManage && ' Add one to give your agents an outside tool.'}
         </p>
       ) : (
         <ul className="divide-y divide-border-default">

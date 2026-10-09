@@ -167,7 +167,7 @@ export default async function WorkspaceDetailPage({
 
         {!hasRunner && (
           <p className="text-sm text-text-muted" data-testid="workspace-no-runner">
-            No runner has picked up work here yet. Set one up in{' '}
+            No runner has picked up work here. Set one up in{' '}
             <Link href="/app/settings/runners" className="underline hover:text-text-primary">Settings › Runners</Link>.
           </p>
         )}

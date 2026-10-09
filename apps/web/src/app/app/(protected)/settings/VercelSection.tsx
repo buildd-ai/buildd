@@ -155,7 +155,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         {loading ? (
           <p className="text-sm text-text-muted">Loading…</p>
         ) : tokens.length === 0 ? (
-          <p className="text-sm text-text-muted">No tokens yet.</p>
+          <p className="text-sm text-text-muted">No tokens.</p>
         ) : (
           <ul className="divide-y divide-border-default">
             {tokens.map((t) => (

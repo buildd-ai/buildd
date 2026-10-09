@@ -58,7 +58,7 @@ export default async function WorkspacesSettingsPage() {
         </div>
         {rows.length === 0 ? (
           <p className="text-sm text-text-muted" data-testid="workspaces-empty">
-            No workspaces yet.
+            No workspaces.
             {canCreate && <>{' '}<Link href="/app/settings/workspaces/new" className="underline text-text-primary hover:text-text-secondary">Create one</Link></>}
           </p>
         ) : (

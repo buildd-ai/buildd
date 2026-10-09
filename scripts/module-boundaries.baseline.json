@@ -619,6 +619,15 @@
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/MergePolicyEditor.tsx": {
       "apps/web/src/lib/workspace-health.ts": "health-quality"
     },
+    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReadinessCard.tsx": {
+      "apps/web/src/lib/onboarding-view.ts": "onboarding"
+    },
+    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx": {
+      "packages/core/release-strategy.ts": "releases"
+    },
+    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/SpecWizard.tsx": {
+      "apps/web/src/lib/onboarding-view.ts": "onboarding"
+    },
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx": {
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
       "apps/web/src/lib/workspace-health.ts": "health-quality",
@@ -679,18 +688,6 @@
     },
     "apps/web/src/app/app/(protected)/tasks/page.tsx": {
       "packages/core/mission-helpers.ts": "missions"
-    },
-    "apps/web/src/app/app/(protected)/teams/[id]/TeamDetailClient.tsx": {
-      "apps/web/src/app/app/(protected)/settings/team/qa-state.ts": "roles-skills"
-    },
-    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReadinessCard.tsx": {
-      "apps/web/src/lib/onboarding-view.ts": "onboarding"
-    },
-    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx": {
-      "packages/core/release-strategy.ts": "releases"
-    },
-    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/SpecWizard.tsx": {
-      "apps/web/src/lib/onboarding-view.ts": "onboarding"
     },
     "apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx": {
       "apps/web/src/components/chat/ChatEntry.tsx": "chat"

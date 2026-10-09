@@ -529,7 +529,7 @@ export default function ObservationList({
         <p className="text-sm text-text-muted">
           {recheckOnly
             ? 'Nothing needs a re-check. A memory is flagged here when a merged PR touches its files.'
-            : 'No memories yet. Workers add them as they finish tasks.'}
+            : 'No memories. Workers add them as they finish tasks.'}
         </p>
       ) : viewMode === 'list' ? (
         <div className="divide-y divide-border-default border-y border-border-default">

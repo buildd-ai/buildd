@@ -135,7 +135,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
 
   if (schedules.length === 0) {
     return (
-      <p className="text-sm text-text-muted">No schedules yet.</p>
+      <p className="text-sm text-text-muted">No schedules.</p>
     );
   }
 
