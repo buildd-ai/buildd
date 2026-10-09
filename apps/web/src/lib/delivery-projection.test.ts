@@ -104,6 +104,16 @@ describe('projectTaskDelivery: today\'s worker/PR fields', () => {
     expect(projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersededByPrNumber: 9 }] }).kind).toBe('landed');
   });
 
+  it('a closed PR is reconciling; an abandoned PR and a failed task are not', () => {
+    const closedPr = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
+    expect(closedPr.reconciling).toBe(true);
+    const abandoned = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', abandonedAt: '2026-10-01T00:00:00Z' }] });
+    expect(abandoned.kind).toBe('notlanded');
+    expect(abandoned.reconciling).toBe(false);
+    expect(projectTaskDelivery({ status: 'failed', workers: [{ status: 'failed' }] }).reconciling).toBe(false);
+    expect(projectTaskDelivery({ status: 'cancelled', workers: [] }).reconciling).toBe(false);
+  });
+
   it('closed without merging is an exception, not a human ask', () => {
     const d = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
     expect(d.kind).toBe('notlanded');
