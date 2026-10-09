@@ -68,9 +68,9 @@ export default function WorkspacePausePanel({ workspaces }: { workspaces: Worksp
             options={workspaces.map(w => ({ value: w.id, label: w.name }))}
           />
         )}
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void send(current.id, { for: '1h' })}>For 1 hour</button>
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void send(current.id, { for: '4h' })}>For 4 hours</button>
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void send(current.id, { until: tomorrowMorning(new Date()).toISOString() })}>Until tomorrow 9:00</button>
+        <button type="button" className="btn btn-sm min-h-11 md:min-h-0" disabled={busy} onClick={() => void send(current.id, { for: '1h' })}>For 1 hour</button>
+        <button type="button" className="btn btn-sm min-h-11 md:min-h-0" disabled={busy} onClick={() => void send(current.id, { for: '4h' })}>For 4 hours</button>
+        <button type="button" className="btn btn-sm min-h-11 md:min-h-0" disabled={busy} onClick={() => void send(current.id, { until: tomorrowMorning(new Date()).toISOString() })}>Until tomorrow 9:00</button>
       </div>
       {error && <p className="text-sm text-status-error" role="alert">{error}</p>}
     </div>
