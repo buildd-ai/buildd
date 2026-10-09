@@ -32,7 +32,7 @@
  * resolver, so the parse helpers load in a plain bun process.
  */
 
-import { cloudflareGatewayURL, cloudflareWorkersAiURL } from '@builddai/ai-kit/models/routes';
+import { CLOUDFLARE_AI_GATEWAY_ROOT, cloudflareGatewayURL, cloudflareWorkersAiURL } from '@builddai/ai-kit/models/routes';
 
 export const CLOUDFLARE_TOKEN_PURPOSE = 'cloudflare_token' as const;
 
@@ -72,20 +72,40 @@ export function jevGatewayBaseURL(cf: CloudflareAiGateway): string | null {
   return cf.gatewayId ? cloudflareGatewayURL({ accountId: cf.accountId, gatewayId: cf.gatewayId }, 'openrouter') : null;
 }
 
+/**
+ * A gateway's provider root for agent runs: `anthropic` (the Messages API;
+ * Claude Code appends `/v1/messages`) or `openrouter`. Null without a gateway.
+ */
+export function agentGatewayBaseURL(cf: Pick<CloudflareAiGateway, 'accountId' | 'gatewayId'>, upstream: 'anthropic' | 'openrouter'): string | null {
+  if (!cf.gatewayId) return null;
+  return upstream === 'openrouter'
+    ? cloudflareGatewayURL({ accountId: cf.accountId, gatewayId: cf.gatewayId }, 'openrouter')
+    : `${CLOUDFLARE_AI_GATEWAY_ROOT}/${cf.accountId}/${cf.gatewayId}/anthropic`;
+}
+
 /** The header an authenticated AI Gateway checks. Harmless on an open gateway. */
 export function gatewayAuthHeaders(cf: CloudflareAiGateway): Record<string, string> {
   return { 'cf-aig-authorization': `Bearer ${cf.apiToken}` };
 }
 
 /**
- * The team's Cloudflare credential for decision calls: the newest team-wide
- * row that is not revoked and parses. Null under the `own` key policy, without
- * one, or on any failure. Never throws.
+ * The team's Cloudflare credential: the newest team-wide row that is not
+ * revoked and parses. Null under the `own` key policy, without one, or on any
+ * failure. Never throws.
+ *
+ * `ignoreKeyPolicy`: only for the agent endpoint's `cloudflare` kind, which
+ * reads the account and gateway ids and never the token (agent runs are not
+ * bound by the inference key policy, docs/design/agent-model-endpoint.md §1).
  */
-export async function resolveCloudflareAiGateway(opts: { teamId: string }): Promise<CloudflareAiGateway | null> {
+export async function resolveCloudflareAiGateway(
+  opts: { teamId: string },
+  flags: { ignoreKeyPolicy?: boolean } = {},
+): Promise<CloudflareAiGateway | null> {
   try {
-    const { loadInferenceKeyPolicy } = await import('./inference-keys');
-    if (await loadInferenceKeyPolicy(opts.teamId) === 'own') return null;
+    if (!flags.ignoreKeyPolicy) {
+      const { loadInferenceKeyPolicy } = await import('./inference-keys');
+      if (await loadInferenceKeyPolicy(opts.teamId) === 'own') return null;
+    }
     const { db } = await import('./db');
     const { secrets } = await import('./db/schema');
     const { and, desc, eq, isNull } = await import('drizzle-orm');

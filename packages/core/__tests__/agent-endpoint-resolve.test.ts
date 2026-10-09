@@ -369,3 +369,64 @@ describe('appliesTo: a team endpoint narrowed to a list of workspaces', () => {
     expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS2 })).toBe(false);
   });
 });
+
+describe('cloudflare endpoint reference', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const TEAM_CF_TOKEN = 'team-cloudflare-deploy-token-abcdefgh';
+  const cfRow = (o: Partial<Row> = {}): Row => ({
+    id: 'cf', purpose: 'cloudflare_token', workspaceId: null, accountId: null, userId: null, healthStatus: 'healthy',
+    encryptedValue: JSON.stringify({ apiToken: TEAM_CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }), ...o,
+  });
+  const anthropicKey = (o: Partial<Row> = {}): Row => ({
+    id: 'ak', purpose: 'inference_key', label: 'anthropic', workspaceId: null, accountId: null, userId: null,
+    healthStatus: 'healthy', encryptedValue: 'sk-ant-api03-team', ...o,
+  });
+  const cfEndpoint = (blob: object = {}) => endpointRow({ id: 'ep', encryptedValue: JSON.stringify({ kind: 'cloudflare', upstream: 'anthropic', ...blob }) });
+
+  it("resolves to the gateway's anthropic path on the team's Anthropic key, never the Cloudflare token", async () => {
+    rows = [cfEndpoint(), cfRow(), anthropicKey()];
+    const r = await resolveAgentEndpoint({ teamId: 't', workspaceId: WS });
+    expect(r).toMatchObject({
+      kind: 'cloudflare', secretId: 'ep', scope: 'team',
+      baseUrl: `https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/anthropic`,
+      apiKey: 'sk-ant-api03-team', authHeader: 'x-api-key',
+    });
+    expect(JSON.stringify(r)).not.toContain(TEAM_CF_TOKEN);
+  });
+
+  it('resolves even under the own key policy (agent runs are not bound by it)', async () => {
+    policy = 'own';
+    rows = [cfEndpoint(), cfRow(), anthropicKey()];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.kind).toBe('cloudflare');
+  });
+
+  it('routes nothing without a Cloudflare credential, a gateway, a live credential, or the upstream key', async () => {
+    rows = [cfEndpoint(), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow({ encryptedValue: JSON.stringify({ apiToken: TEAM_CF_TOKEN, accountId: ACCOUNT }) }), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow({ healthStatus: 'revoked' }), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+  });
+
+  it("sends the team's minted run token as the gateway header when the endpoint has none, never a person's", async () => {
+    const run = (id: string, token: string, userId: string | null): Row => ({
+      id, purpose: 'cloudflare_gateway_token', workspaceId: null, accountId: null, userId, healthStatus: 'healthy',
+      encryptedValue: JSON.stringify({ token, tokenId: `tok${id}000000`, accountId: ACCOUNT, expiresOn: '2099-01-01T00:00:00Z' }),
+    });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer team-run-token-abcdefghijklmnop' });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('me', 'personal-run-token-abcdefghijk', 'u-1')];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toBeUndefined();
+    // A pasted token on the endpoint wins.
+    rows = [cfEndpoint({ gatewayToken: 'pasted-run-token-abcdefghijkl' }), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer pasted-run-token-abcdefghijkl' });
+  });
+
+  it("a team-wide endpoint never picks up one workspace's Anthropic key", async () => {
+    rows = [cfEndpoint(), cfRow(), anthropicKey({ workspaceId: WS })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+  });
+});

@@ -1484,7 +1484,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1508,6 +1508,15 @@ export interface ClaimModelEndpoint {
    * default. Absent/false: not set. Never applied to a Codex run.
    */
   toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -3604,6 +3613,10 @@ export interface LaneBar {
   href?: string | null;
   /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
   missionId?: string | null;
+  /** The run's task, for an explicit "Open task" link. */
+  taskId?: string | null;
+  /** How the run stands or ended, in words ("Stopped: session limit · work kept"). lib/fleet-view-end-reason.ts. */
+  endReason?: string | null;
 }
 
 export interface Lane {
@@ -3619,6 +3632,8 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The task's full title, for a readable name when the label is a machine identifier. */
+  title?: string | null;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;
