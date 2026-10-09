@@ -16,7 +16,7 @@ describe('notKernelOwnedPr', () => {
     expect(text).toContain('FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id');
     expect(text).toContain("kd.workspace_id = $1::uuid AND kd.pr_number = $2 AND kd.authority = 'kernel'");
     // The kill switch hands the PR back to the legacy floor.
-    expect(text).toContain("COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')");
+    expect(text).toContain("(COALESCE((kw.git_config)->>'workflowKernel', 'true') IN ('true', 'on'))");
     expect(params).toEqual(['w1', 7]);
   });
 });

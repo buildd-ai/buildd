@@ -14,6 +14,7 @@ import { db } from '@buildd/core/db';
 import type { DeliveryShip } from '@buildd/core/pr-shipped';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import type { Exec } from './kernel';
+import { kernelOnSql } from './authority';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -34,7 +35,7 @@ SELECT d.workspace_id || ':' || lower(d.repo_full_name) || '#' || d.pr_number AS
   d.superseded_by_pr, d.superseded_by_url, d.superseded_reason
 FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
 WHERE d.authority = 'kernel'
-  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  AND ${kernelOnSql(sql`w.git_config`)}
   AND d.pr_number IS NOT NULL
   AND d.workspace_id || ':' || lower(d.repo_full_name) || '#' || d.pr_number IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb))`;
 }
