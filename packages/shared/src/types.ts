@@ -3649,6 +3649,8 @@ export interface FleetSnapshot {
   /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
+  /** Live workers on offline runners. */
+  liveOffline: number;
   /** Timeline window, epoch ms. */
   window: { from: number; to: number };
 }

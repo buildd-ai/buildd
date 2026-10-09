@@ -19,12 +19,18 @@ import { StatusChip } from '../_components/ConnectionRow';
 /** "3 of 8 slots busy." / "No agents working. 8 slots free." plus "1 offline." */
 export function fleetOverviewHeadline(fleet: FleetSnapshot, teamName?: string | null): HeadlinePart[] {
   const offline = fleet.runners.filter(r => !r.online).length;
-  const tail: HeadlinePart[] = offline > 0 ? [{ text: ` ${offline} offline.` }] : [];
+  const liveOnline = fleet.live - fleet.liveOffline;
+  const offlineTail: HeadlinePart[] = fleet.liveOffline > 0 ? [{ text: ` ${fleet.liveOffline} running on an offline runner.` }] : [];
+  const offlineCountTail: HeadlinePart[] = offline > 0 && fleet.liveOffline === 0 ? [{ text: ` ${offline} offline.` }] : [];
+  const tail: HeadlinePart[] = offlineTail.length > 0 ? offlineTail : offlineCountTail;
   // Another team's runner can be online, so say whose fleet is empty.
   if (fleet.runners.length === 0) return [{ text: teamName ? `No runners online for ${teamName}.` : 'No runners online.' }];
-  if (fleet.capacity === 0 && fleet.live === 0) return [{ text: 'All runners offline.' }];
-  if (fleet.live > 0) {
-    return [{ text: `${fleet.live} of ${fleet.capacity}`, tone: 'accent' }, { text: ' slots busy.' }, ...tail];
+  if (fleet.capacity === 0 && liveOnline === 0 && fleet.liveOffline === 0) return [{ text: 'All runners offline.' }];
+  if (fleet.liveOffline > 0 && liveOnline === 0) {
+    return [{ text: `${fleet.liveOffline} running on an offline runner.` }];
+  }
+  if (liveOnline > 0) {
+    return [{ text: `${liveOnline} of ${fleet.capacity}`, tone: 'accent' }, { text: ' slots busy.' }, ...tail];
   }
   return [{ text: `No agents working. ${fleet.capacity} slot${fleet.capacity === 1 ? '' : 's'} free.` }, ...tail];
 }

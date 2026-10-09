@@ -269,6 +269,14 @@ export function buildFleetSnapshot(
 
   runners.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
 
+  // Count live workers on offline runners separately
+  let liveOffline = 0;
+  for (const r of runners) {
+    if (!r.online) {
+      liveOffline += r.slots.filter(s => s.worker).length;
+    }
+  }
+
   // One row per live session claim, oldest first. A claim whose start time was
   // never stamped starts at its last activity (it is still a working row, not
   // an empty slot).
@@ -297,7 +305,7 @@ export function buildFleetSnapshot(
     if (b.end == null || b.end >= recentCut) earliest = earliest == null ? b.start : Math.min(earliest, b.start);
   }
   const from = fitLaneWindowStart({ earliest, now, maxSpanMs: maxWindow });
-  return { runners, sessions, live, capacity, window: { from, to: now } };
+  return { runners, sessions, live, capacity, liveOffline, window: { from, to: now } };
 }
 
 /** One row of a runner's slot table: a slot, or every quiet slot folded into a count. */

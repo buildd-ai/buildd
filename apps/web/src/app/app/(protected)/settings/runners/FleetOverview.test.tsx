@@ -30,7 +30,8 @@ function runner(id: string, name: string, busy: number, max: number, online = tr
 function fleet(runners: FleetRunner[]): FleetSnapshot {
   const live = runners.reduce((n, r) => n + r.slots.filter(s => s.worker).length, 0);
   const capacity = runners.filter(r => r.online).reduce((n, r) => n + r.maxSlots, 0);
-  return { runners, live, capacity, window: { from: 0, to: 0 } };
+  const liveOffline = runners.filter(r => !r.online).reduce((n, r) => n + r.slots.filter(s => s.worker).length, 0);
+  return { runners, live, capacity, liveOffline, window: { from: 0, to: 0 } };
 }
 
 const text = (html: string) => html.replace(/<!-- -->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
@@ -82,6 +83,15 @@ describe('FleetOverview', () => {
   it('flags a runner whose agent is waiting on you', () => {
     const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 2, true, true)])} />);
     expect(text(html)).toContain('1 need input');
+  });
+
+  it('shows live work on offline runners separately from capacity', () => {
+    // All runners offline, but one has active work
+    const f = fleet([runner('a', 'runner-1', 2, 4, false), runner('b', 'runner-2', 0, 4, false)]);
+    expect(fleetOverviewHeadline(f).map(p => p.text).join('')).toBe('2 running on an offline runner.');
+    // Mix of online and offline with live work
+    const f2 = fleet([runner('a', 'runner-1', 1, 4, true), runner('b', 'runner-2', 1, 4, false)]);
+    expect(fleetOverviewHeadline(f2).map(p => p.text).join('')).toBe('1 of 4 slots busy. 1 running on an offline runner.');
   });
 
   it('with no runners, says how to start one and still shows the cloud row', () => {
