@@ -6,6 +6,7 @@ import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-
 import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { pickEffectiveRole } from '@/lib/effective-roles';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { kickDispatch, wakeTask } from '@/lib/dispatch-authority';
 import { enqueueReadyDependents } from '@buildd/core/dispatch-dependents';
@@ -401,7 +402,11 @@ async function maybeCreateAggregationTask(
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
     where: eq(tasks.id, parentTaskId),
-    columns: { id: true, mode: true, title: true, workspaceId: true, missionId: true, roleSlug: true },
+    columns: {
+      id: true, mode: true, title: true, workspaceId: true, missionId: true, roleSlug: true,
+      // Who the plan is for (resolveTaskRequesterUserId): the aggregator is too.
+      createdByUserId: true, parentTaskId: true, scheduleId: true,
+    },
   });
 
   if (!parent || parent.mode !== 'planning') return;
@@ -486,8 +491,11 @@ async function maybeCreateAggregationTask(
 
   // The aggregator finishes the parent's work, so it runs as the parent's role;
   // a role-less parent (the plan that fanned out) falls back to the Organizer.
-  // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1).
-  const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer']);
+  // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1),
+  // looked up for the parent's requester so a parent on its owner's private
+  // role hands that role on; the aggregator is filed for the same person.
+  const requesterUserId = await resolveTaskRequesterUserId(parent).catch(() => null);
+  const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer'], { requesterUserId });
 
   const [aggregator] = await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
@@ -498,6 +506,7 @@ async function maybeCreateAggregationTask(
     roleSlug,
     parentTaskId,
     missionId: parent.missionId,
+    createdByUserId: requesterUserId,
     status: 'pending',
     creationSource: 'api',
     outputRequirement: 'artifact_required',

@@ -12,6 +12,7 @@ import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, ty
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { wakeTasks } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
@@ -156,6 +157,8 @@ export async function approvePlan(
     where: eq(tasks.id, planningTaskId),
     columns: {
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
+      // Who the plan is for (resolveTaskRequesterUserId): its children are too.
+      createdByUserId: true, parentTaskId: true, scheduleId: true,
       // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
@@ -309,8 +312,12 @@ export async function approvePlan(
   // child at claim (role-routing §1 row 6). A missing or unknown role files
   // role-less, and the rejected slug is recorded on the child's context. The
   // planning task's own role (the Organizer) is never inherited.
+  // The children are for whoever the plan is for: a step may name that
+  // person's private role (never another member's), and each child records
+  // them as its creator so later lookups need no walk.
+  const requesterUserId = await resolveTaskRequesterUserId(task).catch(() => null);
   const knownRoles = survivingPlan.some(step => step.roleSlug) && task.workspaceId
-    ? await resolveEffectiveRoleSlugs(task.workspaceId)
+    ? await resolveEffectiveRoleSlugs(task.workspaceId, requesterUserId)
     : new Set<string>();
 
   // First pass: create all tasks with empty dependsOn to get their IDs
@@ -338,6 +345,7 @@ export async function approvePlan(
         description: step.description || null,
         parentTaskId: planningTaskId,
         missionId: task.missionId,
+        createdByUserId: requesterUserId,
         mode: 'execution',
         taskClass: 'work',
         creationSource: options?.autoApproved ? 'orchestrator' : 'api',
