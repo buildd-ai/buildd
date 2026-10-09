@@ -1,5 +1,6 @@
 /** Client-safe projection of route capabilities. No SDK, environment, DB or secrets. */
 import { ROUTES, ROUTE_IDS, type RouteId, type RouteSpec } from './routes';
+import { chatKeyPurposes } from './provider-registry';
 
 export interface ProviderKeyCapability {
   id: RouteId;
@@ -26,7 +27,8 @@ export const PROVIDER_KEY_CAPABILITIES: readonly ProviderKeyCapability[] = ROUTE
     id, label: route.label, personalKeys: route.personalKeys,
     prefix: route.key?.prefix ?? '', placeholder: route.key?.placeholder ?? '',
     consoleUrl: route.key?.consoleUrl ?? '', rejectedPrefixes: route.key?.rejectedPrefixes ?? [],
-    purposes: ['inference_key', ...(route.key?.legacyPurposes ?? [])],
+    // Storage facts come from the provider registry, not from ROUTES.
+    purposes: chatKeyPurposes(id),
     validation: { minLength: 20, allowWhitespace: false, prefixIsHint: true },
     verification: { baseURL: route.baseURL, path: route.verifyPath, auth: route.auth, method: 'GET', rejectedStatuses: [401, 403] },
   };
