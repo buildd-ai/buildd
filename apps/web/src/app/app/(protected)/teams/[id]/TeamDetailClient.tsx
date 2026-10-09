@@ -361,7 +361,7 @@ export default function TeamDetailClient({
           Members ({members.length})
         </h2>
         <p className="text-xs text-text-muted mb-4">
-          Lowering someone&apos;s role, or removing them, lowers the API keys they created to what their new role may create. Keys are not deleted. Keys with no recorded creator are not changed.
+          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
         </p>
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
