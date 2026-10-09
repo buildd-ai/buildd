@@ -61,8 +61,15 @@ async function mount(scenario: string): Promise<HTMLElement> {
 const text = (el: Element) => el.textContent ?? '';
 /** Every "<n>%" label in the rendered text. */
 const percentLabels = (el: Element) => text(el).match(/\b\d{1,3}\s*%/g) ?? [];
-const stepStates = (el: Element) =>
-  Object.fromEntries([...el.querySelectorAll('[data-testid="run-evidence-rail"] li')].map(li => [li.getAttribute('data-phase'), li.getAttribute('data-state')]));
+/** Opens the rail's "Run evidence" disclosure (closed by default) so the phase list mounts. */
+async function openEvidence(el: Element): Promise<void> {
+  const toggle = el.querySelector<HTMLButtonElement>('[data-testid="run-evidence-rail"] button[aria-expanded="false"]');
+  if (toggle) await act(async () => { toggle.click(); });
+}
+const stepStates = async (el: Element) => {
+  await openEvidence(el);
+  return Object.fromEntries([...el.querySelectorAll('[data-testid="run-evidence-rail"] li')].map(li => [li.getAttribute('data-phase'), li.getAttribute('data-state')]));
+};
 
 describe('legacy worker with a non-monotonic percent stream', () => {
   test('shows no earlier stream value and never a field of percentage labels', async () => {
@@ -77,7 +84,7 @@ describe('legacy worker with a non-monotonic percent stream', () => {
     const s = await mount('legacy-percent-stream');
     expect(s.querySelector('[data-testid="worker-current-action"]')?.textContent).toContain(LEGACY_LATEST_HEADLINE);
     expect(text(s)).toContain('http.ts');
-    const steps = stepStates(s);
+    const steps = await stepStates(s);
     expect(steps).toMatchObject({ started: 'done', changed: 'done', committed: 'done' });
     expect(steps.pr_open).not.toBe('done');
   });
@@ -88,7 +95,7 @@ describe('legacy worker with a non-monotonic percent stream', () => {
 describe('research task', () => {
   test('lights no code phase it never observed', async () => {
     const s = await mount('research-lifecycle');
-    const steps = stepStates(s);
+    const steps = await stepStates(s);
     expect(steps.started).toBe('done');
     for (const k of ['changed', 'committed', 'pushed', 'pr_open', 'ci', 'review', 'merged']) expect(steps[k]).not.toBe('done');
     expect(percentLabels(s)).toEqual([]);
@@ -96,6 +103,8 @@ describe('research task', () => {
 
   test('artifact runs omit irrelevant phases', async () => {
     const s = await mount('research-lifecycle');
+    await openEvidence(s);
+    expect(s.querySelector('[data-phase="started"]')).not.toBeNull();
     for (const phase of ['committed', 'pushed', 'pr_open', 'ci', 'review', 'merged']) expect(s.querySelector(`[data-phase="${phase}"]`)).toBeNull();
   });
 });
@@ -162,23 +171,21 @@ describe('attempts with equal timestamps', () => {
   });
 });
 
-// §4 M-2 / C-6: below md the rail is a summary + a 44px disclosure; opening it
-// lists every phase the md+ rail shows, labelled, with its state.
-describe('evidence rail below md', () => {
-  test('the disclosure opens the full labelled list of the phases the md+ rail shows', async () => {
+// §4 M-2 / C-6: the rail is the one Lifecycle track + a 44px disclosure at
+// every width; opening it lists every phase, labelled, with its state.
+describe('evidence rail', () => {
+  test('the Lifecycle leads; the disclosure opens the full labelled phase list', async () => {
     const s = await mount('legacy-percent-stream');
-    const compact = s.querySelector('[data-testid="run-evidence-compact"]')!;
-    expect(compact).not.toBeNull();
-    const toggle = compact.querySelector<HTMLButtonElement>('button')!;
+    const rail = s.querySelector('[data-testid="run-evidence-rail"]')!;
+    expect(rail.querySelector('[data-testid="lifecycle"]')).not.toBeNull();
+    const toggle = rail.querySelector<HTMLButtonElement>('button')!;
     expect(toggle.className).toContain('min-h-11');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(text(compact)).toMatch(/· \d+ of \d+/);
+    expect(text(rail)).toMatch(/· \d+ of \d+/);
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    const phasesOf = (sel: string) => [...s.querySelectorAll(`${sel} li[data-phase]`)].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);
-    const listed = phasesOf('[data-testid="run-evidence-list"]');
+    const listed = [...s.querySelectorAll('[data-testid="run-evidence-list"] li[data-phase]')].map(li => `${li.getAttribute('data-phase')}:${li.getAttribute('data-state')}`);
     expect(listed.length).toBeGreaterThan(0);
-    expect(listed).toEqual(phasesOf('[data-testid="run-evidence-rail"]'));
     for (const li of s.querySelectorAll('[data-testid="run-evidence-list"] li')) expect(li.className).toContain('min-h-11');
   });
 });
