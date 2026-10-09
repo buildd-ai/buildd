@@ -8,7 +8,7 @@ import { ProviderKeyCard } from '@/components/settings/ProviderKeyCard';
 import { chatKeyLine, ownKeyProviders } from './chat-key-line';
 
 /**
- * Account → chat key. One line that links to Model providers: what chat uses
+ * Account → your keys. One line that links to Providers: what chat uses
  * for you. Team setup lives there; this only shows the outcome of the team's
  * key policy, plus your own key when the policy allows or requires one, for
  * each provider the team has enabled that takes personal keys.
@@ -56,7 +56,7 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
   });
 
   return (
-    <section id="provider-keys" className="scroll-mt-20" aria-label="Chat key">
+    <section id="provider-keys" className="scroll-mt-20" aria-label="Your keys">
       {error && <div className="notice notice-err mb-3 text-xs">{error}</div>}
       <Link
         href="/app/settings/providers"
@@ -78,13 +78,20 @@ export default function PersonalProviderKeys({ teamId, isAdmin }: { teamId: stri
       {view && ownAllowed && !required && cards.length > 0 && (
         <details className="mt-3 group" open={hasOwn}>
           <summary className="cursor-pointer text-xs text-text-secondary hover:text-text-primary list-none">
-            <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Use my own key instead
+            <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Use my own key
           </summary>
           {hasOwn && (
             <p className="text-xs text-text-secondary mt-2">Billed for your use only. Remove it to use the team key.</p>
           )}
           <div className="mt-2.5 space-y-2.5" data-testid="own-key-cards">{cards}</div>
         </details>
+      )}
+
+      {view && ownAllowed && cards.length > 0 && (
+        <p className="mt-2.5 text-xs text-text-muted" data-testid="own-key-scope">
+          Your keys run your chats, and agent tasks you start when the team&apos;s policy allows.{' '}
+          <Link href="/app/settings/providers?scope=mine" className="underline hover:text-text-primary">All your keys</Link>
+        </p>
       )}
     </section>
   );

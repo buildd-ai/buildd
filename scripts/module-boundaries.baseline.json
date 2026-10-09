@@ -645,9 +645,6 @@
       "apps/web/src/lib/chat/limits.ts": "chat",
       "apps/web/src/lib/spend-summary.ts": "health-quality"
     },
-    "apps/web/src/app/app/(protected)/settings/providers/page.tsx": {
-      "apps/web/src/lib/chat-availability.ts": "chat"
-    },
     "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": {
       "apps/web/src/lib/fleet-view.ts": "health-quality"
     },
