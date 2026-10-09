@@ -26,8 +26,12 @@ mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }))
 
 const mockGithubApi = mock(() => Promise.resolve({ check_runs: [] }) as Promise<unknown>);
 const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'merged' }) as Promise<any>);
+// The combined commit status read (ci-verdict.ts) is routed to its own mock, so
+// the ordered mockResolvedValueOnce sequences below stay about check-runs/files/PR.
+const mockStatusApi = mock(async (..._a: any[]): Promise<unknown> => ({ total_count: 0, statuses: [] }));
 mock.module('@/lib/github', () => ({
-  githubApi: mockGithubApi,
+  githubApi: (...args: any[]) =>
+    /\/commits\/[^/]+\/status(\?|$)/.test(String(args[1])) ? mockStatusApi(...args) : (mockGithubApi as any)(...args),
   mergePullRequest: mockMergePullRequest,
 }));
 
@@ -201,6 +205,106 @@ describe('evaluateAutoMergeSafety CI verification', () => {
       reason: expect.stringContaining('integration'),
     });
   });
+
+  // Allow-list (ci-verdict.ts): only completed + success/neutral/skipped pass.
+  for (const conclusion of ['timed_out', 'cancelled', 'startup_failure', 'action_required', 'stale', null]) {
+    it(`refuses a completed run concluded ${conclusion}`, async () => {
+      mockGithubApi.mockResolvedValueOnce({
+        total_count: 2,
+        check_runs: [
+          { name: 'build', status: 'completed', conclusion: 'success' },
+          { name: 'test', status: 'completed', conclusion },
+        ],
+      });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: test (${conclusion ?? 'no conclusion'})`,
+      });
+    });
+  }
+
+  for (const status of ['waiting', 'requested', 'pending']) {
+    it(`refuses a run that has not started (${status})`, async () => {
+      mockGithubApi.mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'deploy', status, conclusion: null }] });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: deploy (${status})`,
+      });
+    });
+  }
+
+  it('lets neutral and skipped through to the later rails', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({
+        total_count: 2,
+        check_runs: [
+          { name: 'build', status: 'completed', conclusion: 'neutral' },
+          { name: 'test', status: 'completed', conclusion: 'skipped' },
+        ],
+      })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('reads check runs 100 per page and follows total_count to page 2', async () => {
+    const green = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `m-${i}`, status: 'completed', conclusion: 'success' }));
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 101, check_runs: green })
+      .mockResolvedValueOnce({ total_count: 101, check_runs: [{ id: 500, name: 'e2e', status: 'completed', conclusion: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: 'CI checks still pending or failed: e2e (failure)',
+    });
+    const paths = mockGithubApi.mock.calls.map((c: any[]) => c[1]);
+    expect(paths[0]).toContain('per_page=100&page=1');
+    expect(paths[1]).toContain('per_page=100&page=2');
+  });
+
+  it('refuses when GitHub returns fewer check runs than its total_count', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 150, check_runs: Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `m-${i}`, status: 'completed', conclusion: 'success' })) })
+      .mockResolvedValueOnce({ total_count: 150, check_runs: [] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not read every check run'),
+    });
+  });
+
+  for (const state of ['failure', 'error', 'pending']) {
+    it(`refuses on a ${state} commit status even with no check runs`, async () => {
+      mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
+      mockStatusApi.mockResolvedValueOnce({ state, total_count: 1, statuses: [{ context: 'ci/jenkins', state }] });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: ci/jenkins (${state})`,
+      });
+    });
+  }
+
+  it('ignores the combined state "pending" GitHub reports when there are no statuses at all', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 0, statuses: [] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('refuses when the commit-status read fails', async () => {
+    mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
+    mockStatusApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify CI status'),
+    });
+  });
 });
 
 describe('evaluateAutoMergeSafety superseded check runs', () => {
@@ -253,7 +357,7 @@ describe('evaluateAutoMergeSafety superseded check runs', () => {
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
-    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: check' });
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: check (failure)' });
   });
 
   it('keeps a failing run that cannot be ordered against a same-name run', async () => {
@@ -279,7 +383,7 @@ describe('evaluateAutoMergeSafety superseded check runs', () => {
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
-    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: build' });
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: build (failure)' });
   });
 });
 
