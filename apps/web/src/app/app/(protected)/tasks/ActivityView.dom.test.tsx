@@ -66,3 +66,21 @@ it('History pages: the first 20 deliveries, then "Show N more"; a filter starts 
     container.remove();
   }
 });
+
+it('a mission group whose projection did not load counts its tasks instead of "0/0 landed"', () => {
+  const nowMs = Date.parse('2026-10-08T12:00:00Z');
+  const now = buildActivityNow({
+    tasks: [{ id: 'm-t1', title: 'Mission task', status: 'in_progress', missionId: 'gone', createdAt: new Date(nowMs).toISOString(), updatedAt: new Date(nowMs).toISOString(), workers: [{ status: 'running' }] }],
+    missions: [], rules, now: nowMs,
+  });
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ActivityView mode="now" now={now} history={[]} nowMs={nowMs} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    expect(container.textContent).not.toContain('0/0 landed');
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});

@@ -14,7 +14,7 @@ import Link from 'next/link';
 import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle, { STEP_OF } from '@/components/ui/Lifecycle';
-import { DeliveryStatePill, STATE_KEY_OF_DELIVERY } from '@/components/delivery/DeliveryStatePill';
+import { STATE_KEY_OF_DELIVERY } from '@/components/delivery/DeliveryStatePill';
 import StatePill from '@/components/ui/StatePill';
 import Disclosure from '@/components/ui/Disclosure';
 import { STATES, TONE_TEXT as STATE_TONE_TEXT, type StateKey } from '@/components/ui/states';
@@ -236,14 +236,17 @@ function Empty({ text }: { text: string }) {
 
 // ── Now ─────────────────────────────────────────────────────────────────────
 
+const taskCount = (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`;
+
 function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: number; openRowIds: readonly string[] }) {
   return (
     <section data-testid="activity-group" data-mission={group.missionId ?? 'standalone'} className="mt-6">
       <div className="flex items-baseline justify-between gap-3 border-b border-border-default pb-1">
         <h2 className="line-clamp-2 min-w-0 break-words text-meta font-semibold text-text-secondary">{group.title}</h2>
+        {/* "n/m landed" only when the mission's projection loaded; never "0/0". */}
         {group.href
-          ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.landed}/{group.total} landed ›</Link>
-          : <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{group.rows.length} {group.rows.length === 1 ? 'task' : 'tasks'}</span>}
+          ? <Link href={group.href} className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap font-mono text-meta text-text-muted md:min-h-0">{group.total > 0 ? `${group.landed}/${group.total} landed` : taskCount(group.rows.length)} ›</Link>
+          : <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{taskCount(group.rows.length)}</span>}
       </div>
       {group.rows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
       {group.moreWaiting > 0 && (
@@ -334,7 +337,7 @@ function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
         <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <DeliveryStatePill kind={episode.kind} />
+        <StatePill state={STATE_KEY_OF_DELIVERY[episode.kind]} label={DELIVERY_KIND[episode.kind].label} variant="plain" data-testid="delivery-state" />
         {episode.repairRounds > 0 && <span className="font-mono text-meta text-status-warning">{repairBadge(episode.repairRounds)}</span>}
         <span className="min-w-0 break-words text-meta text-text-muted">{episode.missionTitle ?? 'Standalone'}</span>
       </div>
