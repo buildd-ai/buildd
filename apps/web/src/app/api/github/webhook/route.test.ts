@@ -324,6 +324,9 @@ mock.module('@buildd/core/release-strategy', () => ({
   // Mirrors the real module: the trigger default lives in ONE place.
   resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
+  isReleaseBranchPr: (c: any, r: any) =>
+    !!c?.enabled && !!c.releaseBranch?.trim() && !!c.prodBranch?.trim() &&
+    r.headRef?.trim() === c.releaseBranch.trim() && r.baseRef?.trim() === c.prodBranch.trim(),
 }));
 
 /**
@@ -6827,6 +6830,30 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       await settle();
       expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
       expect(mockChangedFilesForPr).not.toHaveBeenCalled();
+    });
+
+    it('an ordinary merge still notifies when the workspace has a release config', async () => {
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws-release',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          releaseBranch: 'dev',
+          prodBranch: 'main',
+        },
+      });
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 4242, merged: true, title: 'feat: x', body: null, merge_commit_sha: 'm4242',
+          head: { ref: 'feature/x', sha: 'h4242' }, base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/4242',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).toHaveBeenCalledTimes(1);
     });
   });
 
