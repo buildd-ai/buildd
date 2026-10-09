@@ -103,3 +103,5 @@ Licensing is per directory. Check the `license` field in each `package.json`.
 | Everything else, including the server (`apps/web`) and `packages/core` | [FSL-1.1-ALv2](LICENSE) |
 
 The Functional Source License lets you read, modify, self-host and use the server for anything except a competing product or service. Each release becomes Apache-2.0 two years after it ships.
+
+These are the current licenses and are not changing. A separately licensed Enterprise module is a proposal only; see [docs/specs/commercial-licensing.md](docs/specs/commercial-licensing.md). The offline license check in `packages/core/license` is an entitlement signal for such future modules, not protection for this source-available code.
