@@ -324,7 +324,7 @@ jobs:
             fi
             if [ "$i" -eq 24 ]; then
               echo "::error::App failed to start after 120s"
-              tail -50 /tmp/app.log || true
+              tail -50 /tmp/app.log | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<uuid>/g; s/PR #[0-9]+/PR #<n>/g' || true
               exit 1
             fi
           done
@@ -532,7 +532,14 @@ jobs:
 
       - name: Dump app log on failure
         if: failure()
-        run: tail -100 /tmp/app.log 2>/dev/null || echo '(no app log)'
+        # The app runs against a prod clone and Actions logs are world-readable:
+        # redact row ids and PR numbers before printing anything.
+        run: |
+          if [ -f /tmp/app.log ]; then
+            tail -100 /tmp/app.log | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<uuid>/g; s/PR #[0-9]+/PR #<n>/g'
+          else
+            echo '(no app log)'
+          fi
 
       # The Neon prod-clone branch is always deleted — success or failure.
       # This is the only write-back to Neon: branch deletion. No prod data is modified.
