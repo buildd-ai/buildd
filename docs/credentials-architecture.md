@@ -179,6 +179,16 @@ or `{ "kind": "openrouter" | "anthropic-compatible", "baseUrl", "apiKey",
 routes; `packages/core/scripts/consolidate-openrouter-endpoint-keys.ts` (dry
 run by default, `--apply` to write) turns it into a reference, or flags the row
 `capabilities.legacyInlineKey` when the stored key differs.
+`{ "kind": "cloudflare", "upstream": "anthropic" | "openrouter", "gatewayToken"? }`
+references the team's `cloudflare_token` row for its account and AI Gateway ids
+only (never its token) and the stored Anthropic or OpenRouter key (same scope or
+broader). Agents call `gateway.ai.cloudflare.com/v1/<account>/<gateway>/<upstream>`
+with that key. `gatewayToken`, for an authenticated gateway, must be a separate
+token limited to AI Gateway Run: it reaches runners as `cf-aig-authorization`
+(`modelEndpoint.headers` → `ANTHROPIC_CUSTOM_HEADERS`), so an endpoint carrying
+one is only given to a runner declaring the `agent_endpoint_headers` feature;
+the cloud egress adds it to each forwarded call. A Codex task gets an OpenAI
+route only through an OpenRouter upstream with no gateway token.
 `resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
 `anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
 team, a tie to the endpoint, only the winner delivered. The key policy does not
@@ -391,7 +401,11 @@ own team only, `no-store`, audited as elevated before it decrypts. Its one
 remaining caller is the container-image `wrangler deploy` step of
 `apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
-The same row also serves **decision calls** when the team's decision model says
+The same row's account and gateway ids (never the token) also route **agent
+runs** through an `agent_endpoint` of kind `cloudflare` (see "Agent model
+endpoint" above).
+
+It also serves **decision calls** when the team's decision model says
 `via: 'cloudflare'` (`packages/core/cloudflare-ai-gateway.ts`). Cloudflare's Clef
 models run on Workers AI with the token as the key, through `aiGatewayId` when it is
 set. Jev goes through the gateway's OpenRouter path, still on the team's OpenRouter
