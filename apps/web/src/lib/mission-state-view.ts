@@ -405,6 +405,11 @@ interface MissionStateViewBase {
   /** The one line the header and the card both render. */
   readonly situation: MissionSituation;
   readonly derivedFrom: MissionStateProvenance;
+  /**
+   * The escalation gate verdict for the mission PR, if available. Used to
+   * determine if a not-landed mission should count as needs-you.
+   */
+  readonly escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
 }
 
 /**
@@ -690,6 +695,7 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
       waitingOn: resolved.waitingOn ? resolved.source : null,
       nextAction: resolved.waitingOn ? resolved.source : null,
     },
+    escalationGateVerdict: input.escalationGateVerdict,
   };
 
   if (resolved.waitingOn === null) {
@@ -1919,6 +1925,8 @@ const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
  */
 export function missionNeedsYou(view: MissionStateView): boolean {
   if (view.kind === 'complete') return false;
+  // A not-landed mission is NOT needs-you if the escalation gate says the machine owns the next step.
+  if (view.kind === 'awaiting_merge' && view.escalationGateVerdict?.owner === 'machine') return false;
   if (NEEDS_YOU_KINDS.has(view.kind)) return true;
   const holdAsk = view.kind === 'held' ? view.waitingOn : null;
   if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;

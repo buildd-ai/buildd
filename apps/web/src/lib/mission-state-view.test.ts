@@ -797,7 +797,7 @@ describe('deriveMissionStateView — local executor', () => {
 });
 
 describe('missionNeedsYou — not-landed mission with escalation-gate verdict', () => {
-  it('a mission PR open on the integration branch counts as needs-you even when escalation says Buildd checks next', () => {
+  it('a mission PR open on the integration branch is NOT needs-you when escalation says Buildd checks next', () => {
     const view = deriveMissionStateView({
       ...base,
       progress: 100,
@@ -807,7 +807,7 @@ describe('missionNeedsYou — not-landed mission with escalation-gate verdict', 
     });
     expect(view.kind).toBe('awaiting_merge');
     expect(view.waitingOn?.kind).toBe('merge');
-    expect(missionNeedsYou(view)).toBe(true);
+    expect(missionNeedsYou(view)).toBe(false);
   });
 
   it('a mission PR open on the integration branch counts as needs-you when escalation says owner decides', () => {
@@ -817,6 +817,19 @@ describe('missionNeedsYou — not-landed mission with escalation-gate verdict', 
       missionPr: { state: 'open', prNumber: 124, prUrl: 'https://example.invalid/pr/124' },
       unmergedPrs: [],
       escalationGateVerdict: { owner: 'person', reason: 'Merge this PR' },
+    });
+    expect(view.kind).toBe('awaiting_merge');
+    expect(view.waitingOn?.kind).toBe('merge');
+    expect(missionNeedsYou(view)).toBe(true);
+  });
+
+  it('a mission PR open without a verdict defaults to needs-you', () => {
+    const view = deriveMissionStateView({
+      ...base,
+      progress: 100,
+      missionPr: { state: 'open', prNumber: 125, prUrl: 'https://example.invalid/pr/125' },
+      unmergedPrs: [],
+      // No escalationGateVerdict provided
     });
     expect(view.kind).toBe('awaiting_merge');
     expect(view.waitingOn?.kind).toBe('merge');
