@@ -291,7 +291,7 @@ export async function POST(req: NextRequest) {
 
     // Storing a healthy backend credential recovers tasks that failed on the old
     // (revoked/expired) one — self-heal instead of a manual re-run slog. Best-effort.
-    const requeued = await requeueAfterAgentCredential(targetTeamId, purpose);
+    const requeued = await requeueAfterAgentCredential(targetTeamId, purpose, label);
 
     return NextResponse.json({ id, requeued });
   } catch (error) {
