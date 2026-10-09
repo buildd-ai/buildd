@@ -106,6 +106,11 @@ export type Reconstructed = { ok: true; cmd: Command; inferred: string[] } | { o
 type J = Record<string, unknown>;
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+const liveChecksOf = (v: unknown): { complete: boolean; failing: string[] } | null => {
+  const o = v as { complete?: unknown; failing?: unknown } | null;
+  return o && typeof o === 'object' && typeof o.complete === 'boolean' && Array.isArray(o.failing) && o.failing.every((f) => typeof f === 'string')
+    ? { complete: o.complete, failing: o.failing as string[] } : null;
+};
 
 /** `prefix:a:b:c` → ['a','b','c']; repo names and SHAs carry no colons. */
 function keyParts(key: string, prefix: string): string[] | null {
@@ -233,6 +238,7 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       return ok({
         type: 'CiFailedObserved', actor, headSha: h, signature: str(E.signature) ?? '', maxAttempts,
         preflightMiss: str(E.preflightMiss), trigger: inserted?.trigger === 'human' ? 'human' : 'automatic', triggerFactId,
+        ...(liveChecksOf(E.liveChecks) ? { liveChecks: liveChecksOf(E.liveChecks) } : {}),
       });
     }
     case 'ConflictObserved': {
