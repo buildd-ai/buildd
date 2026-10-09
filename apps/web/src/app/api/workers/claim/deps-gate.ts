@@ -7,6 +7,8 @@ import {
   EARLY_RELEASE_SATISFYING_DECISIONS,
 } from '@/lib/dep-gate-contract';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
+import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
+import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
 
 /**
  * Re-exported for callers already importing the contract from the gate module.
@@ -116,6 +118,7 @@ export function dependencySatisfied(depId: SQL): SQL {
       AND dr.decision IN (${releaseDecisions})
       AND dr.revoked_at IS NULL
     )
+    OR ${migrationEdgeOnOtherBase(depId)}
   )`;
 }
 
@@ -138,4 +141,46 @@ export function depsGate(): SQL {
     bypassFlagCondition(tasks.context, BYPASS_DEPS_GATE_KEY),
     dependenciesSatisfied(),
   )!;
+}
+
+/**
+ * TRUE when `depId` is a migration-overlap edge the claim minted itself
+ * (`pathDeclaration.inferredDependsOn`) and the dependency's PR targets a
+ * different landing base than the dependent will. The edge exists to stop two
+ * tasks taking the same migration index on one base. Work landing on another
+ * base (a mission integration branch vs trunk, or one mission branch vs
+ * another) cannot collide until that base merges, and the index check runs
+ * again then (the renumber path), so the dependent is not serialized behind it,
+ * whether or not the dependency's PR has merged. Caller-declared edges never
+ * qualify, and an unknown base (`pr_base_ref` NULL) keeps the edge closed.
+ *
+ * The dependent's base is its mission's working branch when the mission uses an
+ * integration branch, trunk otherwise. Trunk's name is not in SQL, so "differs"
+ * is: the PR base is not the dependent's mission branch, and at least one side
+ * is a mission branch.
+ */
+function migrationEdgeOnOtherBase(depId: SQL): SQL {
+  const dependentBranch = sql`(
+    SELECT m.working_branch FROM missions m
+    WHERE m.id = ${tasks.missionId} AND m.integration_branch_enabled IS TRUE
+  )`;
+  return sql`(
+    ${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text
+    AND EXISTS (
+      SELECT 1 FROM ${tasks} t4
+      WHERE t4.id = ${depId}
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(COALESCE(t4.path_manifest, '[]'::jsonb)) AS mp
+        WHERE mp ~* ${sql.raw(`'${MIGRATION_PATH_RE.source.replace(/'/g, "''")}'`)}
+      )
+    )
+    AND EXISTS (
+      SELECT 1 FROM ${workers} w4
+      WHERE w4.task_id = ${depId}
+      AND w4.pr_url IS NOT NULL
+      AND w4.pr_base_ref IS NOT NULL
+      AND w4.pr_base_ref IS DISTINCT FROM ${dependentBranch}
+      AND (w4.pr_base_ref LIKE ${sql.raw(`'${MISSION_BRANCH_PREFIX}%'`)} OR ${dependentBranch} IS NOT NULL)
+    )
+  )`;
 }

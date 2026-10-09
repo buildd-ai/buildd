@@ -246,3 +246,20 @@ describe('outsideSurfaceAuditMission(): rendered', () => {
     expect(q.params).toEqual(['[surface audit] %']);
   });
 });
+
+describe('dependencySatisfied(): migration edge onto another landing base', () => {
+  it('releases an inferred migration edge whose PR targets a different base, merged or not', () => {
+    const text = renderGate();
+    // Only edges the claim minted, never a caller-declared dependency.
+    expect(text).toContain(`"tasks"."path_declaration"->'inferredDependsOn' ? (dep_id::uuid)::text`);
+    // The dependency must itself touch a migration path.
+    expect(text).toContain('mp ~* ');
+    // A PR with an unknown base keeps the edge closed.
+    expect(text).toContain('w4.pr_base_ref IS NOT NULL');
+    // Holder merged into mission/<x>, dependent on trunk -> differs.
+    expect(text).toContain('w4.pr_base_ref IS DISTINCT FROM (');
+    expect(text).toContain("w4.pr_base_ref LIKE 'mission/%'");
+    // The dependent's base is its mission's integration branch only when enabled.
+    expect(text).toContain('m.integration_branch_enabled IS TRUE');
+  });
+});
