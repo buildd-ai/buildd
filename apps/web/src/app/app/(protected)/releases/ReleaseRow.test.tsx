@@ -123,7 +123,7 @@ describe('ReleaseRow content', () => {
     expect(html).not.toMatch(/>\s*Gated\s*</i);
     expect(html).not.toContain('Run →');
     expect(html).not.toContain('actions/runs/1');
-    expect(html).not.toContain('uppercase');
+    expect(html).not.toMatch(/upper[c]ase/);
   });
 
   it('keeps times, commits, compare link and counts on one meta line', () => {
