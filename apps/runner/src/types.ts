@@ -123,23 +123,6 @@ export type ChatMessage =
   | { type: 'tool_use'; name: string; input?: any; timestamp: number }
   | { type: 'user'; content: string; timestamp: number };
 
-// Agent team member
-export interface TeamMember {
-  name: string;
-  role?: string;
-  status: 'active' | 'idle' | 'done';
-  spawnedAt: number;
-}
-
-// Inter-agent message
-export interface TeamMessage {
-  from: string;
-  to: string | 'broadcast';
-  content: string;
-  summary?: string;
-  timestamp: number;
-}
-
 // Subagent task lifecycle tracking (from SDK task_started / task_notification messages)
 export interface SubagentTask {
   taskId: string;
@@ -164,14 +147,6 @@ export interface SubagentTask {
     agentName: string | null;
     cumulativeUsage: { inputTokens: number; outputTokens: number; costUsd: number } | null;
   };
-}
-
-// Team state for a worker
-export interface TeamState {
-  teamName: string;
-  members: TeamMember[];
-  messages: TeamMessage[];
-  createdAt: number;
 }
 
 // Local worker state
@@ -248,7 +223,6 @@ export interface LocalWorker {
   codexThreadId?: string;
   error?: string;
   waitingFor?: WaitingFor;  // Set when agent asks a question
-  teamState?: TeamState;  // Set when agent spawns a team
   subagentTasks: SubagentTask[];  // Subagent task lifecycle (task_started → task_notification)
   // Total number of task_started events observed — uncapped, unlike subagentTasks (capped at 100).
   // When subagentTasksObservedCount > subagentTasks.length, persisted span metrics are floors.
