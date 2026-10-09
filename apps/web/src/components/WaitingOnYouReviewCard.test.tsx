@@ -71,7 +71,7 @@ describe('WaitingOnYouReviewCard action hierarchy', () => {
     expect(html).toContain('>Apply<');
     expect(html).toContain('Apply with corrections');
     expect(html).toContain('Merge anyway');
-    // Apply is the filled/primary button (bg-accent); Merge anyway is a bare text link.
+    // Apply is the filled/primary button (btn-ink, the L3 charcoal); Merge anyway is a bare text link.
     const applyIdx = html.indexOf('>Apply<');
     const mergeAnywayIdx = html.indexOf('Merge anyway');
     expect(applyIdx).toBeGreaterThan(-1);
@@ -102,7 +102,7 @@ describe('WaitingOnYouReviewCard — CTA set derives from server state, per revi
       apply: html.includes('>Apply<'),
       applyWithCorrections: html.includes('Apply with corrections'),
       mergeAnywayLink: html.includes('Merge anyway'),
-      mergePrimary: /class="[^"]*bg-accent[^"]*"[^>]*>\s*Merge\s*</.test(html),
+      mergePrimary: /class="[^"]*btn-ink[^"]*"[^>]*>\s*Merge\s*</.test(html),
       reReview: html.includes('Re-review'),
     };
   }
@@ -227,7 +227,7 @@ describe('WaitingOnYouReviewCard — escalation with a concrete defect but no re
       dispatchFix: html.includes('>Dispatch fix<'),
       dispatchFixWithCorrections: html.includes('Dispatch fix with corrections'),
       mergeAnywayLink: html.includes('Merge anyway'),
-      mergePrimary: /class="[^"]*bg-accent[^"]*"[^>]*>\s*Merge\s*</.test(html),
+      mergePrimary: /class="[^"]*btn-ink[^"]*"[^>]*>\s*Merge\s*</.test(html),
       reReview: html.includes('>Re-review<'),
     };
   }

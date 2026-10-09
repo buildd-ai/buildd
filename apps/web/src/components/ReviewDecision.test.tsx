@@ -33,3 +33,14 @@ describe('ReviewDecision', () => {
     expect(html).not.toContain('—');
   });
 });
+
+describe('ReviewDecision fact tags (L3)', () => {
+  it('draws blocker kinds and the CI state as tinted pills', () => {
+    const html = renderToStaticMarkup(
+      <ReviewDecision decision="Refresh first." blockers={[{ kind: 'migration', text: 'Adds a table' }]} status="CI running" />,
+    );
+    expect(html).toMatch(/data-tone="dec"[^>]*>migration</);
+    expect(html).toMatch(/data-tone="run"[^>]*>CI running</);
+    expect(html).toContain('rounded-[var(--radius-pill)]');
+  });
+});
