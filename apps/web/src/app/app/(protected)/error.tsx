@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import ErrorState from '@/components/ErrorState';
 
 export default function ProtectedError({
   error,
@@ -18,42 +19,19 @@ export default function ProtectedError({
           </svg>
         </div>
         <h2 className="text-lg font-semibold text-text-primary mb-2">This page failed to render</h2>
-        {/*
-          No prose line here on purpose. "An unexpected error occurred. Please
-          try again." restated the heading and duplicated the Try again button,
-          and it crowded out the one thing on this screen worth reading: the
-          digest or error string below, which is what makes the failure
-          traceable from a screenshot.
-        */}
-        {error.digest ? (
-          <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded">
-            {error.digest}
-          </p>
-        ) : (
-          // No digest means this was thrown client-side (digest is only
-          // populated for server-rendered errors — see error.digest in the
-          // Next.js docs). Those are otherwise undiagnosable from a
-          // screenshot: nothing else on this screen names what broke.
-          (error.name || error.message) && (
-            <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded break-words">
-              {error.name}{error.name && error.message ? ': ' : ''}{error.message}
-            </p>
-          )
-        )}
-        <div className="flex items-center justify-center gap-3">
-          <button
-            onClick={reset}
-            className="px-4 py-2 bg-primary text-white text-sm rounded-md hover:bg-primary-hover"
-          >
-            Try again
-          </button>
+        <ErrorState
+          message="Something went wrong loading this page. Try again, or head back home."
+          detail={`${error.name}${error.name && error.message ? ': ' : ''}${error.message}`}
+          digest={error.digest}
+          onRetry={reset}
+        >
           <Link
             href="/app/home"
             className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
           >
             Back to home
           </Link>
-        </div>
+        </ErrorState>
       </div>
     </div>
   );

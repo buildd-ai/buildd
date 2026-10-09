@@ -62,3 +62,94 @@ describe('ModelTiersClient on a phone', () => {
     expect(document.querySelector('[data-testid="cell-editor-panel"]')).toBeNull();
   });
 });
+
+describe('History and What ran on a phone', () => {
+  const events = [
+    { id: 'e1', kind: 'suggestion', at: '2026-10-09T09:00:00Z', actor: 'system:succession', after: { model: 'claude-sonnet-6' }, reason: 'successor available' },
+    { id: 'e2', kind: 'allocation', at: '2026-10-09T08:00:00Z', actor: 'system', after: { a: 0.9 }, reason: null },
+    { id: 'e3', kind: 'allocation', at: '2026-10-09T07:00:00Z', actor: 'system', after: { a: 0.8 }, reason: null },
+    { id: 'e4', kind: 'mode', at: '2026-10-08T07:00:00Z', actor: 'admin', after: { mode: 'pinned' }, reason: null },
+  ];
+  const mountWith = async () => {
+    globalThis.fetch = mock(async (url: string) => {
+      const u = String(url);
+      if (u.startsWith('/api/model-tiers/cells')) return new Response(JSON.stringify(CELLS_BODY), { status: 200 });
+      if (u.startsWith('/api/model-tiers/pools/')) return new Response(JSON.stringify({ changes: u.includes('pool-std') ? events : [] }), { status: 200 });
+      if (u.startsWith('/api/model-tiers/pools')) return new Response(JSON.stringify(POOLS_BODY), { status: 200 });
+      if (u.startsWith('/api/models')) return new Response(JSON.stringify({ models: MODELS, catalogComplete: true }), { status: 200 });
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await flush(); await flush();
+  };
+
+  it('groups History by day in plain words, folds low-level events, keeps raw detail', async () => {
+    await mountWith();
+    await act(async () => { (document.querySelector('[data-testid="tiers-history"]') as HTMLElement).click(); });
+    await flush(); await flush();
+    const days = document.querySelectorAll('[data-testid="history-day"]');
+    expect(days.length).toBe(2);
+    const text = document.querySelector('[data-testid="history-changes"]')!.textContent!;
+    expect(text).toContain('Model recommendation updated');
+    expect(text).toContain('suggestion only, traffic unchanged');
+    expect(text).toContain('Returned to the selected model');
+    expect(text).toContain('Traffic split adjusted automatically (2 updates)');
+    // raw actor and reason stay in the disclosure
+    const detail = document.querySelector('[data-testid="history-detail"]')!;
+    expect(detail.textContent).toContain('system:succession');
+    expect(detail.textContent).toContain('successor available');
+    expect(document.querySelectorAll('[data-testid="history-detail-item"]').length).toBe(4);
+  });
+
+  it('What ran names the denominator and shows task titles, not model ids as links', async () => {
+    await mountWith();
+    await act(async () => { (document.querySelector('[data-testid="tier-name-standard"]') as HTMLElement).click(); });
+    await flush();
+    const sheet = document.querySelector('[data-testid="what-ran-sheet"]')!;
+    expect(sheet.textContent).toContain('Share of 50 runs in the last 30 days');
+    expect(sheet.querySelector('[data-testid="what-ran-recent"] a')!.textContent).toBe('Fix flaky date test');
+  });
+});
+
+describe('tier maximum on the tier cards', () => {
+  async function mountWith(max: { agent: string | null; chat: string | null } | 'fail') {
+    const base = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/model-ceilings')) {
+        if (max === 'fail') return new Response('{"error":"nope"}', { status: 500 });
+        return Response.json({ effective: { agent: { max: max.agent }, chat: { max: max.chat } } });
+      }
+      return base(url, init);
+    }) as unknown as typeof fetch;
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => { root.render(<ModelTiersClient teamId="team-demo" teamName="Demo" isAdmin />); });
+    await flush(); await flush();
+  }
+  const note = (tier: string) => document.querySelector(`[data-testid="tier-blocked-${tier}"]`);
+
+  it('marks premium-plus as set-but-not-served under a Premium maximum; the card stays visible', async () => {
+    await mountWith({ agent: 'premium', chat: 'premium' });
+    expect(note('premium-plus')!.textContent).toContain('Can be set, not served');
+    expect(document.querySelector('[data-testid="tier-card-premium-plus"]')).not.toBeNull();
+    expect(note('premium')).toBeNull();
+    expect(note('standard')).toBeNull();
+  });
+
+  it('names the surface when only one is limited', async () => {
+    await mountWith({ agent: 'standard', chat: null });
+    expect(note('premium')!.textContent).toContain('for Coding');
+  });
+
+  it('shows no marks when there is no limit or the read model fails', async () => {
+    await mountWith({ agent: null, chat: null });
+    expect(document.querySelector('[data-testid^="tier-blocked-"]')).toBeNull();
+    act(() => root.unmount()); host.remove();
+    await mountWith('fail');
+    expect(document.querySelector('[data-testid^="tier-blocked-"]')).toBeNull();
+  });
+});

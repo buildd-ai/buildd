@@ -99,7 +99,7 @@ WHERE d.id IN ${IDS}
 ORDER BY r.round`,
   attempts: `-- workflow:corpus_attempts
 SELECT d.id AS delivery_id, a.id, a.family, a.attempt_no, a.mode, a.bound_head_sha, a.trigger_reason, a.trigger_fact_id, a.task_id, a.trigger,
-  a.reported_shas, a.pushed_head_sha, a.status, a.outcome, a.max_attempts, ${T_US('a.created_at')} AS t_us, t.status AS task_status
+  a.reported_shas, a.pushed_head_sha, a.status, a.outcome, a.max_attempts, ${T_US('a.created_at')} AS t_us, ${T_US('a.ended_at')} AS ended_us, t.status AS task_status
 FROM workflow_deliveries d JOIN workflow_attempts a ON a.delivery_id = d.id LEFT JOIN tasks t ON t.id = a.task_id
 WHERE d.id IN ${IDS}
 ORDER BY a.family, a.mode, a.attempt_no`,
@@ -220,7 +220,7 @@ export async function loadRaw(query: Query, ids: string[]): Promise<Array<{ crea
         id: String(a.id), family: String(a.family), attemptNo: n(a.attempt_no), mode: String(a.mode), boundHeadSha: s(a.bound_head_sha),
         triggerReason: s(a.trigger_reason), triggerFactId: s(a.trigger_fact_id), taskId: s(a.task_id), trigger: String(a.trigger ?? 'automatic'),
         reportedShas: arr(a.reported_shas), pushedHeadSha: s(a.pushed_head_sha), status: String(a.status), outcome: s(a.outcome),
-        maxAttempts: n(a.max_attempts), tUs: n(a.t_us),
+        maxAttempts: n(a.max_attempts), tUs: n(a.t_us), endedUs: a.ended_us == null ? null : n(a.ended_us),
       })),
       gateEvents: (G.get(id) ?? []).map((g) => ({ gate: String(g.gate), surface: String(g.surface), outcome: String(g.outcome), tUs: n(g.t_us) })),
     };

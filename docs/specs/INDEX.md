@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (62)
+## Active (63)
 
 ### auth (8)
 
@@ -25,10 +25,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-08
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 
-### billing (2)
+### billing (3)
 
 - [Managed-Runner Entitlements](./managed-runner-entitlements.md) · @builder — verified 2026-10-07
   A Buildd-managed runner claim MUST leave a task queued, never failed, when the team's plan limit on parallel managed runs or monthly runner-hours is reached, and MUST start it once the limit lifts.
+- [Model Tier Ceilings](./model-tier-ceilings.md) · @max — verified 2026-10-09
+  Every chat turn, task claim and server inference call MUST run at or below the most restrictive applicable team, workspace, admin-member and personal tier maximum, refusing explicit requests above it with policy_denied.
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 
@@ -160,13 +162,15 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (3)
+## Draft (4)
 
+- [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
+  The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-07
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-07
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-09
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (3)

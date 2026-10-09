@@ -9,9 +9,12 @@
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { DeliveryEvidence, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryEvidence, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { lifecycleState } from '@/components/delivery/lifecycle-state';
+import Lifecycle from '@/components/ui/Lifecycle';
 import { DeliveryStatePill } from '@/components/delivery/DeliveryStatePill';
 import StatePill from '@/components/ui/StatePill';
+import Disclosure from '@/components/ui/Disclosure';
 import type { StateKey } from '@/components/ui/states';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
@@ -22,6 +25,7 @@ import type { LocalSessionView } from '@/lib/local-session-view';
 import { Select } from '@/components/ui/Select';
 import InteractiveSessions from './InteractiveSessions';
 import LocalTime from './LocalTime';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export type ActivityMode = 'now' | 'history';
 
@@ -111,7 +115,7 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
         {latest && (
           <Link href={latest.href} data-testid="activity-latest" className="mt-2 flex min-h-11 items-center gap-2 text-meta text-text-secondary">
             <span className="shrink-0 text-text-muted">Latest:</span>
-            <span className="min-w-0 truncate text-text-primary">{latest.title}</span>
+            <span className="min-w-0 truncate text-text-primary" title={latest.title}>{displayTaskTitle(latest.title)}</span>
             <span className="shrink-0 text-text-muted">· {age(latest.at, nowMs)} ›</span>
           </Link>
         )}
@@ -190,7 +194,9 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
       {group.moreWaiting > 0 && (
         group.href
           ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you ›</Link>
-          : <p className="py-2 text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you</p>
+          : <Disclosure summary={`+${group.moreWaiting} more waiting, not on you`}>
+              {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} missionHref={group.href} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
+            </Disclosure>
       )}
     </section>
   );
@@ -204,14 +210,14 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
   const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair').sort((a, b) => a.round - b.round);
   const head = (
     <>
-      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary">{row.title}</span>
+      <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary" title={row.title}>{displayTaskTitle(row.title)}</span>
       <span className="whitespace-nowrap font-mono text-meta text-text-muted">
         {age(row.updatedAt, nowMs)}
         {expandable && <span aria-hidden="true" className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-90' : ''}`}>›</span>}
       </span>
       <span className="col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1">
         <DeliveryStatePill kind={row.delivery.kind} />
-        <DeliveryTrack kind={row.delivery.kind} rounds={rounds} />
+        <Lifecycle state={lifecycleState(row.delivery.kind)} repairs={rounds} />
         {row.live && <span className="inline-flex items-center gap-1.5 text-meta text-text-muted"><span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />agent live</span>}
         {row.prNumber && <span className="font-mono text-meta text-text-muted">#{row.prNumber}</span>}
       </span>
@@ -272,7 +278,7 @@ function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
   return (
     <article data-testid="activity-episode" data-kind={episode.kind} className="border-b border-border-default py-3">
       <div className="flex items-start justify-between gap-3">
-        <Link href={episode.href} className="line-clamp-2 min-w-0 break-words text-title font-semibold text-text-primary">{episode.title}</Link>
+        <Link href={episode.href} className="line-clamp-2 min-w-0 break-words text-title font-semibold text-text-primary" title={episode.title}>{displayTaskTitle(episode.title)}</Link>
         <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">

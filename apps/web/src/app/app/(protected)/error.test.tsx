@@ -21,4 +21,10 @@ describe('ProtectedError', () => {
     const html = renderToStaticMarkup(<ProtectedError error={error} reset={() => {}} />);
     expect(html).not.toContain('bg-surface-3 px-3 py-1.5 rounded');
   });
+
+  it('keeps the error text behind a Details disclosure', () => {
+    const error = new TypeError('Failed query: select 1 params: abc');
+    const html = renderToStaticMarkup(<ProtectedError error={error} reset={() => {}} />);
+    expect(html.replace(/<details[\s\S]*<\/details>/, '')).not.toContain('Failed query');
+  });
 });
