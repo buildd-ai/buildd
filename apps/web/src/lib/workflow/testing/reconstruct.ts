@@ -358,7 +358,12 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       if (!roundId || !E.reason) return miss('no round or reason');
       // The contract-retry cap is configuration, not recorded: read off where the round went.
       inferred.push('maxContractRetries');
-      return ok({ type: 'ReviewRoundFailed', actor, roundId, reason: E.reason as never, maxContractRetries: t.toState === 'AWAITING_REVIEW' ? Number.MAX_SAFE_INTEGER : 0 });
+      // A reviewer's failure carries its reviewer (the key's identity); a recording from before that, or a kernel-side one, does not.
+      const reviewerTaskId = str(E.reviewerTaskId);
+      return ok({
+        type: 'ReviewRoundFailed', actor, roundId, reason: E.reason as never, maxContractRetries: t.toState === 'AWAITING_REVIEW' ? Number.MAX_SAFE_INTEGER : 0,
+        ...(reviewerTaskId ? { reviewerTaskId } : {}),
+      });
     }
     case 'PolicyEvidenceRecorded': {
       if (!E.policyEvidence) return miss('no policy evidence');
