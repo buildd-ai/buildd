@@ -176,6 +176,8 @@ const ENDPOINT_KIND_PROVIDER: Readonly<Record<AgentEndpointKind, ProviderId>> = 
   gateway: 'litellm',
   openrouter: 'openrouter',
   'anthropic-compatible': 'custom-endpoint',
+  // A routing preference over the team's own Anthropic or OpenRouter key.
+  cloudflare: 'custom-endpoint',
 };
 const ENDPOINT_PROVIDERS: readonly ProviderId[] = ['litellm', 'openrouter', 'custom-endpoint'];
 

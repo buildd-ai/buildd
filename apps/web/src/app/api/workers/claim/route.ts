@@ -104,7 +104,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
 import {
   attachPersonalCredentials,
   decidePersonalCredential,
@@ -1934,6 +1934,11 @@ export async function POST(req: NextRequest) {
       // bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
+            // Only same-PR conflict/collision attempts get this exemption. Other
+            // soft evidence, active claims and genuine migration mutexes remain.
+            repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
+              ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
+              : [],
             isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
@@ -3403,6 +3408,7 @@ export async function POST(req: NextRequest) {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+        runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
   const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0

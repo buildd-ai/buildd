@@ -98,7 +98,7 @@ cmd_create() {
   # Single-quoted: the URL's query string has '&', which would background the assignment when sourced.
   ( umask 077; printf "DATABASE_URL='%s'\nQA_NEON_BRANCH_NAME='%s'\nQA_NEON_PROJECT_ID='%s'\n" "$url" "$name" "$pid" > "$file" )
   if [ "$migrate" = "1" ]; then
-    log "applying this checkout's migrations to $name…"
+    log "applying this checkout's migrations to ${name}…"
     # shellcheck source=/dev/null
     ( set -a; . "$file"; set +a; cd "$ROOT/packages/core" && bun db:migrate >/dev/null ) || die "migrate failed (branch kept: $name)"
   fi

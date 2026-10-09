@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
+import CloudflareGatewayTokens from './CloudflareGatewayTokens';
 
 interface Team {
   id: string;
@@ -218,6 +219,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
               <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
             </div>
           )}
+          {state.kind === 'verified' && <CloudflareGatewayTokens teamId={selectedTeamId} />}
           {canManage && <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => verify(cred.id)} disabled={busy} className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}>
               {busy ? 'Working…' : 'Verify'}
