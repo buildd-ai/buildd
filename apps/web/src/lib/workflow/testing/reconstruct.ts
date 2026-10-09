@@ -23,15 +23,54 @@ export type Step =
   | { kind: 'command'; expected: CorpusTransition };
 
 /**
+ * Facts that are not kernel input. `activity_note` is a legacy activity-log
+ * entry diverted into the fact table (`divertNoteSql`, pr-activity-effects.ts):
+ * it never reaches `ingestFact`, applies no transition and owes only a
+ * `render:<delivery>:note:*` effect. Its key hashes the unsanitized entry, so
+ * a replay could not reproduce it anyway. Not a step; counted in the report.
+ */
+export const OUT_OF_BAND_FACT_KINDS: ReadonlySet<string> = new Set(['activity_note']);
+
+export function outOfBandFacts(c: CorpusDelivery): CorpusFact[] {
+  return c.facts.filter((f) => OUT_OF_BAND_FACT_KINDS.has(f.kind));
+}
+
+/**
+ * Provenance of an effect row: the transition's own decision, or a write that
+ * came later and hung itself on it. The reducer's effects are inserted by the
+ * same statement as the transition (kernel.ts, one `now()`), so they carry the
+ * transition's exact `tUs`. Everything else attached to a transition is a later
+ * statement: the drain's next `push_recovery` try (`insertFollowupEffectSql`),
+ * the floor's owed effect (`enqueueEffectSql`, on the latest transition) and a
+ * diverted note's render (`divertNoteSql`, likewise). None is reducer output.
+ */
+export function isDecisionEffect(e: CorpusEffect, t: CorpusTransition): boolean {
+  return e.transitionId === t.id && e.tUs === t.tUs;
+}
+
+/** Effects some later statement attached to a recorded transition, in the order they were written. */
+export function outOfBandEffects(c: CorpusDelivery): CorpusEffect[] {
+  const byId = new Map(c.transitions.map((t) => [t.id, t]));
+  return c.effects.filter((e) => { const t = byId.get(e.transitionId); return !t || !isDecisionEffect(e, t); }).sort((a, b) => a.tUs - b.tUs);
+}
+
+/** When a step's input arrived: the fact's observation, or the command's transition. */
+export function stepTime(s: Step): number {
+  return s.kind === 'fact' ? s.fact.tUs : s.expected.tUs;
+}
+
+/**
  * Recorded order: transitions by version; a fact applied by a transition is
  * that transition's step; an unapplied fact (duplicate, stale, rejected) sits
- * where it was observed, expecting no transition.
+ * where it was observed, expecting no transition. Out-of-band facts are not
+ * steps.
  */
 export function buildSteps(c: CorpusDelivery): Step[] {
   const transitions = [...c.transitions].sort((a, b) => a.toVersion - b.toVersion);
   const byTransition = new Map<string, CorpusFact>();
   const loose: CorpusFact[] = [];
   for (const f of [...c.facts].sort((a, b) => a.tUs - b.tUs)) {
+    if (OUT_OF_BAND_FACT_KINDS.has(f.kind)) continue;
     if (f.appliedTransitionId && transitions.some((t) => t.id === f.appliedTransitionId)) byTransition.set(f.appliedTransitionId, f);
     else loose.push(f);
   }
@@ -73,8 +112,9 @@ function keyParts(key: string, prefix: string): string[] | null {
   return key.startsWith(`${prefix}:`) ? key.slice(prefix.length + 1).split(':') : null;
 }
 
+/** The effects the transition's own statement wrote. */
 function effectsOf(c: CorpusDelivery, t: CorpusTransition): CorpusEffect[] {
-  return c.effects.filter((e) => e.transitionId === t.id);
+  return c.effects.filter((e) => isDecisionEffect(e, t));
 }
 
 /** A live read the transition only checked the head of: an open PR at that head. */
