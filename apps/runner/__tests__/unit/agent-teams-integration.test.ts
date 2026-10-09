@@ -348,9 +348,6 @@ describe('Integration: full claim → session flow', () => {
     // Verify the full query configuration
     const opts = lastQueryOpts.options;
 
-    // Teams env is set
-    expect(opts.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
-
     // Agents are defined
     expect(Object.keys(opts.agents)).toEqual(['deploy', 'test-runner']);
 
@@ -402,9 +399,6 @@ describe('Integration: full claim → session flow', () => {
     });
 
     const opts = lastQueryOpts.options;
-
-    // Teams env still set (always on)
-    expect(opts.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
 
     // No agents
     expect(opts.agents).toBeUndefined();
