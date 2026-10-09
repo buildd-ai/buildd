@@ -55,7 +55,7 @@ import {
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
-import { CredentialCache, authBackoffMs } from './credential-cache';
+import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
@@ -90,7 +90,7 @@ import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
-import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import {
   resolveBypassPermissions,
@@ -1960,7 +1960,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number }; credentialDecision?: ClaimCredentialDecision },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -1988,14 +1988,21 @@ export class WorkerManager {
     // wins. Capturing them unconditionally just guarantees a working fallback.
     const fromClaim = selectServerCredentials(claimedWorker);
     const teamKey = teamKeyOf(fullTask);
-    this.workerTeamKeys.set(claimedWorker.id, teamKey);
+    // A personal (or deliberately withheld) model credential is this worker's
+    // alone: never written to the per-team cache, never filled from it, and an
+    // auth failure on it says nothing about the team's credential. Read
+    // defensively: an older server sends no credentialDecision at all.
+    const workerScoped = isWorkerScopedCredential(claimedWorker.credentialDecision);
+    if (!workerScoped) this.workerTeamKeys.set(claimedWorker.id, teamKey);
 
     // Populate/refresh the in-memory per-team cred cache from this claim's
     // payload (the common path — no extra endpoint needed).
-    this.credCache.set(teamKey, {
-      oauthToken: fromClaim.serverOauthToken,
-      apiKey: fromClaim.serverApiKey,
-    });
+    if (!workerScoped) {
+      this.credCache.set(teamKey, {
+        oauthToken: fromClaim.serverOauthToken,
+        apiKey: fromClaim.serverApiKey,
+      });
+    }
 
     // Prefer the freshly-delivered claim credential; otherwise fall back to a
     // fresh cached entry for this team (e.g. the server didn't re-inject on this
@@ -2004,7 +2011,7 @@ export class WorkerManager {
     let serverOauthToken = fromClaim.serverOauthToken;
     // A team agent model endpoint won the claim's ranking: it is the only model
     // credential for this worker, so no cached Anthropic credential is reused.
-    if (!serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
+    if (!workerScoped && !serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
@@ -2095,6 +2102,11 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.credentialDecision && typeof claimedWorker.credentialDecision === 'object') {
+      // No secret in it; startSession reads runnerLocalAllowed from here.
+      worker.credentialDecision = claimedWorker.credentialDecision;
+      if (workerScoped) console.log(`[Worker ${claimedWorker.id}] Model credential scope: ${claimedWorker.credentialDecision.scope} (this worker only, not cached for the team)`);
+    }
     if (claimedWorker.toolSearchDisabled) worker.toolSearchDisabled = true;
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
@@ -3587,9 +3599,17 @@ export class WorkerManager {
       // The machine's own Claude login (host-seat.ts): used when the claim
       // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
       // With a stored seat under the default, the env is the pre-passthrough one.
+      // credentialDecision.runnerLocalAllowed=false (the requester's own key
+      // under personal_only): the machine's seat, login and provider must not
+      // displace it. Absent on older servers and teams without a policy.
+      const runnerLocalAllowed = runnerLocalCredentialsAllowed(worker.credentialDecision);
+      if (!runnerLocalAllowed) {
+        console.log(`[Worker ${worker.id}] This machine's own model credentials are not used: the claim carries the requester's own key and the team policy is personal keys only`);
+      }
       const seatDecision = applyHostSeatPolicy(cleanEnv, {
         serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
         isCodexTask,
+        runnerLocalAllowed,
       });
       const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
@@ -3604,6 +3624,7 @@ export class WorkerManager {
         teamEndpointWithheld: worker.modelEndpointIgnored,
         toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
+        runnerLocalAllowed,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
@@ -3625,7 +3646,7 @@ export class WorkerManager {
       if (modelEnv.teamEndpointIgnored) {
         console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
-      if (this.config.llmProvider?.provider === 'openrouter') {
+      if (runnerLocalAllowed && this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
       }
       if (modelEnv.injected.includes('serverApiKey')) {
@@ -3712,6 +3733,7 @@ export class WorkerManager {
           serverCredentialType: worker.codexCredential?.credentialType ?? null,
           localAuthPath: machineCodexAuth,
           explicitCodexHome: !!process.env.CODEX_HOME,
+          runnerLocalAllowed,
         });
         (worker as any).codexSeatSource = codexSeat;
 

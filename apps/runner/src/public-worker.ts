@@ -142,6 +142,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   modelEndpointIgnored: true,
   toolSearchDisabled: true,
   githubCredentials: true, // a mode marker; the token itself is never on the worker
+  credentialDecision: true, // scope/policy/runnerLocalAllowed; the key itself is serverApiKey or codexCredential
 
   // Withheld — see WITHHELD_WORKER_FIELDS.
   mcpSecrets: false,
