@@ -46,3 +46,36 @@ describe('Needs you at volume: a few decisions, then rows', () => {
     expect(out.hiddenRows).toBe(4);
   });
 });
+
+describe('Needs you: policy decisions batch into one digest line per kind', () => {
+  const policy = (n: number, rail = 'protected_path', over: Partial<NonNullable<HomeAttentionItem['queue']>> = {}): HomeAttentionItem => item(n, {
+    queue: { subjectKey: `s${n}`, chip: 'REVIEW', workspaceId: 'w', prNumber: n, cardAgeHours: n, gate: { owner: 'person', reason: 'r', rail, teamId: 'team-a' }, ...over } as HomeAttentionItem['queue'],
+  });
+
+  it('same-kind policy decisions are one digest, off the cards and rows, each member still reachable', () => {
+    const out = layoutNeedsYou([policy(1), policy(2), policy(3), item(4)]);
+    expect(out.digests).toHaveLength(1);
+    expect(out.digests[0]).toMatchObject({ kind: 'protected_path', count: 3, line: '3 changes to protected files need your OK' });
+    expect(out.digests[0].items.map(i => i.key)).toEqual(['k1', 'k2', 'k3']);
+    expect(out.cards.map(i => i.key)).toEqual(['k4']);
+    expect(out.total).toBe(4);
+  });
+
+  it('distinct kinds are distinct digests', () => {
+    const out = layoutNeedsYou([policy(1), policy(2), policy(3, 'data_migration'), policy(4, 'data_migration')]);
+    expect(out.digests.map(d => d.kind).sort()).toEqual(['data_migration', 'protected_path']);
+  });
+
+  it('a merged or machine-acting subject is not in the digest', () => {
+    const out = layoutNeedsYou([policy(1), policy(2), policy(3, 'protected_path', { prLifecycleStatus: 'merged' }), policy(4, 'protected_path', { machineActing: true })]);
+    expect(out.digests[0].count).toBe(2);
+  });
+
+  it('different tenants never share a digest', () => {
+    const other = policy(2);
+    other.queue = { ...other.queue!, gate: { owner: 'person', reason: 'r', rail: 'protected_path', teamId: 'team-b' } };
+    const out = layoutNeedsYou([policy(1), other]);
+    expect(out.digests).toHaveLength(0);
+    expect(out.cards).toHaveLength(2);
+  });
+});

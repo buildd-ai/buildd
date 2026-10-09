@@ -8,7 +8,7 @@ import { useHideNeedsInputBanner } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
 import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { DecisionCard } from './DecisionCard';
-import { NeedsYouRows } from './NeedsYouRows';
+import { NeedsYouRows, PolicyDigests } from './NeedsYouRows';
 import { layoutNeedsYou } from './needs-you-layout';
 import { DeliveryMilestones } from './DeliveryMilestones';
 import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
@@ -74,7 +74,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
   const copy = homeAttentionCopy(open, { runnerConnected });
   useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
   // A few decisions get the card; the rest are rows (systemic, failing, oldest first).
-  const { cards, rows } = layoutNeedsYou(items);
+  const { cards, rows, digests } = layoutNeedsYou(items);
   const doneLine = (item: HomeAttentionItem) => <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p>;
   const layout: keyof typeof BODY_GRID = milestones.length > 0
     ? (agents || landed ? 'split' : 'single')
@@ -95,6 +95,7 @@ export function HomeBody({ agents = null, landed = null, items: serverItems, ask
       <h2 id="home-needs-you-h" className="sr-only">Needs you</h2>
       {lead}
       {cards.length > 0 && <div data-testid="needs-you-cards" className={`grid gap-4 ${CARD_COLS[cards.length]}`}>{cards.map(item => done[item.key] ? doneLine(item) : <DecisionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>}
+      {digests.length > 0 && <PolicyDigests digests={digests} />}
       {rows.length > 0 && <NeedsYouRows rows={rows} />}
       {foot}
     </section>}
