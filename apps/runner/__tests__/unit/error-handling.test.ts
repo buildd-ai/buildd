@@ -1344,7 +1344,12 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI host can take longer.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-budget-ms');
+        if (w?.milestones.some(m => m.label.includes(SESSION_BUDGET_CAP_ERROR))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-budget-ms');
       const budgetMilestones = worker?.milestones.filter(m =>
