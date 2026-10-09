@@ -9,6 +9,15 @@
  * transition must still describe the delivery (same version, or the same
  * state); otherwise the effect is done as `skipped:superseded`.
  *
+ * The kill switch (§14): an effect claimed for a delivery the kernel no longer
+ * owns (released to legacy, or in a workspace whose switch is off, which the
+ * claim releases there and then) still drains, except the kinds in
+ * `KERNEL_ONLY_EFFECTS`: those act on GitHub for the kernel's own landing and
+ * repair loop (the merge, a branch refresh, a renumber push, push recovery)
+ * and are done as `skipped:legacy_owns`. Whatever a draining handler then
+ * reports back is refused by `applyCommand` (`legacy_owns`), so no drained
+ * effect starts a new kernel decision.
+ *
  * Handlers live in handlers.ts; seam.ts drains a delivery's effects at the end
  * of the request that applied its transition, and the pr-reconcile cron drains
  * whatever is still due.
@@ -18,6 +27,7 @@ import { db } from '@buildd/core/db';
 import type { EffectKind } from './commands';
 import type { Exec } from './kernel';
 import type { DeliveryState } from './types';
+import { kernelOnSql, releaseSql } from './authority';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
 
@@ -48,6 +58,20 @@ export const UNGATED_EFFECTS: ReadonlySet<EffectKind> = new Set([
   'project_supersession', 'post_review', 'escalate_exhaustion', 'gate_event',
 ]);
 
+/**
+ * Effects that act on GitHub or the PR branch on the kernel's behalf, whose
+ * answer only the kernel can read (a merge answered `behind` becomes a
+ * refresh, a refresh becomes a new head). Once a delivery is legacy's they
+ * never run: an emergency rollback must be able to stop a merge (§14). The
+ * other kinds drain: projections and notifications, and the dispatches, which
+ * file legacy-shaped review and fix tasks for decisions already committed
+ * (skipping a committed `dispatch_review` would strand the PR with no
+ * reviewer).
+ */
+export const KERNEL_ONLY_EFFECTS: ReadonlySet<EffectKind> = new Set([
+  'merge_call', 'refresh_branch', 'renumber_migration', 'push_recovery',
+]);
+
 export function effectBackoffMs(attemptCount: number): number {
   return Math.min(BACKOFF_BASE_MS * 2 ** Math.max(0, attemptCount - 1), BACKOFF_CAP_MS);
 }
@@ -62,6 +86,12 @@ export interface ClaimedEffect {
   attemptCount: number;
   delivery: { state: DeliveryState; version: number } | null;
   transition: { toState: DeliveryState; toVersion: number } | null;
+  /**
+   * Who decides for the delivery, read in the claiming statement: `kernel`,
+   * `legacy` (released), or `switched_off` (kernel row in a workspace whose
+   * kill switch is off; the runner releases it before acting).
+   */
+  authority?: 'kernel' | 'legacy' | 'switched_off';
 }
 
 /** §10.4: does the transition that queued this effect still describe the delivery? */
@@ -90,6 +120,8 @@ FROM due
 WHERE e.id = due.id
 RETURNING e.id, e.delivery_id, e.transition_id, e.kind, e.dedupe_key, e.payload, e.attempt_count,
   (SELECT jsonb_build_object('state', d.state, 'version', d.version) FROM workflow_deliveries d WHERE d.id = e.delivery_id) AS delivery,
+  (SELECT CASE WHEN d.authority = 'legacy' THEN 'legacy' WHEN ${kernelOnSql(sql`w.git_config`)} THEN 'kernel' ELSE 'switched_off' END
+     FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id WHERE d.id = e.delivery_id) AS authority,
   (SELECT jsonb_build_object('to_state', tr.to_state, 'to_version', tr.to_version) FROM workflow_transitions tr WHERE tr.id = e.transition_id) AS transition`;
 }
 
@@ -146,6 +178,7 @@ function toClaimed(r: Record<string, unknown>): ClaimedEffect {
     attemptCount: Number(r.attempt_count ?? 0),
     delivery: d && d.state ? { state: d.state as DeliveryState, version: Number(d.version) } : null,
     transition: t && t.to_state ? { toState: t.to_state as DeliveryState, toVersion: Number(t.to_version) } : null,
+    authority: r.authority === 'legacy' || r.authority === 'switched_off' ? r.authority : 'kernel',
   };
 }
 
@@ -155,8 +188,20 @@ export async function runEffects(opts: { handlers: EffectHandlers; limit?: numbe
   const onDead = opts.onDead ?? defaultOnDead;
   const rows = ((await exec(claimDueEffectsSql(opts.limit ?? 25, EFFECT_LEASE_MS, opts.deliveryId ?? null))).rows ?? []) as Array<Record<string, unknown>>;
   const summary: DrainSummary = { claimed: rows.length, done: 0, skipped: 0, failed: 0, dead: [] };
+  const released = new Set<string>();
   for (const raw of rows) {
     const e = toClaimed(raw);
+    if (e.authority === 'switched_off' && !released.has(e.deliveryId)) {
+      // §14: the first kernel touch after switch-off releases the delivery (sticky).
+      const rel = (await exec(releaseSql(e.deliveryId))).rows ?? [];
+      if (rel.length) console.log(`[workflow] delivery ${e.deliveryId} released to legacy (workflowKernel kill switch, effect drain)`);
+      released.add(e.deliveryId);
+    }
+    if (e.authority !== 'kernel' && KERNEL_ONLY_EFFECTS.has(e.kind)) {
+      await exec(ackEffectSql(e.id, 'skipped:legacy_owns'));
+      summary.skipped++;
+      continue;
+    }
     if (!effectIsCurrent(e)) {
       await exec(ackEffectSql(e.id, 'skipped:superseded'));
       summary.skipped++;

@@ -70,7 +70,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
   // treats only success/neutral/skipped as passing.
   // https://docs.github.com/en/rest/checks/runs#get-a-check-run
   for (const conclusion of ['timed_out', 'cancelled', 'startup_failure', 'action_required']) {
-    test.failing(`approved at H; the test job ends ${conclusion} → the landing sweep must not merge H`, async () => {
+    test(`approved at H; the test job ends ${conclusion} → the landing sweep must not merge H`, async () => {
       w = await world();
       const pr = await approvedThenCheck(w, `feat/concl-${conclusion}`, { conclusion });
       const o = await sweep(w, pr);
@@ -83,7 +83,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
   // ("waiting", "requested" and "pending" are GitHub Actions only: a job waiting on an
   // environment protection rule or a concurrency group). https://docs.github.com/en/rest/checks/runs
   for (const status of ['waiting', 'pending', 'requested']) {
-    test.failing(`approved at H; the test job is ${status} (not started) → the landing sweep must not merge H`, async () => {
+    test(`approved at H; the test job is ${status} (not started) → the landing sweep must not merge H`, async () => {
       w = await world();
       const pr = await approvedThenCheck(w, `feat/status-${status}`, { status });
       const o = await sweep(w, pr);
@@ -96,7 +96,7 @@ describe('check-run conclusions and statuses other than success/failure', () => 
 describe('check-runs pagination', () => {
   // GitHub: GET /commits/{ref}/check-runs pages at per_page (default 30, max 100).
   // https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
-  test.failing('approved at H with 31 check runs, the one that failed is on page 2 → the landing sweep must not merge H', async () => {
+  test('approved at H with 31 check runs, the one that failed is on page 2 → the landing sweep must not merge H', async () => {
     w = await world();
     const gh = w.gh as unknown as { request: (m: string, p: string, b?: unknown) => Promise<{ status: number; body: any }> };
     const original = gh.request.bind(gh);
@@ -132,7 +132,7 @@ describe('legacy commit statuses', () => {
   // status contexts) never creates check runs; GET /commits/{ref}/status is the combined state,
   // and a failing non-required context makes mergeable_state "unstable" (merge still allowed).
   // https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
-  test.failing('approved at H; CI reports only a failing commit status (no check runs) → the landing sweep must not merge H', async () => {
+  test('approved at H; CI reports only a failing commit status (no check runs) → the landing sweep must not merge H', async () => {
     w = await world();
     const gh = w.gh as unknown as { request: (m: string, p: string, b?: unknown) => Promise<{ status: number; body: any }> };
     const original = gh.request.bind(gh);
@@ -206,7 +206,7 @@ describe('base retarget', () => {
   // GitHub: deleting a merged PR's head branch retargets open PRs based on it to the merged
   // PR's base (pull_request.edited with changes.base). It does NOT close them.
   // https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-base-branch-of-a-pull-request
-  test.failing('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
+  test('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
     w = await world();
     const a = await w.openPr({ branch: 'feat/stack-a', files: { 'src/a.ts': 'export const a = 2;\n' } });
     const b = await w.openPr({ branch: 'feat/stack-b', base: 'feat/stack-a', files: { 'src/c.ts': 'export const c = 2;\n' } });
@@ -233,7 +233,7 @@ describe('base retarget changes the diff under an approval', () => {
   // GitHub: PATCH /pulls/{n} {base} (or the UI's "Edit" base) keeps the head SHA and recomputes
   // the PR's diff against the new base; it sends pull_request.edited with changes.base.ref.from.
   // https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
-  test.failing('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
+  test('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
     w = await world();
     w.gh.createBranch(w.repo, 'release');
     // dev moves on with someone else's change; the PR branches from dev after it.

@@ -62,7 +62,6 @@ describe('no surface keeps its own humaniser', () => {
       'app/app/(protected)/tasks/[id]/page.tsx',
       'app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx',
       'app/app/(protected)/tasks/[id]/ModelUsagePanel.tsx',
-      'app/app/(protected)/tasks/[id]/SessionHistoryPanel.tsx',
     ]) {
       expect({ rel, handRolled: has(rel, "replace('claude-'") }).toEqual({ rel, handRolled: false });
     }

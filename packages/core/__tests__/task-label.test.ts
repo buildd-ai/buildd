@@ -18,6 +18,8 @@ describe('taskDisplayLabel — heuristic', () => {
     ['fix(claim): a task never path-overlap-blocks on its own open PR', 'claim', 'task never path-overlap-blocks'],
     ['fix(deps): update dependency @openai/codex-sdk to ^0.157.0', 'deps', 'update dependency'], // 4th word would exceed the 32-char chip cap,
     ['refactor!: drop the legacy worker table', null, 'drop legacy worker table'],
+    ['polish(home): tighten the needs-you rail', 'home', 'tighten needs-you rail'], // a polish( title must not leak "polish(home" into the lanes bar
+    ['design(missions): one notice card', 'missions', 'one notice card'],
     ['docs: rewrite the testing guide', null, 'rewrite testing guide'],
     ['Add support for dark mode in the settings page', null, 'support dark mode'],
     ['Investigate why runners stall after budget reset', null, 'investigate why runners stall'],
