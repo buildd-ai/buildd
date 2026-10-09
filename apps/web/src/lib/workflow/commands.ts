@@ -84,6 +84,13 @@ export type Command =
       taskRetryBudgetLeft?: boolean;
       /** Whether this workspace's policy wants a review round once a head exists. */
       reviewRequired?: boolean;
+      /**
+       * §6.5 row 1 (e9f1674b): the check runs on the live head, read when the owner attempt
+       * ended. A red head is handed on to `REPAIRING(ci)` by T10's ledger rather than to a
+       * review round, because a failure hint that arrived while `WORKING` was refused there.
+       * Absent or null (unreadable) hands on exactly as before.
+       */
+      ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -153,6 +160,13 @@ export type Command =
       preflightMiss?: string | null;
       trigger?: 'automatic' | 'human';
       triggerFactId?: string | null;
+      /**
+       * §6.3 T10: the check runs on `headSha` read live when the hint was
+       * handled. A read with nothing failing (green, or a re-run still going)
+       * means the hint is no longer true: `rejected(ci_not_red)`. Absent or
+       * null (unreadable) fails toward doing the work.
+       */
+      liveChecks?: { complete: boolean; failing: string[] } | null;
     })
   | (Base & {
       type: 'ConflictObserved';
@@ -230,6 +244,17 @@ export type Command =
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
   | (Base & {
+      /**
+       * The PR's base branch changed (`pull_request.edited` with `changes.base`, or a live read
+       * that disagrees with `delivery.baseRef`, e.g. GitHub's retarget of a stacked PR). The head
+       * did not move, but the diff did (24e1cfad).
+       */
+      type: 'BaseChanged';
+      live: LivePr;
+      /** The PR's diff against the new base equals its diff against the old one (§8.3 evidence). */
+      diffEquivalent?: boolean;
+    })
+  | (Base & {
       type: 'SupersessionRecorded';
       target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };
       reason: string;
@@ -276,6 +301,13 @@ export type Command =
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
       reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
       maxContractRetries: number;
+      /**
+       * The reviewer task whose run failed. The failure is counted once per
+       * reviewer (key `roundfail:{round}:{reviewerTaskId}`), and a reviewer that
+       * is not the round's current one is stale. Absent only when the kernel
+       * itself could not serve the round (no reviewer was ever asked).
+       */
+      reviewerTaskId?: string;
     })
   | (Base & {
       /**

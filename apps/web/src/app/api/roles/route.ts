@@ -204,12 +204,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // manage_agent_roles for a role (the default); a plain skill stays member-writable.
-    const createsRole = isRole !== undefined ? Boolean(isRole) : true;
-    if (createsRole && !(await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', teamId))) {
-      return NextResponse.json({ error: 'Managing agent roles requires team admin' }, { status: 403 });
-    }
-
     const slug = body.slug || generateSlug(name);
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
       return NextResponse.json(

@@ -36,6 +36,7 @@
  * the subscription the team actually pays for. See `mission-criteria-prose.ts`.
  */
 
+import { enforceTierCeiling, resolveTierCeiling, type TeamTierCeilingPolicy } from '@buildd/shared';
 import { db } from './db';
 import { teams } from './db/schema';
 import { eq } from 'drizzle-orm';
@@ -83,7 +84,14 @@ export type InferenceError =
   | { kind: 'transport'; message: string }
   | { kind: 'provider_error'; status: number; body: string }
   | { kind: 'rate_limited'; retryAfter?: number }
-  | { kind: 'parse'; raw: string };
+  | { kind: 'parse'; raw: string }
+  /**
+   * The feature's tier is above the team's (or workspace's) model-tier
+   * ceiling for chat/inference and the team chose `overCapAuto: 'deny'`
+   * (docs/specs/model-tier-ceilings.md). With the default, the call is served
+   * at the ceiling instead and never gets here.
+   */
+  | { kind: 'policy_denied'; tier: Tier; maxTier: Tier };
 
 export type InferenceResult<T> =
   | {
@@ -110,6 +118,8 @@ export function describeInferenceError(error: InferenceError): string {
       return 'provider rate-limited the inference call';
     case 'parse':
       return 'provider response could not be parsed as the expected JSON';
+    case 'policy_denied':
+      return `tier ${error.tier} is above the team's model-tier maximum (${error.maxTier})`;
   }
 }
 
@@ -126,16 +136,20 @@ export { resolveInferenceKey } from './inference-keys';
  * Fails closed: if the lookup errors we treat inference as disabled rather than
  * spending money on the strength of a failed query.
  */
-async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<boolean> {
+async function teamAllowsCapability(teamId: string, capability: InferenceCapability): Promise<{ allowed: boolean; ceilings: TeamTierCeilingPolicy | null }> {
   try {
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, teamId),
-      columns: { inferenceFeatureModes: true, enabledDecisionShadows: true },
+      // The ceiling rides on the same read: no extra query per call.
+      columns: { inferenceFeatureModes: true, enabledDecisionShadows: true, modelTierCeilings: true },
     });
-    return isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null);
+    return {
+      allowed: isInferenceAllowed(capability, team ? { featureModes: team.inferenceFeatureModes, enabledDecisionShadows: team.enabledDecisionShadows } : null),
+      ceilings: team?.modelTierCeilings ?? null,
+    };
   } catch (e) {
     console.warn(`[inference] capability lookup failed for team ${teamId}:`, e);
-    return false;
+    return { allowed: false, ceilings: null };
   }
 }
 
@@ -363,11 +377,24 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
 
   // Ask permission before doing anything that costs money or time. Checked first,
   // ahead of tier resolution, so a disabled capability is one cheap query.
-  if (!(await teamAllowsCapability(params.teamId, params.capability))) {
+  const access = await teamAllowsCapability(params.teamId, params.capability);
+  if (!access.allowed) {
     return { ok: false, error: { kind: 'capability_disabled', capability: params.capability } };
   }
 
-  const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId, 'chat');
+  // Model-tier ceiling for chat/inference, team and workspace layers only: a
+  // server feature runs for the team, not for a person. The feature's tier is
+  // the system's own choice, so it is an automatic one: served at the ceiling
+  // unless the team chose deny.
+  let tier = params.tier;
+  const ceiling = resolveTierCeiling({ team: access.ceilings, workspaceId: params.workspaceId, userId: null }, 'chat');
+  if (ceiling.max) {
+    const v = enforceTierCeiling({ ceiling, tier, origin: 'auto' });
+    if (!v.ok) return { ok: false, error: { kind: 'policy_denied', tier, maxTier: ceiling.max } };
+    tier = v.tier;
+  }
+
+  const entry = await resolveTierEntry(tier, params.teamId, params.workspaceId, 'chat');
   const provider = entry.provider;
 
   if (!isRouteVendor(provider)) {

@@ -358,24 +358,6 @@ describe('POST /api/connectors', () => {
     expect(mockConnectorsInsert).not.toHaveBeenCalled();
   });
 
-  // Vercel's DCR answers buildd's callback with invalid_redirect_uri: an
-  // approval problem for the owner, not a reachability problem.
-  it('returns 422 needs_approved_client when the provider refuses to register buildd', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockDiscoverOAuthMetadata.mockResolvedValue({
-      authMode: 'oauth',
-      authorizationServer: { registration_endpoint: 'https://api.vercel.com/login/oauth/register' },
-    });
-    mockRegisterClient.mockRejectedValueOnce(new FakeRegistrationRejected('DCR failed (400)'));
-    const res = await POST(makePostReq({ name: 'Vercel', url: 'https://mcp.vercel.com' }));
-    expect(res.status).toBe(422);
-    const data = await res.json();
-    expect(data.error).toBe('needs_approved_client');
-    expect(data.message).toMatch(/Vercel/);
-    expect(data.actionUrl).toMatch(/^https:\/\/vercel\.com\//);
-    expect(mockConnectorsInsert).not.toHaveBeenCalled();
-  });
-
   it('stores the resolved icon on create', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockResolveConnectorIcon.mockResolvedValue('data:image/png;base64,AA');

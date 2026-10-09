@@ -9,12 +9,14 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import ErrorState from '@/components/ErrorState';
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import type { ListProviderKeysResponse, ModelPolicyCell, ModelPolicyCellSurface, ModelPolicyCellsResponse } from '@buildd/shared';
 import Chip from '@/components/ui/Chip';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { suggestionFor, tierBandLabel, tierSuggestions, type CatalogModel, type TierAuditLike } from '@/lib/tier-mapping';
 import { SOURCE_NOTE, SURFACE_LABEL, cellRoutes, cellStateText, priceText } from '@/lib/model-policy-cells-view';
+import { SURFACE_TITLE, overMaximum } from '@/lib/tier-limits-view';
 import CellEditor from './CellEditor';
 import { HistorySheet, WhatRanSheet } from './TierSheets';
 
@@ -59,6 +61,8 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   const [keys, setKeys] = useState<KeyStatus | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [showOverrides, setShowOverrides] = useState(false);
+  // Effective maximums as the server resolved them; the table only labels what they block.
+  const [maxes, setMaxes] = useState<Partial<Record<ModelPolicyCellSurface, string | null>>>({});
   const isMobile = useIsMobile();
   const anchorRef = useRef<HTMLElement | null>(null);
 
@@ -86,9 +90,14 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
       .then((r) => (r.ok ? r.json() : null))
       .then((d: ListProviderKeysResponse | null) => { if (!cancelled) setKeys(keyStatusFrom(d)); })
       .catch(() => {});
+    fetch(`/api/teams/${teamId}/model-ceilings`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d?.effective) setMaxes({ agent: d.effective.agent?.max ?? null, chat: d.effective.chat?.max ?? null }); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [teamId]);
 
+  const blockedOn = (tier: Tier) => SURFACES.filter((s) => overMaximum(tier, maxes[s]));
   const models = catalog.models ?? [];
   const suggestions = useMemo(() => tierSuggestions(catalog.tierAudit, { catalogComplete: catalog.catalogComplete }), [catalog]);
   const cells = data?.cells ?? [];
@@ -117,7 +126,11 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link>.
       </p>
 
-      {loadError && <div className="notice notice-err mt-3">{loadError}</div>}
+      {loadError && (
+        <div className="notice notice-err mt-3" data-testid="load-error">
+          <ErrorState message="We couldn't load your model tiers. Retry, and if it keeps failing, check back shortly." detail={loadError} onRetry={() => { void load(); }} />
+        </div>
+      )}
 
       {/* Desktop: one table, tier rows, Coding and Chat columns. */}
       {!isMobile && <div className="card mt-5 max-w-5xl" data-testid="tier-table">
@@ -128,7 +141,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         {data && TIERS.map((tier) => (
           <div key={tier} className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b border-border-default last:border-b-0" data-testid={`tier-row-${tier}`}>
             <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
-              onOpen={() => setOpen({ kind: 'what-ran', tier })} />
+              blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
               return cell
@@ -146,7 +159,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
           <div key={tier} className="card px-3 py-2" data-testid={`tier-card-${tier}`}>
             <div className="flex items-center gap-2">
               <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
-                onOpen={() => setOpen({ kind: 'what-ran', tier })} />
+                blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
             </div>
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
@@ -202,7 +215,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   );
 }
 
-function TierName({ tier, routes, onOpen }: { tier: Tier; routes: boolean; onOpen: () => void }) {
+function TierName({ tier, routes, blocked, onOpen }: { tier: Tier; routes: boolean; blocked?: readonly ModelPolicyCellSurface[]; onOpen: () => void }) {
   const tag = TIER_TAG[tier];
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-1" title={tierBandLabel(tier)}>
@@ -215,6 +228,11 @@ function TierName({ tier, routes, onOpen }: { tier: Tier; routes: boolean; onOpe
         <span className="font-mono text-title font-bold text-text-primary" data-testid={`tier-name-${tier}`}>{tier}</span>
       )}
       {tag && <span className="font-mono text-meta text-text-muted">{tag}</span>}
+      {blocked && blocked.length > 0 && (
+        <span className="text-meta text-text-muted" data-testid={`tier-blocked-${tier}`}>
+          Over the maximum{blocked.length < SURFACES.length ? ` for ${blocked.map((b) => SURFACE_TITLE[b]).join(', ')}` : ''}. Can be set, not served.
+        </span>
+      )}
     </div>
   );
 }
