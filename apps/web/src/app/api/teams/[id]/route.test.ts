@@ -237,13 +237,28 @@ describe('PATCH /api/teams/[id] — key policy', () => {
     for (const u of capturedUpdates) expect(u).not.toHaveProperty('chatDisabled');
   });
 
-  it('the legacy name writes the credential policy too, so the columns never disagree', async () => {
+  it('the legacy name never opts a team in: credentialPolicy stays unset when it was unset', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: null };
+    for (const legacy of ['team', 'team_or_own', 'own']) {
+      capturedUpdates.length = 0;
+      await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy });
+      expect(capturedUpdates[0]).not.toHaveProperty('credentialPolicy');
+    }
+    teamRow = saved;
+  });
+
+  it('the legacy name keeps credentialPolicy in step for a team that already opted in', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: 'team' };
     const want = { team: 'team', team_or_own: 'personal_first', own: 'personal_only' } as const;
     for (const [legacy, cp] of Object.entries(want)) {
       capturedUpdates.length = 0;
       await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
       expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy, credentialPolicy: cp });
     }
+    teamRow = saved;
   });
 
   it('an admin sets the credential policy by its new name, writing both columns', async () => {
