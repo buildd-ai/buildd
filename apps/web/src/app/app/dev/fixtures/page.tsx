@@ -32,6 +32,8 @@ import RunnerSizeFixture from './RunnerSizeFixture';
 import WorkspacesListFixture from './WorkspacesListFixture';
 import HostedRunnerFixture from './HostedRunnerFixture';
 import InteractiveSessionsFixture from './InteractiveSessionsFixture';
+import RunActivityFixture from './RunActivityFixture';
+import { RUN_ACTIVITY_FIXTURE_STATE } from './run-activity-fixtures';
 import ActivityDeliveryFixture from './ActivityDeliveryFixture';
 import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import TeamMembersFixture from './TeamMembersFixture';
@@ -188,6 +190,10 @@ export default function DevFixturesPage() {
     }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;
+    }
+
+    if (state === RUN_ACTIVITY_FIXTURE_STATE) {
+        return <RunActivityFixture />;
     }
 
     if (state === OPERATOR_ACCESS_FIXTURE_STATE) {

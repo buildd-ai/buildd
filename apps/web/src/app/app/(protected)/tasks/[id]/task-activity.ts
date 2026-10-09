@@ -8,6 +8,7 @@
  * foo.ts", "Ran: bun test"), so every reader here degrades to parsing that
  * label, and line counts it cannot know stay `null` rather than a fake zero.
  */
+import { deriveRunEvidence, type RunEvidence, type RunEvidenceInput } from '@buildd/core/run-evidence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 
 export type Milestone = WorkerMilestone;
@@ -113,7 +114,7 @@ export function formatOffset(ms: number): string {
 
 export interface Tape {
   ticks: Array<{ pos: number; kind: 'edit' | 'read' | 'run'; label: string }>;
-  flags: Array<{ pos: number; pct: number; label: string; at: string }>;
+  flags: Array<{ pos: number; label: string; at: string }>;
   axis: string[];
   /** The right edge's time: the whole span (the elapsed time on a live tape). */
   end: string;
@@ -129,27 +130,20 @@ export function buildTape(milestones: Milestone[], { startMs, nowMs }: { startMs
     if (m.type === 'action') {
       const c = classifyAction(m);
       ticks.push({ pos: pos(m.ts), kind: c?.kind === 'run' ? 'run' : c?.kind === 'read' ? 'read' : 'edit', label: m.label ?? 'Action' });
-    } else if (m.type === 'status' && typeof m.progress === 'number' && m.progress < 100) {
-      flags.push({ pos: pos(m.ts), pct: m.progress, label: m.label ?? '', at: formatOffset(m.ts - startMs) });
+    } else if (m.type === 'status' && !!m.label?.trim() && !NOT_A_HEADLINE.test(m.label.trim())) {
+      flags.push({ pos: pos(m.ts), label: m.label ?? '', at: formatOffset(m.ts - startMs) });
     }
   }
   const axis = [0, 0.25, 0.5, 0.75].map(f => formatOffset(span * f));
   return { ticks, flags, axis, end: formatOffset(span) };
 }
 
-export type StepKey = 'started' | 'read' | 'edit' | 'commit' | 'pr' | 'done';
-export interface NowStep { key: StepKey; label: string; state: 'done' | 'current' | 'todo'; at: string | null }
 export interface NowState {
   headline: string | null;
-  pct: number | null;
   detail: { verb: string; target: string; recentEdits: number } | null;
   updatedTs: number | null;
-  steps: NowStep[];
+  evidence: RunEvidence;
 }
-
-const STEP_LABELS: Record<StepKey, string> = {
-  started: 'Started', read: 'Read', edit: 'Edit', commit: 'Commit', pr: 'PR', done: 'Done',
-};
 
 // Status milestones that record bookkeeping around a question rather than work.
 const NOT_A_HEADLINE = /^(Asked:|Question:|Answer received:|User:)/;
@@ -163,27 +157,18 @@ export function basename(p: string): string {
 
 export function deriveNow(
   milestones: Milestone[],
-  opts: { status: string; currentAction: string | null; prUrl: string | null; startMs: number | null; nowMs: number },
+  opts: RunEvidenceInput & { status: string; currentAction: string | null; prUrl: string | null; startMs: number | null; nowMs: number },
 ): NowState {
   const sorted = [...milestones].sort((a, b) => a.ts - b.ts);
-  const startMs = opts.startMs ?? sorted[0]?.ts ?? opts.nowMs;
 
   let headline: string | null = null;
-  let pct: number | null = null;
-  const firstAt: Partial<Record<StepKey, number>> = {};
   const createdPaths = new Set<string>();
   let lastAction: { c: ClassifiedAction; ts: number } | null = null;
   let recentEdits = 0;
 
   for (const m of sorted) {
-    if (m.type === 'checkpoint') {
-      const key = ({ session_started: 'started', first_read: 'read', first_edit: 'edit', first_commit: 'commit', task_completed: 'done' } as Record<string, StepKey>)[m.event];
-      if (key && firstAt[key] == null) firstAt[key] = m.ts;
-    } else if (m.type === 'status') {
+    if (m.type === 'status') {
       const label = m.label?.trim();
-      if (label && /^Commit:/.test(label) && firstAt.commit == null) firstAt.commit = m.ts;
-      if (label && /^Opened PR\b/.test(label) && firstAt.pr == null) firstAt.pr = m.ts;
-      if (typeof m.progress === 'number') pct = m.progress;
       if (label && !NOT_A_HEADLINE.test(label)) headline = label;
     } else if (m.type === 'action') {
       const c = classifyAction(m);
@@ -193,10 +178,6 @@ export function deriveNow(
       if ((c.kind === 'edit' || c.kind === 'new') && m.ts >= opts.nowMs - 60_000) recentEdits += 1;
     }
   }
-  if (firstAt.started == null && sorted.length > 0) firstAt.started = startMs;
-  if (opts.prUrl && firstAt.pr == null) firstAt.pr = firstAt.commit ?? startMs;
-  if (firstAt.pr != null && firstAt.commit == null) firstAt.commit = firstAt.pr;
-
   let detail: NowState['detail'] = null;
   if (lastAction) {
     const { c } = lastAction;
@@ -205,20 +186,8 @@ export function deriveNow(
     if (target) detail = { verb: VERBS[kind], target, recentEdits };
   }
 
-  const order: StepKey[] = ['started', 'read', 'edit', 'commit', 'pr', 'done'];
-  let currentAssigned = false;
-  const steps: NowStep[] = order.map(key => {
-    const ts = firstAt[key];
-    if (ts != null) return { key, label: STEP_LABELS[key], state: 'done', at: formatOffset(ts - startMs) };
-    if (!currentAssigned) {
-      currentAssigned = true;
-      return { key, label: STEP_LABELS[key], state: 'current', at: null };
-    }
-    return { key, label: STEP_LABELS[key], state: 'todo', at: null };
-  });
-
   const updatedTs = sorted.length ? sorted[sorted.length - 1].ts : null;
-  return { headline: headline ?? opts.currentAction ?? null, pct, detail, updatedTs, steps };
+  return { headline: headline ?? opts.currentAction ?? null, detail, updatedTs, evidence: deriveRunEvidence({ ...opts, startedAt: opts.startMs, milestones }) };
 }
 
 /**

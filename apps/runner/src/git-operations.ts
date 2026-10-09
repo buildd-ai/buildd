@@ -1237,6 +1237,17 @@ export async function setupWorktree(
         execSync(`git worktree add "${worktreePath}" "${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
       } else {
         execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        // `worktree add -b <new> <path> origin/<base>` makes git track the BASE
+        // (branch.autoSetupMerge), so a plain `git push` fails with "upstream
+        // branch name differs" — the push target must be the task's own branch.
+        // Point the upstream at origin/<actualBranch> (it need not exist yet; a
+        // push creates it), matching what `git push -u origin HEAD` would set.
+        try {
+          execSync(`git config "branch.${actualBranch}.remote" origin`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+          execSync(`git config "branch.${actualBranch}.merge" "refs/heads/${actualBranch}"`, { ...execOpts, stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch {
+          // Best-effort: `git push origin HEAD` still works without it.
+        }
       }
     } catch (err) {
       // Make the failure legible: name the branch and, when the branch namespace

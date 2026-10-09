@@ -73,7 +73,7 @@ function waiterMessage(
   // The path_released worker message is what actually reaches an agent (see
   // releaseAndNotify). The workspace-channel Pusher event has no agent-side
   // subscriber, so naming it here sent waiters to watch for nothing.
-  return `Paths overlap with task ${who}${where}. You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
+  return `Paths overlap with task ${who}${where}. You are registered as a waiter — a path_released message reaches you at your next turn boundary when the path is free.`;
 }
 
 function validPaths(rawPaths: unknown): rawPaths is string[] {

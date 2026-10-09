@@ -141,7 +141,7 @@ describe('taskNowState', () => {
   it('derives the Now strip for a live worker, tolerating a non-array milestones column', () => {
     const s = taskNowState({ status: 'running', currentAction: 'Reading files', prUrl: null, startedAt: now - 60_000, milestones: null }, now);
     expect(s).not.toBeNull();
-    expect(Array.isArray(s!.steps)).toBe(true);
+    expect(Array.isArray(s!.evidence.phases)).toBe(true);
   });
 });
 
