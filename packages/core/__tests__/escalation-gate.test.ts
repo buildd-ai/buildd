@@ -263,3 +263,35 @@ describe('verdictAt', () => {
     expect(verdictAt(v, Date.parse('2026-10-09T13:00:00Z')).owner).toBe('person');
   });
 });
+
+describe('mergePolicy.dataMigrations: the reviewer decides data migrations', () => {
+  const dataHandoff = (over: Partial<EscalationSubject> = {}) => base({
+    why: 'landing_handoff', ci: 'green', handoffCause: 'migration', handoffReason: 'runs data migration UPDATE on tasks', ...over,
+  });
+
+  it('a data migration is the person\'s by default', () => {
+    expect(escalationRule(dataHandoff())).toMatchObject({ owner: 'person', rail: 'data_migration' });
+  });
+
+  it('with the setting on, a landing that stopped on a data migration retries the merge instead', () => {
+    expect(escalationRule(dataHandoff({ agentReviewsDataMigrations: true }))).toMatchObject({ owner: 'buildd', action: 'retry_landing' });
+  });
+
+  it('with the setting on, a reviewer escalation naming a data migration is not forced to a person (no rule: Jev weighs it)', () => {
+    const v = escalationRule(base({ why: 'reviewer_escalated', ci: 'green', detail: 'runs data migration UPDATE on tasks', agentReviewsDataMigrations: true }));
+    expect(v).toBeNull();
+  });
+
+  it('destructive DDL stays the person\'s with the setting on', () => {
+    for (const detail of ['drops column tasks.legacy', 'destructive schema change on tasks', 'drops the table legacy']) {
+      expect(escalationRule(base({ why: 'reviewer_escalated', ci: 'green', detail, agentReviewsDataMigrations: true })))
+        .toMatchObject({ owner: 'person', rail: 'data_migration' });
+    }
+  });
+
+  it('turning the setting on is a new look; off keeps today\'s fingerprints', () => {
+    const off = dataHandoff();
+    expect(escalationFingerprint({ ...off, agentReviewsDataMigrations: false })).toBe(escalationFingerprint(off));
+    expect(escalationFingerprint({ ...off, agentReviewsDataMigrations: true })).not.toBe(escalationFingerprint(off));
+  });
+});
