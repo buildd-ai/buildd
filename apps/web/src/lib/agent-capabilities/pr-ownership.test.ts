@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { branchCarriesTaskId, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
+import { branchCarriesTaskId, ownershipApplies, prNumbersNamedAtFiling, taskLinksPr, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
 
 // ── fixtures (illustrative) ───────────────────────────────────────────────────
 
@@ -41,16 +41,27 @@ describe('verifyPrOwnership — shapes a task owns', () => {
   });
 
   it.each([
+    ['a person', 'human:user-1'],
+    ['the task that filed it', 'task:task-0'],
+  ])('a PR the task was linked to when %s filed it (context.prReach)', async (_label, grantedBy) => {
+    const v = await verify(input({ head: 'docs/human-branch', task: { context: { prReach: { prNumbers: [42], grantedBy, grantedAt: '2026-01-01T00:00:00.000Z' } } } }));
+    expect(v).toEqual({ owned: true, basis: 'linked_pr' });
+  });
+
+  it('a PR a person granted a landing override on', async () => {
+    const v = await verify(input({ head: 'docs/human-branch', task: { context: { landingOverride: { prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:user-1', grantedAt: 'x' } } } }));
+    expect(v).toEqual({ owned: true, basis: 'linked_pr' });
+  });
+
+  it.each([
     ['title', { title: 'Fix review comments on #42' }],
     ['description', { description: 'Follow up on https://github.com/acme/widget/pull/42 please' }],
     ['context', { context: { prNumber: 42 } }],
-  ])('a PR the task names in its %s', async (_label, task) => {
+    ['an unstamped context.prReach', { context: { prReach: { prNumbers: [42] } } }],
+    ['a context.prReach stamped by neither a person nor a task', { context: { prReach: { prNumbers: [42], grantedBy: 'agent:x' } } }],
+    ['an unstamped landing override', { context: { landingOverride: { prNumbers: [42], overrides: ['freshness'] } } }],
+  ])('does not own a PR merely named in its %s', async (_label, task) => {
     const v = await verify(input({ head: 'docs/human-branch', task }));
-    expect(v).toEqual({ owned: true, basis: 'task_names_pr' });
-  });
-
-  it('does not read #420 as naming #42', async () => {
-    const v = await verify(input({ head: 'docs/human-branch', task: { title: 'see #420' } }));
     expect(v.owned).toBe(false);
   });
 
@@ -233,3 +244,47 @@ describe('ownershipApplies', () => {
   it('exempts a teammate', () => expect(ownershipApplies({ kind: 'team_member', accountId: 'a' }, {})).toBe(false));
 });
 
+
+describe('taskLinksPr — a task reaches the PRs its own records link it to', () => {
+  const task = (o: Record<string, unknown> = {}) => ({ id: TASK_ID, title: '', description: '', context: {}, ...o });
+  const reach = (grantedBy: string, prNumbers = [42]) => ({ prReach: { prNumbers, grantedBy, grantedAt: 'x' } });
+
+  it.each([
+    ['ciRetryPrNumber', { ciRetryPrNumber: 42 }],
+    ['conflictRetryPrNumber', { conflictRetryPrNumber: 42 }],
+    ['reviewerRetryPrNumber', { reviewerRetryPrNumber: 42 }],
+    ['a person-stamped prReach', { context: reach('human:user-1') }],
+    ['a task-stamped prReach', { context: reach('task:task-0') }],
+    ['a person-stamped landing override', { context: { landingOverride: { prNumbers: [42], overrides: ['size'], grantedBy: 'human:user-1', grantedAt: 'x' } } }],
+  ])('links through %s', (_l, o) => {
+    expect(taskLinksPr(task(o), 42)).toBe(true);
+  });
+
+  it.each([
+    ['title', { title: 'land PR #42' }],
+    ['description', { description: 'resolve conflicts on https://github.com/acme/widget/pull/42' }],
+    ['a context scalar', { context: { prNumber: 42 } }],
+    ['a prReach with no stamp', { context: { prReach: { prNumbers: [42] } } }],
+    ['a prReach with a foreign stamp', { context: reach('agent:x') }],
+    ['a prReach for another PR', { context: reach('human:user-1', [7]) }],
+  ])('does not link through %s', (_l, o) => {
+    expect(taskLinksPr(task(o), 42)).toBe(false);
+  });
+
+  it('no task links nothing', () => {
+    expect(taskLinksPr(null, 42)).toBe(false);
+  });
+});
+
+describe('prNumbersNamedAtFiling', () => {
+  it('collects #N and /pull/N from title and description, and context.prNumber / prNumbers', () => {
+    expect(prNumbersNamedAtFiling({
+      title: 'land #42 and #7',
+      description: 'see https://github.com/acme/widget/pull/9; not #420x',
+      context: { prNumber: 11, prNumbers: [12, 'x', 13], priority: 5 },
+    })).toEqual([7, 9, 11, 12, 13, 42, 420]);
+  });
+  it('ignores other context scalars', () => {
+    expect(prNumbersNamedAtFiling({ title: '', description: null, context: { priority: 5, iteration: 2 } })).toEqual([]);
+  });
+});
