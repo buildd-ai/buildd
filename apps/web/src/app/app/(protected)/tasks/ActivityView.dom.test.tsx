@@ -100,13 +100,14 @@ describe('ActivityView filters across Now and History', () => {
       expect(q('activity-counts')).toBeNull();
       expect(q('activity-empty')).toBeNull();
       expect(container.textContent).not.toContain('Nothing in motion');
+      expect(q('activity-filters')).toBeNull();
     }
   });
 
   it('a busy workspace: Had retries finds the live old root in Now and many episodes in History', async () => {
     const d = activityScaleFixture();
     await show({ mode: 'now', now: d.now, history: d.history, initialFilters: { outcome: 'retries' } });
-    expect(q('activity-counts')?.textContent).toMatch(/^[1-9]\d* deliver(y|ies) in motion · 1 agent working$/);
+    expect(q('activity-counts')?.textContent).toMatch(/^[1-9]\d* deliver(y|ies) in motion · 3 agents working$/);
     const rows = [...container.querySelectorAll('[data-testid="activity-now-row"]')].map(r => r.textContent ?? '');
     expect(rows.some(t => t.includes('fix: long-running migration backfill'))).toBe(true);
     await show({ mode: 'history', now: d.now, history: d.history, initialFilters: { outcome: 'retries' } });

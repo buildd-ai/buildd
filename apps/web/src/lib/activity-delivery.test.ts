@@ -218,7 +218,7 @@ describe('a busy workspace, shaped like real data', () => {
     const rows = d.now.groups.flatMap(g => g.rows);
     expect(rows.map(r => r.id)).toContain('sc-live-old');
     expect(rows.find(r => r.id === 'sc-live-old')!.delivery.kind).toBe('repair');
-    expect(d.now.liveAgents).toBe(1);
+    expect(d.now.liveAgents).toBe(3);
     expect(d.now.inMotion).toBeGreaterThan(0);
   });
 

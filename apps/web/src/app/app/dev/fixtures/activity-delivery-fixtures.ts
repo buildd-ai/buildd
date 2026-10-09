@@ -98,7 +98,7 @@ export function activityFixture(step: number) {
  * roots than the loader's recent window, mostly fresh completed work, retries
  * that landed and retries that failed, cancelled work (standalone and in a
  * mission), and one live root last touched long before the window whose
- * repair attempt an agent is running now.
+ * repair attempt an agent is running now, beside live work with no retries.
  */
 export const ACTIVITY_SCALE_ROOTS = 240;
 export function activityScaleFixture() {
@@ -125,6 +125,9 @@ export function activityScaleFixture() {
       }));
     }
   }
+  // Live work with no retries, in a mission and standalone.
+  tasks.push(row('sc-run-a', 'feat: workspace usage export', SEARCH, { status: 'in_progress', createdAt: at('10:40'), updatedAt: at('11:06'), workers: [live('runner-g', '10:40')] }));
+  tasks.push(row('sc-run-b', 'chore: tidy runner logs', null, { status: 'in_progress', createdAt: at('10:52'), updatedAt: at('11:07'), workers: [live('runner-h', '10:52')] }));
   // Last touched 40 days ago; only its repair attempt moved since.
   const old = dayAt(40);
   tasks.push(row('sc-live-old', 'fix: long-running migration backfill', FLAKY, {

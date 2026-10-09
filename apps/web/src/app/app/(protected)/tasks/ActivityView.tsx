@@ -127,7 +127,7 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
 
         {mode === 'now' && !missionFilter && <div className="-mx-4 mt-2"><InteractiveSessions sessions={localSessions} now={nowMs} /></div>}
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="activity-filters">
+        {!loadError && <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="activity-filters">
           <FilterGroup label="Show" options={SCOPES} value={scope} onChange={setScope} />
           <FilterGroup label="Filter" options={OUTCOMES[mode]} value={outcomeKey} onChange={setOutcome} />
           {mode === 'history' && missionOptions.length > 1 && !missionFilter && (
@@ -140,7 +140,7 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
               className="min-w-0 max-w-[240px]"
             />
           )}
-        </div>
+        </div>}
 
         {loadError ? (
           <div role="alert" data-testid="activity-load-error" className="mt-8 border-2 border-status-error px-4 py-3 text-body text-text-primary">
