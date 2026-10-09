@@ -34,7 +34,7 @@ async function allInstructions(): Promise<Array<{ level: string; surface: string
 
 describe('MCP server instructions block', () => {
   it('route.ts sends the shared instructions', () => {
-    expect(routeSource).toContain('instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes)');
+    expect(routeSource).toContain('instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes, { principal, orchestrationTaskToken })');
   });
 
   it('is under the size that was observed truncating', async () => {
