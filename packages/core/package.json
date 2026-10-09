@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.300.0",
+  "version": "0.301.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -24,6 +24,8 @@
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",
+    "./role-visibility": "./role-visibility.ts",
+    "./task-requester": "./task-requester.ts",
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
@@ -41,6 +43,7 @@
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./providers": "./providers/index.ts",
+    "./providers/resolve": "./providers/resolve.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",
@@ -70,6 +73,7 @@
     "./runner-health": "./runner-health.ts",
     "./question-brief": "./question-brief.ts",
     "./human-attention": "./human-attention.ts",
+    "./needs-you": "./needs-you.ts",
     "./question-gate": "./question-gate.ts",
     "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",

@@ -1,10 +1,11 @@
 /**
- * Home's big numbers: agents live (with a slot meter), needs you, merged
+ * Home's big numbers: agents live (with the last day's runner slots in use), needs you, merged
  * today, and a fourth slot for what happened beyond merging: PRs in CI, else
  * the fixes that healed on their own, else the screens a visual review
  * checked. A zero there is not news, so with none of them the strip has three.
  */
-import { SlotMeter } from '@/components/fleet/SlotMeter';
+import { OccupancySparkline } from '@/components/fleet/OccupancySparkline';
+import type { OccupancySeries } from '@/lib/fleet-occupancy';
 
 export interface StatStripProps {
   live: number;
@@ -19,9 +20,11 @@ export interface StatStripProps {
   selfHealed: number;
   /** The latest shipped mission's visual review, when it had one. */
   screensReviewed?: { shots: number; ok: number; issues: number; unsure: number } | null;
+  /** The last 24h of busy slots, drawn under the slot meter when present. */
+  occupancy?: OccupancySeries | null;
 }
 
-function Stat({ label, value, children, testId, tone }: { label: string; value: React.ReactNode; children?: React.ReactNode; testId: string; tone?: 'accent' }) {
+function Stat({ label, value, children, footer, testId, tone }: { label: string; value: React.ReactNode; children?: React.ReactNode; footer?: React.ReactNode; testId: string; tone?: 'accent' }) {
   return (
     <div data-testid={testId} className="flex min-w-0 flex-col gap-1 px-4 py-3.5 md:px-6 md:py-5">
       <span className="font-mono text-[11px] font-semibold uppercase tracking-[2px] text-text-muted">{label}</span>
@@ -29,6 +32,7 @@ function Stat({ label, value, children, testId, tone }: { label: string; value: 
         {value}
       </span>
       <span className="mt-1 flex min-h-4 min-w-0 items-center justify-between gap-2 truncate font-mono text-[11px] text-text-muted md:text-[12px]">{children}</span>
+      {footer}
     </div>
   );
 }
@@ -46,10 +50,11 @@ export function StatStrip(p: StatStripProps) {
         testId="stat-agents-live"
         label="Agents live"
         tone={p.live > 0 ? 'accent' : undefined}
-        value={<>{p.live}<span className="ml-1 align-baseline text-[18px] font-normal tracking-normal text-text-muted md:text-[22px]">/{p.capacity}</span></>}
+        value={p.live}
+        footer={p.occupancy ? <OccupancySparkline series={p.occupancy} href="/app/health/runners" /> : null}
       >
-        <SlotMeter live={p.live} max={p.capacity} size="lg" />
-        <span className="hidden md:inline">{p.runners} runner{p.runners === 1 ? '' : 's'}</span>
+        <span className="truncate">running now</span>
+        <span data-testid="stat-slots-online" className="truncate">{p.capacity > 0 ? `${p.capacity} slot${p.capacity === 1 ? '' : 's'} online` : 'no runners online'}</span>
       </Stat>
       <Stat testId="stat-needs-you" label="Needs you" value={p.needsYou}>
         <span className="truncate">{p.needsYouDetail ?? 'nothing waiting'}</span>

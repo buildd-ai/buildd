@@ -16,10 +16,11 @@ describe('settingsPermissions: one flag per permission, the server rule', () => 
     }
   });
 
-  it('member: nothing by default, exactly what an override grants', () => {
-    expect(Object.values(settingsPermissions(team('member'), 'user-1', {})).some(Boolean)).toBe(false);
+  it('member: only personal roles by default, plus exactly what an override grants', () => {
+    const base = settingsPermissions(team('member'), 'user-1', {});
+    expect(ALL.filter((p) => base[p])).toEqual(['create_personal_roles']);
     const granted = settingsPermissions(team('member'), 'user-1', { create_workspace: ['owner', 'admin', 'member'] });
-    expect(ALL.filter((p) => granted[p])).toEqual(['create_workspace']);
+    expect(ALL.filter((p) => granted[p]).sort()).toEqual(['create_personal_roles', 'create_workspace']);
   });
 
   it('admin: loses a permission an override narrows to owners', () => {

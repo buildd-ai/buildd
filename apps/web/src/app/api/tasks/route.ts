@@ -57,6 +57,9 @@ import {
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
 import { pickRoleRowForTask, countRoleInferenceCandidates } from '@buildd/core/role-model-routing';
+import { pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
+import { checkStatedRole } from '@/lib/stated-role';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -1291,11 +1294,36 @@ export async function POST(req: NextRequest) {
       loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
     }
 
+    // Who the task is for (resolveTaskRequesterUserId): decides which personal
+    // roles it may run under. Resolved at most once, and only when a personal
+    // role is actually in play.
+    let requesterPromise: Promise<string | null> | null = null;
+    const requesterUserId = () => (requesterPromise ??= resolveTaskRequesterUserId({
+      createdByUserId: creatorContext.createdByUserId,
+      parentTaskId: creatorContext.parentTaskId,
+      missionId: missionId ?? null,
+    }).catch(() => null));
+
+    // A stated role must be one this task may run under: naming another
+    // member's private role is refused rather than silently filed role-less
+    // (role-visibility.ts). Shared personal roles and team roles pass.
+    const statedRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
+    const statedRole = await checkStatedRole(statedRoleSlug, {
+      teamId: targetWorkspace.teamId,
+      workspaceId,
+      requesterUserId,
+    });
+    if (statedRole.refused) {
+      return NextResponse.json(statedRole.refused, { status: 400 });
+    }
+    const statedRoleRows = statedRole.rows;
+
     // Validate and resolve requiredConnectors (team-scoped role lookup).
     const requiredConnectorsCheck = await validateRequiredConnectors(rawRequiredConnectors, {
       roleSlug: typeof roleSlug === 'string' ? roleSlug : null,
       workspaceId,
       teamId: targetWorkspace.teamId ?? null,
+      requesterUserId: slugHasPersonalRows(statedRoleRows, statedRoleSlug) ? await requesterUserId() : null,
     });
     if (!requiredConnectorsCheck.ok) {
       return NextResponse.json({ error: requiredConnectorsCheck.error }, { status: 400 });
@@ -1303,16 +1331,15 @@ export async function POST(req: NextRequest) {
     const resolvedRequiredConnectors = requiredConnectorsCheck.value;
 
     // Fall back to the role's defaultBackend hint, then the workspace default.
-    if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
-      const role = await db.query.workspaceSkills.findFirst({
-        where: and(
-          eq(workspaceSkills.workspaceId, workspaceId),
-          eq(workspaceSkills.slug, roleSlug),
-          eq(workspaceSkills.enabled, true),
-        ),
-        columns: { defaultBackend: true },
+    // The role row is the one the claim will run: override > own personal >
+    // shared personal > team default (it used to read the override only).
+    if (!resolvedBackend && statedRoleSlug && targetWorkspace.teamId) {
+      const role = pickVisibleRoleRow(statedRoleRows, statedRoleSlug, {
+        teamId: targetWorkspace.teamId,
+        workspaceId,
+        requesterUserId: slugHasPersonalRows(statedRoleRows, statedRoleSlug) ? await requesterUserId() : null,
       });
-      if (role?.defaultBackend) resolvedBackend = role.defaultBackend;
+      if (role?.enabled && role.defaultBackend) resolvedBackend = role.defaultBackend;
     }
     if (!resolvedBackend) {
       const ws = await db.query.workspaces.findFirst({
@@ -1396,23 +1423,29 @@ export async function POST(req: NextRequest) {
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
           ),
           columns: {
-            slug: true, name: true, model: true, workspaceId: true, teamId: true, metadata: true,
+            ...ROLE_VISIBILITY_COLUMNS, name: true, model: true, metadata: true,
             enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
           },
         });
+        // Personal rows are in roleRows; who the task is for decides which count.
+        const previewRequester = roleRows.some(r => r.ownerUserId != null) ? await requesterUserId() : null;
         if (previewRoleSlug) {
           const row = pickRoleRowForTask(roleRows, {
             roleSlug: previewRoleSlug, workspaceId, teamId: targetWorkspace.teamId,
+            requesterUserId: previewRequester,
           });
           previewRoleModel = row ? (row.model ?? 'inherit') : null;
         } else {
-          roleMayBeInferred = countRoleInferenceCandidates(roleRows, workspaceId) >= 2;
+          roleMayBeInferred = countRoleInferenceCandidates(roleRows, {
+            teamId: targetWorkspace.teamId, workspaceId, requesterUserId: previewRequester,
+          }) >= 2;
           const kindCandidates = kindDefaultCandidates(roleRows, {
             workspaceId,
             backend: resolvedBackend ?? null,
             outputRequirement: outputRequirement ?? null,
             pathManifestIsConcrete,
             emitsPlan: !!emitsPlan,
+            requesterUserId: previewRequester,
           });
           kindDefaultCandidateCount = kindCandidates.length;
           kindDefaultSlug = kindDefaultRole({
@@ -1686,6 +1719,8 @@ export async function POST(req: NextRequest) {
           backend: task.backend ?? null,
           emitsPlan: !!emitsPlan,
           dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+          // Inference may pick the requester's own private role, never another member's.
+          requesterUserId: await requesterUserId(),
         }, after);
       } catch (err) {
         console.error('[task-create] role shadow scheduling failed (non-fatal):', err);

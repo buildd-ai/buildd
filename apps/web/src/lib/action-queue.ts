@@ -1,9 +1,11 @@
 import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
+import type { MergeAdviceSlot } from './merge-advice';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
 import { readGithubAccessBlock, repoAccessSettingsPath } from './github-repo-access';
 import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -451,6 +453,14 @@ export interface EscalationRawItem {
   reviewInFlight?: 'queued' | 'reviewing' | null;
   /** `workers.updatedAt` — bounds the `pr_open` "awaiting CI" reading, see AWAITING_CI_WINDOW_MS. */
   prLifecycleUpdatedAt?: Date | null;
+  /**
+   * Which of a mission's two bookkeeping PRs this is, from structured markers
+   * only: `'ship'` is the mission's own integration PR (`isMissionPrTask`),
+   * `'refresh'` a conflict task merging trunk into the integration branch
+   * (`context.refreshTrunk`, mission-branch-refresh.ts). When both are queued
+   * for one mission they fold into the ship card — see {@link ActionQueueItem.refreshFirst}.
+   */
+  missionPrRole?: 'ship' | 'refresh' | null;
 }
 
 export interface ActionQueueItem {
@@ -593,6 +603,21 @@ export interface ActionQueueItem {
    * card's chip was taken from it, not from raw worker/reviewer columns.
    */
   delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  /**
+   * Set on a mission's ship card when the same mission's refresh PR is also
+   * queued: the refresh lands first (the ship PR cannot ship while its
+   * integration branch is behind trunk), so the two read as one card with
+   * one ordered next step instead of two cards explaining the same blocker.
+   */
+  refreshFirst?: { prNumber: number | null; prUrl: string | null; taskId: string | null; chip: ActionChip } | null;
+  /** Carried from {@link EscalationRawItem.missionPrRole}; drives the fold above. */
+  missionPrRole?: 'ship' | 'refresh' | null;
+  /**
+   * Human-review cards only: Jev's stored "can this merge now?" answer and the
+   * token to ask for one (merge-advice-server.ts `attachMergeAdvice`). Advice
+   * only; nothing in the queue reads it.
+   */
+  mergeAdvice?: MergeAdviceSlot | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -1395,6 +1420,7 @@ export function buildActionQueue(
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
       ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
+      missionPrRole: item.missionPrRole ?? null,
       pendingGates,
       ...(kernelView ? {
         delivery: deliveryCard(kernelView),
@@ -1584,8 +1610,9 @@ export function buildActionQueue(
   }
 
   const snoozed = options.snoozedSubjectKeys;
-  return [...map.values()]
-    .filter((item) => !snoozed?.has(item.subjectKey))
+  // Fold after the snooze filter: snoozing the ship card must not take the
+  // refresh PR (a separate decision) off the queue with it.
+  return foldMissionRefreshes([...map.values()].filter((item) => !snoozed?.has(item.subjectKey)))
     .sort((a, b) => {
     const chipDiff = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
     if (chipDiff !== 0) return chipDiff;
@@ -1616,6 +1643,42 @@ export function buildActionQueue(
     }
     return 0;
   });
+}
+
+/** {@link EscalationRawItem.missionPrRole} for a PR's owning task. */
+export function missionPrRoleOf(task: {
+  title?: string | null;
+  taskClass?: string | null;
+  missionId?: string | null;
+  context?: unknown;
+}): 'ship' | 'refresh' | null {
+  if (!task.missionId) return null;
+  if (isMissionPrTask(task)) return 'ship';
+  const ctx = task.context as Record<string, unknown> | null | undefined;
+  return typeof ctx?.refreshTrunk === 'string' ? 'refresh' : null;
+}
+
+/**
+ * A mission's refresh PR (trunk → integration branch) and its ship PR
+ * (integration branch → trunk) are one decision in sequence, not two: fold the
+ * refresh into the ship card as `refreshFirst`. Only within one workspace and
+ * mission, only on the structural `missionPrRole` marker; a refresh with no
+ * ship card queued stays a card of its own.
+ */
+function foldMissionRefreshes(items: ActionQueueItem[]): ActionQueueItem[] {
+  const shipKey = (i: ActionQueueItem) => `${i.workspaceId ?? ''}:${i.missionId}`;
+  const ships = new Map<string, ActionQueueItem>();
+  for (const i of items) if (i.missionPrRole === 'ship' && i.missionId) ships.set(shipKey(i), i);
+  if (ships.size === 0) return items;
+  const folded = new Set<ActionQueueItem>();
+  for (const i of items) {
+    if (i.missionPrRole !== 'refresh' || !i.missionId) continue;
+    const ship = ships.get(shipKey(i));
+    if (!ship) continue;
+    folded.add(i);
+    ship.refreshFirst ??= { prNumber: i.prNumber ?? null, prUrl: i.prUrl ?? null, taskId: i.taskId ?? null, chip: i.chip };
+  }
+  return folded.size ? items.filter((i) => !folded.has(i)) : items;
 }
 
 export interface ActionQueueAgeMetrics {

@@ -39,7 +39,7 @@ describe('StatStrip', () => {
   it('shows the four numbers, and self-healed once CI is quiet', () => {
     expect(html).toContain('data-testid="home-stat-strip"');
     expect(html).toContain('data-testid="stat-agents-live"');
-    expect(html).toContain('data-testid="slot-meter"');
+    expect(html).toContain('data-testid="stat-slots-online"');
     expect(html).toContain('data-testid="stat-self-healed"');
     expect(html).not.toContain('data-testid="stat-prs-in-ci"');
   });

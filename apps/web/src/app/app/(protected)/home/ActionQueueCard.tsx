@@ -16,11 +16,46 @@ import { AgentHandledCard } from '@/components/AgentHandledCard';
 import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
+import { ReviewDecision } from '@/components/ReviewDecision';
+import { MergeAdvice } from '@/components/MergeAdvice';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
+import { displayTaskTitle } from '@/lib/task-title';
 
+/**
+ * Every variant below renders `taskTitle`; shorten generated titles once here
+ * (display only — the full title stays the tooltip and the detail page), and
+ * add the mission refresh that must land before this ship PR, when the queue
+ * folded one in (see `foldMissionRefreshes`).
+ */
 export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
+  const short = item.taskTitle ? displayTaskTitle(item.taskTitle) : item.taskTitle;
+  const shortened = !!item.taskTitle && short !== item.taskTitle;
+  const card = <ActionQueueCardBody item={shortened ? { ...item, taskTitle: short } : item} />;
+  const refresh = item.refreshFirst;
+  if (!shortened && !refresh) return card;
+  const refreshHref = refresh?.taskId
+    ? actionCardTaskLink(item, { taskId: refresh.taskId, page: true })
+    : refresh?.prUrl ?? null;
+  return (
+    <div className="contents" title={shortened ? item.taskTitle : undefined}>
+      {card}
+      {refresh && (
+        <p data-testid="refresh-first" className="-mt-px border-l-2 border-status-warning bg-surface-2 px-4 py-2 text-meta text-text-secondary">
+          Waits on the branch refresh{refresh.prNumber != null && <> · PR #{refresh.prNumber}</>}
+          {refreshHref && (
+            <Link href={refreshHref} className="ml-2 inline-flex items-center min-h-11 md:min-h-0 font-mono font-medium text-accent-text hover:underline">
+              Open refresh →
+            </Link>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
     const arc = resolveActionCardContext(item);
     if (item.chip === 'MERGE') {
       return (
@@ -37,10 +72,18 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
     }
     if (item.chip === 'REVIEW' && item.humanReview && item.prUrl) {
       return <article data-testid="human-pr-review-card" className="card p-4">
-        <p className="text-meta text-status-warning">Review required</p>
-        <h3 className="mt-2 text-title font-semibold">{item.taskTitle}</h3>
-        <p className="mt-1 text-body text-text-secondary">{item.humanReview.reason}</p>
-        {item.machineStatus && <p className="mt-1 text-meta text-text-muted">{item.machineStatus}</p>}
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-meta text-status-warning">Review required</p>
+          {arc && arc.kind !== 'workspace' && <span className="text-meta text-text-muted">{arc.label}</span>}
+        </div>
+        <h3 className="mt-2 text-title font-semibold [overflow-wrap:anywhere]">{item.taskTitle}</h3>
+        <ReviewDecision
+          decision={item.humanReview.decision ?? item.humanReview.reason}
+          detail={item.humanReview.reason}
+          blockers={item.humanReview.blockers ?? []}
+          status={item.machineStatus}
+        />
+        {item.mergeAdvice && <MergeAdvice slot={item.mergeAdvice} />}
         <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
       </article>;
     }

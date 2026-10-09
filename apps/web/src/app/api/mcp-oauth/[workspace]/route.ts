@@ -131,6 +131,8 @@ function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string,
     teamId: accountTeamId,
     getWorkspaceId: async () => workspaceId,
     getLevel: async () => level,
+    // An OAuth session is always a signed-in person (its personal roles).
+    principal: 'person',
     knowledgeStore: new PgVectorStore(embedder, getVoyageReranker()),
     embedder,
   };

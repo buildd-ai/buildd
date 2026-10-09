@@ -154,6 +154,8 @@ committing step MUST NOT run against a preview.
   Existing fixtures: `/app/settings/team?state=multi-member` (dev server only) adds a synthetic
   second member so Remove and the role select are reachable; it never writes.
   `/app/health/insights?state=sample|empty|not-admin` covers the chart.
+  `/app/health/runners?state=sample` draws the slots-busy chart from a synthetic fleet (every
+  window), without worker rows.
   `/app/health/insights/tasks?state=sample|large` (optionally `&band=<key>`) renders a
   synthetic band drill-down, typical or holding hundreds of rows, without band params or DB rows.
 - Video or multi-frame capture of a state (the storyboard's `record` / `type` stay its own).

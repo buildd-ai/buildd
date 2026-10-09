@@ -18,6 +18,10 @@ import { hasTokenScope, requiredScopeForAction, type TokenScope } from '@buildd/
  *   CAPABILITY_MCP_GROUP_TOOLS: such a runner matches buildd actions by the
  *   exact `mcp__buildd__buildd` tool name (pr-detection, hooks, nudges).
  *   LEGACY: remove this surface once no runner predating group tools is left.
+ * - A worker-level session also sees list_skills / get_skill /
+ *   register_skill / update_skill / delete_skill, for personal roles
+ *   (`personal: true`); their team path stays admin-only
+ *   (handleBuilddAction refuses it).
  * - `check_path_claim` / `send_worker_message` are worker/admin only. Trigger
  *   tokens never run agent work, so they never need either.
  * - Sensitive workspaces do not expose the knowledge/memory tools at all.
@@ -30,6 +34,7 @@ import {
   learnToolDefinition,
   triggerActions,
   workerActions,
+  PERSONAL_ROLE_ACTIONS,
   allActions as allActionsList,
   memoryActions,
   buildToolDescription,
@@ -91,7 +96,9 @@ export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly
     ? [...allActionsList]
     : accountLevel === 'trigger'
     ? [...triggerActions]
-    : [...workerActions];
+    // Personal roles: list/get/register/update/delete_skill with
+    // personal: true (the team-role path is refused below admin).
+    : [...workerActions, ...PERSONAL_ROLE_ACTIONS];
 }
 
 export const HELP_ACTION = 'help';

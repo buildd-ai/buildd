@@ -191,10 +191,11 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   // Problems: broken credentials, stranded backends, offline runners, failing schedules.
   // failureGroups feeds the Overview's top failures (TopFailureGroups) and the
   // status sentence's failure count; budgetForecast feeds the Budget row.
-  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast']),
+  // agentAccess: access problems count on Overview and are listed on Failures.
+  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
-  failures: new Set(['failureAnalytics', 'failureGroups']),
-  runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules', 'agentAccess']),
+  failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
+  runners: new Set(['runners', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',

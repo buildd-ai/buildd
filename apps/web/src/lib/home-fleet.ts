@@ -1,3 +1,4 @@
+import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from './open-ask';
 /**
  * Home's fleet queries: the runner snapshot (heartbeats × live workers), each
@@ -256,7 +257,8 @@ export async function loadHomeFleet(input: {
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
   const questions: HomeFleetQuestion[] = workerRows
-    .filter(r => isOpenAsk(r.taskStatus, r.status))
+    // Needs You admission: an open ask whose park a disposition hands to a person.
+    .filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now))
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
     .flatMap(r => {
       const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.error, taskTitle: r.taskTitle });

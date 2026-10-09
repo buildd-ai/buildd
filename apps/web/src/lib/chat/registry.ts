@@ -281,6 +281,17 @@ export const CHAT_NATIVE_TOOL_SPECS = {
   unwatch: single('notifications', self({ param: 'watchId', is: 'subscription' }, 'GET /api/subscriptions', 'DELETE /api/subscriptions/:id')),
   list_watches: single('notifications', read('GET /api/subscriptions')),
 
+  // ── personal roles (the signed-in person's own; team roles stay admin) ──
+  /**
+   * Create an agent role owned by the person chatting, private until shared.
+   * The MCP register_skill { personal: true } path, as the signed-in user, in
+   * the conversation team (create_personal_roles: members by default). A
+   * member-usable group, unlike register_skill (admin). A write, so a card.
+   */
+  create_personal_role: single('workers', write({ conversation: true }, 'POST /api/roles', 'POST /api/roles/:id/share')),
+  /** Share one of the person's personal roles with the team, or take it back to private. */
+  share_personal_role: single('workers', write({ conversation: true }, 'GET /api/roles', 'POST /api/roles/:id/share')),
+
 } satisfies Record<string, ChatToolSpec>;
 
 export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATIVE_TOOL_SPECS;

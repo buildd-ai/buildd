@@ -2,6 +2,7 @@ import type { BuilddTask, LocalUIConfig } from './types';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
+import { PERSONAL_CREDENTIAL_RUNNER_FEATURE } from '@buildd/core/providers';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
@@ -180,7 +181,11 @@ export class BuilddClient {
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
       // githubCredentials (agent-github-credentials.ts); without it the
       // server never asks this runner to scope the agent's GitHub access.
-      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
+      // PERSONAL_CREDENTIAL_RUNNER_FEATURE: this build keeps a requester's
+      // own key (credentialDecision.scope = personal) to the one worker it
+      // came with: never in the per-team credCache, never reused
+      // (workers.ts startFromClaim). Without it the server never sends one.
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE, PERSONAL_CREDENTIAL_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.

@@ -53,6 +53,11 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
+/** A role row as the role lookups select it (role-visibility columns included). */
+const roleFixture = (o: Record<string, unknown> = {}) => ({
+  id: 'role-1', slug: 'builder', workspaceId: null, teamId: 'team-1', ownerUserId: null, visibility: 'team',
+  enabled: true, isRole: true, defaultBackend: null, connectorRefs: [], model: 'inherit', metadata: {}, ...o,
+});
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -1733,9 +1738,72 @@ describe('POST /api/tasks', () => {
     expect(captured().missionId).toBe('m-1');
   });
 
+  it("refuses a roleSlug naming another member's private role (400)", async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private' }),
+    ]);
+
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'bobs-helper' },
+    }));
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.gateReason).toBe('role_not_visible');
+    expect(data.error).toContain('private role');
+    expect(captured()).toBeNull();
+  });
+
+  it("accepts the owner's own private role", async () => {
+    const captured = backendCase();
+    mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null, createdByUserId: 'u-bob' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private', defaultBackend: 'codex' }),
+    ]);
+
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'bobs-helper' },
+    }));
+
+    expect(res.status).not.toBe(400);
+    expect(captured().roleSlug).toBe('bobs-helper');
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('accepts a shared personal role and a slug with a team row beside a private one', async () => {
+    backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'reviewer', ownerUserId: 'u-bob', visibility: 'team', defaultBackend: 'codex' }),
+    ]);
+    const shared = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'reviewer' },
+    }));
+    expect(shared.status).not.toBe(400);
+
+    const captured = backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-team', defaultBackend: 'claude' }),
+      roleFixture({ id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private', defaultBackend: 'codex' }),
+    ]);
+    await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    }));
+    // The team row governs: another member's private row's backend hint is not read.
+    expect(captured().backend).toBe('claude');
+  });
+
   it('inherits backend from the role default when not explicitly set', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1748,7 +1816,7 @@ describe('POST /api/tasks', () => {
 
   it('explicit task.backend overrides the role default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1775,7 +1843,7 @@ describe('POST /api/tasks', () => {
 
   it('does not pin a backend inherited from a role, mission or workspace default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
@@ -1788,7 +1856,7 @@ describe('POST /api/tasks', () => {
 
   it('omits backend (schema default applies) when neither task nor role specify one', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: null });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: null })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1815,7 +1883,7 @@ describe('POST /api/tasks', () => {
   it('mission default backend overrides the role default', async () => {
     const captured = backendCase();
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: 'codex' });
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'claude' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1842,7 +1910,7 @@ describe('POST /api/tasks', () => {
   it('falls through to the role default when the mission has no backend', async () => {
     const captured = backendCase();
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: null });
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1868,8 +1936,8 @@ describe('POST /api/tasks', () => {
 
   it('role default takes precedence over the workspace default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { defaultBackend: 'codex' } });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'claude' })]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { defaultBackend: 'codex' } });
 
     const request = createMockRequest({
       method: 'POST',
@@ -3638,7 +3706,7 @@ describe('POST /api/tasks', () => {
     it('rejects requiredConnectors not in role connectorRefs', async () => {
       setupApiKeyAuth();
       // Role has connectorRefs: ['conn-uuid-A']
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A'] });
+      mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ slug: 'email-agent', connectorRefs: ['conn-uuid-A'] })]);
 
       const response = await POST(createMockRequest({
         method: 'POST',
@@ -3659,9 +3727,7 @@ describe('POST /api/tasks', () => {
     it('creates task with valid requiredConnectors', async () => {
       setupApiKeyAuth();
       // Role has connectorRefs: ['conn-uuid-A', 'conn-uuid-B']
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A', 'conn-uuid-B'] });
-      // defaultBackend lookup returns null
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce(null);
+      mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ slug: 'email-agent', connectorRefs: ['conn-uuid-A', 'conn-uuid-B'] })]);
 
       let insertedValues: any;
       const createdTask = { id: 'task-rc', workspaceId: 'ws-1', title: 'Email task', status: 'pending' };

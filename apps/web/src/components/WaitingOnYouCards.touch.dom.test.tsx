@@ -55,7 +55,8 @@ function expectTouchTargets() {
   expect(all.length).toBeGreaterThan(0);
   for (const b of all) {
     const cls = b.getAttribute('class') ?? '';
-    expect({ label: b.textContent?.trim(), touch: cls.includes('min-h-11') && cls.includes('md:min-h-0') })
+    // 44px below md; the desktop height may differ (the Details toggle is md:min-h-9).
+    expect({ label: b.textContent?.trim(), touch: cls.split(/\s+/).includes('min-h-11') && /(^|\s)md:min-h-\d/.test(cls) })
       .toEqual({ label: b.textContent?.trim(), touch: true });
   }
 }

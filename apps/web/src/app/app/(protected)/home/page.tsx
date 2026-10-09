@@ -1,9 +1,11 @@
+import { admitsNoteToNeedsYou, admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from '@/lib/open-ask';
 import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
-import { resolveHumanPrReview, isCurrentReviewApproved, type HumanPrReview } from '@/lib/reviewer-gate';
+import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
+import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
@@ -30,7 +32,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelInboxMembership, missionPrRoleOf, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -83,6 +85,8 @@ import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/missio
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
 import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
+import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
+import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
@@ -276,6 +280,8 @@ export default async function HomePage({
   // head (resolveReviewInFlight). Keeps a human-gated PR out of "Needs you"
   // while the reviewer owns the next step.
   const reviewInFlightByTaskId = new Map<string, 'queued' | 'reviewing'>();
+  // Per human-review PR worker: the review facts the "Ask Jev" advice reads.
+  const mergeAdviceBaseByWorkerId = new Map<string, import('@/lib/merge-advice-server').MergeAdviceBase>();
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
   // Open discrepancy rows beyond each workspace's visible top-10 (§12) — never
@@ -287,6 +293,7 @@ export default async function HomePage({
   // The fleet redesign: runner snapshot, ticker, stat counts (lib/home-fleet.ts),
   // the compact missions rows and the Needs-you stack's own cards.
   let fleetData: HomeFleetData | null = null;
+  let occupancy: OccupancySeries | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
   let phoneMissionRows: HomeMissionRow[] = [];
   let heldMissions: HomeHeldMission[] = [];
@@ -831,7 +838,8 @@ export default async function HomePage({
             },
             with: {
               task: {
-                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true },
+                // context: read only for `refreshTrunk`, the mission-refresh marker (missionPrRoleOf).
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -1029,6 +1037,7 @@ export default async function HomePage({
                 currentHeadSha: w.lastCommitSha ?? null,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
                 hasEscalationNote: escalationNoteTaskIds.has(w.taskId),
+                recommendation: reviewerRecommendationMap.get(w.taskId) ?? null,
                 policyTier: policy.tier,
                 github: githubApprovalByWorkerId.get(w.id) ?? null,
               });
@@ -1055,6 +1064,21 @@ export default async function HomePage({
                 queuedThresholdMinutes: policy.stallNotifyMinutes,
               });
               if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
+              if (humanReview) {
+                const reviewFacts = reviewFactsForAdvice({
+                  reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                  inFlight: !!reviewInFlight,
+                });
+                mergeAdviceBaseByWorkerId.set(w.id, {
+                  prLifecycleStatus: w.prLifecycleStatus ?? null,
+                  review: reviewFacts.review,
+                  reviewConfidence: reviewFacts.confidence,
+                  reviewHeadSha: reviewFacts.reviewHeadSha,
+                  githubApprovalRequired: humanReview.label === 'Approve on GitHub',
+                  draft: !!w.prIsDraft,
+                  policyTier: policy.tier,
+                });
+              }
               // Who owns the landing: one derivation, consumed by the gate. An
               // actual human review request is a different ask and is left alone.
               const landing = !humanReview && w.prNumber != null
@@ -1445,6 +1469,7 @@ export default async function HomePage({
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
                   prIsDraft: w.prIsDraft ?? null,
                   missionMergeBlockedReason: w.taskId ? missionPrGateMap.get(w.taskId) ?? null : null,
+                  missionPrRole: w.task ? missionPrRoleOf(w.task) : null,
                   reviewInFlight: w.taskId ? reviewInFlightByTaskId.get(w.taskId) ?? null : null,
                   prLifecycleUpdatedAt: w.updatedAt ?? null,
                 };
@@ -1702,6 +1727,9 @@ export default async function HomePage({
               inArray(workers.workspaceId, wsIds),
               eq(workers.status, 'waiting_input'),
               isNotNull(workers.waitingFor),
+              // Needs You admission, pre-filtered so undisposed or recovered
+              // parks cannot crowd admitted ones out of the limit.
+              sql`${workers.waitingFor}->>'disposition' in ('ask', 'hold')`,
             ),
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
@@ -1714,7 +1742,7 @@ export default async function HomePage({
           });
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
-            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input')) continue;
+            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -1830,10 +1858,12 @@ export default async function HomePage({
                 eq(missionNotes.status, 'open'),
               ),
               orderBy: desc(missionNotes.createdAt),
-              columns: { id: true, missionId: true, title: true, body: true },
+              columns: { id: true, missionId: true, title: true, body: true, type: true, authorType: true, disposition: true },
             });
             const noteByMission = new Map<string, typeof openNotes[number]>();
             for (const n of openNotes) {
+              // An agent's question note reaches a person only with disposition `ask`.
+              if (!admitsNoteToNeedsYou(n)) continue;
               if (n.missionId && !noteByMission.has(n.missionId)) noteByMission.set(n.missionId, n);
             }
             waitingOnYou.push(...buildDecideItems(escalatedMissions.map(m => {
@@ -1961,6 +1991,8 @@ export default async function HomePage({
           ...waitingOnYou.flatMap((w) => (w.kind === 'failed' && w.taskId ? [w.taskId] : [])),
         ]);
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys, deliveryViews });
+        // After the fold: a ship card's refresh-first dependency is one of the facts.
+        actionQueue = await attachMergeAdvice(actionQueue, mergeAdviceBaseByWorkerId);
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
@@ -2041,16 +2073,23 @@ export default async function HomePage({
             : [];
           teamName = teamRow?.name ?? null;
           teamTz = teamRow?.timezone ?? null;
-          fleetData = await loadHomeFleet({
-            teamId: activeTeamId ?? null,
-            wsIds,
-            now: renderNow,
-            dayStart: startOfDayInZone(renderNow, teamTz),
-            roles: new Map([...rolesMap].map(([slug, r]) => [slug, { name: r.name, color: r.color ?? null }])),
-          }).catch(err => {
-            console.error('[home] fleet load failed (non-fatal):', err);
-            return null;
-          });
+          [fleetData, occupancy] = await Promise.all([
+            loadHomeFleet({
+              teamId: activeTeamId ?? null,
+              wsIds,
+              now: renderNow,
+              dayStart: startOfDayInZone(renderNow, teamTz),
+              roles: new Map([...rolesMap].map(([slug, r]) => [slug, { name: r.name, color: r.color ?? null }])),
+            }).catch(err => {
+              console.error('[home] fleet load failed (non-fatal):', err);
+              return null;
+            }),
+            // The Agents live sparkline: the last day's busy slots, same scope as the fleet.
+            loadOccupancySeries(wsIds, '24h', renderNow).catch(err => {
+              console.error('[home] occupancy load failed (non-fatal):', err);
+              return null;
+            }),
+          ]);
           // Running cells in the missions rows fill to their worker's progress.
           const progressByTask = new Map<string, number>();
           for (const r of fleetData?.fleet.runners ?? []) for (const sl of r.slots) {
@@ -2232,6 +2271,7 @@ export default async function HomePage({
             prsInCi={stats?.prsInCi ?? []}
             selfHealed={stats?.selfHealed ?? 0}
             screensReviewed={shippedMissions[0]?.screens ?? null}
+            occupancy={occupancy}
           />
         )}
 

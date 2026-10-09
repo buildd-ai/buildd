@@ -3,7 +3,8 @@ import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { eq, or, and, isNull, inArray, ne } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { canSeeRole, findSharedSlugClash, isPersonalRole, mayEditPersonalRole, validatePersonalRoleConfig } from '@/lib/personal-roles';
+import { resolveRolesCaller } from '@/lib/roles-caller';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -19,7 +20,7 @@ function computeContentHash(content: string): string {
 }
 
 /** Find a role the user can access (team-level or workspace-scoped). */
-async function findAccessibleRole(roleId: string, userId: string) {
+async function findAccessibleRole(roleId: string, userId: string, bearerTeamId: string | null = null) {
   const [teamIds, wsIds] = await Promise.all([
     getUserTeamIds(userId),
     getUserWorkspaceIds(userId),
@@ -35,14 +36,23 @@ async function findAccessibleRole(roleId: string, userId: string) {
     ),
   });
 
-  return { role, teamIds, wsIds };
+  // Another member's private personal role is invisible, not forbidden. An
+  // OAuth session's bearer sees only its own team's roles.
+  const visible = role && canSeeRole(role, userId) && (bearerTeamId === null || role.teamId === bearerTeamId);
+  return { role: visible ? role : undefined, teamIds, wsIds };
 }
 
 /**
  * manage_agent_roles in the row's team, asked only when the row is a role or
  * is being made one. A plain skill stays writable by any member who can see it.
  */
-async function mayManageRole(userId: string, row: { teamId: string; isRole: boolean }, makesRole: unknown): Promise<boolean> {
+async function mayManageRole(
+  userId: string,
+  row: { id?: string; teamId: string; isRole: boolean; ownerUserId?: string | null; visibility?: string | null },
+  makesRole: unknown,
+): Promise<boolean> {
+  // A personal role: its owner, or manage_agent_roles once it is shared.
+  if (isPersonalRole(row)) return mayEditPersonalRole(userId, row);
   if (!row.isRole && makesRole !== true) return true;
   return can({ kind: 'user', userId }, 'manage_agent_roles', row.teamId);
 }
@@ -58,13 +68,12 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role } = await findAccessibleRole(id, user.id);
+    const { role } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!role) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }
@@ -84,13 +93,12 @@ export async function PATCH(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role: existing, wsIds } = await findAccessibleRole(id, user.id);
+    const { role: existing, wsIds } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!existing) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }
@@ -107,6 +115,16 @@ export async function PATCH(
     // Routing text (role-routing.md §2): validated, never truncated.
     const routing = parseRoutingPatch(body);
     if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
+
+    // A personal role stays team-level, owns no operator grant, and may use
+    // only its owner's secrets and connectors the team can use.
+    if (isPersonalRole(existing)) {
+      if ('workspaceId' in body) {
+        return NextResponse.json({ error: 'workspaceId: a personal role is always team-level and has no workspace overrides', field: 'workspaceId' }, { status: 400 });
+      }
+      const check = await validatePersonalRoleConfig({ teamId: existing.teamId, ownerUserId: existing.ownerUserId!, body });
+      if (!check.ok) return NextResponse.json({ error: check.error, field: check.field }, { status: 400 });
+    }
 
     // Agent capability grant (docs/specs/agent-capabilities.md): only a role
     // with a capability ceiling can hold one at all — writing it on any other
@@ -157,15 +175,9 @@ export async function PATCH(
     if ('workspaceId' in body) {
       const newWorkspaceId = body.workspaceId as string | null;
       if (newWorkspaceId === null) {
-        // Promoting to team-level: ensure no other team-level role with same slug
-        const conflict = await db.query.workspaceSkills.findFirst({
-          where: and(
-            eq(workspaceSkills.teamId, existing.teamId),
-            eq(workspaceSkills.slug, existing.slug),
-            isNull(workspaceSkills.workspaceId),
-            ne(workspaceSkills.id, id),
-          ),
-        });
+        // Promoting to team-level: ensure no other team role (or shared
+        // personal role) holds the slug. A private personal role does not count.
+        const conflict = await findSharedSlugClash({ teamId: existing.teamId, slug: existing.slug, excludeId: id });
         if (conflict) {
           return NextResponse.json(
             {
@@ -253,13 +265,12 @@ export async function DELETE(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role: existing } = await findAccessibleRole(id, user.id);
+    const { role: existing } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!existing) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }

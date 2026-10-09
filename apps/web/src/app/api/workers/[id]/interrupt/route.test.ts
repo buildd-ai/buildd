@@ -412,4 +412,45 @@ describe('POST /api/workers/[id]/interrupt', () => {
       expect(insertValues).toHaveBeenCalledTimes(1);
     });
   });
+
+  // Not an owner route: a dashboard member of the workspace takes over a
+  // reviewer whoever claimed it. It has no bearer path at all.
+  describe("— role path acts on another member's session-claimed worker", () => {
+    it('a dashboard user with workspace access interrupts a reviewer user-a claimed', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: REVIEWER_WORKER_ID, workspaceId: 'ws-1', taskId: 't-rev-1', status: 'running',
+        accountId: 'account-1', claimedByUserId: 'user-a',
+      });
+      mockTasksFindFirst
+        .mockResolvedValueOnce({ id: 't-rev-1', category: 'review', context: { reviewerFor: 't-original', prNumber: 42 } })
+        .mockResolvedValueOnce({ id: 't-original', missionId: null });
+      const db = (await import('@buildd/core/db')).db;
+      (db.update as any) = (table: any) => {
+        if (table === 'workers_table') return makeReturningUpdateChain([{ id: REVIEWER_WORKER_ID }]);
+        return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
+      };
+      (db.insert as any) = () => ({ values: mock(() => Promise.resolve()) });
+
+      const res = await POST(makeRequest(), { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
+
+      expect(res.status).toBe(200);
+      expect(mockGetUserWorkspaceIds).toHaveBeenCalledWith('user-b');
+    });
+
+    it('a bearer header without a cookie session is 401', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      const request = new NextRequest(`http://localhost/api/workers/${REVIEWER_WORKER_ID}/interrupt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer bld_admin' },
+        body: '{}',
+      });
+
+      const res = await POST(request, { params: Promise.resolve({ id: REVIEWER_WORKER_ID }) });
+
+      expect(res.status).toBe(401);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+  });
 });
