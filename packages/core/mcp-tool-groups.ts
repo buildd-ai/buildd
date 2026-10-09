@@ -272,9 +272,9 @@ export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[])
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {
-  manage_missions: 'list, create, edit, arm, delete; link tasks; criteria',
+  manage_missions: 'list, create, edit, arm, delete; tasks; criteria',
   manage_initiatives: 'initiatives: containers above missions',
-  link_tracker: 'link a mission to a Linear project or issue',
+  link_tracker: 'link mission to a Linear project/issue',
   get_visual_review: 'per-screen visual QA; workspaceId alone: missions awaiting review',
   list_discrepancies: 'spec vs code discrepancy rows',
   get_discrepancy: 'one discrepancy with its evidence',
@@ -291,8 +291,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
   explain: 'what blocks a task, mission, PR; evidence',
-  get_error_traces: 'errors caught from agent tool output',
-  get_failure_analytics: 'failure patterns; error= finds known',
+  get_error_traces: 'errors from tool output',
+  get_failure_analytics: 'failure patterns; error= finds one',
   list_incidents: 'failure incidents',
   dispatch_health: 'task delivery: verdict, outbox, latency',
   get_budget_forecast: 'session pressure, budget burn',
