@@ -15,7 +15,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { EffectSpec } from './commands';
-import { PUSH_RECOVERY_BACKOFF_MS } from './reducer';
+import { currentPushEntry, PUSH_RECOVERY_BACKOFF_MS, pushChainId } from './reducer';
 import type { KernelView, RoundSnapshot } from './types';
 
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
@@ -78,7 +78,8 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       // head this sweep reads, so a chain under another L still counts). A key whose status the
       // caller did not read counts as live.
       const local = view.attempts.find((a) => a.id === d.boundAttemptId)?.reportedShas.at(-1) ?? d.pushPendingLocalHead ?? null;
-      const prefix = `push_recovery:${d.id}:${local ?? 'none'}:`;
+      // The chain of this visit (10658a4c): a later visit at the same L is its own chain.
+      const prefix = `push_recovery:${d.id}:${pushChainId(local, currentPushEntry(d))}:`;
       const tries = [...existing].filter((k) => k.startsWith(`push_recovery:${d.id}:`));
       if (tries.some((k) => !status.has(k) || isLive(k))) break;
       const chain = tries.filter((k) => k.startsWith(prefix));
