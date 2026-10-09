@@ -35,9 +35,9 @@ describe('SlotMeter', () => {
   });
 });
 
-describe('missions header slots chip', () => {
-  const src = readFileSync(join(import.meta.dir, '../../app/app/(protected)/missions/page.tsx'), 'utf8');
-  const chip = src.slice(src.indexOf('data-testid="missions-slots"'), src.indexOf('<SetUpChatNudge'));
+describe('missions agent-slots counter', () => {
+  const src = readFileSync(join(import.meta.dir, '../../app/app/(protected)/missions/MissionGrid.tsx'), 'utf8');
+  const chip = src.slice(src.indexOf('data-testid="missions-slots"'), src.indexOf('agent slots</div>'));
 
   it('never wraps the live/capacity label', () => {
     expect(chip).toContain('whitespace-nowrap');

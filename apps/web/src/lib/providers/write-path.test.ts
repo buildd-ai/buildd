@@ -13,10 +13,10 @@ const read = (rel: string) => readFileSync(join(API, rel), 'utf8');
 
 const ADAPTERS: Record<string, { uses: string[]; never: string[] }> = {
   'providers/route.ts': { uses: ['@/lib/providers/credentials'], never: ['replaceScoped', 'setProviderKey', 'setTeamGateway', 'setTeamAgentEndpoint'] },
-  'inference-keys/route.ts': { uses: ['writeChatKey', 'removeChatKey'], never: ['setProviderKey', 'deleteProviderKey'] },
+  'inference-keys/route.ts': { uses: ['writeChatKey', 'writeTeamChatKey', 'removeChatKey', 'sharedWritePermissions'], never: ['setProviderKey', 'deleteProviderKey', 'requeueAuthFailedTasks'] },
   'teams/[id]/litellm-gateway/route.ts': { uses: ['writeGateway', 'removeGateway'], never: ['setTeamGateway', 'deleteTeamGateway'] },
   'teams/[id]/agent-endpoint/route.ts': { uses: ['writeAgentEndpoint', 'removeAgentEndpoint'], never: ['setTeamAgentEndpoint', 'deleteTeamAgentEndpoint'] },
-  'secrets/route.ts': { uses: ['writeSharedSecret', 'MODEL_PURPOSES.has(purpose)'], never: ['requeueAuthFailedTasks'] },
+  'secrets/route.ts': { uses: ['writeSharedSecret', 'MODEL_PURPOSES.has(purpose)', 'sharedWritePermissions', 'sharedKeyPrefixRefusal'], never: ['requeueAuthFailedTasks', 'REQUIRED_PREFIX'] },
 };
 
 describe('model credential writes go through @/lib/providers/write-path', () => {

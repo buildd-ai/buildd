@@ -3,9 +3,11 @@ import { PROVIDER_IDS, PROVIDER_REGISTRY, SURFACES, providerDescriptor } from '.
 import {
   modelCredentialPurposes,
   providerShape,
+  requiredKeyPrefix,
   rowProvider,
   scopeRefusal,
   storageServes,
+  storedWritePermissions,
   surfaceRefusal,
   writePermission,
   writePermissions,
@@ -153,5 +155,53 @@ describe('rowProvider', () => {
     const all = modelCredentialPurposes();
     for (const p of PROVIDER_REGISTRY) for (const s of p.shapes) for (const st of [s.storage, ...s.legacy]) expect(all).toContain(st.purpose);
     expect(all).not.toContain('mcp_credential');
+  });
+});
+
+describe('storedWritePermissions: a raw purpose + label gets the /api/providers rule', () => {
+  it('an Anthropic or OpenAI key in canonical storage needs both permissions, whatever the label case', () => {
+    for (const label of ['anthropic', 'openai', 'Anthropic']) {
+      expect(storedWritePermissions({ purpose: 'inference_key', label })).toEqual(['manage_team_model_keys', 'manage_team_credentials']);
+    }
+  });
+
+  it('agrees with writePermissions for every API key and seat token storage in the registry', () => {
+    for (const p of PROVIDER_REGISTRY) {
+      for (const s of p.shapes) {
+        if (s.id === 'gateway' || s.id === 'endpoint') continue;
+        for (const st of [s.storage, ...s.legacy]) {
+          expect(storedWritePermissions({ purpose: st.purpose, label: st.label ?? null })).toEqual(writePermissions(s, st));
+        }
+      }
+    }
+  });
+
+  it("keeps each other storage at its own route's permission", () => {
+    expect(storedWritePermissions({ purpose: 'inference_key', label: 'openrouter' })).toEqual(['manage_team_model_keys']);
+    expect(storedWritePermissions({ purpose: 'decision_key' })).toEqual(['manage_team_model_keys']);
+    expect(storedWritePermissions({ purpose: 'anthropic_api_key' })).toEqual(['manage_team_credentials']);
+    expect(storedWritePermissions({ purpose: 'oauth_token' })).toEqual(['manage_team_credentials']);
+  });
+
+  it("is null for a gateway, an unknown label and a non-model secret, which keep the route's own rule", () => {
+    expect(storedWritePermissions({ purpose: 'inference_key', label: 'litellm' })).toBeNull();
+    expect(storedWritePermissions({ purpose: 'inference_key', label: 'nobody' })).toBeNull();
+    expect(storedWritePermissions({ purpose: 'mcp_credential', label: 'X' })).toBeNull();
+  });
+});
+
+describe('requiredKeyPrefix', () => {
+  it('a key agent runs read keeps its legacy alias prefix, so a pasted seat token is refused', () => {
+    expect(requiredKeyPrefix({ purpose: 'inference_key', label: 'anthropic' })).toBe('sk-ant-api');
+    expect(requiredKeyPrefix({ purpose: 'anthropic_api_key' })).toBe('sk-ant-api');
+    expect(requiredKeyPrefix({ purpose: 'inference_key', label: 'openai' })).toBe('sk-');
+    expect(requiredKeyPrefix({ purpose: 'openai_api_key' })).toBe('sk-');
+    expect(requiredKeyPrefix({ purpose: 'oauth_token' })).toBe('sk-ant-oat');
+  });
+
+  it('a chat-only key and a gateway key have none', () => {
+    expect(requiredKeyPrefix({ purpose: 'inference_key', label: 'openrouter' })).toBeUndefined();
+    expect(requiredKeyPrefix({ purpose: 'inference_key', label: 'litellm' })).toBeUndefined();
+    expect(requiredKeyPrefix({ purpose: 'mcp_credential' })).toBeUndefined();
   });
 });

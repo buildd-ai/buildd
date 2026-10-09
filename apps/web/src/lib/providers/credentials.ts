@@ -37,6 +37,7 @@ import {
   rowProvider,
   scopeRefusal,
   servedSurfaces,
+  shapeWritesTo,
   storageServes,
   surfaceRefusal,
   writePermissions,
@@ -53,17 +54,19 @@ import type {
   ProviderRefusal,
   ProviderShapeListing,
 } from '@buildd/shared';
-import { agentKeyPurposes } from '@buildd/core/providers/agent-keys';
 import {
   removeAgentEndpoint,
   removeChatKey,
   removeGateway,
   requeueAfterAgentCredential,
+  sanitizeKey,
+  sharedKeyPrefixRefusal,
   verifyApiKey,
   writeAgentEndpoint,
   writeChatKey,
   writeGateway,
   writeSharedSecret,
+  writeTeamChatKey,
 } from './write-path';
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
@@ -206,13 +209,7 @@ function summarizeAll(rows: Row[]): ProviderCredentialSummary[] {
 // ── Listing ──────────────────────────────────────────────────────────────────
 
 function shapeListing(p: ProviderDescriptor, shape: CredentialShape): ProviderShapeListing {
-  const writesTo = {} as ProviderShapeListing['writesTo'];
-  for (const scope of PROVIDER_API_SCOPES) {
-    if (scopeRefusal(p.id, scope)) { writesTo[scope] = null; continue; }
-    const st = writeStorage(p.id, shape, scope);
-    writesTo[scope] = { purpose: st.purpose, label: st.label ?? null };
-  }
-  return { id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo };
+  return { id: shape.id, refreshes: shape.refreshes, connectInBrowser: shape.id === 'oauth_managed', writesTo: shapeWritesTo(p.id, shape) };
 }
 
 export function providerListing(
@@ -351,34 +348,6 @@ export type WriteResult =
   | { ok: true; credentials: ProviderCredentialSummary[]; requeued?: number }
   | { ok: false; status: number; error: string };
 
-/** Trim, and strip one pair of wrapping quotes (pasted keys often carry them). */
-function sanitize(raw: string): string {
-  let v = raw.trim();
-  if (v.length >= 2 && ((v[0] === '"' && v.at(-1) === '"') || (v[0] === "'" && v.at(-1) === "'"))) v = v.slice(1, -1).trim();
-  return v;
-}
-
-/** Prefixes the legacy agent purposes have always required (/api/secrets). */
-const REQUIRED_PREFIX: Record<string, string> = {
-  oauth_token: 'sk-ant-oat',
-  anthropic_api_key: 'sk-ant-api',
-  openai_api_key: 'sk-',
-};
-
-/**
- * The prefix a team or workspace key must have. A canonical Anthropic or
- * OpenAI key is read by agent runs too (provider parity), so it keeps the
- * prefix its legacy alias always required: the form that used to write
- * `anthropic_api_key` refused a pasted seat token, and still does.
- */
-function requiredPrefix(provider: ProviderId, storage: CredentialStorage): string | undefined {
-  const own = REQUIRED_PREFIX[storage.purpose];
-  if (own) return own;
-  if (provider !== 'anthropic' && provider !== 'openai') return undefined;
-  if (!storageServes(providerDescriptor(provider), storage).some(s => s !== 'chat')) return undefined;
-  return REQUIRED_PREFIX[agentKeyPurposes(provider).find(p => p !== storage.purpose) ?? ''];
-}
-
 /** Route (chat key provider) of an API-key provider. */
 function chatProviderOf(provider: ProviderId): ChatProvider | null {
   const route = providerDescriptor(provider).route;
@@ -397,10 +366,10 @@ async function workspaceInTeam(teamId: string, workspaceId: string): Promise<boo
 async function writeSharedKey(input: {
   teamId: string; workspaceId: string | null; provider: ProviderId; storage: CredentialStorage; value: string;
 }): Promise<{ ok: true; requeued: number } | { ok: false; status: number; error: string }> {
-  const value = sanitize(input.value);
+  const value = sanitizeKey(input.value);
   if (!value || /\s/.test(value)) return { ok: false, status: 400, error: 'That doesn\'t look like a key.' };
-  const prefix = requiredPrefix(input.provider, input.storage);
-  if (prefix && !value.startsWith(prefix)) return { ok: false, status: 400, error: `Token must start with ${prefix}…` };
+  const prefixRefusal = sharedKeyPrefixRefusal(input.storage.purpose, input.storage.label, value);
+  if (prefixRefusal) return { ok: false, status: 400, error: prefixRefusal };
 
   // API keys are checked with the provider before they are stored, like the chat key form.
   const chat = chatProviderOf(input.provider);
@@ -461,17 +430,16 @@ export async function setProviderCredential(input: {
       if (!value || !value.trim()) return { ok: false, status: 400, error: 'value is required' };
       const chat = chatProviderOf(plan.provider);
       const chatKey = chat && plan.storage.purpose === 'inference_key' && plan.storage.label === chat && !workspaceId;
-      if (chatKey) {
-        if (plan.scope === 'team') {
-          const prefix = requiredPrefix(plan.provider, plan.storage);
-          const clean = sanitize(value);
-          if (prefix && !clean.startsWith(prefix)) return { ok: false, status: 400, error: `Token must start with ${prefix}…` };
-        }
-        // The chat key's own function: policy check for a personal key, verify-before-store.
-        const r = await writeChatKey({ teamId, userId: input.userId ?? '', provider: chat!, scope: plan.scope === 'mine' ? 'user' : 'team', value });
+      if (chatKey && plan.scope === 'team') {
+        // The team chat key, by the same function /api/inference-keys uses:
+        // prefix check for a key agent runs read, verify-before-store, re-queue.
+        const r = await writeTeamChatKey({ teamId, userId: input.userId ?? '', provider: chat!, value });
         if (!r.ok) return r;
-        // A team key agent runs read: put tasks that failed on the old one back.
-        if (plan.scope === 'team') requeued = await requeueAfterAgentCredential(teamId, plan.storage.purpose, plan.storage.label);
+        requeued = r.requeued;
+      } else if (chatKey) {
+        // A personal chat key: the chat key's own function, with its policy check.
+        const r = await writeChatKey({ teamId, userId: input.userId ?? '', provider: chat!, scope: 'user', value });
+        if (!r.ok) return r;
       } else {
         const r = await writeSharedKey({ teamId, workspaceId, provider: plan.provider, storage: plan.storage, value });
         if (!r.ok) return r;

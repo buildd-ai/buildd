@@ -390,14 +390,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes),
+      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes, { principal, orchestrationTaskToken }),
     }
   );
 
   // ── Tools ────────────────────────────────────────────────────────────────
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface, scopes: tokenScopes }),
+    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface, scopes: tokenScopes, principal, orchestrationTaskToken }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -409,7 +409,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       // action of the group then runs exactly as it does on `buildd`.
       const group = mcpGroupOfToolName(name);
       if (group) {
-        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel, tokenScopes);
+        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel, tokenScopes, { principal, orchestrationTaskToken });
         if (routed.kind === 'reply') {
           return { content: [{ type: "text" as const, text: routed.text }], ...(routed.isError ? { isError: true } : {}) };
         }
