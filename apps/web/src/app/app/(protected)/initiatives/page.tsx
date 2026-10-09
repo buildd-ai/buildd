@@ -7,16 +7,18 @@ import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { loadInitiativeCards } from '@/lib/initiative-cards';
-import { groupInitiativeCards, initiativesHeadline } from '@/lib/initiative-view';
+import { groupInitiativeCards, initiativesCountLine } from '@/lib/initiative-view';
 import { InitiativeList } from './InitiativeList';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * The Initiatives list (docs/specs/initiatives.md). One card per initiative:
- * the status a person set, owner, target date, a bar with one segment per
+ * The Initiatives list (docs/specs/initiatives.md). One L1 row per initiative:
+ * the status a person set, owner, target date, a small strip with one cell per
  * mission, and whatever its missions need from you. Scoped to the active team,
- * like the Missions tab.
+ * like the Missions tab, and headed the way Missions is: a sans h1 (hidden on
+ * phones, where the shell header names the page), one count line, a small
+ * "+ New".
  */
 export default async function InitiativesListPage() {
   const user = await getCurrentUser();
@@ -37,52 +39,39 @@ export default async function InitiativesListPage() {
   const cards = loaded.map((l) => l.card);
   const teamName = teamRows[0]?.name ?? null;
 
-  if (cards.length === 0) {
-    return (
-      <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-[1180px]">
-        <div className="card p-8 text-center max-w-md mx-auto mt-10">
-          <p className="text-sm text-text-secondary mb-4">No initiatives.</p>
-          <Link
-            href="/app/initiatives/new"
-            className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:min-h-9"
-          >
-            + New initiative
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
   const groups = groupInitiativeCards(cards);
-  const count = (s: string) => cards.filter((c) => c.section === s).length;
-  const headline = initiativesHeadline({ needsYou: count('needs_you'), active: count('active') });
-  const summary = groups
-    .filter((g) => g.section !== 'needs_you')
-    .map((g) => `${g.cards.length} ${g.label.toLowerCase()}`)
-    .join(' · ');
+  const countLine = initiativesCountLine(groups);
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
-      <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+      <div className="mb-5 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <div className="section-label hidden text-text-muted md:block">
-            Initiatives{teamName ? ` · ${teamName}` : ''}
-          </div>
-          <h1 data-testid="initiatives-headline" className="mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
-            {headline}
+          {teamName && <div className="hidden text-meta text-text-muted md:block">{teamName}</div>}
+          {/* The mobile header already reads "Initiatives"; show the h1 from md up only. */}
+          <h1 data-testid="initiatives-headline" className="sr-only md:not-sr-only text-xl font-semibold text-text-primary">
+            Initiatives
           </h1>
-          {summary && <p className="mt-1 font-mono text-[12px] text-text-muted">{summary}</p>}
+          {countLine.length > 0 && (
+            <p data-testid="initiatives-count" className="font-mono text-meta text-text-muted md:mt-1">
+              {countLine.map((part, i) => (
+                <span key={part.text}>
+                  {i > 0 && ' · '}
+                  <span className={part.needsYou ? 'text-accent-text' : undefined}>{part.text}</span>
+                </span>
+              ))}
+            </p>
+          )}
         </div>
-        <Link
-          href="/app/initiatives/new"
-          data-testid="new-initiative-link"
-          className="inline-flex min-h-11 items-center self-start border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9 md:self-auto"
-        >
-          + New initiative
+        <Link href="/app/initiatives/new" data-testid="new-initiative-link" className="btn h-11 shrink-0 md:h-8">
+          + New
         </Link>
       </div>
 
-      <InitiativeList groups={groups} />
+      {cards.length === 0 ? (
+        <p className="text-body text-text-secondary">No initiatives yet. An initiative groups the missions behind one goal.</p>
+      ) : (
+        <InitiativeList groups={groups} />
+      )}
     </div>
   );
 }
