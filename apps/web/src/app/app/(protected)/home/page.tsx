@@ -1030,6 +1030,7 @@ export default async function HomePage({
                 currentHeadSha: w.lastCommitSha ?? null,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
                 hasEscalationNote: escalationNoteTaskIds.has(w.taskId),
+                recommendation: reviewerRecommendationMap.get(w.taskId) ?? null,
                 policyTier: policy.tier,
                 github: githubApprovalByWorkerId.get(w.id) ?? null,
               });
