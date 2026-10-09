@@ -322,6 +322,15 @@ person the task is for.
 - Writing a team- or workspace-wide credential needs `manage_team_credentials`
   (`manage_team_model_keys` for the team model key); a member writes only
   their own personal keys.
+- A key agent runs read that is also a chat key (an Anthropic or OpenAI key in
+  canonical `inference_key` storage) needs both `manage_team_model_keys` and
+  `manage_team_credentials`, on every route that writes or removes it
+  (`/api/providers`, `/api/secrets`, `/api/inference-keys`, MCP
+  `manage_providers`). Each applies the API-key prefix (a pasted subscription
+  token is refused) and re-queues auth-failed tasks once it is stored. The rule
+  is `storedWritePermissions` / `writePermissions` in
+  `packages/core/providers/manage.ts`; the Providers page reads it from
+  `GET /api/providers` (`writesTo[scope].permissions`).
 
 Storage, delivery and the per-policy table: `docs/credentials-architecture.md`
 → "Personal keys on agent runs".
@@ -402,9 +411,11 @@ session-only or rejects keys. Line numbers are as of this spec's
 
 | Site | Gates | Session | Key | Permission |
 |---|---|---|---|---|
-| `apps/web/src/app/api/secrets/route.ts:115` | team model key, decision key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
-| `apps/web/src/app/api/secrets/route.ts:115` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
-| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace provider credential stored as a chat key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:112` | team model key, decision key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/secrets/route.ts:112` | an Anthropic or OpenAI key in canonical storage (`inference_key` + provider label; agent runs read it) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
+| `apps/web/src/app/api/secrets/route.ts:112` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
+| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace provider credential stored as a chat-only key (`inference_key`, `decision_key`) | owner, admin, personal team | admin | `manage_team_model_keys` |
+| `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace Anthropic or OpenAI key (canonical storage, read by chat and agent runs) | owner, admin, personal team | admin | `manage_team_model_keys` and `manage_team_credentials` |
 | `apps/web/src/app/api/providers/route.ts:73` | set/delete a team or workspace agent credential (`anthropic_api_key`, `openai_api_key`, `oauth_token`) | owner, admin, personal team | admin | `manage_team_credentials` |
 | `apps/web/src/app/api/providers/route.ts:73` | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/providers/route.ts:207` | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
@@ -412,7 +423,8 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:39` | UI: runner credentials | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/app/(protected)/settings/runners/page.tsx:40` | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
 | `apps/web/src/app/app/(protected)/settings/github/page.tsx:20` | UI: Vercel and other team credentials | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/api/inference-keys/route.ts:40` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope chat-only inference keys (OpenRouter) | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope Anthropic or OpenAI key (agent runs read it) | owner, admin, personal team | — | `manage_team_model_keys` and `manage_team_credentials` |
 | `apps/web/src/app/api/inference-keys/verify/route.ts:31` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:38` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts:41` | finish OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
