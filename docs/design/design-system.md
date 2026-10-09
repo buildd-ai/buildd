@@ -348,8 +348,7 @@ styles are recorded in §2.7; new composition follows §1.1.
 `HeartbeatStatusBadge` and `ReleaseSection`'s local badges now render
 `StatePill`; `Chip` stays for tags that are not a state.
 
-Later candidates (not the next task's scope): `StatusChip.tsx` (merge-policy
-tier), `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
+Later candidates (not the next task's scope): `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
 `.status-pill` classes themselves.
 
 ### StatePill and the state table

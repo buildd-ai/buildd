@@ -13,6 +13,7 @@ import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
 import MemberRepoAccessNotice from '@/components/MemberRepoAccessNotice';
 import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export const dynamic = 'force-dynamic';
 
@@ -164,7 +165,7 @@ export default async function ArtifactDetailPage({
               href={`/app/tasks/${taskId}`}
               className="text-sm text-text-muted hover:text-text-secondary mt-1 inline-block"
             >
-              Task: {taskTitle}
+              Task: {displayTaskTitle(taskTitle)}
             </Link>
           )}
         </div>

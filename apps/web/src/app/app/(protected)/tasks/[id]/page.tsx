@@ -91,6 +91,7 @@ import WorkerSteerPanel from './WorkerSteerPanel';
 import { HeaderStatusPill, FactSheet, AlsoRunning, AlsoRunningCompact, SideDescription, type FactRow, type PeerTask } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
 import { taskHeading } from './task-header';
+import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
 import { buildLineage } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
@@ -1013,7 +1014,7 @@ export default async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{dep.title}</Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{displayTaskTitle(dep.title)}</Link>
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1332,7 +1333,7 @@ export default async function TaskDetailPage({
             )}
             {/* Mobile shows only the back link — the title is the h1 right below. */}
             <span className="mx-2 hidden md:inline" aria-hidden="true">/</span>
-            <span className="text-text-primary hidden md:inline">{task.title}</span>
+            <span className="text-text-primary hidden md:inline" title={task.title}>{displayTaskTitle(task.title)}</span>
           </nav>
         )}
 
@@ -1571,8 +1572,8 @@ export default async function TaskDetailPage({
                       >
                         {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
-                      <span className="text-[12px] text-text-muted">
-                        {dep.title}
+                      <span className="text-[12px] text-text-muted" title={dep.title}>
+                        {displayTaskTitle(dep.title)}
                       </span>
                     </div>
                   );
@@ -1583,7 +1584,7 @@ export default async function TaskDetailPage({
                       href={taskPageHref({ taskId: dep.id })}
                       className="text-sm text-text-secondary hover:underline"
                     >
-                      {dep.title}
+                      {displayTaskTitle(dep.title)}
                     </Link>
                     <StatusPill status={deriveDisplayStatus(dep.status)} />
                   </div>
@@ -1655,7 +1656,7 @@ export default async function TaskDetailPage({
         {/* Agent errors: every captured trace, sorted by what it means for the
             outcome (needs attention / unclear / recovered / exploration noise).
             Any row opens the complete redacted evidence. */}
-        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={task.title} terminalSucceeded={terminalSucceeded} />
+        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} />
 
         {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
         {planChain.length > 0 ? (
@@ -1673,7 +1674,7 @@ export default async function TaskDetailPage({
                     href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
                     className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                   >
-                    {task.parentTask.title}
+                    {displayTaskTitle(task.parentTask.title)}
                   </Link>
                   <StatusPill status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
@@ -1691,7 +1692,7 @@ export default async function TaskDetailPage({
                           href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
                           className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                         >
-                          {sub.title}
+                          {displayTaskTitle(sub.title)}
                         </Link>
                         <StatusPill status={deriveDisplayStatus(sub.status)} />
                       </div>
@@ -1897,7 +1898,7 @@ export default async function TaskDetailPage({
             className="group mb-8 flex items-center gap-3 p-4 border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
           >
             <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
-            <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
+            <span className="text-sm font-medium text-text-primary truncate flex-1">{displayTaskTitle(nextChainTask.title)}</span>
             <StatusPill status={deriveDisplayStatus(nextChainTask.status)} />
             <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
           </Link>
@@ -2105,7 +2106,7 @@ export default async function TaskDetailPage({
                   <li key={d.id} className="border-b border-border-default">
                     <Link href={taskPageHref({ taskId: d.id, missionId: task.missionId })} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
                       <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
-                      <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{d.title}</span>
+                      <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{displayTaskTitle(d.title)}</span>
                       <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
                         {d.status === 'pending' ? 'queued' : d.status === 'in_progress' || d.status === 'assigned' ? 'claimed' : d.status}
                       </span>
