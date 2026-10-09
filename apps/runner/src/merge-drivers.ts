@@ -388,6 +388,24 @@ export function canFinishWithoutAgent(result: DerivedMergeResult): boolean {
   return result.status === 'merged' && result.structurallyResolved.length === 0;
 }
 
+/**
+ * One line per pre-merge, for the worker's milestones (which reach the
+ * server). Always starts "Pre-merge:" and names any file mergiraf resolved, so
+ * a report can count outcomes and structural resolutions from task records.
+ */
+export function formatPreMergeMilestone(result: DerivedMergeResult): string {
+  const mergiraf = result.structurallyResolved.length
+    ? `; mergiraf resolved ${result.structurallyResolved.length}: ${result.structurallyResolved.join(', ')}`
+    : '';
+  const regen = result.regenerated.length ? `; regenerated ${result.regenerated.length} derived file command(s)` : '';
+  switch (result.status) {
+    case 'merged': return `Pre-merge: base merged by the runner${regen}${mergiraf}`;
+    case 'conflicts': return `Pre-merge: ${result.conflicted.length} file(s) left for the agent${mergiraf}`;
+    case 'up_to_date': return 'Pre-merge: already up to date with the base';
+    default: return `Pre-merge: failed, agent merges instead (${(result.error ?? 'unknown error').split('\n')[0].slice(0, 160)})`;
+  }
+}
+
 /** The prompt section telling the agent what the runner already did. Null when there is nothing to say. */
 export function formatDerivedMergeNote(result: DerivedMergeResult, baseRef: string): string | null {
   if (result.status === 'merged') {
