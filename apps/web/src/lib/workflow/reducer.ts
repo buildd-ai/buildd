@@ -1312,7 +1312,7 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return unbound();
   const L = cmd.localHeadSha;
   const live = cmd.live;
-  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live };
+  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live, ...(cmd.ci ? { liveChecks: cmd.ci.liveChecks } : {}) };
 
   if (d.state === 'WORKING') {
     if (cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
@@ -1328,6 +1328,12 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
       if (d.policyEvidence && d.policyEvidence.headSha === h) {
         return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+      }
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
+      // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
+      // live read shows red goes to REPAIRING(ci) through T10's ledger, never to a reviewer.
+      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.decidedAt(h) && !c.openAttempt(['ci'])) {
+        return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
       }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
@@ -1470,6 +1476,36 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     attempts: [end('failed'), { op: 'insert', id, family: a.family, attemptNo: n, mode: a.mode, boundHeadSha: a.boundHeadSha, triggerReason: a.triggerReason, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
     effects: [{ kind, dedupeKey: `${kind}:${d.id}:${a.boundHeadSha}:${a.mode}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: a.boundHeadSha, signature: a.triggerReason } }],
     evidence,
+  });
+}
+
+/**
+ * §6.5 row 1 with a red head (e9f1674b): T10's outcome, taken by the owner's hand-off.
+ * The same ledger row, dispatch key and exhaustion as T10, under the hand-off's own key.
+ * No round is started: resuming from the repair starts one (resumeAfterRepair, T11).
+ */
+function ciRepairAtHandOff(
+  c: Ctx, key: string, h: string, ci: NonNullable<Extract<Command, { type: 'AttemptEnded' }>['ci']>,
+  patch: DeliveryPatch, evidence: Record<string, unknown>,
+): Decision {
+  const d = c.d!;
+  const ciPatch: DeliveryPatch = { ...patch, currentHeadSha: h, ci: 'red', ciHeadSha: h };
+  const ev = { ...evidence, signature: ci.signature };
+  const { spent, max } = c.budget('ci', ci.maxAttempts);
+  if (spent >= max) {
+    return c.apply(key, 'ESCALATED', {
+      patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:${h}`, payload: { family: 'ci', attempts: spent, max, headSha: h, signature: ci.signature } }],
+      evidence: { ...ev, spent, max },
+    });
+  }
+  const n = c.nextNo('ci', 'agent');
+  const id = c.newId();
+  return c.apply(key, 'REPAIRING', {
+    patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
+    attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: h, triggerReason: ci.signature, triggerFactId: null, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
+    effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${d.id}:${h}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: h, signature: ci.signature, trigger: 'automatic' } }],
+    evidence: { ...ev, attemptNo: n, spent: spent + 1, max },
   });
 }
 

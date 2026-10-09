@@ -717,6 +717,11 @@ export const REGRESSIONS: Array<{ name: string; spec: RunSpec; skip?: string }> 
     name: 'a stale CI-failure hint does not leave APPROVED while CI is green',
     spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [owner(), { t: 'ci', ok: false }, { t: 'ci', ok: true }, { t: 'verdict', v: 'approve', oldest: false }] },
   },
+  {
+    // e9f1674b: the failure hint lands while WORKING (refused there); the owner's hand-off acts on it.
+    name: 'a CI failure during the owner run is repaired when the run ends',
+    spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [{ t: 'ci', ok: false }, { t: 'deliver' }, owner(), { t: 'drain' }] },
+  },
 ];
 
 // ── Suite ───────────────────────────────────────────────────────────────────
