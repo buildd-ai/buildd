@@ -39,6 +39,11 @@ describe('copy', () => {
     expect(homeHeadlineSentence(0)).toBe('All clear. Nothing needs you.');
     expect(homeSubline(0, 0)).toBe('No other action needed.');
     expect(homeSubline(0, 1)).toBe('1 automatic repair is running.');
+    expect(homeSubline(2, 3)).toBe('3 automatic repairs are running.');
+  });
+  // The voice review flagged "Everything else is moving on its own." as narration.
+  test('the sub-line with decisions open is the same plain line', () => {
+    expect(homeSubline(2, 0)).toBe('No other action needed.');
   });
   test('elapsed', () => {
     expect(elapsedLabel(38 * 60_000)).toBe('38m');
