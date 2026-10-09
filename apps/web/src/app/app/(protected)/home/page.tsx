@@ -36,6 +36,7 @@ import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
+import { agentReviewsDataMigrations } from '@buildd/shared';
 import { ESCALATION_GATE_READ_DEPS } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
@@ -1369,6 +1370,7 @@ export default async function HomePage({
                       draft: e.prIsDraft,
                       linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
                       reviewedHeadSha: e.approvedSha,
+                      agentReviewsDataMigrations: agentReviewsDataMigrations((ws as { gitConfig?: { mergePolicy?: unknown } | null }).gitConfig?.mergePolicy),
                     }),
                   }];
                 });
