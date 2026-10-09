@@ -41,8 +41,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
-import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
-import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
@@ -1033,14 +1032,7 @@ async function handlePullRequestEvent(event: {
   // branches (e.g. dev → main) and would incorrectly notify workers on the
   // source branch about changes to the dest branch.
   if (pr.merged && pr.base?.ref && event.installation) {
-    const workspace = await db.query.workspaces.findFirst({
-      where: workspaceRepoMatches(repository.full_name),
-      columns: { id: true, releaseConfig: true },
-    });
-    const isReleasePr = workspace && isReleaseBranchPr(workspace.releaseConfig, {
-      headRef: pr.head.ref,
-      baseRef: pr.base.ref,
-    });
+    const isReleasePr = await isReleaseRollupPr(repository.full_name, pr.head.ref, pr.base.ref);
 
     if (!isReleasePr) {
       const installationId = event.installation.id;

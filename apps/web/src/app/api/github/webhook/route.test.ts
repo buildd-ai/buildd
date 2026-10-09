@@ -83,7 +83,9 @@ mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts })
 const mockRunBaseAdvanceNotice = mock((_input: any, _resolver: any) => Promise.resolve({ notified: [], debounced: [] }));
 const mockChangedFilesForPr = mock((_i: number, _r: string, _n: number) => Promise.resolve(['apps/web/src/lib/foo.ts']));
 const mockChangedFilesForCompare = mock((_i: number, _r: string, _b: string, _a: string) => Promise.resolve(['from/compare.ts']));
+const mockIsReleaseRollupPr = mock((_repo: string, _head: string, _base: string) => Promise.resolve(false));
 mock.module('@/lib/base-advance-notice-store', () => ({
+  isReleaseRollupPr: mockIsReleaseRollupPr,
   runBaseAdvanceNotice: mockRunBaseAdvanceNotice,
   changedFilesForPr: mockChangedFilesForPr,
   changedFilesForCompare: mockChangedFilesForCompare,
@@ -324,9 +326,6 @@ mock.module('@buildd/core/release-strategy', () => ({
   // Mirrors the real module: the trigger default lives in ONE place.
   resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
-  isReleaseBranchPr: (c: any, r: any) =>
-    !!c?.enabled && !!c.releaseBranch?.trim() && !!c.prodBranch?.trim() &&
-    r.headRef?.trim() === c.releaseBranch.trim() && r.baseRef?.trim() === c.prodBranch.trim(),
 }));
 
 /**
@@ -6808,15 +6807,7 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
     });
 
     it('a release PR merge does not trigger base-advance notice (no cross-branch notifications)', async () => {
-      mockWorkspacesFindFirst.mockReturnValue({
-        id: 'ws-release',
-        releaseConfig: {
-          enabled: true,
-          strategy: 'branch_merge',
-          releaseBranch: 'dev',
-          prodBranch: 'main',
-        },
-      });
+      mockIsReleaseRollupPr.mockResolvedValueOnce(true);
       await POST(createWebhookRequest('pull_request', {
         action: 'closed',
         pull_request: {
@@ -6832,16 +6823,8 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       expect(mockChangedFilesForPr).not.toHaveBeenCalled();
     });
 
-    it('an ordinary merge still notifies when the workspace has a release config', async () => {
-      mockWorkspacesFindFirst.mockReturnValue({
-        id: 'ws-release',
-        releaseConfig: {
-          enabled: true,
-          strategy: 'branch_merge',
-          releaseBranch: 'dev',
-          prodBranch: 'main',
-        },
-      });
+    it('an ordinary merge still notifies when the release check is false', async () => {
+      mockIsReleaseRollupPr.mockResolvedValueOnce(false);
       await POST(createWebhookRequest('pull_request', {
         action: 'closed',
         pull_request: {
