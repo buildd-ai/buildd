@@ -1,5 +1,5 @@
 /**
- * UserAvatarMenu, TeamSwitcher and TeamSwitcherRail, mounted (happy-dom).
+ * UserAvatarMenu, TeamSwitcher and ScopeSwitcher, mounted (happy-dom).
  *
  * All three announced `aria-haspopup="menu"` but their items were plain links
  * and buttons with no menuitem role and no arrow-key handling, so a screen
@@ -20,12 +20,17 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 mock.module('next-auth/react', () => ({ signOut: () => {} }));
 const switched: string[] = [];
 mock.module('@/lib/switch-team', () => ({ switchTeam: (id: string) => switched.push(id) }));
+mock.module('next/navigation', () => ({
+  usePathname: () => '/app/missions',
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: UserAvatarMenu } = await import('./UserAvatarMenu');
 const { TeamSwitcher } = await import('./TeamSwitcher');
-const { default: TeamSwitcherRail } = await import('./TeamSwitcherRail');
+const { default: ScopeSwitcher } = await import('./ScopeSwitcher');
 
 const TEAMS = [
   { id: 'team-a', name: 'Team A', slug: 'team-a' },
@@ -56,7 +61,7 @@ function pressEscape(target: Element) {
 const cases: Array<{ name: string; render: () => React.ReactElement; trigger: string }> = [
   { name: 'UserAvatarMenu', render: () => <UserAvatarMenu userInitial="A" direction="down" />, trigger: 'button[aria-label="Account menu"]' },
   { name: 'TeamSwitcher', render: () => <TeamSwitcher teams={TEAMS} currentTeamId="team-a" />, trigger: 'button[aria-label^="Switch team"]' },
-  { name: 'TeamSwitcherRail', render: () => <TeamSwitcherRail teams={TEAMS} currentTeamId="team-a" />, trigger: 'button[aria-label^="Team:"]' },
+  { name: 'ScopeSwitcher', render: () => <ScopeSwitcher teams={TEAMS} currentTeamId="team-a" />, trigger: 'button[aria-label^="Scope:"]' },
 ];
 
 for (const c of cases) {
@@ -158,9 +163,9 @@ describe('team switchers mark the current team', () => {
     expect(current[0].textContent).toContain('Team B');
   });
 
-  it('TeamSwitcherRail sets aria-current on the active team only', () => {
-    act(() => root.render(<TeamSwitcherRail teams={TEAMS} currentTeamId="team-a" />));
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label^="Team:"]')!.click());
+  it('ScopeSwitcher sets aria-current on the active team only', () => {
+    act(() => root.render(<ScopeSwitcher teams={TEAMS} currentTeamId="team-a" />));
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label^="Scope:"]')!.click());
     const current = host.querySelectorAll('[aria-current="true"]');
     expect(current.length).toBe(1);
     expect(current[0].textContent).toContain('Team A');

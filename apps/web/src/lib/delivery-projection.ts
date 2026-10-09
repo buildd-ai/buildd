@@ -22,6 +22,7 @@
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import type { StateKey } from '@/components/ui/states';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -54,6 +55,14 @@ export const DELIVERY_KIND: Record<DeliveryKind, { label: string; glyph: string;
   unavailable: { label: 'Audit can’t run', glyph: '⊘', tone: 'warning' },
   notlanded: { label: 'Not landed', glyph: '✕', tone: 'error' },
   needs: { label: 'Needs input', glyph: '!', tone: 'ink' },
+};
+
+/** A mission's delivery kind as the shared state vocabulary (glyph + word). */
+export const STATE_OF_KIND: Record<DeliveryKind, StateKey | null> = {
+  needs: 'needs_you', notlanded: 'not_landed', unavailable: 'recovering',
+  repair: 'fixing', audit: 'review', landing: 'landing', build: 'running', landed: 'landed',
+  // Not started: no state pill; the row says why in words.
+  waiting: null, held: null, planning: null,
 };
 
 const STATUS_OF: Record<DeliveryKind, DeliveryStatus> = {

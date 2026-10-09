@@ -11,7 +11,6 @@
  */
 import type { DeliveryKind } from './delivery-projection';
 import type { PortfolioRow } from './mission-portfolio';
-import type { StateKey } from '@/components/ui/states';
 
 export type MissionSectionKey = 'needs' | 'motion' | 'waiting';
 
@@ -33,13 +32,8 @@ const SECTION_OF: Record<DeliveryKind, MissionSectionKey> = {
 
 export const sectionOf = (r: PortfolioRow): MissionSectionKey => SECTION_OF[r.delivery.kind];
 
-/** A mission's delivery kind as the shared state vocabulary (glyph + word). */
-export const STATE_OF_KIND: Record<DeliveryKind, StateKey | null> = {
-  needs: 'needs_you', notlanded: 'not_landed', unavailable: 'recovering',
-  repair: 'fixing', audit: 'review', landing: 'landing', build: 'running', landed: 'landed',
-  // Not started: no state pill; the row says why in words.
-  waiting: null, held: null, planning: null,
-};
+// Lives with the projection so Home's mission rows can read it too.
+export { STATE_OF_KIND } from './delivery-projection';
 
 const byId = (a: PortfolioRow, b: PortfolioRow) => a.delivery.id.localeCompare(b.delivery.id);
 /** Epoch ms, a missing time last. */

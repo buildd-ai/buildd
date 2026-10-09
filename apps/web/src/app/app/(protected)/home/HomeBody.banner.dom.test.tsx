@@ -25,7 +25,7 @@ const { default: NeedsInputBanner } = await import('@/components/NeedsInputBanne
 const { NeedsInputContext } = await import('@/components/needs-input-context');
 const { deriveHomeAttention } = await import('@/lib/home-attention');
 const { isActionableChip } = await import('@/lib/action-queue');
-const { phoneBannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
+const { bannerHiddenSnapshot } = await import('@/lib/needs-input-hidden');
 type WaitingTask = import('@/components/needs-input-context').WaitingTask;
 
 let container: HTMLElement;
@@ -48,38 +48,41 @@ function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAtte
   act(() => root.render(
     <NeedsInputContext.Provider value={{ tasks, count: tasks.filter(t => !t.answerSent).length, alertPermission: 'unsupported', enableAlerts() {} }}>
       <NeedsInputBanner />
-      <HomeBody items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} shipped={[]} />
+      <HomeBody items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} />
     </NeedsInputContext.Provider>,
   ));
 }
-const text = (id: string) => container.querySelector(`[data-testid="${id}"]`)?.textContent ?? '';
+const cardCount = () => container.querySelectorAll('[data-testid="needs-you-card"]').length;
 
 describe('phone Home and the needs-input banner', () => {
-  it('a waiting task the banner knows is in the inbox and the count, and the banner hides on a phone', () => {
+  // Home's list holds every task the banner would name, at every width, so
+  // the banner steps aside on Home on desktop too, not only on a phone.
+  it('a waiting task the banner knows is in the inbox and the count, and the banner steps aside at every width', () => {
     mount([waiting]);
-    expect(text('needs-you-count')).toBe('2 open');
+    expect(cardCount()).toBe(2);
     expect(container.textContent).toContain('2 things need you.');
     const cards = [...container.querySelectorAll('[data-testid="needs-you-card"]')];
     expect(cards.map(c => c.getAttribute('data-kind')).sort()).toEqual(['question', 'queue']);
     expect(container.textContent).toContain('Ship to canary first?');
-    expect(phoneBannerHiddenSnapshot()).toBe(true);
-    const banner = container.querySelector('[data-testid="global-needs-input-banner"]');
-    expect(banner?.getAttribute('class')).toContain('hidden md:block');
+    expect(bannerHiddenSnapshot()).toBe(true);
+    expect(container.querySelector('[data-testid="global-needs-input-banner"]')).toBeNull();
   });
 
   it('a task already in the inbox from the server is not listed twice', () => {
     mount([waiting], [{ workerId: 'w-1', taskId: 'task-waiting', label: 'rollout', runnerName: null, askedAt: null, href: '/app/tasks/task-waiting', question: { headline: 'Ship to canary first?', body: null, options: [], noteId: null } }]);
-    expect(text('needs-you-count')).toBe('2 open');
+    expect(cardCount()).toBe(2);
+    expect(container.textContent).toContain('2 things need you.');
   });
 
   it('an answered task is not admitted: it no longer needs the person', () => {
     mount([{ ...waiting, waitingFor: null, answerSent: true }]);
-    expect(text('needs-you-count')).toBe('1 open');
+    expect(cardCount()).toBe(1);
+    expect(container.textContent).toContain('1 thing needs you.');
   });
 
   it('the hold is released when Home unmounts, so other pages keep the banner', () => {
     mount([waiting]);
     act(() => root.render(<></>));
-    expect(phoneBannerHiddenSnapshot()).toBe(false);
+    expect(bannerHiddenSnapshot()).toBe(false);
   });
 });
