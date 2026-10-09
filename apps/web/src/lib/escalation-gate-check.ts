@@ -224,6 +224,9 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
     } catch {
       stored = new Map();
     }
+    // Rules and stored verdicts first (no model call), then Jev for the rest
+    // in parallel, so a pass costs at most one model timeout, not one per PR.
+    const forJev: Array<{ s: GatedSubject; started: number; ledgerBase: Omit<DecisionLedgerInput, 'applied' | 'status'> }> = [];
     for (const s of list) {
       const started = now();
       try {
@@ -257,6 +260,14 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
           continue;
         }
         budget -= 1;
+        forJev.push({ s, started, ledgerBase });
+      } catch {
+        out.set(s.key, { owner: 'person', by: 'fallback', reason: 'The check failed, so it comes to you.' });
+      }
+    }
+
+    await Promise.all(forJev.map(async ({ s, started, ledgerBase }) => {
+      try {
         const answer = await askJev(s, jevDeps, started, now);
         out.set(s.key, answer.verdict);
         await record({
@@ -272,7 +283,7 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
       } catch {
         out.set(s.key, { owner: 'person', by: 'fallback', reason: 'The check failed, so it comes to you.' });
       }
-    }
+    }));
   }
   return out;
 }
