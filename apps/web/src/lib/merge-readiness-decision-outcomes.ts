@@ -17,7 +17,7 @@
  * (decision, source) wins, so a redelivery or a sweep after the webhook is a
  * no-op. Never throws to its caller.
  *
- * The stores (DB + GitHub) are `merge-readiness-outcomes-store.ts`.
+ * The stores (DB + GitHub) are `merge-readiness-decision-outcomes-store.ts`.
  */
 import { labelDecisionOutcome } from '@buildd/core/decision-outcomes';
 import {

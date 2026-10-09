@@ -8,8 +8,9 @@
  * so there is nothing to look at.
  *
  * `pr.close_delivered`: merge readiness decisions on the PR get their outcome
- * label (lib/merge-readiness-outcomes.ts). GitHub reads, so `after()`; the
- * hourly pr-reconcile pass is the backstop for a lost delivery. Idempotent.
+ * label (lib/merge-readiness-decision-outcomes.ts). GitHub reads, so `after()`.
+ * `sweep.pr_hourly` is the backstop for a lost delivery, and attaches the
+ * revert labels. Both idempotent.
  */
 import { after } from 'next/server';
 import { subscriber, type AnySubscriber } from '@/lib/core-events';
@@ -33,7 +34,7 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
   }),
   subscriber('jev-decisions', 'pr.close_delivered', 'merge-readiness-outcome', e => {
     if (e.installationId == null) return;
-    const run = () => import('@/lib/merge-readiness-outcomes-store')
+    const run = () => import('@/lib/merge-readiness-decision-outcomes-store')
       .then(m => m.attachMergeReadinessOutcomesOnClose(e))
       .then(() => undefined, err => console.warn('[merge-readiness-outcomes] close label failed (non-fatal):', err));
     try {
@@ -42,5 +43,10 @@ export const decisionSubscribers: readonly AnySubscriber[] = [
       // after() is unavailable outside a request scope (tests): run inline, unawaited.
       void run();
     }
+  }),
+  subscriber('jev-decisions', 'sweep.pr_hourly', 'merge-readiness-outcome-sweep', async e => {
+    const { sweepMergeReadinessOutcomes } = await import('@/lib/merge-readiness-decision-outcomes-store');
+    const r = await sweepMergeReadinessOutcomes(e.at);
+    console.log(`[MergeReadinessOutcomes] prs=${r.prs} recorded=${r.recorded} errors=${r.errors} revertsChecked=${r.reverts.checked} reverted=${r.reverts.reverted} notReverted=${r.reverts.notReverted}`);
   }),
 ];

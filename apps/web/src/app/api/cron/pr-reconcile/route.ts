@@ -90,7 +90,7 @@ import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
-import { sweepMergeReadinessOutcomes } from '@/lib/merge-readiness-outcomes-store';
+import { emit } from '@/lib/core-emit';
 
 export const maxDuration = 60;
 
@@ -117,7 +117,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles, mergeReadiness] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -209,18 +209,11 @@ export async function GET(req: NextRequest) {
       restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
-      // Outcome labels for merge readiness decisions whose close webhook was
-      // lost, then their revert labels (lib/merge-readiness-outcomes.ts).
-      // Ledger-only: nothing here changes a PR. Isolated.
-      sweepMergeReadinessOutcomes().catch((err): { error: string } => ({
-        error: err instanceof Error ? err.message : String(err),
-      })),
+      // Module backstops for lossy webhooks (e.g. merge readiness outcome
+      // labels). Core only emits; modules.ts lists who reacts. Each
+      // subscriber is isolated by emit().
+      emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
-    if ('error' in mergeReadiness) {
-      console.error('[MergeReadinessOutcomes] error:', mergeReadiness.error);
-    } else {
-      console.log(`[MergeReadinessOutcomes] prs=${mergeReadiness.prs} recorded=${mergeReadiness.recorded} errors=${mergeReadiness.errors} revertsChecked=${mergeReadiness.reverts.checked} reverted=${mergeReadiness.reverts.reverted} notReverted=${mergeReadiness.reverts.notReverted}`);
-    }
     if ('error' in kernelFloor) {
       console.error('[KernelFloor] error:', kernelFloor.error);
     } else {
@@ -335,15 +328,13 @@ export async function GET(req: NextRequest) {
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
         + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
         + ('error' in treadmillCycles ? 0 : treadmillCycles.restarted)
-        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated)
-        + ('error' in mergeReadiness ? 0 : mergeReadiness.recorded + mergeReadiness.reverts.reverted + mergeReadiness.reverts.notReverted),
+        + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
         + ('error' in kernelFloor ? 1 : kernelFloor.errors)
-        + ('error' in mergeReadiness ? 1 : mergeReadiness.errors + mergeReadiness.reverts.errors)
         + ('error' in treadmillCycles ? 1 : treadmillCycles.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles, mergeReadiness },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles },
     });
 
     return NextResponse.json({

@@ -11,7 +11,7 @@ import {
   type MergeReadinessOutcomeDeps,
   type PrTerminalState,
   type RevertCandidate,
-} from './merge-readiness-outcomes';
+} from './merge-readiness-decision-outcomes';
 
 /**
  * The webhook and the hourly sweep both call `attachMergeReadinessOutcomes`

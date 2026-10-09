@@ -1,7 +1,7 @@
 /**
  * Outcome labels for `buildd.merge_readiness` decisions: what actually
  * happened to the PR head a decision was asked about. Pure; the GitHub reads
- * and the ledger write live in `apps/web/src/lib/merge-readiness-outcomes.ts`.
+ * and the ledger write live in `apps/web/src/lib/merge-readiness-decision-outcomes.ts`.
  *
  * Label definitions (knowledge-base: buildd/reports/merge-readiness-backtest/README.md):
  *

@@ -1,5 +1,5 @@
 /**
- * The DB and GitHub halves of `merge-readiness-outcomes.ts`, plus the two
+ * The DB and GitHub halves of `merge-readiness-decision-outcomes.ts`, plus the two
  * entry points that wire them: the webhook's `pr.close_delivered` subscriber
  * and the hourly pr-reconcile backstop.
  */
@@ -21,11 +21,11 @@ import {
   type PendingDecisionHead,
   type RevertCandidate,
   type RevertSweepDeps,
-} from './merge-readiness-outcomes';
+} from './merge-readiness-decision-outcomes';
 
 /** Decisions older than this are not swept: a PR open for a month is rare, and the scan stays bounded. */
 const SWEEP_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000;
-const SWEEP_PR_LIMIT = 25;
+const SWEEP_PR_LIMIT = 10;
 const MAX_FILE_PAGES = 30;
 const MAX_COMMIT_PAGES = 3;
 

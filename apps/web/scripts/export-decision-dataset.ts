@@ -5,7 +5,7 @@
  * (`buildd-datasets/merge-readiness/v1/`), so a new version is comparable:
  * see `packages/core/decision-dataset.ts` for the files and the manifest.
  *
- *   DATABASE_URL=... bun run scripts/export-decision-dataset.ts \
+ *   cd apps/web && DATABASE_URL=... bun run scripts/export-decision-dataset.ts \
  *     --kind buildd.merge_readiness --dataset merge-readiness --version v2
  *
  * Writes under `.decision-data/<dataset>/` by default. That directory is
@@ -27,10 +27,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
 import { and, asc, eq, gte, inArray } from 'drizzle-orm';
-import * as schema from '../packages/core/db/schema';
-import { buildDecisionDataset } from '../packages/core/decision-dataset';
+import { drizzle } from 'drizzle-orm/neon-http';
+import { decisionOutcomes, decisionRecords } from '@buildd/core/db/schema';
+import { buildDecisionDataset } from '@buildd/core/decision-dataset';
 
 function flag(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -52,8 +52,8 @@ if (!process.env.DATABASE_URL) {
   console.error('ERROR: DATABASE_URL is not set');
   process.exit(2);
 }
-const db = drizzle(neon(process.env.DATABASE_URL), { schema });
-const { decisionRecords, decisionOutcomes } = schema;
+// The neon HTTP driver directly: `@buildd/core/db` is server-only.
+const db = drizzle(neon(process.env.DATABASE_URL));
 
 const PAGE = 2000;
 
