@@ -1,6 +1,7 @@
 /**
- * One resolver for every provider and every surface. No callers yet: chat, the
- * host claim path and cloud egress move onto it in later slices.
+ * One resolver for every provider and every surface. Chat and inference keys
+ * (`../inference-keys`) and the LiteLLM gateway (`../litellm-gateway`) resolve
+ * through it; the host claim path and cloud egress move onto it in later slices.
  *
  *   resolveProviderCredential({ teamId, workspaceId, accountId, requesterUserId, surface, provider? })
  *     → { credential, provider, scope, source, why } | { none: true, reason, why }
@@ -50,10 +51,12 @@
  * is table-tested without a database; the SQL is tested against real Postgres
  * in `apps/web/tests/db/provider-resolve.test.ts`.
  */
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+// Only and/eq/or/isNull/sql from drizzle, and nothing that imports more: the
+// chat and inference wrappers load this module under test stubs of exactly
+// that set (inference-client, decision-client tests).
+import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { secrets } from '../db/schema';
 import { ROUTES } from '@builddai/ai-kit/models/routes';
-import { credentialScopeRank } from '../secrets/team-scope';
 import { endpointAppliesTo, parseAgentEndpointBlob, type AgentEndpointBlob, type AgentEndpointKind } from '../agent-endpoint';
 import {
   PROVIDER_REGISTRY,
@@ -94,6 +97,17 @@ export interface ResolveProviderCredentialInput {
   providers?: readonly ProviderId[];
   /** The team's policy columns, when the caller already has the row. Loaded otherwise. */
   team?: TeamPolicyColumns | null;
+  /**
+   * Only these `secrets.purpose` values, in this preference order within a
+   * scope (it replaces canonical-before-legacy). Narrows; never widens.
+   */
+  purposes?: readonly string[];
+  /** Only these scopes (a gateway: workspace and team). Narrows the policy; never widens it. */
+  scopes?: readonly PolicyScope[];
+  /** Is a decrypted value usable? One that is not is skipped, and the next row tried. */
+  accept?: (value: string) => boolean;
+  /** Decrypt with the caller's secrets module. Defaults to `../secrets/crypto`. */
+  decrypt?: (encrypted: string) => string;
 }
 
 export interface ResolvedProviderCredential {
@@ -208,7 +222,7 @@ interface StorageMatch {
  * an endpoint reference), and `agent_endpoint` is read whenever a provider an
  * endpoint can route to is eligible.
  */
-function storagesFor(surface: Surface, eligible: readonly ProviderId[]): StorageMatch[] {
+function storagesFor(surface: Surface, eligible: readonly ProviderId[], purposes?: readonly string[]): StorageMatch[] {
   const out: StorageMatch[] = [];
   eligible.forEach((id, providerIndex) => {
     if (isAgentSurface(surface) && id === 'litellm') return;
@@ -216,21 +230,25 @@ function storagesFor(surface: Surface, eligible: readonly ProviderId[]): Storage
     for (const shape of providerDescriptor(id).shapes) {
       for (const [i, storage] of [shape.storage, ...shape.legacy].entries()) {
         if (storage.purpose === ENDPOINT_PURPOSE) continue; // added below
+        if (purposes && !purposes.includes(storage.purpose)) continue;
         out.push({ provider: id, shape: shape.id, storage, legacy: i > 0, providerIndex, storageIndex: storageIndex++ });
       }
     }
   });
+  // A caller's purpose order replaces canonical-before-legacy within a provider.
+  if (purposes) for (const s of out) s.storageIndex = purposes.indexOf(s.storage.purpose);
   return out;
 }
 
-function readsEndpoints(surface: Surface, eligible: readonly ProviderId[]): boolean {
-  return isAgentSurface(surface) && eligible.some(p => ENDPOINT_PROVIDERS.includes(p));
+function readsEndpoints(surface: Surface, eligible: readonly ProviderId[], purposes?: readonly string[]): boolean {
+  return isAgentSurface(surface) && eligible.some(p => ENDPOINT_PROVIDERS.includes(p)) &&
+    (!purposes || purposes.includes(ENDPOINT_PURPOSE));
 }
 
-/** The `secrets.purpose` values one resolve reads. */
-export function resolvePurposes(surface: Surface, eligible: readonly ProviderId[]): ModelCredentialPurpose[] {
-  const out = new Set<ModelCredentialPurpose>(storagesFor(surface, eligible).map(s => s.storage.purpose));
-  if (readsEndpoints(surface, eligible)) out.add(ENDPOINT_PURPOSE);
+/** The `secrets.purpose` values one resolve reads (narrowed by `purposes` when given). */
+export function resolvePurposes(surface: Surface, eligible: readonly ProviderId[], purposes?: readonly string[]): ModelCredentialPurpose[] {
+  const out = new Set<ModelCredentialPurpose>(storagesFor(surface, eligible, purposes).map(s => s.storage.purpose));
+  if (readsEndpoints(surface, eligible, purposes)) out.add(ENDPOINT_PURPOSE);
   return [...out];
 }
 
@@ -260,7 +278,7 @@ export function providerCredentialWhere(input: ProviderCredentialWhereInput): SQ
   const requester = normalizeRequester(input.requesterUserId);
   const conds: (SQL | undefined)[] = [
     eq(secrets.teamId, input.teamId),
-    input.purposes.length > 0 ? inArray(secrets.purpose, input.purposes as never[]) : sql`false`,
+    input.purposes.length > 0 ? or(...input.purposes.map(p => eq(secrets.purpose, p as never))) : sql`false`,
     or(isNull(secrets.workspaceId), input.workspaceId ? eq(secrets.workspaceId, input.workspaceId) : sql`false`),
     or(isNull(secrets.userId), input.personalAllowed && requester ? eq(secrets.userId, requester) : sql`false`),
   ];
@@ -281,6 +299,10 @@ export interface SelectContext {
   policy: SurfacePolicy;
   /** Provider env vars, and whether they may stand in (chat only, non-production). */
   env?: { allowed: boolean; values: Readonly<Record<string, string | undefined>> };
+  /** See `ResolveProviderCredentialInput`. */
+  purposes?: readonly string[];
+  scopes?: readonly PolicyScope[];
+  accept?: (value: string) => boolean;
 }
 
 interface Candidate {
@@ -304,6 +326,21 @@ function matchStorage(row: ProviderCredentialRow, storages: readonly StorageMatc
     (s.storage.label === undefined || s.storage.label === label)) ?? null;
 }
 
+/**
+ * `credentialScopeRank` from ../secrets/team-scope, restated: that module
+ * imports `inArray`, which the wrappers' test stubs do not provide. A test
+ * holds the two equal. -1 = does not apply; higher = more specific.
+ */
+export function scopeSpecificity(
+  row: { userId: string | null; workspaceId: string | null; accountId: string | null },
+  target: { accountId: string | null; workspaceId: string | null },
+): number {
+  if (row.userId) return -1;
+  if (row.workspaceId && row.workspaceId !== target.workspaceId) return -1;
+  if (row.accountId && row.accountId !== target.accountId) return -1;
+  return (row.workspaceId ? 2 : 0) + (row.accountId ? 1 : 0);
+}
+
 /** Scope and rank of a row, or why it does not apply. Lower rank = more specific. */
 function placeRow(
   row: ProviderCredentialRow,
@@ -325,7 +362,7 @@ function placeRow(
     return row.workspaceId ? { scope: 'workspace', rank: 2 } : { scope: 'team', rank: 3 };
   }
   if (row.purpose === ENDPOINT_PURPOSE && row.accountId) return { skip: 'an endpoint is never account-scoped' };
-  const specificity = credentialScopeRank(row, { accountId: ctx.accountId, workspaceId: ctx.workspaceId });
+  const specificity = scopeSpecificity(row, { accountId: ctx.accountId, workspaceId: ctx.workspaceId });
   if (specificity < 0) return { skip: 'another account' };
   // Coarse rank workspace > account > team decides against an endpoint (which
   // is never account-scoped, so a workspace+account row ties a workspace
@@ -355,8 +392,9 @@ export function selectProviderCredential(
   );
   why.push(requester ? 'requester: present' : 'requester: none (team work)');
 
-  const storages = storagesFor(ctx.surface, ctx.eligible);
-  const endpoints = readsEndpoints(ctx.surface, ctx.eligible);
+  const storages = storagesFor(ctx.surface, ctx.eligible, ctx.purposes);
+  const endpoints = readsEndpoints(ctx.surface, ctx.eligible, ctx.purposes);
+  const scopeAsked = (scope: PolicyScope) => !ctx.scopes || ctx.scopes.includes(scope);
   const scopeOpen = (scope: PolicyScope) =>
     policyAllowsScope({ policy: ctx.policy.policy, scope, hasRequester: !!requester, surface: ctx.surface, agentEnforced: ctx.policy.enforced });
 
@@ -371,6 +409,10 @@ export function selectProviderCredential(
     const name = `${describeRow(row)} ${row.id}`;
     if ('skip' in placed) {
       why.push(`${name}: skipped, ${placed.skip}`);
+      continue;
+    }
+    if (!scopeAsked(placed.scope)) {
+      why.push(`${placed.scope} ${name}: skipped, not a scope this caller reads`);
       continue;
     }
     if (!scopeOpen(placed.scope)) {
@@ -426,6 +468,10 @@ export function selectProviderCredential(
       why.push(`${name}: empty`);
       continue;
     }
+    if (ctx.accept && !ctx.accept(value)) {
+      why.push(`${name}: not a usable value`);
+      continue;
+    }
     let provider: ProviderId;
     let shape: CredentialShape['id'];
     let endpoint: AgentEndpointBlob | undefined;
@@ -467,12 +513,12 @@ export function selectProviderCredential(
     };
   }
 
-  if (!winner && !agent && ctx.env?.allowed && scopeOpen('env')) {
+  if (!winner && !agent && ctx.env?.allowed && scopeAsked('env') && scopeOpen('env')) {
     for (const id of ctx.eligible) {
       const route = providerDescriptor(id).route;
       const envVar = route ? ROUTES[route].key?.envVar : undefined;
       const value = envVar ? ctx.env.values[envVar] : undefined;
-      if (!envVar || !value) continue;
+      if (!envVar || !value || (ctx.accept && !ctx.accept(value))) continue;
       why.push(`env ${envVar}: used (${id})`);
       const shape = providerDescriptor(id).shapes[0].id;
       winner = {
@@ -540,7 +586,8 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
   const requester = normalizeRequester(input.requesterUserId);
 
   let rows: ProviderCredentialRow[] = [];
-  const purposes = resolvePurposes(input.surface, eligible);
+  const purposes = resolvePurposes(input.surface, eligible, input.purposes);
+  const scopeAsked = (scope: PolicyScope) => !input.scopes || input.scopes.includes(scope);
   if (purposes.length > 0) {
     try {
       const { db } = await import('../db');
@@ -551,8 +598,8 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
           accountId: input.accountId,
           requesterUserId: requester,
           purposes,
-          personalAllowed: applied !== 'team',
-          legacyAccountRows: !isAgentSurface(input.surface),
+          personalAllowed: applied !== 'team' && scopeAsked('personal'),
+          legacyAccountRows: !isAgentSurface(input.surface) && scopeAsked('account'),
         }),
         columns: {
           id: true, purpose: true, label: true, encryptedValue: true, accountId: true, workspaceId: true,
@@ -564,7 +611,7 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
     }
   }
 
-  const { decrypt } = await import('../secrets/crypto');
+  const decrypt = input.decrypt ?? (await import('../secrets/crypto')).decrypt;
   const result = selectProviderCredential(rows, {
     workspaceId: input.workspaceId,
     accountId: input.accountId,
@@ -573,6 +620,9 @@ export async function resolveProviderCredential(input: ResolveProviderCredential
     eligible,
     policy,
     env: { allowed: providerEnvKeysAllowed(), values: process.env },
+    purposes: input.purposes,
+    scopes: input.scopes,
+    accept: input.accept,
   }, decrypt);
   for (const { provider, reason } of impossible) result.why.push(`${provider}: impossible on ${input.surface} (${reason})`);
   return result;
