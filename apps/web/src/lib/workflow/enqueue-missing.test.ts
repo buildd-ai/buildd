@@ -56,6 +56,24 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     expect(enqueueMissingEffects(V(D({ state: 'AWAITING_REVIEW' }), [R({ status: 'reviewing' })]), none)).toEqual([]);
   });
 
+  test('a6cbd241: a queued round with no reviewer whose every dispatch finished (one skipped while the delivery was briefly REPAIRING) owes a fresh dispatch_review', () => {
+    const open = R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' });
+    const v = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, version: 9 }), [open]);
+    const held = new Set(['dispatch_review:d1:2', 'dispatch_review:d1:1']);
+    expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:1', 'done']]))).toEqual([
+      { kind: 'dispatch_review', dedupeKey: 'dispatch_review:d1:2:floor:v9', payload: { roundId: 'r2', round: 2, headSha: 'H2', kind: 'delta', priorRound: null, scope: null } },
+    ]);
+    // The floor's own key, once held, is owed no more at this version.
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:floor:v9']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:floor:v9', 'pending']]))).toEqual([]);
+    // A live retry is the round's exit; a dead dispatch is EffectDead's; an unread status proves nothing.
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:retry1']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:retry1', 'delivering']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'dead']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, held)).toEqual([]);
+    // A round whose reviewer was asked owes nothing, and round 20's keys are not round 2's.
+    expect(enqueueMissingEffects(V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 }), [R({ ...open, reviewerTaskId: 'rv1' })]), held, new Map([['dispatch_review:d1:2', 'done']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:20']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:20', 'pending']]))).toHaveLength(1);
+  });
+
   test('AWAITING_PUSH owes a push_recovery only when none was ever enqueued for the local head', () => {
     const v = V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' }));
     const [e] = enqueueMissingEffects(v, none);
@@ -76,6 +94,26 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     // …and only once: the final key, dead or not, is held by its dedupe key.
     const withFinal = new Set([...keys, 'push_recovery:d1:L2:final']);
     expect(enqueueMissingEffects(v, withFinal, new Map([...deadAll, ['push_recovery:d1:L2:final', 'dead']]))).toEqual([]);
+  });
+
+  test('9e27996d: a chain with no try left to run (all done, the delivery still AWAITING_PUSH) owes the final try', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' }));
+    const keys = new Set(['push_recovery:d1:L2:1', 'push_recovery:d1:L2:2', 'push_recovery:d1:L2:head:H2']);
+    const allDone = new Map([...keys].map((k) => [k, 'done']));
+    expect(enqueueMissingEffects(v, keys, allDone)).toEqual([
+      { kind: 'push_recovery', dedupeKey: 'push_recovery:d1:L2:final', payload: { localHeadSha: 'L2', try: 3, maxTries: 3 } },
+    ]);
+    // A restarted chain's try still pending owns the move.
+    const restarted = new Set([...keys, 'push_recovery:d1:L2:head:H2:2']);
+    expect(enqueueMissingEffects(v, restarted, new Map([...allDone, ['push_recovery:d1:L2:head:H2:2', 'pending']]))).toEqual([]);
+  });
+
+  test('abe42d1b: a live chain under another local head is not doubled by one under the attempt’s reported head', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', boundAttemptId: 'a1' }), [], [A({ status: 'ended', outcome: 'unproven', reportedShas: ['H2'] })]);
+    const none = new Set(['push_recovery:d1:none:1']);
+    expect(enqueueMissingEffects(v, none, new Map([['push_recovery:d1:none:1', 'pending']]))).toEqual([]);
+    // Once that chain has nothing left to run, the floor owes one under the head it reads.
+    expect(enqueueMissingEffects(v, none, new Map([['push_recovery:d1:none:1', 'done']]))[0]).toMatchObject({ dedupeKey: 'push_recovery:d1:H2:1' });
   });
 
   test('67d34094: LANDING with no live merge_call or verify_merge owes one read-back per version', () => {

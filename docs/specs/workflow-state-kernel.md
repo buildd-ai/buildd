@@ -2,7 +2,7 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-09
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
@@ -452,7 +452,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T7 | `ReviewBudgetExhausted` (inside T6/T11) | `CHANGES_REQUESTED`, `FIXING` | `current_round >= max_rounds` | `ESCALATED(review_exhausted)` | `escalate_exhaustion` (mission note + notify) | `exhaust:{delivery}:{head}` | resets only by a new head (T3) |
 | T8 | `FixDispatched` (effect completion) | `CHANGES_REQUESTED` | **revalidation (§10.5) passed**: live read shows PR still open, head still the round's head, no newer approve; ledger row `review_fix` allocated (`attempt_no` = previous + 1, `≤ max_attempts`); fix task row created for `(round)`; unique per round | unchanged; past `max_attempts` (failed fixes spend the ledger faster than rounds, so T6 can owe a fix the budget cannot pay) → `ESCALATED(review_exhausted)` with `escalate_exhaustion`, key `fixbudget:{delivery}:{round}`, never a silent refusal (AC-14) | link `tasks.delivery_id`, role `fix` | `fix:{delivery}:{round}` | a fix for a round that is no longer current is cancelled (`newer_verdict_supersedes_fix`) |
 | T9 | `FixClaimed(a)` (claim route) | `CHANGES_REQUESTED` | `a` is the fix task of the current round; **claim-time revalidation** (§10.5): live read still shows the round's head current, PR open and not approved | `FIXING` bound to `(H, r, a)` | announce `fix_started` | `claim:{a}` | a claim for a fix of a superseded round, or one whose target was resolved meanwhile (merged, approved, head moved), is `rejected(fix_superseded)` / `rejected(fix_not_needed)`; the claim route cancels the task as `skipped` (not failed) and the ledger row becomes `skipped` |
-| T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED` | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}` | `H' != current` → recorded fact only; this is what stops an old-SHA failure overwriting a newer head |
+| T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED` | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}:{n}` (§13.1 deviation 17) | `H' != current` → recorded fact only; CI not red on `H'` in the live read → `rejected(ci_not_red)`; this is what stops an old-SHA failure overwriting a newer head |
 | T11 | `RepairDelivered` = T3 from `REPAIRING` | `REPAIRING`, `AWAITING_PUSH` | §9 proof | `AWAITING_REVIEW` (new round) or `APPROVED` if §8.3 carry-forward holds | as T5 / T13 | via T3 key | as T3 |
 | T12 | `ConflictObserved(H')` fact | as T10 | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10 |
 | T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | the previous head is covered by the delivery's own approval (`headCoverage`: `approved_heads` or `composition_heads`, any basis) **and** the PR diff is unchanged from it to `H'`; recorded as `own_refresh` when the previous head is the one a `refresh_branch` effect of this delivery was pinned to (payload `headSha`), else `content_equivalent`. Never decided from a reviewer task row | `APPROVED`, `approved_heads += H'` (`composition_heads += H'` for a composition basis) | `equivalentHeadShas` projected onto the approving round's reviewer after the transition commits | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, delta) from `APPROVED` |
@@ -470,7 +470,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T24 | `DeliveryFailed(reason)` (owner task terminal, no PR) | `WORKING`, `AWAITING_PUSH` | task `failed`/`cancelled`, retry budget spent, no PR bound | `FAILED` | none | `fail:{task}` | with a PR bound, T18/T22 apply instead |
 | T25 | `TrunkRedObserved(signature)` (circuit breaker, §6.10) | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `REPAIRING(ci)` | the same `signature` is failing on the base branch's own head, **or** ≥ the configured count of deliveries in the workspace hit it inside the configured window; open or join the `trunk_incidents` row | `BLOCKED_ON_TRUNK` with `resume_state` = the source | one `dispatch_trunk_fix` per incident (never per PR); cancel queued per-PR `ci` attempts for affected deliveries as `skipped`; `render_activity` ("blocked on trunk") | `trunk:{incident}:{delivery}` | a fact for a head that is no longer current is recorded only |
 | T26 | `TrunkRecovered(incident)` (base head green for the signature, or incident resolved by the trunk-fix PR merging) | `BLOCKED_ON_TRUNK` | live read: base branch's CI no longer fails the signature | `resume_state` re-entered at the current head; if that head predates the trunk fix, effect `refresh_branch` then re-run CI is the mechanical repair | none | `trunkok:{incident}:{delivery}` | a still-red re-read keeps the state; the budget of the `ci` family is **not** consumed while blocked |
-| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{n}` | a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
+| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{reviewerTask}` (the reviewer task whose run failed; `roundfail:{round}:{n}` only for a kernel-side failure where no reviewer was ever asked) | a repeated report of one reviewer's failure (a retried PATCH, the reaper) is `duplicate`, and a reviewer task that is not the round's recorded reviewer is `stale(reviewer_not_current)`: the round's contract budget is spent once per reviewer (04a79514); a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
 | T28 | `PolicyEvidenceRecorded(evidence)` (the PR-open pre-flight finding; `workflow_deliveries.policy_evidence`) | any non-terminal | `evidence.headSha == current_head_sha`. `outcome` is `human` (destructive or uninspectable SQL, deny path, human-tier policy) or `agent_split` (a PR mixing EXPAND and CONTRACT migrations, a mechanical-split job for an agent) | from `AWAITING_REVIEW`/`APPROVED` with no open attempt: `human` → `ESCALATED(policy_human)`, open rounds superseded; `agent_split` → `REPAIRING(migration)` with one agent `migration` ledger row (past 2 rows → `ESCALATED(policy_human)`). Every other state (a running owner, an open repair, an owed fix, landing) **records** the finding and acts on nothing: the platform already owns the PR, so no human is notified and no second branch writer is queued. An owner hand-off (§6.5 row 1) at exactly that head applies the recorded finding instead of queuing a review round | `notify(policy_human)` (admitted only while the delivery is still `ESCALATED` at that head); `dispatch_conflict_fix(repairKind=migration_split)` | `policy:{delivery}:{head}:{outcome}` | a finding for any other head is `stale(head_not_current)` and never re-escalates a newer head; the same finding replays as `duplicate`. It never bypasses CI or T15's rails |
 
 ### 6.4 `HeadObserved(H')` by state
@@ -495,6 +495,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `WORKING`, success, PR bound and live head `H` contains `L` (or `L` is empty and the output requirement is satisfied by the PR) | `AWAITING_REVIEW`, round queued at `H` per T5 unless one is already open at `H` (§15 step 2). The owner attempt has ended, so `WORKING` (worker owns the next move, §4) would leave the delivery with no owner |
 | as above, round already **decided** at `H` | the state that round's verdict maps to, exactly as T6: approve → `APPROVED`; request changes → `CHANGES_REQUESTED` with `dispatch_fix` unless a fix for that round is open (`ESCALATED(review_exhausted)` at the round budget); escalate → `ESCALATED(review_escalated)` |
 | as above, the workspace policy requires no review (auto-threshold) | `APPROVED` with `approval_basis = policy`, `state_reason = policy_no_review`: no round, no verdict, `approved_heads` untouched, so it never reads as a reviewer verdict (§8). Policy covers only the current head; a later push stays `APPROVED` by policy. Landing is still gated by T15's rails |
+| as row 1, the live read of the head's check runs shows a failing check | T10's outcome, under T4's key: `REPAIRING(ci)` with one `ci` ledger row and `dispatch_ci_fix(H)`, or `ESCALATED(ci_exhausted)` at the cap; no round is queued (the repair's resume starts one, so a reviewer is never spent on a red head). A trunk-explained failure (§6.10) hands on as row 1 and then takes T25. A policy finding (T28) or a verdict already decided at `H` is applied first; an unreadable check read hands on as row 1. Why: a `CiFailedObserved` hint that arrived while `WORKING` was `stale(state_not_allowed)` (the owner owned the move, and is never interrupted), so the hand-off is the first point the platform can act on it (§13.1 deviation 18) |
 | `WORKING`, success, PR required and `commitCount>0` but live head does not contain `L`, or no PR | `AWAITING_PUSH` with effect `push_recovery` |
 | `WORKING`, `failed`/`lost`, retry budget left | stay `WORKING` (task retried, attempt count +1) |
 | `WORKING`, `failed`/`lost`, budget spent, PR bound | `ESCALATED(push_undeliverable)` if `L` unproven; else, with the PR open, hand on exactly as row 1 (review round, decided verdict, or policy approval) |
@@ -877,7 +878,11 @@ each one it reads the PR once and imports what GitHub says through
 It then inserts whatever `enqueueMissingEffects` (`enqueue-missing.ts`) says the
 state owes and the delivery lacks:
 - `CHANGES_REQUESTED`: a `dispatch_fix` for the current round at the current head;
-- `AWAITING_REVIEW`: a `dispatch_review` for the queued round at the current head;
+- `AWAITING_REVIEW`: a `dispatch_review` for the queued round at the current head; a
+  queued round with no reviewer whose every `dispatch_review` key is `done` (one acked
+  `skipped:*` while the delivery was briefly elsewhere, e.g. a not-needed repair that
+  resumed the round) owes a fresh one per version
+  (`dispatch_review:{delivery}:{round}:floor:v{version}`) (a6cbd241);
 - `AWAITING_PUSH`: a `push_recovery` chain; a chain whose every try is `dead` owes its
   last try (`push_recovery:{delivery}:{L}:final`), which is T22 when the head has not moved;
 - `LANDING`: with no `merge_call` or `verify_merge` still pending or delivering, one
@@ -1127,6 +1132,31 @@ Part 2 deviations:
 16. A queued mechanical attempt counts as live for attribution (the platform's own
     refresh is in flight from dispatch). The runner's `remoteHeadSha` /
     `unpushedCommits` payload is not added: provenance uses the reported local heads.
+17. **T10's live check-suite read is the check runs on `H'` now, and its key carries
+    the ledger row: `ci:{delivery}:{H'}:{n}`.** The `check_suite` hint and the red-PR
+    sweep both pass through `observeCiFailure`, which reads the runs on the live head
+    through the `GithubFactReader`; a read with nothing failing (re-run green, or a
+    re-run still going, whose own completion is the next hint) is
+    `rejected(ci_not_red)` and records nothing, so a stale or redelivered failure hint
+    never leaves `APPROVED`. The read is the transition's `liveChecks` evidence; an
+    unreadable one (and a person's "Fix CI") fails toward doing the work. The key keeps
+    `:{n}` because T10 at the same head is a designed path, not a replay: the sweep
+    re-observes a head whose attempt ended without a push, the cap escalates at that
+    head, and a re-run that fails again after going green is a new red. A plain
+    `ci:{delivery}:{H'}` would answer every one of those `duplicate` and strand a red
+    head with no repair. Redelivery is bounded by the live read, `fix_in_flight` and
+    the ledger cap instead.
+18. **The owner's hand-off reads CI on its head (e9f1674b).** T10 does not move
+    `WORKING`, so a `check_suite` failure that arrived while the owner ran was dropped
+    until the red-PR sweep or a push. `attemptEnded` in the seam now reads the check runs
+    on the live head when an owner attempt ends with the PR open, and passes them as
+    `AttemptEnded.ci` (`liveChecks`, the failing checks' `signature`, the workspace's
+    `maxCiRetries`). A red read routes §6.5 row 1 to `REPAIRING(ci)` through the same
+    ledger, dispatch key and cap as T10; the read is the transition's `liveChecks`
+    evidence either way. A red the trunk explains (the T10 classification, §6.10) is
+    handed on as before and then applied as `TrunkRedObserved`. A green, still-running
+    or unreadable read changes nothing, so recorded histories without the field replay
+    unchanged.
 
 Deferred to part 3, which shipped them (§13.2): `DeliveryView` with one owner of the
 next move, `render_activity` regenerating the comment from transitions (§12.1),

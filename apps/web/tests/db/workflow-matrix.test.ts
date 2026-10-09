@@ -264,8 +264,16 @@ async function open(): Promise<Delivery> {
 async function openAndHandOn(): Promise<Delivery> {
   const o = await open();
   const workerId = await seedWorker(o.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: o.prNumber, commitCount: 1 });
-  const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
-  expect(ended.handled).toBe(true);
+  // The checks a test sets are the ones T10 reads after the hand-off: CI has not reported when the
+  // owner ends here (a red already on the head at the hand-off is e9f1674b's, workflow-scenarios-ci).
+  const checks = gh.checks;
+  gh.checks = undefined;
+  try {
+    const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    expect(ended.handled).toBe(true);
+  } finally {
+    gh.checks = checks;
+  }
   return o;
 }
 
