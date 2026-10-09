@@ -16,6 +16,7 @@ import { AgentHandledCard } from '@/components/AgentHandledCard';
 import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
+import { ReviewDecision } from '@/components/ReviewDecision';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
@@ -70,10 +71,17 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
     }
     if (item.chip === 'REVIEW' && item.humanReview && item.prUrl) {
       return <article data-testid="human-pr-review-card" className="card p-4">
-        <p className="text-meta text-status-warning">Review required</p>
-        <h3 className="mt-2 text-title font-semibold">{item.taskTitle}</h3>
-        <p className="mt-1 text-body text-text-secondary">{item.humanReview.reason}</p>
-        {item.machineStatus && <p className="mt-1 text-meta text-text-muted">{item.machineStatus}</p>}
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-meta text-status-warning">Review required</p>
+          {arc && arc.kind !== 'workspace' && <span className="text-meta text-text-muted">{arc.label}</span>}
+        </div>
+        <h3 className="mt-2 text-title font-semibold [overflow-wrap:anywhere]">{item.taskTitle}</h3>
+        <ReviewDecision
+          decision={item.humanReview.decision ?? item.humanReview.reason}
+          detail={item.humanReview.reason}
+          blockers={item.humanReview.blockers ?? []}
+          status={item.machineStatus}
+        />
         <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
       </article>;
     }
