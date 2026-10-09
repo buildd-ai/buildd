@@ -1362,9 +1362,15 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   });
 
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
+    // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
+    // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
+    // AWAITING_PUSH head path and the floor already read it. Only when nothing local can be lost
+    // (the WORKING rule, §9 AC-10): an unproven end with unreported commits is still not proof.
+    const unknownLocalIsSafe = cmd.outcome === 'success' || cmd.commitCount === 0;
+    const proofLocal = L ?? (unknownLocalIsSafe ? a.reportedShas.at(-1) ?? null : null);
     const proof = deliveryProof({
       boundHeadSha: a.boundHeadSha,
-      localHeadSha: L,
+      localHeadSha: proofLocal,
       liveHeadSha: livePrOpen(live) ? live!.headSha : null,
       liveContainsLocal: cmd.proof?.liveContainsLocal,
       contentDiffChanged: cmd.proof?.contentDiffChanged,

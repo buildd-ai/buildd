@@ -62,14 +62,20 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       break;
     }
     case 'AWAITING_PUSH': {
-      // A push_recovery chain for the pending local head; any try of it that did not go dead counts.
+      // A push_recovery try still to run owns the next move: pending or delivering, in any chain of
+      // this delivery (the attempt's end keys its chain by the L it reported, which need not be the
+      // head this sweep reads, so a chain under another L still counts). A key whose status the
+      // caller did not read counts as live.
       const local = view.attempts.find((a) => a.id === d.boundAttemptId)?.reportedShas.at(-1) ?? d.pushPendingLocalHead ?? null;
       const prefix = `push_recovery:${d.id}:${local ?? 'none'}:`;
-      const chain = [...existing].filter((k) => k.startsWith(prefix));
-      if (chain.some((k) => !isDead(k))) break;
+      const tries = [...existing].filter((k) => k.startsWith(`push_recovery:${d.id}:`));
+      if (tries.some((k) => !status.has(k) || isLive(k))) break;
+      const chain = tries.filter((k) => k.startsWith(prefix));
       const maxTries = PUSH_RECOVERY_BACKOFF_MS.length;
       // 67d34094: a chain that died owes its last try, which re-reads GitHub and, with the head
       // still unmoved, is T22 (ESCALATED(push_undeliverable)). A dead key never blocks it.
+      // 9e27996d: so does a chain that ended with no try left to run and no exit taken (every try
+      // done, the delivery still here): AWAITING_PUSH is never left without an owner (§4).
       owed.push(chain.length === 0
         ? { kind: 'push_recovery', dedupeKey: `${prefix}1`, payload: { localHeadSha: local, try: 1, maxTries } }
         : { kind: 'push_recovery', dedupeKey: `${prefix}final`, payload: { localHeadSha: local, try: maxTries, maxTries } });
