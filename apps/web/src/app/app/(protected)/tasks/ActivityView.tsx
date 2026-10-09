@@ -44,6 +44,8 @@ export interface ActivityViewProps {
   openRowIds?: readonly string[];
   /** The rows could not be read. Shown as a failure, never as an empty Now or History. */
   loadError?: boolean;
+  /** The load hit its root cap: History reaches back only to this time, not the full window. */
+  historyReach?: { oldestAt: string } | null;
   /** Filters to start with (fixtures). The filters are kept across Now and History. */
   initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome };
 }
@@ -60,7 +62,7 @@ const OUTCOMES: Record<ActivityMode, ReadonlyArray<{ key: ActivityOutcome; label
 
 export { age };
 
-export default function ActivityView({ mode, now, history, latest, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, initialFilters }: ActivityViewProps) {
+export default function ActivityView({ mode, now, history, latest, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, historyReach = null, initialFilters }: ActivityViewProps) {
   const [scope, setScope] = useState<ActivityScope>(initialFilters?.scope ?? 'all');
   const [outcome, setOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   const [mission, setMission] = useState<string>('');
@@ -163,6 +165,12 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
               : (
                 <>
                   {shownEpisodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
+                  {remaining === 0 && historyReach && (
+                    <p data-testid="history-boundary" className="mt-4 text-meta text-text-muted">
+                      Older work is not shown. History reaches back to {age(Date.parse(historyReach.oldestAt), nowMs)} ago.{' '}
+                      <Link href="/app/missions" className="inline-flex min-h-11 items-center text-accent-text md:min-h-0">Browse missions ›</Link>
+                    </p>
+                  )}
                   {remaining > 0 && (
                     <button
                       type="button"
