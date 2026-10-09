@@ -34,7 +34,7 @@ async function defaultLoadPolicy(workspaceId: string): Promise<Pick<MergePolicy,
 }
 
 /**
- * The rule merge alone, for the escalation dispatcher (lib/escalation-dispatch.ts):
+ * The rule merge alone, for the escalation dispatcher (lib/pr-landing-verdict-dispatch.ts):
  * false when the workspace merge policy keeps the merge for a person.
  */
 export async function runPolicyMerge(

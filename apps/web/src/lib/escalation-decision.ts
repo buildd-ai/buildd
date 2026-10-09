@@ -15,7 +15,7 @@ import { recordDecision } from '@buildd/core/decision-ledger';
 import { escalationActionFiler, gateEscalations, type EscalationGateDeps, type GatedSubject } from './escalation-gate-check';
 import { escalationFingerprint } from '@buildd/core/escalation-gate';
 import { escalationRuleExecutor } from './merge-policy-rule-executor';
-import { dispatchVerdictAction } from './escalation-dispatch';
+import { dispatchVerdictAction } from './pr-landing-verdict-dispatch';
 import { insertDecisionReceipts } from './memory-decisions';
 import { fileRecoverableBlockerRepair } from './recoverable-blocker-repair';
 
@@ -30,7 +30,7 @@ export function escalationGateDeps(): EscalationGateDeps {
     // A rule verdict's step starts on the look that files it, once per state
     // (the claim is keyed on its decision record). With no record id (the
     // ledger write failed) the policy merge still runs as before; the hourly
-    // sweep in pr-reconcile catches the rest.
+    // sweep (sweep.pr_hourly, lib/decision-subscribers.ts) catches the rest.
     actRule: (s, action, recordId) => recordId && s.prNumber != null
       ? dispatchVerdictAction({ recordId, teamId: s.teamId, workspaceId: s.workspaceId, prNumber: s.prNumber, taskId: s.taskId, action, detail: s.detail })
       : escalationRuleExecutor()(s, action),

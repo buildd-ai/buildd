@@ -12,7 +12,7 @@ import {
   type DispatchDeps,
   type DispatchTarget,
   type SweepDeps,
-} from './escalation-dispatch';
+} from './pr-landing-verdict-dispatch';
 
 const NOW = Date.parse('2026-10-09T21:00:00Z');
 
@@ -197,7 +197,7 @@ describe('the once-per-state claim and the reads, as SQL', () => {
   it('the claim is one decision_outcomes row per (record, source), backed by the unique index', async () => {
     const { getTableConfig } = await import('drizzle-orm/pg-core');
     const { decisionOutcomes } = await import('@buildd/core/db/schema');
-    const { dispatchClaimRow, DISPATCH_SOURCE } = await import('./escalation-dispatch');
+    const { dispatchClaimRow, DISPATCH_SOURCE } = await import('./pr-landing-verdict-dispatch');
     const idx = getTableConfig(decisionOutcomes).indexes.find(i => i.config.name === 'decision_outcomes_decision_source_idx');
     expect(idx?.config.unique).toBe(true);
     expect(idx?.config.columns.map((c: any) => c.name)).toEqual(['decision_record_id', 'source']);
@@ -206,7 +206,7 @@ describe('the once-per-state claim and the reads, as SQL', () => {
 
   it('the settle touches only this record\'s dispatch row; the sweep reads only escalation-gate PR records in its window', async () => {
     const { PgDialect } = await import('drizzle-orm/pg-core');
-    const { dispatchRowWhere, recentEscalationRecordsWhere } = await import('./escalation-dispatch');
+    const { dispatchRowWhere, recentEscalationRecordsWhere } = await import('./pr-landing-verdict-dispatch');
     const dialect = new PgDialect();
     const settle = dialect.sqlToQuery(dispatchRowWhere('rec-9')!);
     expect(settle.sql).toContain('"decision_outcomes"."decision_record_id" = $1');

@@ -24,7 +24,7 @@
  * one state, so a refresh, a second instance or the sweep never files twice.
  * The row then holds what happened, which is what the label reads.
  *
- * `sweepUndispatchedEscalations` (pr-reconcile's floor) dispatches verdicts no
+ * `sweepUndispatchedEscalations` (the hourly `sweep.pr_hourly` subscriber) dispatches verdicts no
  * look dispatched: the ones filed before this shipped, and any look that died
  * between filing and dispatching.
  */
@@ -32,36 +32,27 @@ import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { decisionOutcomes, decisionRecords, gateEvents } from '@buildd/core/db/schema';
 import {
+  DISPATCHABLE_ACTIONS,
+  DISPATCH_SOURCE,
   ESCALATION_GATE_CAPABILITY,
   verdictFromCode,
+  type DispatchResult,
   type EscalationAction,
-  type EscalationVerdict,
 } from '@buildd/core/escalation-gate';
+
+// The pure half (labels, the claim's source, which actions dispatch) lives in
+// core, which the gate's read path uses; this module holds the dispatchers.
+export { DISPATCH_GRACE_MS, DISPATCH_SOURCE, DISPATCHABLE_ACTIONS, labelWithDispatch, type DispatchResult, type StoredDispatch } from '@buildd/core/escalation-gate';
 import type { CiFailureInput, CiRetryOutcome } from '@/lib/ci-failure-retry';
 import type { CiRedPeek, CiRedResolution, CiRedTarget } from '@/lib/ci-red-sweep';
 import type { DispatchConflictRetryParams, DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import type { MigrationCollisionRetryParams, MigrationCollisionRetryResult } from '@/lib/migration-collision-retry';
 import { collisionFromReason } from '@/lib/pr-landing-fix-dispatch';
 
-export const DISPATCH_SOURCE = 'escalation_dispatch';
-/** The rule verdicts whose step something must start. Waits and holds start nothing. */
-export const DISPATCHABLE_ACTIONS: ReadonlySet<EscalationAction> = new Set<EscalationAction>([
-  'ci_fix', 'conflict_fix', 'renumber_migration', 'retry_landing', 'policy_merge',
-]);
-/**
- * A dispatchable verdict with nothing started after this long is the person's.
- * Longer than one hourly floor sweep, so the sweep gets its turn first.
- */
-export const DISPATCH_GRACE_MS = 90 * 60_000;
 /** The sweep leaves a verdict this young to the look that filed it. */
 export const SWEEP_MIN_AGE_MS = 10 * 60_000;
 /** How far back the sweep looks: past the gate's own stuck ceiling a verdict is the person's anyway. */
 export const SWEEP_WINDOW_MS = 6 * 60 * 60_000;
-
-export type DispatchResult =
-  | { kind: 'dispatched'; taskId: string }
-  | { kind: 'queued'; where: 'landing' }
-  | { kind: 'skipped'; cause: string };
 
 export interface DispatchTarget {
   /** The decision record of the verdict: the claim is keyed on it. */
@@ -161,46 +152,18 @@ export async function dispatchVerdictAction(t: DispatchTarget, deps: DispatchDep
   try {
     if (!(await deps.claim(t.recordId, t.teamId))) return null;
   } catch (err) {
-    console.warn('[escalation-dispatch] claim failed (non-fatal):', (err as Error)?.message ?? err);
+    console.warn('[verdict-dispatch] claim failed (non-fatal):', (err as Error)?.message ?? err);
     return null;
   }
   let result: DispatchResult;
   try {
     result = await run(t, deps);
   } catch (err) {
-    console.warn(`[escalation-dispatch] ${t.action} for PR #${t.prNumber} failed:`, (err as Error)?.message ?? err);
+    console.warn(`[verdict-dispatch] ${t.action} for PR #${t.prNumber} failed:`, (err as Error)?.message ?? err);
     result = skipped('dispatch_error');
   }
   await deps.settle(t.recordId, result).catch(() => {});
   return result;
-}
-
-/** What a verdict's dispatch row says, as the read path loads it. */
-export interface StoredDispatch {
-  label: string;
-  metadata: Record<string, unknown> | null;
-}
-
-/**
- * A Buildd-owned rule verdict as a person should read it: the running task, or
- * "queued" while the step is starting. A step that could not start, or nothing
- * started past the grace period, is the person's, with the cause.
- */
-export function labelWithDispatch(v: EscalationVerdict, dispatch: StoredDispatch | null, ageMs: number): EscalationVerdict {
-  if (v.owner !== 'buildd' || v.by !== 'rule' || !DISPATCHABLE_ACTIONS.has(v.action)) return v;
-  const meta = dispatch?.metadata ?? {};
-  if (dispatch?.label === 'dispatched' && typeof meta.taskId === 'string' && meta.taskId) {
-    return { ...v, reason: `${v.reason} (task ${meta.taskId.slice(0, 8)})` };
-  }
-  if (dispatch?.label === 'queued') return { ...v, reason: `${v.reason} (queued for the merge sweep)` };
-  if (dispatch?.label === 'skipped') {
-    const cause = typeof meta.cause === 'string' ? meta.cause : 'unknown';
-    return { owner: 'person', by: 'rule', reason: `Buildd couldn't start its next step (${cause}), so it is yours.` };
-  }
-  if (ageMs >= DISPATCH_GRACE_MS) {
-    return { owner: 'person', by: 'rule', reason: 'Buildd named a next step but nothing started it, so it is yours.' };
-  }
-  return { ...v, reason: `${v.reason} (queued)` };
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────

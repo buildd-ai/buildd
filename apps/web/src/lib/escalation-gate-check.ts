@@ -31,6 +31,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { decisionOutcomes, decisionRecords } from '@buildd/core/db/schema';
 import {
+  DISPATCH_SOURCE,
   ESCALATION_GATE_CAPABILITY,
   ESCALATION_GATE_DECISION_TIMEOUT_MS,
   ESCALATION_GATE_MIN_CONFIDENCE,
@@ -43,6 +44,9 @@ import {
   verdictAt,
   verdictCode,
   verdictFromCode,
+  labelWithDispatch,
+  type DispatchResult,
+  type StoredDispatch,
   type EscalationAction,
   type EscalationSubject,
   type EscalationVerdict,
@@ -52,7 +56,6 @@ import type * as EscalationDecision from '@buildd/core/escalation-gate-decision'
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { FileRepairInput } from './question-gate-check';
-import { DISPATCH_SOURCE, labelWithDispatch, type DispatchResult, type StoredDispatch } from './escalation-dispatch';
 
 /** A Buildd-owned state that has not changed for this long is the person's again. */
 export const ESCALATION_STUCK_MS = 6 * 60 * 60_000;
@@ -80,7 +83,7 @@ export interface StoredVerdict {
   fingerprint: string;
   appliedAnswer: string | null;
   createdAt: Date;
-  /** What dispatching a Buildd-owned rule verdict's step did (lib/escalation-dispatch.ts); null: nothing yet. */
+  /** What dispatching a Buildd-owned rule verdict's step did (lib/pr-landing-verdict-dispatch.ts); null: nothing yet. */
   dispatch?: StoredDispatch | null;
 }
 
@@ -107,7 +110,7 @@ export interface EscalationGateDeps {
   act?: (subject: GatedSubject, action: JevAction) => Promise<void>;
   /**
    * Run a Buildd-owned RULE verdict's step that no sweep takes on its own
-   * (lib/escalation-dispatch.ts). Called once per state, on the look that
+   * (lib/pr-landing-verdict-dispatch.ts). Called once per state, on the look that
    * files the verdict, with that verdict's decision record; never on a reuse.
    * Its answer relabels the verdict (the running task, or the person's when it
    * could not start).
