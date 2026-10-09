@@ -26,7 +26,7 @@ import { db } from '@buildd/core/db';
 import { q, seedTask } from './harness';
 import { seam, world, type World } from './workflow-scenarios-world';
 
-const { runEffects } = await import('../../src/lib/workflow/effects');
+const { runEffects, ackEffectSql, failEffectSql } = await import('../../src/lib/workflow/effects');
 const { withPrFactEffects } = await import('../../src/lib/workflow/pr-fact-effects');
 const modules = await import('../../src/modules');
 type Exec = import('../../src/lib/workflow/kernel').Exec;
@@ -90,9 +90,9 @@ describe('FINDING: a command that loses the CAS race twice is dropped, and nothi
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FINDING 2: a batch shares one lease; serial handlers outlive it; acks are unfenced.
+// FINDING 2 (fixed, 625449c7): a batch shared one lease and acks were unfenced; rows are now renewed per attempt.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('FINDING: an effect claimed in a batch whose lease runs out mid-batch is executed twice', () => {
+describe('FIXED (625449c7): an effect claimed in a batch whose lease runs out mid-batch is executed once', () => {
   async function mergedWithEffectsPending(branch: string) {
     w = await world();
     const pr = await w.openPr({ branch, files: { 'src/a.ts': 'export const a = 2;\n' } });
@@ -105,7 +105,7 @@ describe('FINDING: an effect claimed in a batch whose lease runs out mid-batch i
     return pr;
   }
 
-  test.failing('cron drain A claims the post-merge batch; its first handler takes >120s; drain B re-claims the rest → emit_pr_merged runs once (one task.pr_merged)', async () => {
+  test('cron drain A claims the post-merge batch; its first handler takes >120s; drain B re-claims the rest → emit_pr_merged runs once (one task.pr_merged)', async () => {
     const pr = await mergedWithEffectsPending('feat/lease-batch');
     emitted.length = 0;
     const base = realHandlers();
@@ -120,8 +120,10 @@ describe('FINDING: an effect claimed in a batch whose lease runs out mid-batch i
       if (slow) {
         slow = false;
         // This handler is slow (a GitHub call, a reviewer context build, a cold Neon): 120s pass.
-        // Modelled by moving the batch's leases into the past, which is what the clock does.
-        await q(sql`UPDATE workflow_effects SET lease_until = now() - interval '1 second' WHERE delivery_id = ${pr.deliveryId}::uuid AND status = 'delivering'`);
+        // Modelled by moving the batch's leases into the past, which is what the clock does to
+        // the rows still waiting their turn. The running row's own lease was renewed when it
+        // started and is kept alive by the drain's heartbeat while its handler runs.
+        await q(sql`UPDATE workflow_effects SET lease_until = now() - interval '1 second' WHERE delivery_id = ${pr.deliveryId}::uuid AND status = 'delivering' AND id <> ${e.id}::uuid`);
         // The next cron tick (or any webhook's inline drain) runs meanwhile.
         const b = await runEffects({ handlers: forB, deliveryId: pr.deliveryId, limit: 25 });
         note('[probe] drain B (while A is still running):', JSON.stringify({ claimed: b.claimed, done: b.done, skipped: b.skipped }));
@@ -137,33 +139,40 @@ describe('FINDING: an effect claimed in a batch whose lease runs out mid-batch i
     expect(prMerged).toHaveLength(1);
   });
 
-  test.failing('unfenced ack: A completes an effect B re-claimed and failed meanwhile → A\'s ack is a no-op, the row stays pending and the effect runs a third time', async () => {
+  test('fenced attempts: B re-claims and fails an effect A still holds in memory → A neither runs nor settles it; B\'s failure stands and it retries once', async () => {
     const pr = await mergedWithEffectsPending('feat/lease-ack');
     const base = realHandlers();
-    // B's run of finalize_mission_pr fails (GitHub 5xx); A's run (the stale one) succeeded first.
+    // B's run of finalize_mission_pr fails (GitHub 5xx) while A, whose batch lease ran out, still holds a copy.
     let slow = true;
     let bFailed = false;
+    let aRanFinalize = false;
     const forB: EffectHandlers = { ...base, finalize_mission_pr: async () => { bFailed = true; throw new Error('GitHub 502 on branch delete'); } };
     const forA: EffectHandlers = Object.fromEntries(Object.entries(base).map(([k, fn]) => [k, async (e: ClaimedEffect) => {
+      if (e.kind === 'finalize_mission_pr') aRanFinalize = true;
       if (slow) {
         slow = false;
-        await q(sql`UPDATE workflow_effects SET lease_until = now() - interval '1 second' WHERE delivery_id = ${pr.deliveryId}::uuid AND status = 'delivering'`);
-        // B re-claims everything A holds; B's finalize fails and is re-queued (pending, backoff)...
+        await q(sql`UPDATE workflow_effects SET lease_until = now() - interval '1 second' WHERE delivery_id = ${pr.deliveryId}::uuid AND status = 'delivering' AND id <> ${e.id}::uuid`);
+        // B re-claims every row still waiting in A's batch; B's finalize fails and is re-queued (pending, backoff).
         await runEffects({ handlers: forB, deliveryId: pr.deliveryId, limit: 25 });
       }
       return fn!(e);
     }])) as EffectHandlers;
-    await runEffects({ handlers: forA, deliveryId: pr.deliveryId, limit: 25 });
+    const a = await runEffects({ handlers: forA, deliveryId: pr.deliveryId, limit: 25 });
     const [fin] = await q<{ status: string; attempt_count: number; last_error: string | null; outcome: string | null }>(
       sql`SELECT status, attempt_count, last_error, outcome FROM workflow_effects WHERE delivery_id = ${pr.deliveryId}::uuid AND kind = 'finalize_mission_pr'`);
-    note('[probe] finalize_mission_pr row after both drains:', JSON.stringify(fin), 'B failed:', bFailed);
-    // Each attempt must answer for itself: A's ack cannot settle B's attempt, nor B's fail re-open A's.
-    // Today an unfenced ack/fail (WHERE status = 'delivering') settles whichever attempt holds the row.
+    note('[probe] finalize_mission_pr row after both drains:', JSON.stringify(fin), 'B failed:', bFailed, 'A lost:', a.lost);
+    // Each attempt answers for itself: before 625449c7 an unfenced ack/fail (WHERE status = 'delivering')
+    // let A run the effect again after B re-queued it, and A's ack then settled nothing.
     expect(bFailed).toBe(true);
-    expect(fin.attempt_count).toBe(2);
-    // A ran AFTER B failed and B re-queued it, so A's ack found status='pending' and did nothing:
-    // the effect A really completed is run a THIRD time later. Either way the row's outcome is not A's.
-    expect(fin.status).toBe('done');
+    expect(aRanFinalize).toBe(false);
+    expect(a.lost).toBeGreaterThan(0);
+    expect(fin).toMatchObject({ status: 'pending', attempt_count: 2, last_error: 'GitHub 502 on branch delete', outcome: null });
+    // A stale attempt's ack or fail is a no-op on the row B's attempt holds.
+    const [eff] = await q<{ id: string }>(sql`SELECT id FROM workflow_effects WHERE delivery_id = ${pr.deliveryId}::uuid AND kind = 'finalize_mission_pr'`);
+    await q(sql`UPDATE workflow_effects SET status = 'delivering' WHERE id = ${eff.id}::uuid`);
+    expect(await q(ackEffectSql(eff.id, 1, 'ok'))).toHaveLength(0);
+    expect(await q(failEffectSql(eff.id, 'stale', 1))).toHaveLength(0);
+    expect(await q(ackEffectSql(eff.id, 2, 'ok'))).toHaveLength(1);
   });
 });
 
