@@ -42,10 +42,11 @@ function loadOpenPrWorkers(wsIds: string[], opts: { workerIds?: string[]; prNumb
       id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true,
       // prBaseRef: where the PR points; a mission-branch PR is not a human's to merge.
       prLifecycleStatus: true, completedAt: true, prBaseRef: true, lastCommitSha: true,
+      prIsDraft: true, linesAdded: true, linesRemoved: true,
     },
     with: {
       task: {
-        columns: { id: true, title: true, missionId: true, status: true, taskClass: true, context: true },
+        columns: { id: true, title: true, missionId: true, status: true, taskClass: true, context: true, pathManifest: true },
         // Only the two Option A' fields: more would feed other steps of
         // resolvePolicy's precedence chain into this call site.
         with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
@@ -326,6 +327,9 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
             machineActing: (w.prNumber != null && (conflictRetryMap.has(prKey) || ciFixLive.has(prKey)))
               || (!!w.taskId && agentReviewingTaskIds.has(w.taskId)),
             landingStall: w.taskId ? stalls.get(w.taskId) ?? null : null,
+            pathManifest: ((w.task as any)?.pathManifest as string[] | null | undefined) ?? null,
+            draft: w.prIsDraft ?? null,
+            linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
           }),
         }];
       });

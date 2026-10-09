@@ -67,6 +67,15 @@ export interface EscalationSubject {
   landingStranded?: boolean;
   /** The PR head the state was read at; part of the fingerprint, so a new push is a new look. */
   headSha?: string | null;
+  /** Risk classes the PR's paths fall in (policyConfig risk classes: destructive_schema_change, ci_deploy_config, ...). */
+  riskClasses?: readonly string[];
+  /** The escalation is the policy's alone (a hard rule on paths), not the reviewer's judgment of the change. */
+  policyOnly?: boolean;
+  /** The reviewed head is still the PR's head (false: pushed since the verdict). */
+  headIsCurrent?: boolean | null;
+  draft?: boolean;
+  /** The diff is extra large (the merge-advice XL bucket). */
+  sizeXl?: boolean;
 }
 
 /** A named next step Buildd takes instead of asking. */
@@ -79,13 +88,18 @@ export type EscalationAction =
   | 'retry_landing'
   | 're_review'
   | 'address_review'
+  | 'policy_merge'
   | 'hold';
 
-/** The actions Jev may pick (the rest are rule-only). */
-export const JEV_ACTIONS = ['re_review', 'address_review', 'ci_fix', 'conflict_fix', 'retry_landing'] as const;
+/**
+ * The actions Jev may pick: only machine fixes. Jev never merges or approves
+ * (offline backtest, knowledge-base buildd/reports/merge-readiness-backtest/:
+ * it is weak at "merge as-is?"); merging is a rule's call (`policy_merge`).
+ */
+export const JEV_ACTIONS = ['re_review', 'address_review', 'ci_fix', 'conflict_fix'] as const;
 export type JevAction = (typeof JEV_ACTIONS)[number];
 
-export type EscalationRail = 'protected_path' | 'data_migration' | 'mission_ship_escalation' | 'irreversible';
+export type EscalationRail = 'protected_path' | 'data_migration' | 'security' | 'mission_ship_escalation' | 'irreversible';
 
 export type EscalationVerdict =
   | { owner: 'person'; by: 'rule' | 'jev' | 'fallback'; rail?: EscalationRail; reason: string }
@@ -94,7 +108,7 @@ export type EscalationVerdict =
 /** How long a Jev `hold` keeps a PR out of the inbox before it is the person's again. */
 export const ESCALATION_HOLD_MS = 2 * 60 * 60_000;
 export const ESCALATION_GATE_MIN_CONFIDENCE = 0.7;
-export const ESCALATION_GATE_PROMPT_VERSION = 'eg1';
+export const ESCALATION_GATE_PROMPT_VERSION = 'eg2';
 export const ESCALATION_GATE_DECISION_TIMEOUT_MS = 3_000;
 /** The ledger capability every escalation look is filed under. */
 export const ESCALATION_GATE_CAPABILITY = 'escalation_gate';
@@ -109,16 +123,24 @@ export const ACTION_WORDS: Record<EscalationAction, string> = {
   retry_landing: 'Buildd retries the merge once the base settles',
   re_review: 'Buildd asked for a fresh review of the current head',
   address_review: 'Buildd is addressing the reviewer\'s feedback',
+  policy_merge: 'Buildd lands it under the merge policy: the escalation was policy only and every gate holds',
   hold: 'held for now; it comes back if nothing changes',
 };
 
 const RAIL_WORDS: Record<EscalationRail, string> = {
   protected_path: 'It touches a protected path, so only a person can merge it.',
   data_migration: 'It runs a data migration, so a person decides.',
+  security: 'The reviewer raised a security concern, so a person decides.',
   mission_ship_escalation: 'The reviewer escalated the mission\'s ship PR, the one human gate for this mission.',
   irreversible: 'It names an action that can\'t be undone.',
 };
 
+/** Paths only a person merges, whatever else holds: CI/deploy config and auth/secrets. */
+const HARD_RISK_CLASSES: ReadonlySet<string> = new Set(['ci_deploy_config', 'auth_and_secrets']);
+/** Risk classes a policy-only escalation may carry and still land by rule (no reverts or prod failures in the backtest window). */
+const POLICY_MERGE_CLASSES: ReadonlySet<string> = new Set(['destructive_schema_change', 'public_api_contract', 'dependency_bump']);
+const SECURITY = /\bsecurity (?:concern|risk|issue|hole|scope|review|sensitive)|\bsecurity-sensitive\b|\bvulnerab|\bprivilege escalation\b|\bauth(?:entication|orization)? bypass\b|\bleaks? (?:a |the )?(?:secret|token|credential)/i;
+const COLLISION = /\bmigration (?:number|index) collision\b|\bcollides with (?:open )?pr\b|\brenumber/i;
 const DATA_MIGRATION = /\bdata migration\b|\bdestructive (?:schema|migration)\b|\bdrops? (?:a |the )?(?:table|column)s?\b/i;
 const STRANDED_CAUSES: ReadonlySet<string> = new Set(['refresh_exhausted', 'refresh_failed', 'base_rewritten']);
 const PROTECTED_CAUSES: ReadonlySet<string> = new Set(['deny_path']);
@@ -141,16 +163,35 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
   if (s.machineActing) return buildd('wait_machine');
   if (s.ci === 'red') return buildd('ci_fix');
   if (s.conflict && s.why !== 'conflict_fixes_spent') return buildd('conflict_fix');
+  if (s.migrationCollision || textsOf(s).some(t => COLLISION.test(t))) return buildd('renumber_migration');
 
   if (s.handoffCause && PROTECTED_CAUSES.has(s.handoffCause)) return person('protected_path');
+  if ((s.riskClasses ?? []).some(c => HARD_RISK_CLASSES.has(c))) return person('protected_path');
   if (textsOf(s).some(t => DATA_MIGRATION.test(t))) return person('data_migration');
-  if (detectIrreversibleAction(textsOf(s))) return person('irreversible');
+  if (textsOf(s).some(t => SECURITY.test(t))) return person('security');
+  // Landing's own words only: a reviewer's prose says "safe to merge this" far more often than it names an irreversible step.
+  if (detectIrreversibleAction([s.handoffReason])) return person('irreversible');
   if (s.missionPrRole === 'ship' && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted')) return person('mission_ship_escalation');
 
-  if (s.migrationCollision) return buildd('renumber_migration');
   if (s.landingStranded || (s.handoffCause && STRANDED_CAUSES.has(s.handoffCause))) return buildd('retry_landing');
   if (s.ci === 'running' || s.ci === 'unknown') return buildd('wait_ci');
+  if (isPolicyMerge(s)) return buildd('policy_merge');
   return null;
+}
+
+/**
+ * A policy-only escalation whose gates all hold lands by rule, not by a
+ * person: CI green, the reviewed head is the live head, not a draft, not XL,
+ * and every risk class it carries is one that landed cleanly in the backtest
+ * (schema/migration, public API, dependency bump). About 3 in 4 such cards
+ * merged as-is there.
+ */
+export function isPolicyMerge(s: EscalationSubject): boolean {
+  const classes = s.riskClasses ?? [];
+  return !!s.policyOnly
+    && (s.why === 'reviewer_escalated' || s.why === 'review_exhausted' || s.why === 'human_tier')
+    && s.ci === 'green' && s.headIsCurrent !== false && !s.draft && !s.sizeXl
+    && classes.length > 0 && classes.every(c => POLICY_MERGE_CLASSES.has(c));
 }
 
 /**
@@ -164,6 +205,7 @@ export function escalationFingerprint(s: EscalationSubject): string {
     key: s.key, why: s.why, ci: s.ci, conflict: s.conflict, acting: s.machineActing, role: s.missionPrRole,
     cause: s.handoffCause ?? null, collision: !!s.migrationCollision, stranded: !!s.landingStranded, head: s.headSha ?? null,
     detail: s.detail ?? null, handoff: s.handoffReason ?? null,
+    classes: [...(s.riskClasses ?? [])].sort(), policy: !!s.policyOnly, current: s.headIsCurrent ?? null, draft: !!s.draft, xl: !!s.sizeXl,
   };
   return createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
 }

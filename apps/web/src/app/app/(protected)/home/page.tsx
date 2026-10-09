@@ -682,7 +682,7 @@ export default async function HomePage({
             with: {
               task: {
                 // context: read only for `refreshTrunk`, the mission-refresh marker (missionPrRoleOf).
-                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true },
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true, pathManifest: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -1365,6 +1365,10 @@ export default async function HomePage({
                       conflictFixesSpent: !!(e as { deadZoneExhausted?: boolean }).deadZoneExhausted,
                       machineActing: reviewMachineActing(e as never, new Date()),
                       landingStall: e.taskId ? stalls.get(e.taskId) ?? null : null,
+                      pathManifest: ((w.task as any)?.pathManifest as string[] | null | undefined) ?? null,
+                      draft: e.prIsDraft,
+                      linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
+                      reviewedHeadSha: e.approvedSha,
                     }),
                   }];
                 });
