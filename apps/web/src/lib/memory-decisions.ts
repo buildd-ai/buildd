@@ -95,7 +95,8 @@ export function decisionUsageRow(receipt: DecisionReceipt, scope: { teamId: stri
     tier: null,
     surface: 'decision',
     kind: receipt.decisionId,
-    provider: 'openrouter',
+    // Clef is paid to Cloudflare; every other decision is recorded as before.
+    provider: receipt.provider === 'cloudflare' ? 'cloudflare' : 'openrouter',
     model: receipt.model,
     planSource: 'fallback',
     inputTokens: receipt.usage.inputTokens,
