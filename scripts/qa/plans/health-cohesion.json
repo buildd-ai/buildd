@@ -3,7 +3,10 @@
     "route": "/app/health"
   },
   {
-    "route": "/app/health/runners",
+    "route": "/app/health/runners"
+  },
+  {
+    "route": "/app/health/runners?state=sample",
     "states": [
       {
         "key": "selected-run",
