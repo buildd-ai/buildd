@@ -8,7 +8,9 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
 import { moveTargets } from '../../workspaces/rows';
 import MergePolicyEditor from './MergePolicyEditor';
-import { getTeamsPermissionOverrides } from '@/lib/permissions';
+import { getTeamsPermissionOverrides, getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { loadWorkspaceRepoFacts, memberHasRepoAccess } from '@/lib/member-repo-access';
+import MemberRepoAccessSection from './MemberRepoAccessSection';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +56,13 @@ export default async function WorkspaceMergePolicyPage({
   const teams = await getUserTeamsWithDetails(user.id).catch(() => []);
   const moveTeams = moveTargets(user.id, teams, workspace.teamId, await getTeamsPermissionOverrides(teams.map((t) => t.id)));
 
+  // Opt-in GitHub repo check (lib/member-repo-access.ts): the setting, and the
+  // viewer's own result while it is on.
+  const repoFacts = await loadWorkspaceRepoFacts(workspaceId).catch(() => null);
+  const repoAccessMode = repoFacts?.mode ?? 'off';
+  const viewerRepoAccess = repoAccessMode === 'off' ? null : await memberHasRepoAccess(user.id, workspaceId);
+  const canManageSettings = roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(workspace.teamId));
+
   const missionOverrides = missionsWithOverrides
     .filter(m => m.mergePolicy != null)
     .map(m => ({ id: m.id, title: m.title, policy: m.mergePolicy! }));
@@ -68,12 +77,20 @@ export default async function WorkspaceMergePolicyPage({
           policyConfig={workspace.gitConfig?.policyConfig ?? null}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
+          canEdit={canManageSettings}
           headerAction={moveTeams && (
             <MoveToTeamButton
               workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
               teams={moveTeams}
             />
           )}
+        />
+        <MemberRepoAccessSection
+          workspaceId={workspaceId}
+          mode={repoAccessMode}
+          repoFullName={repoFacts?.repoFullName ?? null}
+          canManage={canManageSettings}
+          viewer={viewerRepoAccess}
         />
       </div>
     </main>

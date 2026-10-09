@@ -51,6 +51,12 @@ export interface RouteSpec {
     placeholder: string;
     consoleUrl: string;
     envVar: string;
+    /**
+     * @deprecated Storage facts live in the provider registry
+     * (`./provider-registry`); `PROVIDER_KEY_CAPABILITIES` no longer reads
+     * this. Kept for one release so consumers do not break; a test holds it
+     * equal to the registry's chat-read legacy purposes.
+     */
     legacyPurposes?: readonly string[];
     rejectedPrefixes?: readonly string[];
   };

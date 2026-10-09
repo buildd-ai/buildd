@@ -25,6 +25,7 @@ import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
 import { kernelDeliveryForPr } from './authority';
+import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
 import type { DrainSummary } from './effects';
 
@@ -49,8 +50,8 @@ export interface LandingInput {
   /** `human:<user>`, `agent:<worker>` or `system:<door>`. */
   actor: string;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
-  /** A person merging past a review verdict; recorded in the transition's `bypass`. */
-  override?: { reason: string } | null;
+  /** A person (or an agent run under a person's task grant) merging past a rail; recorded in the transition's `bypass`. */
+  override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
   /** The delivery version the caller saw (human and agent callers, §7.2). */
   expectedVersion?: number;
 }
@@ -91,12 +92,32 @@ export interface KernelLanding {
 const NOT_LOADED: CurrentView = { state: null, version: 0, head: null, round: 0 };
 
 /** The delivery a person's merge would act on: its version, for the S20 check before any rail runs. */
-export async function kernelLandingView(workspaceId: string, repoFullName: string, prNumber: number, exec: Exec = dbExec): Promise<{ deliveryId: string; current: CurrentView } | null> {
+export interface KernelLandingTreadmill {
+  /** The current S15 cycle (1-based) and the cap. */
+  cycle: number;
+  maxCycles: number;
+  /** Behind refreshes dispatched in the current cycle. */
+  refreshes: number;
+  /** The current cycle's budget is spent: an ESCALATED(landing_needs_human) delivery escalated on the treadmill. */
+  spent: boolean;
+}
+
+export async function kernelLandingView(workspaceId: string, repoFullName: string, prNumber: number, exec: Exec = dbExec): Promise<{
+  deliveryId: string; current: CurrentView; stateReason?: string | null; treadmill?: KernelLandingTreadmill | null;
+} | null> {
   const deliveryId = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber, exec);
   if (!deliveryId) return null;
-  const d = (await loadView({ deliveryId }, exec)).delivery;
+  const view = await loadView({ deliveryId }, exec);
+  const d = view.delivery;
   if (!d) return null;
-  return { deliveryId, current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound } };
+  const t = treadmillCycle(view.attempts.filter((a) => a.family === 'conflict' && a.mode === 'mechanical'));
+  const spent = d.state === 'ESCALATED' && d.stateReason === 'landing_needs_human' && t.refreshes >= DEFAULT_MAX_BEHIND_REFRESHES;
+  return {
+    deliveryId,
+    current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound },
+    stateReason: d.stateReason,
+    treadmill: { cycle: t.cycle, maxCycles: MAX_TREADMILL_CYCLES, refreshes: t.refreshes, spent },
+  };
 }
 
 /**

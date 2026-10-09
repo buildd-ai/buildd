@@ -609,6 +609,15 @@ watchers (`watched_projects`) that auto-file ops tasks + Pushover alerts.
 Check `authType` to know which limits apply. CLI auth via device-code flow
 (`device_codes`). MCP clients via OAuth 2.1 PKCE.
 
+**Repository access.** By default, team membership is the whole check: a member
+can see everything Buildd can see in the workspace's repository through its
+GitHub App installation, whatever their own GitHub rights. A workspace admin can
+set `gitConfig.memberRepoAccess: 'require_read'`; then a person (dashboard or
+OAuth MCP session) must also hold read or higher on the linked repo on GitHub to
+create tasks, read diff artifacts, chat over the workspace or recall its `code`
+corpus. A person with no linked GitHub account, or whom GitHub cannot confirm,
+is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
+
 ---
 
 ## 8. What is live vs. retired

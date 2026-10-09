@@ -31,7 +31,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   secrets: {
-    id: 'id', teamId: 'team_id', accountId: 'account_id', workspaceId: 'workspace_id',
+    id: 'id', teamId: 'team_id', accountId: 'account_id', workspaceId: 'workspace_id', userId: 'user_id',
     purpose: 'purpose', encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at', lastRefreshedAt: 'last_refreshed_at',
     refreshLockedAt: 'refresh_locked_at', rotationStartedAt: 'rotation_started_at',
@@ -363,6 +363,63 @@ describe('resolveClaudeCredential', () => {
     const result = await resolveClaudeCredential({ teamId: 'team-1', workspaceId: 'ws-1' });
     // Revoked workspace row is skipped; healthy team-wide row should be returned.
     expect(result?.accessToken).toBe('at-team');
+  });
+
+  // ── scope precedence (docs/credentials-architecture.md) ─────────────────────
+
+  it('a newer team-wide row does not beat an older workspace row', async () => {
+    mockFindMany.mockResolvedValue([
+      makeRow({ encryptedValue: makeBlob('at-team'), workspaceId: null, updatedAt: new Date('2026-09-05T00:00:00Z') }),
+      makeRow({ encryptedValue: makeBlob('at-ws'), workspaceId: 'ws-1', updatedAt: new Date('2026-09-01T00:00:00Z') }),
+    ]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1', accountId: 'acct-1', workspaceId: 'ws-1' });
+    expect(result?.accessToken).toBe('at-ws');
+  });
+
+  it('an account row beats a newer team-wide row', async () => {
+    mockFindMany.mockResolvedValue([
+      makeRow({ encryptedValue: makeBlob('at-team'), accountId: null, updatedAt: new Date('2026-09-05T00:00:00Z') }),
+      makeRow({ encryptedValue: makeBlob('at-acct'), accountId: 'acct-1', updatedAt: new Date('2026-09-01T00:00:00Z') }),
+    ]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1', accountId: 'acct-1', workspaceId: 'ws-1' });
+    expect(result?.accessToken).toBe('at-acct');
+  });
+
+  it('within one scope, the newest row wins', async () => {
+    mockFindMany.mockResolvedValue([
+      makeRow({ encryptedValue: makeBlob('at-old'), updatedAt: new Date('2026-09-01T00:00:00Z') }),
+      makeRow({ encryptedValue: makeBlob('at-new'), updatedAt: new Date('2026-09-03T00:00:00Z') }),
+    ]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1' });
+    expect(result?.accessToken).toBe('at-new');
+  });
+
+  it('never picks a personal row', async () => {
+    mockFindMany.mockResolvedValue([
+      makeRow({ encryptedValue: makeBlob('at-personal'), userId: 'user-1', workspaceId: 'ws-1' }),
+      makeRow({ encryptedValue: makeBlob('at-team') }),
+    ]);
+    const result = await resolveClaudeCredential({ teamId: 'team-1', accountId: 'acct-1', workspaceId: 'ws-1' });
+    expect(result?.accessToken).toBe('at-team');
+  });
+
+  // db is mocked, so the WHERE clause is the only place the scoping lives.
+  it('queries through the team-credential filter with account and workspace scope', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await resolveClaudeCredential({ teamId: 'team-1', accountId: 'acct-1', workspaceId: 'ws-1' });
+    const where = JSON.stringify((mockFindMany.mock.calls[0] as any)[0].where);
+    // Personal rows excluded as the OUTERMOST conjunct.
+    expect((mockFindMany.mock.calls[0] as any)[0].where.__and[0]).toEqual({ __isNull: 'user_id' });
+    expect(where).toContain(JSON.stringify({ __or: [{ __isNull: 'account_id' }, { __eq: { f: 'account_id', v: 'acct-1' } }] }));
+    expect(where).toContain(JSON.stringify({ __or: [{ __isNull: 'workspace_id' }, { __eq: { f: 'workspace_id', v: 'ws-1' } }] }));
+  });
+
+  it('without an account, account-scoped rows are excluded from the query', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await resolveClaudeCredential({ teamId: 'team-1' });
+    const where = JSON.stringify((mockFindMany.mock.calls[0] as any)[0].where);
+    expect(where).toContain(JSON.stringify({ __isNull: 'account_id' }));
+    expect(where).not.toContain('"f":"account_id"');
   });
 });
 

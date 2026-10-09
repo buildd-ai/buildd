@@ -640,7 +640,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required), workspaceId? (disambiguate when prNumber exists in multiple repos) } — workerId is resolved from prNumber when absent, same as merge_pr. Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     update_pr: '{ workerId?, prNumber (required), body? , draft? (false — marks a draft PR ready for review instead of editing the body; one of body/draft is required) } — Replace a pull request\'s body, or mark it ready for review with draft:false (gh pr ready is blocked for builders) via the workspace\'s GitHub App installation, same as close_pr but rewriting content instead of state. Use this instead of the GitHub connector\'s update_pull_request (returns 403 Resource not accessible by integration on most installations) and instead of create_pr\'s dedup-adoption path for a PR create_pr did not open or was not asked to refresh — e.g. correcting a PR body after the fact (removing a disclosed URL, fixing a no-prod-data gate trip). Only an agent run or team member that owns the PR (its own worker\'s, or one its task names) may call this; a task token is confined to its own task\'s PR the same way close_pr is.',
-    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
+    merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId?, overrides? ({ freshness?: true, size?: true }), reason? (required with overrides) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps. **overrides** is the escape hatch for a PR whose landing escalated because the base kept moving (or the size cap): it merges past base freshness / the size cap, never the review verdict, red CI or a deny path, and is recorded with the reason. A person\'s own session (OAuth MCP, chat) may use it; an agent run is refused unless a person granted it on the run\'s task at creation (create_task context.landingOverride: { prNumbers, overrides: ["freshness"|"size"] }).',
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
@@ -2625,6 +2625,21 @@ export async function handleBuilddAction(
       if (!params.prNumber) throw new Error('prNumber is required');
 
       const mergeMethod = params.mergeMethod ?? 'squash';
+      const overrideFields = {
+        ...(params.overrides != null ? { overrides: params.overrides } : {}),
+        ...(params.reason != null ? { reason: params.reason } : {}),
+      };
+
+      // Chat is a signed-in person in process: it merges through the dashboard's
+      // own merge route (the landing page's rails), not the runner-key route.
+      if (ctx.surface === 'chat') {
+        const res = await api(`/api/prs/${encodeURIComponent(String(params.prNumber))}/merge`, {
+          method: 'POST',
+          body: JSON.stringify({ ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}), ...overrideFields }),
+        });
+        if (!res.merged) return text(`PR #${params.prNumber} merge failed: ${res.error ?? res.message ?? 'not merged'}`);
+        return text(`PR #${params.prNumber} merged successfully.${res.message ? `\n**Message:** ${res.message}` : ''}`);
+      }
 
       const data = await api('/api/github/pr', {
         method: 'PUT',
@@ -2633,6 +2648,7 @@ export async function handleBuilddAction(
           prNumber: params.prNumber,
           mergeMethod,
           ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...overrideFields,
         }),
       });
 
@@ -6718,6 +6734,13 @@ type MemoryActionCtx = {
    * docs corpus over exactly these ids, and never code/task/memory.
    */
   linkedDocsWorkspaceIds?: string[];
+  /**
+   * The web layer's opt-in GitHub repo check for the person behind an OAuth
+   * session (apps/web/src/lib/member-repo-access.ts). Returns a refusal
+   * message when this caller may not read the `code` corpus, else null.
+   * Omitted (API keys, runners): code reads as before. Core never decides.
+   */
+  codeAccessRefusal?: () => Promise<string | null>;
   /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
   memoryLedger?: MemoryLedgerWriter;
   /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
@@ -7071,6 +7094,16 @@ async function queryCorpus(
  * suppression is deliberate and must stay silent (memory 0ff1a5c7's
  * bidirectional isolation decision).
  */
+/** The code corpus refusal, if any. A throwing check refuses (fails closed). */
+async function codeRefusal(ctx: MemoryActionCtx): Promise<string | null> {
+  if (!ctx.codeAccessRefusal) return null;
+  try {
+    return await ctx.codeAccessRefusal();
+  } catch {
+    return 'could not confirm GitHub access to this workspace repository';
+  }
+}
+
 async function fanOutCorpora(
   ks: KnowledgeStore,
   mc: MemoryStore | null,
@@ -7087,6 +7120,13 @@ async function fanOutCorpora(
       if (c === 'memory' && !normalizeProject(ctx.project)) {
         failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
         return [];
+      }
+      if (c === 'code') {
+        const refusal = await codeRefusal(ctx);
+        if (refusal) {
+          failures.push({ corpus: c, reason: refusal });
+          return [];
+        }
       }
       const ns = knowledgeNamespace(ctx, c);
       if (!ns) {
@@ -7254,6 +7294,10 @@ export async function handleRecallAction(
   }
   if (scope === 'memory' && !normalizeProject(ctx.project)) {
     return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
+  }
+  if (scope === 'code') {
+    const refusal = await codeRefusal(ctx);
+    if (refusal) return errorResult(`recall scope=code is unavailable: ${refusal}`);
   }
 
   // Resolve namespace — namespace resolution is internal to the server.
@@ -7901,6 +7945,10 @@ export async function handleMemoryAction(
       }
       if (corpus === 'memory' && !normalizeProject(ctx.project)) {
         throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);
+      }
+      if (corpus === 'code') {
+        const refusal = await codeRefusal(ctx);
+        if (refusal) throw new Error(`query_knowledge corpus=code is unavailable: ${refusal}`);
       }
 
       const ns = knowledgeNamespace(ctx, corpus);

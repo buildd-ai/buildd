@@ -21,7 +21,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveClaudeCredential } from '@/lib/claude-credential';
 import { resolveOpenAiApiKey } from '@/lib/openai-credential';
-import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { pickMostSpecificCredential, teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -64,22 +64,23 @@ export async function attachServerManagedSecrets(
             eq(secrets.workspaceId, task.workspaceId),
           ),
         ),
-        columns: { id: true, purpose: true, label: true, healthStatus: true, updatedAt: true },
+        columns: {
+          id: true, purpose: true, label: true, healthStatus: true, updatedAt: true,
+          accountId: true, workspaceId: true, userId: true,
+        },
       });
 
       if (workerSecrets.length === 0) continue;
 
-      // Pick the best row per purpose: prefer a non-revoked credential, then the
-      // most recently updated. With replaceScoped enforcing one row per scope this
-      // is normally a single row; the ordering is defense-in-depth so a stale or
-      // revoked leftover can never shadow a healthy credential (the bug that let a
-      // revoked token be handed to workers while a fresh one sat unused).
+      // Pick the best row per purpose with the documented precedence
+      // (docs/credentials-architecture.md): a live row over a revoked one, then
+      // the most specific scope (workspace > account > team-wide), then the most
+      // recently updated. Sorting on recency alone let a newer team-wide key
+      // shadow a workspace's own key; a revoked leftover must still never shadow
+      // a healthy credential.
+      const scopeTarget = { accountId, workspaceId: task.workspaceId };
       const pickBest = (purpose: string) =>
-        workerSecrets
-          .filter(s => s.purpose === purpose)
-          .sort((a, b) =>
-            (a.healthStatus === 'revoked' ? 1 : 0) - (b.healthStatus === 'revoked' ? 1 : 0) ||
-            (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0];
+        pickMostSpecificCredential(workerSecrets.filter(s => s.purpose === purpose), scopeTarget);
 
       // The endpoint is the only model credential for its workers; MCP secrets
       // below are not model credentials and are still delivered.
@@ -104,7 +105,17 @@ export async function attachServerManagedSecrets(
       // Cue that require two headers (x-api-key + x-tenant-id). mcp_credential
       // secrets keyed by their label (the env var name) remain the viable path
       // until connectors gain a headers JSONB column.
-      const mcpCredSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential');
+      // Many rows legitimately (one per env-var label), so precedence applies per
+      // label: a workspace override of CUE_API_KEY beats the team-wide value of
+      // CUE_API_KEY without touching any other label.
+      const mcpByLabel = new Map<string, typeof workerSecrets>();
+      for (const s of workerSecrets) {
+        if (s.purpose !== 'mcp_credential' || !s.label) continue;
+        mcpByLabel.set(s.label, [...(mcpByLabel.get(s.label) ?? []), s]);
+      }
+      const mcpCredSecrets = [...mcpByLabel.values()]
+        .map(rows => pickMostSpecificCredential(rows, scopeTarget))
+        .filter((s): s is NonNullable<typeof s> => !!s);
       if (mcpCredSecrets.length > 0) {
         const mcpSecretsMap: Record<string, string> = {};
         await Promise.all(mcpCredSecrets.map(async (s) => {
@@ -206,6 +217,8 @@ export async function attachCodexCredentials(
 export async function attachClaudeCredentials(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  /** The claiming account: an account-scoped credential outranks a team-wide one. */
+  accountId: string,
   /** Workers whose agent model endpoint won: no Claude token for them. */
   endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
@@ -225,7 +238,8 @@ export async function attachClaudeCredentials(
       // NOTE: credentials with healthStatus = 'revoked' (killed by prior Vercel IP-flip refreshes)
       // cannot be recovered by this cutover — users must reconnect via the OAuth device-code flow.
       // The first refresh after reconnect comes from the runner (workers.ts BUILDD_RUNNER_REFRESH gate).
-      const cred = await resolveClaudeCredential({ teamId, workspaceId: wsId });
+      // Resolve the most-specific credential: workspace > account > team-wide.
+      const cred = await resolveClaudeCredential({ teamId, accountId, workspaceId: wsId });
       if (cred) {
         (cw as any).claudeAccessToken = cred.accessToken;
         (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;

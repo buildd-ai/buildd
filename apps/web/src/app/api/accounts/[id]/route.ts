@@ -77,11 +77,13 @@ export async function DELETE(
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
     }
 
-    // Deleting a key is a manage_team_keys act, like editing or regenerating it.
-    const role = await getUserTeamRole(user.id, account.teamId);
-    if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
+    // Deleting someone else's key is a manage_team_keys act, like editing or
+    // regenerating it. Anyone may delete a key they minted themselves.
+    const ownKey = account.createdByUserId != null && account.createdByUserId === user.id;
+    const role = ownKey ? null : await getUserTeamRole(user.id, account.teamId);
+    if (!ownKey && !canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
       return NextResponse.json(
-        { error: 'Only team members holding manage_team_keys can delete API keys' },
+        { error: 'Only the person who created this key, or team members holding manage_team_keys, can delete it' },
         { status: 403 },
       );
     }

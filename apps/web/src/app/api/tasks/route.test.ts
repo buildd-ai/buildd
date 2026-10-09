@@ -1001,6 +1001,54 @@ describe('POST /api/tasks', () => {
     expect(new Date(data.startAt).toISOString()).toBe(inserted.startAt.toISOString());
   });
 
+  // Opt-in GitHub repo check (lib/member-repo-access.ts): with the setting on
+  // and nothing to confirm access against, a person is refused (fails closed).
+  it('refuses a session user when memberRepoAccess is on and access cannot be confirmed', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { memberRepoAccess: 'require_read' } });
+
+    const response = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Test Task' } }));
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe('member_repo_access');
+    expect(data.reason).toBe('check_failed');
+  });
+
+  // The landing escape hatch's grant (lib/landing-override-grant.ts): a person's call, stamped by the server.
+  it('a person may grant a task a landing override; the server stamps who granted it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    let insertedValues: any;
+    mockTasksInsert.mockReturnValue({ values: mock((values: any) => { insertedValues = values; return { returning: mock(() => [{ id: 'task-g', workspaceId: 'ws-1', title: 'Land #42' }]) }; }) });
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'ws-1', title: 'Land #42', context: { landingOverride: { prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:someone-else' } } },
+    }));
+    expect(response.status).toBe(200);
+    expect(insertedValues.context.landingOverride).toMatchObject({ prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:user-123' });
+  });
+
+  it('an API key or task token may not grant a landing override', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    const insertCalls = mockTasksInsert.mock.calls.length;
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Land #42', context: { landingOverride: { prNumbers: [42], overrides: ['freshness'] } } },
+    }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toContain('person');
+    expect(mockTasksInsert.mock.calls.length).toBe(insertCalls);
+  });
+
   it('creates task with session auth', async () => {
     const createdTask = {
       id: 'task-123',

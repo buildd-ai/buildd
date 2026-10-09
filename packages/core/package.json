@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.299.0",
+  "version": "0.300.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -40,6 +40,7 @@
     "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./providers": "./providers/index.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",

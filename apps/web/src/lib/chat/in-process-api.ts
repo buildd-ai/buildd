@@ -107,6 +107,8 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
     reach: { unpinned: 'lists the caller\'s PRs; every row carries its workspaceId and is filtered', ...ROWS },
   },
   { pattern: '/api/github/pr', methods: ['GET'], load: () => import('@/app/api/github/pr/route'), reach: { pinTeam: true, requireQuery: ['workerId', 'workspaceId'], ...ROWS } },
+  // merge_pr from chat: the dashboard's merge route, as the signed-in person; the workspace names the repo.
+  { pattern: '/api/prs/:prNumber/merge', methods: ['POST'], load: () => import('@/app/api/prs/[prNumber]/merge/route'), reach: { requireBody: ['workspaceId'], bodyScopedPath: ['prNumber'], ...ROWS } },
   { pattern: '/api/github/pr/review', methods: ['GET'], load: () => import('@/app/api/github/pr/review/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/releases', methods: ['GET'], load: () => import('@/app/api/releases/route'), reach: { requireQuery: ['workspaceId', 'missionId'], ...ROWS } },
   { pattern: '/api/releases/status', methods: ['GET'], load: () => import('@/app/api/releases/status/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },

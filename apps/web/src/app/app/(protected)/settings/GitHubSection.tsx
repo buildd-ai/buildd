@@ -15,7 +15,12 @@ interface Installation {
   suspendedAt: string | null;
 }
 
-export default function GitHubSection() {
+/**
+ * `disconnectableIds`: installations the person may disconnect (the server
+ * page computes the DELETE route's rule). Any other row offers Sync only and
+ * says who can change it. Omitted = every row.
+ */
+export default function GitHubSection({ disconnectableIds }: { disconnectableIds?: string[] } = {}) {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [loading, setLoading] = useState(true);
   // False when this buildd server has no GitHub App: connecting cannot work.
@@ -180,12 +185,16 @@ export default function GitHubSection() {
                   >
                     {syncing === inst.id ? 'Syncing…' : 'Sync'}
                   </button>
-                  <button
-                    onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                    className="btn btn-danger"
-                  >
-                    Disconnect
-                  </button>
+                  {!disconnectableIds || disconnectableIds.includes(inst.id) ? (
+                    <button
+                      onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
+                      className="btn btn-danger"
+                    >
+                      Disconnect
+                    </button>
+                  ) : (
+                    <span data-testid={`github-read-only-${inst.id}`} className="self-center text-xs text-text-muted">Admins can disconnect this.</span>
+                  )}
                 </div>
               </div>
             </div>

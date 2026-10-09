@@ -66,7 +66,7 @@ async function ensureUserAccount(userId: string, workspaceId: string): Promise<v
 
     // Set seatId from the team's Claude credential so this account is grouped
     // correctly with other accounts sharing the same Anthropic subscription.
-    const cred = await resolveClaudeCredential({ teamId: workspace.teamId });
+    const cred = await resolveClaudeCredential({ teamId: workspace.teamId, accountId });
     if (cred) {
       const seatId = extractJwtSub(cred.accessToken);
       if (seatId) {

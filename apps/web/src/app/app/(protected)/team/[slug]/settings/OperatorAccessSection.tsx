@@ -187,7 +187,7 @@ function EffectiveGrantPreview({ grant }: { grant: ReturnType<typeof resolveOper
 }
 
 /** Team-level ceiling: a kill switch, the standard-capability ceiling, and optional scope ceilings. Never elevated. */
-function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unknown }) {
+function TeamCeilingCard({ roleId, metadata, canEdit = true }: { roleId: string; metadata: unknown; canEdit?: boolean }) {
   const initial = sanitizeOperatorGrantConfig((metadata as { operator?: unknown } | null)?.operator) ?? {};
   const [killSwitchOff, setKillSwitchOff] = useState(initial.enabled === false);
   const [caps, setCaps] = useState<Set<AgentCapability>>(
@@ -237,7 +237,7 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
   }
 
   return (
-    <div className="border border-border-default rounded-lg p-4">
+    <fieldset disabled={!canEdit} className="border border-border-default rounded-lg p-4 min-w-0">
       <div className="flex items-center justify-between mb-1">
         <h3 className="text-title font-semibold text-text-primary">Team ceiling</h3>
         <label className="flex items-center gap-2 cursor-pointer">
@@ -283,7 +283,7 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
 
       {error && <div className="mt-3 px-3 py-2 rounded-md bg-status-error/10 text-status-error text-meta">{error}</div>}
 
-      <div className="flex items-center gap-3 pt-3 mt-3 border-t border-border-default">
+      {canEdit && <div className="flex items-center gap-3 pt-3 mt-3 border-t border-border-default">
         <button
           type="button"
           onClick={handleSave}
@@ -292,8 +292,8 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
         >
           {saving ? 'Saving…' : saved ? 'Saved' : 'Save team ceiling'}
         </button>
-      </div>
-    </div>
+      </div>}
+    </fieldset>
   );
 }
 
@@ -304,12 +304,14 @@ function WorkspaceGrantRow({
   override,
   teamMetadata,
   onSaved,
+  canEdit = true,
 }: {
   roleId: string;
   workspace: WorkspaceOption;
   override: OperatorRoleRow | undefined;
   teamMetadata: unknown;
   onSaved: (override: OperatorRoleRow) => void;
+  canEdit?: boolean;
 }) {
   const initial = sanitizeOperatorGrantConfig((override?.metadata as { operator?: unknown } | null)?.operator) ?? {};
   const [expanded, setExpanded] = useState(false);
@@ -418,7 +420,7 @@ function WorkspaceGrantRow({
       </button>
 
       {expanded && (
-        <div className="p-4 space-y-4">
+        <fieldset disabled={!canEdit} className="p-4 space-y-4 min-w-0">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -467,7 +469,7 @@ function WorkspaceGrantRow({
 
           {error && <div className="px-3 py-2 rounded-md bg-status-error/10 text-status-error text-meta">{error}</div>}
 
-          <div className="flex items-center gap-3 pt-2 border-t border-border-default">
+          {canEdit && <div className="flex items-center gap-3 pt-2 border-t border-border-default">
             <button
               type="button"
               onClick={handleSave}
@@ -476,8 +478,8 @@ function WorkspaceGrantRow({
             >
               {saving ? 'Saving…' : saved ? 'Saved' : 'Save workspace grant'}
             </button>
-          </div>
-        </div>
+          </div>}
+        </fieldset>
       )}
     </div>
   );
@@ -488,11 +490,14 @@ export function OperatorAccessSection({
   teamMetadata,
   overrides,
   workspaces,
+  canEdit = true,
 }: {
   roleId: string;
   teamMetadata: unknown;
   overrides: OperatorRoleRow[];
   workspaces: WorkspaceOption[];
+  /** Holds `manage_agent_roles`. False: the ceiling and each grant read-only. Defaults to true. */
+  canEdit?: boolean;
 }) {
   const [overrideList, setOverrideList] = useState<OperatorRoleRow[]>(overrides);
 
@@ -515,7 +520,7 @@ export function OperatorAccessSection({
         </p>
       </div>
 
-      <TeamCeilingCard roleId={roleId} metadata={teamMetadata} />
+      <TeamCeilingCard roleId={roleId} metadata={teamMetadata} canEdit={canEdit} />
 
       {workspaces.length === 0 ? (
         <p className="text-body text-text-muted">No workspaces to configure.</p>
@@ -529,6 +534,7 @@ export function OperatorAccessSection({
               override={overrideList.find(o => o.workspaceId === ws.id)}
               teamMetadata={teamMetadata}
               onSaved={handleSaved}
+              canEdit={canEdit}
             />
           ))}
         </div>
