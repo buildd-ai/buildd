@@ -804,7 +804,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 
 /* ── Chat canvas (knowledge-base: buildd/design/chat-canvas.md). Two materials, one rule: the
- * conversation is soft (Plex Sans, gentle tints, rounded bubbles, no frames)
+ * conversation is soft (Schibsted, gentle tints, rounded bubbles, no frames)
  * and fleet objects inside it (a mission, an approval, a question, a task)
  * stay hard and square. Orange still means action or live, never decoration:
  * here it is the send button. (While a turn streams, the only glow is the blue
@@ -826,80 +826,64 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --canvas-dim: rgba(231, 227, 219, 0.74);
 }
 @layer components {
-  .font-convo { font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .font-convo { font-family: var(--font-sans); }
 }
-/* ── Chat v3 foreground (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"). The
- * foreground is square: no radius, 1px rules, offset shadows. Colour carries
- * meaning only: calm (teal), needs you (copper), thinking (blue/violet),
- * landed (green). Components read these roles, never the hex. */
+/* ── Chat foreground (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"). Chat
+ * has no palette of its own: every --chat-* role below is an alias of an app
+ * token, so day/night and any future retune reach chat for free
+ * (chat-tokens.test.ts holds this). Only three values stay chat-specific, each
+ * with its reason beside it. Colour carries meaning only, and means the same
+ * as everywhere else: thinking = audit blue, needs you = decision orange,
+ * landed = delivered green, calm = neutral. Components read these roles,
+ * never the hex. */
+:root, [data-theme] {
+  --chat-ground: var(--surface-1);
+  --chat-bar: var(--surface-1);
+  --chat-surface: var(--card);
+  --chat-raised: var(--surface-3);
+  --chat-rule: var(--border);
+  /* --faint is the app's 3:1 graphics grey: what a chat object's outline needs. */
+  --chat-rule-strong: var(--faint);
+  --chat-text: var(--text-primary);
+  --chat-muted: var(--text-muted);
+  --chat-dim: var(--text-muted);
+  /* The glass behind the composer and menus: the ground, see-through. */
+  --chat-panel: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  --mood-calm: var(--q);
+  --mood-needs: var(--status-warning);
+  --mood-needs-fill: var(--accent);
+  --on-mood-needs: var(--on-accent);
+  --mood-thinking: var(--status-info);
+  --mood-landed: var(--status-success);
+}
 :root, [data-theme="dark"] {
-  --chat-ground: #141312;
-  --chat-bar: #171513;
-  --chat-surface: #1f1c19;
-  --chat-raised: #2a2622;
-  --chat-rule: #37322c;
-  --chat-rule-strong: #8a8378;
-  --chat-text: #efe8dc;
-  --chat-muted: #a89f92;
-  --chat-dim: #8b8276;
-  --chat-panel: rgba(20, 19, 18, 0.78);
+  /* Chat-specific: the phone sheet's dark overlay, near-black in both themes
+   * (the app's --canvas-dim is a light wash in day and cannot stand in). */
   --chat-scrim: rgba(14, 13, 12, 0.94);
-  --mood-calm: #8fb9b3;
-  --mood-needs: #e0955a;
-  --mood-needs-fill: #c9783b;
-  --on-mood-needs: #171513;
-  --mood-thinking: #7ea6ff;
-  --mood-thinking-alt: #b49cff;
-  --mood-thinking-rule: #5f7fd0;
-  --mood-thinking-done: #4a5a7a;
-  --mood-thinking-text: #dfe8ff;
-  --mood-thinking-label: #9ec0ff;
-  --mood-landed: #86c9a1;
-  /* Pools are capped so the dimmest body text (--text-muted) keeps AA over
-   * each one's peak (sea.test.ts, "AA over the sea"). */
-  --sea-calm-1: rgba(70, 122, 124, 0.24);
-  --sea-calm-2: rgba(44, 78, 100, 0.41);
-  --sea-calm-3: rgba(98, 130, 114, 0.21);
-  --sea-calm-4: rgba(28, 46, 60, 0.7);
-  --sea-needs: rgba(224, 149, 90, 0.15);
-  --sea-thinking-1: rgba(126, 166, 255, 0.23);
-  --sea-thinking-2: rgba(180, 156, 255, 0.22);
-  --sea-thinking-3: rgba(64, 112, 114, 0.4);
-  --sea-thinking-4: rgba(30, 40, 82, 0.7);
+  /* Chat-specific: the sea. Pools are capped so the dimmest body text keeps AA
+   * over each one's peak, and over all of them stacked (chat-tokens.test.ts).
+   * Calm is neutral, thinking is the audit blue, needs you the decision orange. */
+  --sea-calm-1: rgba(168, 159, 150, 0.09);
+  --sea-calm-2: rgba(122, 114, 105, 0.20);
+  --sea-calm-3: rgba(168, 159, 150, 0.07);
+  --sea-calm-4: rgba(10, 9, 8, 0.45);
+  --sea-needs: rgba(244, 129, 31, 0.12);
+  --sea-thinking-1: rgba(147, 184, 214, 0.18);
+  --sea-thinking-2: rgba(122, 172, 202, 0.16);
+  --sea-thinking-3: rgba(79, 120, 150, 0.30);
+  --sea-thinking-4: rgba(14, 30, 46, 0.6);
 }
-/* Day: the same roles on linen, each dark enough for AA on --chat-ground. */
 [data-theme="light"] {
-  --chat-ground: #f4efe8;
-  --chat-bar: #efe9e1;
-  --chat-surface: #fbf8f3;
-  --chat-raised: #e9e2d8;
-  --chat-rule: #d3cabe;
-  --chat-rule-strong: #5f574e;
-  --chat-text: #1f1b17;
-  --chat-muted: #514a42;
-  --chat-dim: #625a51;
-  --chat-panel: rgba(251, 248, 243, 0.86);
   --chat-scrim: rgba(38, 34, 30, 0.9);
-  --mood-calm: #2f6f68;
-  --mood-needs: #9c4f14;
-  --mood-needs-fill: #c9783b;
-  --on-mood-needs: #171513;
-  --mood-thinking: #3a5fc4;
-  --mood-thinking-alt: #6a4fc0;
-  --mood-thinking-rule: #3a5fc4;
-  --mood-thinking-done: #8a9ac0;
-  --mood-thinking-text: #1f2f66;
-  --mood-thinking-label: #2c4fb0;
-  --mood-landed: #2f7d52;
-  --sea-calm-1: rgba(70, 122, 124, 0.22);
-  --sea-calm-2: rgba(44, 78, 100, 0.18);
-  --sea-calm-3: rgba(98, 130, 114, 0.18);
-  --sea-calm-4: rgba(28, 46, 60, 0.12);
-  --sea-needs: rgba(224, 149, 90, 0.24);
-  --sea-thinking-1: rgba(126, 166, 255, 0.24);
-  --sea-thinking-2: rgba(180, 156, 255, 0.22);
-  --sea-thinking-3: rgba(64, 112, 114, 0.18);
-  --sea-thinking-4: rgba(30, 40, 82, 0.12);
+  --sea-calm-1: rgba(150, 142, 130, 0.04);
+  --sea-calm-2: rgba(107, 101, 92, 0.02);
+  --sea-calm-3: rgba(150, 142, 130, 0.035);
+  --sea-calm-4: rgba(107, 101, 92, 0.015);
+  --sea-needs: rgba(224, 122, 46, 0.03);
+  --sea-thinking-1: rgba(127, 163, 192, 0.07);
+  --sea-thinking-2: rgba(79, 120, 150, 0.03);
+  --sea-thinking-3: rgba(127, 163, 192, 0.05);
+  --sea-thinking-4: rgba(45, 90, 124, 0.02);
 }
 @layer components {
   /* Anything said by Buildd or the person: hero, rows, placeholders. */
@@ -1023,8 +1007,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --kit-accent-ink: var(--on-accent);
   --kit-radius-soft: 18px;
   --kit-radius-hard: 0;
-  --kit-font-body: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
-  --kit-font-mono: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  --kit-font-body: var(--font-sans);
+  --kit-font-mono: var(--font-mono);
   --kit-sheet-bottom-offset: 0px;
   /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
   --kit-scrim: rgb(0 0 0 / 0.5);
@@ -1168,7 +1152,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-approval .kit-actions { gap: 8px; padding-top: 4px; }
   .buildd-approval .kit-btn {
     min-height: 44px; padding: 0 14px; white-space: nowrap;
-    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;
+    font-family: var(--font-sans); font-size: 14px; font-weight: 500;
     border: 1.5px solid var(--border-strong); color: var(--text-primary);
   }
   .buildd-approval .kit-btn:hover:not(:disabled) { background: var(--surface-3); }
@@ -1298,7 +1282,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-live-chevron { color: var(--chat-muted); }
   .buildd-thread .kit-live-count { color: var(--chat-muted); }
   .buildd-thread .kit-live-timer { color: var(--status-warning); opacity: .85; }
-  .buildd-thread .kit-thinking[data-expanded] > .kit-steps { margin-top: 4px; padding: 4px 0 4px 12px; border-left: 2px solid var(--mood-thinking-rule); }
+  .buildd-thread .kit-thinking[data-expanded] > .kit-steps { margin-top: 4px; padding: 4px 0 4px 12px; border-left: 2px solid var(--run-hatch); }
   .buildd-thread .kit-step[data-weight="key"][data-state="done"] { color: var(--chat-text); }
   .buildd-thread .kit-step-fold-btn { font-family: var(--kit-font-mono); color: var(--chat-dim); }
   .buildd-thread .kit-step-fold-btn:hover { color: var(--chat-muted); }
@@ -1316,17 +1300,17 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-steps { margin-top: 12px; gap: 8px; }
   .buildd-thread .kit-step { gap: 12px; font-family: var(--kit-font-mono); font-size: 13px; line-height: 1.4; }
   .buildd-thread .kit-step[data-state="done"] { color: var(--chat-muted); }
-  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking-text); }
+  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking); }
   .buildd-thread .kit-step[data-state="pending"] { color: var(--chat-dim); }
   .buildd-thread .kit-step-mark { width: 10px; height: 10px; border: 0; border-radius: 0; }
-  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--mood-thinking-done); }
+  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--run-hatch); }
   .buildd-thread .kit-step[data-state="active"] .kit-step-mark { background: var(--mood-thinking); animation: mood-dot 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .buildd-thread .kit-step[data-state="active"] .kit-step-mark { animation: none; } }
   .buildd-thread .kit-step[data-state="pending"] .kit-step-mark { border: 1px solid var(--chat-dim); background: transparent; }
   /* The request failed: said once, under the turn. */
   .buildd-thread > .kit-error {
     border: 0; border-radius: 12px; padding: 12px 16px; background: var(--fleet-err-soft);
-    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; color: var(--status-error);
+    font-family: var(--font-sans); font-size: 14px; color: var(--status-error);
   }
   /* The thumbs: 44px to touch on a phone or tablet, 32px on a desktop pointer. */
   .buildd-feedback .kit-thumb-btn { color: var(--text-muted); }
@@ -1411,7 +1395,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* ── Steer on the kit (SteerConversation): the canvas's own chrome, rescoped
      to one running agent. A header, the square presence strip (the pinned
      object's family), the sent / delivered list, and a soft composer. */
-  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-sans); }
   .buildd-steer .kit-steer-header { min-height: 56px; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--convo-line); }
   .buildd-steer .kit-steer-header > .kit-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
   .buildd-steer .kit-steer-header > .kit-eyebrow::after { content: "/"; margin-left: 8px; font-weight: 400; letter-spacing: 0; }
