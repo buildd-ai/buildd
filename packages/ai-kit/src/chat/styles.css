@@ -199,6 +199,8 @@ button.kit-live-line:disabled { cursor: default; }
 .kit-steer-msg { display: grid; gap: 6px; border: 1px solid var(--kit-rule); border-radius: var(--kit-radius-hard); background: var(--kit-bg); padding: 8px 12px; }
 .kit-steer-status { justify-self: start; font-family: var(--kit-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--kit-muted); }
 .kit-steer-status[data-status="delivered"] { color: var(--kit-ink); }
+.kit-steer-status[data-status="acknowledged"] { color: var(--kit-ok); }
+.kit-steer-status[data-status="undelivered"] { color: var(--kit-danger); }
 .kit-steer > .kit-composer { margin: 8px 14px 0; }
 .kit-steer > .kit-error { margin: 8px 14px 0; }
 .kit-send.kit-steer-send { width: auto; padding: 0 16px; font-size: 14px; }

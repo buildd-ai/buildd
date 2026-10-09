@@ -14,6 +14,9 @@ name: Visual QA
 # Ad-hoc screenshots (humans and worker agents — workers have no DATABASE_URL):
 #   gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
 #   gh run download <run-id> -n qa-screenshots
+# Run-activity regression (fixture states; fails on overflow / sub-44px targets):
+#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780
+#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=desktop
 # See .claude/skills/visual-review/SKILL.md. Dispatch defaults to capture +
 # artifact only; the dispatching agent reads the PNGs and judges them itself.
 
@@ -29,7 +32,7 @@ on:
         required: false
         default: ""
       plan:
-        description: "QA_PLAN capture plan, instead of routes: the JSON itself, or a repo path to it. Steps open dialogs/menus before a shot (docs/specs/qa-capture-steps.md)."
+        description: "QA_PLAN capture plan, instead of routes: the JSON itself, or a repo path to it (e.g. scripts/qa/plans/run-activity.json). Steps open dialogs/menus before a shot; assertLayout fails the run on overflow or small tap targets (docs/specs/qa-capture-steps.md)."
         type: string
         required: false
         default: ""
