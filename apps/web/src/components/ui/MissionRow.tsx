@@ -39,7 +39,11 @@ export default function MissionRow({ href, title, strip, state, stat, eta, slip,
       data-testid="mission-row"
       className="group flex flex-col gap-1.5 border-t border-border-default py-3.5 text-inherit no-underline"
     >
-      <span className="text-title font-semibold text-text-primary [overflow-wrap:anywhere] group-hover:underline group-hover:decoration-[var(--border-strong)]">
+      {/* Up to three lines, breaking between words; a single unbroken token still wraps rather than overflow at 320. */}
+      <span
+        title={typeof title === 'string' ? title : undefined}
+        className="line-clamp-3 font-sans text-title font-semibold text-text-primary [overflow-wrap:break-word] group-hover:underline group-hover:decoration-[var(--border-strong)]"
+      >
         {title}
       </span>
       {decide && <span className="text-title font-semibold text-status-warning">! {decide}</span>}
