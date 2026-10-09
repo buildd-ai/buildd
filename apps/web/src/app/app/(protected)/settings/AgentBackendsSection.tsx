@@ -9,6 +9,8 @@ import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-s
 
 /** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
 const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
+/** Your own model key, on Profile: the path a member has when team credentials are admin-only. */
+const OWN_KEY_HREF = '/app/settings/account#provider-keys';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -150,8 +152,16 @@ interface Workspace {
 interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
-  /** Teams the user owns or admins — the only "All my teams" targets. Omitted = every team shown. */
+  /** Teams where the user may write team credentials: the only "All my teams" targets. Omitted = every team shown. */
   manageableTeamIds?: string[];
+  /**
+   * May write team-wide and workspace credentials in the active team
+   * (`manage_team_credentials`). False: every row shows its status only, with
+   * the person's own-key path named instead. Defaults to true.
+   */
+  canManage?: boolean;
+  /** May change provider routing, a team setting (`manage_team_settings`). Defaults to `canManage`. */
+  canManageRouting?: boolean;
 }
 
 type Scope = 'team' | 'workspace' | 'all_teams';
@@ -186,7 +196,8 @@ export interface TeamTarget {
  * or — for an operator who runs one runner across several of their teams — fanned
  * out to every team they manage ("all my teams"). See docs/credentials-architecture.md.
  */
-export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds }: Props) {
+export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds, canManage = true, canManageRouting = canManage }: Props) {
+  const readOnly = !canManage;
   // Only workspaces in the active team can share a team-wide credential.
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
@@ -300,6 +311,12 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
 
   return (
     <>
+      {readOnly && (
+        <p data-testid="credentials-read-only" className="px-4 py-3 text-xs text-text-secondary">
+          Admins can change these.{' '}
+          <a href={OWN_KEY_HREF} className="text-accent-text hover:underline">Add your own key</a>
+        </p>
+      )}
       <StoredSeatNotice kinds={storedSeats} />
       {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
           key is a collapsed fallback inside the same row. */}
@@ -312,6 +329,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
         open={open === 'claude'}
         onToggle={() => toggle('claude')}
         onOpen={() => setOpen('claude')}
+        readOnly={readOnly}
         onAddKey={() => { setOpen('claude'); setFocusKey((k) => k + 1); }}
         seatOpen={showSeat}
         onSeatToggle={() => setShowSeat((v) => !v)}
@@ -338,6 +356,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
         onToggle={() => toggle('codex')}
         onOpen={() => setOpen('codex')}
         scopeControl={scopeControl}
+        readOnly={readOnly}
       />
       {/* A plain OpenAI API key is the simpler alternative to connecting ChatGPT
           above — same purpose (Codex agent tasks), stored like the Anthropic key. */}
@@ -351,6 +370,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
         open={open === 'openai_key'}
         onToggle={() => toggle('openai_key')}
         scopeControl={scopeControl}
+        readOnly={readOnly}
       />
       {/* Team provider routing toggle (reversible mask over the resolution chain) */}
       <ProviderRoutingToggle
@@ -359,6 +379,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
         onRoutingChange={refreshStrand}
         open={open === 'routing'}
         onToggle={() => toggle('routing')}
+        readOnly={!canManageRouting}
       />
     </>
   );
@@ -383,12 +404,15 @@ function ProviderRoutingToggle({
   onRoutingChange,
   open,
   onToggle,
+  readOnly = false,
 }: {
   teamId: string;
   workspaceId: string;
   onRoutingChange?: () => void;
   open: boolean;
   onToggle: () => void;
+  /** Status only: changing routing is a team setting the person does not hold. */
+  readOnly?: boolean;
 }) {
   const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
   // Track which backends have credentials configured so we can block stranding toggles.
@@ -490,6 +514,7 @@ function ProviderRoutingToggle({
       meta="Turn one off to send its jobs to the other."
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
     >
       <div className="space-y-2">
         {ALL_BACKENDS.map((b) => (
@@ -802,7 +827,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
 // tasks the same way `codex_credential` is, so either one makes Codex runnable.
 
 function OpenAiApiKeyCard({
-  teamId, scope, workspaceId, teamTargets, strand, onCredentialChange, open, onToggle, scopeControl,
+  teamId, scope, workspaceId, teamTargets, strand, onCredentialChange, open, onToggle, scopeControl, readOnly,
 }: {
   teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null;
   onCredentialChange?: () => void;
@@ -931,6 +956,7 @@ function OpenAiApiKeyCard({
       meta="For Codex tasks, instead of a ChatGPT sign-in."
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
     >
       {scopeControl}
       <StrandedWorkNotice stat={strand} />
@@ -994,6 +1020,8 @@ interface RowProps {
   onOpen: () => void;
   /** The shared "applies to" control, drawn at the top of the open row. */
   scopeControl: ReactNode;
+  /** Status only: no toggle, action or controls (the person cannot change it). */
+  readOnly?: boolean;
 }
 
 /**
@@ -1002,7 +1030,7 @@ interface RowProps {
  * `children`, the setup token) is folded under one disclosure labelled
  * self-hosted runner only, open by default only for a team already signed in.
  */
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, onAddKey, seatOpen, onSeatToggle, keyForm, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; onAddKey: () => void; seatOpen: boolean; onSeatToggle: () => void; keyForm: ReactNode; children?: ReactNode } & RowProps) {
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, readOnly, onAddKey, seatOpen, onSeatToggle, keyForm, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; onAddKey: () => void; seatOpen: boolean; onSeatToggle: () => void; keyForm: ReactNode; children?: ReactNode } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1174,6 +1202,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       meta={meta}
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
       action={needsReconnect ? (
         <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
           Reconnect
@@ -1369,7 +1398,7 @@ interface CodexStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange, open, onToggle, onOpen, scopeControl }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void } & RowProps) {
+function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange, open, onToggle, onOpen, scopeControl, readOnly }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1577,6 +1606,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       meta={meta}
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
       action={needsSignIn ? (
         <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className={`btn ${status?.expired ? 'btn-accent' : ''}`}>
           Sign in

@@ -77,6 +77,7 @@ export default async function WorkspaceMergePolicyPage({
           policyConfig={workspace.gitConfig?.policyConfig ?? null}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
+          canEdit={canManageSettings}
           headerAction={moveTeams && (
             <MoveToTeamButton
               workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
