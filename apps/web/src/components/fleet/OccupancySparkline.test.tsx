@@ -44,4 +44,31 @@ describe('OccupancySparkline', () => {
     expect(out).not.toContain('<svg');
     expect(out).toContain('No runner work in the past 24h');
   });
+
+  describe('idle shade', () => {
+    const shaded = (shade: { from: number; to: number }[], series = busy) =>
+      renderToStaticMarkup(<OccupancySparkline series={series} shade={shade} />);
+
+    it('never puts var() in an SVG paint attribute (Safari paints it black)', () => {
+      const out = shaded([{ from: NOW - 10 * H, to: NOW - 8 * H }]);
+      expect(out).not.toMatch(/\s(fill|stroke)="var\(/);
+      expect(out).toMatch(/<rect[^>]*style="fill:var\(--q-tint\)"/);
+      expect(out).not.toMatch(/<rect[^>]*fill="(#000|black)/);
+    });
+
+    it('draws the line after the shade so it stays on top', () => {
+      const out = shaded([{ from: NOW - 10 * H, to: NOW - 8 * H }]);
+      expect(out.indexOf('occupancy-shade')).toBeLessThan(out.indexOf('<path'));
+      expect(out).toContain('stroke:var(--accent)');
+    });
+
+    it('a zero-length span still renders a 1-unit sliver', () => {
+      const out = shaded([{ from: NOW - 5 * H, to: NOW - 5 * H }]);
+      expect(out).toMatch(/occupancy-shade[^>]*width="1"/);
+    });
+
+    it('no shade renders no rect', () => {
+      expect(shaded([])).not.toContain('occupancy-shade');
+    });
+  });
 });

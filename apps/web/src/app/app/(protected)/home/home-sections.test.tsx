@@ -45,17 +45,19 @@ describe('NeedsYouStack shipped card', () => {
     expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
   });
 
-  it('a mission open for weeks: work time and open time, never one wall-clock figure', () => {
+  it('a mission open for weeks: agent work and filed-to-shipped, never one wall-clock figure', () => {
     const t = text({ durationMs: 35 * 86_400_000, activeMs: 40 * 60_000 });
-    expect(t).toMatch(/40m\s+of work/);
-    expect(t).toMatch(/35d\s+open/);
+    expect(t).toMatch(/40m\s+agent work/);
+    expect(t).toMatch(/35d\s+to ship/);
+    // A bare "open" under the big number read as time spent working.
+    expect(t).not.toMatch(/\sopen\s/);
     expect(t).not.toMatch(/wall clock/);
   });
 
   it('one figure when the work filled the window', () => {
     const t = text({ activeMs: 35 * 60_000 });
-    expect(t).toMatch(/35m\s+of work/);
-    expect(t).not.toMatch(/\sopen\s/);
+    expect(t).toMatch(/35m\s+agent work/);
+    expect(t).not.toMatch(/to ship/);
   });
 });
 
@@ -80,26 +82,41 @@ describe('NeedsYouStack', () => {
     expect(html).toContain('Rounding each line can differ');
   });
   // Regression: page.tsx always passes `{cond && <…/>}` children, so with
-  // nothing waiting `children` was `[false, false]` — truthy — and the heading
-  // rendered over an empty column with no empty state.
-  it('shows the empty state when every child renders nothing', () => {
+  // nothing waiting `children` was `[false, false]` — truthy. The headline
+  // already says all clear, so the section steps aside instead of heading an
+  // empty column.
+  it('renders nothing when every child renders nothing', () => {
     const empty = renderToStaticMarkup(
       <NeedsYouStack count={0} questions={[]} held={[]} shipped={[]}>
         {false}
         {null}
       </NeedsYouStack>,
     );
-    expect(empty).toContain('Nothing needs input');
-    expect(empty).not.toContain('data-testid="needs-you-count"');
+    expect(empty).toBe('');
   });
-  it('does not show the empty state when the action queue renders', () => {
+  it('renders the queue cards when the action queue has asks', () => {
     const withQueue = renderToStaticMarkup(
       <NeedsYouStack count={1} questions={[]} held={[]} shipped={[]}>
-        <div data-testid="home-action-queue" />
+        <article data-testid="action-card" />
         {false}
       </NeedsYouStack>,
     );
+    expect(withQueue).toContain('data-testid="action-card"');
     expect(withQueue).not.toContain('Nothing needs input');
+  });
+  // Regression (desktop at 1280): a full-row child inside the auto-fit grid
+  // kept every track alive, so one card sat at half width beside dead space.
+  it('keeps full-row content out of the card grid', () => {
+    const html = renderToStaticMarkup(
+      <NeedsYouStack count={1} questions={[]} held={[]} shipped={[]} lead={<div data-testid="lead-row" />} foot={<p data-testid="foot-row" />}>
+        <article data-testid="action-card" />
+      </NeedsYouStack>,
+    );
+    const grid = html.slice(html.indexOf('data-testid="needs-you-cards"'));
+    expect(html.indexOf('data-testid="lead-row"')).toBeLessThan(html.indexOf('data-testid="needs-you-cards"'));
+    expect(grid).toContain('data-testid="action-card"');
+    // The grid closes right after the card; the foot follows outside it.
+    expect(grid).toMatch(/data-testid="action-card"><\/article><\/div><p data-testid="foot-row"/);
   });
   it('splits an option into its answer and its reason', () => {
     expect(splitOption('Per line — match Stripe')).toEqual({ main: 'Per line', sub: 'match Stripe' });
@@ -121,17 +138,11 @@ describe('ActivityTicker', () => {
 });
 
 describe('NeedsYouStack — nothing needs you, but work is in flight', () => {
-  // Regression: the stack's only child was the action queue holding IN FLIGHT
-  // cards, so `hasChildren` suppressed the empty state and the NEEDS YOU
-  // heading sat over nothing but "IN FLIGHT 1".
-  it('says "Nothing waiting on you" above the in-flight cards when the count is 0', () => {
-    const html = renderToStaticMarkup(
-      <NeedsYouStack count={0} questions={[]} held={[]} shipped={[]}>
-        <div data-testid="home-action-queue"><div data-testid="waiting-in-flight">In flight 1</div></div>
-      </NeedsYouStack>,
-    );
-    expect(html).toContain('Nothing needs input');
-    expect(html.indexOf('Nothing needs input')).toBeLessThan(html.indexOf('waiting-in-flight'));
+  // In flight is the platform's next move, not yours: it lives in the Moving
+  // column now, so an all-clear stack has nothing to head.
+  it('renders nothing when only the foot is empty and nothing needs you', () => {
+    const html = renderToStaticMarkup(<NeedsYouStack count={0} questions={[]} held={[]} shipped={[]} />);
+    expect(html).toBe('');
   });
 });
 
