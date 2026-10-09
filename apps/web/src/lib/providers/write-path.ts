@@ -21,6 +21,18 @@ import type { ChatProvider } from '@buildd/shared';
 /** Model-credential purposes whose (re)store should put auth-failed tasks back in the queue. */
 export const AGENT_AUTH_PURPOSES: ReadonlySet<string> = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential', 'openai_api_key']);
 
+/**
+ * Is this storage an agent credential? The legacy agent purposes, and the
+ * canonical Anthropic / OpenAI key (`inference_key` + provider label), which
+ * agent runs read too (provider parity). Another provider's chat key is not.
+ */
+export function isAgentAuthStorage(purpose: string, label?: string | null): boolean {
+  if (AGENT_AUTH_PURPOSES.has(purpose)) return true;
+  if (purpose !== 'inference_key') return false;
+  const l = (label ?? '').toLowerCase();
+  return l === 'anthropic' || l === 'openai';
+}
+
 // ── API keys for chat (canonical `inference_key`, team-wide or personal) ────
 
 export async function writeChatKey(input: { teamId: string; userId: string; provider: ChatProvider; scope: 'user' | 'team'; value: string }) {
@@ -68,8 +80,8 @@ export async function writeSharedSecret(input: SharedSecretWrite): Promise<strin
 }
 
 /** After an agent credential is stored: put tasks that failed on the old one back. Best-effort. */
-export async function requeueAfterAgentCredential(teamId: string, purpose: string): Promise<number> {
-  if (!AGENT_AUTH_PURPOSES.has(purpose)) return 0;
+export async function requeueAfterAgentCredential(teamId: string, purpose: string, label?: string | null): Promise<number> {
+  if (!isAgentAuthStorage(purpose, label)) return 0;
   try {
     const { requeueAuthFailedTasks } = await import('@/lib/credential-recovery');
     return (await requeueAuthFailedTasks(teamId)).requeued.length;

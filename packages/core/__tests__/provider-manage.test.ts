@@ -8,6 +8,7 @@ import {
   storageServes,
   surfaceRefusal,
   writePermission,
+  writePermissions,
   writeStorage,
 } from '../providers/manage';
 
@@ -20,17 +21,37 @@ describe('writeStorage', () => {
     }
   });
 
-  it('a team Anthropic key goes where every surface reads it today (the legacy purpose)', () => {
-    const st = writeStorage('anthropic', shapeOf('anthropic'), 'team');
-    expect(st.purpose).toBe('anthropic_api_key');
-    expect(storageServes(providerDescriptor('anthropic'), st)).toEqual(['chat', 'agent-claude', 'cloud-egress']);
-    expect(writeStorage('anthropic', shapeOf('anthropic'), 'workspace').purpose).toBe('anthropic_api_key');
+  // Provider parity: agent runs read the canonical storage now, so a team or
+  // workspace Anthropic or OpenAI key is written there, and serves chat and
+  // agent runs alike. (Before: the Anthropic key went to the legacy
+  // `anthropic_api_key`, the only storage the host claim read, and a team
+  // OpenAI key reached chat only.)
+  it('a team or workspace Anthropic key goes to canonical storage, which every surface reads', () => {
+    for (const scope of ['team', 'workspace'] as const) {
+      const st = writeStorage('anthropic', shapeOf('anthropic'), scope);
+      expect(st).toEqual({ purpose: 'inference_key', label: 'anthropic', readBy: ['chat', 'agent-claude', 'cloud-egress'] });
+      expect(storageServes(providerDescriptor('anthropic'), st)).toEqual(['chat', 'agent-claude', 'cloud-egress']);
+    }
+  });
+
+  it('a team or workspace OpenAI key goes to canonical storage, which serves chat and Codex runs', () => {
+    for (const scope of ['team', 'workspace'] as const) {
+      const st = writeStorage('openai', shapeOf('openai'), scope);
+      expect(st).toEqual({ purpose: 'inference_key', label: 'openai', readBy: ['chat', 'agent-codex'] });
+      expect(storageServes(providerDescriptor('openai'), st)).toEqual(['chat', 'agent-codex']);
+    }
   });
 
   it('a tie stays on canonical storage', () => {
-    // OpenAI: canonical serves chat, legacy serves Codex: one surface each.
-    expect(writeStorage('openai', shapeOf('openai'), 'team')).toEqual({ purpose: 'inference_key', label: 'openai', readBy: ['chat'] });
     expect(writeStorage('openrouter', shapeOf('openrouter'), 'team').purpose).toBe('inference_key');
+  });
+
+  it('no API key provider writes a legacy alias any more', () => {
+    for (const p of PROVIDER_REGISTRY) {
+      const s = p.shapes.find(x => x.id === 'api_key');
+      if (!s) continue;
+      for (const scope of ['team', 'workspace'] as const) expect(writeStorage(p.id, s, scope)).toEqual(s.storage);
+    }
   });
 
   it('never picks a storage that serves fewer surfaces than canonical', () => {
@@ -87,6 +108,23 @@ describe('surfaceRefusal', () => {
         else expect(refusal!.reason).toBe(support.reason);
       }
     }
+  });
+});
+
+describe('writePermissions', () => {
+  // A canonical key that agent runs read is both a model key and an agent
+  // credential: whoever sets it needs what each of the two routes that used to
+  // write those storages needed, so moving the write changes nobody's access.
+  it('a canonical key read by agent runs needs both the model-key and the agent-credential permission', () => {
+    for (const id of ['anthropic', 'openai'] as const) {
+      expect(writePermissions(shapeOf(id), shapeOf(id).storage)).toEqual(['manage_team_model_keys', 'manage_team_credentials']);
+    }
+  });
+
+  it('a chat-only canonical key, and every other storage, needs only its own route\'s permission', () => {
+    expect(writePermissions(shapeOf('openrouter'), shapeOf('openrouter').storage)).toEqual(['manage_team_model_keys']);
+    expect(writePermissions(shapeOf('anthropic'), { purpose: 'anthropic_api_key', readBy: ['agent-claude'] })).toEqual(['manage_team_credentials']);
+    expect(writePermissions(shapeOf('litellm'), shapeOf('litellm').storage)).toEqual(['manage_inference_providers']);
   });
 });
 

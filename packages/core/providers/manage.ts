@@ -20,11 +20,11 @@
  *   legacy agent purposes cannot hold a personal row at all.
  * - `team` / `workspace`: of the shape's canonical and legacy storages, the one
  *   that the most of the provider's surfaces read today (`readBy`), canonical
- *   on a tie. Until the consolidation migration runs, an Anthropic API key is
- *   still read by the host claim only as `anthropic_api_key`, so a team
- *   Anthropic key is written there and keeps serving chat, Claude agents and
- *   cloud runs. When the registry's `readBy` for the canonical storage grows,
- *   writes move to it with no change here.
+ *   on a tie. Agent runs read an Anthropic or OpenAI key's canonical storage
+ *   (`inference_key` + provider label) as well as its legacy alias, so team and
+ *   workspace keys for both are written to canonical storage and serve chat
+ *   and agent runs alike. A storage only some surfaces read would win only if
+ *   it served more of them than canonical.
  *
  * ## Permissions (`writePermission`)
  *
@@ -36,6 +36,11 @@
  * |------------------------------------------------|------------------------------|
  * | `inference_key`, `decision_key` (API keys)     | `manage_team_model_keys`     |
  * | `anthropic_api_key`, `openai_api_key`, `oauth_token` | `manage_team_credentials` |
+ * | `inference_key` that agent runs read (Anthropic, OpenAI) | both of the above |
+ *
+ * The last row is `writePermissions`: an Anthropic or OpenAI key in canonical
+ * storage is a chat key and an agent credential at once, so setting it needs
+ * what each of the two routes that wrote those needed.
  * | LiteLLM gateway, custom endpoint               | `manage_inference_providers` |
  * | credential policy                              | `manage_team_settings`       |
  *
@@ -153,6 +158,16 @@ export function writePermission(shape: CredentialShape, storage: CredentialStora
   return storage.purpose === 'inference_key' || storage.purpose === 'decision_key'
     ? 'manage_team_model_keys'
     : 'manage_team_credentials';
+}
+
+const AGENT_SURFACES: readonly Surface[] = ['agent-claude', 'agent-codex', 'cloud-egress'];
+
+/** See the module comment: one permission per storage, two for a model key agent runs read. */
+export function writePermissions(shape: CredentialShape, storage: CredentialStorage): WritePermission[] {
+  const own = writePermission(shape, storage);
+  return own === 'manage_team_model_keys' && storage.readBy.some(s => AGENT_SURFACES.includes(s))
+    ? [own, 'manage_team_credentials']
+    : [own];
 }
 
 /** Every `secrets.purpose` some provider stores a model credential under. */
