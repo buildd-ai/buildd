@@ -5,7 +5,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
 import { can } from '@/lib/permissions';
-import { RUNNER_PROVIDED_ENV, findSharedSlugClash, findVisibleTeamLevelRole, isPersonalRole, sharedSlugClashBody } from '@/lib/personal-roles';
+import { RUNNER_PROVIDED_ENV, findSharedSlugClash, findVisibleTeamLevelRole, isPersonalRole, sharedSlugClashBody, isSharedSlugViolation } from '@/lib/personal-roles';
 
 /**
  * POST /api/roles/[id]/promote
@@ -58,6 +58,9 @@ export async function POST(
         : {}),
     });
   } catch (error) {
+    if (isSharedSlugViolation(error)) {
+      return NextResponse.json({ error: 'The team already has a shared or team role with this slug. Rename this role before sharing it.' }, { status: 409 });
+    }
     console.error('POST /api/roles/[id]/promote error:', error);
     return NextResponse.json({ error: 'Failed to promote role' }, { status: 500 });
   }
