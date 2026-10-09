@@ -1,43 +1,36 @@
 'use client';
 
-import { useState } from 'react';
-import { InitiativeCard } from '@/components/initiatives/InitiativeCard';
+import { InitiativeRow } from '@/components/initiatives/InitiativeCard';
+import Disclosure from '@/components/ui/Disclosure';
+import Section from '@/components/ui/Section';
 import type { InitiativeGroup } from '@/lib/initiative-view';
 
 /**
- * The Initiatives list: one card per initiative, grouped by what you act on
+ * The Initiatives list: one L1 row per initiative, grouped by what you act on
  * first (lib/initiative-view.ts `groupInitiativeCards`). Completed initiatives
- * collapse behind one control at the bottom.
+ * collapse behind one Disclosure at the bottom, as Missions' Completed does.
  */
 export function InitiativeList({ groups }: { groups: InitiativeGroup[] }) {
-  const [showCompleted, setShowCompleted] = useState(false);
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-3">
       {groups.map((g) => {
-        const collapsed = g.section === 'completed' && !showCompleted;
+        const rows = (
+          <div className="border-b border-border-default">
+            {g.cards.map((c) => <InitiativeRow key={c.id} card={c} />)}
+          </div>
+        );
         return (
-          <section key={g.section} data-testid="initiative-group" data-section={g.section}>
-            <div className="mb-2.5 flex items-center justify-between gap-3">
-              <h2 className="section-label text-text-muted">
-                {g.label} <span className="text-text-secondary">{g.cards.length}</span>
-              </h2>
-              {g.section === 'completed' && (
-                <button
-                  type="button"
-                  data-testid="initiative-completed-toggle"
-                  onClick={() => setShowCompleted((v) => !v)}
-                  className="min-h-11 font-mono text-[12px] text-text-muted hover:text-text-secondary md:min-h-0"
-                >
-                  {showCompleted ? 'Hide' : `Show ${g.cards.length}`}
-                </button>
-              )}
-            </div>
-            {!collapsed && (
-              <div className="flex flex-col gap-4">
-                {g.cards.map((c) => <InitiativeCard key={c.id} card={c} />)}
-              </div>
+          <div key={g.section} data-testid="initiative-group" data-section={g.section}>
+            {g.section === 'completed' ? (
+              <Disclosure summary={g.label} count={g.cards.length}>
+                {rows}
+              </Disclosure>
+            ) : (
+              <Section title={g.label} count={g.cards.length} className="py-2">
+                {rows}
+              </Section>
             )}
-          </section>
+          </div>
         );
       })}
     </div>

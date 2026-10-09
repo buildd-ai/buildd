@@ -45,6 +45,7 @@ export type InferenceCapability =
   | 'scout_probe_selection'
   | 'endpoint_model_match'
   | 'question_gate'
+  | 'escalation_gate'
   | 'post_session_triage'
   | 'task_verdict'
   | 'early_release'
@@ -208,6 +209,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Question review',
     description: 'Before an agent\'s question reaches you, a decision model checks that it can be answered with no other context and sends unclear ones back to the agent. It may also answer from the listed options itself, or hold the question until it has waited unanswered.',
     costHint: '~$0.00003 per question',
+  },
+  // Escalation gate (packages/core/escalation-gate.ts). Unconditional, like the
+  // question gate: runs on every stuck PR no rule decides, whenever a key resolves.
+  escalation_gate: {
+    id: 'escalation_gate',
+    kind: 'built_in',
+    label: 'Escalation review',
+    description: 'Before a stuck pull request is sent to you, a decision model checks whether Buildd can move it on itself (a fresh review, a fix, a retry) or should wait. Only what needs your judgment reaches you.',
+    costHint: '~$0.00003 per stuck PR, once per state',
   },
   // Post-session quality triage (packages/core/post-session-triage.ts). Runs
   // in the background after a session ends, on bounded facts only; a

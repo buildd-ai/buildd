@@ -977,6 +977,28 @@ describe('WorkerManager — state transitions', () => {
       expect(manager.getWorker('w-pause-resume')?.worktreePath).toBe(worktree);
     });
 
+    // Found live (task 4b2b30a9): a run budget failover moved to Codex resumed
+    // down the Claude path with its Codex thread id and failed with "No
+    // conversation found". Resume must follow the backend the session ran on.
+    test('Resume of a Codex session never resumes Claude with the Codex thread id', async () => {
+      liveSession('w-pause-codex');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-codex')?.sessionId === 'sess-w-pause-codex');
+      await manager.pauseWorker('w-pause-codex');
+      await waitFor(() => manager.getWorker('w-pause-codex')?.status === 'waiting' && !manager.hasLiveSession('w-pause-codex'));
+      const worker = manager.getWorker('w-pause-codex')!;
+      worker.taskBackend = 'codex';
+      worker.codexThreadId = 'codex-thread-1';
+
+      mockMessages = [{ type: 'result', subtype: 'success', session_id: 'sess-w-pause-codex' }];
+      const before = mockQueryResumes.length;
+      await manager.sendMessage('w-pause-codex', 'Resume');
+      await new Promise(r => setTimeout(r, 500));
+
+      expect(mockQueryResumes.slice(before)).not.toContain('codex-thread-1');
+    });
+
     test('waits for a running tool to finish before stopping', async () => {
       liveSession('w-pause-tool');
       manager = new WorkerManager(makeConfig());

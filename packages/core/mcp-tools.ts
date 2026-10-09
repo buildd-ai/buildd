@@ -978,6 +978,7 @@ export function renderPrList(data: { state?: string; sinceDays?: number; workspa
     const label = `${PR_STATE_LABEL[p.status] ?? p.status ?? 'open'}${attempts}`;
     return `- #${p.prNumber ?? '?'} ${lead}${label} · ${[
       p.resolving ? PR_RESOLVING_LABEL[p.resolving] : null,
+      p.builddOwns ? `not paged: ${p.builddOwns}` : null,
       p.taskTitle ?? '(no task)',
       p.workspaceName,
       p.missionTitle ? `mission "${p.missionTitle}"` : null,

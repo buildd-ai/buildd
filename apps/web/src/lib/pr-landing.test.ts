@@ -1075,9 +1075,10 @@ describe('landPr — safety rails', () => {
 
 describe('landPr — a ready PR is never stranded waiting on a person who is not needed', () => {
   // The sweep wires no dispatchFix: what it gets is landPr's own default.
+  const sweepRetryCi = mock(async (_i: any): Promise<any> => ({ kind: 'dispatched', taskId: 'ci-fix-1' }));
   const sweepDeps = (send: LandPrDeps['dispatchStaleApprovalReReview']): LandPrDeps => {
     const { dispatchFix: _omit, ...rest } = deps();
-    return { ...rest, dispatchStaleApprovalReReview: send };
+    return { ...rest, dispatchStaleApprovalReReview: send, landingFix: { retryCi: sweepRetryCi } };
   };
 
   it('#3654 shape: green, mergeable, never reviewed — the workspace reviewer is requested, once', async () => {
@@ -1103,8 +1104,12 @@ describe('landPr — a ready PR is never stranded waiting on a person who is not
     reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
     gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
     const send = mock(async (_i: any): Promise<any> => ({ outcome: 'dispatched', reviewTaskId: 'r', plan: 'full' }));
+    sweepRetryCi.mockClear();
     const out = await land({ policy: agentReview, door: 'sweep' }, sweepDeps(send));
-    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
+    // a90fc99b: with no dispatchFix wired, landing's own default files the CI fix.
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix', taskId: 'ci-fix-1' });
+    expect(sweepRetryCi).toHaveBeenCalledTimes(1);
+    expect(sweepRetryCi.mock.calls[0]![0]).toMatchObject({ prNumber: 42, surface: 'landing' });
     expect(send).not.toHaveBeenCalled();
   });
 

@@ -27,14 +27,17 @@ import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, missionPrRoleOf, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
-import type { WaitingOnYouRawItem } from '@/lib/action-queue';
+import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
+import { gateEscalations } from '@/lib/escalation-gate-check';
+import { ESCALATION_GATE_READ_DEPS } from '@/modules';
+import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
@@ -202,6 +205,8 @@ export default async function HomePage({
     prLifecycleVerifiedAt: Date | null;
     /** Whether the PR is in draft status. */
     prIsDraft: boolean | null;
+    /** The escalation gate's verdict (lib/escalation-gate-check.ts). */
+    gate?: EscalationGateMark | null;
   }[] = [];
 
 
@@ -677,7 +682,7 @@ export default async function HomePage({
             with: {
               task: {
                 // context: read only for `refreshTrunk`, the mission-refresh marker (missionPrRoleOf).
-                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true },
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true, pathManifest: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -786,7 +791,7 @@ export default async function HomePage({
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
-              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true, dataClass: true },
               with: WORKSPACE_INSTALLATION_WITH,
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
@@ -1327,6 +1332,57 @@ export default async function HomePage({
                 if (arcDiff !== 0) return arcDiff;
                 return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
               });
+
+            // Escalation gate: the same verdict the PR inbox, list_prs and the
+            // pushes read (lib/escalation-gate-check.ts). A PR whose next move is
+            // Buildd's (a fix, a renumber, a retry, CI still running, or what Jev
+            // judged Buildd can do itself) is never a Needs You card. A gate
+            // failure leaves every card as it was: it never silences.
+            if (escalationInbox.length > 0) {
+              try {
+                const workerById = new Map(openPrWorkers.map(w => [w.id, w]));
+                const stalls = await loadLandingStalls(escalationInbox.map(e => e.taskId).filter(Boolean));
+                const gateSubjects = escalationInbox.flatMap(e => {
+                  const ws = wsInboxMap.get(e.workspaceId);
+                  const w = workerById.get(e.workerId);
+                  if (!ws?.teamId || !w) return [];
+                  const view = e.taskId ? inboxDeliveryViews.get(e.taskId) : undefined;
+                  const landingRow = e.taskId ? landingStateByTaskId.get(e.taskId) : undefined;
+                  const own = landingRow?.handoff && e.prNumber != null
+                    ? resolveLandingOwnership({ policy: { tier: 'agent-review', agentReview: undefined }, landingMode: 'enforce', landing: landingRow.landing, handoff: landingRow.handoff, prNumber: e.prNumber })
+                    : null;
+                  const cause = (landingRow?.handoff as { cause?: unknown } | null | undefined)?.cause;
+                  return [{
+                    workerId: e.workerId,
+                    subject: prSubjectFor({
+                      teamId: ws.teamId, sensitive: (ws as { dataClass?: string }).dataClass === 'sensitive',
+                      workspaceId: e.workspaceId, prNumber: e.prNumber, taskId: e.taskId || null,
+                      task: (w.task as any) ?? null, missionPrRole: w.task ? missionPrRoleOf(w.task) : null, lifecycle: e.prLifecycleStatus, headSha: e.headSha,
+                      kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline } : null,
+                      escalated: e.hasEscalationNote ? { reason: e.escalationReason } : null,
+                      approved: !!e.reviewApproved || e.leaseState === 'agent_approved',
+                      handoff: own?.owner === 'human' ? { cause: typeof cause === 'string' ? cause : 'unknown', reason: own.reason } : null,
+                      conflictFixesSpent: !!(e as { deadZoneExhausted?: boolean }).deadZoneExhausted,
+                      machineActing: reviewMachineActing(e as never, new Date()),
+                      landingStall: e.taskId ? stalls.get(e.taskId) ?? null : null,
+                      pathManifest: ((w.task as any)?.pathManifest as string[] | null | undefined) ?? null,
+                      draft: e.prIsDraft,
+                      linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
+                      reviewedHeadSha: e.approvedSha,
+                    }),
+                  }];
+                });
+                const unique = [...new Map(gateSubjects.map(g => [g.subject.key, g.subject])).values()];
+                const verdicts = await gateEscalations(unique, ESCALATION_GATE_READ_DEPS());
+                const byWorker = new Map(gateSubjects.flatMap(g => {
+                  const v = verdicts.get(g.subject.key);
+                  return v ? [[g.workerId, { owner: v.owner, reason: v.reason }] as const] : [];
+                }));
+                escalationInbox = escalationInbox.map(e => ({ ...e, gate: byWorker.get(e.workerId) ?? null }));
+              } catch (err) {
+                console.warn('[home] escalation gate failed (non-fatal, every card kept):', err instanceof Error ? err.message : 'unknown');
+              }
+            }
           }
         }
 

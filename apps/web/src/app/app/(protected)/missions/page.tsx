@@ -1,12 +1,10 @@
 import { db } from '@buildd/core/db';
-import { missions, accounts, workers, workspaces, teams } from '@buildd/core/db/schema';
+import { missions, accounts, workers } from '@buildd/core/db/schema';
 import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
-import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
-import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { NewWorkLink, SetUpChatNudge } from '@/components/chat/ChatEntry';
+import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -38,14 +36,10 @@ export default async function MissionsPage({
   if (teamIds.length === 0) {
     return (
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
-        <div className="flex items-baseline justify-between mb-6">
-          <h1 className="hidden md:block text-xl font-semibold text-text-primary">Missions</h1>
-          <span className="text-xs text-text-secondary font-light">0 active</span>
-        </div>
-        <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary mb-1">No team found.</p>
-          <p className="text-xs text-text-muted"><Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to plan missions.</p>
-        </div>
+        <h1 className="sr-only md:not-sr-only md:mb-4 text-heading font-semibold text-text-primary">Missions</h1>
+        <p className="text-body text-text-secondary">
+          No team found. <Link href="/app/teams/new" className="text-text-primary underline underline-offset-4">Create a team</Link> to plan missions.
+        </p>
       </div>
     );
   }
@@ -78,10 +72,8 @@ export default async function MissionsPage({
   // one dependent chain (accounts -> live-seat count) stays inside its entry.
   const [
     seats,
-    teamWorkspaces,
     activeRows,
     completedRowsPage,
-    teamRows,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
     // needs the account ids, so it genuinely follows the accounts read.
@@ -102,17 +94,9 @@ export default async function MissionsPage({
         ));
       return { maxSeats: max, activeSeats: row?.count ?? 0 };
     })(),
-    // Active team's workspaces for the filter dropdown
-    db
-      .select({ id: workspaces.id, name: workspaces.name })
-      .from(workspaces)
-      .where(eq(workspaces.teamId, activeTeamId)),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
-    // The header's "Missions · <team>" label.
-    db.select({ name: teams.name }).from(teams).where(eq(teams.id, activeTeamId)).limit(1),
   ]);
-  const team = teamRows[0] ?? null;
 
   const { maxSeats, activeSeats } = seats;
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
@@ -121,27 +105,6 @@ export default async function MissionsPage({
   ) as unknown as { items: typeof completedRowsPage; nextCursor: string | null };
 
   const allMissions = [...activeRows, ...completedRows] as any[];
-
-  // D6: release state is workspace-level — one footer per workspace, rendered
-  // once on the list, never on each mission row.
-  const uniqueWorkspaces = new Map<string, { id: string; name: string | null; gitConfig: unknown; releaseConfig: unknown }>();
-  for (const m of allMissions) {
-    const ws = m.workspace as { id: string; name: string; gitConfig: unknown; releaseConfig: unknown } | null | undefined;
-    if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
-  }
-  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
-  // so the two surfaces cannot disagree about queue depth or deploy state.
-  const releaseFooters: Record<string, ReleaseFooterData> = {};
-  await Promise.all(
-    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
-      releaseFooters[ws.id] = await loadReleaseFooterData({
-        id: ws.id,
-        name: ws.name,
-        gitConfig: ws.gitConfig,
-        releaseConfig: ws.releaseConfig,
-      });
-    }),
-  );
 
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m
@@ -182,41 +145,34 @@ export default async function MissionsPage({
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
-      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div className="min-w-0">
-          <div className="section-label hidden text-text-muted md:block">
-            {team?.name ?? 'Team'}
-          </div>
-          {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
-          <h1 data-testid="missions-headline" className="sr-only md:not-sr-only md:mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
-            Missions
-          </h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2.5">
-          <SetUpChatNudge />
+      <div className="mb-4 flex items-center justify-between gap-3">
+        {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
+        <h1 data-testid="missions-headline" className="sr-only md:not-sr-only text-heading font-semibold text-text-primary">
+          Missions
+        </h1>
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {/* Releases and Initiatives left the primary nav; this is their door. */}
+          <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
+            Releases
+          </Link>
+          <Link href="/app/initiatives" data-testid="missions-initiatives-link" className="btn btn-quiet h-11 md:h-8">
+            Initiatives
+          </Link>
           <NewWorkLink
             kind="mission"
             workspaceId={wsFilter ?? null}
             testId="new-mission-link"
-            className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9"
+            className="btn h-11 md:h-8"
           >
-            + New mission
+            + New
           </NewWorkLink>
         </div>
       </div>
 
       {rows.length === 0 ? (
-        <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary">No missions.</p>
-        </div>
+        <p className="text-body text-text-secondary">No missions. A mission groups the tasks behind one goal.</p>
       ) : (
-        <MissionGrid
-          rows={rows}
-          releaseFooters={releaseFooters}
-          slots={{ live: activeSeats, max: maxSeats }}
-          workspaces={teamWorkspaces}
-          now={now}
-        />
+        <MissionGrid rows={rows} slots={{ live: activeSeats, max: maxSeats }} now={now} />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the
@@ -228,9 +184,9 @@ export default async function MissionsPage({
         <div className="mt-4 text-center">
           <Link
             href={`/app/missions?${new URLSearchParams({ ...(wsFilter ? { workspace: wsFilter } : {}), completedCursor: nextCompletedCursor }).toString()}`}
-            className="text-[11px] text-text-muted hover:text-text-secondary font-mono"
+            className="text-meta text-text-muted hover:text-text-secondary"
           >
-            Load older completed missions ↓
+            Load older completed missions
           </Link>
         </div>
       )}
