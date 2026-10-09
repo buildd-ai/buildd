@@ -187,13 +187,26 @@ mock.module('@/lib/mission-feed', () => ({
 
 // Roles effective for the parent's workspace (role-routing §1 row 9, §3.1).
 let effectiveRoles = new Set<string>();
-const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined> }> = [];
+const pickRoleCalls: Array<{ workspaceId: string; candidates: Array<string | null | undefined>; requesterUserId: string | null }> = [];
 mock.module('@/lib/effective-roles', () => ({
-  pickEffectiveRole: async (workspaceId: string, candidates: Array<string | null | undefined>) => {
-    pickRoleCalls.push({ workspaceId, candidates });
+  pickEffectiveRole: async (
+    workspaceId: string,
+    candidates: Array<string | null | undefined>,
+    opts: { requesterUserId?: string | null } = {},
+  ) => {
+    pickRoleCalls.push({ workspaceId, candidates, requesterUserId: opts.requesterUserId ?? null });
     return candidates.find(c => c && effectiveRoles.has(c)) ?? null;
   },
   resolveEffectiveRoleSlugs: async () => effectiveRoles,
+}));
+
+// Who a task is for (task → parents → mission → schedule). The walk itself is
+// covered in packages/core; here only what the aggregator does with the answer.
+let requesterAnswer: string | null = null;
+const requesterLookups: any[] = [];
+mock.module('@buildd/core/task-requester', () => ({
+  resolveTaskRequesterUserId: async (task: any) => { requesterLookups.push(task); return requesterAnswer; },
+  requesterOf: async () => requesterAnswer,
 }));
 
 import {
@@ -241,6 +254,8 @@ function resetMocks() {
   missionsFindFirstResults = [];
   effectiveRoles = new Set();
   pickRoleCalls.length = 0;
+  requesterAnswer = null;
+  requesterLookups.length = 0;
   mockMaybeOpenMissionIntegrationPr.mockReset();
   mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
   mockNoteMissionPrOpenFailure.mockReset();
@@ -1279,7 +1294,7 @@ describe('task-dependencies aggregation — role', () => {
     givenPlanningParent('researcher');
     effectiveRoles = new Set(['researcher', 'organizer']);
     await resolveCompletedTask('child-1', 'ws-1');
-    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['researcher', 'organizer'] }]);
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['researcher', 'organizer'], requesterUserId: null }]);
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'researcher', taskClass: 'bookkeeping' }));
   });
 
@@ -1288,6 +1303,29 @@ describe('task-dependencies aggregation — role', () => {
     effectiveRoles = new Set(['organizer']);
     await resolveCompletedTask('child-1', 'ws-1');
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'organizer' }));
+  });
+
+  it("resolves roles as the parent's requester and files the aggregator for them", async () => {
+    // A parent running the owner's private role: its aggregator may only
+    // inherit that role if the lookup is made on the owner's behalf.
+    givenPlanningParent('my-reviewer');
+    requesterAnswer = 'user-owner';
+    effectiveRoles = new Set(['my-reviewer', 'organizer']);
+    await resolveCompletedTask('child-1', 'ws-1');
+    expect(requesterLookups.at(-1)).toMatchObject({ missionId: null });
+    expect(pickRoleCalls).toEqual([{ workspaceId: 'ws-1', candidates: ['my-reviewer', 'organizer'], requesterUserId: 'user-owner' }]);
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      roleSlug: 'my-reviewer',
+      createdByUserId: 'user-owner',
+    }));
+  });
+
+  it('files the aggregator with no creator when the parent has no requester', async () => {
+    givenPlanningParent(null);
+    requesterAnswer = null;
+    effectiveRoles = new Set(['organizer']);
+    await resolveCompletedTask('child-1', 'ws-1');
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: 'organizer', createdByUserId: null }));
   });
 
   it('files role-less when neither the parent role nor the Organizer resolves', async () => {

@@ -20,6 +20,16 @@ const mockReleaseAndNotify = mock(() => Promise.resolve());
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
+const mockWorkspaceSkillsFindMany = mock((_args?: any) => Promise.resolve([] as any[]));
+
+// Who a task is for (task → parents → mission → schedule); the walk itself is
+// covered in packages/core. Records what it was asked about.
+let requesterAnswer: string | null = null;
+const requesterLookups: any[] = [];
+mock.module('@buildd/core/task-requester', () => ({
+  resolveTaskRequesterUserId: async (task: any) => { requesterLookups.push(task); return requesterAnswer; },
+  requesterOf: async (task: any) => { requesterLookups.push(task); return requesterAnswer; },
+}));
 
 const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
 mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
@@ -100,6 +110,7 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findFirst: mockWorkersFindFirst, findMany: mockWorkersFindMany },
       artifacts: { findMany: mockArtifactsFindMany },
+      workspaceSkills: { findMany: mockWorkspaceSkillsFindMany },
     },
     update: mockTasksUpdate,
     delete: mockTasksDelete,
@@ -137,6 +148,8 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ type: 'and', args }),
   inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  or: (...args: any[]) => ({ type: 'or', args }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
 }));
 
 // Mock schema
@@ -146,6 +159,10 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { taskId: 'taskId', createdAt: 'createdAt' },
   artifacts: { workerId: 'workerId', updatedAt: 'updatedAt' },
   workspaces: {},
+  workspaceSkills: {
+    teamId: 'ws_skills.team_id', workspaceId: 'ws_skills.workspace_id', slug: 'ws_skills.slug',
+    isRole: 'ws_skills.is_role', ownerUserId: 'ws_skills.owner_user_id', visibility: 'ws_skills.visibility',
+  },
 }));
 
 // Import handlers AFTER mocks
@@ -655,6 +672,88 @@ describe('PATCH /api/tasks/[id]', () => {
       mockTasksFindMany.mockResolvedValueOnce([{ id: TASK_ID }]);
       const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { dependsOn: [TASK_ID] } }), TASK_ID);
       expect(res.status).toBe(400);
+    });
+  });
+
+  // A roleSlug edit is held to the same rule as creation (role-visibility.ts):
+  // another member's private role is refused, never saved.
+  describe('roleSlug visibility', () => {
+    const task = {
+      id: TASK_ID, title: 'T', status: 'pending', mode: 'execution', missionId: null,
+      roleSlug: null, createdByUserId: 'u-alice', parentTaskId: null, scheduleId: null,
+      dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+    };
+    const role = (o: Record<string, unknown>) => ({
+      id: 'r-1', slug: 'helper', workspaceId: null, teamId: 'team-1', ownerUserId: null,
+      visibility: 'team', enabled: true, defaultBackend: null, ...o,
+    });
+    let setCalls: any[] = [];
+    function setup(rows: any[]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockTasksFindFirst.mockResolvedValue(task);
+      mockWorkspaceSkillsFindMany.mockReset();
+      mockWorkspaceSkillsFindMany.mockResolvedValue(rows);
+      requesterAnswer = 'u-alice';
+      requesterLookups.length = 0;
+      setCalls = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((data: any) => { setCalls.push(data); return { where: mock(() => ({ returning: mock(() => [{ ...task, ...data }]) })) }; }),
+      });
+    }
+
+    it("refuses another member's private role with 400 role_not_visible and writes nothing", async () => {
+      setup([role({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private' })]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'bobs-helper' } }), TASK_ID);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.gateReason).toBe('role_not_visible');
+      expect(data.error).toContain('private role');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+      // Scoped to the task's team and slug, and decided for the task's requester.
+      const where = JSON.stringify((mockWorkspaceSkillsFindMany.mock.calls.at(-1) as any[])[0].where);
+      expect(where).toContain('team-1');
+      expect(where).toContain('bobs-helper');
+      expect(requesterLookups.at(-1)).toMatchObject({ id: TASK_ID, createdByUserId: 'u-alice' });
+    });
+
+    it("saves the requester's own private role", async () => {
+      setup([role({ id: 'r-alice', slug: 'my-helper', ownerUserId: 'u-alice', visibility: 'private' })]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'my-helper' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(setCalls[0].roleSlug).toBe('my-helper');
+    });
+
+    it('saves a shared personal role', async () => {
+      setup([role({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'team' })]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'bobs-helper' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(setCalls[0].roleSlug).toBe('bobs-helper');
+    });
+
+    it('saves a team role without resolving the requester', async () => {
+      setup([role({ slug: 'builder' })]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'builder' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(setCalls[0].roleSlug).toBe('builder');
+      expect(requesterLookups).toEqual([]);
+    });
+
+    it('decides for the requester of the mission being linked in the same PATCH', async () => {
+      setup([role({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private' })]);
+      mockTasksFindFirst.mockResolvedValue({ ...task, createdByUserId: null });
+      requesterAnswer = 'u-bob';
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: 'bobs-helper', missionId: 'm-bob' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(requesterLookups.at(-1)).toMatchObject({ missionId: 'm-bob' });
+      expect(setCalls[0].roleSlug).toBe('bobs-helper');
+    });
+
+    it('clearing the role needs no lookup', async () => {
+      setup([]);
+      const res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { roleSlug: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(mockWorkspaceSkillsFindMany).not.toHaveBeenCalled();
+      expect(setCalls[0].roleSlug).toBeNull();
     });
   });
 
