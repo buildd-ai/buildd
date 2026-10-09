@@ -86,7 +86,7 @@ describe('POST /api/roles { personal: true }', () => {
     expect(store.workspaceSkills[0].requiredEnvVars).toEqual({ NPM_TOKEN: 'MY_TOKEN', BUILDD_API_KEY: 'whatever' });
   });
 
-  it('accepts a connector owned by or shared to the team; refuses a foreign or blocked one', async () => {
+  it('accepts a connector owned by or shared to the team; refuses a foreign one', async () => {
     store.connectors.push({ id: 'c-own', teamId: T, url: 'https://a.example' });
     store.connectors.push({ id: 'c-shared', teamId: OTHER_T, url: 'https://b.example' });
     store.connectors.push({ id: 'c-foreign', teamId: OTHER_T, url: 'https://c.example' });

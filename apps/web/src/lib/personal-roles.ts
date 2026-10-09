@@ -10,10 +10,10 @@
  *   or another shared personal role in the same team.
  * - A personal role never carries an operator grant, may map env vars only to
  *   its owner's own secrets (`secrets.userId = owner`), and may mount only
- *   connectors its team can use: owned by or shared to the team, and not
- *   blocked by catalog policy (the same visibility and policy the claim-time
- *   connector injection applies — connector-capabilities-store.ts and
- *   connector-access-policy.ts).
+ *   connectors its team can use: owned by or shared to the team (the same
+ *   visibility claim-time connector injection applies —
+ *   connector-capabilities-store.ts). Catalog policy (a blocked provider) is
+ *   enforced at the claim boundary, as for team roles.
  *
  * Spec: docs/specs/team-permissions.md ("Personal roles").
  */
@@ -22,7 +22,6 @@ import { connectors, connectorShares, secrets, workspaceSkills } from '@buildd/c
 import { and, eq, inArray, isNull, isNotNull, ne, or } from 'drizzle-orm';
 import { can } from '@/lib/permissions';
 import { getUserTeamIds } from '@/lib/team-access';
-import { connectorBlock, loadBlockedCatalogs } from '@/lib/connector-access-policy';
 
 export type RoleVisibility = 'private' | 'team';
 
@@ -138,15 +137,17 @@ export async function validatePersonalRoleConfig(
           inArray(connectors.id, ids),
           sharedIds.length > 0 ? or(eq(connectors.teamId, teamId), inArray(connectors.id, sharedIds)) : eq(connectors.teamId, teamId),
         ),
-        columns: { id: true, url: true, teamId: true },
+        columns: { id: true },
       });
-      const blocked = await loadBlockedCatalogs([teamId, ...rows.map(r => r.teamId)]);
-      const usable = new Set(rows.filter(r => !connectorBlock(r, teamId, blocked)).map(r => r.id));
+      // Catalog policy (a blocked provider) is not checked here: every
+      // boundary that hands a connector to an agent already asks
+      // connector-access-policy.ts, and core may not import that module.
+      const usable = new Set(rows.map(r => r.id));
       const unusable = ids.filter(id => !usable.has(id));
       if (unusable.length > 0) {
         return refuse(
           'connectorRefs',
-          `connectorRefs: ${unusable.join(', ')} is not a connector your team can use (not owned by or shared to the team, or blocked by policy).`,
+          `connectorRefs: ${unusable.join(', ')} is not a connector your team can use (neither owned by nor shared to the team).`,
         );
       }
     }

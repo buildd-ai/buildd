@@ -312,7 +312,7 @@ team-level, `visibility` `private` (its owner only) or `team` (shared).
 - A personal role never holds an operator grant, carries no raw `mcpServers`,
   maps `requiredEnvVars` only to secrets with `user_id` = its owner (runner
   provided vars excepted), and mounts only connectors its team owns or was
-  shared and that catalog policy does not block. Each refusal is a 400 naming
+  shared (catalog policy is enforced at claim time, as for team roles). Each refusal is a 400 naming
   the field. It has no workspace overrides (400), and the workspace skills
   routes neither create nor list it.
 

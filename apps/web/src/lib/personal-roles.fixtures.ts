@@ -17,8 +17,6 @@ type Col = { __col: string };
 export const store: Record<string, Row[]> = {};
 /** userId -> teamId -> team role. */
 export const teamRoles: Record<string, Record<string, string>> = {};
-/** teamId -> host-blocked connector ids (stands in for catalog policy). */
-export const blockedConnectorIds = new Set<string>();
 export const session: { user: { id: string } | null; cookieTeam?: string } = { user: null };
 
 const SKILL_DEFAULTS: Row = {
@@ -30,7 +28,6 @@ const SKILL_DEFAULTS: Row = {
 export function resetStore() {
   for (const k of Object.keys(store)) delete store[k];
   for (const k of Object.keys(teamRoles)) delete teamRoles[k];
-  blockedConnectorIds.clear();
   for (const t of ['workspaceSkills', 'secrets', 'connectors', 'connectorShares', 'users', 'workspaces']) store[t] = [];
   session.user = null;
   session.cookieTeam = undefined;
@@ -167,10 +164,6 @@ export function installPersonalRoleMocks() {
       caller.kind === 'user' && roleHas(teamRoles[caller.userId!]?.[teamId], permission, {}),
     roleHas,
     getTeamPermissionOverrides: async () => ({}),
-  }));
-  mock.module('@/lib/connector-access-policy', () => ({
-    loadBlockedCatalogs: async () => new Map(),
-    connectorBlock: (c: { id?: string }) => (c.id && blockedConnectorIds.has(c.id) ? { slug: 'x', name: 'X', blockedByTeamId: 't' } : null),
   }));
   mock.module('@/lib/mission-context', () => ({
     // Reproduces the workspace view's reach: workspace rows + every team-level
