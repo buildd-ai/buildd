@@ -54,12 +54,13 @@ import {
 // From `model-tier-defaults`, not `model-tier-registry`: the registry imports
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
-import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
+import { TIERS, bundledTierEntry, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
-import { pickRoleRowForTask, countRoleInferenceCandidates } from '@buildd/core/role-model-routing';
+import { pickRoleRowForTask, countRoleInferenceCandidates, isExactRoleModel, roleFloorTier } from '@buildd/core/role-model-routing';
 import { pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
+import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -1465,7 +1466,7 @@ export async function POST(req: NextRequest) {
         console.warn('[tasks] role lookup for routing preview failed:', err);
       }
     }
-    const routingPreview = computeRoutingPreview({
+    let routingPreview = computeRoutingPreview({
       roleSlug: previewRoleSlug,
       roleModel: previewRoleModel,
       roleMayBeInferred,
@@ -1479,6 +1480,27 @@ export async function POST(req: NextRequest) {
       pathManifestIsConcrete,
       emitsPlan,
     });
+
+    // Model-tier ceiling: refuse an explicit tier, model pin or stated role
+    // model above the effective maximum now, with the policy_denied body,
+    // instead of filing a task that would only sit held at claim. The claim
+    // route still re-checks on every claim (docs/specs/model-tier-ceilings.md).
+    const ceilingSubject = { teamId: targetWorkspace.teamId, workspaceId, userId: requesterUserId };
+    const createCeiling = await loadRequestCeiling(ceilingSubject, 'agent');
+    const ceilingRejection = await rejectOverCeiling({
+      subject: ceilingSubject,
+      ceiling: createCeiling,
+      surface: 'agent',
+      request: {
+        tier: rawTier,
+        model: explicitPreviewModel,
+        roleTier: previewRoleSlug ? roleFloorTier(previewRoleModel) : null,
+        roleExactModel: previewRoleSlug && isExactRoleModel(previewRoleModel) && previewRoleModel !== 'inherit' ? previewRoleModel : null,
+      },
+      gate: { surface: 'POST /api/tasks', workspaceId, callerOrigin: gateCaller },
+    });
+    if (ceilingRejection) return ceilingRejection;
+    routingPreview = previewUnderCeiling(routingPreview, createCeiling, (t) => bundledTierEntry(t).model);
 
     const createTaskRow = async (subjectOverrides: {
       id: string;
