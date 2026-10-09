@@ -3,9 +3,10 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { HealthClient } from '../HealthClient';
+import { sampleRunnerLanes, resolveRunnerLanesSample } from '../runners/sample-lanes';
 import { loadHealth, type HealthPageKey } from './health-data';
 
-export type HealthSearchParams = Promise<{ workspace?: string; window?: string; failureWindow?: string }>;
+export type HealthSearchParams = Promise<{ workspace?: string; window?: string; failureWindow?: string; state?: string | string[] }>;
 
 function Empty({ children }: { children: React.ReactNode }) {
   return (
@@ -26,7 +27,10 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
     return <Empty>No team found. <Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to see this page.</Empty>;
   }
 
-  const loaded = await loadHealth({ page, userId: user.id, teamIds, searchParams: await searchParams });
+  const params = await searchParams;
+  const loaded = await loadHealth({ page, userId: user.id, teamIds, searchParams: params });
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
-  return <HealthClient page={page} {...loaded.data} top={top} />;
+  const runnerLanes = page === 'runners' && resolveRunnerLanesSample(params.state)
+    ? sampleRunnerLanes(loaded.data.now) : loaded.data.runnerLanes;
+  return <HealthClient page={page} {...loaded.data} runnerLanes={runnerLanes} top={top} />;
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { FleetSnapshot } from '@buildd/shared';
 import SlotLanes from './SlotLanes';
-import { RunnerLanes, idleSentences, idleSlotCount, laneCaption, runnerLanes } from './runner-lanes';
+import { RunDetail, RunnerLanes, idleSentences, idleSlotCount, runnerLanes } from './runner-lanes';
 
 const T = Date.UTC(2026, 0, 1);
 const m = (n: number) => T + n * 60_000;
@@ -21,12 +21,19 @@ const fleet = {
 } as unknown as FleetSnapshot;
 
 describe('runnerLanes', () => {
-  it('maps bar states to strip-cell states, with no role letter', () => {
+  it('plain fills, no strip-cell textures, no role letter, and no links on the bars', () => {
     const [lane] = runnerLanes(fleet);
     expect(lane.badge).toBeNull();
     expect(lane.minSlots).toBe(2);
-    expect(Object.fromEntries(lane.bars.map(b => [b.id, b.cell?.state]))).toEqual({ a: 'landed', b: 'failed', c: 'running', d: 'waiting' });
+    expect(lane.bars.map(b => b.cell)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(Object.fromEntries(lane.bars.map(b => [b.id, b.tone]))).toEqual({ a: 'done', b: 'stopped', c: 'live', d: 'waiting' });
+    expect(lane.bars.every(b => b.href === undefined)).toBe(true);
     expect(lane.bars[0].label).toBe('task a');
+  });
+
+  it('a bar labelled with a machine identifier shows its title in words', () => {
+    const f = { ...fleet, runners: [{ ...fleet.runners[0], slots: [{ lane: { bars: [{ ...bar('x', 'running', 0, null), label: 'open_pr_outp', title: '[friction] open_pr_outpaced_by_base: pull_request 4191' }] } }] }] } as unknown as FleetSnapshot;
+    expect(runnerLanes(f)[0].bars[0].label).toBe('Open PR outpaced by base: PR #4191');
   });
 });
 
@@ -42,16 +49,49 @@ describe('idleSentences', () => {
 
 describe('RunnerLanes', () => {
   const html = renderToStaticMarkup(<RunnerLanes fleet={fleet} idle={[{ from: m(5), to: m(10), waited: 1 }]} now={m(60)} />);
-  it('draws state-cell bars, shade and the sentence', () => {
-    expect(html).toContain('state-cell');
-    expect(html).toContain('data-state="landed"');
-    expect(html).toContain('data-pattern="hatch-bold"');
+  it('draws plain bars (no hatching or crosshatching), shade and the sentence', () => {
+    expect(html).not.toContain('state-cell');
+    expect(html).not.toContain('data-pattern');
     expect(html).toContain('slot-lanes-shade');
     expect(html).toContain('every slot sat idle 5m while 1 task waited');
     expect(html).toContain('task a');
   });
-  it('has no role letter avatar', () => {
+  it('has no role letter avatar and no floating hover card', () => {
     expect(html).not.toContain('border-[1.5px] border-border-strong bg-surface-1');
+    expect(html).not.toContain('lane-bar-card');
+  });
+  it('no detail panel until a run is tapped, and the hint says what a tap does', () => {
+    expect(html).not.toContain('runner-lane-detail');
+    expect(html).toContain('Tap a run to see what it was and how it ended');
+  });
+});
+
+describe('RunDetail', () => {
+  const missions = { m1: { title: 'Delivery UX', landed: 2, total: 7 } };
+  const run = {
+    id: 'w1', start: m(0), end: m(55), label: 'home and nav', title: 'refactor(home): one needs-you source',
+    color: null, state: 'failed', missionId: 'm1', taskId: 't1',
+    endReason: 'Stopped: session limit · work kept · merged as #4235',
+  } as const;
+  const html = renderToStaticMarkup(<RunDetail run={run} missions={missions} now={m(60)} />);
+  it('says what the run was, its mission, when, and how it ended, in words', () => {
+    expect(html).toContain('data-testid="runner-lane-detail"');
+    expect(html).toContain('home and nav');
+    expect(html).toContain('One needs-you source');
+    expect(html).toContain('Delivery UX');
+    expect(html).toContain('2 of 7 merged');
+    expect(html).toContain('55m');
+    expect(html).toContain('Stopped: session limit · work kept · merged as #4235');
+    expect(html).not.toContain('failed ·');
+  });
+  it('links to the task and the mission explicitly', () => {
+    expect(html).toContain('href="/app/tasks/t1"');
+    expect(html).toContain('Open task');
+    expect(html).toContain('href="/app/missions/m1"');
+  });
+  it('a standalone run names no mission', () => {
+    const h = renderToStaticMarkup(<RunDetail run={{ ...run, missionId: null }} missions={missions} now={m(60)} />);
+    expect(h).toContain('No mission');
   });
 });
 
@@ -116,27 +156,3 @@ describe('runnerLanes: missions, empty slots and short runs', () => {
   });
 });
 
-describe('laneCaption', () => {
-  const missions = { m1: { title: 'Delivery UX', landed: 2, total: 7 } };
-  it('no selection: the chart title', () => {
-    expect(laneCaption(null, missions)).toEqual({ text: 'Slots over the last hours', href: null });
-  });
-  it('a mission bar: mission title and merged count, linking to the mission', () => {
-    expect(laneCaption({ id: 'a', focusKey: 'm1', title: 'feat(x): y', label: 'y', href: '/t/a' }, missions))
-      .toEqual({ text: 'Delivery UX · 2 of 7 merged', href: '/app/missions/m1' });
-  });
-  it('a bar with no mission (or an unknown one): the task\'s display title, linking to the task', () => {
-    expect(laneCaption({ id: 'a', title: 'fix(api): retry the claim', label: 'retry', href: '/t/a' }, missions))
-      .toEqual({ text: 'Retry the claim', href: '/t/a' });
-    expect(laneCaption({ id: 'a', focusKey: 'm9', title: 'chore: bump', label: 'bump', href: '/t/a' }, missions).text).toBe('Bump');
-  });
-});
-
-describe('RunnerLanes on Health', () => {
-  const html = renderToStaticMarkup(<RunnerLanes fleet={fleet} idle={[]} now={m(60)} missions={{}} />);
-  it('owns its caption and draws the chart unframed inside the page card', () => {
-    expect(html).toContain('data-testid="runner-lanes-caption"');
-    expect(html).toContain('Slots over the last hours');
-    expect(html).not.toContain('border-2 border-border-strong');
-  });
-});

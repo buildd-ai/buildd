@@ -1,8 +1,8 @@
 /**
  * SlotLanes, mounted (happy-dom): tap-to-select. The first tap on a bar
  * highlights every bar sharing its focus key (a mission, for Health's lanes)
- * and dims the rest; a second tap on the same bar follows its link; tapping
- * the empty track or pressing Escape clears.
+ * and dims the rest lightly; nothing navigates (the caller shows the run's
+ * detail and an explicit link); tapping the empty track or pressing Escape clears.
  *
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
@@ -81,9 +81,18 @@ describe('SlotLanes selection', () => {
     expect(selected).toEqual(['a']);
   });
 
-  it('a second tap on the same bar follows its link', () => {
+  it('never navigates: a selectable chart draws no links, so a second tap keeps the selection', () => {
+    expect(container.querySelectorAll('a').length).toBe(0);
     tap(bar('a'));
-    expect(tap(bar('a'))).toBe(true);
+    tap(bar('a'));
+    expect(focused().sort()).toEqual(['a', 'c']);
+  });
+
+  it('the other bars dim lightly, so they stay readable', () => {
+    tap(bar('a'));
+    const wrap = bar('b').parentElement!;
+    expect(wrap.className).toContain('opacity-60');
+    expect(wrap.className).not.toContain('opacity-25');
   });
 
   it('a tap on another bar moves the selection instead of navigating', () => {
@@ -119,4 +128,11 @@ describe('SlotLanes without selectable', () => {
     expect(tap(bar('a'))).toBe(true);
     expect(focused()).toEqual([]);
   });
+});
+
+it('a selected bar has no hover card covering the chart', () => {
+  act(() => root.render(<SlotLanes lanes={lanes} from={m(0)} to={m(100)} selectable hoverCard />));
+  act(() => { bar('a').dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+  tap(bar('a'));
+  expect(container.querySelector('[data-testid="lane-bar-card"]')).toBeNull();
 });

@@ -48,7 +48,7 @@ assertions:
 | `ALTER COLUMN ... TYPE` | CONTRACT | Rewrites column data |
 | `ALTER COLUMN ... SET NOT NULL` | CONTRACT | Locks table; fails on null rows |
 | `ADD COLUMN ... NOT NULL` (no DEFAULT) | CONTRACT | Locks table; fails on existing rows |
-| `INSERT/UPDATE/DELETE/MERGE` | CONTRACT | Data migration — irreversible |
+| `INSERT/UPDATE/DELETE/MERGE` | CONTRACT (`kind: 'data'`) | Data migration — irreversible; see the data-migration policy below |
 | Any other statement | CONTRACT | Fail-closed |
 
 **Invariants**
@@ -59,6 +59,9 @@ assertions:
 - The migration inspection MUST run for any PR that touches a generated migration file (`drizzle/NNNN_name.sql`) or `packages/core/db/schema.ts`, regardless of whether these paths appear in `escalateToPaths` or `denyPaths`.
 - `packages/core/db/schema.ts` MUST NOT be treated as a standalone escalation path. It travels with its generated migration and is gated by the operation-class verdict on that migration.
 - A `schema.ts` change without a corresponding generated migration MUST classify as CONTRACT (schema drift without migration).
+- A CONTRACT verdict whose only CONTRACT statements move data (`INSERT/UPDATE/DELETE/MERGE`) MUST carry `kind: 'data'`. Any destructive statement in the same file or PR MUST win over it, whatever the order, so a backfill cannot hide a `DROP`.
+- A data-only migration whose number collides with another open PR MUST report the collision first (a mechanical renumber); the data verdict applies again on the renumbered head.
+- **Data-migration policy** (`mergePolicy.dataMigrations`): `'person'` (default) keeps a data migration a person's decision. `'agent-review'`, under tier `agent-review` only, lets the reviewer agent decide it: the reviewer pre-check, auto-merge and the escalation gate MUST NOT force a person for `kind: 'data'`, and the reviewer prompt asks the reviewer to judge the data change. A risk class the policy preset maps to `human` still applies. Destructive DDL, rewritten migrations, mixed PRs and uninspectable migrations are unaffected.
 
 **Acceptance criteria**
 
@@ -70,6 +73,7 @@ assertions:
 - AC-6: GIVEN a workspace whose path configuration (detected risk-class paths, or a legacy stored `escalateToPaths`) does NOT contain `drizzle/` WHEN a PR with an EXPAND migration is submitted THEN the inspector still runs, classifies it as EXPAND, and the PR passes auto-merge safety. (Removing `drizzle/` from path config does NOT disable the gate.)
 - AC-7: GIVEN a PR that modifies or deletes an existing generated migration file WHEN evaluated THEN `operationClass` is `CONTRACT` (immutable migration history invariant).
 - AC-8: GIVEN two open PRs whose migrations share the same sequence number WHEN either is evaluated THEN `operationClass` is `CONTRACT` (collision guard).
+- AC-9: GIVEN an agent-review workspace with `mergePolicy.dataMigrations: 'agent-review'` WHEN a reviewer-approved PR's only CONTRACT statement is an `UPDATE` THEN the pre-check does not escalate and auto-merge safety passes; GIVEN the default WHEN the same PR is evaluated THEN auto-merge is refused with `runs data migration UPDATE on <table>`.
 
 **Verification gate (EXPAND migrations)**
 
