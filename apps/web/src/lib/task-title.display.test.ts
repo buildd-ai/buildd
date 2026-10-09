@@ -21,7 +21,7 @@ describe('displayTaskTitle', () => {
     expect(displayTaskTitle('Ship mission: Widget Polish')).toBe('Ship Widget Polish');
   });
 
-  it('shortens a ship title behind a retry wrap, keeping the wrap', () => {
+  it('shortens a ship title behind a retry wrap, dropping the wrap', () => {
     expect(displayTaskTitle('[builder · after review #2] Ship mission: Widget Polish'))
       .toBe('Ship Widget Polish');
   });
@@ -38,6 +38,14 @@ describe('displayTaskTitle', () => {
     ['Fix the thing: carefully', 'Fix the thing: carefully'],
     ['already plain title', 'Already plain title'],
     ['chore(mission): merge dev', 'Merge dev'],
+    ['feat: add invoices', 'Add invoices'],
+    ['refactor(ui)!: drop the old board', 'Drop the old board'],
+    ['polish(home): tighten the rail', 'Tighten the rail'],
+    ['design: revise the card', 'Revise the card'],
+    ['[builder · after CI #1] feat(invoices): render invoices', 'Render invoices'],
+    ['Investigate the flaky login test', 'Investigate the flaky login test'],
+    ['fix:', 'fix:'],
+    ['Note: the parser is slow', 'Note: the parser is slow'],
   ])('%s -> %s', (input, out) => {
     expect(displayTaskTitle(input)).toBe(out);
   });

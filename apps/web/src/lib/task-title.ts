@@ -17,8 +17,9 @@
  */
 
 import { stripTaskTitlePrefixes } from '@buildd/core/task-title';
+import { CONVENTIONAL_PREFIX_RE } from '@buildd/core/task-label';
 
-export { stripTaskTitlePrefixes };
+export { stripTaskTitlePrefixes, CONVENTIONAL_PREFIX_RE };
 
 /** Attempt reason for a builder retry after reviewer feedback. */
 export type AttemptReason = 'after review' | 'after conflict' | 'after CI' | 'migration collision' | 'semantic overlap' | 'split migrations';
@@ -69,7 +70,7 @@ const REFRESH_TITLE = /^chore\(mission\): merge (\S+) into the (.+) integration 
 const SHIP_TITLE = /^((?:\[[^\]]*\]\s*)*)Ship mission:\s+(.+)$/;
 
 /** `type(scope)!:` — a known type with or without scope, or any lowercase word with a scope. */
-const CONVENTIONAL_PREFIX = /^(?:(?:feat|fix|chore|docs?|refactor|tests?|ci|perf|build|style|revert|hotfix|release|deps|polish)(?:\([^)]*\))?|[a-z][\w-]*\([^)]*\))!?:\s*/i;
+const SCOPED_PREFIX = /^[a-z][\w-]*\([^)]*\)!?:\s*/i;
 /** Any leading `[tag]` (retry wraps, `[surface audit]`, `[friction]` …). */
 const LEADING_TAG = /^\s*\[[^\]]*\]\s*/;
 
@@ -102,8 +103,9 @@ export function displayTaskTitle(title: string | null | undefined): string {
   if (refresh) return `Refresh ${refresh[2]} from ${refresh[1]}`;
   const ship = SHIP_TITLE.exec(t);
   if (ship) return `Ship ${ship[2]}`;
-  const bare = t.replace(CONVENTIONAL_PREFIX, '').trim();
-  return capitalise(bare || t);
+  const prefix = CONVENTIONAL_PREFIX_RE.exec(t) ?? SCOPED_PREFIX.exec(t);
+  const bare = (prefix ? t.slice(prefix[0].length) : t).trim();
+  return bare ? capitalise(bare) : t;
 }
 
 const SHORT_NAME_MAX = 40;
