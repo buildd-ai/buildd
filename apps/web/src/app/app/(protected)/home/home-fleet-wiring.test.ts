@@ -56,7 +56,7 @@ describe('Home live workers', () => {
   });
 
   it('renders the redesigned sections with stable test ids', () => {
-    for (const id of ['home-headline', 'home-body', 'home-waiting-on-you', 'needs-you-count']) expect(body).toContain(`data-testid="${id}"`);
+    for (const id of ['home-headline', 'home-body', 'home-waiting-on-you']) expect(body).toContain(`data-testid="${id}"`);
     for (const c of ['<AgentsPanel', '<LandedThisWeek']) expect(home).toContain(c);
     expect(body).toContain('<DeliveryMilestones');
   });

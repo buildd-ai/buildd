@@ -10,6 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
@@ -41,6 +42,7 @@ import {
 import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
 import { resolveSubjectPolicy, isIdentifyingSubjectKeyType } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
+import { resolvePrReachGrant, withoutPrReachGrant, type PrReachFiler } from '@/lib/pr-reach-grant';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
@@ -457,15 +459,15 @@ export async function POST(req: NextRequest) {
 
     // The landing escape hatch's grant (context.landingOverride) is a person's call: only a
     // dashboard/chat session or an OAuth MCP session may set it, and the server stamps who.
-    const grantPerson = apiAccount
-      ? ((apiAccount as { sessionUserId?: string | null }).sessionUserId ?? null)
-      : (user?.id ?? null);
+    const grantPerson = requestingPerson(user, apiAccount);
     const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
     if (!stampedGrant.ok) {
       return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });
     }
     // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
-    const incomingContext = withoutReviewDispatchContext(stampedGrant.context) as typeof rawIncomingContext;
+    // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
+    // here and the link this filing earns is stamped just before the insert.
+    const incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -856,6 +858,28 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
     const creationSource = creatorContext.creationSource ?? 'api';
+
+    // The PRs this task may act on beyond its own worker's: a person's filing
+    // links the PRs it names; an agent run's links only PRs its own task
+    // already reaches (lib/pr-reach-grant.ts). Text alone never grants it later.
+    let prReachFiler: PrReachFiler = { kind: 'none' };
+    if (grantPerson) {
+      prReachFiler = { kind: 'person', personId: grantPerson };
+    } else if (apiAccount?.taskScope) {
+      prReachFiler = { kind: 'task', taskId: apiAccount.taskScope.taskId };
+    } else if (apiAccount && creatorContext.createdByWorkerId) {
+      const filerWorker = await db.query.workers.findFirst({
+        where: eq(workers.id, creatorContext.createdByWorkerId),
+        columns: { taskId: true },
+      });
+      if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
+    }
+    const prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
+      .catch((err) => {
+        console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
+        return null;
+      });
+    const prReachCtx = prReach ? { prReach } : {};
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
     // tasks exactly ONCE, when the mission's planning task is created — but
@@ -1534,6 +1558,7 @@ export async function POST(req: NextRequest) {
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence
+          ...prReachCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1593,6 +1618,7 @@ export async function POST(req: NextRequest) {
         ...(deferredStart.resolution ? {
           context: {
             ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
+            ...prReachCtx,
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),

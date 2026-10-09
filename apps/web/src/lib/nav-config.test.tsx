@@ -1,37 +1,26 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
-import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, navItemsFor, showsWorkspaceFilter } from './nav-config';
+import { MOBILE_TAB_LIMIT, NAV_ITEMS, WORKSPACE_FILTERED_PAGES, mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from './nav-config';
+import { SETTINGS_ROUTE_MOVES } from '../../next.config.mjs';
 
 describe('NAV_ITEMS', () => {
-  it('defines the primary surfaces in spec order (unified-app-ia §D.2)', () => {
-    expect(NAV_ITEMS.map((i) => i.href)).toEqual([
-      '/app/home',
-      '/app/chat',
-      '/app/missions',
-      '/app/releases',
-      '/app/initiatives',
-      '/app/tasks',
-      '/app/team',
-      '/app/health',
-    ]);
-    expect(NAV_ITEMS.map((i) => i.label)).toEqual([
-      'Home',
-      'Chat',
-      'Missions',
-      'Releases',
-      'Initiatives',
-      'Activity',
-      'Team',
-      'Health',
-    ]);
+  // Owner decision (Oct 9): five primary destinations, the same on a phone and
+  // on desktop. Releases and Initiatives live under Missions, Team under Settings.
+  it('is the five primary surfaces, in order', () => {
+    expect(NAV_ITEMS.map((i) => i.href)).toEqual(['/app/home', '/app/missions', '/app/tasks', '/app/health', '/app/chat']);
+    expect(NAV_ITEMS.map((i) => i.label)).toEqual(['Home', 'Missions', 'Activity', 'Health', 'Chat']);
+    expect(NAV_ITEMS.length).toBe(MOBILE_TAB_LIMIT);
   });
 
-  it('marks only Releases and Initiatives desktop-only (kept off the mobile bottom bar)', () => {
-    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual([
-      '/app/releases',
-      '/app/initiatives',
-    ]);
+  it('Releases, Initiatives and Team leave the nav but their pages still resolve', () => {
+    // Team resolves through a redirect into Settings › Roles (next.config SETTINGS_ROUTE_MOVES).
+    const redirected = new Map(SETTINGS_ROUTE_MOVES.map((m) => [m.source, m.destination]));
+    for (const href of ['/app/releases', '/app/initiatives', '/app/team']) {
+      expect(NAV_ITEMS.map((i) => i.href)).not.toContain(href);
+      const target = redirected.get(href) ?? href;
+      expect(`${href}: ${existsSync(resolve(import.meta.dir, `../app/app/(protected)${target.replace('/app', '')}/page.tsx`))}`).toBe(`${href}: true`);
+    }
   });
 
   it('Chat is a plain nav item, gated on nothing (chat is always on)', () => {
@@ -101,7 +90,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/settings')).toBe('Settings');
     expect(mobilePageTitle('/app/settings/account')).toBe('Profile');
     expect(mobilePageTitle('/app/settings/runners')).toBe('Runners');
-    expect(mobilePageTitle('/app/settings/models')).toBe('Model tiers');
+    expect(mobilePageTitle('/app/settings/models')).toBe('Models');
     expect(mobilePageTitle('/app/settings/workspace/ws-1')).toBe('Workspaces');
   });
 
@@ -147,35 +136,5 @@ describe('showsWorkspaceFilter', () => {
     expect(checked.length).toBeGreaterThan(0);
     const nextConfig = readFileSync(resolve(import.meta.dir, '../../next.config.mjs'), 'utf8');
     for (const path of REDIRECT_ONLY) expect(nextConfig).toContain(`source: '${path}'`);
-  });
-});
-
-describe('navItemsFor', () => {
-  const hrefs = (items: { href: string }[]) => items.map(i => i.href);
-
-  it('the Chat entry is always present, for every audience, on both surfaces', () => {
-    for (const audience of ['member', 'operator'] as const) {
-      for (const surface of ['desktop', 'mobile'] as const) {
-        expect(hrefs(navItemsFor({ audience }, surface))).toContain('/app/chat');
-      }
-    }
-  });
-
-  it('a member gets Chat first, desktop and phone', () => {
-    expect(navItemsFor({ audience: 'member' }, 'desktop')[0].href).toBe('/app/chat');
-    expect(navItemsFor({ audience: 'member' }, 'mobile')[0].href).toBe('/app/chat');
-  });
-
-  it('an operator keeps Home (the fleet) first, Chat right after', () => {
-    expect(hrefs(navItemsFor({ audience: 'operator' }, 'desktop')).slice(0, 2)).toEqual(['/app/home', '/app/chat']);
-  });
-
-  it('the phone tab bar never exceeds its limit; Team steps off, the rail keeps it', () => {
-    for (const audience of ['member', 'operator'] as const) {
-      const mobile = navItemsFor({ audience }, 'mobile');
-      expect(mobile.length).toBeLessThanOrEqual(MOBILE_TAB_LIMIT);
-      expect(hrefs(mobile)).not.toContain('/app/team');
-      expect(hrefs(navItemsFor({ audience }, 'desktop'))).toContain('/app/team');
-    }
   });
 });

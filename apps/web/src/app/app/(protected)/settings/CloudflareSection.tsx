@@ -153,7 +153,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
 
   const meta = cred ? (
     <span data-testid="cloudflare-credential">
-      {teamName ? `${teamName} · ` : ''}Account {cred.accountId ?? '?'} · token {cred.tokenHint ?? '?'}
+      {teamName ? `${teamName} · ` : ''}Account <span className="font-mono">{cred.accountId ?? '?'}</span> · token <span className="font-mono">{cred.tokenHint ?? '?'}</span>
     </span>
   ) : (
     <>{teamName ? `${teamName} · ` : ''}Cloud runner account</>
@@ -173,7 +173,7 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
           onClick={nextStep}
           disabled={busy}
           data-testid="cloudflare-next"
-          className={`btn ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}
+          className="btn"
         >
           {busy ? 'Working…' : state.next}
         </button>

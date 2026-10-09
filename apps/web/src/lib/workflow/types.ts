@@ -114,6 +114,10 @@ export interface DeliverySnapshot {
    * ledger row, so this is the `L` its proof is checked against.
    */
   pushPendingLocalHead?: string | null;
+  /** §9: how many times the delivery has entered AWAITING_PUSH (absent in fixtures = 0). */
+  pushEntries?: number;
+  /** §9: the version of the latest entry into AWAITING_PUSH; names a later visit's push_recovery chain. */
+  pushPendingSince?: number | null;
 }
 
 export interface RoundSnapshot {

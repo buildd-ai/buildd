@@ -10,7 +10,7 @@ import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, 
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
-import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
+import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -79,6 +79,7 @@ import { roleSlugGate } from './role-gate';
 // applying it.
 import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
+import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
@@ -416,12 +417,18 @@ export async function POST(req: NextRequest) {
     ),
   });
 
-  if (activeWorkers.length >= account.maxConcurrentWorkers) {
+  // The account's worker limit is the slots its runners are assigned, never a
+  // cap on the person (task 69f5b7cd). A verified interactive session is not
+  // limited by it, and its workers (runner 'mcp') do not occupy a runner slot.
+  // Only the verified marker counts: 'mcp-unverified' is an ordinary runner.
+  const runnerSlotWorkers = activeWorkers.filter(w => w.runner !== INTERACTIVE_RUNNER);
+
+  if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
       {
         error: 'Max concurrent workers limit reached',
         limit: account.maxConcurrentWorkers,
-        current: activeWorkers.length,
+        current: runnerSlotWorkers.length,
       },
       { status: 429 }
     );
@@ -443,7 +450,7 @@ export async function POST(req: NextRequest) {
       );
     }
   } else if (account.authType === 'oauth') {
-    if (account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
+    if (!interactiveSession && account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
       return NextResponse.json(
         {
           error: 'Max concurrent sessions limit reached',
@@ -516,13 +523,15 @@ export async function POST(req: NextRequest) {
   const accountBudgetExhausted = account.authType === 'oauth'
     && isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt);
 
-  const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
+  const availableSlots = interactiveSession
+    ? maxTasks
+    : Math.min(maxTasks, account.maxConcurrentWorkers - runnerSlotWorkers.length);
 
   if (availableSlots === 0) {
     return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
-        activeWorkers: activeWorkers.length,
+        activeWorkers: runnerSlotWorkers.length,
         maxConcurrent: account.maxConcurrentWorkers,
       } satisfies ClaimDiagnostics,
     });
@@ -710,6 +719,14 @@ export async function POST(req: NextRequest) {
     claimableConditions.push(explicitTaskGates.workspaceExecutor);
   }
 
+  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
+  // Runner claims wait; a person's interactive session is never paused, and an
+  // admin force claim lifts it like the other workspace gates.
+  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
+    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
+    claimableConditions.push(explicitTaskGates.workspacePaused);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -807,6 +824,7 @@ export async function POST(req: NextRequest) {
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
         workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
+        workspacePaused: workspaceNotPausedGate(now),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
@@ -1106,7 +1124,8 @@ export async function POST(req: NextRequest) {
   //  • OAUTH_BUDGET_PACING=off — operational kill switch, no redeploy of logic
   //    needed, no settings row, no UI.
   const pacingConfig = readPacingConfig(process.env);
-  const pacingApplies = pacingConfig.enabled && !taskId;
+  // An interactive session runs on the person's own credentials, not a seat.
+  const pacingApplies = pacingConfig.enabled && !taskId && !interactiveSession;
   let oauthPressure: OauthBudgetPressure | null = null;
   let oauthSeatSlotsLeft: number | null = null; // null = uncapped
   if (account.authType === 'oauth' && pacingApplies) {
@@ -2922,6 +2941,16 @@ export async function POST(req: NextRequest) {
     // what PATCH /api/workers/[id] matches to let only the claimer act as the
     // worker (lib/worker-owner.ts). NULL for a bld_ key.
     const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+    // Same rule as the pre-check: a session is not limited, and a runner's
+    // count leaves the person's own sessions out.
+    const accountSlotPredicate = interactiveSession
+      ? sql`TRUE`
+      : sql`(
+          SELECT count(*) FROM ${workers}
+          WHERE account_id = ${account.id}
+          AND status IN ('idle', 'running', 'starting', 'waiting_input')
+          AND runner IS DISTINCT FROM ${INTERACTIVE_RUNNER}
+        ) < ${account.maxConcurrentWorkers}`;
     const [, insertResult] = await db.batch([
       db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
       db.execute(sql`
@@ -2934,11 +2963,7 @@ export async function POST(req: NextRequest) {
           AND t_claim.claimed_by = ${account.id}
           FOR UPDATE
         )
-        AND (
-          SELECT count(*) FROM ${workers}
-          WHERE account_id = ${account.id}
-          AND status IN ('idle', 'running', 'starting', 'waiting_input')
-        ) < ${account.maxConcurrentWorkers}
+        AND ${accountSlotPredicate}
         AND NOT EXISTS (
           SELECT 1 FROM ${workers} w_dup
           WHERE w_dup.task_id = ${task.id}

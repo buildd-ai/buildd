@@ -55,7 +55,7 @@ function differsFromDefault(id: string, gitConfig: WorkspaceGitConfig | null): W
   const out: WorkspaceDiffer[] = [];
   const gitWorkflow = BRANCH_LABEL[resolveBranchStrategy(gitConfig)];
   if (gitWorkflow !== WORKSPACE_DEFAULTS.gitWorkflow) {
-    out.push({ key: 'gitWorkflow', label: gitWorkflow, href: `/app/workspaces/${id}/config` });
+    out.push({ key: 'gitWorkflow', label: gitWorkflow, href: `/app/settings/workspace/${id}` });
   }
   const mergePolicy = TIER_LABEL[resolvePolicy({ gitConfig }).tier];
   if (mergePolicy !== WORKSPACE_DEFAULTS.mergePolicy) {
@@ -63,7 +63,7 @@ function differsFromDefault(id: string, gitConfig: WorkspaceGitConfig | null): W
   }
   // enforceGreenCI: a task's PR gets fix rounds until its checks pass (tasks route).
   if (gitConfig?.enforceGreenCI === true) {
-    out.push({ key: 'ciRetry', label: 'Fixes until CI passes', href: `/app/workspaces/${id}/config#ci-retry` });
+    out.push({ key: 'ciRetry', label: 'Fixes until CI passes', href: `/app/settings/workspace/${id}#ci-retry` });
   }
   return out;
 }
@@ -111,7 +111,9 @@ export function buildWorkspaceRows({
       id: ws.id,
       name: ws.name,
       teamId: ws.teamId,
-      teamName: teamName.get(ws.teamId) ?? 'Unknown team',
+      // Null when the team can't be resolved: the list drops the heading rather
+      // than inventing a name.
+      teamName: teamName.get(ws.teamId)?.trim() || null,
       differs: differsFromDefault(ws.id, ws.gitConfig),
       runsOn: { executor, size: executor === 'cloud' ? resolveRunnerSize({ gitConfig: ws.gitConfig, reports: [] }).size : null },
       lastActivityAt: toIso(a?.lastTaskAt),

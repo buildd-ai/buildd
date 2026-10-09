@@ -19,7 +19,7 @@ describe('GettingStartedChecklist', () => {
     expect(html).toContain('buildd login --device');
     expect(html).not.toContain('8766');
     expect(html).toContain('Add an agent key');
-    expect(html).toContain('/app/settings/runners#agent-key');
+    expect(html).toContain('/app/settings/models#agent-key');
     expect(html).toContain('OpenRouter');
     expect(html).toContain('LiteLLM');
     expect(html).toContain('Run a first task');
