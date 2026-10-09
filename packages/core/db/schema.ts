@@ -4439,8 +4439,9 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 
 /** Who a grant's requests act as. 'person': the signed-in user (a `human:`
  * principal, person-only actions allowed). 'agent': the user's agent
- * (attributed to the user, never a person principal). Chosen at consent and
- * never changed afterwards; a legacy workspace-claim token counts as 'person'. */
+ * (attributed to the user, never a person principal). Chosen at consent; the
+ * owner may later downgrade 'person' to 'agent' in Settings, never the reverse
+ * (that needs a fresh consent). A legacy workspace-claim token counts as 'person'. */
 export type McpGrantActsAs = 'person' | 'agent';
 export type McpGrantScope = 'read' | 'write';
 
