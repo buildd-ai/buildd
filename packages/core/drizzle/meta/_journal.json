@@ -205,6 +205,7 @@
       "when": 1791541472428,
       "tag": "0279_dapper_warbird",
       "breakpoints": true
+<<<<<<< HEAD
     },
     {
       "idx": 280,
@@ -213,5 +214,17 @@
       "tag": "0280_rapid_goblin_queen",
       "breakpoints": true
     }
+||||||| 3beeec32a
+    }
+=======
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1791559599687,
+      "tag": "0280_bumpy_miss_america",
+      "breakpoints": true
+    }
+>>>>>>> origin/dev
   ]
 }
