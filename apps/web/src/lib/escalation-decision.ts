@@ -14,6 +14,7 @@ import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { recordDecision } from '@buildd/core/decision-ledger';
 import { escalationActionFiler, gateEscalations, type EscalationGateDeps, type GatedSubject } from './escalation-gate-check';
 import { escalationFingerprint } from '@buildd/core/escalation-gate';
+import { escalationRuleExecutor } from './merge-policy-rule-executor';
 import { insertDecisionReceipts } from './memory-decisions';
 import { fileRecoverableBlockerRepair } from './recoverable-blocker-repair';
 
@@ -25,6 +26,7 @@ export function escalationGateDeps(): EscalationGateDeps {
     record: input => recordDecision(input),
     recordReceipts: (receipts, scope) => insertDecisionReceipts(receipts, scope),
     act: escalationActionFiler(fileRecoverableBlockerRepair),
+    actRule: escalationRuleExecutor(),
   };
 }
 
