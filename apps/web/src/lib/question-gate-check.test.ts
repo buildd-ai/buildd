@@ -5,7 +5,7 @@
  * recorded to the decision ledger (plus its ai_usage receipt).
  */
 import { describe, expect, it } from 'bun:test';
-import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
+import { checkQuestion, recheckParkedQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
 import { labelDecidedQuestionOutcomes } from './question-gate-decision-outcomes';
 import type { QuestionGateRequest } from '@buildd/core/question-gate';
 
@@ -284,6 +284,51 @@ describe('checkQuestion: recoverable blockers route to repair, not to a person',
   it('a real decision is untouched', async () => {
     const { d } = deps({ runDecide: decideRun('ask', null, 0.9) as any, fileRepair: async () => { throw new Error('must not file'); } });
     expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ outcome: 'asked' });
+  });
+});
+
+describe('recheckParkedQuestion: a park that arrived without a gate disposition', () => {
+  const REPAIR = 'abcdef12-0000-0000-0000-000000000000';
+
+  it('a legacy park describing a recoverable blocker self-routes: repair filed, disposed recovered', async () => {
+    const filed: any[] = [];
+    const recs: any[] = [];
+    const out = await recheckParkedQuestion({ ...SCOPE, missionId: 'm-1' }, BLOCKER.question, {
+      fileRepair: async (input) => { filed.push(input); return { id: REPAIR, reused: false }; },
+      record: async (r) => { recs.push(r); return null; },
+    });
+    expect(out).toMatchObject({ disposition: 'recovered', dispositionBy: 'server_recheck', gateOutcome: 'recovered', repairTaskId: REPAIR });
+    expect(out.reason).toContain('abcdef12');
+    expect(filed[0].spec.signature).toBe('recoverable-blocker:migration_order:m-1');
+    expect(recs[0]).toMatchObject({ reason: 'recovered:migration_order', applied: true });
+  });
+
+  it('a hard rail still asks, naming the rail, and files nothing', async () => {
+    const out = await recheckParkedQuestion(
+      { ...SCOPE, hardRail: { pathManifest: ['packages/core/drizzle/0001_x.sql'] } },
+      BLOCKER.question,
+      { fileRepair: async () => { throw new Error('must not file'); }, record: async () => null },
+    );
+    expect(out).toEqual({ disposition: 'ask', dispositionBy: 'server_recheck', gateOutcome: 'hard_rail', rail: 'migration' });
+  });
+
+  it('an irreversible action in the prompt asks', async () => {
+    const out = await recheckParkedQuestion(SCOPE, { prompt: 'Merge this PR into main now that CI is red on the base?', options: [] }, {
+      fileRepair: async () => { throw new Error('must not file'); }, record: async () => null,
+    });
+    expect(out).toMatchObject({ disposition: 'ask', rail: 'irreversible' });
+  });
+
+  it('a real decision asks', async () => {
+    expect(await recheckParkedQuestion(SCOPE, BARE.question, { fileRepair: async () => { throw new Error('must not file'); } }))
+      .toEqual({ disposition: 'ask', dispositionBy: 'server_recheck' });
+  });
+
+  it('fails open to ask when the repair cannot be filed, and with the kill switch off', async () => {
+    expect(await recheckParkedQuestion(SCOPE, BLOCKER.question, { fileRepair: async () => null, record: async () => null }))
+      .toEqual({ disposition: 'ask', dispositionBy: 'server_recheck' });
+    expect(await recheckParkedQuestion({ ...SCOPE, gateEnabled: false }, BLOCKER.question, { fileRepair: async () => ({ id: REPAIR, reused: true }) }))
+      .toEqual({ disposition: 'ask', dispositionBy: 'server_recheck', gateOutcome: 'off' });
   });
 });
 

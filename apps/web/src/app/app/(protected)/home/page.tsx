@@ -1,3 +1,4 @@
+import { admitsNoteToNeedsYou, admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from '@/lib/open-ask';
 import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
@@ -1705,6 +1706,9 @@ export default async function HomePage({
               inArray(workers.workspaceId, wsIds),
               eq(workers.status, 'waiting_input'),
               isNotNull(workers.waitingFor),
+              // Needs You admission, pre-filtered so undisposed or recovered
+              // parks cannot crowd admitted ones out of the limit.
+              sql`${workers.waitingFor}->>'disposition' in ('ask', 'hold')`,
             ),
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
@@ -1717,7 +1721,7 @@ export default async function HomePage({
           });
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
-            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input')) continue;
+            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input') || !admitsToNeedsYou(wf, Date.now())) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
@@ -1833,10 +1837,12 @@ export default async function HomePage({
                 eq(missionNotes.status, 'open'),
               ),
               orderBy: desc(missionNotes.createdAt),
-              columns: { id: true, missionId: true, title: true, body: true },
+              columns: { id: true, missionId: true, title: true, body: true, type: true, authorType: true, disposition: true },
             });
             const noteByMission = new Map<string, typeof openNotes[number]>();
             for (const n of openNotes) {
+              // An agent's question note reaches a person only with disposition `ask`.
+              if (!admitsNoteToNeedsYou(n)) continue;
               if (n.missionId && !noteByMission.has(n.missionId)) noteByMission.set(n.missionId, n);
             }
             waitingOnYou.push(...buildDecideItems(escalatedMissions.map(m => {
