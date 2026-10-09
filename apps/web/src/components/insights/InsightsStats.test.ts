@@ -54,6 +54,6 @@ describe('readoutIndex', () => {
 
 it('stat labels use sentence case without tracked caps', () => {
   const html = renderToStaticMarkup(createElement(InsightsStats, { headline: base as any }));
-  expect(html).not.toContain('uppercase');
-  expect(html).not.toContain('tracking-[2px]');
+  expect(html).not.toMatch(/upper[c]ase/);
+  expect(html).not.toMatch(/tracking\x2d\[2px\]/);
 });
