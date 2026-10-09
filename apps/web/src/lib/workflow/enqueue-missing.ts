@@ -55,10 +55,21 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       // A queued round at the current head has a dispatch_review (startRound's key).
       if (!current || current.status !== 'queued' || current.headSha !== d.currentHeadSha) break;
       const prior = lastDecidedBefore(current.round)?.round ?? null;
-      owed.push({
-        kind: 'dispatch_review', dedupeKey: `dispatch_review:${d.id}:${current.round}`,
-        payload: { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null },
-      });
+      const payload = { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null };
+      const base = `dispatch_review:${d.id}:${current.round}`;
+      if (!existing.has(base)) {
+        owed.push({ kind: 'dispatch_review', dedupeKey: base, payload });
+        break;
+      }
+      // a6cbd241: the round's dispatches all finished and none asked a reviewer (one acked
+      // `skipped:superseded` because the delivery was briefly elsewhere, then came back to this
+      // round). A finished key still holds its own slot, so the round owes a fresh one. Only
+      // when every dispatch for the round is known `done`: a live one is the round's exit, a
+      // dead one is EffectDead's business, and an unread status proves nothing.
+      if (current.reviewerTaskId) break;
+      const keys = [...existing].filter((k) => k === base || k.startsWith(`${base}:`));
+      if (!keys.every((k) => status.get(k) === 'done')) break;
+      owed.push({ kind: 'dispatch_review', dedupeKey: `${base}:floor:v${d.version}`, payload });
       break;
     }
     case 'AWAITING_PUSH': {
