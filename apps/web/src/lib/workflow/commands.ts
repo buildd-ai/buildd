@@ -84,6 +84,13 @@ export type Command =
       taskRetryBudgetLeft?: boolean;
       /** Whether this workspace's policy wants a review round once a head exists. */
       reviewRequired?: boolean;
+      /**
+       * §6.5 row 1 (e9f1674b): the check runs on the live head, read when the owner attempt
+       * ended. A red head is handed on to `REPAIRING(ci)` by T10's ledger rather than to a
+       * review round, because a failure hint that arrived while `WORKING` was refused there.
+       * Absent or null (unreadable) hands on exactly as before.
+       */
+      ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {

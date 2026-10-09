@@ -25,6 +25,7 @@ import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
@@ -400,12 +401,30 @@ export async function attemptEnded(p: {
   if (!d) return { handled: false };
   let live: LivePr | null = null;
   let proof: { liveContainsLocal: boolean } | undefined;
+  let ci: Extract<Command, { type: 'AttemptEnded' }>['ci'] = null;
+  let trunk: TrunkClassification | null = null;
   if (d.repoFullName && d.prNumber != null) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     if (repo) {
       const reader = readerFor(deps, repo.installationId);
       live = await reader.readPr(d.repoFullName, d.prNumber);
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused (T10 does
+      // not move WORKING). The owner's hand-off reads the head's checks now and acts on a red.
+      if (attemptKind === 'owner' && d.state === 'WORKING' && live && live.state === 'open' && !live.merged && reader.checkRuns) {
+        const liveChecks = await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null);
+        if (liveChecks) {
+          // §6.10: classified as T10 would; a trunk-caused red is handed on and then T25's.
+          const cls = liveChecks.failing.length > 0
+            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
+            : null;
+          if (cls?.incident) trunk = cls;
+          else {
+            const configured = (repo.gitConfig as { maxCiRetries?: unknown } | null)?.maxCiRetries;
+            ci = { liveChecks, signature: cls?.signature ?? UNKNOWN_CI_SIGNATURE, maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries') };
+          }
+        }
+      }
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
@@ -422,10 +441,20 @@ export async function attemptEnded(p: {
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
+    ...(ci ? { ci } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+  }
+  if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
+    await applyCommand(
+      { type: 'TrunkRedObserved', actor: p.source, incidentId: trunk.incident.id, signature: trunk.signature, headSha: live.headSha, thresholdMet: true },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (trunk.incident.opened) {
+      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+    }
   }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
