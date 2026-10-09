@@ -84,3 +84,10 @@ describe('prSubjectFor', () => {
     expect(escalationRule(prSubjectFor(input({ lifecycle: 'conflict' })))).toMatchObject({ action: 'conflict_fix' });
   });
 });
+
+describe('prSubjectFor: data migrations', () => {
+  it('carries the workspace setting to the gate', () => {
+    expect(prSubjectFor(input({ agentReviewsDataMigrations: true })).agentReviewsDataMigrations).toBe(true);
+    expect(prSubjectFor(input()).agentReviewsDataMigrations).toBeFalsy();
+  });
+});

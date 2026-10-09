@@ -43,7 +43,8 @@ jobs:
     name: Fresh install (ubuntu, non-root, no sudo)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: ubuntu:26.04
+    # ECR Public mirror of the official image: Docker Hub rate-limits shared runner IPs.
+    container: public.ecr.aws/docker/library/ubuntu:26.04
     steps:
       - name: Base tools a fresh machine has
         run: |
@@ -67,7 +68,8 @@ jobs:
     name: Fresh install --client (ubuntu, non-root, no sudo)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: ubuntu:26.04
+    # ECR Public mirror of the official image: Docker Hub rate-limits shared runner IPs.
+    container: public.ecr.aws/docker/library/ubuntu:26.04
     steps:
       - name: Base tools a fresh machine has
         run: |

@@ -25,7 +25,7 @@ describe('FailureGroupsSection', () => {
     );
     expect(html).toContain('8%');
     expect(html).toContain('3 of 40 agent runs failed');
-    expect(html.match(/data-testid="failure-group"/g)?.length).toBe(2);
+    expect(html.match(/data-testid="failure-group"/g)?.length).toBe(1);
     expect(html).toContain("Hit the model provider&#x27;s usage limit");
     expect(html).toContain('Platform');
   });
@@ -53,3 +53,16 @@ describe('failureProblemLine', () => {
     expect(failureProblemLine(data([w('a', 'TypeError: x is undefined')]), '24h')).toStartWith('Failures: 1 cause in the last day: ');
   });
 });
+
+ it('splits recurring causes and folds single occurrences without losing drill-downs', () => {
+   const html = renderToStaticMarkup(<FailureGroupsSection groups={data([
+     w('a', "You've hit your session limit"), w('b', "You've hit your session limit"),
+     w('c', 'TypeError: x is undefined'), w('d', 'TypeError: x is undefined'),
+     w('e', 'Unique failure'),
+   ])} headline={null} windowLabel="7d" now={NOW} />);
+   expect(html).toContain('data-testid="failure-kind-platform"');
+   expect(html).toContain('data-testid="failure-kind-work"');
+   expect(html).toContain('1 one-off failure');
+   expect(html.match(/data-testid="failure-group"/g)?.length).toBe(2);
+   expect(html).not.toContain('Unique failure');
+ });
