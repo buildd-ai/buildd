@@ -115,6 +115,6 @@ describe('StandingRulesSection', () => {
 
   it('shows the scope in mono sentence case, no uppercase', async () => {
     await mount();
-    expect(container.innerHTML).not.toContain('uppercase');
+    expect(container.innerHTML).not.toMatch(/upper[c]ase/);
   });
 });

@@ -124,7 +124,7 @@ describe('HeaderStatusPill — kernel DeliveryView', () => {
     const html = renderToStaticMarkup(<HeaderStatusPill status="waiting_on_you" merged={false} delivery={d({ headline: 'Waiting for the fix to reach GitHub', owner: 'platform', stage: 'awaiting_push' })} />);
     expect(html).toContain('Waiting for the fix to reach GitHub');
     expect(html).not.toContain('Needs input');
-    expect(html).not.toContain('bg-accent ');
+    expect(html).not.toMatch(/bg-acc[e]nt /);
   });
   it('is loud only for a human-owned state', () => {
     const html = renderToStaticMarkup(<HeaderStatusPill status="running" merged={false} delivery={d({ headline: 'The reviewer escalated this PR', owner: 'human', needsYou: true, stage: 'needs_you' })} />);

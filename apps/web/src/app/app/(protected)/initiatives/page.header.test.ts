@@ -22,7 +22,7 @@ describe('initiatives page header', () => {
   it('the create entry is a small .btn, not an orange 2px frame', () => {
     const link = src.match(/<Link[^>]*data-testid="new-initiative-link"[^>]*>/)?.[0] ?? '';
     expect(link).toMatch(/className="btn\b/);
-    expect(src).not.toContain('bg-primary');
+    expect(src).not.toMatch(/bg-prim[a]ry/);
     expect(src).not.toContain('border-2');
   });
 

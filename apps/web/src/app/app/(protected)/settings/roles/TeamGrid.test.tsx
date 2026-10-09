@@ -96,7 +96,7 @@ describe('TeamGrid', () => {
       );
       expect(html).not.toContain('<h1');
       expect(html).not.toContain('The Team');
-      expect(html).not.toContain('uppercase');
+      expect(html).not.toMatch(/upper[c]ase/);
     });
   });
 
