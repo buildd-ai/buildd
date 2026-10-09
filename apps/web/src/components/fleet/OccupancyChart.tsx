@@ -124,7 +124,7 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
 function Metric({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div data-testid={testId} className="flex min-w-0 flex-col">
-      <span className="font-mono text-[10px] font-semibold uppercase tracking-[1.5px] text-text-muted">{label}</span>
+      <span className="font-mono text-[11px] font-semibold uppercase tracking-[1.5px] text-text-muted">{label}</span>
       <span className="font-mono text-[18px] font-semibold leading-tight text-text-primary">{value}</span>
     </div>
   );
