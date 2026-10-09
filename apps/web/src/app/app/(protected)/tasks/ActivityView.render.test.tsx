@@ -39,8 +39,10 @@ describe('ActivityView: Now', () => {
     expect(h1).toContain('md:not-sr-only');
   });
 
-  it('Now has no filters and no "Latest" line: the rows are the page', () => {
-    expect(html).not.toContain('data-testid="activity-filters"');
+  it('Now retains repair and attention filters without restoring the Latest line', () => {
+    expect(html).toContain('data-testid="activity-filters"');
+    expect(html).toContain('Had repairs');
+    expect(html).toContain('Needs attention');
     expect(html).not.toContain('data-testid="activity-latest"');
   });
 
@@ -106,10 +108,10 @@ describe('ActivityView: Now', () => {
 });
 
 describe('ActivityView: History', () => {
-  it('has the four outcome chips in the prototype’s words, and day sections with a tally', () => {
+  it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
-    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you']);
+    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you', 'Not landed']);
     expect(html).toContain('data-testid="activity-day"');
     expect(html).not.toContain('aria-label="Mission"');
   });
