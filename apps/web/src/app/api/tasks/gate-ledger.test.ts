@@ -14,6 +14,14 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { gateFrictionSignature } from '@buildd/core/gate-friction-signature';
 
+// No model-tier ceiling here (docs/specs/model-tier-ceilings.md): the create
+// route reads one per task, and this file has no DB.
+const { resolveTierCeiling } = await import('@buildd/shared');
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: async (_s: unknown, surface: 'agent' | 'chat') => resolveTierCeiling({}, surface),
+  tierCeilingLoader: () => async (_s: unknown, surface: 'agent' | 'chat') => resolveTierCeiling({}, surface),
+}));
+
 interface Recorded {
   gate: string;
   surface: string;

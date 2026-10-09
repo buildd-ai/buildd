@@ -1,6 +1,23 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+
+
 const own = { id: 'c-1', teamId: 't-1', workspaceId: null, createdByUserId: 'u-1', title: null, archivedAt: null } as any;
 // The caller's own conversation in a team they have since left.
 const formerTeam = { ...own, id: 'c-left', teamId: 't-left' };
@@ -194,6 +211,19 @@ describe('/api/chat/[id]: tier pin and tool permissions', () => {
     expect(tiers).toEqual([['c-1', 'premium'], ['c-1', null]]);
     expect((await PATCH(req('PATCH', { tier: 'claude-opus' }), ctx('c-1'))).status).toBe(400);
     expect(tiers).toHaveLength(2);
+  });
+
+  it('PATCH { tier } above the team ceiling is refused with policy_denied and not saved; lowering still works', async () => {
+    ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+    try {
+      const before = tiers.length;
+      const res = await PATCH(req('PATCH', { tier: 'premium' }), ctx('c-1'));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'policy_denied', code: 'tier_above_ceiling', binding: { source: 'team' } });
+      expect(tiers).toHaveLength(before);
+      expect((await PATCH(req('PATCH', { tier: 'budget' }), ctx('c-1'))).status).toBe(200);
+      expect((await PATCH(req('PATCH', { tier: null }), ctx('c-1'))).status).toBe(200);
+    } finally { ceilingTest.inputs = {}; }
   });
 
   it('a turn carries the caller\'s own allowed tool groups for the conversation team', async () => {

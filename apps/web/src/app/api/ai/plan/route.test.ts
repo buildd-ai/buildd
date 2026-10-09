@@ -5,6 +5,7 @@ import { describe, it, expect } from 'bun:test';
 import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
 import { handlePlanRequest, type PlanDeps, type PlanRow, type AiApiAccount } from '@/lib/ai/handlers';
 import type { PoolArmPick } from '@/lib/ai/plan';
+import { resolveTierCeiling } from '@buildd/shared';
 
 const NOW = new Date('2026-09-27T12:00:00.000Z');
 const ACCOUNT: AiApiAccount = { id: 'acct-app', teamId: 'team-a' };
@@ -199,5 +200,38 @@ describe('POST /api/ai/plan — the plan', () => {
     const res = await handlePlanRequest(req(BODY), deps);
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: 'Internal server error' });
+  });
+});
+
+describe('POST /api/ai/plan — model-tier ceiling (an API key is not a person)', () => {
+  const catalogEntry = (id: string, input: number) => ({
+    id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic' as const, displayName: id,
+    contextLength: 400000, created: 1, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
+  });
+  const ceilingOf = (inputs: Parameters<typeof resolveTierCeiling>[0]) => async (_t: string, ws: string | null) =>
+    resolveTierCeiling({ ...inputs, workspaceId: ws, userId: null }, 'chat');
+
+  it('a requested tier above the team ceiling is refused with policy_denied, and nothing is planned', async () => {
+    const { deps, saved } = makeDeps({ tierCeiling: ceilingOf({ team: { team: { chat: 'standard' } } }) });
+    const res = await handlePlanRequest(req({ ...BODY, tier: 'premium' }), deps);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: 'policy_denied', maxTier: 'standard', requested: { origin: 'request_tier' } });
+    expect(saved).toHaveLength(0);
+  });
+
+  it('an option whose model is priced above the ceiling is not offered', async () => {
+    const { deps } = makeDeps({
+      tierCeiling: ceilingOf({ team: { team: { all: 'budget' } } }),
+      resolveEntry: async (tier) => (tier === 'budget' ? { provider: 'anthropic', model: 'claude-sonnet-5', source: 'team' } : REGISTRY[tier]),
+      chatCatalog: async () => [catalogEntry('claude-sonnet-5', 2)],
+    });
+    const body = await (await handlePlanRequest(req({ ...BODY, tier: 'budget' }), deps)).json();
+    expect(body.budget).toMatchObject({ action: 'deny', reason: 'no_routable_provider' });
+  });
+
+  it('a workspace ceiling only applies to that workspace', async () => {
+    const tierCeiling = ceilingOf({ team: { workspaces: { [WS]: { all: 'budget' } } } });
+    expect((await handlePlanRequest(req(BODY), makeDeps({ tierCeiling }).deps)).status).toBe(200);
+    expect((await handlePlanRequest(req({ ...BODY, workspaceId: WS }), makeDeps({ tierCeiling }).deps)).status).toBe(403);
   });
 });
