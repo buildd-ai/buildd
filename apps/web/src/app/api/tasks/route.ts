@@ -10,6 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
@@ -458,9 +459,7 @@ export async function POST(req: NextRequest) {
 
     // The landing escape hatch's grant (context.landingOverride) is a person's call: only a
     // dashboard/chat session or an OAuth MCP session may set it, and the server stamps who.
-    const grantPerson = apiAccount
-      ? ((apiAccount as { sessionUserId?: string | null }).sessionUserId ?? null)
-      : (user?.id ?? null);
+    const grantPerson = requestingPerson(user, apiAccount);
     const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
     if (!stampedGrant.ok) {
       return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });

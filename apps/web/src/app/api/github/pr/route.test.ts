@@ -4138,6 +4138,15 @@ describe('PUT /api/github/pr', () => {
           expect(mockLandPr).not.toHaveBeenCalled();
         });
 
+        it('a per-task token is never a person, even if its account names a session user', async () => {
+          enforceWorker(auto);
+          mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-7', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: 0 } } as any);
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', context: {} });
+          const res = await putO({ overrides: { freshness: true }, reason: 'stuck' });
+          expect(res.status).toBe(403);
+          expect(mockLandPr).not.toHaveBeenCalled();
+        });
+
         it('an agent run without a grant on its task is refused with the reason; nothing lands', async () => {
           enforceWorker(auto);
           mockTasksFindFirst.mockResolvedValue({ id: 'task-1', context: {} });
