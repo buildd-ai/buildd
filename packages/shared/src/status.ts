@@ -66,6 +66,24 @@ export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_inp
 export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
 
 /**
+ * Whether a live worker holds one of its runner's slots. A person's pause
+ * (waitingFor.type 'pause') and a parked run (parkedUntil set: the cloud
+ * container is gone) hold none; the runner's own heartbeat count already
+ * excludes them (apps/runner/src/pause.ts holdsRunnerSlot), so the server's
+ * count must too, or the two disagree. A question waiting in a live session
+ * still holds its slot.
+ */
+export function workerHoldsRunnerSlot(w: {
+  status: string;
+  waitingFor?: { type?: string } | null;
+  parkedUntil?: Date | string | null;
+}): boolean {
+  if (!(LIVE_WORKER_STATUSES as readonly string[]).includes(w.status)) return false;
+  if (w.parkedUntil) return false;
+  return !(w.status === 'waiting_input' && w.waitingFor?.type === 'pause');
+}
+
+/**
  * Live statuses a cloud --once runner may park a worker in (docs/design/
  * cloudflare-sandbox-runner.md, Phase 2): a question (`waiting_input`), or a
  * run the agent parked after its own restart (`running`). The park and
