@@ -44,6 +44,7 @@
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./providers": "./providers/index.ts",
+    "./providers/resolve": "./providers/resolve.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",

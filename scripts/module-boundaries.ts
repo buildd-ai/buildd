@@ -59,6 +59,10 @@ export type Owner = ModuleId | 'core';
 const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   'packages/core/bash-failure-trace.ts',
   'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
+  // The team credential policy (teams.credentialPolicy): it governs agent runs
+  // and every provider (packages/core/providers/policy.ts), not just decision
+  // and inference calls, so `inference-(…policy…)` misfiles it.
+  'packages/core/inference-key-policy.ts',
 ]);
 
 export function moduleOf(path: string): Owner {
