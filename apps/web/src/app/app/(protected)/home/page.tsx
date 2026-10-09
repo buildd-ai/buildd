@@ -51,6 +51,7 @@ import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup'
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
@@ -74,17 +75,21 @@ import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveRev
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
-import { StatStrip } from './StatStrip';
-import { MobileHome, type HomeFlightRow } from './MobileHome';
+import { MobileHome } from './MobileHome';
+import { DeliveryMilestones } from './DeliveryMilestones';
+import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
-import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
 import { MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from '../missions/[id]/mission-page-query';
 import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
-import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
+import { loadHomeFleet, loadQueueHistory, type HomeFleetData } from '@/lib/home-fleet';
+import { AgentsPanel } from './AgentsPanel';
+import { LandedThisWeek, type LandedMission } from './LandedThisWeek';
+import { buildAgentsModel, homeHeadlineSentence, homeSubline } from '@/lib/home-agents';
+import { idleWhileQueued, type IdleStretch } from '@/lib/idle-while-queued';
 import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
@@ -296,10 +301,14 @@ export default async function HomePage({
   let occupancy: OccupancySeries | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
   let phoneMissionRows: HomeMissionRow[] = [];
+  // The shared delivery projection, one per non-archived mission (lib/delivery-projection.ts).
+  let missionDeliveries: Array<{ delivery: MissionDelivery; status: string; liveAgents: number }> = [];
   let heldMissions: HomeHeldMission[] = [];
   let shippedMissions: HomeShippedMission[] = [];
   let missionTotal = 0;
   let shippedToday = 0;
+  let landedWeek: LandedMission[] = [];
+  let idleStretches: IdleStretch[] = [];
   let teamName: string | null = null;
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
@@ -590,6 +599,16 @@ export default async function HomePage({
             for (const r of liveRows) if (r.missionId) liveWorkerCounts.set(r.missionId, r.n);
           }
 
+          missionDeliveries = allMissions.map(m => ({
+            delivery: projectMissionDelivery({
+              id: m.id, title: m.title, status: m.status, href: `/app/missions/${m.id}`,
+              isHeld: m.isHeld, integrationBranch: m.integrationBranchEnabled === true,
+              tasks: m.tasks as unknown as Parameters<typeof projectMissionDelivery>[0]['tasks'],
+            }, missionHelpers),
+            status: m.status,
+            liveAgents: liveWorkerCounts.get(m.id) ?? 0,
+          }));
+
           // S35: one DeliveryView load for every failed deliverable, so a
           // failed attempt the kernel already replaced does not read FAILED.
           const missionDeliveryViews = await getDeliveryViewsForTasks(failedDeliverableTaskIds(allMissions as MissionCardRow[]));
@@ -658,6 +677,10 @@ export default async function HomePage({
           }));
           const done = listed.filter(r => r.model.kind === 'done');
           shippedToday = done.length;
+          landedWeek = done
+            .filter(r => r.completedAt && nowMs - new Date(r.completedAt).getTime() < 7 * 86_400_000)
+            .slice(0, 6)
+            .map(({ view, model }) => ({ id: view.id, title: view.title, href: view.href, completedAt: view.completedAt!, prs: model.done?.prs ?? 0 }));
           shippedMissions = done
             .filter(r => r.completedAt && nowMs - new Date(r.completedAt).getTime() < 3 * 3_600_000)
             .slice(0, 1)
@@ -2079,7 +2102,8 @@ export default async function HomePage({
             : [];
           teamName = teamRow?.name ?? null;
           teamTz = teamRow?.timezone ?? null;
-          [fleetData, occupancy] = await Promise.all([
+          let queueHistory: Awaited<ReturnType<typeof loadQueueHistory>> | null = null;
+          [fleetData, occupancy, queueHistory] = await Promise.all([
             loadHomeFleet({
               teamId: activeTeamId ?? null,
               wsIds,
@@ -2095,7 +2119,12 @@ export default async function HomePage({
               console.error('[home] occupancy load failed (non-fatal):', err);
               return null;
             }),
+            loadQueueHistory({ wsIds, from: renderNow - 24 * 3_600_000, now: renderNow }).catch(err => {
+              console.error('[home] queue history load failed (non-fatal):', err);
+              return null;
+            }),
           ]);
+          if (queueHistory) idleStretches = idleWhileQueued({ ...queueHistory, from: renderNow - 24 * 3_600_000, to: renderNow });
           // Running cells in the missions rows fill to their worker's progress.
           const progressByTask = new Map<string, number>();
           for (const r of fleetData?.fleet.runners ?? []) for (const sl of r.slots) {
@@ -2170,6 +2199,9 @@ export default async function HomePage({
     ...(teamTz ? { timeZone: teamTz } : {}),
   });
   const stats = fleetData?.stats;
+  const repairingMissions = missionDeliveries.filter(d => d.delivery.kind === 'repair').length;
+  const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
+  const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
   // Legend: the roles on today's lanes (every role when the lanes are empty).
   const lanesRoles = new Set((fleetData?.fleet.runners ?? []).flatMap(r => r.slots.flatMap(sl => sl.lane.bars.map(b => b.roleSlug))).filter(Boolean));
   const fleetRoles = teamRoles
@@ -2177,21 +2209,10 @@ export default async function HomePage({
     .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
   const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
-  const phoneFlight = new Map<string, HomeFlightRow>();
-  const flightLabels: Record<string, string> = { FIXING_CI: 'fixing tests', CI_RUNNING: 'tests running', FIXING_SPEC: 'updating docs', RESOLVING: 'resolving conflicts', FIXING_REVIEW: 'applying review', REVIEW_RUNNING: 'reviewing', AUTO_MERGE: 'merging' };
-  for (const item of inFlightItems) {
-    const key = item.taskId ?? item.subjectKey;
-    phoneFlight.set(key, { key, title: item.taskTitle ?? item.missionTitle ?? 'Work in progress', agent: flightLabels[item.chip] ?? 'agent working', href: actionCardTaskLink(item), age: '', fixing: item.chip === 'FIXING_CI' });
-  }
-  for (const item of activeItems) {
-    if (item.workerStatus === 'waiting_input') continue;
-    const key = item.taskId;
-    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle, agent: item.roleSlug ?? 'agent', href: homeTaskHref({ missionId: item.missionId, taskId: item.taskId, from: 'home', mode: 'sheet' }), age: item.startedAt ? timeAgo(item.startedAt) : '', fixing: false });
-  }
-  for (const item of [...agentReviewingPrs, ...reviewQueuedPrs]) {
-    const key = item.taskId;
-    if (!phoneFlight.has(key)) phoneFlight.set(key, { key, title: item.taskTitle ?? 'Changes in review', agent: 'reviewing', href: actionCardTaskLink(item), age: '', fixing: false });
-  }
+  const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
+  const deliveries = missionDeliveries.map(d => d.delivery);
+  const milestones = selectHomeMilestones(deliveries);
+  const quietMissions = countQuietMissions(deliveries);
   const phoneAsk = chatPlacement.kind === 'chat' && chatTeamId
     ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
     : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
@@ -2216,18 +2237,15 @@ export default async function HomePage({
           <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
-      <MobileHome items={phoneAttention} ask={phoneAsk} setup={phoneSetup} runnerConnected={fleetData ? fleetData.fleet.runners.length > 0 : undefined} live={live} capacity={fleetData?.fleet.capacity ?? 0} mergedToday={stats?.mergedToday ?? 0} inCi={stats?.prsInCi.length ?? 0} shipped={shippedMissions} flight={[...phoneFlight.values()]} timeZone={teamTz} />
+      <MobileHome agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} idPrefix="phone" /> : null} landed={<LandedThisWeek missions={landedWeek} timeZone={teamTz} idPrefix="phone" />} items={phoneAttention} ask={phoneAsk} setup={phoneSetup} runnerConnected={fleetData ? fleetData.fleet.runners.length > 0 : undefined} counts={counts} milestones={milestones} quietMissions={quietMissions} shipped={shippedMissions} timeZone={teamTz} />
       <div className="mx-auto hidden max-w-[1320px] md:block">
         <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
             <div className="section-label hidden text-text-muted md:block">Home{teamName ? ` · ${teamName}` : ''}</div>
-            <h1 data-testid="home-headline" className="mt-1.5 font-mono text-[22px] font-semibold leading-tight tracking-[-0.5px] text-text-primary md:text-[28px]">
-              {headline.map((part, i) => (
-                <span key={i} className={part.tone === 'accent' ? 'text-accent-text' : part.tone === 'success' ? 'text-status-success' : undefined}>
-                  {part.text}
-                </span>
-              ))}
+            <h1 data-testid="home-headline" className="mt-1.5 font-voice text-display font-medium normal-case leading-tight tracking-normal text-text-primary">
+              {homeHeadlineSentence(needsYouCount)}
             </h1>
+            <p data-testid="home-subline" className="mt-1 font-voice text-lede italic text-text-secondary">{homeSubline(needsYouCount, repairingMissions)}</p>
             {arcHeadline && <p className="mt-1 font-mono text-[13px] text-text-secondary">{arcHeadline}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -2265,25 +2283,64 @@ export default async function HomePage({
           <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />
         )}
 
-        {rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
-          <StatStrip
-            live={live}
-            capacity={fleetData?.fleet.capacity ?? 0}
-            runners={fleetData?.fleet.runners.filter(r => r.online).length ?? 0}
-            needsYou={needsYouCount}
-            needsYouDetail={needsYouDetail}
-            mergedToday={stats?.mergedToday ?? 0}
-            mergedDetail={stats && stats.mergedPrNumbers.length > 0 ? stats.mergedPrNumbers.slice(0, 4).map(n => `#${n}`).join(' ') : null}
-            prsInCi={stats?.prsInCi ?? []}
-            selfHealed={stats?.selfHealed ?? 0}
-            screensReviewed={shippedMissions[0]?.screens ?? null}
-            occupancy={occupancy}
-          />
-        )}
 
         {/* Below xl the asks come first: on a phone the first screen is what needs you. */}
-        <div className="flex flex-col xl:grid xl:grid-cols-[minmax(0,1fr)_400px] xl:gap-8">
-          <div className="min-w-0">
+        {/* The decisions come first at every width: full width, side by side. */}
+        <NeedsYouStack
+              count={needsYouCount}
+              questions={questions}
+              held={heldMissions}
+              shipped={shippedMissions}
+              timeZone={teamTz}
+            >
+              {actionQueue.length > 0 && (
+                <div data-testid="home-action-queue" className="contents">
+                  {/* Initiative scoping chips — SCOPE the queue, never group it. */}
+                  <div className="[grid-column:1/-1]"><InitiativeFilterChips
+                    initiatives={actionQueueInitiatives}
+                    selectedId={initFilter ?? null}
+                    workspaceFilter={wsFilter ?? null}
+                  /></div>
+                  {filteredActionQueue.length === 0 && (
+                    <p className="text-[13px] text-text-muted mb-2 [grid-column:1/-1]">Nothing waiting for this initiative.</p>
+                  )}
+                  {queueNeedsYou.length > 0 && (
+                    <div data-testid="waiting-needs-you" className="contents">
+                      {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
+                    </div>
+                  )}
+                  {inFlightItems.length > 0 && (
+                    <div data-testid="waiting-in-flight" className="[grid-column:1/-1]">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
+                        <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
+                      </div>
+                      <div className="space-y-2">
+                        {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
+                        {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
+                          ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
+                          : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
+                      </div>
+                    </div>
+                  )}
+                  {/* §12: overflow past the top-10-per-workspace cap is never
+                      silently dropped — a clean-looking queue must not be able
+                      to hide a growing backlog the way the Schedules page did. */}
+                  {discrepancyOverflowCount > 0 && (
+                    <p className="text-[11px] text-text-muted [grid-column:1/-1]">
+                      +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
+                    </p>
+                  )}
+                </div>
+              )}
+              {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
+        </NeedsYouStack>
+
+        {/* Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */}
+        <div data-testid="home-body" className="grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'landed'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']">
+          {agentsModel && <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} />}
+          <div style={{ gridArea: 'moving' }} className="min-w-0">
+            <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
             <div data-testid="home-right-now">
               {rightNow === 'get-started' ? null : rightNow === 'create-workspace' ? (
                 <div className="mb-8">
@@ -2308,7 +2365,6 @@ export default async function HomePage({
                   {/* Operators get the fleet near the top; a member gets their
                       missions first and the fleet as one expandable line below.
                       Chat, when available, sits above all of this. */}
-                  {audience === 'operator' && fleetData && <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} />}
                   {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
                     <div className="mb-8 space-y-2">
             {/* Agent-reviewing PR cards — ambient presence, not actionable */}
@@ -2404,11 +2460,6 @@ export default async function HomePage({
               )}
             </div>
 
-            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} timeZone={teamTz} />
-            {audience === 'member' && fleetData && rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
-              <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} compact />
-            )}
-
             {/* Pending Schedule Suggestions */}
             {pendingSuggestions.length > 0 && (
               <div className="mb-8">
@@ -2443,66 +2494,9 @@ export default async function HomePage({
             {/* Release Queue — gated workspaces with unshipped commits and CI green (spec §8) */}
             <ReleaseWidget items={releaseReadinessItems} />
           </div>
-
-          {/* Below xl this column dissolves (display: contents) so its two
-              parts order independently: what needs you first, the ticker last —
-              not wedged between the asks and the fleet. */}
-          <div className="contents min-w-0 xl:block">
-            <div className="order-first min-w-0 xl:order-none">
-            <NeedsYouStack
-              count={needsYouCount}
-              questions={questions}
-              held={heldMissions}
-              shipped={shippedMissions}
-              timeZone={teamTz}
-            >
-              {actionQueue.length > 0 && (
-                <div data-testid="home-action-queue">
-                  {/* Initiative scoping chips — SCOPE the queue, never group it. */}
-                  <InitiativeFilterChips
-                    initiatives={actionQueueInitiatives}
-                    selectedId={initFilter ?? null}
-                    workspaceFilter={wsFilter ?? null}
-                  />
-                  {filteredActionQueue.length === 0 && (
-                    <p className="text-[13px] text-text-muted mb-2">Nothing waiting for this initiative.</p>
-                  )}
-                  {queueNeedsYou.length > 0 && (
-                    <div data-testid="waiting-needs-you" className="space-y-2">
-                      {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
-                    </div>
-                  )}
-                  {inFlightItems.length > 0 && (
-                    <div data-testid="waiting-in-flight" className={queueNeedsYou.length > 0 ? 'mt-5' : undefined}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="section-label-missions text-[11px] text-text-muted">In flight</span>
-                        <span className="text-[11px] text-text-muted font-mono">{inFlightItems.length}</span>
-                      </div>
-                      <div className="space-y-2">
-                        {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
-                        {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
-                          ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
-                          : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
-                      </div>
-                    </div>
-                  )}
-                  {/* §12: overflow past the top-10-per-workspace cap is never
-                      silently dropped — a clean-looking queue must not be able
-                      to hide a growing backlog the way the Schedules page did. */}
-                  {discrepancyOverflowCount > 0 && (
-                    <p className="text-[11px] text-text-muted mt-2">
-                      +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
-                    </p>
-                  )}
-                </div>
-              )}
-              {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
-            </NeedsYouStack>
-
-            </div>
-            <div className="order-last min-w-0 xl:order-none">
-              <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
-            </div>
+          <LandedThisWeek missions={landedWeek} timeZone={teamTz} />
+          <div className="min-w-0 [grid-column:1/-1]">
+            <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
           </div>
         </div>
       </div>

@@ -1657,6 +1657,18 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(wakeTasksCalls.length).toBe(0);
   });
 
+  it('accepts workspaceId + executor:runner in one PATCH on a workspace-less local mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Local Mission', workspaceId: null, executor: 'local', status: 'active', scheduleId: null, priority: 0,
+    });
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceId: WS_ID, executor: 'runner' }),
+    });
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).not.toBe(409);
+  });
+
   it('refuses local → runner on a completed mission', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID, teamId: 'team-1', title: 'Local Mission', workspaceId: WS_ID, executor: 'local', status: 'completed', scheduleId: null, priority: 0,

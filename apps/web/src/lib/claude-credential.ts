@@ -5,6 +5,7 @@ import { pickMostSpecificCredential, teamCredentialWhere } from '@buildd/core/se
 import { agentKeyPurposes, agentKeyStorageIndex, isAgentKeyRow } from '@buildd/core/providers/agent-keys';
 import { eq, and, or, isNull, lt, sql } from 'drizzle-orm';
 import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './credential-health';
+import { CLAUDE_CREDENTIAL_PURPOSES, isTeamClaudeCredential } from './claude-credential-rows';
 
 /**
  * Decode the `sub` claim from an Anthropic JWT access token without verification.
@@ -575,12 +576,13 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
   const row = await db.query.secrets.findFirst({
     where: and(
       eq(secrets.id, secretId),
-      or(eq(secrets.purpose, 'oauth_token'), eq(secrets.purpose, 'anthropic_api_key')),
+      or(...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p))),
     ),
-    columns: { encryptedValue: true, purpose: true, healthStatus: true },
+    columns: { encryptedValue: true, purpose: true, label: true, userId: true, healthStatus: true },
   });
 
-  if (!row) return { verified: false, error: 'Credential not found' };
+  // `inference_key` also holds other providers' keys and personal keys.
+  if (!row || !isTeamClaudeCredential(row)) return { verified: false, error: 'Credential not found' };
 
   let credentialValue: string;
   try {
@@ -597,7 +599,8 @@ export async function verifyClaudeCredential(secretId: string): Promise<ClaudeVe
       'anthropic-version': ANTHROPIC_API_VERSION,
     };
 
-    if (row.purpose === 'anthropic_api_key') {
+    if (row.purpose !== 'oauth_token') {
+      // An Anthropic API key, in either storage.
       headers['x-api-key'] = credentialValue;
     } else {
       // oauth_token uses Bearer authorization

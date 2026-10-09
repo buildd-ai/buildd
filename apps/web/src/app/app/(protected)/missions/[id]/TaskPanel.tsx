@@ -11,7 +11,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
-import StatusBadge from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import PrCard from '@/components/task/PrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import WorkerStats from '@/components/task/WorkerStats';
@@ -282,7 +282,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="task-header-status" data-status={displayStatus}>
-            <StatusBadge status={displayStatus} />
+            <StatusPill status={displayStatus} />
           </span>
           {data.backend && (
             <span

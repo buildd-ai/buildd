@@ -207,7 +207,10 @@ async function requeueOpenTask(taskId: string): Promise<void> {
 const notTerminalTask = (): SQL => sql`${tasks.status} NOT IN (${sql.join(TERMINAL_TASK_STATUSES.map(s => sql`${s}`), sql`, `)})`;
 
 /**
- * Live interactive workers whose task has ended, for the sweeps. `accountId`
+ * Live interactive workers whose task has ended, for the sweeps. A task that
+ * was deleted has ended too: its worker's task_id is set NULL and nothing else
+ * would ever move it out of the live set (the session keeps it fresh, and no
+ * task row exists to finish). The event door (`taskId`) never takes that arm. `accountId`
  * narrows to that account's team: the row holds no live work buildd can see
  * (its task is over), so any teammate's claim may free it, as with the reaper's
  * never-started arm. No `accountId` is the global repair sweep.
@@ -216,15 +219,20 @@ export function endedTaskInteractiveScope(opts: { accountId?: string; taskId?: s
   const ended = opts.graceMs > 0
     ? sql`AND t_end.updated_at < ${new Date(opts.now.getTime() - opts.graceMs).toISOString()}::timestamptz`
     : sql``;
-  return and(
-    liveInteractive(),
-    opts.taskId ? eq(workers.taskId, opts.taskId) : undefined,
-    sql`EXISTS (
+  const endedTask = sql`EXISTS (
       SELECT 1 FROM ${tasks} t_end
       WHERE t_end.id = ${workers.taskId}
       AND t_end.status IN (${sql.join(TERMINAL_TASK_STATUSES.map(s => sql`${s}`), sql`, `)})
       ${ended}
-    )`,
+    )`;
+  // Same grace as an ended task, measured on the worker itself; a floor of the
+  // default grace so a zero-grace caller cannot cut into a delete in flight.
+  const orphanCutoff = new Date(opts.now.getTime() - Math.max(opts.graceMs, DETACH_GRACE_MS)).toISOString();
+  const deletedTask = sql`(${workers.taskId} IS NULL AND ${workers.updatedAt} < ${orphanCutoff}::timestamptz)`;
+  return and(
+    liveInteractive(),
+    opts.taskId ? eq(workers.taskId, opts.taskId) : undefined,
+    opts.taskId ? endedTask : sql`(${endedTask} OR ${deletedTask})`,
     opts.accountId
       ? sql`${workers.accountId} IN (
           SELECT sibling.id FROM ${accounts} sibling
@@ -257,7 +265,9 @@ export async function detachInteractiveWorkersOfEndedTasks(opts: {
     const rows = await db
       .select({ id: workers.id, taskStatus: tasks.status })
       .from(workers)
-      .innerJoin(tasks, eq(tasks.id, workers.taskId))
+      // Left join: a worker whose task row was deleted (task_id set NULL) has
+      // no task to join, and is exactly the leak the orphan arm below repairs.
+      .leftJoin(tasks, eq(tasks.id, workers.taskId))
       .where(endedTaskInteractiveScope({
         accountId: opts.accountId,
         taskId: opts.taskId,
@@ -269,7 +279,7 @@ export async function detachInteractiveWorkersOfEndedTasks(opts: {
       const r = await detachInteractiveWorker({
         workerId: row.id,
         actor: { kind: 'system' },
-        reason: `task ${row.taskStatus}`,
+        reason: row.taskStatus ? `task ${row.taskStatus}` : 'task deleted',
         now,
       });
       if (r.detached) detached++;

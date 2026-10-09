@@ -43,6 +43,9 @@ import {
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
+import { RunnerLanes } from '@/components/fleet/runner-lanes';
+import type { FleetSnapshot } from '@buildd/shared';
+import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
@@ -52,6 +55,7 @@ import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { backendCredentialLabel } from '@/lib/claude-credential-rows';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -260,6 +264,8 @@ interface Props {
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -309,6 +315,7 @@ export function HealthClient({
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
   agentAccess = null,
+  runnerLanes = null,
   now,
   page = 'all',
 }: Props) {
@@ -526,11 +533,7 @@ export function HealthClient({
           <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
-              const purposeLabel =
-                cred.purpose === 'oauth_token' ? 'Claude OAuth token'
-                : cred.purpose === 'anthropic_api_key' ? 'Anthropic API key'
-                : cred.purpose === 'codex_credential' ? 'Codex credential'
-                : cred.purpose;
+              const purposeLabel = backendCredentialLabel(cred.purpose);
               const isRevoked = cred.healthStatus === 'revoked';
               return (
                 <div key={cred.id} className="px-4 py-3">
@@ -746,6 +749,15 @@ export function HealthClient({
           busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
           workspaceId={wsFilter}
         />
+      )}
+
+      {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
+        <div data-testid="health-section-lanes" className="mb-6">
+          <h3 className="text-xs font-medium text-text-secondary mb-3">Slots over the last hours</h3>
+          <div className="card overflow-hidden">
+            <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} />
+          </div>
+        </div>
       )}
 
       {show('capacity') && (
@@ -1651,11 +1663,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
 
 // ── Credential health (STATE) ────────────────────────────────────────────────
 
-const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
-  oauth_token: 'Claude OAuth token',
-  anthropic_api_key: 'Anthropic API key',
-  codex_credential: 'Codex credential',
-};
 
 const CREDENTIAL_STATUS_WORD: Record<CredentialHealthItem['healthStatus'], string> = {
   healthy: 'working',
@@ -1701,7 +1708,7 @@ function CredentialStateSection({
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
             <span className="text-sm text-text-primary truncate">
-              {CREDENTIAL_PURPOSE_LABELS[c.purpose] ?? c.purpose}
+              {backendCredentialLabel(c.purpose)}
             </span>
             <div className="flex items-center gap-2 text-xs shrink-0">
               <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>
