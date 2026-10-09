@@ -88,6 +88,57 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect(row.delivery).toBe(m.tasks[0].delivery);
   });
 
+  it('open tasks of a completed mission with no non-landed tasks are regrouped as standalone', () => {
+    const completed1 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    const completed2 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    const newOpen = task({ missionId: 'm1', missionTitle: 'Completed', status: 'pending', createdAt: ago(5) });
+    const rows = [completed1, completed2, newOpen];
+    const m1 = projectMissionDelivery({
+      id: 'm1', title: 'Completed', status: 'active', href: '/app/missions/m1',
+      tasks: [completed1, completed2].map((t): MissionTaskRow => ({ ...t, dependsOn: null })),
+    }, rules);
+    const n = now(rows, [m1]);
+    // The mission should be marked as landed, so open tasks are regrouped as standalone
+    expect(n.groups.find(g => g.missionId === 'm1')).toBeUndefined();
+    const standalone = n.groups.find(g => g.missionId === null);
+    expect(standalone).toBeDefined();
+    expect(standalone?.rows.map(r => r.id)).toContain(newOpen.id);
+  });
+
+  it('standalone group expands hidden waiting rows, with no overlap between rows and hiddenWaitingRows', () => {
+    const standaloneWaiting = [...Array.from({ length: 5 }, () => task())];
+    const g = now(standaloneWaiting).groups[0];
+    expect(g.missionId).toBeNull();
+    expect(g.href).toBeNull();
+    expect(g.rows.length).toBe(WAITING_ROWS_PER_GROUP);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+    expect(g.hiddenWaitingRows.length).toBe(g.moreWaiting);
+    const sortedWaiting = [...standaloneWaiting].sort((a, b) => a.id.localeCompare(b.id));
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(sortedWaiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
+    const rowIds = new Set(g.rows.map(r => r.id));
+    for (const hidden of g.hiddenWaitingRows) {
+      expect(rowIds.has(hidden.id)).toBe(false);
+    }
+    const allIds = new Set([...g.rows, ...g.hiddenWaitingRows].map(r => r.id));
+    expect(allIds.size).toBe(5);
+  });
+
+  it('a not-landed mission keeps its group, real counts, and href even with open tasks outside the cap', () => {
+    const live = running({ missionId: 'active', missionTitle: 'Active' });
+    const waiting = [...Array.from({ length: 5 }, () => task({ missionId: 'active', missionTitle: 'Active' }))];
+    const rows = [live, ...waiting];
+    const m = missionOf('active', 'Active', rows);
+    const g = now(rows, [m]).groups[0];
+    expect(g.missionId).toBe('active');
+    expect(g.href).toBe('/app/missions/active');
+    expect(g.kind).toBe(m.kind);
+    expect(g.landed).toBe(m.landed);
+    expect(g.total).toBe(6);
+    expect(g.landed).toBe(0);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(waiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
+  });
+
   it('retries and reviews fold into their deliverable; an orphaned attempt still shows', () => {
     const parent = inAudit();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: parent.id, status: 'in_progress', workers: [{ status: 'running' }] });
