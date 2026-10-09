@@ -499,6 +499,7 @@
     "packages/core/prompt-catalog.ts": {
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
+      "packages/core/escalation-gate-decision.ts": "jev-decisions",
       "packages/core/memory-decisions.ts": "jev-decisions",
       "packages/core/orchestration-claim-decision.ts": "jev-decisions",
       "packages/core/orchestration-overlap-decision.ts": "jev-decisions",

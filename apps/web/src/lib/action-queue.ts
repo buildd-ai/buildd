@@ -354,7 +354,16 @@ export interface WaitingOnYouRawItem {
   workspaceName?: string | null;
 }
 
+/** The escalation gate's verdict on a PR (lib/escalation-gate-check.ts), as a card reads it. */
+export interface EscalationGateMark {
+  owner: 'person' | 'buildd';
+  /** One line: the rail that makes it the person's, or the step Buildd is taking. */
+  reason: string;
+}
+
 export interface EscalationRawItem {
+  /** The escalation gate's verdict: a Buildd-owned PR is never a Needs You card. */
+  gate?: EscalationGateMark | null;
   /** Canonical current-head reviewer approval; a review action still takes precedence. */
   reviewApproved?: boolean;
   humanReview?: HumanPrReview | null;
@@ -483,6 +492,8 @@ export interface ActionQueueItem {
   machineStatus?: string | null;
   /** A human review whose PR Buildd is still repairing or checking (`reviewMachineActing`). */
   machineActing?: boolean;
+  /** The escalation gate's verdict, when the PR went through it. */
+  gate?: EscalationGateMark | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -1402,6 +1413,7 @@ export function buildActionQueue(
       humanReview: item.humanReview,
       machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
       machineActing: item.humanReview ? reviewMachineActing(item, now) : false,
+      gate: item.gate ?? null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours

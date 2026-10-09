@@ -60,3 +60,17 @@ describe('waitsOnBuildd is the one predicate', () => {
     expect(waitsOnBuildd({ ...review(8, { conflictRetryTaskId: 'r' }), prLifecycleStatus: 'merged' })).toBe(false);
   });
 });
+
+describe('the escalation gate decides when it ran', () => {
+  it('a Buildd-owned verdict is never a card, and counts as in progress', () => {
+    const out = derive([review(9, { gate: { owner: 'buildd', reason: 'Buildd is fixing the failing checks' } })]);
+    expect(out.count).toBe(0);
+    expect(out.inProgress).toBe(1);
+  });
+
+  it('a person-owned verdict is a card', () => {
+    const out = derive([review(10, { gate: { owner: 'person', reason: 'It touches a protected path, so only a person can merge it.' } })]);
+    expect(out.count).toBe(1);
+    expect(out.inProgress).toBe(0);
+  });
+});

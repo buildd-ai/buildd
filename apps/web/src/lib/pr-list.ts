@@ -147,6 +147,8 @@ export function shapePrRows(rows: PrListRow[], state: PrListState, kernel: Reado
 export interface PrSignals {
   /** Why a person is needed: the escalation inbox's decision. */
   waitingOnYou?: string;
+  /** The escalation gate kept it from you: Buildd's next step, in words. */
+  builddOwns?: string;
   /** An agent is already on it. */
   resolving?: 'conflict' | 'ci' | 'review';
   /** CI fix tasks buildd has dispatched for this PR (red only): the retries give up after a few. */
@@ -160,6 +162,8 @@ export interface PrSignals {
 export interface PrAttentionIndex {
   /** workerId → why it is waiting on a person. */
   inbox: Map<string, string>;
+  /** workerId → the next step Buildd took instead of paging (the escalation gate). */
+  builddOwns?: Map<string, string>;
   /** workerIds under a live agent-review lease. */
   reviewing: Set<string>;
   /** `${workspaceId}:${prNumber}` with a live conflict-fix task. */
@@ -183,6 +187,8 @@ export function prSignals(pr: ShapedPr, a: PrAttentionIndex, now: Date = new Dat
   // An agent resolving it outranks the inbox's "resolving" card: it isn't yours yet.
   if (resolving) out.resolving = resolving;
   else if (waiting) out.waitingOnYou = waiting;
+  const owned = !out.resolving && !out.waitingOnYou ? pr.workerIds.map(id => a.builddOwns?.get(id)).find(Boolean) : undefined;
+  if (owned) out.builddOwns = owned;
   // Not workers.prCheckFailureCount: that counts failed GitHub lookups and resets on success.
   const attempts = a.ciFixAttempts.get(key) ?? 0;
   if (pr.status === 'ci_failed' && attempts > 0) out.ciFixAttempts = attempts;
@@ -230,7 +236,8 @@ export function waitingReason(i: {
 
 /** The attention index for these PRs: the inbox decision, plus live fix and review tasks. */
 async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Promise<PrAttentionIndex> {
-  const idx: PrAttentionIndex = { inbox: new Map(), reviewing: new Set(), conflictFix: new Set(), ciFix: new Set(), ciFixAttempts: new Map() };
+  const builddOwns = new Map<string, string>();
+  const idx: PrAttentionIndex = { inbox: new Map(), builddOwns, reviewing: new Set(), conflictFix: new Set(), ciFix: new Set(), ciFixAttempts: new Map() };
   if (prs.length === 0) return idx;
   const attention = await loadPrAttention(workspaceIds, { workerIds: prs.flatMap(p => p.workerIds) });
   // Every worker of a PR speaks with the PR's collapsed state, not its own row.
@@ -239,6 +246,8 @@ async function loadAttentionIndex(prs: ShapedPr[], workspaceIds: string[]): Prom
     if (w.taskId && attention.agentReviewingTaskIds.has(w.taskId)) idx.reviewing.add(w.id);
     const key = `${w.workspaceId}:${w.prNumber}`;
     if (attention.conflictRetryMap.has(key)) idx.conflictFix.add(key);
+    const verdict = attention.gateVerdicts.get(w.id);
+    if (verdict?.owner === 'buildd') builddOwns.set(w.id, verdict.reason);
     if (!attention.isInInbox(w) || attention.conflictRetryMap.has(key)) continue;
     idx.inbox.set(w.id, waitingReason({
       conflictFixesSpent: attention.deadZoneExhaustedMap.has(w.id),

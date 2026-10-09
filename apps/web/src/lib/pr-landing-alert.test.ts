@@ -268,7 +268,7 @@ describe('alertOnLanding: copy and tap URL', () => {
   it('addresses the owning workspace and task', async () => {
     const { deps, state } = makeDeps();
     await alertOnLanding(base(human('size_cap')), deps);
-    expect(state.sent[0].subject).toEqual({ workspaceId: 'ws-1', taskId: 'task-1' });
+    expect(state.sent[0].subject).toEqual({ workspaceId: 'ws-1', taskId: 'task-1', prNumber: 42 });
   });
 });
 

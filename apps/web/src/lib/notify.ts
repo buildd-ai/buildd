@@ -195,6 +195,17 @@ export interface AlertSubject {
   workspaceId?: string | null;
   missionId?: string | null;
   taskId?: string | null;
+  /**
+   * A PR escalation: with `needsAttention`, the escalation gate's verdict for
+   * this PR decides whether it pages (lib/escalation-notify.ts). Needs the
+   * workspace, given directly or through the task.
+   */
+  prNumber?: number | null;
+}
+
+async function taskWorkspace(taskId: string): Promise<string | null> {
+  const t = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { workspaceId: true } });
+  return t?.workspaceId ?? null;
 }
 
 async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null> {
@@ -221,6 +232,13 @@ async function resolveSubjectTeam(subject: AlertSubject): Promise<string | null>
  */
 export async function notifyTeamOf(subject: AlertSubject, event: TeamAlertEvent, payload: NotifyPayload): Promise<void> {
   try {
+    if (event === 'needsAttention' && subject.prNumber != null) {
+      const workspaceId = subject.workspaceId ?? (subject.taskId ? await taskWorkspace(subject.taskId) : null);
+      if (workspaceId) {
+        const { mayPageEscalation } = await import('./escalation-notify');
+        if (!(await mayPageEscalation({ workspaceId, prNumber: subject.prNumber }))) return;
+      }
+    }
     const teamId = await resolveSubjectTeam(subject);
     if (!teamId) return;
     await notifyTeam(teamId, event, payload);

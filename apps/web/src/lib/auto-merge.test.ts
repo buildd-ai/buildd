@@ -925,7 +925,7 @@ describe('escalateConflictExhaustion', () => {
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add dark mode');
@@ -1017,7 +1017,7 @@ describe('escalateReviewerExhaustion', () => {
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add search');
@@ -1115,7 +1115,7 @@ describe('escalateReviewContractFailure', () => {
     await call();
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const notifyCall = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
     expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });
