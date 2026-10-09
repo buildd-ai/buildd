@@ -43,7 +43,6 @@ describe('buildMissionListCard — running mission', () => {
   };
   const card = build(row, {
     roleColors: new Map([['builder', '#123456']]),
-    progressByWorker: new Map([['w-api', 65]]),
   });
 
   it('groups cells by phase with scope labels, the orchestrator row as Plan', () => {
@@ -53,10 +52,11 @@ describe('buildMissionListCard — running mission', () => {
     expect(card.phases[1]).toMatchObject({ done: 1, total: 2 });
   });
 
-  it('splits a CI-pending PR (in_ci) from a working agent (running, with progress)', () => {
+  it('splits a CI-pending PR (in_ci) from a working agent (running, without a reported fraction)', () => {
     const cells = card.phases.flatMap(p => p.cells);
     expect(cells.find(c => c.taskId === 'fx')?.state).toBe('in_ci');
-    expect(cells.find(c => c.taskId === 'api')).toMatchObject({ state: 'running', fill: 0.65 });
+    expect(cells.find(c => c.taskId === 'api')).toMatchObject({ state: 'running' });
+    expect(cells.find(c => c.taskId === 'api')).not.toHaveProperty('fill');
     expect(card.counts).toMatchObject({ done: 2, total: 5, inCi: 1, running: 1, open: 1 });
   });
 

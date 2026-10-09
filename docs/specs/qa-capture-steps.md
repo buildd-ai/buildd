@@ -73,6 +73,7 @@ A closed list; any other `action` is rejected when the plan is validated:
 | `select` | `selector`, `value` | picks an option of a `<select>` |
 | `waitFor` | `selector`, optional `state: visible \| hidden` | waits for it to appear (default) or go |
 | `waitMs` | `ms` | sleeps, capped at 5000 ms |
+| `assertLayout` | optional `selector` (scope, default `<body>`), optional `minTarget` (px, default 44) | checks the page: fails on horizontal overflow, and below `md` (768px) on any tap target smaller than `minTarget` in either direction |
 
 Selectors: `testid:<id>`, `role:<role>[name=<accessible name>]`, `text:<text>`, `css:<css>`,
 or raw CSS / a Playwright selector as a last resort. A bare word (`mission-detail`) is a
@@ -107,6 +108,11 @@ committing step MUST NOT run against a preview.
   own never makes the exit code non-zero.
 - An invalid plan (unknown action, missing field, duplicate key, bad JSON) exits 1 before
   the browser launches.
+- `assertLayout` is the one step whose failure is a finding, not a step that did not settle.
+  Its capture records `stepFailed` with `assertion: true` and every violation on one line
+  (`layout: horizontal overflow: …; tap target button "…" is 30x30, under 44px`). Every shot
+  is still written; then the run exits 4, so a dispatch with a layout-gated plan comes back red.
+  Links inside running text (`display: inline`) are exempt from the tap-target rule.
 
 ## Evidence
 
@@ -135,11 +141,18 @@ committing step MUST NOT run against a preview.
 - AC-7: GIVEN `metadata.qa.state` WHEN the shot is parsed THEN `state` round-trips.
 - AC-8: GIVEN a run with only `QA_ROUTES` WHEN capture runs THEN `captures.json` has the same
   structure as before (no new required field).
+- AC-9: GIVEN an `assertLayout` step on a 360px page that scrolls sideways or holds a 30x30
+  button WHEN the state is captured THEN `stepFailed.assertion` is true, the error names each
+  violation, and the process exits 4 after writing every shot.
+- AC-10: GIVEN the same step at 1280px WHEN a target is under 44px THEN it passes (the
+  tap-target rule applies below `md` only); overflow still fails at any width.
 
 ## Code surface
 
 - `scripts/qa/steps.ts`: `parsePlan`, `validatePlan`, `runSteps`, `toLocator`,
-  `isMutatingMethod`.
+  `isMutatingMethod`, `layoutViolations`.
+- `scripts/qa/plans/run-activity.json`: the run-detail regression plan over
+  `/app/dev/fixtures?state=run-activity&scenario=…`, one `layout` state per scenario.
 - `scripts/qa/capture.ts`: `QA_PLAN` mode, the write guard, `stepFailed`.
 - `scripts/demo/run-storyboard.ts`: selector resolution and clicks through the engine.
 - `apps/web/src/lib/visual-audit-evidence.ts`: `parseQaMeta` reads `state`;

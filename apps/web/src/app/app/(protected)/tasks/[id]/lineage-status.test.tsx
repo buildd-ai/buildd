@@ -91,6 +91,35 @@ describe('lineageWorkerHistory', () => {
     const rows = lineageWorkerHistory([w('first', 0)], [{ workers: [] }, { workers: [w('first', 0)] }]);
     expect(rows.map(r => r.worker.id)).toEqual(['first']);
   });
+
+  // C-2: workers inserted in the same instant (reclaim, retry dispatch) came back
+  // in whatever order the database returned them, so rows swapped between renders.
+  it('returns one order for equal timestamps across 100 shuffled inputs', () => {
+    const tie = new Date('2026-09-26T10:30:00Z');
+    const own = [{ id: 'own-b', createdAt: tie }, { id: 'own-a', createdAt: tie }];
+    const attempts = [{ workers: [{ id: 'retry-z', createdAt: tie }, { id: 'retry-y', createdAt: tie }] }];
+    const key = (rows: ReturnType<typeof lineageWorkerHistory>) => rows.map(r => `${r.worker.id}|${r.attemptLabel}`);
+    const expected = key(lineageWorkerHistory(own, attempts));
+    expect(expected).toEqual([
+      'retry-z|attempt 2 · CI fix',
+      'retry-y|attempt 2 · CI fix',
+      'own-b|attempt 1',
+      'own-a|attempt 1',
+    ]);
+    let seed = 7;
+    const shuffle = <T,>(xs: readonly T[]) => {
+      const out = xs.slice();
+      for (let i = out.length - 1; i > 0; i--) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        const j = seed % (i + 1);
+        [out[i], out[j]] = [out[j], out[i]];
+      }
+      return out;
+    };
+    for (let i = 0; i < 100; i++) {
+      expect(key(lineageWorkerHistory(shuffle(own), [{ workers: shuffle(attempts[0].workers) }]))).toEqual(expected);
+    }
+  });
 });
 
 describe('HeaderStatusPill — kernel DeliveryView', () => {

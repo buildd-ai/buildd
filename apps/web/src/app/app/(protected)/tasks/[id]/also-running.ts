@@ -6,24 +6,18 @@
  * e.g. sub-tasks of one plan) are genuine peers and stay.
  */
 
+import { deriveRunEvidence, type RunEvidenceInput } from '@buildd/core/run-evidence';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskPageHref } from '@/lib/mission-task-href';
+import { compareWorkersChrono, oldestFirst } from '@/lib/attempt-order';
 import type { PeerTask } from './TaskSidePanel';
 
-interface PeerWorkerRow {
+interface PeerWorkerRow extends Omit<RunEvidenceInput, 'milestones' | 'createdAt'> {
+  id: string;
+  createdAt: Date;
   status: string;
   milestones: unknown;
-  task: { id: string; title: string; label?: string | null; missionId: string | null } | null;
-}
-
-/** Latest self-reported progress on a worker's milestone list. */
-function latestPct(ms: unknown): number | null {
-  const list = Array.isArray(ms) ? (ms as Array<{ type?: string; progress?: unknown }>) : [];
-  for (let i = list.length - 1; i >= 0; i--) {
-    const m = list[i];
-    if (m.type === 'status' && typeof m.progress === 'number') return m.progress;
-  }
-  return null;
+  task: { id: string; title: string; label?: string | null; outputRequirement?: string | null; missionId: string | null } | null;
 }
 
 /**
@@ -36,6 +30,9 @@ function latestPct(ms: unknown): number | null {
  *   specific relation to this task.
  * - Every row is drawn with the Board's scope + short label, so a raw
  *   "RESEARCH: …" title reads the same as a "feat(x): …" one.
+ * - Rows render oldest worker first by (createdAt, id). The loader picks *which*
+ *   peers by `updatedAt`, which every runner sync bumps; ordering by it made the
+ *   list reshuffle while it was being read.
  */
 export function sidePanelPeers(
   rows: readonly PeerWorkerRow[],
@@ -43,7 +40,7 @@ export function sidePanelPeers(
 ): PeerTask[] {
   const seen = new Set<string>();
   const out: PeerTask[] = [];
-  for (const w of rows) {
+  for (const w of oldestFirst(rows, compareWorkersChrono)) {
     const t = w.task;
     if (!t) continue;
     if (opts.missionId && t.missionId !== opts.missionId) continue;
@@ -55,7 +52,7 @@ export function sidePanelPeers(
       scope,
       title: label,
       fullTitle: t.title,
-      pct: latestPct(w.milestones),
+      phase: deriveRunEvidence({ ...w, outputRequirement: t.outputRequirement, milestones: Array.isArray(w.milestones) ? w.milestones : undefined }).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
       href: taskPageHref({ taskId: t.id, missionId: t.missionId }),
       waiting: w.status === 'waiting_input',
     });
