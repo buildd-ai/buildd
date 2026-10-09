@@ -33,6 +33,12 @@ describe('human PR review card', () => {
     expect(html).toContain('/pull/7/files');
   });
 
+  it('is an L3 decision: the decision frame and a charcoal primary button', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={item} />);
+    expect(html).toMatch(/data-testid="human-pr-review-card" data-level="3" class="card-decision/);
+    expect(html).toMatch(/class="btn btn-ink[^"]*" href="[^"]*\/pull\/7\/files"/);
+  });
+
   it('a ship card shows the short title, keeps the full one as tooltip, and carries the refresh line', () => {
     const ship = {
       ...item,

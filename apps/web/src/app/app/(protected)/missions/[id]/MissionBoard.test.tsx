@@ -36,17 +36,12 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('1/4');
   });
 
-  // Regression (surface audit, 390px/320px): a runner with ten slots ran its
-  // boxes past the Fleet cell's divider onto "nothing waiting", and a phase's
-  // progress squares pushed its count past the viewport. The slot row wraps
-  // inside its cell; the squares give way before the label and count do.
-  it('keeps a wide slot row inside the Fleet cell', () => {
-    const rows = [...html.matchAll(/data-testid="fleet-runner"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
-    expect(rows.length).toBeGreaterThan(0);
-    for (const cls of rows) {
-      expect(cls).toContain('flex-wrap');
-      expect(cls).toContain('min-w-0');
-    }
+  // Runners are shared across missions, so the Fleet cell counts this
+  // mission's agents instead of drawing runner squares.
+  it('names this mission\'s agents, not the shared runners', () => {
+    expect(html).not.toContain('data-testid="fleet-runner"');
+    const fleet = html.match(/data-testid="fleet-agents"[^>]*>([^<]+)</)![1];
+    expect(fleet).toMatch(/^(No agent|\d+ agents?) on this mission/);
   });
 
   it('lets the phase progress squares shrink so the count stays in view', () => {

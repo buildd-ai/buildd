@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { ReactNode } from 'react';
-import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import { deliveryReading, type DeliveryTone } from '@/lib/workflow/delivery-display';
 
 /** The header pill's palette, one entry per canonical tone. Success green is for a landed delivery only. */
@@ -59,9 +59,9 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
     case 'completed':
       return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Completed</span>;
     case 'failed':
-      return <span className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}{STATUS_LABELS.failed}</span>;
+      return <span className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}Failed</span>;
     default:
-      return <StatusBadge status={status} />;
+      return <StatusPill status={status} />;
   }
 }
 

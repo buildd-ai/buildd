@@ -1,6 +1,7 @@
 'use client';
 
-import Chip from '@/components/ui/Chip';
+import { TonePill } from '@/components/ui/StatePill';
+import type { StateTone } from '@/components/ui/states';
 import Disclosure from '@/components/ui/Disclosure';
 import { blockerLabel, type ReviewBlocker } from '@/lib/attention-line';
 
@@ -27,15 +28,15 @@ export function ReviewDecision({
   const hasDetail = (detail && detail.trim() !== decision.trim()) || blockers.length > 0;
   return (
     <>
-      <p data-testid="review-decision" className="mt-1 text-body text-text-primary [overflow-wrap:anywhere]">{decision}</p>
+      <p data-testid="review-decision" className="mt-1 text-lede font-medium text-text-primary [overflow-wrap:anywhere]">{decision}</p>
       {(kinds.length > 0 || status) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {kinds.map((k) => (
-            <Chip key={k} tone="warning" dot={false} title={blockers.filter((b) => b.kind === k).map((b) => b.text).join('; ')}>
+            <TonePill key={k} tone="dec" title={blockers.filter((b) => b.kind === k).map((b) => b.text).join('; ')}>
               {blockerLabel(k)}
-            </Chip>
+            </TonePill>
           ))}
-          {status && <Chip tone="muted" dot={false}>{status}</Chip>}
+          {status && <TonePill tone={statusTone(status)}>{status}</TonePill>}
         </div>
       )}
       {hasDetail && (
@@ -57,4 +58,11 @@ export function ReviewDecision({
       )}
     </>
   );
+}
+
+/** A machine-state tag's tone: red when something failed, blue while checks run, otherwise neutral. */
+function statusTone(status: string): StateTone {
+  if (/fail|error/i.test(status)) return 'bad';
+  if (/running|pending|queued|in progress/i.test(status)) return 'run';
+  return 'q';
 }

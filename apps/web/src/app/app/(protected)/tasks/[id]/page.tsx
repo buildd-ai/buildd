@@ -39,7 +39,7 @@ import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
-import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
@@ -1242,7 +1242,7 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     <div data-testid="worker-history-meta" className="flex items-center gap-2 pl-11 md:pl-0 shrink-0">
-                      <StatusBadge status={
+                      <StatusPill status={
                         worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
                           ? worker.exitCause
                           : worker.status
@@ -1573,9 +1573,7 @@ export default async function TaskDetailPage({
                     >
                       {dep.title}
                     </Link>
-                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                      {dep.status}
-                    </span>
+                    <StatusPill status={deriveDisplayStatus(dep.status)} />
                   </div>
                 ))}
               </div>
@@ -1665,7 +1663,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
+                  <StatusPill status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
@@ -1683,7 +1681,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
+                        <StatusPill status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1879,9 +1877,7 @@ export default async function TaskDetailPage({
           >
             <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
             <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
-            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
-              {nextChainTask.status}
-            </span>
+            <StatusPill status={deriveDisplayStatus(nextChainTask.status)} />
             <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
           </Link>
         )}
