@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { randomBytes } from 'crypto';
 import {
   consumeAuthCode,
   consumeRefreshToken,
@@ -12,73 +11,22 @@ import {
 import { signAccessToken, signGrantAccessToken } from '@/lib/oauth/tokens';
 import { resolveGrant, revokeRefreshTokensForGrant } from '@/lib/mcp-grants';
 import { db } from '@buildd/core/db';
-import { accounts, workspaces, users } from '@buildd/core/db/schema';
+import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { findTeamSessionAccount } from '@/lib/oauth/session-account';
-import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
+import { ensureTeamSessionAccount } from '@/lib/oauth/ensure-session-account';
 
 export const dynamic = 'force-dynamic';
 
-function generateApiKey(): string {
-  return `bld_${randomBytes(32).toString('hex')}`;
-}
-
-/**
- * Option B: ensure the workspace's team has a type='user' account so
- * authenticateOauthJwt can find one. Users who authorize the MCP connector
- * for the first time (without having gone through device/CLI auth) won't
- * have one yet. Creates a minimal account and silently skips on any error
- * so the token response is never blocked.
- */
+/** The session account for the workspace's team (lib/oauth/ensure-session-account.ts). */
 async function ensureUserAccount(userId: string, workspaceId: string): Promise<void> {
   try {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
       columns: { teamId: true },
     });
-    if (!workspace) return;
-
-    // The same row the session will act as (lib/api-auth.ts).
-    const existing = await findTeamSessionAccount(workspace.teamId);
-
-    let accountId: string;
-    if (existing) {
-      accountId = existing.id;
-      // Return early if seatId already set — nothing more to do.
-      if (existing.seatId) return;
-    } else {
-      const user = await db.query.users.findFirst({
-        where: eq(users.id, userId),
-        columns: { name: true, email: true },
-      });
-
-      const plaintextKey = generateApiKey();
-      const [created] = await db.insert(accounts).values({
-        name: `${user?.name || user?.email || 'User'}'s Account`,
-        type: 'user',
-        authType: 'oauth',
-        apiKey: hashApiKey(plaintextKey),
-        apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
-        maxConcurrentWorkers: 10,
-        teamId: workspace.teamId,
-      }).returning({ id: accounts.id });
-      if (!created) return;
-      accountId = created.id;
-    }
-
-    // Set seatId from the team's Claude credential so this account is grouped
-    // correctly with other accounts sharing the same Anthropic subscription.
-    const cred = await resolveClaudeCredential({ teamId: workspace.teamId, accountId });
-    if (cred) {
-      const seatId = extractJwtSub(cred.accessToken);
-      if (seatId) {
-        await db.update(accounts).set({ seatId }).where(eq(accounts.id, accountId));
-      }
-    }
+    if (workspace) await ensureTeamSessionAccount(userId, workspace.teamId);
   } catch {
     // Non-fatal: the token is valid even if account provisioning fails.
-    // The user may 401 on MCP tool calls until the account is created.
   }
 }
 
@@ -129,8 +77,7 @@ async function issuePair(args: {
       return tokenError('invalid_grant', 'this connection no longer grants access');
     }
     for (const teamId of new Set(grant.workspaces.map((w) => w.teamId))) {
-      const ws = grant.workspaces.find((w) => w.teamId === teamId)!;
-      await ensureUserAccount(userId, ws.workspaceId);
+      await ensureTeamSessionAccount(userId, teamId);
     }
     const { token, expiresIn } = await signGrantAccessToken({ userId, grantId: binding.grantId, clientId, scope });
     const refreshToken = await createRefreshToken({ clientId, userId, grantId: binding.grantId, scope: args.scope, ...family });

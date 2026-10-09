@@ -33,6 +33,7 @@ import {
 } from '@buildd/core/db/schema';
 import { getActiveGrant, memberWorkspaces } from './mcp-grants';
 import { grantedScopeString, type ConsentTeam } from './oauth/account-consent';
+import { ensureTeamSessionAccount } from './oauth/ensure-session-account';
 import {
   GRANT_NOT_FOUND,
   WORKSPACE_NOT_ACCESSIBLE,
@@ -204,10 +205,12 @@ export async function updateUserGrant(userId: string, grantId: string, patch: Gr
   if (!grant) return GRANT_NOT_FOUND;
 
   const add = patch.addWorkspaceIds;
+  let addedTeamIds: string[] = [];
   if (add.length > 0) {
     if (!add.every(isUuid)) return WORKSPACE_NOT_ACCESSIBLE;
     const reachable = await memberWorkspaces(userId, add);
     if (reachable.length !== add.length) return WORKSPACE_NOT_ACCESSIBLE;
+    addedTeamIds = [...new Set(reachable.map((w) => w.teamId))];
   }
   const remove = patch.removeWorkspaceIds.filter(isUuid);
 
@@ -240,6 +243,10 @@ export async function updateUserGrant(userId: string, grantId: string, patch: Gr
       .where(and(eq(mcpOauthGrantWorkspaces.grantId, grantId), inArray(mcpOauthGrantWorkspaces.workspaceId, remove)));
   }
   if (add.length > 0) {
+    // A team joined after connecting has no session account until a token is
+    // issued for it. Provision it now, so the added workspace works on the
+    // next request on the app's current access token, not after a refresh.
+    for (const teamId of addedTeamIds) await ensureTeamSessionAccount(userId, teamId);
     await db
       .insert(mcpOauthGrantWorkspaces)
       .values(add.map((workspaceId) => ({ grantId, workspaceId })))

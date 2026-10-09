@@ -248,6 +248,28 @@ describe('strict workspace resolution', () => {
     expect(selfCalls.map((c) => c.bound)).toEqual([s.b.workspaceId]);
   });
 
+  // Task f371c26c: a granted workspace whose team has no session account
+  // (joined after connecting, or the row went away) must not answer 401: an
+  // MCP client reads that as signed out of the whole connection.
+  test('a granted workspace whose team has no session account is served, not answered with 401', async () => {
+    const userId = await user();
+    const a = await seedWorkspace();
+    const d = await seedWorkspace();
+    for (const id of [a.workspaceId, d.workspaceId]) await open(id);
+    await member(a.teamId, userId, 'owner');
+    await member(d.teamId, userId, 'member');
+    await teamAccount(a.teamId);
+    const jwt = await grantToken({ userId, clientId: await client(), actsAs: 'agent', workspaceIds: [a.workspaceId, d.workspaceId] });
+    const taskD = await seedTask(d.workspaceId, { title: `td-${rand()}` });
+
+    const r = await callTool(jwt, { action: 'get_task', params: { taskId: taskD, workspaceId: d.workspaceId } });
+    expect(r.status).toBe(200);
+    expect(r.isError).toBe(false);
+    expect(selfCalls.map((c) => c.bound)).toEqual([d.workspaceId]);
+    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM accounts WHERE team_id = ${d.teamId}::uuid AND type = 'user'`);
+    expect(n).toBe(1);
+  });
+
   test('an ungranted or unknown workspace id is refused without echoing it', async () => {
     const s = await setup();
     for (const ref of [s.sibling, s.outside.workspaceId, crypto.randomUUID()]) {

@@ -185,7 +185,9 @@ connections separately with a hint to switch.
 - Access tokens last one hour. Refresh tokens rotate on every use, are stored
   as SHA-256 hashes, and end 90 days after sign-in. Replaying a spent refresh
   token revokes its whole family.
-- A team's session account is created at code exchange and refresh. A workspace
-  added in Settings in a team the grant has never had a token for answers 401 on
-  `/api/mcp` until the client next refreshes. A fix is tracked on the mission.
+- Each team a connection reaches needs a shared `type='user'` session account.
+  It is created at code exchange and refresh, when Settings adds a workspace in
+  a team that has none (a team joined after connecting), and by `/api/mcp` when
+  a granted workspace's team still has none. That team's workspace works on the
+  next request, with no refresh.
 - `list_workspaces` is not a chat tool.
