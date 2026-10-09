@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveRolesCaller } from '@/lib/roles-caller';
 import { isUuid } from '@/lib/uuid';
 import {
   findSharedSlugClash, findVisibleTeamLevelRole, isPersonalRole, mayEditPersonalRole, sharedSlugClashBody,
@@ -24,8 +24,10 @@ export async function POST(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // A dashboard session, or an OAuth MCP session's bearer (lib/roles-caller.ts).
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
     const body = await req.json().catch(() => ({}));
@@ -34,7 +36,8 @@ export async function POST(
       return NextResponse.json({ error: "visibility must be 'team' or 'private'", field: 'visibility' }, { status: 400 });
     }
 
-    const role = await findVisibleTeamLevelRole(id, user.id);
+    const found = await findVisibleTeamLevelRole(id, user.id);
+    const role = found && (who.caller.bearerTeamId === null || found.teamId === who.caller.bearerTeamId) ? found : undefined;
     if (!role) return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     if (!isPersonalRole(role)) {
       return NextResponse.json({ error: 'Team roles are always shared with the team; only a personal role has a visibility' }, { status: 400 });

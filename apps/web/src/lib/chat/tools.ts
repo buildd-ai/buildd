@@ -181,6 +181,22 @@ function explicitSchema(action: string, ops: [string, ...string[]] | null): z.Zo
       });
     case 'answer_question':
       return z.object({ taskId: z.string(), answer: z.string().max(4000) });
+    case 'create_personal_role':
+      return z.object({
+        name: z.string().max(120),
+        content: z.string().max(20000).describe('The role\'s instructions: who the agent is and how it works.'),
+        description: z.string().max(500).optional(),
+        slug: z.string().max(64).optional().describe('lowercase-with-hyphens; derived from the name if omitted.'),
+        model: z.string().optional().describe('A tier (premium | standard | budget) or "inherit".'),
+        whenToUse: z.string().optional().describe('20-300 chars: the work this role should pick up.'),
+        notFor: z.string().optional(),
+        visibility: z.enum(['private', 'team']).optional().describe('Default private (only the user). team shares it with everyone in the team.'),
+      });
+    case 'share_personal_role':
+      return z.object({
+        slug: z.string().describe('The personal role\'s slug.'),
+        visibility: z.enum(['team', 'private']).describe('team: everyone in the team can use it. private: only its owner.'),
+      });
     case 'merge_pr':
       return z.object({
         prNumber: z.number().int().positive(),
@@ -308,6 +324,8 @@ const NATIVE_DESCRIPTIONS: Record<string, string> = {
   hold_task: `Hold one task (no agent claims it; a running agent is told to stop at a safe point) or resume it. Params: ${TASK_REF} hold: true to hold, false to resume; reason: optional, e.g. "until the rounding decision is in". Shows the user an approval card first.`,
   watch: 'Tell the user once, in this conversation, when a task or PR does something ("let me know when #42 merges", "tell me when checkout is done"). Name exactly one: taskId (id, short id or words) or prNumber (in workspaceId, default the conversation workspace). on: done | failed | needs_input for a task, merged | ci_failed for a PR. It ends by itself after telling them, or after 7 days. May show the user a card first.',
   unwatch: 'Stop one of the user\'s watches. Name it by watchId (from list_watches), taskId or prNumber.',
+  create_personal_role: 'Create an agent role of the user\'s own: a name and its instructions (content). It starts private (only the user\'s tasks can use it); visibility "team" shares it. A team-wide role is a different, admin-only thing. Shows the user an approval card first.',
+  share_personal_role: 'Share one of the user\'s personal roles with the team (visibility "team"), or take it back to private. Shows the user an approval card first.',
   list_watches: 'The user\'s running watches: what each is for and when it ends.',
   get_visual_review: 'The mission\'s visual audit as text: its phase, then per route and viewport (phone, desktop) the round, the agent\'s verdict (ok, issue, unsure) and finding, the user\'s decision and the fix task; plus other visual evidence (manual screenshots, validation reports with their verdict line). Each screen and screenshot carries its page link (/app/artifacts/<id>): give those when the user asks for the screenshots or links. Read-only, and it carries no images: you never see the screenshots. The user reviews them on the mission card.',
 };
@@ -584,6 +602,9 @@ async function runAction(
   if (action === 'unwatch') return runUnwatch(api, input);
   if (action === 'list_watches') return runListWatches(api);
   if (action === 'get_visual_review') return runGetVisualReview(api, input);
+  // The MCP personal-role path, as the signed-in person: never a team skill.
+  if (action === 'create_personal_role') return handle(api, 'register_skill', { ...input, personal: true }, deps.ctx);
+  if (action === 'share_personal_role') return handle(api, 'update_skill', { slug: input.slug, visibility: input.visibility, personal: true }, deps.ctx);
   return handle(api, action, input, deps.ctx);
 }
 
