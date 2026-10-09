@@ -5,7 +5,7 @@ import { ciStateOf, landingStallOf, landingStallWhere, prSubjectFor, type PrSubj
 
 const input = (over: Partial<PrSubjectInput> = {}): PrSubjectInput => ({
   teamId: 'team', sensitive: false, workspaceId: 'ws', prNumber: 9, taskId: 'task-9',
-  task: { title: 'fix(a): b', missionId: null }, lifecycle: 'ci_green',
+  task: { title: 'fix(a): b', missionId: null }, missionPrRole: null, lifecycle: 'ci_green',
   escalated: null, approved: false, handoff: null, conflictFixesSpent: false, machineActing: false, landingStall: null,
   ...over,
 });
@@ -49,7 +49,7 @@ describe('prSubjectFor', () => {
   });
 
   it('a mission ship PR the reviewer escalated is the person\'s', () => {
-    const s = prSubjectFor(input({ task: { title: 'Ship mission: Widgets', missionId: 'm', taskClass: 'bookkeeping' }, escalated: { reason: 'scope' }, lifecycle: 'ci_running' }));
+    const s = prSubjectFor(input({ task: { title: 'Ship mission: Widgets', missionId: 'm' }, missionPrRole: 'ship', escalated: { reason: 'scope' }, lifecycle: 'ci_running' }));
     expect(s.missionPrRole).toBe('ship');
     expect(escalationRule(s)).toMatchObject({ owner: 'person', rail: 'mission_ship_escalation' });
   });

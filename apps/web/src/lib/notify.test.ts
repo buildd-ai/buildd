@@ -73,9 +73,9 @@ mock.module('@buildd/core/secrets', () => ({
   encrypt: (v: string) => v,
 }));
 
-// The escalation gate's push check (lib/escalation-page.ts): PR 9 is Buildd's.
+// The escalation gate's push check (lib/escalation-notify.ts): PR 9 is Buildd's.
 const pageChecks: Array<{ workspaceId: string; prNumber: number }> = [];
-mock.module('./escalation-page', () => ({
+mock.module('./escalation-notify', () => ({
   mayPageEscalation: async (s: { workspaceId: string; prNumber: number }) => { pageChecks.push(s); return s.prNumber !== 9; },
 }));
 

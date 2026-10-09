@@ -36,6 +36,7 @@ import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
+import { ESCALATION_GATE_DEPS } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1356,7 +1357,7 @@ export default async function HomePage({
                     subject: prSubjectFor({
                       teamId: ws.teamId, sensitive: (ws as { dataClass?: string }).dataClass === 'sensitive',
                       workspaceId: e.workspaceId, prNumber: e.prNumber, taskId: e.taskId || null,
-                      task: (w.task as any) ?? null, lifecycle: e.prLifecycleStatus, headSha: e.headSha,
+                      task: (w.task as any) ?? null, missionPrRole: w.task ? missionPrRoleOf(w.task) : null, lifecycle: e.prLifecycleStatus, headSha: e.headSha,
                       kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline } : null,
                       escalated: e.hasEscalationNote ? { reason: e.escalationReason } : null,
                       approved: !!e.reviewApproved || e.leaseState === 'agent_approved',
@@ -1368,7 +1369,7 @@ export default async function HomePage({
                   }];
                 });
                 const unique = [...new Map(gateSubjects.map(g => [g.subject.key, g.subject])).values()];
-                const verdicts = await gateEscalations(unique);
+                const verdicts = await gateEscalations(unique, ESCALATION_GATE_DEPS());
                 const byWorker = new Map(gateSubjects.flatMap(g => {
                   const v = verdicts.get(g.subject.key);
                   return v ? [[g.workerId, { owner: v.owner, reason: v.reason }] as const] : [];

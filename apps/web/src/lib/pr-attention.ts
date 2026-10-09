@@ -13,13 +13,15 @@ import { workers, tasks, workspaces, missionNotes } from '@buildd/core/db/schema
 import { eq, and, inArray, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { policyValue } from '@/lib/policy-overrides';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
-import { kernelInboxMembership } from '@/lib/action-queue';
+import { kernelInboxMembership, missionPrRoleOf } from '@/lib/action-queue';
 import { resolveLandingOwnership } from '@/lib/pr-landing-ownership';
 import type { EscalationVerdict } from '@buildd/core/escalation-gate';
 import { gateEscalations, type EscalationGateDeps } from '@/lib/escalation-gate-check';
+import { escalationGateDeps } from '@/lib/escalation-decision';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string; teamId?: string | null; dataClass?: string | null };
@@ -314,7 +316,8 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
           subject: prSubjectFor({
             teamId: ws.teamId, sensitive: ws.dataClass === 'sensitive',
             workspaceId: w.workspaceId, prNumber: w.prNumber, taskId: w.taskId,
-            task: (w.task as any) ?? null, lifecycle: w.prLifecycleStatus ?? null, headSha: w.lastCommitSha ?? null,
+            task: (w.task as any) ?? null, missionPrRole: w.task ? missionPrRoleOf(w.task as any) : null,
+            lifecycle: w.prLifecycleStatus ?? null, headSha: w.lastCommitSha ?? null,
             kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline } : null,
             escalated: w.taskId ? escalationMap.get(w.taskId) ?? null : null,
             approved: !!w.taskId && approvalMap.has(w.taskId),
@@ -328,7 +331,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
       });
       // Several workers can share one PR: one look per PR.
       const unique = [...new Map(subjects.map(s => [s.subject.key, s.subject])).values()];
-      const verdicts = await gateEscalations(unique, opts.gate);
+      const verdicts = await gateEscalations(unique, { ...escalationGateDeps(), ...opts.gate });
       for (const { workerId, subject } of subjects) {
         const v = verdicts.get(subject.key);
         if (v) gateVerdicts.set(workerId, v);
@@ -358,7 +361,7 @@ async function loadLiveCiFixes(wsIds: string[], prNumbers: number[]): Promise<Se
     const rows = await db.select({ workspaceId: tasks.workspaceId, prNumber: tasks.ciRetryPrNumber }).from(tasks).where(and(
       inArray(tasks.workspaceId, wsIds),
       inArray(tasks.ciRetryPrNumber, [...new Set(prNumbers)]),
-      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      inArray(tasks.status, [...OPEN_TASK_STATUSES]),
     ));
     for (const r of rows) out.add(`${r.workspaceId}:${r.prNumber}`);
   } catch {

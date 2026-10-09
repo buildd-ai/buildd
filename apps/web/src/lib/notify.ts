@@ -197,7 +197,7 @@ export interface AlertSubject {
   taskId?: string | null;
   /**
    * A PR escalation: with `needsAttention`, the escalation gate's verdict for
-   * this PR decides whether it pages (lib/escalation-page.ts). Needs the
+   * this PR decides whether it pages (lib/escalation-notify.ts). Needs the
    * workspace, given directly or through the task.
    */
   prNumber?: number | null;
@@ -235,7 +235,7 @@ export async function notifyTeamOf(subject: AlertSubject, event: TeamAlertEvent,
     if (event === 'needsAttention' && subject.prNumber != null) {
       const workspaceId = subject.workspaceId ?? (subject.taskId ? await taskWorkspace(subject.taskId) : null);
       if (workspaceId) {
-        const { mayPageEscalation } = await import('./escalation-page');
+        const { mayPageEscalation } = await import('./escalation-notify');
         if (!(await mayPageEscalation({ workspaceId, prNumber: subject.prNumber }))) return;
       }
     }

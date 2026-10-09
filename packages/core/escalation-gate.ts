@@ -23,6 +23,8 @@
  * Pure (no I/O). Uses node:crypto for the fingerprint, so server-only.
  */
 import { createHash } from 'node:crypto';
+import type { DecisionRun } from '@builddai/ai-kit/decide';
+import type { ESCALATION_GATE_QUESTIONS } from './escalation-gate-decision';
 import { detectIrreversibleAction } from './question-gate';
 
 /** Why a PR reached the inbox before the gate looked at it. */
@@ -217,4 +219,47 @@ export function verdictFromCode(code: string | null | undefined): EscalationVerd
     return { owner: 'buildd', by, action: a as EscalationAction, reason: ACTION_WORDS[a as EscalationAction], ...(holdUntil ? { holdUntil } : {}) };
   }
   return null;
+}
+
+// ── What Jev reads, and its answer (the definition is ./escalation-gate-decision.ts) ──
+
+const WHY_WORDS: Record<EscalationSubject['why'], string> = {
+  reviewer_escalated: 'the reviewer agent escalated it to a person',
+  review_exhausted: 'review rounds ran out without an approval',
+  approved_needs_merge: 'the reviewer approved it and the merge policy leaves the merge to a person',
+  human_tier: 'the workspace merge policy says a person merges',
+  landing_handoff: 'the automatic merge stopped and handed it to a person',
+  conflict_fixes_spent: 'automatic conflict fixes were all used up',
+  kernel_needs_you: 'the delivery workflow says a person owns the next move',
+};
+
+/** The record Jev reads: the PR as the owner's card would describe it. */
+export function buildEscalationGateState(s: EscalationSubject): Record<string, unknown> {
+  return {
+    pr: {
+      title: s.title,
+      why: WHY_WORDS[s.why],
+      detail: s.detail ?? null,
+      landingStopped: s.handoffReason ?? null,
+      checks: s.ci,
+      conflictsWithBase: s.conflict,
+      missionPr: s.missionPrRole,
+    },
+  };
+}
+
+/** The disposition and action a run answered, or why it has none. */
+export function readEscalationGateRun(run: DecisionRun<typeof ESCALATION_GATE_QUESTIONS>): EscalationAnswer | { error: string } {
+  const d = run.outcomes.disposition;
+  if (!run.ok || !d || d.status === 'skipped') {
+    return { error: !run.result.ok ? run.result.error.kind : 'no_answer' };
+  }
+  const a = run.outcomes.action;
+  const action = a && a.status !== 'skipped' && (JEV_ACTIONS as readonly string[]).includes(String(a.value)) ? (a.value as JevAction) : null;
+  return {
+    disposition: d.value as EscalationDisposition,
+    dispositionConfidence: d.confidence,
+    action,
+    actionConfidence: action && a && a.status !== 'skipped' ? a.confidence : null,
+  };
 }

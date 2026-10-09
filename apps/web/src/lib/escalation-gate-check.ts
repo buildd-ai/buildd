@@ -16,6 +16,10 @@
  * Buildd-owned state that has not changed for `ESCALATION_STUCK_MS` is the
  * person's again, with that said, so a rule that names a step nothing takes
  * cannot hide a PR forever. Never throws: a gate failure asks.
+ *
+ * Core: the model call, the ledger write and the action filer are slots
+ * (`EscalationGateDeps`), filled by lib/escalation-decision.ts. A caller with
+ * no slots filled still gets every rule, and the person for the rest.
  */
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
@@ -25,8 +29,10 @@ import {
   ESCALATION_GATE_DECISION_TIMEOUT_MS,
   ESCALATION_GATE_MIN_CONFIDENCE,
   ESCALATION_GATE_PROMPT_VERSION,
+  buildEscalationGateState,
   escalationFingerprint,
   escalationRule,
+  readEscalationGateRun,
   resolveEscalationAnswer,
   verdictAt,
   verdictCode,
@@ -35,11 +41,7 @@ import {
   type EscalationVerdict,
   type JevAction,
 } from '@buildd/core/escalation-gate';
-import {
-  ESCALATION_GATE_DECISION,
-  buildEscalationGateState,
-  readEscalationGateRun,
-} from '@buildd/core/escalation-gate-decision';
+import type * as EscalationDecision from '@buildd/core/escalation-gate-decision';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { FileRepairInput } from './question-gate-check';
@@ -67,14 +69,14 @@ export interface EscalationGateDeps {
   /** subjectKey → its newest ledger row, for one team. */
   loadStored?: (teamId: string, keys: string[]) => Promise<Map<string, StoredVerdict>>;
   resolveAccess?: (scope: { teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
-  run?: typeof ESCALATION_GATE_DECISION.run;
+  run?: typeof EscalationDecision.ESCALATION_GATE_DECISION.run;
   record?: (input: DecisionLedgerInput) => Promise<string | null | void>;
   recordReceipts?: (receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }) => Promise<void>;
   /**
-   * Take the machine action a Jev `act` verdict named. Defaults to filing the
-   * repair task (`escalationActionFiler` over the question gate's filer), so
-   * whichever surface makes the look first also takes the action: the verdict
-   * is stored once and later reads only reuse it.
+   * Take the machine action a Jev `act` verdict named (`escalationActionFiler`
+   * over the question gate's filer). Every surface passes the same deps, so
+   * whichever makes the look first also takes the action: the verdict is
+   * stored once and later reads only reuse it.
    */
   act?: (subject: GatedSubject, action: JevAction) => Promise<void>;
   now?: () => number;
@@ -117,26 +119,6 @@ async function defaultLoadStored(teamId: string, keys: string[]): Promise<Map<st
   return out;
 }
 
-async function defaultResolveAccess(s: { teamId: string; workspaceId: string; accountId: string | null }): Promise<DecisionAccess> {
-  const { resolveDecisionAccess } = await import('@buildd/core/decision-client');
-  return resolveDecisionAccess({ capability: 'escalation_gate', ...s });
-}
-
-async function defaultRecord(input: DecisionLedgerInput): Promise<string | null> {
-  const { recordDecision } = await import('@buildd/core/decision-ledger');
-  return recordDecision(input);
-}
-
-async function defaultAct(subject: GatedSubject, action: JevAction): Promise<void> {
-  const { fileRecoverableBlockerRepair } = await import('./recoverable-blocker-repair');
-  await escalationActionFiler(fileRecoverableBlockerRepair)(subject, action);
-}
-
-async function defaultRecordReceipts(receipts: DecisionReceipt[], scope: { teamId: string; accountId: string | null }): Promise<void> {
-  const { insertDecisionReceipts } = await import('./memory-decisions');
-  await insertDecisionReceipts(receipts, scope);
-}
-
 const stuck = (since: Date, nowMs: number): EscalationVerdict => ({
   owner: 'person', by: 'rule',
   reason: `Buildd has been on it for ${Math.round((nowMs - since.getTime()) / 3_600_000)}h with nothing changing, so it is yours now.`,
@@ -159,7 +141,7 @@ function unsupportedModel(access: DecisionAccess & { ok: true }): boolean {
 
 async function askJev(
   s: GatedSubject,
-  deps: Required<Pick<EscalationGateDeps, 'resolveAccess' | 'recordReceipts'>> & Pick<EscalationGateDeps, 'run'>,
+  deps: Pick<EscalationGateDeps, 'resolveAccess' | 'recordReceipts' | 'run'>,
   started: number,
   now: () => number,
 ): Promise<{ verdict: EscalationVerdict; jev: { label: string; confidence: number } | null; error?: string }> {
@@ -169,6 +151,7 @@ async function askJev(
     error,
   });
   if (s.sensitive) return fallback('sensitive');
+  if (!deps.resolveAccess || !deps.run) return fallback('no_decision_model');
   const receipts: DecisionReceipt[] = [];
   try {
     const access = await deps.resolveAccess({ teamId: s.teamId, workspaceId: s.workspaceId, accountId: s.accountId ?? null });
@@ -176,8 +159,7 @@ async function askJev(
     if (unsupportedModel(access)) return fallback('unsupported_decision_model');
     const remaining = ESCALATION_GATE_DECISION_TIMEOUT_MS - (now() - started);
     if (remaining <= 100) return fallback('timeout');
-    const run = deps.run ?? ESCALATION_GATE_DECISION.run;
-    const result = await run({
+    const result = await deps.run({
       apiKey: access.apiKey,
       state: buildEscalationGateState(s),
       timeoutMs: remaining,
@@ -193,7 +175,7 @@ async function askJev(
   } catch {
     return fallback('transport');
   } finally {
-    if (receipts.length) await deps.recordReceipts(receipts, { teamId: s.teamId, accountId: s.accountId ?? null }).catch(() => {});
+    if (receipts.length && deps.recordReceipts) await deps.recordReceipts(receipts, { teamId: s.teamId, accountId: s.accountId ?? null }).catch(() => {});
   }
 }
 
@@ -206,12 +188,8 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
   if (subjects.length === 0) return out;
   const now = deps.now ?? (() => Date.now());
   const loadStored = deps.loadStored ?? defaultLoadStored;
-  const record = deps.record ?? defaultRecord;
-  const jevDeps = {
-    resolveAccess: deps.resolveAccess ?? defaultResolveAccess,
-    recordReceipts: deps.recordReceipts ?? defaultRecordReceipts,
-    run: deps.run,
-  };
+  const record = deps.record ?? (async () => {});
+  const jevDeps = { resolveAccess: deps.resolveAccess, recordReceipts: deps.recordReceipts, run: deps.run };
   let budget = deps.maxModelCalls ?? ESCALATION_MAX_MODEL_CALLS;
 
   const byTeam = new Map<string, GatedSubject[]>();
@@ -277,8 +255,8 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
           applied: answer.verdict.by === 'jev', status: answer.error ? 'fallback' : answer.verdict.by === 'jev' ? 'applied' : 'suggested',
           reason: answer.error ?? null, latencyMs: now() - started,
         }).catch(() => {});
-        if (answer.verdict.owner === 'buildd' && answer.verdict.by === 'jev' && answer.verdict.action !== 'hold') {
-          await (deps.act ?? defaultAct)(s, answer.verdict.action as JevAction).catch(() => {});
+        if (answer.verdict.owner === 'buildd' && answer.verdict.by === 'jev' && answer.verdict.action !== 'hold' && deps.act) {
+          await deps.act(s, answer.verdict.action as JevAction).catch(() => {});
         }
       } catch {
         out.set(s.key, { owner: 'person', by: 'fallback', reason: 'The check failed, so it comes to you.' });

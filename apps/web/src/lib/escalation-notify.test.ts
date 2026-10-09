@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mayPageEscalation, verdictsAllowPage } from './escalation-page';
+import { mayPageEscalation, verdictsAllowPage } from './escalation-notify';
 
 const buildd = { owner: 'buildd' as const, by: 'rule' as const, action: 'ci_fix' as const, reason: 'fixing' };
 const person = { owner: 'person' as const, by: 'rule' as const, rail: 'protected_path' as const, reason: 'protected' };

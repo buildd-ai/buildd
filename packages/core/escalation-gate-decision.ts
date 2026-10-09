@@ -5,29 +5,17 @@
  *
  * Jev reads one stuck PR, already past every rule in ./escalation-gate.ts, and
  * answers: can Buildd move it on itself (and with which action), should it
- * wait, or is this a call for a person?
+ * wait, or is this a call for a person? The state it reads and the reader of
+ * its answer are in ./escalation-gate.ts (`buildEscalationGateState`,
+ * `readEscalationGateRun`), so the server gate needs no import of this module.
  */
-import { choice, type DecisionRun } from '@builddai/ai-kit/decide';
+import { choice } from '@builddai/ai-kit/decide';
 import { definePromptedDecision } from './prompted-decision';
 import {
   ESCALATION_GATE_DECISION_TIMEOUT_MS,
   ESCALATION_GATE_PROMPT_VERSION,
-  JEV_ACTIONS,
-  type EscalationAnswer,
-  type EscalationDisposition,
-  type EscalationSubject,
   type JevAction,
 } from './escalation-gate';
-
-const WHY_WORDS: Record<EscalationSubject['why'], string> = {
-  reviewer_escalated: 'the reviewer agent escalated it to a person',
-  review_exhausted: 'review rounds ran out without an approval',
-  approved_needs_merge: 'the reviewer approved it and the merge policy leaves the merge to a person',
-  human_tier: 'the workspace merge policy says a person merges',
-  landing_handoff: 'the automatic merge stopped and handed it to a person',
-  conflict_fixes_spent: 'automatic conflict fixes were all used up',
-  kernel_needs_you: 'the delivery workflow says a person owns the next move',
-};
 
 export const ESCALATION_GATE_QUESTIONS = {
   disposition: choice(
@@ -63,34 +51,3 @@ export const ESCALATION_GATE_DECISION = definePromptedDecision({
   mode: 'live',
   timeoutMs: ESCALATION_GATE_DECISION_TIMEOUT_MS,
 });
-
-/** The record Jev reads: the PR as the owner's card would describe it. */
-export function buildEscalationGateState(s: EscalationSubject): Record<string, unknown> {
-  return {
-    pr: {
-      title: s.title,
-      why: WHY_WORDS[s.why],
-      detail: s.detail ?? null,
-      landingStopped: s.handoffReason ?? null,
-      checks: s.ci,
-      conflictsWithBase: s.conflict,
-      missionPr: s.missionPrRole,
-    },
-  };
-}
-
-/** The disposition and action a run answered, or why it has none. */
-export function readEscalationGateRun(run: DecisionRun<typeof ESCALATION_GATE_QUESTIONS>): EscalationAnswer | { error: string } {
-  const d = run.outcomes.disposition;
-  if (!run.ok || !d || d.status === 'skipped') {
-    return { error: !run.result.ok ? run.result.error.kind : 'no_answer' };
-  }
-  const a = run.outcomes.action;
-  const action = a && a.status !== 'skipped' && (JEV_ACTIONS as readonly string[]).includes(String(a.value)) ? (a.value as JevAction) : null;
-  return {
-    disposition: d.value as EscalationDisposition,
-    dispositionConfidence: d.confidence,
-    action,
-    actionConfidence: action && a && a.status !== 'skipped' ? a.confidence : null,
-  };
-}

@@ -7,7 +7,6 @@ import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { gateEvents } from '@buildd/core/db/schema';
 import type { CiState, EscalationSubject, EscalationWhy } from '@buildd/core/escalation-gate';
-import { missionPrRoleOf } from '@/lib/action-queue';
 import type { GatedSubject } from '@/lib/escalation-gate-check';
 
 /** How far back a landing deferral still describes the PR. */
@@ -71,7 +70,9 @@ export interface PrSubjectInput {
   workspaceId: string;
   prNumber: number | null;
   taskId: string | null;
-  task: { title?: string | null; missionId?: string | null; taskClass?: string | null; context?: unknown } | null;
+  task: { title?: string | null; missionId?: string | null } | null;
+  /** `missionPrRoleOf` (lib/action-queue.ts) for the PR's task, computed by the caller. */
+  missionPrRole: 'ship' | 'refresh' | null;
   lifecycle: string | null;
   headSha?: string | null;
   /** The kernel's view of the delivery, when the kernel owns it. */
@@ -112,7 +113,7 @@ export function prSubjectFor(i: PrSubjectInput): GatedSubject {
     ci: ciStateOf(i.lifecycle, prState),
     conflict,
     machineActing: i.machineActing,
-    missionPrRole: i.task ? missionPrRoleOf(i.task) : null,
+    missionPrRole: i.missionPrRole,
     handoffCause: i.handoff?.cause ?? null,
     handoffReason: i.handoff?.reason ?? null,
     detail: i.escalated?.reason ?? i.kernel?.detail ?? i.kernel?.headline ?? null,
