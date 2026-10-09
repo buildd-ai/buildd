@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import * as rules from '@buildd/core/mission-helpers';
+import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SCALE_ROOTS, activityScaleFixture } from '@/app/app/dev/fixtures/activity-delivery-fixtures';
 import { projectMissionDelivery, type MissionTaskRow } from './delivery-projection';
 import {
   NOT_LANDED_NOW_WINDOW_MS, WAITING_ROWS_PER_GROUP,
@@ -172,5 +173,75 @@ describe('reviewOf: a reviewer run read like derivePrReviewStatus reads it', () 
   it('anything else is no verdict', () => {
     expect(reviewOf({ structuredOutput: { verdict: 'lgtm' } }, null)).toEqual({ verdict: null, headSha: null });
     expect(reviewOf(null, { headSha: '' })).toEqual({ verdict: null, headSha: null });
+  });
+});
+
+// Regression: one cancelled root anywhere in the window threw a TypeError out
+// of History (the mission projection drops cancelled roots, and the standalone
+// projection read its row with `!`). The page caught it and rendered an empty
+// Now and History with "0 deliveries in motion · 0 agents working".
+describe('cancelled work does not take Activity down', () => {
+  it('a cancelled standalone root is a not-landed episode in History', () => {
+    const c = task({ status: 'cancelled', updatedAt: ago(30) });
+    const h = buildActivityHistory({ tasks: [c, merged()], missions: [], rules });
+    expect(h.map(e => e.id)).toContain(c.id);
+    expect(h.find(e => e.id === c.id)!.kind).toBe('notlanded');
+    expect(h.find(e => e.id === c.id)!.steps.at(-1)!.text).toBe('Cancelled');
+  });
+
+  it('a cancelled mission task (absent from the mission projection) still projects', () => {
+    const rows = [task({ status: 'cancelled', missionId: 'm', missionTitle: 'M' }), running({ missionId: 'm', missionTitle: 'M' })];
+    const ms = [missionOf('m', 'M', rows)];
+    expect(() => buildActivityHistory({ tasks: rows, missions: ms, rules })).not.toThrow();
+    expect(buildActivityHistory({ tasks: rows, missions: ms, rules })).toHaveLength(2);
+  });
+
+  it('a cancelled root with a failed retry keeps its repair count', () => {
+    const c = task({ status: 'cancelled' });
+    const r = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: c.id, status: 'failed' });
+    const [e] = buildActivityHistory({ tasks: [c, r], missions: [], rules });
+    expect(e.repairRounds).toBe(1);
+    expect(filterEpisodes([e], { scope: 'all', outcome: 'retries' })).toHaveLength(1);
+  });
+});
+
+describe('a busy workspace, shaped like real data', () => {
+  const d = activityScaleFixture();
+
+  it('projects every root: one episode per delivery, attempts folded', () => {
+    const roots = d.tasks.filter(t => !t.parentTaskId);
+    expect(roots.length).toBeGreaterThan(ACTIVITY_SCALE_ROOTS);
+    expect(d.history).toHaveLength(roots.length);
+  });
+
+  it('the live old root is in Now with its agent counted, and leads History by its latest step', () => {
+    const rows = d.now.groups.flatMap(g => g.rows);
+    expect(rows.map(r => r.id)).toContain('sc-live-old');
+    expect(rows.find(r => r.id === 'sc-live-old')!.delivery.kind).toBe('repair');
+    expect(d.now.liveAgents).toBe(3);
+    expect(d.now.inMotion).toBeGreaterThan(0);
+  });
+
+  it('Had retries, Landed and Exceptions all find episodes; retries include landed and failed ones', () => {
+    const f = (outcome: 'retries' | 'landed' | 'exceptions') => filterEpisodes(d.history, { scope: 'all', outcome });
+    const retried = f('retries');
+    expect(retried.length).toBeGreaterThan(0);
+    expect(retried.some(e => e.kind === 'landed')).toBe(true);
+    expect(retried.some(e => e.kind === 'notlanded')).toBe(true);
+    expect(f('landed').length).toBeGreaterThan(0);
+    expect(f('exceptions').length).toBeGreaterThan(0);
+  });
+
+  it('Had retries in Now is the live slice of what History holds for it', () => {
+    const inNow = filterNow(d.now, { scope: 'all', outcome: 'retries' }).flatMap(g => g.rows.map(r => r.id));
+    const inHistory = filterEpisodes(d.history, { scope: 'all', outcome: 'retries' }).map(e => e.id);
+    expect(inNow).toContain('sc-live-old');
+    expect(inHistory.length).toBeGreaterThan(inNow.length);
+    expect(inNow.every(id => inHistory.includes(id))).toBe(true);
+  });
+
+  it('newest first, and the latest task is fresh work, not the window edge', () => {
+    expect(d.history.every((e, i) => i === 0 || d.history[i - 1].at >= e.at)).toBe(true);
+    expect(ACTIVITY_FIXTURE_NOW - d.latest!.at).toBeLessThan(60 * 60_000);
   });
 });

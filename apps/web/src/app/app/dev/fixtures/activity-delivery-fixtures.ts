@@ -92,3 +92,60 @@ export function activityFixture(step: number) {
     latest: latestTask(tasks, rules),
   };
 }
+
+/**
+ * A busy workspace's 30 days, shaped like real data (`&data=scale`): more
+ * roots than the loader's recent window, mostly fresh completed work, retries
+ * that landed and retries that failed, cancelled work (standalone and in a
+ * mission), and one live root last touched long before the window whose
+ * repair attempt an agent is running now, beside live work with no retries.
+ */
+export const ACTIVITY_SCALE_ROOTS = 240;
+export function activityScaleFixture() {
+  const dayAt = (daysAgo: number, min = 0) => new Date(ACTIVITY_FIXTURE_NOW - daysAgo * 86_400_000 - min * 60_000).toISOString();
+  const tasks: ActivityTaskInput[] = [];
+  for (let i = 0; i < ACTIVITY_SCALE_ROOTS; i++) {
+    const id = `sc-${String(i).padStart(3, '0')}`;
+    const t = dayAt(i / 12, 5);
+    const m = i % 3 === 0 ? SEARCH : null;
+    const kind = i % 10;
+    if (kind === 7) {
+      tasks.push(row(id, `chore: cancelled idea ${i}`, m, { status: 'cancelled', createdAt: t, updatedAt: t }));
+      continue;
+    }
+    const failed = kind === 5;
+    tasks.push(row(id, `feat: change ${i}`, m, {
+      status: failed ? 'failed' : 'completed', createdAt: t, updatedAt: t,
+      workers: [done({ startedAt: t, completedAt: t, updatedAt: t, prUrl: `${PR}${1000 + i}`, prNumber: 1000 + i, ...(failed ? { prLifecycleStatus: 'closed' } : { mergedAt: t }) })],
+    }));
+    if (kind === 2 || kind === 5) {
+      tasks.push(row(`${id}-r1`, `[builder · after CI #1] feat: change ${i}`, m, {
+        taskClass: 'attempt', parentTaskId: id, status: failed ? 'failed' : 'completed', createdAt: t, updatedAt: t,
+        workers: [done({ startedAt: t, completedAt: t, updatedAt: t, lastCommitSha: `c0ffee${String(i).padStart(4, '0')}` })],
+      }));
+    }
+  }
+  // Live work with no retries, in a mission and standalone.
+  tasks.push(row('sc-run-a', 'feat: workspace usage export', SEARCH, { status: 'in_progress', createdAt: at('10:40'), updatedAt: at('11:06'), workers: [live('runner-g', '10:40')] }));
+  tasks.push(row('sc-run-b', 'chore: tidy runner logs', null, { status: 'in_progress', createdAt: at('10:52'), updatedAt: at('11:07'), workers: [live('runner-h', '10:52')] }));
+  // Last touched 40 days ago; only its repair attempt moved since.
+  const old = dayAt(40);
+  tasks.push(row('sc-live-old', 'fix: long-running migration backfill', FLAKY, {
+    status: 'completed', createdAt: old, updatedAt: old,
+    workers: [done({ startedAt: old, completedAt: old, updatedAt: old, prUrl: `${PR}999`, prNumber: 999, prLifecycleStatus: 'ci_failed', lastCommitSha: 'feed00beef' })],
+  }));
+  tasks.push(row('sc-live-old-r1', '[builder · after CI #1] fix: long-running migration backfill', FLAKY, {
+    taskClass: 'attempt', parentTaskId: 'sc-live-old', status: 'in_progress', createdAt: at('10:50'), updatedAt: at('11:05'), workers: [live('runner-f', '10:50')],
+  }));
+  const missions = [SEARCH, FLAKY].map(m => projectMissionDelivery({
+    id: m.id, title: m.title, status: 'active', href: `/app/missions/${m.id}`,
+    tasks: tasks.filter(t => t.missionId === m.id),
+  }, rules));
+  const args = { tasks, missions, rules };
+  return {
+    tasks,
+    now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
+    history: buildActivityHistory(args),
+    latest: latestTask(tasks, rules),
+  };
+}
