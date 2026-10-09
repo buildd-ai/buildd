@@ -8,6 +8,7 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE } from '@/lib/role-tool-scope';
 import { ColorSwatches, ROLE_COLOR_VALUES } from '@/components/ColorSwatches';
+import { newRoleRequestBody, responseErrorMessage, type NewRoleKind } from '../_lib/personal-roles-view';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -22,7 +23,23 @@ interface WorkspaceOption {
 interface Props {
   teamId: string;
   workspaces: WorkspaceOption[];
+  /**
+   * Kinds the viewer may create: 'personal' ("Just for me",
+   * create_personal_roles) and/or 'team' (manage_agent_roles). Default team only.
+   */
+  kinds?: readonly NewRoleKind[];
+  initialKind?: NewRoleKind;
 }
+
+const KIND_LABEL: Record<NewRoleKind, string> = {
+  personal: 'Just for me',
+  team: 'Team role',
+};
+
+const KIND_NOTE: Record<NewRoleKind, string> = {
+  personal: 'Only your tasks can run it. You can share it with the team later.',
+  team: 'Anyone in the team can run it.',
+};
 
 type Scope = 'team' | 'workspace';
 
@@ -33,10 +50,13 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-export function TeamRoleForm({ teamId, workspaces }: Props) {
+export function TeamRoleForm({ teamId, workspaces, kinds = ['team'], initialKind }: Props) {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Who the role is for. A personal role is always team-level, so it has no scope.
+  const [kind, setKind] = useState<NewRoleKind>(initialKind ?? kinds[0] ?? 'team');
 
   // Scope
   const [scope, setScope] = useState<Scope>('team');
@@ -75,12 +95,12 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
     try {
       let res: Response;
 
-      if (scope === 'team') {
-        // Create a team-level role
+      if (kind === 'personal' || scope === 'team') {
+        // A team-level role: the team's, or one just for the caller.
         res = await fetch('/api/roles', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(newRoleRequestBody(kind, teamId, {
             name,
             slug: slug || undefined,
             description: description || undefined,
@@ -92,8 +112,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
             background,
             maxTurns: maxTurns ? parseInt(maxTurns, 10) : null,
             color,
-            isRole: true,
-          }),
+          })),
         });
       } else {
         // Create a workspace-scoped role
@@ -119,8 +138,8 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
       }
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to create role');
+        const data = await res.json().catch(() => null);
+        throw new Error(responseErrorMessage(data, 'Failed to create role'));
       }
 
       router.push('/app/team');
@@ -135,11 +154,42 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary mb-1">New Role</h1>
+        <h1 className="text-2xl font-bold text-text-primary mb-1">{kinds.length === 1 && kind === 'personal' ? 'New role, just for you' : 'New Role'}</h1>
         <p className="text-sm text-text-muted">Define an agent persona with a model, tools, and instructions.</p>
       </div>
 
-      {/* Scope selector */}
+      {/* Who it is for: only when the viewer may create both kinds */}
+      {kinds.length > 1 ? (
+        <div className="border border-border-default rounded-lg p-4" data-testid="role-kind-picker">
+          <div className="flex items-center gap-2 mb-3">
+            <span id="role-kind-label" className="text-sm font-medium text-text-secondary">Who uses it</span>
+          </div>
+          <div role="radiogroup" aria-labelledby="role-kind-label" className="flex rounded-md border border-border-default overflow-hidden w-fit">
+            {kinds.map((k, i) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={kind === k}
+                onClick={() => setKind(k)}
+                className={`min-h-11 md:min-h-0 px-4 py-2 text-sm font-medium transition-colors ${i > 0 ? 'border-l border-border-default' : ''} ${
+                  kind === k
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-text-muted mt-2">{KIND_NOTE[kind]}</p>
+        </div>
+      ) : kind === 'personal' ? (
+        <p className="text-xs text-text-muted -mt-4" data-testid="role-kind-personal-note">{KIND_NOTE.personal}</p>
+      ) : null}
+
+      {/* Scope selector (team roles only) */}
+      {kind === 'team' && (
       <div className="border border-border-default rounded-lg p-4">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-sm font-medium text-text-secondary">Applies to</span>
@@ -191,6 +241,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
           </div>
         )}
       </div>
+      )}
 
       <div className="border border-border-default rounded-lg p-6">
         <div className="flex flex-col md:flex-row gap-8">

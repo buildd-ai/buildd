@@ -1,13 +1,15 @@
 import { db } from '@buildd/core/db';
-import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces } from '@buildd/core/db/schema';
-import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
+import { workspaceSkills, workers, tasks, accountWorkspaces, workspaces, users } from '@buildd/core/db/schema';
+import { eq, and, or, isNull, isNotNull, inArray, desc, sql } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { can } from '@/lib/permissions';
 import { TeamGrid } from './TeamGrid';
+import { splitTeamLevelRows, type RoleVisibility } from './_lib/personal-roles-view';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,6 +61,21 @@ export interface RoleWithActivity {
   activeWorkerCount: number;
 }
 
+/** A personal role the viewer can see: their own (any visibility) or a teammate's shared one. */
+export interface PersonalRoleEntry {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  color: string;
+  model: string;
+  visibility: RoleVisibility;
+  /** The viewer owns it. */
+  isMine: boolean;
+  /** Owner's display name; null when unset. Only shown for teammates' roles. */
+  ownerName: string | null;
+}
+
 export default async function TeamPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
@@ -68,6 +85,14 @@ export default async function TeamPage() {
   const cookieStore = await cookies();
   const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
   const teamIds = activeTeamId ? [activeTeamId] : [];
+  // What "New role" offers in the active team, with its overrides applied.
+  const caller = { kind: 'user' as const, userId: user.id };
+  const [canCreatePersonalRole, canCreateTeamRole] = activeTeamId
+    ? await Promise.all([
+        can(caller, 'create_personal_roles', activeTeamId).catch(() => false),
+        can(caller, 'manage_agent_roles', activeTeamId).catch(() => false),
+      ])
+    : [false, false];
   const wsIds = activeTeamId
     ? await getTeamWorkspaceIds(activeTeamId)
     : await getUserWorkspaceIds(user.id);
@@ -103,12 +128,46 @@ export default async function TeamPage() {
       eq(workspaceSkills.isRole, true),
       or(
         wsIds.length > 0 ? inArray(workspaceSkills.workspaceId, wsIds) : undefined,
-        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
+        // Team roles only: personal rows are team-level too, and are listed
+        // separately below so another member's private role never shows.
+        teamIds.length > 0 ? and(isNull(workspaceSkills.workspaceId), isNull(workspaceSkills.ownerUserId), inArray(workspaceSkills.teamId, teamIds)) : undefined,
         accountIds.length > 0 ? inArray(workspaceSkills.accountId, accountIds) : undefined,
       ),
     ),
     orderBy: [desc(workspaceSkills.createdAt)],
   });
+
+  // Personal roles in the active team: the viewer's own and teammates' shared ones.
+  const personalRows = teamIds.length === 0 ? [] : await db.query.workspaceSkills.findMany({
+    where: and(
+      inArray(workspaceSkills.teamId, teamIds),
+      isNull(workspaceSkills.workspaceId),
+      isNotNull(workspaceSkills.ownerUserId),
+      eq(workspaceSkills.isRole, true),
+      eq(workspaceSkills.enabled, true),
+      or(eq(workspaceSkills.ownerUserId, user.id), eq(workspaceSkills.visibility, 'team')),
+    ),
+    columns: { id: true, slug: true, name: true, description: true, color: true, model: true, ownerUserId: true, visibility: true },
+    orderBy: [desc(workspaceSkills.createdAt)],
+  });
+  const { mine, sharedByOthers } = splitTeamLevelRows(personalRows, user.id);
+  const otherOwnerIds = [...new Set(sharedByOthers.map(r => r.ownerUserId!))];
+  const owners = otherOwnerIds.length === 0 ? [] : await db.query.users.findMany({
+    where: inArray(users.id, otherOwnerIds),
+    columns: { id: true, name: true, email: true },
+  });
+  const ownerNames = new Map(owners.map(o => [o.id, o.name || o.email?.split('@')[0] || null]));
+  const personalRoles: PersonalRoleEntry[] = [...mine, ...sharedByOthers].map(r => ({
+    id: r.id,
+    slug: r.slug,
+    name: r.name,
+    description: r.description,
+    color: r.color,
+    model: r.model,
+    visibility: r.visibility === 'team' ? 'team' : 'private',
+    isMine: r.ownerUserId === user.id,
+    ownerName: r.ownerUserId === user.id ? null : ownerNames.get(r.ownerUserId!) ?? null,
+  }));
 
   // Get historical task counts per role (last 30 days)
   // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate stats.
@@ -280,6 +339,9 @@ export default async function TeamPage() {
           workspaceIds={wsIds}
           teamId={teamIds[0] || null}
           totalActiveWorkerCount={totalActiveWorkerCount}
+          personalRoles={personalRoles}
+          canCreatePersonalRole={canCreatePersonalRole}
+          canCreateTeamRole={canCreateTeamRole}
         />
       </div>
     </main>

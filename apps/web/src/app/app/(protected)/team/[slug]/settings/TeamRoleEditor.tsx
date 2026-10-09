@@ -14,6 +14,8 @@ import { useDirtyState, useWarnOnUnload } from '@/hooks/useUnsavedChanges';
 import { NOT_FOR_MAX, WHEN_TO_USE_MAX, WHEN_TO_USE_MIN, readRoleRouting } from '@/lib/role-routing';
 import { OPERATOR_ROLE_SLUG } from '@/lib/permission-registry';
 import { OperatorAccessSection } from './OperatorAccessSection';
+import Chip from '@/components/ui/Chip';
+import { responseErrorMessage, type RoleVisibility } from '../../_lib/personal-roles-view';
 
 type Scope = 'team' | 'workspace';
 
@@ -70,6 +72,162 @@ interface Props {
    * override. Defaults to true.
    */
   canEdit?: boolean;
+  /**
+   * Set for a personal role: no workspace scope, overrides or operator
+   * access (the API refuses them), and a share toggle instead.
+   */
+  personal?: PersonalRoleInfo;
+}
+
+export interface PersonalRoleInfo {
+  visibility: RoleVisibility;
+  isOwner: boolean;
+  /** Owner's name when the viewer is not the owner. */
+  ownerName: string | null;
+  /** May change who uses it (owner, or an admin once shared). */
+  canShare: boolean;
+  /** May turn it into a team role (admin, shared only). */
+  canPromote: boolean;
+}
+
+/** Share toggle + "Make team role" for a personal role. */
+function PersonalSharingSection({
+  roleId,
+  slug,
+  info,
+}: {
+  roleId: string;
+  slug: string;
+  info: PersonalRoleInfo;
+}) {
+  const router = useRouter();
+  const [visibility, setVisibility] = useState<RoleVisibility>(info.visibility);
+  const [busy, setBusy] = useState<'share' | 'promote' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [promoteWarnings, setPromoteWarnings] = useState<string[] | null>(null);
+  const { confirm, confirmDialog } = useConfirm();
+
+  async function changeVisibility(next: RoleVisibility) {
+    if (next === visibility || busy) return;
+    setBusy('share');
+    setError(null);
+    try {
+      const res = await fetch(`/api/roles/${roleId}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visibility: next }),
+      });
+      const data = await res.json().catch(() => null) as { skill?: { visibility?: string } } | null;
+      if (!res.ok) {
+        // A 409 slug clash carries the message to show as-is.
+        setError(responseErrorMessage(data, next === 'team' ? 'Could not share this role' : 'Could not make this role private'));
+        return;
+      }
+      const stored = data?.skill?.visibility;
+      setVisibility(stored === 'team' || stored === 'private' ? stored : next);
+      router.refresh();
+    } catch {
+      setError('Could not reach the server');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function promote() {
+    if (busy) return;
+    if (!(await confirm({
+      title: 'Make this a team role?',
+      message: 'It becomes the team\u2019s, with no owner, and admins manage it from then on. Its slug stays the same.',
+      confirmLabel: 'Make team role',
+    }))) return;
+    setBusy('promote');
+    setError(null);
+    try {
+      const res = await fetch(`/api/roles/${roleId}/promote`, { method: 'POST' });
+      const data = await res.json().catch(() => null) as { warnings?: unknown } | null;
+      if (!res.ok) {
+        setError(responseErrorMessage(data, 'Could not make this a team role'));
+        return;
+      }
+      const raw = data?.warnings;
+      const warnings = Array.isArray(raw) ? raw.filter((w): w is string => typeof w === 'string') : [];
+      if (warnings.length > 0) {
+        setPromoteWarnings(warnings);
+        return;
+      }
+      router.push(`/app/team/${encodeURIComponent(slug)}/settings`);
+      router.refresh();
+    } catch {
+      setError('Could not reach the server');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const teamRoleHref = `/app/team/${encodeURIComponent(slug)}/settings`;
+
+  return (
+    <section className="border border-border-default p-4 mb-8" data-testid="personal-role-sharing">
+      <h2 id="personal-share-label" className="text-sm font-medium text-text-secondary mb-3">Who can use it</h2>
+      {promoteWarnings ? (
+        <div className="space-y-2" data-testid="personal-role-promoted">
+          <p className="text-body text-text-primary">This is now a team role.</p>
+          {promoteWarnings.map(w => (
+            <p key={w} className="text-meta text-status-warning">{w}</p>
+          ))}
+          <Link href={teamRoleHref} className="inline-flex items-center min-h-11 md:min-h-0 text-meta text-accent-text hover:underline">
+            Open the team role
+          </Link>
+        </div>
+      ) : (
+        <>
+          <div role="radiogroup" aria-labelledby="personal-share-label" className="flex border border-border-default overflow-hidden w-fit">
+            {(['private', 'team'] as const).map((v, i) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={visibility === v}
+                disabled={!info.canShare || busy !== null}
+                onClick={() => changeVisibility(v)}
+                data-testid={`personal-share-${v}`}
+                className={`min-h-11 md:min-h-0 px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed ${i > 0 ? 'border-l border-border-default' : ''} ${
+                  visibility === v
+                    ? 'bg-surface-3 text-text-primary'
+                    : 'text-text-secondary hover:text-text-primary disabled:hover:text-text-secondary'
+                }`}
+              >
+                {v === 'private' ? (info.isOwner ? 'Only me' : 'Only its owner') : 'Whole team'}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-text-muted mt-2">
+            {visibility === 'team'
+              ? 'Anyone in the team can run it. Only its owner and admins can change it.'
+              : 'Only its owner\u2019s tasks run it. Nobody else can see it.'}
+          </p>
+          {error && (
+            <p role="alert" data-testid="personal-share-error" className="mt-2 text-meta text-status-error">{error}</p>
+          )}
+          {info.canPromote && visibility === 'team' && (
+            <div className="mt-4 pt-4 border-t border-border-default flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={promote}
+                disabled={busy !== null}
+                data-testid="personal-role-promote"
+                className="min-h-11 md:min-h-0 px-3 py-1.5 border border-border-strong text-sm font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50"
+              >
+                {busy === 'promote' ? 'Making team role\u2026' : 'Make team role'}
+              </button>
+              <span className="text-xs text-text-muted">The team takes it over; the owner no longer manages it.</span>
+            </div>
+          )}
+        </>
+      )}
+      {confirmDialog}
+    </section>
+  );
 }
 
 /**
@@ -361,7 +519,7 @@ function WorkspaceOverrideEditor({
   );
 }
 
-export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, delegateOptions, canEdit = true }: Props) {
+export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, delegateOptions, canEdit = true, personal }: Props) {
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
@@ -539,9 +697,15 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         <div className="flex items-center gap-1.5 text-[13px] mb-5">
           <Link href="/app/team" className="text-text-muted hover:text-text-secondary">Team</Link>
           <span className="text-text-muted">/</span>
-          <Link href={`/app/team/${role.slug}`} className="text-text-muted hover:text-text-secondary">{name}</Link>
-          <span className="text-text-muted">/</span>
-          <span className="text-text-primary font-medium">Settings</span>
+          {personal ? (
+            <span className="text-text-primary font-medium [overflow-wrap:anywhere]">{name}</span>
+          ) : (
+            <>
+              <Link href={`/app/team/${role.slug}`} className="text-text-muted hover:text-text-secondary">{name}</Link>
+              <span className="text-text-muted">/</span>
+              <span className="text-text-primary font-medium">Settings</span>
+            </>
+          )}
         </div>
 
         {/* Header */}
@@ -557,10 +721,23 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[13px] text-text-muted mt-0.5">
               <span className="font-mono text-xs">{role.slug}</span>
               <span>&middot;</span>
-              <span className="text-[11px] text-text-muted">Applies to</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
-                All workspaces
-              </span>
+              {personal ? (
+                <>
+                  <Chip tone="muted" dot={false} data-testid="personal-role-badge">
+                    {personal.isOwner ? 'Yours' : 'Personal'}
+                  </Chip>
+                  {!personal.isOwner && (
+                    <span className="text-meta">by {personal.ownerName || 'a teammate'}</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-[11px] text-text-muted">Applies to</span>
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] md:text-[10px] font-medium rounded bg-accent-text/10 text-accent-text">
+                    All workspaces
+                  </span>
+                </>
+              )}
             </div>
           </div>
           {/* Desktop save; phones get the sticky MobileSaveBar at the bottom. */}
@@ -568,8 +745,12 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         </div>
 
         {!canEdit && (
-          <p data-testid="role-read-only" className="-mt-5 mb-8 text-xs text-text-muted">Admins can change this role.</p>
+          <p data-testid="role-read-only" className="-mt-5 mb-8 text-xs text-text-muted">
+            {personal ? 'Only its owner or a team admin can change this role.' : 'Admins can change this role.'}
+          </p>
         )}
+
+        {personal && <PersonalSharingSection roleId={role.id} slug={role.slug} info={personal} />}
 
         {error && (
           <div className="mb-6 px-4 py-2 rounded-md bg-status-error/10 text-status-error text-sm">
@@ -580,7 +761,8 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         {/* A disabled fieldset disables every control inside it: the role
             stays readable, nothing in it can be changed. */}
         <fieldset disabled={!canEdit} className="min-w-0">
-        {/* Applies to */}
+        {/* Applies to (team roles; a personal role is always team-level) */}
+        {!personal && (
         <div className="border border-border-default rounded-lg p-4 mb-8">
           <div className="flex items-center gap-2 mb-3">
             <span className="text-sm font-medium text-text-secondary">Applies to</span>
@@ -637,6 +819,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
             </div>
           )}
         </div>
+        )}
 
         {/* Two-column form */}
         <div className="flex flex-col md:flex-row gap-8 mb-10">
@@ -704,7 +887,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-base md:text-sm text-text-primary"
                 placeholder="You are Builder, a senior software engineer…"
               />
-              <p className="text-xs text-text-muted mt-1">The full system prompt for this role. A workspace can override it.</p>
+              <p className="text-xs text-text-muted mt-1">The full system prompt for this role.{personal ? '' : ' A workspace can override it.'}</p>
             </div>
           </div>
 
@@ -787,7 +970,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     );
                   })}
                 </div>
-                <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE} Individual workspaces can override it.</p>
+                <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE}{personal ? '' : ' Individual workspaces can override it.'}</p>
               </div>
             </details>
 
@@ -841,7 +1024,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         </fieldset>
 
         {/* Platform Operator access: a distinct admin surface, not a content/tools/mcp override. */}
-        {role.slug === OPERATOR_ROLE_SLUG && (
+        {!personal && role.slug === OPERATOR_ROLE_SLUG && (
           <OperatorAccessSection
             roleId={role.id}
             teamMetadata={role.metadata}
@@ -852,7 +1035,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
         )}
 
         {/* Workspace Overrides Section */}
-        {role.slug !== OPERATOR_ROLE_SLUG && (
+        {!personal && role.slug !== OPERATOR_ROLE_SLUG && (
         <div className="border-t border-border-default pt-8">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
             <div className="min-w-0">

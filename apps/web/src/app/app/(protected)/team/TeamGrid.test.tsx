@@ -4,12 +4,14 @@
  */
 import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
 
 mock.module('next/link', () => ({
-  default: ({ href, children, ...props }: any) => `<a href="${href}" ${Object.entries(props).map(([k, v]) => `${k}="${v}"`).join(' ')}>${children}</a>`,
+  default: ({ href, children, ...props }: any) => createElement('a', { href, ...props }, children),
 }));
 
 import { TeamGrid } from './TeamGrid';
+import type { PersonalRoleEntry } from './page';
 
 describe('TeamGrid', () => {
   describe('idle state on mobile', () => {
@@ -105,6 +107,62 @@ describe('TeamGrid', () => {
       expect(html).toContain('mb-6');
       // And mt-0 for top spacing (explicitly set to ensure banner has proper gap)
       expect(html).toContain('mt-0');
+    });
+  });
+
+  describe('personal roles', () => {
+    const mine = (overrides: Partial<PersonalRoleEntry> = {}): PersonalRoleEntry => ({
+      id: 'p-1', slug: 'my-reviewer', name: 'My Reviewer', description: null, color: '#000000',
+      model: 'inherit', visibility: 'private', isMine: true, ownerName: null, ...overrides,
+    });
+    const render = (props: Partial<Parameters<typeof TeamGrid>[0]>) => renderToStaticMarkup(
+      <TeamGrid
+        activeRoles={[]}
+        idleRoles={[]}
+        workspaceIds={['ws-1']}
+        teamId="team-1"
+        totalActiveWorkerCount={0}
+        {...props}
+      />,
+    );
+
+    it('lists the viewer\'s own roles under Mine with a private / shared badge', () => {
+      const html = render({
+        personalRoles: [mine(), mine({ id: 'p-2', slug: 'my-writer', name: 'My Writer', visibility: 'team' })],
+        canCreatePersonalRole: true,
+      });
+      expect(html).toContain('data-testid="team-mine-section"');
+      expect(html).toContain('My Reviewer');
+      expect(html).toContain('Private');
+      expect(html).toContain('Shared');
+      // Personal slugs are not unique, so the link carries the id.
+      expect(html).toContain('/app/team/my-reviewer/settings?id=p-1');
+    });
+
+    it('shows a teammate\'s shared role with its owner, outside Mine', () => {
+      const html = render({
+        personalRoles: [mine({ id: 'p-9', slug: 'their-role', name: 'Their Role', visibility: 'team', isMine: false, ownerName: 'Ada' })],
+      });
+      expect(html).toContain('data-testid="team-shared-section"');
+      expect(html).toContain('by Ada');
+      expect(html).not.toContain('data-testid="team-mine-section"');
+    });
+
+    it('a member who can only create personal roles gets New Role pointed at "Just for me"', () => {
+      const html = render({ canCreatePersonalRole: true, canCreateTeamRole: false });
+      expect(html).toContain('href="/app/team/new?kind=personal"');
+      expect(html).not.toContain('href="/app/team/new"');
+    });
+
+    it('no New Role at all when the viewer holds neither permission', () => {
+      const html = render({ canCreatePersonalRole: false, canCreateTeamRole: false });
+      expect(html).not.toContain('New Role');
+      expect(html).not.toContain('Just for me');
+    });
+
+    it('an admin gets the plain New Role link (the form offers both kinds)', () => {
+      const html = render({ canCreatePersonalRole: true, canCreateTeamRole: true });
+      expect(html).toContain('href="/app/team/new"');
     });
   });
 });

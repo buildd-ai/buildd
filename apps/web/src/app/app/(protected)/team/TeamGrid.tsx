@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import type { RoleWithActivity } from './page';
+import type { RoleWithActivity, PersonalRoleEntry } from './page';
 import { countOf } from '@/lib/plural';
+import Chip from '@/components/ui/Chip';
+import { personalRoleEditorPath } from './_lib/personal-roles-view';
 
 interface Props {
   activeRoles: RoleWithActivity[];
@@ -11,6 +13,12 @@ interface Props {
   teamId: string | null;
   /** Total active workers in scope — includes workers whose tasks have no role attribution */
   totalActiveWorkerCount: number;
+  /** The viewer's own personal roles, then teammates' shared ones. */
+  personalRoles?: PersonalRoleEntry[];
+  /** Holds create_personal_roles in the active team. */
+  canCreatePersonalRole?: boolean;
+  /** Holds manage_agent_roles in the active team. Undefined: not known, offer New Role as before. */
+  canCreateTeamRole?: boolean;
 }
 
 function RoleAvatar({ name, color, size = 40 }: { name: string; color: string; size?: number }) {
@@ -190,9 +198,89 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
   );
 }
 
-export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalActiveWorkerCount }: Props) {
+/** One personal role: own (private / shared) or a teammate's shared one with its owner. */
+function PersonalRoleChip({ role }: { role: PersonalRoleEntry }) {
+  return (
+    <Link
+      href={personalRoleEditorPath(role)}
+      data-testid="personal-role-chip"
+      className="flex items-center gap-2.5 bg-[var(--card)] border border-border-strong px-4 py-3 min-h-11 hover:bg-surface-3 transition-colors"
+    >
+      <RoleAvatar name={role.name} color={role.color} size={28} />
+      <div className="flex-1 min-w-0">
+        <span className="text-body font-medium text-text-primary truncate block">{role.name}</span>
+        {!role.isMine && (
+          <span className="text-meta text-text-muted truncate block">
+            {role.ownerName ? `by ${role.ownerName}` : 'by a teammate'}
+          </span>
+        )}
+      </div>
+      {role.isMine && (
+        role.visibility === 'team'
+          ? <Chip tone="info" dot={false} data-testid="personal-role-visibility">Shared</Chip>
+          : <Chip tone="muted" dot={false} data-testid="personal-role-visibility">Private</Chip>
+      )}
+      <span className="hidden sm:inline text-chip text-text-muted font-mono shrink-0">{role.slug}</span>
+    </Link>
+  );
+}
+
+function PersonalRolesSection({ roles, canCreate }: { roles: PersonalRoleEntry[]; canCreate: boolean }) {
+  const mine = roles.filter(r => r.isMine);
+  const shared = roles.filter(r => !r.isMine);
+  if (mine.length === 0 && shared.length === 0 && !canCreate) return null;
+  return (
+    <div className="mt-8 space-y-8">
+      {(mine.length > 0 || canCreate) && (
+        <section data-testid="team-mine-section">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="text-body font-semibold text-text-muted">Mine</h2>
+            {canCreate && mine.length > 0 && (
+              <Link href="/app/team/new?kind=personal" className="inline-flex items-center min-h-11 md:min-h-0 text-meta text-accent-text hover:underline">
+                + Just for me
+              </Link>
+            )}
+          </div>
+          {mine.length === 0 ? (
+            <div className="border border-dashed border-border-default px-4 py-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-body text-text-secondary">Roles only you run. Share one with the team when it&apos;s ready.</p>
+              <Link
+                href="/app/team/new?kind=personal"
+                className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-1.5 border border-border-strong text-body font-medium text-text-primary hover:bg-surface-3"
+              >
+                + Just for me
+              </Link>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {mine.map(role => <PersonalRoleChip key={role.id} role={role} />)}
+            </div>
+          )}
+        </section>
+      )}
+      {shared.length > 0 && (
+        <section data-testid="team-shared-section">
+          <h2 className="text-body font-semibold text-text-muted mb-3">Shared by teammates</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {shared.map(role => <PersonalRoleChip key={role.id} role={role} />)}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+export function TeamGrid({
+  activeRoles, idleRoles, workspaceIds, teamId, totalActiveWorkerCount,
+  personalRoles = [], canCreatePersonalRole = false, canCreateTeamRole,
+}: Props) {
   const totalRoles = activeRoles.length + idleRoles.length;
   const firstWsId = workspaceIds[0];
+  // Undefined = permissions not passed: keep the old "anyone with a team" offer.
+  const hasScope = !!(teamId || firstWsId);
+  const offersTeam = canCreateTeamRole ?? hasScope;
+  const canCreateAny = hasScope && (offersTeam || canCreatePersonalRole);
+  const newRoleHref = !offersTeam && canCreatePersonalRole ? '/app/team/new?kind=personal' : '/app/team/new';
   // Workers active in scope but not attributed to any configured role
   const unattributedWorkerCount = totalActiveWorkerCount - activeRoles.reduce((sum, r) => sum + r.activeWorkerCount, 0);
 
@@ -212,11 +300,11 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
             </span>
           )}
         </div>
-        {/* New Role — creates a team-level role by default */}
-        {(teamId || firstWsId) && (
+        {/* New Role: team role and/or "Just for me", per the viewer's permissions */}
+        {canCreateAny && (
           <div className="flex items-center gap-2">
             <Link
-              href={`/app/team/new`}
+              href={newRoleHref}
               className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md text-sm font-medium transition-colors"
             >
               + New Role
@@ -230,9 +318,9 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
           <p className="text-[15px] text-text-secondary mb-3">
             No roles.
           </p>
-          {(teamId || firstWsId) && (
+          {canCreateAny && (
             <Link
-              href={`/app/team/new`}
+              href={newRoleHref}
               className="inline-flex px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md text-sm font-medium"
             >
               + New Role
@@ -272,6 +360,8 @@ export function TeamGrid({ activeRoles, idleRoles, workspaceIds, teamId, totalAc
           )}
         </>
       )}
+
+      <PersonalRolesSection roles={personalRoles} canCreate={hasScope && canCreatePersonalRole} />
     </div>
   );
 }
