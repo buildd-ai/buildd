@@ -892,7 +892,7 @@ export default async function MissionDetailPage({
         {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
           <span>
             Workspace:{' '}
-            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
+            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-text-primary underline underline-offset-4">
               {displayWorkspaceName(mission.workspace.name)}
             </Link>
           </span>
