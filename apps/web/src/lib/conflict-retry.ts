@@ -263,8 +263,8 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       : migrationCollision
       ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prRefs ?? null)
       : semanticConflict
-        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
-        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict, prRefs ?? null)
+        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, prRefs ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -331,16 +331,40 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
   };
 }
 
+/**
+ * The PR's head when it is not this worker's own branch (the retry is bound to
+ * an existing PR, typically a mission integration PR). `create_pr` refuses a
+ * second PR for that lineage with a 409, so briefs must name the real head.
+ */
+function boundHeadRef(worker: ConflictRetryInput['worker'], prRefs: ConflictRetryInput['prRefs']): string | null {
+  return prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
+}
+
+function boundLineageNote(
+  worker: ConflictRetryInput['worker'],
+  prRefs: ConflictRetryInput['prRefs'],
+  fixWhat: string,
+): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  if (!boundHead) return '';
+  return `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. ${fixWhat} on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`;
+}
+
 function buildConflictDescription(
   task: ConflictRetryInput['originalTask'],
   worker: ConflictRetryInput['worker'],
   repoFullName: string,
   iteration: number,
   maxIterations: number,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push the resolved merge to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} will auto-update.`
+    : `Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.
+  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.${boundLineageNote(worker, prRefs, 'Resolve the conflicts')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -354,7 +378,7 @@ function buildConflictDescription(
    \`\`\`
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
 4. Run the test suite and verify correctness before pushing.
-5. Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.
+5. ${pushStep}
 
 PR: ${prUrl}
 
@@ -372,7 +396,12 @@ function buildSemanticConflictDescription(
   iteration: number,
   maxIterations: number,
   assessment: SemanticAssessment,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} updates, and CI plus normal review decide the merge on the new head.`
+    : `Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
   const base = assessment.baseRef ?? "the PR's base branch";
   const evidence = (assessment.evidence ?? [])
@@ -383,7 +412,7 @@ function buildSemanticConflictDescription(
 
 ${evidence}
 
-A clean git merge does not mean the two changes agree. This is a semantic conflict review.
+A clean git merge does not mean the two changes agree. This is a semantic conflict review.${boundLineageNote(worker, prRefs, 'Reconcile the symbols')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -397,7 +426,7 @@ A clean git merge does not mean the two changes agree. This is a semantic confli
    \`\`\`
 3. Read each symbol above as it now stands and reconcile both intents on the merits. If they already agree, say so in your summary and change nothing else.
 4. Run the tests that cover those symbols before pushing.
-5. Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.
+5. ${pushStep}
 
 PR: ${prUrl}
 
@@ -437,10 +466,8 @@ function buildMigrationCollisionDescription(
   // The PR's head is not this worker's branch: the retry is bound to an
   // existing PR (typically a mission integration PR). create_pr rejects a new
   // PR from the worker branch as duplicate lineage, so name the real target.
-  const boundHead = prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
-  const lineageNote = boundHead
-    ? `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. Fix the migration on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`
-    : '';
+  const boundHead = boundHeadRef(worker, prRefs);
+  const lineageNote = boundLineageNote(worker, prRefs, 'Fix the migration');
   const pushStep = boundHead
     ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force), then request re-review so the collision flag clears.`
     : `Push to the existing branch, then request re-review so the collision flag clears.`;
