@@ -10,8 +10,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { computeReleaseWidgetDecision, type ReleaseReadinessItem } from '@/lib/release-readiness';
-import { ReleaseWidget } from './ReleaseWidget';
+import type { ReleaseReadinessItem } from '@/lib/release-readiness';
+import { ReleaseWidget, releaseWidgetShows } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -2231,7 +2231,7 @@ export default async function HomePage({
   const movingEmpty = milestones.length === 0 && inFlightItems.length === 0
     && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0
     && rightNow !== 'create-workspace' && pendingSuggestions.length === 0
-    && !releaseReadinessItems.some(i => computeReleaseWidgetDecision(i.queueDepth, i.ciState, i.commitsAheadAtDispatch) !== 'hide');
+    && !releaseWidgetShows(releaseReadinessItems);
   const bodyLayout: keyof typeof HOME_BODY_GRID = !movingEmpty
     ? (agentsModel || landedWeek.length > 0 ? 'split' : 'single')
     : agentsModel && landedWeek.length > 0 ? 'side' : 'single';
