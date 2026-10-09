@@ -142,6 +142,12 @@ mock.module('@/lib/path-claim-release', () => ({
 }));
 
 // Mock Pusher
+const mockRequestWorkerPause = mock(async (_id: string) => true);
+mock.module('@/lib/worker-pause', () => ({
+  ...require('@/lib/worker-pause-policy'),
+  requestWorkerPause: mockRequestWorkerPause,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: {
@@ -945,6 +951,35 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(mockTasksUpdate).toHaveBeenCalled();
       expect(mockResolveCompletedTask).toHaveBeenCalledWith(TASK_ID, 'ws-1');
+    });
+
+    // Pause instead of cancel (task baf3809a): keeps the session for Resume.
+    it('pause: true pauses the running agent and changes nothing else on the task', async () => {
+      setup(baseTask, baseTask);
+      mockRequestWorkerPause.mockClear();
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'running', runner: 'coder', waitingFor: null });
+      const res = await patch({ pause: true });
+      expect(res.status).toBe(200);
+      expect((await res.json()).paused).toBe('requested');
+      expect(mockRequestWorkerPause).toHaveBeenCalledWith('w-1');
+      expect(mockTasksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('pause with no running agent, or mixed with other fields, is refused', async () => {
+      setup(baseTask, baseTask);
+      mockRequestWorkerPause.mockClear();
+      mockWorkersFindFirst.mockResolvedValue(null);
+      expect((await patch({ pause: true })).status).toBe(409);
+      expect((await patch({ pause: true, title: 'x' })).status).toBe(400);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'waiting_input', runner: 'coder', waitingFor: { type: 'question' } });
+      expect((await patch({ pause: true })).status).toBe(409);
+      expect(mockRequestWorkerPause).not.toHaveBeenCalled();
+    });
+
+    it('the live_worker refusal offers pause', async () => {
+      setup(baseTask, { ...baseTask, status: 'cancelled' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'w-1', status: 'running' });
+      expect((await (await patch({ status: 'cancelled' })).json()).error).toMatch(/pause: true/);
     });
 
     it('abort must be a boolean', async () => {
