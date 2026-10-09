@@ -3282,7 +3282,7 @@ export async function POST(req: NextRequest) {
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
     await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks, endpointWorkers);
+    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
     await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
   } else {
     for (const cw of claimedWorkers) {
