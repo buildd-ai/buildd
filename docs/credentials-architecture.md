@@ -122,6 +122,32 @@ delete path reaches them. They're managed through `/api/inference-keys` (persona
 scope for any member, team scope for owners/admins), which returns only the last
 four characters and health, never plaintext.
 
+#### Personal keys on agent runs (`teams.credential_policy`)
+
+A personal Anthropic or OpenAI key (the `inference_key` rows above) can also
+pay for agent runs, only for tasks the person started, and only when the team
+has explicitly set `credential_policy`. The host claim decides per task in
+`apps/web/src/app/api/workers/claim/personal-credential-injection.ts`, through
+`resolveProviderCredential` (`@buildd/core/providers/resolve`), with the
+requester from `resolveTaskRequesterUserId`:
+
+| `credential_policy` | Agent run |
+|---|---|
+| NULL | Team credentials exactly as above; nothing personal is read and the claim gains no field. |
+| `team` | The same, plus a non-secret `credentialDecision` marker. |
+| `personal_first` | The requester's own key (Anthropic for Claude tasks, OpenAI for Codex) is the only model credential; without one, team credentials. |
+| `personal_only` | The requester's own key, or the task is not claimed (deferral `no_personal_credential`, with the reason: no requester, no key, old runner). |
+
+A personal key goes only to a runner declaring the `personal_credentials`
+feature (`PERSONAL_CREDENTIAL_RUNNER_FEATURE`): older runners cache
+`serverApiKey` per team and would reuse it for another person's worker. A cloud
+claim carries no model credential at all: cloud egress resolves the personal
+route per run, and under `personal_only` the claim defers when egress would
+find none. Personal subscription seats and personal
+endpoints are not delivered. The legacy purposes `anthropic_api_key` /
+`openai_api_key` stay team-only: `POST /api/secrets` refuses a `userId` for
+them and points to `/api/inference-keys`.
+
 ### Agent model endpoint
 
 `purpose = 'agent_endpoint'`, team-wide or one workspace (never account or
