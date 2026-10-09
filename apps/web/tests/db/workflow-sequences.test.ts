@@ -647,20 +647,12 @@ async function checkLiveness(ctx: Ctx): Promise<void> {
  *  - a6cbd241: the current round's dispatch_review was acked `skipped:superseded`
  *    (a repair started before the drain) and the resume back to AWAITING_REVIEW
  *    owed none, so the round never gets a reviewer.
- *  - 9e27996d: push_recovery restarted at try 1 after an unproven head move, its
- *    follow-up key collided with the first chain's, and nothing is owed again.
  */
 async function knownLimbo(ctx: Ctx, d: DeliveryRow): Promise<boolean> {
   if (d.state === 'AWAITING_REVIEW') {
     const rows = await q<{ outcome: string | null }>(sql`SELECT outcome FROM workflow_effects WHERE delivery_id = ${ctx.deliveryId}::uuid
       AND dedupe_key = ${`dispatch_review:${ctx.deliveryId}:${d.current_round}`}`);
     return rows.length === 1 && String(rows[0].outcome ?? '').startsWith('skipped:');
-  }
-  if (d.state === 'AWAITING_PUSH') {
-    // 9e27996d: a head-keyed restart at try 1 whose follow-up collided with the first chain's try 2.
-    const rows = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workflow_effects WHERE delivery_id = ${ctx.deliveryId}::uuid
-      AND kind = 'push_recovery' AND dedupe_key LIKE ${`push_recovery:${ctx.deliveryId}:%:head:%`} AND status = 'done' AND outcome LIKE 'ok:retry_%'`);
-    return Number(rows[0]?.n ?? 0) > 0;
   }
   return false;
 }
@@ -747,7 +739,6 @@ export const REGRESSIONS: Array<{ name: string; spec: RunSpec; skip?: string }> 
   },
   {
     name: 'push recovery still escalates after an unproven head move',
-    skip: 'the restarted push_recovery chain collides with the first one and ends: fix task 9e27996d',
     spec: { seed: 1, faults: NO_FAULTS, strict: false, enforceKnownGaps: true, acts: [
       { t: 'ownerEnds', outcome: 'completed', localOnly: true, retry: false }, { t: 'clock' }, { t: 'forcePush' }, { t: 'clock' },
     ] },
