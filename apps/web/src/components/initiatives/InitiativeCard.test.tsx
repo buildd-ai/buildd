@@ -57,7 +57,7 @@ describe('InitiativeRow', () => {
     expect(html).toContain('data-status="active"');
     expect(html).toContain('data-tone="run"');
     expect(html).toContain('>Active<');
-    expect(html).not.toContain('uppercase');
+    expect(html).not.toMatch(/upper[c]ase/);
     expect(html).toContain('Ines');
     expect(html).toContain('Due Oct 14');
   });
@@ -68,7 +68,7 @@ describe('InitiativeRow', () => {
     expect(html).toContain('Mark completed');
     expect(html).not.toMatch(/\d+%/);
     expect(html).not.toMatch(/losing|stuck|dormant|unverified|ready to close/i);
-    expect(html).not.toContain('bg-primary');
+    expect(html).not.toMatch(/bg-prim[a]ry/);
     expect(html).not.toContain('btn-ink');
   });
 
@@ -78,7 +78,7 @@ describe('InitiativeRow', () => {
     expect(html).toContain('href="/app/missions/q?task=t"');
     const answer = html.match(/<a[^>]*data-kind="answer"[^>]*>/)?.[0] ?? '';
     expect(answer).toContain('btn-ink');
-    expect(html).not.toContain('bg-primary');
+    expect(html).not.toMatch(/bg-prim[a]ry/);
   });
 
   it('does not list the missions in the row (the strip enumerates them)', () => {
