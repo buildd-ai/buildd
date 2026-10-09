@@ -82,6 +82,13 @@ export interface CorpusAttempt {
   outcome: string | null;
   maxAttempts: number;
   tUs: number;
+  /**
+   * When the row was last ended (`ended_at`), on the same clock as `tUs`; null
+   * while it is open. Absent in a corpus exported before it was recorded. An
+   * end at a transition's own `tUs` is that statement's write; any other is
+   * out of band (an unbound worker end writes the row and no transition).
+   */
+  endedUs?: number | null;
 }
 
 export interface CorpusGateEvent {
