@@ -50,6 +50,7 @@
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",
+    "./license": "./license/index.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",
     "./branch-names": "./branch-names.ts",
