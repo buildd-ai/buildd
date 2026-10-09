@@ -7,7 +7,6 @@ import {
   EARLY_RELEASE_SATISFYING_DECISIONS,
 } from '@/lib/dep-gate-contract';
 import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
-import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
 import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
 
 /**
@@ -143,6 +142,10 @@ export function depsGate(): SQL {
   )!;
 }
 
+// Mirrors MISSION_BRANCH_PREFIX in @buildd/core/mission-integration (not imported:
+// the module-boundaries ratchet forbids this edge).
+const MISSION_BRANCH_LIKE = 'mission/%';
+
 /**
  * TRUE when `depId` is a migration-overlap edge the claim minted itself
  * (`pathDeclaration.inferredDependsOn`) and the dependency's PR targets a
@@ -180,7 +183,7 @@ function migrationEdgeOnOtherBase(depId: SQL): SQL {
       AND w4.pr_url IS NOT NULL
       AND w4.pr_base_ref IS NOT NULL
       AND w4.pr_base_ref IS DISTINCT FROM ${dependentBranch}
-      AND (w4.pr_base_ref LIKE ${`${MISSION_BRANCH_PREFIX}%`} OR ${dependentBranch} IS NOT NULL)
+      AND (w4.pr_base_ref LIKE ${MISSION_BRANCH_LIKE} OR ${dependentBranch} IS NOT NULL)
     )
   )`;
 }

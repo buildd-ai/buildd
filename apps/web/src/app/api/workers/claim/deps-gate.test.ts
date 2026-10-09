@@ -3,7 +3,6 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate, outsideSurfaceAuditMission } from './deps-gate';
 import { sql } from 'drizzle-orm';
 import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
-import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
 import {
   DEP_SATISFYING_STATUSES as CONTRACT_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -123,7 +122,7 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
       DEP_UNBLOCKING_PR_LIFECYCLE,
       ...EARLY_RELEASE_SATISFYING_DECISIONS,
       MIGRATION_PATH_RE.source,
-      `${MISSION_BRANCH_PREFIX}%`,
+      'mission/%',
       '[surface audit] %',
     ]);
   });
@@ -264,7 +263,7 @@ describe('dependencySatisfied(): migration edge onto another landing base', () =
     // Holder merged into mission/<x>, dependent on trunk -> differs.
     expect(text).toContain('w4.pr_base_ref IS DISTINCT FROM (');
     expect(text).toMatch(/w4\.pr_base_ref LIKE \$\d+/);
-    expect(renderParams()).toContain(`${MISSION_BRANCH_PREFIX}%`);
+    expect(renderParams()).toContain('mission/%');
     // The dependent's base is its mission's integration branch only when enabled.
     expect(text).toContain('m.integration_branch_enabled IS TRUE');
   });
