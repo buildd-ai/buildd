@@ -266,11 +266,15 @@ export default async function TaskDetailPage({
     // The frozen estimate, only for a team that has the switch on.
     (async () => {
       const teamId = (task.workspace as { teamId?: string } | null)?.teamId;
-      if (!teamId || !(await taskEstimatesEnabled(teamId))) return null;
-      return (await db.query.taskEstimates.findFirst({
-        where: eq(taskEstimates.taskId, id),
-        orderBy: desc(taskEstimates.createdAt),
-      })) ?? null;
+      if (!teamId) return null;
+      // Gate and row read side by side: one wait, not two.
+      return Promise.all([
+        taskEstimatesEnabled(teamId),
+        db.query.taskEstimates.findFirst({
+          where: eq(taskEstimates.taskId, id),
+          orderBy: desc(taskEstimates.createdAt),
+        }),
+      ]).then(([enabled, row]) => (enabled ? row ?? null : null));
     })(),
   ]);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);

@@ -8,9 +8,17 @@
  * Agent time is the sum over sessions, an open session counted to `now`, the
  * same measure the estimate is scored on.
  */
-import { formatDuration } from './mission-duration';
-
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/** `<1m`, `48m`, `1h 10m`: task-sized spans only, so no day units. */
+function formatDuration(ms: number): string {
+  if (!(ms >= MINUTE)) return '<1m';
+  if (ms < HOUR) return `${Math.floor(ms / MINUTE)}m`;
+  const h = Math.floor(ms / HOUR);
+  const m = Math.floor((ms % HOUR) / MINUTE);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
 
 export interface TimeRowSession { startedAt: Date | null; completedAt: Date | null }
 
