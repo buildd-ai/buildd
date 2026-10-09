@@ -90,6 +90,11 @@ export interface TaskActionZoneProps {
    */
   entitlementBlock?: EntitlementBlock | null;
   onChanged?: () => void | Promise<void>;
+  /**
+   * False inside a card that already frames the task (the mission Overview's
+   * focus card, the strip drawer): the Run now group drops its own box.
+   */
+  framed?: boolean;
 }
 
 const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
@@ -113,6 +118,7 @@ export default function TaskActionZone({
   hideQueuedNote = false,
   entitlementBlock = null,
   onChanged,
+  framed = true,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
   const [retrying, setRetrying] = useState<'same' | 'switch' | null>(null);
@@ -307,7 +313,7 @@ export default function TaskActionZone({
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
-        <div className="space-y-3 border border-border-default p-4">
+        <div data-testid="task-run-now" className={framed ? 'space-y-3 border border-border-default p-4' : 'space-y-2'}>
           {!hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
               ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."

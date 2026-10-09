@@ -83,6 +83,18 @@ async function mount(props: Partial<Parameters<typeof TaskActionZone>[0]> = {}) 
 
 const startCalls = () => calls.filter(c => c.url === '/api/tasks/t1/start');
 
+describe('TaskActionZone — Run now frame', () => {
+  it('boxes Run now on its own, and drops the box inside a card that already frames the task', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount();
+    expect(container.querySelector('[data-testid="task-run-now"]')!.className).toContain('border');
+    await mount({ framed: false });
+    const group = container.querySelector('[data-testid="task-run-now"]')!;
+    expect(group.className).not.toContain('border');
+    expect(button('Run now')).toBeDefined();
+  });
+});
+
 describe('TaskActionZone — inline Force start', () => {
   it('a bypassable 422 offers Force start, and pressing it posts forceOverride exactly once', async () => {
     stubFetch({ status: 422, body: { gateReason: 'mission_local', canForce: true, blockClass: 'policy' } });

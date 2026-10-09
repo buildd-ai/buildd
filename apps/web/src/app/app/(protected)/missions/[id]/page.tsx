@@ -54,7 +54,7 @@ import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
-import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
+import MissionLayoutShell, { MISSION_HEADER_ACTION, MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
 import MissionOverview from './MissionOverview';
@@ -1182,7 +1182,7 @@ export default async function MissionDetailPage({
     />
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
-  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
+  const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} className={MISSION_HEADER_ACTION} />;
   // The mission's visual review as a mission command (never the task composer):
   // on any open mission with a workspace to run it in.
   const visualReviewAction = !isTerminal && mission.workspaceId ? <MissionVisualReviewAction missionId={id} initialOpen={visualReviewParam === '1'} /> : null;
