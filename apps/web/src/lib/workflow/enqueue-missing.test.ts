@@ -56,6 +56,24 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     expect(enqueueMissingEffects(V(D({ state: 'AWAITING_REVIEW' }), [R({ status: 'reviewing' })]), none)).toEqual([]);
   });
 
+  test('a6cbd241: a queued round with no reviewer whose every dispatch finished (one skipped while the delivery was briefly REPAIRING) owes a fresh dispatch_review', () => {
+    const open = R({ id: 'r2', round: 2, headSha: 'H2', kind: 'delta' });
+    const v = V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2, version: 9 }), [open]);
+    const held = new Set(['dispatch_review:d1:2', 'dispatch_review:d1:1']);
+    expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:1', 'done']]))).toEqual([
+      { kind: 'dispatch_review', dedupeKey: 'dispatch_review:d1:2:floor:v9', payload: { roundId: 'r2', round: 2, headSha: 'H2', kind: 'delta', priorRound: null, scope: null } },
+    ]);
+    // The floor's own key, once held, is owed no more at this version.
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:floor:v9']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:floor:v9', 'pending']]))).toEqual([]);
+    // A live retry is the round's exit; a dead dispatch is EffectDead's; an unread status proves nothing.
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:2:retry1']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:2:retry1', 'delivering']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, held, new Map([['dispatch_review:d1:2', 'dead']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, held)).toEqual([]);
+    // A round whose reviewer was asked owes nothing, and round 20's keys are not round 2's.
+    expect(enqueueMissingEffects(V(D({ state: 'AWAITING_REVIEW', currentHeadSha: 'H2', currentRound: 2 }), [R({ ...open, reviewerTaskId: 'rv1' })]), held, new Map([['dispatch_review:d1:2', 'done']]))).toEqual([]);
+    expect(enqueueMissingEffects(v, new Set([...held, 'dispatch_review:d1:20']), new Map([['dispatch_review:d1:2', 'done'], ['dispatch_review:d1:20', 'pending']]))).toHaveLength(1);
+  });
+
   test('AWAITING_PUSH owes a push_recovery only when none was ever enqueued for the local head', () => {
     const v = V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' }));
     const [e] = enqueueMissingEffects(v, none);
