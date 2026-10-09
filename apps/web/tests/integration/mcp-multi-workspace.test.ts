@@ -492,6 +492,38 @@ describe.skipIf(!ENABLED)('live: one MCP connection across teams', () => {
       expect(await listedIds(tok.access_token)).toEqual([W.a1, W.b1].sort());
     }, T);
 
+    // Task f371c26c: a team joined after connecting has no session account
+    // (seedTeam makes none). Its workspace, added in Settings, must work on the
+    // next request on the same access token, not 401 until a refresh.
+    test('a workspace in a team joined after connecting works on the next request, without a refresh', async () => {
+      const teamD = await seedTeam();
+      const d1 = await seedWorkspace(teamD, `delta-${rand()}`);
+      await addMember(teamD, W.userId, 'member');
+      const sessionAccounts = async (teamId: string) => (await q<{ n: number }>("SELECT count(*)::int AS n FROM accounts WHERE team_id = $1 AND type = 'user'", [teamId]))[0].n;
+      expect(await sessionAccounts(teamD)).toBe(0);
+
+      expect((await grantsApi(W.cookie, 'PATCH', grantId, { addWorkspaceIds: [d1] })).status).toBe(200);
+      expect(await listedIds(tok.access_token)).toContain(d1);
+      const r = await tool(tok.access_token, { action: 'list_tasks', params: { workspaceId: d1 } });
+      expect(r.status).toBe(200);
+      expect(r.isError).toBe(false);
+      expect(await sessionAccounts(teamD)).toBe(1);
+
+      // The same when the grant reaches such a team by any other path: the MCP
+      // route provisions the session account instead of answering 401.
+      const teamE = await seedTeam();
+      const e1 = await seedWorkspace(teamE, `echo-${rand()}`);
+      await addMember(teamE, W.userId, 'member');
+      await q('INSERT INTO mcp_oauth_grant_workspaces (grant_id, workspace_id) VALUES ($1, $2)', [grantId, e1]);
+      const viaRoute = await tool(tok.access_token, { action: 'list_tasks', params: { workspaceId: e1 } });
+      expect(viaRoute.status).toBe(200);
+      expect(viaRoute.isError).toBe(false);
+      expect(await sessionAccounts(teamE)).toBe(1);
+
+      expect((await grantsApi(W.cookie, 'PATCH', grantId, { removeWorkspaceIds: [d1, e1] })).status).toBe(200);
+      expect(await listedIds(tok.access_token)).toEqual([W.a1, W.b1].sort());
+    }, T);
+
     test('a bearer token cannot manage connections, so a connection cannot widen itself', async () => {
       const res = await fetch(`${SERVER}/api/mcp-grants/${grantId}`, {
         method: 'PATCH',

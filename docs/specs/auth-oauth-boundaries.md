@@ -749,6 +749,13 @@ Settings › Connected apps. Every change applies on the app's next request.
   the page was shown. One unreachable id refuses the whole change (403
   `workspace_not_accessible`), nothing is written, and no refusal repeats an
   id from the request.
+- An added workspace works on the next request even when its team has no
+  session account yet (a team joined after connecting). The PATCH provisions
+  that team's `type='user'` account, the same one the token endpoint creates
+  at code exchange and refresh (`ensureTeamSessionAccount`). A refused change
+  provisions nothing. `/api/mcp` also provisions it when a granted
+  workspace's team has none, rather than answering 401: an MCP client reads a
+  401 as signed out of the whole connection.
 - A connection keeps at least one reachable workspace; removing the last one
   is refused (400), and the person revokes it instead.
 - `acts_as` can go from `'person'` to `'agent'` here, never back. A PATCH
@@ -789,6 +796,12 @@ Settings › Connected apps. Every change applies on the app's next request.
   token response has no person scope. GIVEN an `'agent'` grant WHEN PATCH
   sets `actsAs: 'person'` THEN it is refused with 403 and the row stays
   `'agent'`.
+- AC-62: GIVEN a grant on team A and a team D the person joined later, with
+  no session account WHEN PATCH adds a D workspace THEN the next call on the
+  same access token naming it succeeds (no refresh), D has exactly one
+  session account, and later edits create none; GIVEN a granted workspace
+  whose team has no session account by any other path WHEN `/api/mcp` serves
+  a call naming it THEN it succeeds instead of answering 401.
 - AC-47: GIVEN a grant with refresh tokens in two families WHEN DELETE runs
   THEN every refresh token under it is revoked, each refresh is refused, the
   access token stops resolving, and a second DELETE is 404.
@@ -803,6 +816,9 @@ Settings › Connected apps. Every change applies on the app's next request.
   `updateUserGrant()`, `consentTeamsForUser()`;
   `apps/web/src/lib/mcp-grant-patch.ts` — `parseGrantPatch()`;
   `apps/web/src/lib/mcp-grants.ts` — `revokeGrant()`
+- Session account provisioning: `apps/web/src/lib/oauth/ensure-session-account.ts`
+  — `ensureTeamSessionAccount()` (also used by `apps/web/src/app/api/oauth/token/route.ts`
+  and `apps/web/src/app/api/mcp/route.ts`)
 - UI: `apps/web/src/app/app/(protected)/settings/connections/` —
   `ConnectionsSection.tsx`, `WorkspacePicker.tsx`; dev fixture
   `/app/dev/fixtures?state=mcp-connections`
@@ -825,10 +841,8 @@ reconnect, and the legacy endpoint with its deprecation headers. It is opt-in
 the recipe is in `docs/mcp-connect-operators.md`. User guide:
 `docs/mcp-connect.md`.
 
-Known gap: a team's session account is provisioned at code exchange and
-refresh only, so a workspace added here in a team the grant never had a token
-for answers 401 on `/api/mcp` until the client's next refresh (AC-45 holds for
-teams the grant already covers). Tracked on the mission.
+It also covers a workspace added in Settings in a team joined after
+connecting, which has no session account until one is provisioned (AC-62).
 ---
 
 ## CLI Device-Code Auth

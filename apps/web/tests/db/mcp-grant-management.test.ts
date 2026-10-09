@@ -189,6 +189,38 @@ describe('expand', () => {
     expect(await authenticateGrantSession(jwt, s.b.workspaceId)).toMatchObject({ teamId: s.b.teamId, workspaceIds: [s.b.workspaceId] });
   });
 
+  // Task f371c26c: a team joined after connecting has no session account until
+  // one is provisioned. Adding its workspace here must make it usable on the
+  // next request on the same access token, not only after a refresh.
+  test('a workspace in a team with no session account yet is usable on the next request, without a refresh', async () => {
+    const s = await setup();
+    const d = await seedWorkspace();
+    await member(d.teamId, s.userId, 'member');
+    const sessionAccounts = async () => (await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM accounts WHERE team_id = ${d.teamId}::uuid AND type = 'user'`))[0].n;
+    expect(await sessionAccounts()).toBe(0);
+    const g = await grant({ userId: s.userId, clientId: s.clientId, actsAs: 'agent', workspaceIds: [s.a.workspaceId] });
+    const jwt = await jwtFor(s.userId, g, s.clientId);
+
+    expect((await patch(g, { addWorkspaceIds: [d.workspaceId] })).status).toBe(200);
+    expect(await authenticateGrantSession(jwt, d.workspaceId)).toMatchObject({ teamId: d.teamId, workspaceIds: [d.workspaceId] });
+    expect(await sessionAccounts()).toBe(1);
+
+    // Editing again, or adding a team that already has one, provisions nothing more.
+    expect((await patch(g, { access: 'read' })).status).toBe(200);
+    expect((await patch(g, { addWorkspaceIds: [s.b.workspaceId] })).status).toBe(200);
+    expect(await sessionAccounts()).toBe(1);
+    expect((await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM accounts WHERE team_id = ${s.b.teamId}::uuid AND type = 'user'`))[0].n).toBe(1);
+  });
+
+  test('a refused change provisions no session account', async () => {
+    const s = await setup();
+    const d = await seedWorkspace();
+    await member(d.teamId, s.userId, 'member');
+    const g = await grant({ userId: s.userId, clientId: s.clientId, actsAs: 'agent', workspaceIds: [s.a.workspaceId] });
+    expect((await patch(g, { addWorkspaceIds: [d.workspaceId, s.outside.workspaceId] })).status).toBe(403);
+    expect((await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM accounts WHERE team_id IN (${d.teamId}::uuid, ${s.outside.teamId}::uuid)`))[0].n).toBe(0);
+  });
+
   test('one unreachable workspace refuses the whole change, writes nothing and names no id', async () => {
     const s = await setup();
     const g = await grant({ userId: s.userId, clientId: s.clientId, actsAs: 'agent', workspaceIds: [s.a.workspaceId], scopes: ['read'] });

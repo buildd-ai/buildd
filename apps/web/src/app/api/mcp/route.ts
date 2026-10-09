@@ -28,6 +28,7 @@ import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
+import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
 import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
 import { claimingUserId } from "@/lib/worker-owner";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
@@ -1204,7 +1205,14 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
 
   let server: Server;
   if (target && !refusal) {
-    const account = await authenticateGrantSession(jwt, target.workspaceId);
+    // The grant reaches this workspace (granted ∩ membership, above), so a
+    // missing session means its team has no session account yet: one joined
+    // after connecting. Provision it and retry, rather than answer 401, which
+    // a client reads as signed out of every workspace on the connection.
+    let account = await authenticateGrantSession(jwt, target.workspaceId);
+    if (!account && await ensureTeamSessionAccount(grant.userId, target.teamId)) {
+      account = await authenticateGrantSession(jwt, target.workspaceId);
+    }
     if (!account) return unauthorizedResponse("Invalid access token");
     if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
       return grantJsonError(403, { error: "Worker not found for this account" });
