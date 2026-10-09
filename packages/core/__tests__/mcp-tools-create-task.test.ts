@@ -952,3 +952,38 @@ describe('create_task — short display label', () => {
     expect(buildParamsDescription(['create_task'])).toContain('label?');
   });
 });
+
+describe('create_task — mission inheritance for friction reports', () => {
+  const callerApi = () => {
+    const api = mock(async (endpoint: string) =>
+      endpoint.startsWith('/api/workers/')
+        ? { task: { missionId: 'mission-1' } }
+        : { id: 'task-new' });
+    return api;
+  };
+  const postBody = (api: ReturnType<typeof mock>) =>
+    JSON.parse(api.mock.calls.find(([e]) => e === '/api/tasks')![1].body);
+  const ctx = () => createMockContext({ workerId: 'worker-1' });
+
+  it('still inherits the caller mission for ordinary tasks', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: 'Do work', description: 'd' }, ctx());
+    expect(postBody(api).missionId).toBe('mission-1');
+  });
+
+  it('does not inherit the mission for a [friction] title (PR base stays trunk)', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: '[friction] broken thing', description: 'd' }, ctx());
+    const body = postBody(api);
+    expect(body.missionId).toBeUndefined();
+    expect(body.context.relatedMissionId).toBe('mission-1');
+  });
+
+  it('does not inherit the mission when context.frictionSignature is set', async () => {
+    const api = callerApi();
+    await handleBuilddAction(api as unknown as ApiFn, 'create_task', { title: 'x', description: 'd', context: { frictionSignature: 'sig' } }, ctx());
+    const body = postBody(api);
+    expect(body.missionId).toBeUndefined();
+    expect(body.context.frictionSignature).toBe('sig');
+  });
+});
