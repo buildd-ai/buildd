@@ -33,6 +33,7 @@ import {
   INTERACTIVE_CLAIM_SESSION_KEY,
   INTERACTIVE_CLAIM_USER_KEY,
   INTERACTIVE_TOUCH_THROTTLE_MS,
+  isInitializeOnlyRequest,
   isInteractiveWorker,
   resetInteractiveTouchMemo,
   runnerWorkerOnly,
@@ -143,6 +144,25 @@ describe('scheduleInteractiveTouch', () => {
     scheduleInteractiveTouch({ accountId: 'account-1', level: undefined });
     await new Promise(r => setTimeout(r, 0));
     expect(updateCalls).toHaveLength(0);
+  });
+});
+
+describe('initialize requests never touch', () => {
+  const rpc = (b: unknown) => new Request('http://x/api/mcp', { method: 'POST', body: JSON.stringify(b) });
+
+  it('an initializeOnly request is not a touch', async () => {
+    scheduleInteractiveTouch({ accountId: 'account-1', level: 'worker', initializeOnly: true });
+    await new Promise(r => setTimeout(r, 0));
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('detects initialize, leaves the body readable, and rejects other calls', async () => {
+    const init = rpc({ jsonrpc: '2.0', id: 1, method: 'initialize' });
+    expect(await isInitializeOnlyRequest(init)).toBe(true);
+    expect(await init.json()).toMatchObject({ method: 'initialize' });
+    expect(await isInitializeOnlyRequest(rpc({ method: 'tools/call' }))).toBe(false);
+    expect(await isInitializeOnlyRequest(rpc([{ method: 'initialize' }, { method: 'tools/list' }]))).toBe(false);
+    expect(await isInitializeOnlyRequest(new Request('http://x', { method: 'POST', body: 'nope' }))).toBe(false);
   });
 });
 

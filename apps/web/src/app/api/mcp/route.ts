@@ -26,7 +26,7 @@ import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@b
 import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
-import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
+import { scheduleInteractiveTouch, isInitializeOnlyRequest } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
@@ -994,6 +994,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
     sessionKey,
     level: account.level,
+    initializeOnly: !sessionKey && (await isInitializeOnlyRequest(req)),
   });
 
   // Create per-request API wrapper, server, and transport
