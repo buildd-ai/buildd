@@ -14,15 +14,12 @@ export const TONE_TEXT: Record<DeliveryTone, string> = {
   success: 'text-status-success', info: 'text-status-info', warning: 'text-status-warning',
   ink: 'text-text-primary', muted: 'text-text-muted', error: 'text-status-error',
 };
-export const TONE_EDGE: Record<DeliveryTone, string> = {
-  success: 'border-l-status-success', info: 'border-l-status-info', warning: 'border-l-status-warning',
-  ink: 'border-l-accent', muted: 'border-l-border-default', error: 'border-l-status-error',
-};
 
+/** Glyph and word in the kind's tone, unframed: a status, not a button. */
 export function DeliveryChip({ kind }: { kind: DeliveryKind }) {
   const k = DELIVERY_KIND[kind];
   return (
-    <span data-testid="delivery-chip" data-kind={kind} className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap border border-border-default px-1.5 font-mono text-meta ${TONE_TEXT[k.tone]}`}>
+    <span data-testid="delivery-chip" data-kind={kind} className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-meta ${TONE_TEXT[k.tone]}`}>
       <span aria-hidden="true">{k.glyph}</span>{k.label}
     </span>
   );

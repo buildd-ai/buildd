@@ -87,17 +87,19 @@ describe('NeedsYouStack shipped card', () => {
     expect(text({ fixes: 2 })).toMatch(/2\s+auto-fixes/);
   });
 
-  it('a mission open for weeks: work time and open time, never one wall-clock figure', () => {
+  it('a mission open for weeks: agent work and filed-to-shipped, never one wall-clock figure', () => {
     const t = text({ durationMs: 35 * 86_400_000, activeMs: 40 * 60_000 });
-    expect(t).toMatch(/40m\s+of work/);
-    expect(t).toMatch(/35d\s+open/);
+    expect(t).toMatch(/40m\s+agent work/);
+    expect(t).toMatch(/35d\s+to ship/);
+    // A bare "open" under the big number read as time spent working.
+    expect(t).not.toMatch(/\sopen\s/);
     expect(t).not.toMatch(/wall clock/);
   });
 
   it('one figure when the work filled the window', () => {
     const t = text({ activeMs: 35 * 60_000 });
-    expect(t).toMatch(/35m\s+of work/);
-    expect(t).not.toMatch(/\sopen\s/);
+    expect(t).toMatch(/35m\s+agent work/);
+    expect(t).not.toMatch(/to ship/);
   });
 });
 
