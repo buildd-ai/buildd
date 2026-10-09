@@ -36,6 +36,21 @@ mock.module('@buildd/core/litellm-gateway', () => ({
   resolveLiteLLMGateway: async (opts: any, flags: any) => { gatewayCalls.push({ opts, flags }); return gateway; },
 }));
 
+// The stored OpenRouter key an `openrouter` reference routes, per scope
+// ('' = team-wide). Lookups are recorded so scope narrowing is observable.
+let storedOpenRouter: Record<string, string> = {};
+const openRouterLookups: Array<string | null> = [];
+const realAgentEndpoint = { ...(await import('@buildd/core/agent-endpoint')) };
+mock.module('@buildd/core/agent-endpoint', () => ({
+  ...realAgentEndpoint,
+  resolveStoredOpenRouterKey: async (opts: { teamId: string; workspaceId: string | null }) => {
+    openRouterLookups.push(opts.workspaceId);
+    // Same scope or broader: a workspace lookup falls back to the team key.
+    const key = (opts.workspaceId ? storedOpenRouter[opts.workspaceId] : undefined) ?? storedOpenRouter[''];
+    return key ? { key, secretId: 'or-key', scope: opts.workspaceId && storedOpenRouter[opts.workspaceId] ? 'workspace' : 'team' } : null;
+  },
+}));
+
 const { setTeamAgentEndpoint, listTeamAgentEndpoints, verifyAgentEndpointSecret, previewAgentEndpointModels, VERIFY_MODEL } = await import('./agent-endpoint-settings');
 
 const KEY = 'sk-agent-example-1234';
@@ -47,6 +62,7 @@ const custom = { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example
 beforeEach(() => {
   stored.length = 0; updates.length = 0; gatewayCalls.length = 0;
   secretRows = []; secretRow = null; workspaceRow = null; gateway = null; registryRows = [];
+  storedOpenRouter = {}; openRouterLookups.length = 0;
 });
 
 describe('setTeamAgentEndpoint', () => {
@@ -308,6 +324,82 @@ describe('setTeamAgentEndpoint with a blank key', () => {
       .toMatchObject({ ok: false, status: 400 });
     expect(ep.calls).toHaveLength(0);
     expect(stored).toHaveLength(0);
+  });
+});
+
+describe('OpenRouter endpoint: the stored OpenRouter key instead of its own copy', () => {
+  const STORED = 'sk-or-stored-example-7777';
+  const INLINE = 'sk-or-inline-example-8888';
+  const storedRow = (blob: unknown, workspaceId: string | null = null) => ({
+    id: 's-1', purpose: 'agent_endpoint', workspaceId, accountId: null, userId: null, healthStatus: 'healthy',
+    lastVerifiedAt: null, lastVerificationError: null, updatedAt: new Date('2026-01-01'), encryptedValue: JSON.stringify(blob),
+  });
+  const inlineBlob = { kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: INLINE, authHeader: 'authorization' };
+
+  it('a blank key with a stored OpenRouter key saves a reference, verified with the stored key', async () => {
+    storedOpenRouter = { '': STORED };
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r).toMatchObject({ ok: true, endpoint: { kind: 'openrouter', keySource: 'stored', last4: '7777' } });
+    expect(ep.messages()[0].headers.get('authorization')).toBe(`Bearer ${STORED}`);
+    const saved = JSON.parse(stored[0].value);
+    expect(saved).toEqual({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authHeader: 'authorization' });
+    expect(JSON.stringify(r)).not.toContain(STORED);
+  });
+
+  it('a workspace override looks the key up at its own scope (or broader); a team row only at team scope', async () => {
+    workspaceRow = { id: 'ws-1', teamId: 't', name: 'Widgets' };
+    storedOpenRouter = { 'ws-1': STORED };
+    const ep = fakeEndpoint(404);
+    const w = await setTeamAgentEndpoint({ teamId: 't', workspaceId: 'ws-1', endpoint: { kind: 'openrouter' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(w).toMatchObject({ ok: true, endpoint: { scope: 'workspace', keySource: 'stored' } });
+    expect(openRouterLookups.every((s) => s === 'ws-1')).toBe(true);
+    // The team row never picks up one workspace's key.
+    stored.length = 0;
+    const t = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(t).toEqual({ ok: false, status: 400, error: 'Enter the key for this endpoint.' });
+    expect(stored).toHaveLength(0);
+  });
+
+  it('a blank key with nothing stored keeps the endpoint\'s own saved key (legacy) as before', async () => {
+    secretRows = [storedRow(inlineBlob)];
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r).toMatchObject({ ok: true, endpoint: { keySource: 'inline', last4: '8888' } });
+    expect(JSON.parse(stored[0].value).apiKey).toBe(INLINE);
+  });
+
+  it('a typed key is still saved inline', async () => {
+    storedOpenRouter = { '': STORED };
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter', apiKey: INLINE } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r).toMatchObject({ ok: true, endpoint: { keySource: 'inline' } });
+    expect(JSON.parse(stored[0].value).apiKey).toBe(INLINE);
+  });
+
+  it('re-saving a row the backfill flagged picks a key and clears the flag, keeping tool search', async () => {
+    storedOpenRouter = { '': STORED };
+    secretRows = [storedRow({ ...inlineBlob, capabilities: { toolSearch: false, legacyInlineKey: true } })];
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'openrouter' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r.ok).toBe(true);
+    expect(JSON.parse(stored[0].value)).toEqual({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authHeader: 'authorization', capabilities: { toolSearch: false } });
+  });
+
+  it('the list reports where the key comes from, a missing stored key, and the backfill flag, never a key', async () => {
+    storedOpenRouter = { '': STORED };
+    const ref = { kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authHeader: 'authorization' };
+    secretRows = [storedRow(ref)];
+    let [e] = await listTeamAgentEndpoints('t');
+    expect(e).toMatchObject({ keySource: 'stored', storedKeyMissing: false, legacyInlineKey: false, last4: '7777' });
+    storedOpenRouter = {};
+    [e] = await listTeamAgentEndpoints('t');
+    expect(e).toMatchObject({ keySource: 'stored', storedKeyMissing: true, last4: '' });
+    secretRows = [storedRow({ ...inlineBlob, capabilities: { legacyInlineKey: true } })];
+    [e] = await listTeamAgentEndpoints('t');
+    expect(e).toMatchObject({ keySource: 'inline', legacyInlineKey: true, last4: '8888' });
+    expect(JSON.stringify(e)).not.toContain(INLINE);
+    expect(JSON.stringify(e)).not.toContain(STORED);
   });
 });
 
