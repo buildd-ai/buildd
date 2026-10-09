@@ -113,6 +113,8 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect(g.rows.length).toBe(WAITING_ROWS_PER_GROUP);
     expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
     expect(g.hiddenWaitingRows.length).toBe(g.moreWaiting);
+    const sortedWaiting = [...standaloneWaiting].sort((a, b) => a.id.localeCompare(b.id));
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(sortedWaiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
     const rowIds = new Set(g.rows.map(r => r.id));
     for (const hidden of g.hiddenWaitingRows) {
       expect(rowIds.has(hidden.id)).toBe(false);
@@ -131,7 +133,10 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect(g.href).toBe('/app/missions/active');
     expect(g.kind).toBe(m.kind);
     expect(g.landed).toBe(m.landed);
-    expect(g.total).toBe(m.total);
+    expect(g.total).toBe(6);
+    expect(g.landed).toBe(0);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(waiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
   });
 
   it('retries and reviews fold into their deliverable; an orphaned attempt still shows', () => {
