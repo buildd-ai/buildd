@@ -45,6 +45,7 @@ import {
   requestTaskRetry,
   taskActionSet,
 } from '@/lib/task-actions';
+import type { WaitingFor } from '@buildd/shared';
 
 /** Phases that mean the agent took the answer and moved on: the confirmation stands down. */
 const MOVED_ON: ReadonlySet<TaskPhase> = new Set<TaskPhase>(['running', 'completed', 'failed', 'plan_review']);
@@ -72,7 +73,7 @@ export interface TaskActionZoneProps {
   failureKind?: TaskFailureKind | null;
   /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
   auditTaskId?: string | null;
-  worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
+  worker: { id: string; waitingFor: Pick<WaitingFor, 'prompt' | 'options' | 'context'> | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   roleSlug?: string | null;
