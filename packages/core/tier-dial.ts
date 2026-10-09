@@ -564,6 +564,8 @@ export function sameModel(a: string | null | undefined, b: string | null | undef
 /** One finished coding run, as loaded from tasks, task_outcomes, workers and reviewer tasks. */
 export interface CodingRun {
   taskId: string;
+  /** Task title, for display only. */
+  title?: string | null;
   at: Date;
   tier: string | null;
   model: string | null;
