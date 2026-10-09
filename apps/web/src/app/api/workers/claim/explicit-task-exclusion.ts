@@ -42,7 +42,8 @@ export type ExplicitTaskGateName =
   | 'role'
   | 'runnerCooldown'
   | 'workspaceCap'
-  | 'workspaceExecutor';
+  | 'workspaceExecutor'
+  | 'workspacePaused';
 
 export type ExplicitTaskGates = Partial<Record<ExplicitTaskGateName, SQL>>;
 
@@ -77,6 +78,7 @@ const GATE_ORDER: Array<[ExplicitTaskGateName, ClaimTaskExclusionCode, string]> 
   ['role', 'role_mismatch', 'The task\'s role needs an explicit skill match this caller does not advertise.'],
   ['runnerCooldown', 'runner_cooldown', 'A worker from this runner failed on this task in the last minute; the per-runner cooldown is in effect. Retry in a minute.'],
   ['workspaceCap', 'workspace_cap', `The workspace is at its concurrent-task cap (active workers on its other tasks). ${FORCE_HINT}`],
+  ['workspacePaused', 'workspace_paused', `The workspace has paused new starts until a set time; running work carries on and it resumes on its own. Resume it early from Health > Runners, claim it from an interactive session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}`],
   ['workspaceExecutor', 'workspace_executor', `The workspace runs its work on a different executor (cloud or host, set by gitConfig.executor or derived from its cloud dispatch webhook) than this caller. Change it on the workspace config page, or an admin can claim it anyway with claim_task force: true.`],
 ];
 
@@ -274,7 +276,7 @@ export function explicitExclusionGateEvent(opts: {
 }
 
 /** Force-claim audit names for the SQL gates a force claim lifts. */
-export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'startAt';
+export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'workspacePaused' | 'startAt';
 const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
   deps: 'deps_blocked',
   missionHeld: 'mission_held',
@@ -282,6 +284,7 @@ const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
   subject: 'subject_dead',
   workspaceCap: 'workspace_cap',
   workspaceExecutor: 'workspace_executor',
+  workspacePaused: 'workspace_paused',
   startAt: 'deferred',
 };
 
