@@ -700,4 +700,42 @@ describe('POST /api/workers/[id]/instruct', () => {
       expect(capturedSet.instructionHistory[0].message).toBe('Use JWT tokens');
     });
   });
+
+  // Not an owner route: steering is a role, and an admin of the worker's team
+  // may steer a worker another member's session claimed. The owner rule in
+  // lib/worker-owner.ts must not leak in here.
+  describe("— role path acts on another member's session-claimed worker", () => {
+    const claimedByA = () => ({
+      id: WORKER_ID,
+      status: 'running',
+      accountId: 'account-1',
+      claimedByUserId: 'user-a',
+      workspaceId: 'ws-1',
+      workspace: { teamId: 'team-1', dataClass: 'standard' },
+      instructionHistory: [],
+      pendingInstructions: null,
+    });
+
+    it('an admin-level OAuth session of the team instructs a worker user-a claimed', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin', sessionUserId: 'user-b', scopes: null });
+      mockWorkersFindFirst.mockResolvedValue(claimedByA());
+
+      const res = await POST(createMockRequestWithAuth({ message: 'Rebase' }, 'oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockWorkersUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a worker-level OAuth session of the same team is refused, queueing nothing', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'worker', sessionUserId: 'user-b', scopes: null });
+      mockWorkersFindFirst.mockResolvedValue(claimedByA());
+
+      const res = await POST(createMockRequestWithAuth({ message: 'Rebase' }, 'oauth_token'), { params: mockParams });
+
+      expect(res.status).toBe(401);
+      expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    });
+  });
 });

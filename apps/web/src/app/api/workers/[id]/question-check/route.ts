@@ -19,6 +19,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { parseQuestionGateRequest } from '@buildd/core/question-gate';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
@@ -43,9 +44,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, workspaceId: true, taskId: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true },
   });
-  if (!worker || worker.accountId !== account.id) return notFound();
+  if (!worker || !callerOwnsWorker(account, worker)) return notFound();
   if (!worker.taskId) return NextResponse.json({ verdict: 'send', outcome: 'off', version: null, latencyMs: 0 });
 
   const workspace = await db.query.workspaces.findFirst({
