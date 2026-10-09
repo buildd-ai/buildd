@@ -34,7 +34,7 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@buildd/core/db/schema', () => ({
   secrets: {
-    id: 'id', teamId: 'teamId', accountId: 'accountId', workspaceId: 'workspaceId',
+    id: 'id', teamId: 'teamId', accountId: 'accountId', workspaceId: 'workspaceId', userId: 'userId',
     purpose: 'purpose', label: 'label', healthStatus: 'healthStatus', tokenExpiresAt: 'tokenExpiresAt',
   },
 }));
@@ -132,6 +132,7 @@ describe('attachServerManagedSecrets', () => {
 
   const secretRow = (extra: Record<string, unknown>) => ({
     id: 'sec-1', purpose: 'anthropic_api_key', label: null,
+    accountId: null, workspaceId: null, userId: null,
     healthStatus: 'ok', updatedAt: new Date('2026-09-01T00:00:00.000Z'), ...extra,
   });
 
@@ -202,6 +203,72 @@ describe('attachServerManagedSecrets', () => {
     await attachServerManagedSecrets(workers, 'acct-1');
 
     expect(workers[0].serverApiKey).toBe('new-key');
+  });
+
+  // docs/credentials-architecture.md: the most specific scope wins
+  // (workspace > account > team-wide). Recency only breaks a tie within one
+  // scope; sorting on updatedAt alone let a newer team-wide key shadow the
+  // workspace's own key.
+  it('a newer team-wide row does not beat an older workspace row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team', accountId: null, workspaceId: null, updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws', accountId: null, workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => (id === 'sec-ws' ? 'ws-key' : 'team-key'));
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('ws-key');
+  });
+
+  it('an account row beats a newer team-wide row, and a workspace row beats both', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team', purpose: 'oauth_token', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-acct', purpose: 'oauth_token', accountId: 'acct-1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team-key', purpose: 'anthropic_api_key', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-acct-key', purpose: 'anthropic_api_key', accountId: 'acct-1', updatedAt: new Date('2026-09-04T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws-key', purpose: 'anthropic_api_key', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverOauthToken).toBe('val:sec-acct');
+    expect(workers[0].serverApiKey).toBe('val:sec-ws-key');
+  });
+
+  it('never picks a personal row', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-personal', userId: 'user-1', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-09T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team' }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].serverApiKey).toBe('val:sec-team');
+    // And the query itself excludes personal rows as a top-level conjunct.
+    expect(predicate(mockSecretsFindMany.mock.calls[0]?.[0], 'isNull', 'userId')).toEqual({ field: 'userId', type: 'isNull' });
+  });
+
+  // mcp_credential is many rows (one per env-var label), so precedence applies
+  // per label: a workspace override of one label must win over the team-wide
+  // value of that label without dropping the other labels.
+  it('resolves mcp_credential per label with the most specific scope winning', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      secretRow({ id: 'sec-team-key', purpose: 'mcp_credential', label: 'CUE_API_KEY', updatedAt: new Date('2026-09-05T00:00:00.000Z') }),
+      secretRow({ id: 'sec-ws-key', purpose: 'mcp_credential', label: 'CUE_API_KEY', workspaceId: 'ws-t1', updatedAt: new Date('2026-09-01T00:00:00.000Z') }),
+      secretRow({ id: 'sec-team-tenant', purpose: 'mcp_credential', label: 'CUE_TENANT_ID' }),
+    ]);
+    mockProviderGet.mockImplementation(async (id: string) => `val:${id}`);
+    const workers = [swWorker('t1')];
+
+    await attachServerManagedSecrets(workers, 'acct-1');
+
+    expect(workers[0].mcpSecrets).toEqual({ CUE_API_KEY: 'val:sec-ws-key', CUE_TENANT_ID: 'val:sec-team-tenant' });
   });
 
   it('picks per purpose — a revoked api key does not affect the oauth pick', async () => {
@@ -486,7 +553,7 @@ describe('attachClaudeCredentials', () => {
     });
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'claude')]);
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(workers[0].claudeAccessToken).toBe('claude-access');
     expect(workers[0].claudeTokenExpiresAt).toBe('2026-09-03T12:00:00.000Z');
@@ -495,12 +562,12 @@ describe('attachClaudeCredentials', () => {
   it('passes the recorded scopes through, and nothing when none were recorded', async () => {
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: ['user:inference', 'user:mcp_servers'] });
     const withScopes = [worker('t1')];
-    await attachClaudeCredentials(withScopes, [task('t1', 'claude')]);
+    await attachClaudeCredentials(withScopes, [task('t1', 'claude')], 'acct-1');
     expect(withScopes[0].claudeTokenScopes).toEqual(['user:inference', 'user:mcp_servers']);
 
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: null });
     const without = [worker('t1')];
-    await attachClaudeCredentials(without, [task('t1', 'claude')]);
+    await attachClaudeCredentials(without, [task('t1', 'claude')], 'acct-1');
     expect(without[0].claudeTokenScopes).toBeUndefined();
   });
 
@@ -514,7 +581,7 @@ describe('attachClaudeCredentials', () => {
     });
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'claude')]);
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(JSON.stringify(workers[0])).not.toContain('claude-refresh');
   });
@@ -523,7 +590,7 @@ describe('attachClaudeCredentials', () => {
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'claude')]);
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(workers[0].claudeTokenExpiresAt).toBeNull();
   });
@@ -532,7 +599,7 @@ describe('attachClaudeCredentials', () => {
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'codex')]);
+    await attachClaudeCredentials(workers, [task('t1', 'codex')], 'acct-1');
 
     expect(workers[0].claudeAccessToken).toBeUndefined();
     expect(mockResolveClaude).not.toHaveBeenCalled();
@@ -544,9 +611,9 @@ describe('attachClaudeCredentials', () => {
   it('resolves with the task team and the task workspace', async () => {
     mockResolveClaude.mockResolvedValue(null);
 
-    await attachClaudeCredentials([worker('t1')], [task('t1', 'claude', 'team-9')]);
+    await attachClaudeCredentials([worker('t1')], [task('t1', 'claude', 'team-9')], 'acct-7');
 
-    expect(mockResolveClaude).toHaveBeenCalledWith({ teamId: 'team-9', workspaceId: 'ws-t1' });
+    expect(mockResolveClaude).toHaveBeenCalledWith({ teamId: 'team-9', accountId: 'acct-7', workspaceId: 'ws-t1' });
   });
 
   it('resolves each worker against its own workspace', async () => {
@@ -555,17 +622,18 @@ describe('attachClaudeCredentials', () => {
     await attachClaudeCredentials(
       [worker('t1'), worker('t2')],
       [task('t1', 'claude', 'team-a'), task('t2', 'claude', 'team-b')],
+      'acct-1',
     );
 
-    expect(mockResolveClaude.mock.calls[0][0]).toEqual({ teamId: 'team-a', workspaceId: 'ws-t1' });
-    expect(mockResolveClaude.mock.calls[1][0]).toEqual({ teamId: 'team-b', workspaceId: 'ws-t2' });
+    expect(mockResolveClaude.mock.calls[0][0]).toEqual({ teamId: 'team-a', accountId: 'acct-1', workspaceId: 'ws-t1' });
+    expect(mockResolveClaude.mock.calls[1][0]).toEqual({ teamId: 'team-b', accountId: 'acct-1', workspaceId: 'ws-t2' });
   });
 
   it('treats a task with no backend set as Claude', async () => {
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', null)]);
+    await attachClaudeCredentials(workers, [task('t1', null)], 'acct-1');
 
     expect(workers[0].claudeAccessToken).toBe('claude-access');
   });
@@ -574,7 +642,7 @@ describe('attachClaudeCredentials', () => {
     mockResolveClaude.mockRejectedValue(new Error('vault down'));
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'claude')]);
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(workers[0].claudeAccessToken).toBeUndefined();
   });
@@ -583,7 +651,7 @@ describe('attachClaudeCredentials', () => {
     delete process.env.ENCRYPTION_KEY;
     const workers = [worker('t1')];
 
-    await attachClaudeCredentials(workers, [task('t1', 'claude')]);
+    await attachClaudeCredentials(workers, [task('t1', 'claude')], 'acct-1');
 
     expect(mockResolveClaude).not.toHaveBeenCalled();
   });
@@ -774,7 +842,7 @@ describe('endpointWorkers: the endpoint is the only model credential', () => {
   it('attachClaudeCredentials: no Claude token', async () => {
     mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null });
     const workers = [worker('t1'), worker('t2')];
-    await attachClaudeCredentials(workers, [task('t1', 'claude'), task('t2', 'claude')], new Set(['w-t1']));
+    await attachClaudeCredentials(workers, [task('t1', 'claude'), task('t2', 'claude')], 'acct-1', new Set(['w-t1']));
     expect(workers[0].claudeAccessToken).toBeUndefined();
     expect(workers[1].claudeAccessToken).toBe('claude-access');
   });
