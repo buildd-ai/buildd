@@ -2182,9 +2182,10 @@ export async function POST(req: NextRequest) {
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession && !taskId) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
+      // Explicit taskId claims bypass the budget check (same exemption as pacing).
       claudePoolBlocked = true;
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -3027,7 +3028,8 @@ export async function POST(req: NextRequest) {
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     // Exception: interactive sessions have their own credentials and do not consume
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
-    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    // Also exempt explicit taskId claims, which skip OAuth budget pacing by design.
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession && !taskId;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
@@ -3320,7 +3322,8 @@ export async function POST(req: NextRequest) {
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
-    ...(accountBudgetExhausted && !interactiveSession && {
+    // Also exempt explicit taskId claims, which skip budget gates by design.
+    ...(accountBudgetExhausted && !interactiveSession && !taskId && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
