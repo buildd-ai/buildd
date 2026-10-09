@@ -10,6 +10,10 @@ vi.mock('@buildd/core/db', () => ({
         findFirst: vi.fn(),
         findMany: vi.fn(),
       },
+      // Read by the real permission check (lib/permissions.ts): the caller's
+      // team roles and the team's permission overrides.
+      teamMembers: { findMany: vi.fn(async () => []) },
+      teams: { findFirst: vi.fn(async () => null) },
     },
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -37,7 +41,6 @@ vi.mock('@/lib/api-auth', () => ({
 vi.mock('@/lib/team-access', () => ({
   verifyWorkspaceAccess: vi.fn(),
   verifyAccountWorkspaceAccess: vi.fn(),
-  canCallerAdminTeam: vi.fn(),
 }));
 
 vi.mock('@/lib/schedule-helpers', () => ({
@@ -49,7 +52,7 @@ import { GET, PATCH, DELETE } from './route';
 import { db } from '@buildd/core/db';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { NextRequest } from 'next/server';
 
@@ -92,8 +95,14 @@ function mockSessionUser() {
 
 function mockAdminApiKey() {
   (getCurrentUser as any).mockResolvedValue(null);
-  (authenticateApiKey as any).mockResolvedValue({ id: 'account-1', level: 'admin' });
+  (authenticateApiKey as any).mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin' });
   (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
+}
+
+/** The session user's role in team-1, and team-1's permission overrides. */
+function teamRole(role: 'owner' | 'admin' | 'member', overrides: Record<string, string[]> | null = null) {
+  (db.query.teamMembers.findMany as any).mockResolvedValue([{ teamId: 'team-1', role }]);
+  (db.query.teams.findFirst as any).mockResolvedValue({ id: 'not-a-personal-team', permissionOverrides: overrides });
 }
 
 function mockNoAuth() {
@@ -245,7 +254,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('a team admin grants it, and the row records who and when', async () => {
     mockSessionUser();
-    (canCallerAdminTeam as any).mockResolvedValue(true);
+    teamRole('admin');
     const { set } = mockDbUpdate({ ...mockSchedule });
     const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
     expect(res.status).toBe(200);
@@ -253,12 +262,37 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
     expect(written.grants).toEqual(grant.grants);
     expect(written.grantedByUserId).toBe('user-1');
     expect(typeof written.grantedAt).toBe('string');
-    expect(canCallerAdminTeam).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'team-1');
+  });
+
+  it('an admin cannot grant it once delegate_schedule_access is owner-only', async () => {
+    mockSessionUser();
+    teamRole('admin', { delegate_schedule_access: ['owner'] });
+    mockDbUpdate({ ...mockSchedule });
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a member grants it once delegate_schedule_access is granted to members', async () => {
+    mockSessionUser();
+    teamRole('member', { delegate_schedule_access: ['owner', 'admin', 'member'] });
+    const { set } = mockDbUpdate({ ...mockSchedule });
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
+    expect(res.status).toBe(200);
+    expect((set.mock.calls[0] as any)[0].delegation.grants).toEqual(grant.grants);
+  });
+
+  it('an admin key of another team cannot grant it', async () => {
+    mockAdminApiKey();
+    (authenticateApiKey as any).mockResolvedValue({ id: 'account-1', teamId: 'team-2', level: 'admin' });
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }, 'Bearer bld_admin'), { params });
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('a team member who is not admin cannot grant it', async () => {
     mockSessionUser();
-    (canCallerAdminTeam as any).mockResolvedValue(false);
+    teamRole('member');
     const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
     expect(res.status).toBe(403);
     expect(db.update).not.toHaveBeenCalled();
@@ -266,7 +300,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('never reaches another team', async () => {
     mockSessionUser();
-    (canCallerAdminTeam as any).mockResolvedValue(true);
+    teamRole('admin');
     const res = await PATCH(makeRequest('PATCH', {
       delegation: { grants: [{ workspaceId: OTHER_TEAM_WS, capabilities: ['analytics:read'] }] },
     }), { params });
@@ -276,7 +310,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('refuses a capability outside the delegation vocabulary', async () => {
     mockSessionUser();
-    (canCallerAdminTeam as any).mockResolvedValue(true);
+    teamRole('admin');
     for (const capability of ['admin', 'secrets', 'tasks:write']) {
       const res = await PATCH(makeRequest('PATCH', {
         delegation: { grants: [{ workspaceId: TARGET, capabilities: [capability] }] },
@@ -288,7 +322,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('the granter must reach the target itself', async () => {
     mockAdminApiKey();
-    (canCallerAdminTeam as any).mockResolvedValue(true);
+    teamRole('admin');
     (verifyAccountWorkspaceAccess as any).mockImplementation(async (_a: string, ws: string) => ws === WORKSPACE_ID);
     const res = await PATCH(makeRequest('PATCH', { delegation: grant }, 'Bearer bld_admin'), { params });
     expect(res.status).toBe(403);
@@ -297,7 +331,7 @@ describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s t
 
   it('null clears it', async () => {
     mockSessionUser();
-    (canCallerAdminTeam as any).mockResolvedValue(true);
+    teamRole('admin');
     const { set } = mockDbUpdate({ ...mockSchedule });
     const res = await PATCH(makeRequest('PATCH', { delegation: null }), { params });
     expect(res.status).toBe(200);

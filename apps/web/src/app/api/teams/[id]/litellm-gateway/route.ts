@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
 import { deleteTeamGateway, getTeamGateway, setTeamGateway } from '@/lib/litellm-gateway-settings';
 
@@ -19,7 +20,7 @@ async function caller(req: NextRequest, teamId: string, admin: boolean): Promise
   if (session.response) return session.response;
   const userId = session.user.id;
   if (!(await getUserTeamIds(userId)).includes(teamId)) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (admin && !(await getUserAdminTeamIds(userId)).includes(teamId)) {
+  if (admin && !(await can({ kind: 'user', userId }, 'manage_inference_providers', teamId))) {
     return NextResponse.json({ error: 'Only a team owner or admin can manage the gateway.' }, { status: 403 });
   }
   return null;
