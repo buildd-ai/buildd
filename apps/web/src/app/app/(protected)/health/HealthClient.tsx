@@ -235,7 +235,7 @@ const VIEW_TITLE: Record<HealthView, string> = {
   all: 'Health',
   overview: 'Health',
   failures: 'Failures',
-  runners: 'Runners & capacity',
+  runners: 'Runners',
   operator: 'Operator',
 };
 
