@@ -430,11 +430,24 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   };
 }
 
+const REFRESH_TITLE = /^chore\(mission\): merge (\S+) into the .+ integration branch$/;
+
+/**
+ * The focus task as the subject of a mission's own sentence. A refresh task
+ * names the mission it belongs to ("Refresh <this mission> from dev"), which
+ * under that mission's own row reads as noise: it is "The update from dev".
+ */
+export function focusPhrase(title: string): string {
+  const refresh = REFRESH_TITLE.exec(title.trim());
+  if (refresh) return `The update from ${refresh[1]}`;
+  return displayTaskTitle(title);
+}
+
 const REPAIR_WHY = { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' } as const;
 
 function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | null, m: MissionDeliveryInput, rounds: number): { evidence: string; next: string } {
   // The display title (no `type(scope):` prefix): this sentence is read on every list.
-  const t = focus?.title ? displayTaskTitle(focus.title) : 'the next task';
+  const t = focus?.title ? focusPhrase(focus.title) : 'the next task';
   const d = focus?.delivery;
   switch (kind) {
     case 'landing':
