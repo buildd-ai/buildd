@@ -6026,6 +6026,38 @@ export const taskEstimates = pgTable('task_estimates', {
 export type TaskEstimate = typeof taskEstimates.$inferSelect;
 export type NewTaskEstimate = typeof taskEstimates.$inferInsert;
 
+/**
+ * What a task estimated in `task_estimates` actually took, kept next to it
+ * (packages/core/task-estimate-actuals.ts). One row per task, rewritten as the
+ * task settles (a merge after the last session fills in wall time); the frozen
+ * estimate row is never touched. Work tasks only: attempt and bookkeeping
+ * tasks are other tasks' cost, counted as `repairs` on their parent.
+ */
+export const taskEstimateActuals = pgTable('task_estimate_actuals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  /** Sum of completed-session durations: the cost measure. */
+  agentMinutes: real('agent_minutes').notNull(),
+  /** Input + output tokens over the same sessions. */
+  tokens: integer('tokens').notNull(),
+  /** Retry (attempt) tasks that hang off this task. */
+  repairs: integer('repairs').notNull().default(0),
+  workerCount: integer('worker_count').notNull().default(0),
+  firstStartedAt: timestamp('first_started_at', { withTimezone: true }),
+  /** First start to merge; to the last session's end when nothing merged. Null with no start. */
+  wallMinutes: real('wall_minutes'),
+  wallBasis: text('wall_basis').$type<'merge' | 'last_session'>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: uniqueIndex('task_estimate_actuals_task_idx').on(t.taskId),
+  teamIdx: index('task_estimate_actuals_team_idx').on(t.teamId),
+}));
+
+export type TaskEstimateActuals = typeof taskEstimateActuals.$inferSelect;
+export type NewTaskEstimateActuals = typeof taskEstimateActuals.$inferInsert;
+
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
 
