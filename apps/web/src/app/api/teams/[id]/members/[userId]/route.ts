@@ -4,6 +4,7 @@ import { teamMembers, teams } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, isTeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { clampCreatorKeys } from '@/lib/creator-key-clamp';
 
 async function ownerCount(teamId: string): Promise<number> {
   const owners = await db.query.teamMembers.findMany({
@@ -20,6 +21,10 @@ async function ownerCount(teamId: string): Promise<number> {
  * Change a member's role. member ↔ admin takes `assign_team_roles`; any change
  * to or from owner takes `assign_team_owner`. Demoting an owner is refused
  * while they are the team's last owner, whoever asks.
+ *
+ * Once the role is written, the keys the target minted in this team are
+ * clamped to what the new role may mint (creator-key-clamp.ts); the response
+ * says how many changed as `clampedKeys`.
  */
 export async function PATCH(
   req: NextRequest,
@@ -80,7 +85,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Cannot demote the last owner. Make someone else an owner first.' }, { status: 400 });
     }
 
-    await db
+    const updated = await db
       .update(teamMembers)
       .set({ role })
       .where(
@@ -88,9 +93,16 @@ export async function PATCH(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, targetUserId)
         )
-      );
+      )
+      .returning({ userId: teamMembers.userId });
 
-    return NextResponse.json({ success: true });
+    if (updated.length === 0) {
+      return NextResponse.json({ error: 'Member not found' }, { status: 404 });
+    }
+
+    const clampedKeys = await clampCreatorKeys({ teamId, userId: targetUserId, role, overrides });
+
+    return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
     console.error('Update member role error:', error);
     return NextResponse.json({ error: 'Failed to update member role' }, { status: 500 });
@@ -102,6 +114,10 @@ export async function PATCH(
  * `manage_team_members` (and `assign_team_owner` for an owner). Removing
  * yourself is leaving: any member may, except the last owner and the owner of
  * a personal team.
+ *
+ * Once the membership is gone, the keys the person minted in this team are
+ * clamped to what a member may mint, admin scopes dropped. They are not
+ * revoked. The response says how many changed as `clampedKeys`.
  */
 export async function DELETE(
   req: NextRequest,
@@ -166,16 +182,22 @@ export async function DELETE(
       }
     }
 
-    await db
+    const removed = await db
       .delete(teamMembers)
       .where(
         and(
           eq(teamMembers.teamId, teamId),
           eq(teamMembers.userId, targetUserId)
         )
-      );
+      )
+      .returning({ userId: teamMembers.userId });
 
-    return NextResponse.json({ success: true });
+    // Nothing removed (they already left): their keys were clamped then.
+    const clampedKeys = removed.length > 0
+      ? await clampCreatorKeys({ teamId, userId: targetUserId, role: null })
+      : 0;
+
+    return NextResponse.json({ success: true, clampedKeys });
   } catch (error) {
     console.error('Remove team member error:', error);
     return NextResponse.json({ error: 'Failed to remove team member' }, { status: 500 });

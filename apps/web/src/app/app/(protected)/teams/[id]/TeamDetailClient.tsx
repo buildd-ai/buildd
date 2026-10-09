@@ -1,5 +1,6 @@
 'use client';
 
+import { clampedKeysNotice } from './clamped-keys-notice';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
@@ -55,6 +56,8 @@ export default function TeamDetailClient({
   const [editSlug, setEditSlug] = useState(team.slug);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Set when a role change, removal or transfer lowered someone's API keys.
+  const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'admin' | 'member'>('member');
@@ -169,6 +172,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to update role');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -191,6 +195,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to remove member');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -221,6 +226,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to transfer ownership');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'you'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -257,6 +263,12 @@ export default function TeamDetailClient({
         <div className="mb-4 p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
           {error}
           <button onClick={() => setError('')} className="ml-2 text-sm underline">dismiss</button>
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="mb-4 p-4 bg-status-info/10 border border-status-info/30 rounded-lg text-text-primary text-sm">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-2 text-sm underline">dismiss</button>
         </div>
       )}
 
@@ -345,9 +357,12 @@ export default function TeamDetailClient({
 
       {/* Members */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">
+        <h2 className="text-xl font-semibold mb-1">
           Members ({members.length})
         </h2>
+        <p className="text-xs text-text-muted mb-4">
+          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
+        </p>
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
             <div key={member.userId} className="p-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-2">
