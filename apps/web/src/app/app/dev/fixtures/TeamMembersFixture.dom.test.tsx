@@ -47,6 +47,28 @@ describe('team-members fixture controls', () => {
     expect(v.text).toContain('You are the only owner.');
   });
 
+  it('owner: member controls stack under the identity on phones with 44px targets', async () => {
+    await renderAs('owner');
+    const groups = [...container.querySelectorAll('[data-testid="member-controls"]')];
+    expect(groups.length).toBeGreaterThan(0);
+    for (const g of groups) {
+      const cls = g.className.split(/\s+/);
+      // Right-pinning only from md up; on a phone the group sits on its own line.
+      expect(cls).not.toContain('ml-auto');
+      expect(cls).not.toContain('justify-end');
+      expect(g.parentElement!.className.split(/\s+/)).toContain('flex-col');
+    }
+    const actions = [...container.querySelectorAll('button')].filter((b) =>
+      ['Transfer ownership', 'Remove'].includes(b.textContent?.trim() ?? ''),
+    );
+    expect(actions.length).toBe(4);
+    for (const b of actions) {
+      const cls = b.className.split(/\s+/);
+      expect(cls).toContain('min-h-11');
+      expect(cls).toContain('px-3');
+    }
+  });
+
   it('admin: manages the member, not the owner', async () => {
     const v = await renderAs('admin');
     expect(v.selects).toEqual(['Role for member@example.com']);
