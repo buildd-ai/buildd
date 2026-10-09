@@ -34,6 +34,7 @@ function noRetriesNow() {
     { id: 'a', title: 'feat: live work', status: 'in_progress', taskClass: 'work', missionId: null, createdAt: iso(20), updatedAt: iso(1), workers: [{ status: 'running', name: 'runner-a', startedAt: iso(20), updatedAt: iso(1) }] },
     { id: 'b', title: 'fix: landed after a retry', status: 'completed', taskClass: 'work', missionId: null, createdAt: iso(300), updatedAt: iso(200), workers: [{ status: 'completed', prUrl: 'https://github.com/example/project/pull/7', prNumber: 7, mergedAt: iso(200), startedAt: iso(300), completedAt: iso(250), updatedAt: iso(200) }] },
     { id: 'b-r1', title: '[builder · after CI #1] fix: landed after a retry', status: 'completed', taskClass: 'attempt', parentTaskId: 'b', missionId: null, createdAt: iso(240), updatedAt: iso(220), workers: [{ status: 'completed', startedAt: iso(240), completedAt: iso(220), updatedAt: iso(220), lastCommitSha: 'abcdef0123' }] },
+    { id: 'c', title: 'chore: landed clean', status: 'completed', taskClass: 'work', missionId: null, createdAt: iso(400), updatedAt: iso(380), workers: [{ status: 'completed', prUrl: 'https://github.com/example/project/pull/8', prNumber: 8, mergedAt: iso(380), startedAt: iso(400), completedAt: iso(390), updatedAt: iso(380) }] },
   ];
   const args = { tasks, missions: [], rules };
   return { now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }), history: buildActivityHistory(args), latest: latestTask(tasks, rules) };
@@ -82,6 +83,24 @@ describe('ActivityView filters across Now and History', () => {
     expect(q('activity-filtered-empty')?.textContent).toContain('No episodes match these filters. 1 episode in History.');
     await click(q('activity-clear-filters')!);
     expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(1);
+  });
+
+  it('History shows one page, then more on request; a filter finds matches past the first page', async () => {
+    const d = noRetriesNow();
+    const ep = d.history[0];
+    const many = Array.from({ length: 45 }, (_, i) => ({ ...ep, id: `e${i}`, at: 1000 - i, kind: i === 44 ? ('notlanded' as const) : ep.kind }));
+    await show({ mode: 'history', ...d, history: many });
+    await click(button('Any outcome'));
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(20);
+    await click(q('history-show-more')!);
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(40);
+    await click(q('history-show-more')!);
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(45);
+    expect(q('history-show-more')).toBeNull();
+    await click(button('Exceptions'));
+    expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(1);
+    expect(q('history-show-more')).toBeNull();
+    await click(button('Any outcome'));
   });
 
   it('genuinely empty is not filtered-empty and offers nothing to clear', async () => {
