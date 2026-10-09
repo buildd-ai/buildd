@@ -45,10 +45,10 @@ export default function SettingsSubNav({ billing = false }: { billing?: boolean 
                         href={item.href}
                         aria-current={isActive ? 'page' : undefined}
                         data-active={isActive ? 'true' : undefined}
-                        className={`block px-2 py-1.5 text-[13px] border-l-2 transition-colors ${
+                        className={`block px-2 py-1.5 rounded-[var(--radius-card)] text-[13px] transition-colors ${
                           isActive
-                            ? 'border-accent text-accent-text bg-accent-soft font-medium'
-                            : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                            ? 'text-text-primary bg-[var(--q-tint)] font-medium'
+                            : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
                         }`}
                       >
                         {item.label}

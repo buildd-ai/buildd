@@ -35,12 +35,16 @@ let mockStreamInputFn = mock(() => {});
 // the post-loop cleanup path, never the catch-block path a thrown abort
 // actually takes in production.
 let mockThrowOnAbort = false;
+const BLOCK_UNTIL_ABORT = Symbol('block-until-abort');
+// The SDK `resume` option of each query() call, in order (undefined = fresh session).
+let mockQueryResumes: (string | undefined)[] = [];
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (opts: any) => {
     const msgs = [...(mockMessagesQueue.shift() ?? mockMessages)];
     // The prompt is one open stream: its first message is the task prompt.
     // Read it lazily so the stream is not consumed ahead of the runner.
+    mockQueryResumes.push(opts?.options?.resume);
     const slot = mockQueryPrompts.push('') - 1;
     if (typeof opts?.prompt === 'string') {
       mockQueryPrompts[slot] = opts.prompt;
@@ -61,6 +65,17 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
         return {
           async next() {
             if (mockThrowOnAbort && signal?.aborted) {
+              const err = new Error('The operation was aborted.');
+              err.name = 'AbortError';
+              throw err;
+            }
+            // BLOCK_UNTIL_ABORT: a live session that sits between turns until
+            // it is aborted (then throws like the real SDK).
+            if (msgs[idx] === BLOCK_UNTIL_ABORT) {
+              await new Promise<void>(resolve => {
+                if (signal?.aborted) return resolve();
+                signal?.addEventListener('abort', () => resolve(), { once: true });
+              });
               const err = new Error('The operation was aborted.');
               err.name = 'AbortError';
               throw err;
@@ -258,6 +273,7 @@ describe('WorkerManager — state transitions', () => {
     mockMessages = [];
     mockMessagesQueue = [];
     mockQueryPrompts = [];
+    mockQueryResumes = [];
     mockThrowOnAbort = false;
     mockCheckQuestion.mockClear();
     mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
@@ -444,6 +460,21 @@ describe('WorkerManager — state transitions', () => {
   });
 
   describe('Phase tracking', () => {
+    // Live pause proof (task 4b2b30a9): an agent that only made MCP calls
+    // before its first Bash call sat on "Setting up worktree..." for minutes.
+    test('an MCP tool call moves currentAction off "Setting up worktree..."', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-mcp' },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_m', name: 'mcp__buildd__buildd', input: { action: 'update_progress' } }] } },
+        BLOCK_UNTIL_ABORT,
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-mcp', branch: 'buildd/mcp', task: makeTask() }] }));
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-mcp')?.currentAction?.startsWith('Using ') === true);
+      expect(manager.getWorker('w-mcp')?.currentAction).toBe('Using buildd');
+    });
+
     test('creates milestones from text + tool_use sequences', async () => {
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-phase' },
@@ -905,6 +936,116 @@ describe('WorkerManager — state transitions', () => {
         expect(waitingInputCalls.length).toBe(0);
       });
     }
+  });
+
+  describe('Pause (task baf3809a)', () => {
+    function liveSession(id: string) {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: `sess-${id}` },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it.' }] } },
+        BLOCK_UNTIL_ABORT,
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id, branch: `buildd/${id}`, task: makeTask() }] }));
+    }
+
+    test('stops the session, parks it as waiting_input with a pause, and never reports a failure', async () => {
+      liveSession('w-pause');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause')?.sessionId === 'sess-w-pause');
+
+      expect(await manager.pauseWorker('w-pause')).toBe('apply');
+      await waitFor(() => !manager.hasLiveSession('w-pause'));
+
+      const worker = manager.getWorker('w-pause');
+      expect(worker?.status).toBe('waiting');
+      expect(worker?.waitingFor?.type).toBe('pause');
+      expect(worker?.currentAction).toBe('Paused');
+      // The session id survives, so Resume continues the same transcript.
+      expect(worker?.sessionId).toBe('sess-w-pause');
+      // Nothing failed: no "Task failed" checkpoint after "Paused" (live pause proof, task 4b2b30a9).
+      expect(worker?.milestones.some((m: any) => m.type === 'checkpoint' && m.event === 'task_error')).toBe(false);
+      const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-pause');
+      expect(calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
+      // The last report is the park, carrying the pause, so a sync in between cannot leave it running.
+      const last = calls[calls.length - 1] as any[];
+      expect(last[1]?.status).toBe('waiting_input');
+      expect(last[1]?.waitingFor?.type).toBe('pause');
+    });
+
+    test('Resume continues the SAME session by its id, in the same worktree', async () => {
+      liveSession('w-pause-resume');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-resume')?.sessionId === 'sess-w-pause-resume');
+      const worktree = manager.getWorker('w-pause-resume')?.worktreePath;
+      await manager.pauseWorker('w-pause-resume');
+      await waitFor(() => manager.getWorker('w-pause-resume')?.status === 'waiting' && !manager.hasLiveSession('w-pause-resume'));
+
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-w-pause-resume' },
+        { type: 'result', subtype: 'success', session_id: 'sess-w-pause-resume' },
+      ];
+      expect(await manager.sendMessage('w-pause-resume', 'Resume')).toBe(true);
+      await waitFor(() => mockQueryResumes.length >= 2);
+
+      expect(mockQueryResumes[0]).toBeUndefined();
+      expect(mockQueryResumes[1]).toBe('sess-w-pause-resume');
+      expect(manager.getWorker('w-pause-resume')?.worktreePath).toBe(worktree);
+    });
+
+    // Found live (task 4b2b30a9): a run budget failover moved to Codex resumed
+    // down the Claude path with its Codex thread id and failed with "No
+    // conversation found". Resume must follow the backend the session ran on.
+    test('Resume of a Codex session never resumes Claude with the Codex thread id', async () => {
+      liveSession('w-pause-codex');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-codex')?.sessionId === 'sess-w-pause-codex');
+      await manager.pauseWorker('w-pause-codex');
+      await waitFor(() => manager.getWorker('w-pause-codex')?.status === 'waiting' && !manager.hasLiveSession('w-pause-codex'));
+      const worker = manager.getWorker('w-pause-codex')!;
+      worker.taskBackend = 'codex';
+      worker.codexThreadId = 'codex-thread-1';
+
+      mockMessages = [{ type: 'result', subtype: 'success', session_id: 'sess-w-pause-codex' }];
+      const before = mockQueryResumes.length;
+      await manager.sendMessage('w-pause-codex', 'Resume');
+      await new Promise(r => setTimeout(r, 500));
+
+      expect(mockQueryResumes.slice(before)).not.toContain('codex-thread-1');
+    });
+
+    test('waits for a running tool to finish before stopping', async () => {
+      liveSession('w-pause-tool');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-tool')?.sessionId === 'sess-w-pause-tool');
+      const worker = manager.getWorker('w-pause-tool')!;
+      worker.toolInFlight = true;
+
+      expect(await manager.pauseWorker('w-pause-tool')).toBe('defer');
+      await new Promise(r => setTimeout(r, 1200));
+      expect(manager.hasLiveSession('w-pause-tool')).toBe(true);
+      expect(worker.status).toBe('working');
+
+      worker.toolInFlight = false;
+      await waitFor(() => !manager.hasLiveSession('w-pause-tool'));
+      expect(worker.status).toBe('waiting');
+      expect(worker.waitingFor?.type).toBe('pause');
+    });
+
+    test('a --once run without resumable runs refuses and keeps running', async () => {
+      liveSession('w-pause-none');
+      manager = new WorkerManager(makeConfig({ pauseMode: 'none' }));
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-none')?.sessionId === 'sess-w-pause-none');
+
+      expect(await manager.pauseWorker('w-pause-none')).toBe('refuse');
+      expect(manager.hasLiveSession('w-pause-none')).toBe(true);
+      expect(manager.getWorker('w-pause-none')?.status).toBe('working');
+      expect(manager.getWorker('w-pause-none')?.milestones.some(m => 'label' in m && /isn.t available/.test(String((m as any).label)))).toBe(true);
+    });
   });
 
   describe('Stale recovery', () => {

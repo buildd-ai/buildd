@@ -100,9 +100,21 @@ describe('StandingRulesSection', () => {
     expect(q('standing-rules')!.textContent).toContain('visible to the workspace');
   });
 
-  it('says so when there are none', async () => {
+  it('says so when there are none, with the one add control inline', async () => {
     directives = [];
     await mount();
     expect(q('standing-rules-empty')!.textContent).toBe('No rules.');
+    expect(all('standing-rules-add')).toHaveLength(1);
+    expect(all('standing-rules-add')[0].textContent?.trim()).toBe('Add a rule');
+  });
+
+  it('has exactly one add control with rules listed', async () => {
+    await mount();
+    expect(all('standing-rules-add')).toHaveLength(1);
+  });
+
+  it('shows the scope in mono sentence case, no uppercase', async () => {
+    await mount();
+    expect(container.innerHTML).not.toContain('uppercase');
   });
 });

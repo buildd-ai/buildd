@@ -8,7 +8,7 @@
  * in the read-only visual-QA clone). Mounted directly with fixture data so
  * the section is reviewable without a database.
  */
-import { OperatorAccessSection } from '../../(protected)/team/[slug]/settings/OperatorAccessSection';
+import { OperatorAccessSection } from '../../(protected)/settings/roles/[slug]/edit/OperatorAccessSection';
 
 const WORKSPACES = [
   { id: 'ws-staging-desk', name: 'Staging Desk' },

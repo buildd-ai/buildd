@@ -86,12 +86,12 @@ export default function ProviderCard({ provider: p, scope, data, workspaceId, on
             hasRow={view.rows.some((r) => r.shape === (view.edit as { shape: ProviderShapeId }).shape)}
             onChanged={onChanged}
             extra={p.id === 'openrouter' && view.rows.length === 0 && scope !== 'workspace'
-              ? <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo="/app/settings/providers" />
+              ? <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo="/app/settings/models" />
               : null}
           />
         )}
         {view.edit.kind === 'form' && (
-          <p><a href={`#${ADVANCED_ANCHOR}`} className="underline text-accent-text hover:no-underline">Set up under Advanced</a></p>
+          <p><a href={`#${ADVANCED_ANCHOR}`} className="underline text-accent-text hover:no-underline">Set up under Routing</a></p>
         )}
         {view.connectInBrowser && !view.closed && (
           <p className="text-meta">

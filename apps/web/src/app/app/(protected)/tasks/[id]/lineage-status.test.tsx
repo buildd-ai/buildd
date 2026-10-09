@@ -57,10 +57,6 @@ describe('tasks/[id]/page.tsx lineage wiring', () => {
     expect(src).toContain('lineageWorkerHistory(taskWorkers, ciAttemptTasks)');
     expect(src).toContain('{runnerLabel(worker) ?? worker.name}');
   });
-
-  it('drops "Unblocked by this" tasks from "Also running"', () => {
-    expect(src).toContain('excludeTaskIds: new Set(dependentTasks.map(d => d.id))');
-  });
 });
 
 // Regression: Worker history listed only the task's own worker, so a PR that

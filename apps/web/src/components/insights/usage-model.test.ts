@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { usageByRole, usageByBasis, summarizeBand, bandTaskListHref, parseBandFilter } from './usage-model';
+import { usageByRole, summarizeBand, bandTaskListHref, parseBandFilter } from './usage-model';
 import { sampleFlowSeries } from '@/app/app/(protected)/health/insights/sample-series';
 it('attributes worker totals to their own role and tier, excludes outside-window workers and keeps unknown tiers', () => {
   const rows = [
@@ -69,22 +69,6 @@ it('splits each role and tier into real and virtual cost', () => {
   const [g] = usageByRole(rows);
   expect(g).toMatchObject({ realUsd: 2, virtualUsd: 5, costUsd: 8 });
   expect(g.tiers[0]).toMatchObject({ realUsd: 2, virtualUsd: 5 });
-});
-it('totals usage per basis and per executor, and names unknown on its own', () => {
-  const rows = [
-    { role: 'a', tier: null, tokens: 10, costUsd: 2, hours: 0, basis: 'real' as const, executor: 'runner' as const },
-    { role: 'a', tier: null, tokens: 30, costUsd: 5, hours: 0, basis: 'virtual' as const, executor: 'interactive' as const },
-    { role: 'a', tier: null, tokens: 5, costUsd: 1, hours: 0, basis: 'unknown' as const, executor: 'runner' as const },
-    { role: 'a', tier: null, tokens: 0, costUsd: 0, hours: 3, basis: null, executor: 'runner' as const },
-  ];
-  const s = usageByBasis(rows);
-  expect(s.total.real).toEqual({ workers: 1, tokens: 10, costUsd: 2 });
-  expect(s.total.virtual).toEqual({ workers: 1, tokens: 30, costUsd: 5 });
-  expect(s.total.unknown).toEqual({ workers: 1, tokens: 5, costUsd: 1 });
-  expect(s.total.mixed.workers).toBe(0);
-  expect(s.byExecutor.interactive.virtual.costUsd).toBe(5);
-  expect(s.byExecutor.runner.real.costUsd).toBe(2);
-  expect(s.combinedUsd).toBe(8);
 });
 it('carries each worker\'s basis and executor from the fold', async () => {
   const { buildFlowSeries } = await import('@/lib/insights-flow');

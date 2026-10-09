@@ -1,10 +1,15 @@
 import type { ReactNode } from 'react';
+import { TonePill } from '@/components/ui/StatePill';
+import type { StateTone } from '@/components/ui/states';
 
 export type ChipTone = 'ok' | 'warn' | 'err' | 'idle';
 
-/** The square status chip every connection row carries. */
+/** Connection health in the shared state tones: a warning needs a decision, not a fire. */
+const CHIP_TONE: Record<ChipTone, StateTone> = { ok: 'ok', warn: 'dec', err: 'bad', idle: 'q' };
+
+/** The status chip every connection row carries, drawn as a TonePill. */
 export function StatusChip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
-  return <span className={`status-pill status-pill-${tone}`}>{children}</span>;
+  return <TonePill tone={CHIP_TONE[tone]}>{children}</TonePill>;
 }
 
 /**
@@ -35,10 +40,10 @@ export default function ConnectionRow({
   const heading = (
     <span className="min-w-0 flex-1">
       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <span className="font-mono text-[13px] font-semibold text-text-primary">{title}</span>
+        <span className="text-sm font-semibold text-text-primary">{title}</span>
         {chip}
       </span>
-      {meta && <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">{meta}</span>}
+      {meta && <span className="mt-1 block truncate text-meta text-text-muted">{meta}</span>}
     </span>
   );
   if (readOnly) {
