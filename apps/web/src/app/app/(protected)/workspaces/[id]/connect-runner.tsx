@@ -159,7 +159,7 @@ export function ConnectRunnerSection({ workspaceId, runners }: ConnectRunnerSect
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a Service account</div>
               <p className="text-sm text-text-secondary">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;Service - Always-on server/VM&quot; as the type.
+                Go to <a href="/app/settings/runners" className="text-primary hover:underline">Settings &rarr; Runners</a> and create a Service account by selecting &quot;Service - Always-on server/VM&quot; as the type.
               </p>
             </div>
 
@@ -188,7 +188,7 @@ export function ConnectRunnerSection({ workspaceId, runners }: ConnectRunnerSect
             <div>
               <div className="text-sm font-medium mb-2">Step 1: Create a User account</div>
               <p className="text-sm text-text-secondary">
-                Go to <a href="/app/accounts/new" className="text-primary hover:underline">Accounts &rarr; New Account</a> and select &quot;User - Personal laptop/workstation&quot; as the type.
+                Go to <a href="/app/settings/runners" className="text-primary hover:underline">Settings &rarr; Runners</a> and create a User account by selecting &quot;User - Personal laptop/workstation&quot; as the type.
               </p>
             </div>
 
