@@ -29,7 +29,7 @@ export function AgentsPanel({ model, occupancy, idle = [], idPrefix = 'home' }: 
         <span data-testid="agents-summary" className="font-mono text-meta text-text-muted">{model.total > 0 ? agentsSummary(model) : 'no runner online'}</span>
       </div>
       {model.total > 0 && (
-        <div role="img" aria-label={`${agentsSummary(model)}${waiting > 0 ? `, ${waiting} waiting on you` : ''}`} className="flex flex-wrap gap-1">
+        <div role="img" aria-label={`${agentsSummary(model)}${waiting > 0 ? `, ${waiting} waiting for input` : ''}`} className="flex flex-wrap gap-1">
           {model.squares.map((s, i) => <Square key={i} kind={s} />)}
         </div>
       )}

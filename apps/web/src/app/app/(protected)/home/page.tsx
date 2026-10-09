@@ -2201,7 +2201,7 @@ export default async function HomePage({
   const stats = fleetData?.stats;
   const repairingMissions = missionDeliveries.filter(d => d.delivery.kind === 'repair').length;
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
-  const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById) : null;
+  const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
   // Legend: the roles on today's lanes (every role when the lanes are empty).
   const lanesRoles = new Set((fleetData?.fleet.runners ?? []).flatMap(r => r.slots.flatMap(sl => sl.lane.bars.map(b => b.roleSlug))).filter(Boolean));
   const fleetRoles = teamRoles

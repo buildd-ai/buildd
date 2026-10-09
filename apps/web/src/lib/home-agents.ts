@@ -6,7 +6,6 @@
  * the work (task, mission, elapsed), never the runner or the role.
  */
 import type { FleetSnapshot } from '@buildd/shared';
-import { missionTaskHref } from './mission-task-href';
 
 export type AgentSquare = 'busy' | 'waiting' | 'free';
 
@@ -31,7 +30,7 @@ export interface AgentsModel {
   lines: AgentLine[];
 }
 
-export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitles: ReadonlyMap<string, string> = new Map()): AgentsModel {
+export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitles: ReadonlyMap<string, string> = new Map(), taskHref: (w: { missionId: string | null; taskId: string }) => string = ({ taskId }) => `/app/tasks/${taskId}`): AgentsModel {
   const lines: AgentLine[] = [];
   const squares: AgentSquare[] = [];
   for (const runner of fleet.runners) {
@@ -48,7 +47,7 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
         rest: w.rest,
         missionId: w.missionId,
         mission: w.missionId ? missionTitles.get(w.missionId) ?? null : null,
-        href: w.taskId ? missionTaskHref({ missionId: w.missionId, taskId: w.taskId, from: 'home', mode: 'sheet' }) : null,
+        href: w.taskId ? taskHref({ missionId: w.missionId ?? null, taskId: w.taskId }) : null,
         waiting,
         elapsedMs: w.startedAt ? Math.max(0, now - new Date(w.startedAt).getTime()) : null,
       });
