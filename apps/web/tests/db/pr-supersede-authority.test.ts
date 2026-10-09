@@ -53,7 +53,7 @@ beforeAll(() => assertDbConfigured());
 beforeEach(() => { recordCalls.length = 0; });
 
 describe('recording a PR supersession from a runner key', () => {
-  test('another task\'s PR on the same runner account is refused; its own task's PR link, its own PR, and a teammate are allowed; text alone is not', async () => {
+  test('another task\'s PR on the same runner account is refused; its own task\'s PR link, its own PR, and a teammate are allowed; text alone is not', async () => {
     const { teamId, workspaceId } = await seedWorkspace();
     const runner = await workerKey(teamId);
 
