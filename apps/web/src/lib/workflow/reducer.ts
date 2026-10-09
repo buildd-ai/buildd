@@ -215,6 +215,8 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'TrunkRecovered': return d ? `trunkok:${cmd.incidentId}:${d.id}` : null;
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
     case 'PolicyEvidenceRecorded': return d ? `policy:${d.id}:${cmd.evidence.headSha}:${cmd.evidence.outcome}` : null;
+    // One failure per reviewer: a repeated report (a retried PATCH, the reaper) is a duplicate.
+    case 'ReviewRoundFailed': return cmd.reviewerTaskId ? roundFailKey(cmd.roundId, cmd.reviewerTaskId) : null;
     default: return null;
   }
 }
@@ -228,6 +230,11 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
  */
 export function headObservationKey(pr: string, fromHead: string | null, toHead: string, version: number): string {
   return `head:${pr}:${fromHead ?? 'none'}->${toHead}@v${version}`;
+}
+
+/** T27's key for a reviewer's failure: the reviewer task, never the round's running count. */
+export function roundFailKey(roundId: string, reviewerTaskId: string): string {
+  return `roundfail:${roundId}:${reviewerTaskId}`;
 }
 
 function landingKey(pr: string, headSha: string, version: number): string {
@@ -1059,8 +1066,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'AWAITING_REVIEW') return c.stale('state_moved');
       const round = c.roundById(cmd.roundId);
       if (!round || !OPEN_ROUND.has(round.status) || round.round !== dd.currentRound) return c.stale('round_not_current');
+      // A reviewer the round no longer (or never) waits on cannot spend the budget of the one it does.
+      if (cmd.reviewerTaskId && round.reviewerTaskId && round.reviewerTaskId !== cmd.reviewerTaskId) return c.stale('reviewer_not_current');
       const n = round.failureCount + 1;
-      const key = `roundfail:${round.id}:${n}`;
+      // Keyed on the reviewer that failed (§6.3 T27); only a kernel-side failure with no reviewer counts by number.
+      const key = cmd.reviewerTaskId ? roundFailKey(round.id, cmd.reviewerTaskId) : `roundfail:${round.id}:${n}`;
+      const ev = cmd.reviewerTaskId ? { roundId: round.id, reason: cmd.reason, reviewerTaskId: cmd.reviewerTaskId } : { roundId: round.id, reason: cmd.reason };
       const gate: EffectSpec = { kind: 'gate_event', dedupeKey: `gate_event:${round.id}:${n}`, payload: { slug: 'review_round_failed', reason: cmd.reason, failure: n } };
       // A person's takeover is not a contract failure to retry: it escalates now.
       if (n <= cmd.maxContractRetries && cmd.reason !== 'human_takeover') {
@@ -1069,7 +1080,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           guardRound: true,
           rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'queued', failureCount: n, clearReviewer: true } }],
           effects: [{ kind: 'dispatch_review', dedupeKey: `dispatch_review:${dd.id}:${round.round}:retry${n}`, payload: { roundId: round.id, round: round.round, headSha: round.headSha, kind: round.kind, retry: n } }, gate],
-          evidence: { roundId: round.id, reason: cmd.reason },
+          evidence: ev,
         });
       }
       return c.apply(key, 'ESCALATED', {
@@ -1077,7 +1088,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { stateReason: 'review_unavailable' },
         rounds: [{ op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed', failureCount: n } }],
         effects: [gate],
-        evidence: { roundId: round.id, reason: cmd.reason },
+        evidence: ev,
       });
     }
 
@@ -1362,9 +1373,15 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   });
 
   if (cmd.outcome === 'success' || (cmd.outcome === 'unproven' && cmd.commitCount > 0)) {
+    // abe42d1b: an agent that pushed from its own session leaves the runner nothing local to
+    // report, but its push was attributed to it mid-attempt (§6.9). That push is its L, as the
+    // AWAITING_PUSH head path and the floor already read it. Only when nothing local can be lost
+    // (the WORKING rule, §9 AC-10): an unproven end with unreported commits is still not proof.
+    const unknownLocalIsSafe = cmd.outcome === 'success' || cmd.commitCount === 0;
+    const proofLocal = L ?? (unknownLocalIsSafe ? a.reportedShas.at(-1) ?? null : null);
     const proof = deliveryProof({
       boundHeadSha: a.boundHeadSha,
-      localHeadSha: L,
+      localHeadSha: proofLocal,
       liveHeadSha: livePrOpen(live) ? live!.headSha : null,
       liveContainsLocal: cmd.proof?.liveContainsLocal,
       contentDiffChanged: cmd.proof?.contentDiffChanged,

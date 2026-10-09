@@ -448,7 +448,40 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const last = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', attemptNo: 3 })]);
     expect(applied(end(last, { attemptId: 'a1', outcome: 'lost', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
   });
-  const repairing = (o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
+  test('abe42d1b: a fix that pushed itself and ends with no local head is delivered by its own attributed push', () => {
+    // FIXING bound to (H1, r1, a1). The agent pushed H2 itself, so the head handler recorded it as
+    // the attempt's (reportedShas [H2], current head H2) and the runner has nothing local to report.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    const dec = applied(end(pushed, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H2') }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.evidence.proof).toEqual({ holds: true, reason: 'live_head_contains_local' });
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta' }));
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+    expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'delivered', pushedHeadSha: 'H2' } });
+    expect(effectKinds(dec)).not.toContain('push_recovery');
+    // REPAIRING: the same rule for a CI fix that pushed itself.
+    const rep = V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', currentHeadSha: 'H2' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', reportedShas: ['H2'] })]);
+    expect(applied(end(rep, { attemptId: 'c1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H2') })).toState).toBe('AWAITING_REVIEW');
+  });
+  test('abe42d1b: an unreported local head is not proof without the attempt’s own push', () => {
+    // No attributed push at all: the head never moved off the bound one.
+    const quiet = applied(end(fixing(), { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1') }));
+    expect(quiet.toState).toBe('AWAITING_PUSH');
+    // A foreign push (recorded, never in reportedShas) moved the head: still not the attempt's work.
+    const foreign = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H9' }), [decidedRC], [A({ status: 'running' })]);
+    const f = applied(end(foreign, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H9') }));
+    expect(f.toState).toBe('AWAITING_PUSH');
+    expect(f.evidence.proof).toEqual({ holds: false, reason: 'local_head_unknown' });
+    // The attempt pushed H2, then someone force-pushed H9 over it: H9 does not carry the attempt's push.
+    const over = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H9' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    expect(applied(end(over, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H9') })).toState).toBe('AWAITING_PUSH');
+    // Commits reported but no SHA, on an unproven end: something local may be missing from the push.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    const unsafe = applied(end(pushed, { attemptId: 'a1', outcome: 'unproven', localHeadSha: null, commitCount: 2, live: live('H2') }));
+    expect(unsafe.toState).toBe('AWAITING_PUSH');
+    expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
+  });
+  const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {
     expect(applied(end(repairing(), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
@@ -1126,6 +1159,18 @@ describe('T27 ReviewRoundFailed (S29, AC-19)', () => {
   test('guards', () => {
     expectResult(f(V(D({ state: 'APPROVED' }))), 'stale', 'state_moved');
     expectResult(f(v({ status: 'decided' })), 'stale', 'round_not_current');
+  });
+  test('04a79514: a reviewer\'s failure is keyed on that reviewer, and a reviewer the round does not wait on is stale', () => {
+    const g = (view: KernelView, reviewerTaskId: string) => run(view, { type: 'ReviewRoundFailed', actor: 'runner', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: 2, reviewerTaskId });
+    const dec = applied(g(v({ reviewerTaskId: 'rv1' }), 'rv1'));
+    expect(dec.idempotencyKey).toBe('roundfail:r1:rv1');
+    expect(dec.evidence).toMatchObject({ roundId: 'r1', reason: 'prose_verdict', reviewerTaskId: 'rv1' });
+    expectResult(g(v({ reviewerTaskId: 'rv2', failureCount: 1 }), 'rv1'), 'stale', 'reviewer_not_current');
+    // The stable key answers a replay before the reducer runs, whatever the round's count by then.
+    expect(stableIdempotencyKey({ type: 'ReviewRoundFailed', actor: 'runner', roundId: 'r1', reason: 'infra', maxContractRetries: 2, reviewerTaskId: 'rv1' }, D())).toBe('roundfail:r1:rv1');
+    // A kernel-side failure (no reviewer was ever asked) still counts by number, with no stable key.
+    expect(applied(f(v())).idempotencyKey).toBe('roundfail:r1:1');
+    expect(stableIdempotencyKey({ type: 'ReviewRoundFailed', actor: 'kernel', roundId: 'r1', reason: 'infra', maxContractRetries: 0 }, D())).toBeNull();
   });
   test('a human takeover (reviewer interrupted) is never re-queued: ESCALATED(review_unavailable) on the first failure', () => {
     const dec = applied(run(v(), { type: 'ReviewRoundFailed', actor: 'human:interrupt', roundId: 'r1', reason: 'human_takeover', maxContractRetries: 2 }));

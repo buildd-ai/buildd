@@ -120,20 +120,7 @@ const actArb: fc.Arbitrary<Act> = fc.oneof(
 
 const MAX_ACTS = Number(process.env.KERNEL_SEQ_MAX_ACTS ?? 30);
 
-export interface RunSpec { seed: number; faults: Faults; strict: boolean; acts: Act[]; enforceKnownGaps?: boolean }
-
-/**
- * Facts whose replay is known not to be a no-op, each pinned by a skipped
- * regression case below and owned by a fix task. The random runs leave them
- * out of the replay check so they keep exploring for other failures; the fix
- * removes the entry and unskips its case.
- *  - reviewerFails: T27 keys on the round's failure count, not on the reviewer
- *    that failed, so a repeated report re-queues again (fix task 04a79514).
- *  - staleCiHint: T10 applies a check_suite failure hint without a live read
- *    showing CI red, so a redelivered hint for a head now green flaps the
- *    delivery to REPAIRING and back (fix task 438517a9). Replayed only while red.
- */
-const KNOWN_REPLAY_GAPS: ReadonlySet<Act['t'] | 'staleCiHint'> = new Set(['reviewerFails', 'staleCiHint']);
+export interface RunSpec { seed: number; faults: Faults; strict: boolean; acts: Act[] }
 
 const rate = (max: number) => fc.integer({ min: 0, max: Math.round(max * 100) }).map((n) => n / 100);
 const faultsArb: fc.Arbitrary<Faults> = fc.record({
@@ -197,8 +184,6 @@ interface Ctx {
   replays: Replay[];
   replayLabels: string[];
   terminalSeen: string | null;
-  /** Check even the known gaps (KNOWN_REPLAY_GAPS, knownLimbo): the regression cases that pin those bugs. */
-  enforceKnownGaps: boolean;
   step: string;
   /** Violations recorded at call time (see `violate`). */
   violations: string[];
@@ -268,10 +253,7 @@ function ingestFor(ctx: Ctx) {
         }
       }
     };
-    const staleCiHint = d.name === 'check_suite' && p.check_suite?.conclusion === 'failure';
-    await feed(ctx, `webhook ${d.name}.${p.action ?? ''}`, run, staleCiHint && !ctx.enforceKnownGaps
-      ? { replay: async () => { if (!(await ciGreenNow(ctx, String(p.check_suite.head_sha)))) await run(); } } // KNOWN_REPLAY_GAPS: staleCiHint (438517a9)
-      : {});
+    await feed(ctx, `webhook ${d.name}.${p.action ?? ''}`, run);
   };
 }
 
@@ -301,7 +283,7 @@ async function setup(spec: RunSpec): Promise<Ctx> {
 
   const ctx: Ctx = {
     gh, restoreFetch, repo, workspaceId, ownerTaskId, deliveryId: opened.deliveryId, prNumber, ownerAlive: true,
-    running: new Map(), replays: [], replayLabels: [], terminalSeen: null, enforceKnownGaps: spec.enforceKnownGaps ?? false, step: 'setup', violations: [], surprises: [], log: [],
+    running: new Map(), replays: [], replayLabels: [], terminalSeen: null, step: 'setup', violations: [], surprises: [], log: [],
   };
   gh.onWebhook(ingestFor(ctx));
   guardCalls(ctx);
@@ -501,7 +483,7 @@ async function step(ctx: Ctx, a: Act, i: number): Promise<void> {
         task: { id: t.id, workspaceId: ctx.workspaceId, deliveryId: ctx.deliveryId, deliveryRole: 'review', context: t.context },
         workerId, status: 'failed', localHeadSha: null, commitCount: 0, source: 'runner', reviewFailure: a.reason,
       });
-      await feed(ctx, 'reviewerFails', run, KNOWN_REPLAY_GAPS.has('reviewerFails') && !ctx.enforceKnownGaps ? { replay: null } : {});
+      await feed(ctx, 'reviewerFails', run);
       return;
     }
     case 'fixClaim': {
@@ -636,39 +618,14 @@ async function checkLiveness(ctx: Ctx): Promise<void> {
       const live = await q<{ id: string }>(sql`SELECT t.id FROM tasks t JOIN workflow_review_rounds r ON r.id::text = t.context->>'workflowRoundId'
         WHERE r.delivery_id = ${ctx.deliveryId}::uuid AND r.round = ${d.current_round} AND r.status IN ('queued', 'reviewing')
           AND t.delivery_role = 'review' AND t.status IN ('pending', 'assigned', 'in_progress')`);
-      if (!live.length && !(!ctx.enforceKnownGaps && await knownLimbo(ctx, d))) fail(s, `AWAITING_REVIEW with no live reviewer for round ${d.current_round}`);
+      if (!live.length) fail(s, `AWAITING_REVIEW with no live reviewer for round ${d.current_round}`);
       return;
     }
     case 'CHANGES_REQUESTED': if (!(await openTasks(['fix']))) fail(s, 'CHANGES_REQUESTED with no fix task queued or running'); return;
     case 'FIXING': case 'REPAIRING': if (!(await openTasks(['fix', 'ci_fix', 'conflict_fix']))) fail(s, `${d.state}(${d.state_reason}) with no attempt task live`); return;
     default:
-      if (!ctx.enforceKnownGaps && await knownLimbo(ctx, d)) return;
       fail(s, `limbo: ${d.state}(${d.state_reason}) after settling`);
   }
-}
-
-/**
- * Limbo already pinned by a skipped regression case and owned by a fix task,
- * matched narrowly so any other limbo still fails the random runs.
- *  - a6cbd241: the current round's dispatch_review was acked `skipped:superseded`
- *    (a repair started before the drain) and the resume back to AWAITING_REVIEW
- *    owed none, so the round never gets a reviewer.
- *  - 9e27996d: push_recovery restarted at try 1 after an unproven head move, its
- *    follow-up key collided with the first chain's, and nothing is owed again.
- */
-async function knownLimbo(ctx: Ctx, d: DeliveryRow): Promise<boolean> {
-  if (d.state === 'AWAITING_REVIEW') {
-    const rows = await q<{ outcome: string | null }>(sql`SELECT outcome FROM workflow_effects WHERE delivery_id = ${ctx.deliveryId}::uuid
-      AND dedupe_key = ${`dispatch_review:${ctx.deliveryId}:${d.current_round}`}`);
-    return rows.length === 1 && String(rows[0].outcome ?? '').startsWith('skipped:');
-  }
-  if (d.state === 'AWAITING_PUSH') {
-    // 9e27996d: a head-keyed restart at try 1 whose follow-up collided with the first chain's try 2.
-    const rows = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM workflow_effects WHERE delivery_id = ${ctx.deliveryId}::uuid
-      AND kind = 'push_recovery' AND dedupe_key LIKE ${`push_recovery:${ctx.deliveryId}:%:head:%`} AND status = 'done' AND outcome LIKE 'ok:retry_%'`);
-    return Number(rows[0]?.n ?? 0) > 0;
-  }
-  return false;
 }
 
 /** Replaying every prefix of the facts fed to the kernel changes nothing. */
@@ -742,27 +699,23 @@ const owner = (outcome: Outcome = 'completed'): Act => ({ t: 'ownerEnds', outcom
 export const REGRESSIONS: Array<{ name: string; spec: RunSpec; skip?: string }> = [
   {
     name: 'a repeated reviewer failure report is a duplicate',
-    skip: 'T27 counts a repeated report as a new failure: fix task 04a79514',
-    spec: { seed: 1, faults: NO_FAULTS, strict: false, enforceKnownGaps: true, acts: [owner(), { t: 'reviewerFails', reason: 'prose_verdict' }] },
+    spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [owner(), { t: 'reviewerFails', reason: 'prose_verdict' }] },
   },
   {
     // GitHub still computing mergeability after the push (normal) makes the door's stale `dirty` hint win.
     name: 'a round queued just before a not-needed repair still gets a reviewer',
-    skip: 'resumeAfterRepair owes no dispatch for an open round whose dispatch was skipped: fix task a6cbd241',
-    spec: { seed: 1, faults: { mergeableUnknownReads: 1 }, strict: false, enforceKnownGaps: true, acts: [owner(), { t: 'foreignPush' }, { t: 'conflictDoor', hint: 'dirty' }] },
+    spec: { seed: 1, faults: { mergeableUnknownReads: 1 }, strict: false, acts: [owner(), { t: 'foreignPush' }, { t: 'conflictDoor', hint: 'dirty' }] },
   },
   {
     name: 'push recovery still escalates after an unproven head move',
-    skip: 'the restarted push_recovery chain collides with the first one and ends: fix task 9e27996d',
-    spec: { seed: 1, faults: NO_FAULTS, strict: false, enforceKnownGaps: true, acts: [
+    spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [
       { t: 'ownerEnds', outcome: 'completed', localOnly: true, retry: false }, { t: 'clock' }, { t: 'forcePush' }, { t: 'clock' },
     ] },
   },
   {
     // The check was re-run green before its failure hint arrived; the redelivered hint flaps the delivery again.
     name: 'a stale CI-failure hint does not leave APPROVED while CI is green',
-    skip: 'T10 applies without a live read showing CI red: fix task 438517a9',
-    spec: { seed: 1, faults: NO_FAULTS, strict: false, enforceKnownGaps: true, acts: [owner(), { t: 'ci', ok: false }, { t: 'ci', ok: true }, { t: 'verdict', v: 'approve', oldest: false }] },
+    spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [owner(), { t: 'ci', ok: false }, { t: 'ci', ok: true }, { t: 'verdict', v: 'approve', oldest: false }] },
   },
 ];
 

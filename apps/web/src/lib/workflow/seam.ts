@@ -388,7 +388,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.task.id },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);

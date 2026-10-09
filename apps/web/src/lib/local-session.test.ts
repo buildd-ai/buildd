@@ -501,6 +501,24 @@ describe('end', () => {
     expect(presences).toHaveLength(0);
   });
 
+  it('a straggler touch just after the end is a replay: it does not re-open the session or touch its workers', async () => {
+    claimWorker(id, { updatedAt: new Date(NOW.getTime() - 5 * 60_000) });
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'end', reason: 'clear' }, ACCOUNT, later(1_000));
+    const touchesBefore = workerTouches;
+    // An async PostToolUse that was in flight when the session closed.
+    expect((await run({ event: 'touch' }, ACCOUNT, later(4_000))).outcome).toBe('already_ended');
+    expect(presences[0].endedAt).toEqual(later(1_000));
+    expect(workerTouches).toBe(touchesBefore);
+  });
+
+  it('a touch well after the end is a resumed session whose start was missed: it re-opens', async () => {
+    await run({ event: 'start' });
+    await run({ event: 'end', reason: 'exit' });
+    expect((await run({ event: 'touch' }, ACCOUNT, later(5 * 60_000))).outcome).toBe('started');
+    expect(presences[0].endedAt).toBeNull();
+  });
+
   it('a resumed session re-opens its presence', async () => {
     await run({ event: 'start' });
     await run({ event: 'end', reason: 'exit' });
