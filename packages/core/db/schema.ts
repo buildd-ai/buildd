@@ -2788,6 +2788,10 @@ export const missionNotes = pgTable('mission_notes', {
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Human-attention disposition of an agent/outside-caller question note
+  // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
+  // 'recovered' means a repair task owns it. NULL on every other note.
+  disposition: text('disposition').$type<'ask' | 'recovered'>(),
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),

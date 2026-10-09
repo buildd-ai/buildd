@@ -9,6 +9,8 @@ import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import type { MissionNoteAuthorType, MissionNoteStatus, MissionNoteType } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
+import { disposeQuestionNote, gatedNoteResponse } from '@/lib/note-question-disposition';
+import { RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update'];
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system'];
@@ -123,6 +125,13 @@ export async function POST(
       ? null
       : (bodyText || null);
 
+  // Needs You admission (lib/note-question-disposition.ts): an agent's
+  // question passes the gate's deterministic half before anyone sees it.
+  const gated = await disposeQuestionNote(
+    { type, authorType: effectiveAuthorType, title, bodyText, defaultChoice, workspaceId: task.workspaceId, missionId: null, taskId: id, workerId: workerId || null },
+    { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
+  );
+
   const [note] = await db.insert(missionNotes).values({
     missionId: null,
     taskId: id,
@@ -132,7 +141,9 @@ export async function POST(
     title,
     body: effectiveBody,
     defaultChoice: defaultChoice || null,
-    status: effectiveStatus,
+    // A recovered question is settled by its repair task, not a person.
+    status: gated.disposition === 'recovered' ? 'answered' : effectiveStatus,
+    disposition: gated.disposition,
   }).returning();
 
   await triggerEvent(channels.task(id), events.MISSION_NOTE_POSTED, {
@@ -142,5 +153,5 @@ export async function POST(
     title: note.title,
   });
 
-  return NextResponse.json(note, { status: 201 });
+  return NextResponse.json(gatedNoteResponse(note, gated), { status: 201 });
 }
