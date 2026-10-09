@@ -1,5 +1,5 @@
 /**
- * The mission page's three layouts: Board (default), Lanes and Feed. `?layout=`
+ * The mission page's layouts: Overview (`board`, default) and History (`feed`); Lanes by URL only. `?layout=`
  * names one; `?view=timeline|structure` (the Feed's Timeline · Structure
  * disclosure) implies Feed, so its old links still land where they pointed.
  */
@@ -7,10 +7,13 @@ export const MISSION_LAYOUTS = ['board', 'lanes', 'feed'] as const;
 export type MissionLayout = (typeof MISSION_LAYOUTS)[number];
 
 export const MISSION_LAYOUT_LABEL: Record<MissionLayout, string> = {
-  board: 'Board',
+  board: 'Overview',
   lanes: 'Lanes',
-  feed: 'Feed',
+  feed: 'History',
 };
+
+/** The two the page offers. Lanes is still reachable by `?layout=lanes`. */
+export const MISSION_LAYOUT_TABS: readonly MissionLayout[] = ['board', 'feed'];
 
 export function parseMissionLayout(layout: string | null | undefined, view?: string | null): MissionLayout {
   if ((MISSION_LAYOUTS as readonly string[]).includes(layout ?? '')) return layout as MissionLayout;

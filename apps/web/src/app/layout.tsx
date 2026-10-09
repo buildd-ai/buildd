@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Outfit, Schibsted_Grotesk, JetBrains_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Newsreader, Fraunces } from 'next/font/google';
+import { Outfit, Schibsted_Grotesk, JetBrains_Mono, Newsreader, Fraunces } from 'next/font/google';
 import ThemeProvider from '@/components/ThemeProvider';
 import './globals.css';
 
@@ -22,21 +22,6 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
   weight: ['400', '500', '600'],
   variable: '--font-jetbrains-mono',
-  display: 'swap',
-});
-
-// Retiring: only chat still reads the two Plex faces (--kit-font-mono, .font-convo).
-// Drop both when chat moves onto the app's type.
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-ibm-plex-mono',
-  display: 'swap',
-});
-
-const ibmPlexSans = IBM_Plex_Sans({
-  subsets: ['latin'],
-  variable: '--font-plex-sans',
   display: 'swap',
 });
 
@@ -67,7 +52,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${outfit.variable} ${schibsted.variable} ${jetbrainsMono.variable} ${ibmPlexMono.variable} ${ibmPlexSans.variable} ${newsreader.variable} ${fraunces.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${outfit.variable} ${schibsted.variable} ${jetbrainsMono.variable} ${newsreader.variable} ${fraunces.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
