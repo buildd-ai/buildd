@@ -120,9 +120,8 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('@/lib/mission-notifications', () => ({
   notifyMissionPrReady: mock(() => Promise.resolve({ notified: false })),
 }));
-mock.module('@/lib/migration-inspector', () => ({
-  inspectPullRequestMigrations: mock(() => Promise.resolve({ safe: true as const })),
-}));
+const mockInspectMigrations = mock(async (): Promise<any> => ({ safe: true }));
+mock.module('@/lib/migration-inspector', () => ({ inspectPullRequestMigrations: mockInspectMigrations }));
 mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mock(() => Promise.resolve({ action: 'updated', commentId: 1 })),
 }));
@@ -291,6 +290,7 @@ const landingEvents = () => mockFireGateEvent.mock.calls.map((c) => c[0]).filter
 
 beforeEach(() => {
   gh = freshGh();
+  mockInspectMigrations.mockImplementation(async () => ({ safe: true }));
   verdict = 'approved';
   reviewStatus = { state: 'approved', verdict: 'approve', confidence: 0.9, merged: false };
   markerStore = null;
@@ -1033,6 +1033,47 @@ describe('landPr — safety rails', () => {
     const out = await land();
     expect(out).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-1' });
     expect(mockDispatchConflictRetry.mock.calls[0]![0].behindOnly).toBeFalsy();
+  });
+
+  it('the sweep repairs a conflict before requiring migration approval, then reviews and lands the approved head', async () => {
+    gh.prFiles = ['packages/core/drizzle/0400_x.sql'];
+    gh.mergeableState = 'dirty';
+    mockInspectMigrations.mockImplementation(async () => ({ safe: false, reason: 'runs data migration UPDATE on workers' }));
+    mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: true, taskId: 'conflict-task-1' }));
+    expect(await land({ door: 'sweep', policy: agentReview, eventHeadSha: gh.head })).toMatchObject({ kind: 'needs_fix', fix: 'conflict', taskId: 'conflict-task-1' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    // The repaired head still requires a person to authorize the UPDATE.
+    gh.mergeableState = 'clean';
+    gh.head = 'head2';
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    expect(await land({ door: 'sweep', policy: agentReview, eventHeadSha: gh.head })).toMatchObject({ kind: 'needs_human', cause: 'migration' });
+    expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
+    expect(mockDispatchFix).toHaveBeenCalledTimes(1);
+    expect(mockDispatchFix.mock.calls[0]![0]).toMatchObject({ kind: 're_review', headSha: 'head2' });
+    verdict = 'in_flight';
+    reviewStatus = { state: 'queued', verdict: null, confidence: null, merged: false };
+    expect(await land({ door: 'sweep', policy: agentReview, eventHeadSha: gh.head })).toMatchObject({ kind: 'needs_human', cause: 'migration' });
+    expect(mockDispatchFix).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    // Review may finish while human approval remains outstanding.
+    mockInspectMigrations.mockImplementation(async () => ({ safe: true }));
+    verdict = 'approved';
+    reviewStatus = { state: 'approved', verdict: 'approve', confidence: 0.9, merged: false };
+    expect(await land({ door: 'sweep', policy: agentReview, eventHeadSha: gh.head })).toMatchObject({ kind: 'merged' });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('a kernel-owned migration approval wait does not start a legacy reviewer', async () => {
+    gh.prFiles = ['packages/core/drizzle/0400_x.sql'];
+    mockInspectMigrations.mockImplementation(async () => ({ safe: false, reason: 'runs data migration UPDATE on workers' }));
+    verdict = 'none';
+    reviewStatus = { state: 'not_requested', verdict: null, confidence: null, merged: false };
+    expect(await land({ door: 'sweep', policy: agentReview }, {
+      ...deps(), kernelLandingView: async () => ({ current: { state: 'AWAITING_REVIEW', head: 'head1', version: 1 } } as any),
+    })).toMatchObject({ kind: 'needs_human', cause: 'migration' });
+    expect(mockDispatchFix).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
   it('a stale dirty flag that merged cleanly is a branch update, not a conflict fix', async () => {

@@ -785,6 +785,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;
   const observed: { baseRef?: string | null; mergeableState?: string | null; checkRuns?: CheckRunState[] } = {};
+  let kernelViewPromise: ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView> | null = null;
+  const kernelStatus = () => (kernelViewPromise ??= (async () => {
+    const read = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
+    return read(workspaceId, repoFullName, prNumber).catch(() => null);
+  })());
   const runSafety = (bound: ModelApproveBound | undefined) =>
     evaluateAutoMergeSafety(installationId, repoFullName, prNumber, liveHead, effectivePolicy, {
       mission,
@@ -835,7 +840,21 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         return human('deny_path', reason);
       case 'migration':
         if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
-        return /^could not /.test(reason) ? waiting(reason) : human('migration', reason);
+        if (/^could not /.test(reason)) return waiting(reason);
+        // Human authorization gates landing, not technical review. A repaired
+        // head can earn its review while the migration decision is outstanding.
+        // Use the existing reviewer dispatcher/dedupe; never file another repair.
+        if (act && policy.tier === 'agent-review' && !(await kernelStatus())) {
+          const status = await reviewStatus();
+          const stale = status?.verdict === 'approve' && status.reviewHeadSha && status.reviewHeadSha !== liveHead;
+          if (status?.state === 'not_requested' || stale) {
+            const send = deps.dispatchFix ?? reReviewVia(stale ? 'migration approval pending on a repaired head' : undefined, !stale);
+            await send({ kind: 're_review', workspaceId, installationId, repoFullName, prNumber,
+              headSha: liveHead, owner, reason: `technical review while human migration approval is pending: ${reason}`,
+            }).catch(err => console.warn('[pr-landing] technical review dispatch failed:', err));
+          }
+        }
+        return human('migration', reason);
       case 'size':
         return human('size_cap', reason);
       case 'conflict':
@@ -857,8 +876,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
-  const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
+  const kernelView = await kernelStatus();
   if (kernelView) {
     const { state, head } = kernelView.current;
     const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };
