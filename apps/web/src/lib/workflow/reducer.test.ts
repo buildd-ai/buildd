@@ -1160,6 +1160,18 @@ describe('T27 ReviewRoundFailed (S29, AC-19)', () => {
     expectResult(f(V(D({ state: 'APPROVED' }))), 'stale', 'state_moved');
     expectResult(f(v({ status: 'decided' })), 'stale', 'round_not_current');
   });
+  test('04a79514: a reviewer\'s failure is keyed on that reviewer, and a reviewer the round does not wait on is stale', () => {
+    const g = (view: KernelView, reviewerTaskId: string) => run(view, { type: 'ReviewRoundFailed', actor: 'runner', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: 2, reviewerTaskId });
+    const dec = applied(g(v({ reviewerTaskId: 'rv1' }), 'rv1'));
+    expect(dec.idempotencyKey).toBe('roundfail:r1:rv1');
+    expect(dec.evidence).toMatchObject({ roundId: 'r1', reason: 'prose_verdict', reviewerTaskId: 'rv1' });
+    expectResult(g(v({ reviewerTaskId: 'rv2', failureCount: 1 }), 'rv1'), 'stale', 'reviewer_not_current');
+    // The stable key answers a replay before the reducer runs, whatever the round's count by then.
+    expect(stableIdempotencyKey({ type: 'ReviewRoundFailed', actor: 'runner', roundId: 'r1', reason: 'infra', maxContractRetries: 2, reviewerTaskId: 'rv1' }, D())).toBe('roundfail:r1:rv1');
+    // A kernel-side failure (no reviewer was ever asked) still counts by number, with no stable key.
+    expect(applied(f(v())).idempotencyKey).toBe('roundfail:r1:1');
+    expect(stableIdempotencyKey({ type: 'ReviewRoundFailed', actor: 'kernel', roundId: 'r1', reason: 'infra', maxContractRetries: 0 }, D())).toBeNull();
+  });
   test('a human takeover (reviewer interrupted) is never re-queued: ESCALATED(review_unavailable) on the first failure', () => {
     const dec = applied(run(v(), { type: 'ReviewRoundFailed', actor: 'human:interrupt', roundId: 'r1', reason: 'human_takeover', maxContractRetries: 2 }));
     expect(dec.toState).toBe('ESCALATED');
