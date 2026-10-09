@@ -14,6 +14,36 @@ export function buildSkipsTypecheck(env) {
   return env.GITHUB_ACTIONS === 'true' && env.CI_TYPECHECK_DONE === '1';
 }
 
+/**
+ * Pages that moved into Settings (one Settings: Team and Roles inside it, one
+ * place each for runners, models, members, roles and workspace settings).
+ * Order matters: the first match wins, so `/new` comes before `/:slug`.
+ * Next passes the query string through and the browser keeps the #fragment,
+ * so `/app/settings/providers#agent-endpoint-h` still lands on that section.
+ * Guarded by src/lib/settings-route-moves.test.ts.
+ */
+export const SETTINGS_ROUTE_MOVES = [
+  // Agent roles: the Team page and its editor become Settings › Roles.
+  { source: '/app/team', destination: '/app/settings/roles' },
+  { source: '/app/team/new', destination: '/app/settings/roles/new' },
+  { source: '/app/team/:slug/settings', destination: '/app/settings/roles/:slug/edit' },
+  { source: '/app/team/:slug', destination: '/app/settings/roles/:slug' },
+  { source: '/app/workspaces/:id/skills', destination: '/app/settings/roles' },
+  // People: one Team page; another team opens there by id.
+  { source: '/app/teams/new', destination: '/app/settings/team/new' },
+  { source: '/app/teams/:id', destination: '/app/settings/team?team=:id' },
+  // Runners: configured in Settings, watched in Health.
+  { source: '/app/accounts/new', destination: '/app/settings/runners/tokens/new' },
+  { source: '/app/workspaces/:id/runners', destination: '/app/health/runners?workspace=:id' },
+  // Models: keys, routing, tiers and AI features on one page.
+  { source: '/app/settings/providers', destination: '/app/settings/models' },
+  { source: '/app/settings/ai', destination: '/app/settings/models' },
+  // Workspaces: one list and one settings page per workspace.
+  { source: '/app/workspaces', destination: '/app/settings/workspaces' },
+  { source: '/app/workspaces/new', destination: '/app/settings/workspaces/new' },
+  { source: '/app/workspaces/:id/config', destination: '/app/settings/workspace/:id' },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: { ignoreBuildErrors: buildSkipsTypecheck(process.env) },
@@ -72,6 +102,7 @@ const nextConfig = {
         destination: '/app/settings/connectors',
         permanent: false,
       },
+      ...SETTINGS_ROUTE_MOVES.map((move) => ({ ...move, permanent: false })),
       // /memory is handled in src/proxy.ts: on the apex it goes to the
       // marketing site's /memory page; elsewhere it keeps the old 307 to the
       // docs page. It can't live here — config redirects run before the proxy.

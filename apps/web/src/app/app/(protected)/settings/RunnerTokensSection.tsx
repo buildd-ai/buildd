@@ -4,10 +4,11 @@ import { useState } from 'react';
 import { TOKEN_SCOPE_DEFINITIONS } from '@buildd/core/token-scopes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import DeleteAccountButton from '../accounts/DeleteAccountButton';
+import DeleteAccountButton from './DeleteAccountButton';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import SettingsSection from './SettingsSection';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 import { StatusChip } from './_components/ConnectionRow';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
@@ -54,6 +55,9 @@ interface Workspace {
   name: string;
   repo: string | null;
 }
+
+/** Where a new runner token is made. */
+export const NEW_TOKEN_HREF = '/app/settings/runners/tokens/new';
 
 export default function RunnerTokensSection({ accounts, workspaces = [] }: { accounts: Account[]; workspaces?: Workspace[] }) {
   const router = useRouter();
@@ -104,18 +108,19 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
     <SettingsSection
       title="Runner tokens"
       bare
-      action={<Link href="/app/accounts/new" className="btn btn-primary">+ New token</Link>}
+      id="runner-tokens"
+      // One primary: with tokens the header link is a plain button; empty, the
+      // inline "Create a runner token" below is the primary and this is hidden.
+      action={accounts.length > 0 ? <Link href={NEW_TOKEN_HREF} className="btn" data-testid="new-token">+ New token</Link> : undefined}
     >
       <p className="text-xs text-text-secondary mb-3">
-        For runners, CI and analytics clients. Model credentials are in Connections.
+        For runners, CI and analytics clients. Model sign-ins are on Models.
       </p>
 
       {accounts.length === 0 ? (
-        <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No runner tokens</p>
-          <Link href="/app/accounts/new" className="btn btn-primary">
-            Create a runner token
-          </Link>
+        <div className="flex flex-wrap items-center gap-3" data-testid="runner-tokens-empty">
+          <p className="text-sm text-text-muted">No runner tokens yet.</p>
+          <PrimaryAction href={NEW_TOKEN_HREF}>Create a runner token</PrimaryAction>
         </div>
       ) : (
         <div className="card divide-y divide-border-default p-0">
@@ -132,11 +137,11 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                      <span className="font-mono text-[13px] font-semibold text-text-primary truncate">{group.team}</span>
+                      <span className="text-sm font-semibold text-text-primary truncate">{group.team}</span>
                       {unlinked > 0 && <StatusChip tone="warn">{unlinked} unlinked</StatusChip>}
                     </span>
-                    <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">
-                      {group.tokens.length} token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
+                    <span className="mt-1 block truncate text-meta text-text-muted">
+                      <span className="font-mono">{group.tokens.length}</span> token{group.tokens.length === 1 ? '' : 's'}{seen ? ` · ${seen}` : ''}
                     </span>
                   </span>
                   <span aria-hidden="true" className={`shrink-0 font-mono text-[12px] text-text-muted transition-transform ${teamOpen ? 'rotate-180' : ''}`}>▾</span>
@@ -156,18 +161,18 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                           >
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="font-mono text-[13px] font-medium text-text-primary truncate">{account.name}</span>
+                                <span className="text-sm font-medium text-text-primary truncate">{account.name}</span>
                                 {hasWarning && (
                                   <span className="w-2 h-2 bg-status-warning flex-shrink-0" title="No workspace linked" />
                                 )}
                               </div>
                               {account.expiresAt && (
-                                <div className={`mt-0.5 font-mono text-[11px] ${new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : 'text-text-muted'}`}>
+                                <div className={`mt-0.5 text-meta ${new Date(account.expiresAt).getTime() <= Date.now() ? 'text-status-warning' : 'text-text-muted'}`}>
                                   {new Date(account.expiresAt).getTime() <= Date.now() ? 'Expired' : 'Expires'} {new Date(account.expiresAt).toLocaleDateString()}
                                 </div>
                               )}
                               {seenLabel(account.lastSeenAt) && (
-                                <div data-testid="token-last-seen" className="mt-0.5 font-mono text-[11px] text-text-muted">{seenLabel(account.lastSeenAt)}</div>
+                                <div data-testid="token-last-seen" className="mt-0.5 text-meta text-text-muted">{seenLabel(account.lastSeenAt)}</div>
                               )}
                             </div>
                             <code className="text-xs text-text-muted font-mono flex-shrink-0">

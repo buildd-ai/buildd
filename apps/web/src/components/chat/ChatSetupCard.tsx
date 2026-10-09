@@ -14,7 +14,7 @@ export type ChatSetupReason = 'no_key';
 
 /** Settings screens that fix each reason. */
 export const CHAT_SETTINGS_HREF = {
-  teamKeys: '/app/settings/providers',
+  teamKeys: '/app/settings/models#keys',
   ownKey: '/app/settings/account',
 } as const;
 

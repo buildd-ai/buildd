@@ -21,7 +21,7 @@ assertions:
 # Design System
 
 **Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
-**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/ui/StatePill.tsx`, `apps/web/src/components/ui/states.ts`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
+**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/ui/StatePill.tsx`, `apps/web/src/components/ui/states.ts`, `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
 `ui_designer` skill, its `references/` files and `mobile-feed-spec.md` point here

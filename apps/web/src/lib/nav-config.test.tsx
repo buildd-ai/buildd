@@ -86,7 +86,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/settings')).toBe('Settings');
     expect(mobilePageTitle('/app/settings/account')).toBe('Profile');
     expect(mobilePageTitle('/app/settings/runners')).toBe('Runners');
-    expect(mobilePageTitle('/app/settings/models')).toBe('Model tiers');
+    expect(mobilePageTitle('/app/settings/models')).toBe('Models');
     expect(mobilePageTitle('/app/settings/workspace/ws-1')).toBe('Workspaces');
   });
 

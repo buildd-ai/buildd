@@ -345,7 +345,7 @@ Concretely:
   missions so "release" has no single target; a task cannot release on its
   own (§10.3).
 - **Workspace config — configuration only.** `ReleaseSection.tsx` on
-  `/app/workspaces/[id]/config` keeps the strategy selector, branch pickers,
+  `/app/settings/workspace/[id]` keeps the strategy selector, branch pickers,
   trigger-policy selector, and read-only Vercel-token status — everything
   that decides *how* a release runs. The `Release now` button that currently
   lives there is **removed from that surface** and relocated to Home. Configuration and action were conflated in one card;
@@ -404,7 +404,7 @@ detail get the same component, not two implementations to keep in sync.
   renders, THEN no `Release now` button (or other trigger control) and no
   workspace queue depth is present; the Home readiness widget carries the
   trigger (§10.2).
-- **AC-47**: WHEN `/app/workspaces/[id]/config` renders the release section,
+- **AC-47**: WHEN `/app/settings/workspace/[id]` renders the release section,
   THEN no `Release now` button (or equivalent trigger control) is present in
   the DOM — only strategy, branch, trigger-policy, and read-only token-status
   fields.
@@ -446,7 +446,7 @@ detail get the same component, not two implementations to keep in sync.
 - `apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx` and
   `apps/web/src/lib/release-readiness.ts` — Home exception widget (§8.2);
   gains the trigger action (§10.2, AC-46).
-- `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`
+- `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx`
   — loses the `Release now` button (§10.2, AC-47); keeps strategy/branch/
   trigger-policy/token-status fields.
 - `apps/web/src/app/app/(protected)/releases/[id]/page.tsx` — release detail;

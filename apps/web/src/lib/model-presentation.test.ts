@@ -45,16 +45,10 @@ describe('no surface keeps its own humaniser', () => {
     readFileSync(join(WEB_SRC, rel), 'utf8').includes(needle);
 
   test('the role page no longer hardcodes a model generation', () => {
-    const page = 'app/app/(protected)/team/[slug]/page.tsx';
+    const page = 'app/app/(protected)/settings/roles/[slug]/page.tsx';
     expect(has(page, 'Claude Opus 4')).toBe(false);
     expect(has(page, 'Claude Sonnet 4')).toBe(false);
     expect(has(page, 'roleModelLabel')).toBe(true);
-  });
-
-  test('the skill list no longer keeps a MODEL_LABELS map', () => {
-    const list = 'app/app/(protected)/workspaces/[id]/skills/SkillList.tsx';
-    expect(has(list, 'MODEL_LABELS')).toBe(false);
-    expect(has(list, 'roleModelLabel')).toBe(true);
   });
 
   test('no task surface strips the claude- prefix by hand', () => {

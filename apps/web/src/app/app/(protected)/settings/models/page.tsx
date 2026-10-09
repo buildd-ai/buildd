@@ -1,53 +1,88 @@
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
-import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
+import { hasTeamInferenceKey } from '@buildd/core/inference-keys';
+import Section from '@/components/ui/Section';
+import SettingsPage from '../_components/SettingsPage';
+import { loadSettingsContext } from '../_lib/settings-context';
+import { teamIdsHolding } from '../_lib/settings-permissions';
+import ModelProvidersClient from '../providers/ModelProvidersClient';
+import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
+import AgentBackendsSection from '../AgentBackendsSection';
 import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
-import LegacyAnchorRedirect from '../_components/LegacyAnchorRedirect';
-import { roleHas } from '@/lib/permission-registry';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import ModelFeatures from '../ai/ModelFeatures';
+// Experiment: remove with apps/web/src/lib/chat-retro/ (see its REMOVAL.md).
+import ChatRetroSection from '@/lib/chat-retro/ChatRetroSection';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → AI → Model tiers.
+ * Settings → Models: every model concern on one page, in the order you set it
+ * up. Keys (provider keys at team, workspace or personal scope), Runner
+ * sign-ins (what agent runs log in with), Routing (gateway, decision model,
+ * agent endpoint), Tiers (which model each tier runs, limits, upgrades) and
+ * Features (where AI features run). Was /app/settings/providers and
+ * /app/settings/ai; next.config redirects both here.
  *
- * One table of tier x surface cells, the new-chat default as one row, then
- * the model-upgrade policy (how tiers move to newly certified models).
- * Everyone in the team can see it; only owners and admins can change it (the APIs enforce the same rule, this only decides which
- * controls render). Provider keys live at /app/settings/providers.
+ * Every section is a client component that loads its own data, so one failed
+ * read blanks that section, not the page. Each control follows the permission
+ * its API enforces; this only decides what renders.
  */
-export default async function ModelTiersPage() {
-  const user = await getCurrentUser();
-  if (!user) redirect('/app/auth/signin');
+export default async function ModelsSettingsPage() {
+  const { currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
 
-  const cookieStore = await cookies();
-  const [teamId, teams] = await Promise.all([
-    resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value).catch(() => null),
-    getUserTeamsWithDetails(user.id).catch(() => []),
-  ]);
-  const team = teams.find((t) => t.id === teamId) ?? null;
-  const isAdmin = (!!team && roleHas(team.role, 'manage_model_tiers', await getTeamPermissionOverrides(team.id))) || team?.slug === `personal-${user.id}`;
+  if (!currentTeam) {
+    return (
+      <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide>
+        <p className="text-sm text-text-secondary">Join or create a team to connect a model provider.</p>
+      </SettingsPage>
+    );
+  }
+
+  const teamId = currentTeam.id;
+  const teamWorkspaces = workspaces.filter((w) => w.teamId === teamId);
+  const hasTeamKey = await hasTeamInferenceKey(teamId).catch(() => false);
 
   return (
-    <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">
-      <div className="max-w-6xl">
-        {/* #provider-keys moved to Settings → Model providers. */}
-        <LegacyAnchorRedirect />
-        {teamId ? (
-          <>
-            <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
-            <TierLimitSection teamId={teamId} isAdmin={isAdmin} />
-            <ChatTierPolicySection teamId={teamId} isAdmin={isAdmin} />
-            <ModelUpgradePolicySection teamId={teamId} isAdmin={isAdmin} />
-          </>
-        ) : (
-          <p className="text-sm text-text-secondary">Join or create a team to set up model tiers.</p>
-        )}
-      </div>
-    </main>
+    <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide>
+      <ModelProvidersClient
+        teamId={teamId}
+        isAdmin={perms.manage_inference_providers}
+        workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
+        between={
+          <Section title="Runner sign-ins" id="sign-ins" className="scroll-mt-20">
+            {/* Old links: /app/settings/runners#agent-backends and /app/settings#agent-backends. */}
+            <span id="agent-backends" aria-hidden="true" />
+            {teamWorkspaces.length > 0 ? (
+              <div data-testid="models-sign-ins" className="border-y border-border-default divide-y divide-border-default">
+                <AgentBackendsSection
+                  workspaces={workspaces}
+                  currentTeamId={currentTeamId}
+                  manageableTeamIds={teamIdsHolding(permsByTeam, 'manage_team_credentials')}
+                  canManage={perms.manage_team_credentials}
+                  canManageRouting={perms.manage_team_settings}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted">Add a workspace to connect a runner sign-in.</p>
+            )}
+          </Section>
+        }
+      />
+
+      <Section title="Tiers" id="tiers" className="scroll-mt-20">
+        <ModelTiersClient teamId={teamId} teamName={currentTeam.name ?? null} isAdmin={perms.manage_model_tiers} />
+        <TierLimitSection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+        <ChatTierPolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+        <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
+      </Section>
+
+      <Section title="Features" id="features" className="scroll-mt-20">
+        {/* Old /app/settings#inference-spending links. */}
+        <span id="inference-spending" aria-hidden="true" />
+        <ModelFeatures teamId={teamId} canManage={perms.manage_team_settings} hasTeamKey={hasTeamKey} />
+        <ChatRetroSection teamId={teamId} isAdmin={perms.manage_chat_retro} />
+      </Section>
+    </SettingsPage>
   );
 }

@@ -1,10 +1,27 @@
 import { db } from '@buildd/core/db';
 import { teamInvitations, teams, users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import AcceptInvitationButton from './AcceptButton';
+import Notice from '@/components/ui/Notice';
+import type { ReactNode } from 'react';
+
+const FRAME = 'pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10';
+
+/** The invitation page frame: one title, then the one thing to do. */
+function InvitationFrame({ children }: { children: ReactNode }) {
+  return (
+    <main className={FRAME}>
+      <div className="max-w-md space-y-6">
+        <h1 className="text-xl font-semibold text-text-primary">Team invitation</h1>
+        {children}
+      </div>
+    </main>
+  );
+}
+
+const HOME = { label: 'Go to home', href: '/app/home' };
 
 export default async function InvitationPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -20,17 +37,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (!invitation) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
-        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Not Found</h1>
-          <p className="text-text-secondary mb-6">
-            This invitation link is invalid or revoked.
-          </p>
-          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to workspaces
-          </Link>
-        </div>
-      </div>
+      <InvitationFrame>
+        <Notice tone="err" title="Invitation not found" action={HOME}>
+          This invitation link is invalid or revoked.
+        </Notice>
+      </InvitationFrame>
     );
   }
 
@@ -53,17 +64,11 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (invitation.status === 'accepted') {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
-        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-text-primary mb-2">Already Accepted</h1>
-          <p className="text-text-secondary mb-6">
-            You already accepted this invitation. You're a member of <strong>{team?.name}</strong>.
-          </p>
-          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to workspaces
-          </Link>
-        </div>
-      </div>
+      <InvitationFrame>
+        <Notice tone="ok" title="Already accepted" action={{ label: 'Open team settings', href: '/app/settings/team' }}>
+          You already accepted this invitation. You&apos;re a member of <strong>{team?.name}</strong>.
+        </Notice>
+      </InvitationFrame>
     );
   }
 
@@ -71,35 +76,26 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
 
   if (isExpired) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
-        <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-          <h1 className="text-xl font-semibold text-text-primary mb-2">Invitation Expired</h1>
-          <p className="text-text-secondary mb-6">
-            This invitation expired. Ask a team admin to send a new one.
-          </p>
-          <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to workspaces
-          </Link>
-        </div>
-      </div>
+      <InvitationFrame>
+        <Notice tone="warn" title="Invitation expired" action={HOME}>
+          Ask a team admin to send a new one.
+        </Notice>
+      </InvitationFrame>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 pt-4 pb-24 md:py-8">
-      <div className="bg-surface-2 rounded-lg shadow-lg p-8 max-w-md w-full text-center">
-        <h1 className="text-xl font-semibold text-text-primary mb-2">Team Invitation</h1>
-        <p className="text-text-secondary mb-1">
+    <InvitationFrame>
+      <div className="space-y-1">
+        <p className="text-text-secondary">
           {inviterName ? <>{inviterName} invited you to join</> : <>You&apos;re invited to join</>}
         </p>
-        <p className="text-lg font-semibold text-text-primary mb-1">
-          {team?.name}
-        </p>
-        <p className="text-sm text-text-muted mb-6">
+        <p className="text-lg font-semibold text-text-primary">{team?.name}</p>
+        <p className="text-sm text-text-muted">
           as <span className="font-medium capitalize">{invitation.role}</span>
         </p>
-        <AcceptInvitationButton token={token} />
       </div>
-    </div>
+      <AcceptInvitationButton token={token} />
+    </InvitationFrame>
   );
 }

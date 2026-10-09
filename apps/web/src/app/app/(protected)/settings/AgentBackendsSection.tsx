@@ -7,10 +7,8 @@ import { useConfirm } from '@/components/useConfirm';
 import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
 import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
 
-/** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
-const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
-/** Your own model key, on Profile: the path a member has when team credentials are admin-only. */
-const OWN_KEY_HREF = '/app/settings/account#provider-keys';
+/** Settings → Models → Routing → Agent model endpoint (OpenRouter, LiteLLM). */
+const AGENT_ENDPOINT_HREF = '/app/settings/models#agent-endpoint-h';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -24,7 +22,7 @@ function CredActionRow({ children }: { children: ReactNode }) {
 function CredAction({
   onClick, children, disabled, tone = 'neutral',
 }: { onClick: () => void; children: ReactNode; disabled?: boolean; tone?: 'primary' | 'neutral' | 'danger' }) {
-  const toneCls = tone === 'primary' ? 'btn-accent' : tone === 'danger' ? 'btn-danger' : '';
+  const toneCls = tone === 'danger' ? 'btn-danger' : '';
   return (
     <button onClick={onClick} disabled={disabled} className={`btn ${toneCls}`}>
       {children}
@@ -102,9 +100,9 @@ function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
   return (
     <div className="inset-panel border border-status-error/30 space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="status-pill status-pill-err">
+        <StatusChip tone="err">
           Stranding {n} pending task{plural}
-        </span>
+        </StatusChip>
         <span className="text-xs text-text-muted">no runner can claim {them}</span>
       </div>
       <p className="text-xs text-text-secondary">
@@ -156,8 +154,8 @@ interface Props {
   manageableTeamIds?: string[];
   /**
    * May write team-wide and workspace credentials in the active team
-   * (`manage_team_credentials`). False: every row shows its status only, with
-   * the person's own-key path named instead. Defaults to true.
+   * (`manage_team_credentials`). False: every row shows its status only (the
+   * person's own key is under Keys on the same page). Defaults to true.
    */
   canManage?: boolean;
   /** May change provider routing, a team setting (`manage_team_settings`). Defaults to `canManage`. */
@@ -261,7 +259,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
   }, [teamId, showSeat, open]);
 
   // Deep link from the getting-started checklist and the failed-task page:
-  // /app/settings/runners#agent-key opens the Claude row on the key field.
+  // /app/settings/models#agent-key opens the Claude row on the key field.
   useEffect(() => {
     if (typeof window === 'undefined' || window.location.hash !== '#agent-key') return;
     setOpen('claude');
@@ -313,8 +311,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
     <>
       {readOnly && (
         <p data-testid="credentials-read-only" className="px-4 py-3 text-xs text-text-secondary">
-          Admins can change these.{' '}
-          <a href={OWN_KEY_HREF} className="text-accent-text hover:underline">Add your own key</a>
+          Admins can change these.
         </p>
       )}
       <StoredSeatNotice kinds={storedSeats} />
@@ -527,7 +524,7 @@ function ProviderRoutingToggle({
             <button
               onClick={() => toggle(b)}
               disabled={busy || !loaded}
-              className={`btn ${isOn(b) ? '' : 'btn-accent'}`}
+              className="btn"
             >
               {isOn(b) ? 'Disable' : 'Enable'}
             </button>
@@ -753,11 +750,11 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {matching[0].healthStatus === 'revoked' ? (
-              <span className="status-pill status-pill-err">Revoked · re-auth required</span>
+              <StatusChip tone="err">Revoked · re-auth required</StatusChip>
             ) : matching[0].healthStatus === 'degraded' ? (
-              <span className="status-pill status-pill-warn">Degraded · auth failures</span>
+              <StatusChip tone="warn">Degraded · auth failures</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
           </div>
@@ -806,7 +803,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
           {allTeams ? (
             <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
           ) : mode === 'setup_token' ? (
-            <span className="status-pill status-pill-idle">Not connected</span>
+            <StatusChip tone="idle">Not connected</StatusChip>
           ) : null}
           {inputForm}
         </div>
@@ -1204,11 +1201,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       onToggle={onToggle}
       readOnly={readOnly}
       action={needsReconnect ? (
-        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
+        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn">
           Reconnect
         </button>
       ) : needsKey ? (
-        <button onClick={onAddKey} className="btn btn-accent">
+        <button onClick={onAddKey} className="btn">
           Add key
         </button>
       ) : undefined}
@@ -1241,13 +1238,13 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired · reconnect</span>
+              <StatusChip tone="warn">Expired · reconnect</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
             {status.expired && status.healthStatus === 'revoked' && fallbackConnected && (
-              <span className="status-pill status-pill-ok">Workers using setup token as fallback</span>
+              <StatusChip tone="ok">Workers using setup token as fallback</StatusChip>
             )}
           </div>
 
@@ -1288,9 +1285,9 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       ) : (
         <div className="space-y-3">
           {fallbackConnected ? (
-            <span className="status-pill status-pill-ok">Connected via setup token / API key</span>
+            <StatusChip tone="ok">Connected via setup token / API key</StatusChip>
           ) : (
-            <span className="status-pill status-pill-idle">Not connected</span>
+            <StatusChip tone="idle">Not connected</StatusChip>
           )}
           {/* OAuth connect (short code) is the clean primary path. */}
           {oauth ? (
@@ -1608,7 +1605,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       onToggle={onToggle}
       readOnly={readOnly}
       action={needsSignIn ? (
-        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className={`btn ${status?.expired ? 'btn-accent' : ''}`}>
+        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className="btn">
           Sign in
         </button>
       ) : undefined}
@@ -1623,9 +1620,9 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired · refresh needed</span>
+              <StatusChip tone="warn">Expired · refresh needed</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
           </div>
@@ -1669,7 +1666,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         <p data-testid="codex-all-teams" className="text-xs text-text-muted">{ROTATING_CREDENTIAL_ALL_TEAMS_ERROR}</p>
       ) : (
         <div className="space-y-3">
-          <span className="status-pill status-pill-idle">Not connected</span>
+          <StatusChip tone="idle">Not connected</StatusChip>
           {/* Device login mints a buildd-owned session — no pasted file to go stale. */}
           {device ? (
             <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}

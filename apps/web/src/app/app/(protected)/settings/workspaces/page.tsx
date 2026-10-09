@@ -53,14 +53,14 @@ export default async function WorkspacesSettingsPage() {
         <div className="flex items-center justify-between gap-3 mb-1 min-h-8">
           <h2 id="ws-list-h" className="section-label">Your workspaces</h2>
           {canCreate
-            ? <Link href="/app/workspaces/new" className="btn btn-quiet">New workspace</Link>
+            ? <Link href="/app/settings/workspaces/new" className="btn btn-sm">New workspace</Link>
             : <span data-testid="create-workspace-read-only" className="text-xs text-text-muted">Admins can create workspaces.</span>}
         </div>
         {rows.length === 0 ? (
-          <div className="card p-6 text-center">
-            <p className={`text-sm text-text-secondary ${canCreate ? 'mb-3' : ''}`}>No workspaces.</p>
-            {canCreate && <Link href="/app/workspaces/new" className="btn btn-primary">Create a workspace</Link>}
-          </div>
+          <p className="text-sm text-text-muted" data-testid="workspaces-empty">
+            No workspaces yet.
+            {canCreate && <>{' '}<Link href="/app/settings/workspaces/new" className="underline text-text-primary hover:text-text-secondary">Create one</Link></>}
+          </p>
         ) : (
           <WorkspacesTable rows={rows} moveTeams={moveTeams} defaults={WORKSPACE_DEFAULTS} now={new Date().toISOString()} />
         )}

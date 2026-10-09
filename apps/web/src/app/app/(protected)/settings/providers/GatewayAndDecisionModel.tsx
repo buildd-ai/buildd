@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { keyHealthPill, keyHealthTone, type KeyHealth } from '@/lib/provider-keys-client';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
+import { StatusChip } from '../_components/ConnectionRow';
 
 /**
  * Settings → Model providers: the team's LiteLLM gateway and which model
@@ -140,7 +141,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0 px-3 py-2.5 border-b border-border-default">
         <span aria-hidden className={`w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE[tone]}`} />
         <b className="min-w-0 break-words text-body font-semibold text-text-primary">LiteLLM gateway</b>
-        <span className={`status-pill status-pill-${pill.tone} shrink-0 ml-auto`} data-testid="litellm-gateway-health">{pill.label}</span>
+        <span className="shrink-0 ml-auto inline-flex" data-testid="litellm-gateway-health"><StatusChip tone={pill.tone}>{pill.label}</StatusChip></span>
       </div>
       <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
         <div className="flex items-baseline justify-between gap-3">

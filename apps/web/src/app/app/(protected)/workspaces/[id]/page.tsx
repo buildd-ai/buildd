@@ -1,16 +1,20 @@
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions, memories } from '@buildd/core/db/schema';
+import { workspaces, tasks, taskSchedules, workers, artifacts, missions, memories } from '@buildd/core/db/schema';
 import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
 import { workspaceProjectKey } from '@buildd/core/project-scope';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { notFound, redirect } from 'next/navigation';
-import { ConnectRunnerSection } from './connect-runner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { roleHas } from '@/lib/permission-registry';
-import { RepoLinkCard } from './config/RepoLinkCard';
+import { RepoLinkCard } from '../../settings/workspace/[workspaceId]/RepoLinkCard';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { primaryActionClass } from '@/components/ui/PrimaryAction';
+import Lede from '@/components/ui/Lede';
+import Section from '@/components/ui/Section';
+import { StatusPill } from '@/components/ui/StatePill';
+import { taskCountLede } from './overview-lede';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -23,10 +27,8 @@ export default async function WorkspaceDetailPage({
 
   if (isDev) {
     return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-text-muted">Development mode · no database</p>
-        </div>
+      <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+        <p className="text-text-muted">Development mode · no database</p>
       </main>
     );
   }
@@ -57,11 +59,8 @@ export default async function WorkspaceDetailPage({
     notFound();
   }
 
-  const connectedAccounts = workspace.accountWorkspaces || [];
-  const runners = {
-    service: connectedAccounts.filter((aw) => aw.account?.type === 'service' && aw.canClaim),
-    user: connectedAccounts.filter((aw) => aw.account?.type === 'user' && aw.canClaim),
-  };
+  // Any account that may claim here counts as a runner; the setup lives in Settings › Runners.
+  const hasRunner = (workspace.accountWorkspaces || []).some((aw) => aw.account && aw.canClaim);
 
   const taskCounts = await db
     .select({ status: tasks.status, count: count() })
@@ -103,12 +102,6 @@ export default async function WorkspaceDetailPage({
     .where(eq(missions.workspaceId, id));
   const missionCount = Number(objCount?.count || 0);
 
-  const [skillCount] = await db
-    .select({ count: count() })
-    .from(workspaceSkills)
-    .where(eq(workspaceSkills.workspaceId, id));
-  const skillsCount = Number(skillCount?.count || 0);
-
   // Count deliverable artifacts (exclude plan types)
   const wsWorkerIds = await db
     .select({ id: workers.id })
@@ -127,156 +120,85 @@ export default async function WorkspaceDetailPage({
     artifactCount = Number(artCount?.count || 0);
   }
 
-  return (
-    <main className="min-h-screen p-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
-        <Link href="/app/workspaces" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-          &larr; Workspaces
-        </Link>
+  const canManage = roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId));
+  const links: Array<{ href: string; label: string; count?: number }> = [
+    { href: `/app/settings/workspace/${workspace.id}`, label: 'Settings' },
+    { href: `/app/workspaces/${workspace.id}/memory`, label: 'Memory', count: memoryCount },
+    { href: `/app/missions?workspaceId=${workspace.id}`, label: 'Missions', count: missionCount },
+    { href: `/app/workspaces/${workspace.id}/schedules`, label: 'Schedules', count: scheduleCount },
+    { href: `/app/workspaces/${workspace.id}/artifacts`, label: 'Artifacts', count: artifactCount },
+    { href: `/app/health/runners?workspace=${workspace.id}`, label: 'Runners' },
+    { href: '/app/settings/roles', label: 'Roles' },
+  ];
 
-        <div className="flex flex-col md:flex-row justify-between items-start mb-4 gap-4">
-          <div className="min-w-0 pr-4">
-            <h1 className="text-2xl md:text-[28px] font-semibold tracking-tight text-text-primary break-all">{workspace.name}</h1>
+  return (
+    <main className="pt-[4.5rem] px-4 pb-24 md:px-8 md:pt-8 md:pb-10">
+      <div className="max-w-4xl space-y-6">
+        <header className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold text-text-primary break-all">{workspace.name}</h1>
             {workspace.repo && (
-              <p className="text-sm md:text-base text-text-muted mt-1 break-all">{workspace.repo}</p>
+              <p className="mt-1 font-mono text-sm text-text-muted break-all">{workspace.repo}</p>
             )}
           </div>
-          <div className="flex gap-2 w-full md:w-auto shrink-0">
-            {/* Delete lives in Configure's danger zone, not beside the primary action. */}
-            <NewWorkLink
-              kind="task"
-              workspaceId={workspace.id}
-              className="px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base whitespace-nowrap bg-primary text-white hover:bg-primary-hover"
-            >
-              + New Task
-            </NewWorkLink>
-          </div>
-        </div>
+          {/* Delete lives in Settings' danger zone, not beside the primary action. */}
+          <NewWorkLink
+            kind="task"
+            workspaceId={workspace.id}
+            className={primaryActionClass({ fullWidthOnMobile: true, className: 'shrink-0' })}
+          >
+            New task
+          </NewWorkLink>
+        </header>
+
+        <nav aria-label="Workspace" data-testid="workspace-links" className="flex flex-wrap gap-2">
+          {links.map((l) => (
+            <Link key={l.label} href={l.href} className="btn btn-sm">
+              {l.label}
+              {l.count ? <span className="ml-1.5 font-mono text-text-muted">{l.count}</span> : null}
+            </Link>
+          ))}
+        </nav>
+
+        <Lede>{taskCountLede(taskCountMap)}</Lede>
 
         {/* No repo means workers have nothing to work in; linking one is an admin write. */}
-        {!workspace.repo && roleHas(access.role, 'manage_workspace_settings', await getTeamPermissionOverrides(access.teamId)) && (
-          <RepoLinkCard workspaceId={workspace.id} />
+        {!workspace.repo && canManage && <RepoLinkCard workspaceId={workspace.id} />}
+
+        {!hasRunner && (
+          <p className="text-sm text-text-muted" data-testid="workspace-no-runner">
+            No runner has picked up work here yet. Set one up in{' '}
+            <Link href="/app/settings/runners" className="underline hover:text-text-primary">Settings › Runners</Link>.
+          </p>
         )}
 
-        {/* Tab bar — scrolls sideways on phones; the edge fade signals there
-            is more (Configure is otherwise off-screen). */}
-        <div className="relative mb-8">
-        <div
-          data-testid="workspace-tab-bar"
-          className="flex gap-1 border-b border-border-default pb-0 overflow-x-auto whitespace-nowrap scrollbar-hide pr-12 md:pr-0"
+        <Section
+          title="Recent tasks"
+          count={workspace.tasks?.length || undefined}
+          action={
+            <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="btn btn-sm">
+              View all
+            </Link>
+          }
         >
-          <Link
-            href={`/app/missions?workspaceId=${workspace.id}`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Missions{missionCount > 0 ? ` (${missionCount})` : ''}
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/artifacts`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Artifacts{artifactCount > 0 ? ` (${artifactCount})` : ''}
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/schedules`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Schedules{scheduleCount > 0 ? ` (${scheduleCount})` : ''}
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/skills`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Skills{skillsCount > 0 ? ` (${skillsCount})` : ''}
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/runners`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Runners
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/memory`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Memory{memoryCount > 0 ? ` (${memoryCount})` : ''}
-          </Link>
-          <Link
-            href={`/app/workspaces/${workspace.id}/config`}
-            className="inline-flex items-center min-h-11 md:min-h-0 px-3 py-2 text-[13px] font-medium text-text-secondary hover:text-text-primary border-b-2 border-transparent hover:border-text-muted -mb-px"
-          >
-            Configure
-          </Link>
-        </div>
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute right-0 top-0 bottom-px w-12 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
-        />
-        </div>
-
-        {/* Task Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <div className="bg-surface-2 border border-border-default p-4">
-            <div className="text-2xl font-semibold">{taskCountMap['pending'] || 0}</div>
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Pending</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default p-4">
-            <div className="text-2xl font-semibold">{taskCountMap['assigned'] || 0}</div>
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Assigned</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default p-4">
-            <div className="text-2xl font-semibold">{taskCountMap['completed'] || 0}</div>
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Completed</div>
-          </div>
-          <div className="bg-surface-2 border border-border-default p-4">
-            <div className="text-2xl font-semibold">{taskCountMap['failed'] || 0}</div>
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted">Failed</div>
-          </div>
-        </div>
-
-        {/* Runners */}
-        <ConnectRunnerSection
-          workspaceId={workspace.id}
-          runners={{
-            service: runners.service.map(r => r.account?.name || 'Unknown'),
-            user: runners.user.map(r => r.account?.name || 'Unknown'),
-          }}
-        />
-
-        {/* Recent Tasks */}
-        {workspace.tasks && workspace.tasks.length > 0 && (
-          <div>
-            <div className="flex justify-between items-center font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
-              <span>Recent Tasks</span>
-              <Link href={`/app/tasks?workspaceId=${workspace.id}`} className="text-primary hover:underline normal-case tracking-normal font-sans text-sm">
-                View all
-              </Link>
-            </div>
-            <div className="border border-border-default divide-y divide-border-default">
+          {workspace.tasks && workspace.tasks.length > 0 && (
+            <ul className="divide-y divide-border-default border-y border-border-default">
               {workspace.tasks.map((task) => (
-                <Link
-                  key={task.id}
-                  href={`/app/tasks/${task.id}`}
-                  className="block p-4 hover:bg-surface-3"
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-medium">{task.title}</h3>
-                      <p className="text-sm text-text-muted line-clamp-1">{task.description}</p>
+                <li key={task.id}>
+                  <Link href={`/app/tasks/${task.id}`} className="flex items-start justify-between gap-3 py-3 hover:bg-surface-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-text-primary truncate">{task.title}</p>
+                      {task.description && (
+                        <p className="text-sm text-text-muted line-clamp-1">{task.description}</p>
+                      )}
                     </div>
-                    <span className={`px-2 py-1 text-xs rounded-full ${task.status === 'completed' ? 'bg-status-success/10 text-status-success' :
-                      task.status === 'failed' ? 'bg-status-error/10 text-status-error' :
-                        task.status === 'assigned' ? 'bg-primary/10 text-primary' :
-                          'bg-status-warning/10 text-status-warning'
-                      }`}>
-                      {task.status}
-                    </span>
-                  </div>
-                </Link>
+                    <StatusPill status={task.status} />
+                  </Link>
+                </li>
               ))}
-            </div>
-          </div>
-        )}
+            </ul>
+          )}
+        </Section>
       </div>
     </main>
   );

@@ -363,7 +363,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
               ) : null}
               {preset?.authMode === 'header' && (
                 <div>
-                  <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">
                     {preset.headerName || 'API key'}
                   </label>
                   <input
@@ -379,7 +379,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
               {!preset && (
               <>
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
                   Name
                 </label>
                 <input
@@ -392,7 +392,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
                   URL
                 </label>
                 <input
@@ -510,7 +510,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     API key header detected
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
                       {createdConnector.headerName || 'API Key'}
                     </label>
                     <input
