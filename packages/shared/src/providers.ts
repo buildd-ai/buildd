@@ -9,6 +9,8 @@
  */
 
 export type ProviderApiScope = 'team' | 'workspace' | 'mine';
+/** A permission a provider credential write can need (`@buildd/core/providers/manage` `writePermissions`). */
+export type ProviderWritePermission = 'manage_team_model_keys' | 'manage_team_credentials' | 'manage_inference_providers';
 export type ProviderSurfaceId = 'chat' | 'agent-claude' | 'agent-codex' | 'cloud-egress';
 export type ProviderShapeId = 'api_key' | 'setup_token' | 'oauth_managed' | 'gateway' | 'endpoint';
 export type CredentialPolicyValue = 'team' | 'personal_first' | 'personal_only';
@@ -49,8 +51,11 @@ export interface ProviderShapeListing {
   refreshes: boolean;
   /** Connected in the browser, never pasted (subscription seats). */
   connectInBrowser: boolean;
-  /** Where a write at each scope is stored; null when the scope is closed to this provider. */
-  writesTo: Record<ProviderApiScope, { purpose: string; label: string | null } | null>;
+  /**
+   * Where a write at each scope is stored, and every permission it needs (all
+   * of them; empty for `mine`); null when the scope is closed to this provider.
+   */
+  writesTo: Record<ProviderApiScope, { purpose: string; label: string | null; permissions: ProviderWritePermission[] } | null>;
 }
 
 export interface ProviderListing {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PROVIDER_REGISTRY } from '@buildd/core/providers';
-import { PROVIDER_API_SCOPES, writePermission, writeStorage } from '@buildd/core/providers/manage';
+import { PROVIDER_API_SCOPES, writePermissions, writeStorage } from '@buildd/core/providers/manage';
 import { fixtureResponse } from '../../../dev/fixtures/providers-fixture-data';
 import {
   ADMINS_ONLY,
@@ -15,22 +15,57 @@ import {
   policySentence,
   servesLine,
   surfaceList,
-  writePermissionFor,
+  writePermissionsFor,
 } from './providers-view';
 
 const listing = (res: ReturnType<typeof fixtureResponse>, id: string) => res.providers.find((p) => p.id === id)!;
 
-describe('writePermissionFor', () => {
-  it('matches the server rule for every shape at every scope', () => {
+describe('writePermissionsFor', () => {
+  it('is every permission the server rule asks for, for every shape at every scope', () => {
+    const res = fixtureResponse({ workspaceId: 'ws-a' });
     for (const p of PROVIDER_REGISTRY) {
+      const l = listing(res, p.id);
       for (const shape of p.shapes) {
+        const s = l.shapes.find((x) => x.id === shape.id)!;
         for (const scope of PROVIDER_API_SCOPES) {
-          const storage = writeStorage(p.id, shape, scope);
-          expect(`${p.id}/${shape.id}/${scope}:${writePermissionFor(shape.id, storage.purpose)}`)
-            .toBe(`${p.id}/${shape.id}/${scope}:${writePermission(shape, storage)}`);
+          if (!s.writesTo[scope]) continue;
+          const expected = scope === 'mine' ? [] : writePermissions(shape, writeStorage(p.id, shape, scope));
+          expect(`${p.id}/${shape.id}/${scope}:${writePermissionsFor(s, scope).join('+')}`)
+            .toBe(`${p.id}/${shape.id}/${scope}:${expected.join('+')}`);
         }
       }
     }
+  });
+
+  it('an Anthropic or OpenAI team key needs both the model-key and the team-credential permission', () => {
+    const res = fixtureResponse({});
+    for (const id of ['anthropic', 'openai']) {
+      const s = listing(res, id).shapes.find((x) => x.id === 'api_key')!;
+      expect(writePermissionsFor(s, 'team')).toEqual(['manage_team_model_keys', 'manage_team_credentials']);
+    }
+  });
+});
+
+describe('cardView follows every permission a write needs', () => {
+  const only = (perm: string) => ({ manage_team_model_keys: false, manage_team_credentials: false, manage_inference_providers: false, manage_team_settings: false, [perm]: true });
+
+  it('the model-key permission alone cannot change a key agent runs read, and says so', () => {
+    const res = { ...fixtureResponse({ workspaceId: 'ws-a' }) };
+    res.caller = { ...res.caller, can: only('manage_team_model_keys') };
+    for (const id of ['anthropic', 'openai']) {
+      for (const scope of ['team', 'workspace'] as const) {
+        const v = cardView(listing(res, id), scope, res);
+        expect(v.edit.kind).toBe('none');
+        expect(v.readOnly).toBe(ADMINS_ONLY);
+      }
+    }
+    expect(cardView(listing(res, 'openrouter'), 'team', res).edit).toEqual({ kind: 'paste', shape: 'api_key' });
+  });
+
+  it('the team-credential permission alone cannot change it either', () => {
+    const res = { ...fixtureResponse({}) };
+    res.caller = { ...res.caller, can: only('manage_team_credentials') };
+    expect(cardView(listing(res, 'anthropic'), 'team', res).readOnly).toBe(ADMINS_ONLY);
   });
 });
 
