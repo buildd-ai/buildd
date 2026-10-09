@@ -317,3 +317,52 @@ export function readEscalationGateRun(run: DecisionRun<typeof ESCALATION_GATE_QU
     actionConfidence: action && a && a.status !== 'skipped' ? a.confidence : null,
   };
 }
+
+// ── A Buildd-owned verdict's step: did it start? (task c06dedf5) ──
+// The dispatchers live in apps/web/src/lib/pr-landing-verdict-dispatch.ts; this
+// is the pure half the gate's read path labels with.
+
+export const DISPATCH_SOURCE = 'escalation_dispatch';
+/** The rule verdicts whose step something must start. Waits and holds start nothing. */
+export const DISPATCHABLE_ACTIONS: ReadonlySet<EscalationAction> = new Set<EscalationAction>([
+  'ci_fix', 'conflict_fix', 'renumber_migration', 'retry_landing', 'policy_merge',
+]);
+/**
+ * A dispatchable verdict with nothing started after this long is the person's.
+ * Longer than one hourly floor sweep, so the sweep gets its turn first.
+ */
+export const DISPATCH_GRACE_MS = 90 * 60_000;
+export type DispatchResult =
+  | { kind: 'dispatched'; taskId: string }
+  | { kind: 'queued'; where: 'landing' }
+  | { kind: 'skipped'; cause: string };
+
+/** What a verdict's dispatch row says, as the read path loads it. */
+export interface StoredDispatch {
+  label: string;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * A Buildd-owned rule verdict as a person should read it: the running task, or
+ * "queued" while the step is starting. A step that could not start, or nothing
+ * started past the grace period, is the person's, with the cause.
+ */
+export function labelWithDispatch(v: EscalationVerdict, dispatch: StoredDispatch | null, ageMs: number): EscalationVerdict {
+  if (v.owner !== 'buildd' || v.by !== 'rule' || !DISPATCHABLE_ACTIONS.has(v.action)) return v;
+  const meta = dispatch?.metadata ?? {};
+  if (dispatch?.label === 'dispatched' && typeof meta.taskId === 'string' && meta.taskId) {
+    return { ...v, reason: `${v.reason} (task ${meta.taskId.slice(0, 8)})` };
+  }
+  if (dispatch?.label === 'queued') return { ...v, reason: `${v.reason} (queued for the merge sweep)` };
+  if (dispatch?.label === 'skipped') {
+    const cause = typeof meta.cause === 'string' ? meta.cause : 'unknown';
+    return { owner: 'person', by: 'rule', reason: `Buildd couldn't start its next step (${cause}), so it is yours.` };
+  }
+  if (ageMs >= DISPATCH_GRACE_MS) {
+    return { owner: 'person', by: 'rule', reason: 'Buildd named a next step but nothing started it, so it is yours.' };
+  }
+  return { ...v, reason: `${v.reason} (queued)` };
+}
+
+
