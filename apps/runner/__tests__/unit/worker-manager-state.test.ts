@@ -460,6 +460,21 @@ describe('WorkerManager — state transitions', () => {
   });
 
   describe('Phase tracking', () => {
+    // Live pause proof (task 4b2b30a9): an agent that only made MCP calls
+    // before its first Bash call sat on "Setting up worktree..." for minutes.
+    test('an MCP tool call moves currentAction off "Setting up worktree..."', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-mcp' },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_m', name: 'mcp__buildd__buildd', input: { action: 'update_progress' } }] } },
+        BLOCK_UNTIL_ABORT,
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-mcp', branch: 'buildd/mcp', task: makeTask() }] }));
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-mcp')?.currentAction?.startsWith('Using ') === true);
+      expect(manager.getWorker('w-mcp')?.currentAction).toBe('Using buildd');
+    });
+
     test('creates milestones from text + tool_use sequences', async () => {
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-phase' },
@@ -791,7 +806,9 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => mockUpdateWorker.mock.calls.some(
+        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.error?.includes('needs_input')
+      ));
 
       // The final cleanup update stays waiting_input and includes waitingFor context
       const finalWaitingCalls = mockUpdateWorker.mock.calls.filter(
@@ -948,6 +965,8 @@ describe('WorkerManager — state transitions', () => {
       expect(worker?.currentAction).toBe('Paused');
       // The session id survives, so Resume continues the same transcript.
       expect(worker?.sessionId).toBe('sess-w-pause');
+      // Nothing failed: no "Task failed" checkpoint after "Paused" (live pause proof, task 4b2b30a9).
+      expect(worker?.milestones.some((m: any) => m.type === 'checkpoint' && m.event === 'task_error')).toBe(false);
       const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-pause');
       expect(calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
       // The last report is the park, carrying the pause, so a sync in between cannot leave it running.

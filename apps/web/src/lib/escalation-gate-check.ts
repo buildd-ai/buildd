@@ -29,8 +29,9 @@
  */
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { decisionRecords } from '@buildd/core/db/schema';
+import { decisionOutcomes, decisionRecords } from '@buildd/core/db/schema';
 import {
+  DISPATCH_SOURCE,
   ESCALATION_GATE_CAPABILITY,
   ESCALATION_GATE_DECISION_TIMEOUT_MS,
   ESCALATION_GATE_MIN_CONFIDENCE,
@@ -43,6 +44,9 @@ import {
   verdictAt,
   verdictCode,
   verdictFromCode,
+  labelWithDispatch,
+  type DispatchResult,
+  type StoredDispatch,
   type EscalationAction,
   type EscalationSubject,
   type EscalationVerdict,
@@ -74,9 +78,13 @@ export interface GatedSubject extends EscalationSubject {
 }
 
 export interface StoredVerdict {
+  /** The decision record's id (absent in older test fixtures). */
+  id?: string;
   fingerprint: string;
   appliedAnswer: string | null;
   createdAt: Date;
+  /** What dispatching a Buildd-owned rule verdict's step did (lib/pr-landing-verdict-dispatch.ts); null: nothing yet. */
+  dispatch?: StoredDispatch | null;
 }
 
 export interface EscalationGateDeps {
@@ -102,10 +110,12 @@ export interface EscalationGateDeps {
   act?: (subject: GatedSubject, action: JevAction) => Promise<void>;
   /**
    * Run a Buildd-owned RULE verdict's step that no sweep takes on its own
-   * (lib/merge-policy-rule-executor.ts: `policy_merge`). Called once per state,
-   * on the look that files the verdict, never on a reuse.
+   * (lib/pr-landing-verdict-dispatch.ts). Called once per state, on the look that
+   * files the verdict, with that verdict's decision record; never on a reuse.
+   * Its answer relabels the verdict (the running task, or the person's when it
+   * could not start).
    */
-  actRule?: (subject: GatedSubject, action: EscalationAction) => Promise<void>;
+  actRule?: (subject: GatedSubject, action: EscalationAction, recordId?: string | null) => Promise<DispatchResult | null | void>;
   now?: () => number;
   maxModelCalls?: number;
 }
@@ -126,18 +136,25 @@ async function defaultLoadStored(teamId: string, keys: string[]): Promise<Map<st
   try {
     const rows = await db
       .select({
+        id: decisionRecords.id,
         subjectId: decisionRecords.subjectId,
         fingerprint: decisionRecords.fingerprint,
         appliedAnswer: decisionRecords.appliedAnswer,
         createdAt: decisionRecords.createdAt,
+        dispatchLabel: decisionOutcomes.label,
+        dispatchMetadata: decisionOutcomes.metadata,
       })
       .from(decisionRecords)
+      .leftJoin(decisionOutcomes, and(eq(decisionOutcomes.decisionRecordId, decisionRecords.id), eq(decisionOutcomes.source, DISPATCH_SOURCE)))
       .where(storedVerdictWhere(teamId, keys))
       .orderBy(desc(decisionRecords.createdAt))
       .limit(keys.length * 4);
     for (const r of rows) {
       if (r.subjectId && !out.has(r.subjectId)) {
-        out.set(r.subjectId, { fingerprint: r.fingerprint, appliedAnswer: r.appliedAnswer, createdAt: r.createdAt });
+        out.set(r.subjectId, {
+          id: r.id, fingerprint: r.fingerprint, appliedAnswer: r.appliedAnswer, createdAt: r.createdAt,
+          dispatch: r.dispatchLabel ? { label: r.dispatchLabel, metadata: (r.dispatchMetadata as Record<string, unknown> | null) ?? null } : null,
+        });
       }
     }
   } catch (err) {
@@ -159,7 +176,7 @@ function reuse(stored: StoredVerdict, nowMs: number): EscalationVerdict | null {
   if (v.owner === 'buildd' && v.action !== 'hold' && nowMs - stored.createdAt.getTime() >= ceiling) {
     return stuck(stored.createdAt, nowMs);
   }
-  return verdictAt(v, nowMs);
+  return labelWithDispatch(verdictAt(v, nowMs), stored.dispatch ?? null, nowMs - stored.createdAt.getTime());
 }
 
 /** A gateway-routed decision model cannot answer a decision pinned to Jev. */
@@ -260,11 +277,14 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
         };
         if (rule) {
           out.set(s.key, rule);
-          await record({
+          const recordId = await record({
             ...ledgerBase, ruleAnswer: verdictCode(rule), appliedAnswer: verdictCode(rule), applied: true, status: 'applied',
             reason: rule.owner === 'person' ? `rule:${rule.rail ?? 'person'}` : `rule:${rule.action}`, latencyMs: now() - started,
-          }).catch(() => {});
-          if (rule.owner === 'buildd' && deps.actRule) await deps.actRule(s, rule.action).catch(() => {});
+          }).catch(() => null);
+          if (rule.owner === 'buildd' && deps.actRule) {
+            const dispatched = await deps.actRule(s, rule.action, typeof recordId === 'string' ? recordId : null).catch(() => null);
+            if (dispatched) out.set(s.key, labelWithDispatch(rule, { label: dispatched.kind, metadata: dispatched as unknown as Record<string, unknown> }, 0));
+          }
           continue;
         }
 

@@ -140,3 +140,8 @@ describe('RunnerLanes on Health', () => {
     expect(html).not.toContain('border-2 border-border-strong');
   });
 });
+
+it('keeps tap instructions outside the chart in its caption', () => {
+  const html = renderToStaticMarkup(<RunnerLanes fleet={fleet} idle={[]} now={m(60)} />);
+  expect(html).toContain('Tap a run to highlight');
+});
