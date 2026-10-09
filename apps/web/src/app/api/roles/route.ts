@@ -5,6 +5,7 @@ import { db } from '@buildd/core/db';
 import { users, workspaceSkills } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNull, isNotNull, or } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveRolesCaller } from '@/lib/roles-caller';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserWorkspaceIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { canSeeRole, findSharedSlugClash, sharedSlugClashBody, validatePersonalRoleConfig } from '@/lib/personal-roles';
@@ -53,10 +54,18 @@ export async function GET(req: NextRequest) {
       [wsIds, teamIds] = await Promise.all([getUserWorkspaceIds(user!.id), getUserTeamIds(user!.id)]);
     }
 
+    // ?teamId narrows to one of the caller's teams (chat pins its
+    // conversation team this way); an unknown one narrows to nothing.
+    const pinTeam = new URL(req.url).searchParams.get('teamId');
+    if (pinTeam) teamIds = teamIds.filter(t => t === pinTeam);
+
     // Personal roles in the caller's teams: their own (any visibility) and
-    // others' shared ones. An API key has no person behind it, so it sees
-    // shared ones only. Never another member's private role.
-    const viewerId = apiAccount ? null : user!.id;
+    // others' shared ones. A bld_ key has no person behind it, so it sees
+    // shared ones only; an OAuth session's bearer is its person
+    // (sessionUserId). Never another member's private role.
+    const viewerId = apiAccount
+      ? ((apiAccount as { sessionUserId?: string | null }).sessionUserId ?? null)
+      : user!.id;
     const personalRows = teamIds.length === 0 ? [] : (await db.query.workspaceSkills.findMany({
       where: and(
         inArray(workspaceSkills.teamId, teamIds),
@@ -79,6 +88,8 @@ export async function GET(req: NextRequest) {
     const personalRoles = personalRows.map(r => ({
       ...r,
       personal: true as const,
+      // The caller's own: what MCP's update_skill/delete_skill { personal: true } resolve a slug to first.
+      mine: viewerId !== null && r.ownerUserId === viewerId,
       ownerName: ownerName.get(r.ownerUserId!) ?? null,
     }));
 
@@ -129,10 +140,12 @@ export async function GET(req: NextRequest) {
 // POST /api/roles — create a team-level role (workspaceId = null), or with
 // `personal: true` a personal role owned by the caller (starts private).
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // A dashboard session, or an OAuth MCP session's bearer (the MCP
+  // register_skill personal path); never a key or task token (lib/roles-caller.ts).
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const { bearerTeamId } = who.caller;
+  const user = { id: who.caller.userId };
 
   try {
     const body = await req.json();
@@ -157,10 +170,14 @@ export async function POST(req: NextRequest) {
     }
     let teamId: string | null;
     if (body.teamId !== undefined) {
-      if (typeof body.teamId !== 'string' || !teamIds.includes(body.teamId)) {
+      if (typeof body.teamId !== 'string' || !teamIds.includes(body.teamId)
+        || (bearerTeamId !== null && body.teamId !== bearerTeamId)) {
         return NextResponse.json({ error: 'Team not found' }, { status: 404 });
       }
       teamId = body.teamId;
+    } else if (bearerTeamId !== null) {
+      // An OAuth session is pinned to its workspace's team.
+      teamId = teamIds.includes(bearerTeamId) ? bearerTeamId : null;
     } else {
       teamId = await resolveActiveTeamId(user.id, req.cookies.get('buildd-team')?.value ?? null);
     }

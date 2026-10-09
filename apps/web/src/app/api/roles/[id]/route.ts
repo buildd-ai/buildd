@@ -4,7 +4,7 @@ import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { eq, or, and, isNull, inArray, ne } from 'drizzle-orm';
 import { canSeeRole, findSharedSlugClash, isPersonalRole, mayEditPersonalRole, validatePersonalRoleConfig } from '@/lib/personal-roles';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveRolesCaller } from '@/lib/roles-caller';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -20,7 +20,7 @@ function computeContentHash(content: string): string {
 }
 
 /** Find a role the user can access (team-level or workspace-scoped). */
-async function findAccessibleRole(roleId: string, userId: string) {
+async function findAccessibleRole(roleId: string, userId: string, bearerTeamId: string | null = null) {
   const [teamIds, wsIds] = await Promise.all([
     getUserTeamIds(userId),
     getUserWorkspaceIds(userId),
@@ -36,8 +36,10 @@ async function findAccessibleRole(roleId: string, userId: string) {
     ),
   });
 
-  // Another member's private personal role is invisible, not forbidden.
-  return { role: role && canSeeRole(role, userId) ? role : undefined, teamIds, wsIds };
+  // Another member's private personal role is invisible, not forbidden. An
+  // OAuth session's bearer sees only its own team's roles.
+  const visible = role && canSeeRole(role, userId) && (bearerTeamId === null || role.teamId === bearerTeamId);
+  return { role: visible ? role : undefined, teamIds, wsIds };
 }
 
 /**
@@ -66,13 +68,12 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role } = await findAccessibleRole(id, user.id);
+    const { role } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!role) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }
@@ -92,13 +93,12 @@ export async function PATCH(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role: existing, wsIds } = await findAccessibleRole(id, user.id);
+    const { role: existing, wsIds } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!existing) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }
@@ -265,13 +265,12 @@ export async function DELETE(
   if (!isUuid(id)) {
     return NextResponse.json({ error: `Invalid role id: expected a UUID, got "${id}".` }, { status: 404 });
   }
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const who = await resolveRolesCaller(req);
+  if (!who.ok) return who.response;
+  const user = { id: who.caller.userId };
 
   try {
-    const { role: existing } = await findAccessibleRole(id, user.id);
+    const { role: existing } = await findAccessibleRole(id, user.id, who.caller.bearerTeamId);
     if (!existing) {
       return NextResponse.json({ error: 'Role not found' }, { status: 404 });
     }

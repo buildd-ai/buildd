@@ -162,6 +162,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         // A session can see several workspaces: ambiguous actions must name one.
         authType: 'oauth' as const,
         surface: 'chat' as const,
+        // A signed-in person: create_personal_role writes a role they own.
+        principal: 'person' as const,
         getWorkspaceId: async () => def,
         knowledgeStore,
         embedder,
