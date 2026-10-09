@@ -79,6 +79,19 @@ describe('ActivityView: Now', () => {
   it('a landed delivery leaves Now', () => {
     expect(render(ACTIVITY_SEQUENCE.length - 1, 'now')).not.toContain('feat: scheduled export email');
   });
+
+  it('standalone group renders expand button for hidden waiting rows', () => {
+    const html = render(4, 'now');
+    const standaloneGroup = html.match(/data-mission="standalone"[^<]*(?:<[^>]*>)*.*?(?=data-mission=|<\/section>)/s)?.[0] || '';
+    if (standaloneGroup) {
+      const hasMoreWaiting = standaloneGroup.includes('+') && standaloneGroup.includes('more waiting');
+      if (hasMoreWaiting) {
+        expect(standaloneGroup).toContain('<button');
+        expect(standaloneGroup).toContain('aria-hidden="true"');
+        expect(standaloneGroup).toContain('›');
+      }
+    }
+  });
 });
 
 describe('ActivityView: History', () => {
