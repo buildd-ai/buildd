@@ -100,7 +100,9 @@ export { age };
 export default function ActivityView({ mode, now, history, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, initialFilters }: ActivityViewProps) {
   const breakdown = deliveryBreakdown(now);
   const [nowOutcome, setNowOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
-  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowOutcome }), [now, initialFilters?.scope, nowOutcome]);
+  // A History-only outcome stays selected there, but cannot hide all of Now.
+  const nowFilterOutcome = nowOutcome === 'landed' || nowOutcome === 'you' ? 'any' : nowOutcome;
+  const groups = useMemo(() => filterNow(now, { scope: initialFilters?.scope ?? 'all', outcome: nowFilterOutcome }), [now, initialFilters?.scope, nowFilterOutcome]);
   return (
     <div className="h-full overflow-y-auto">
       <div data-testid="activity-view" data-mode={mode} className="mx-auto max-w-[1000px] px-4 pb-10 pt-14 md:px-6 md:pt-8">
@@ -152,7 +154,7 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
             </div>
             {!missionFilter && <SessionsLine sessions={localSessions} nowMs={nowMs} />}
             <div className="mt-3" data-testid="activity-filters">
-              <FilterGroup label="Filter" options={[{ key: 'any', label: 'All' }, { key: 'retries', label: 'Had repairs' }, { key: 'exceptions', label: 'Needs attention' }]} value={nowOutcome} onChange={setNowOutcome} />
+              <FilterGroup label="Filter" options={[{ key: 'any', label: 'All' }, { key: 'retries', label: 'Had repairs' }, { key: 'exceptions', label: 'Needs attention' }]} value={nowFilterOutcome} onChange={setNowOutcome} />
             </div>
             {groups.length === 0
               ? (now.groups.length === 0
