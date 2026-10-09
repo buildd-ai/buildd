@@ -128,7 +128,7 @@ const emitPrMerged: EffectHandler = async (e) => {
   const repo = await workspaceRepo(d.workspaceId);
   const task = owner.task;
   await runMergedPrWork({
-    worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null },
+    worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null, runner: owner.runner },
     task: task
       ? {
           id: task.id, status: task.status, workspaceId: task.workspaceId, missionId: task.missionId ?? null,

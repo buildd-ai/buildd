@@ -32,6 +32,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { workerOwnsPr, workerOwnsPrUrl } from '@/lib/repo-scope';
 import { otherOpenPrsOfTask } from '@/lib/task-open-prs';
+import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 export interface MergedPrTask {
   id: string;
@@ -44,7 +45,7 @@ export interface MergedPrTask {
 }
 
 export interface MergedPrWorkInput {
-  worker: { id: string; workspaceId: string; taskId: string | null };
+  worker: { id: string; workspaceId: string; taskId: string | null; runner?: string | null };
   task: MergedPrTask | null;
   repoFullName: string;
   prNumber: number;
@@ -170,7 +171,12 @@ export async function runMergedPrWork(p: MergedPrWorkInput): Promise<void> {
   // A stacked series: the task owns more PRs than this one. Its first merge
   // must not complete the task; the last one does.
   const openSiblingPrs = task.status !== 'completed' ? await otherOpenPrsOfTask(task.id, { prUrl: p.prUrl }) : [];
-  if (openSiblingPrs.length > 0) {
+  if (task.status !== 'completed' && p.worker.runner === INTERACTIVE_WORKER_RUNNER) {
+    // A local session decides when it is done (it may still be planning PR B..D,
+    // which no open-PR check can see); only its complete_task ends the task.
+    transition = 'not_flipped';
+    console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: interactive session completes its own task`);
+  } else if (openSiblingPrs.length > 0) {
     transition = 'not_flipped';
     console.log(`Task ${task.id} stays open after PR #${p.prNumber} merged: ${openSiblingPrs.length} other PR(s) still open`);
   } else if (task.status !== 'completed') {
