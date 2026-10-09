@@ -143,8 +143,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
     <section className="mt-6 max-w-5xl" data-testid="tier-limits">
       <h2 className="font-mono text-body font-semibold text-text-primary">Maximum allowed</h2>
       <p className="mt-1 text-meta text-text-muted">
-        The most expensive tier work may use. It is enforced on every task and chat, and nobody can pick past it.
-        It does not set a spending budget (how much) or which provider keys are used.
+        The most expensive tier work may use. Enforced on every task and chat. Not a spending budget.
       </p>
 
       <div className="card mt-3 flex flex-col gap-2 px-3 py-3" data-testid="tier-limits-effective">
@@ -161,7 +160,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
               {e.max && (
                 <p className="text-meta text-text-muted">
                   {e.layers.map((l) => `${SOURCE_LABEL[l.source] ?? l.source} ${TIER_LABEL[l.tier]}`).join(' · ')}
-                  {e.layers.length > 1 && e.binding ? ` → ${TIER_LABEL[e.max]} (lowest wins)` : e.binding ? ` — set by ${SOURCE_LABEL[e.binding.source]}` : ''}
+                  {e.layers.length > 1 && e.binding ? ` → ${TIER_LABEL[e.max]} (lowest wins)` : e.binding ? ` · set by ${SOURCE_LABEL[e.binding.source]}` : ''}
                 </p>
               )}
             </div>
@@ -234,8 +233,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
       )}
 
       <p className="mt-3 text-meta text-text-muted" data-testid="coding-route-note">
-        Coding runs use a provider API route or a runner’s own sign-in, depending on how the runner is set up. A maximum limits the tier on either one;
-        which one is used is set under Providers, not here.
+        A maximum applies to both API and runner sign-in. Set the route under Providers.
       </p>
 
       {(msg || loadError) && (
