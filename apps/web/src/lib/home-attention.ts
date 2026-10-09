@@ -36,13 +36,17 @@ export interface HomeAttentionItem {
 }
 
 /**
- * THE "Buildd is acting, so this is not a decision yet" rule for Home, the
- * badge and the headline: a human review on a PR Buildd is still repairing or
- * checking (`machineActing`, from `reviewMachineActing` in action-queue.ts).
- * One predicate so a shared needs-you classifier can replace it in one place.
+ * THE "Buildd owns the next move, so this is not a decision" rule for Home,
+ * the badge and the headline. The escalation gate's verdict decides
+ * (lib/escalation-gate-check.ts, `gate`): Buildd's own next step, or what Jev
+ * judged Buildd can do itself, is never a card. Without a verdict (the gate
+ * did not run), a human review on a PR Buildd is still repairing or checking
+ * (`machineActing`, from `reviewMachineActing` in action-queue.ts) waits too.
  */
-export function waitsOnBuildd(i: Pick<ActionQueueItem, 'humanReview' | 'machineActing' | 'prLifecycleStatus'>): boolean {
-  return !!i.humanReview && !!i.machineActing && i.prLifecycleStatus !== 'merged' && i.prLifecycleStatus !== 'closed';
+export function waitsOnBuildd(i: Pick<ActionQueueItem, 'humanReview' | 'machineActing' | 'prLifecycleStatus' | 'gate'>): boolean {
+  if (i.prLifecycleStatus === 'merged' || i.prLifecycleStatus === 'closed') return false;
+  if (i.gate) return i.gate.owner === 'buildd';
+  return !!i.humanReview && !!i.machineActing;
 }
 
 /**

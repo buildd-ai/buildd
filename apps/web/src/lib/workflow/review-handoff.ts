@@ -37,7 +37,7 @@ export const legacyFirstReview: LegacyFirstReview = async (p) => {
       installationId: p.installationId, repoFullName: p.repoFullName, prNumber: p.prNumber,
       entry: { kind: 'human_review_required', note: p.policyEvidence.reason }, workspaceId: p.workspaceId,
     });
-    void notifyTeamOf({ workspaceId: p.workspaceId }, 'needsAttention', {
+    void notifyTeamOf({ workspaceId: p.workspaceId, prNumber: p.prNumber }, 'needsAttention', {
       title: `PR #${p.prNumber} escalated`, message: p.policyEvidence.reason, url: p.htmlUrl, urlTitle: 'View PR',
     });
     return { outcome: 'human_review_required' };

@@ -473,7 +473,7 @@ const missionNote: EffectHandler = async (e) => {
   const overrideReason = ((reviewer?.result ?? {}) as { effectiveVerdictReason?: string }).effectiveVerdictReason ?? null;
   const message = overrideReason ?? out.escalationReason ?? out.summary ?? 'see the review';
   const prUrl = `https://github.com/${d.repoFullName}/pull/${d.prNumber}`;
-  void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', { title: `PR #${d.prNumber} escalated by reviewer`, message, url: prUrl, urlTitle: 'View PR' });
+  void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', { title: `PR #${d.prNumber} escalated by reviewer`, message, url: prUrl, urlTitle: 'View PR' });
   const repo = await workspaceRepo(d.workspaceId);
   if (repo) {
     await appendPrActivity({ installationId: repo.installationId, repoFullName: d.repoFullName, prNumber: d.prNumber, entry: { kind: 'review_escalated', note: message }, workspaceId: d.workspaceId });
@@ -497,7 +497,7 @@ const notify: EffectHandler = async (e) => {
     const d = view.delivery;
     if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
     if (d.state !== 'ESCALATED' || d.currentHeadSha !== e.payload.headSha) return { outcome: 'skipped:state_moved' };
-    void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+    void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', {
       title: `PR #${d.prNumber} needs a person`,
       message: String(e.payload.reason ?? 'workspace policy requires human review'),
       url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
@@ -512,7 +512,7 @@ const notify: EffectHandler = async (e) => {
   if (e.payload.event === 'effect_dead') {
     // §10.3: a critical effect went dead and the delivery escalated (67d34094).
     const what = DEAD_EFFECT_COPY[String(e.payload.effectKind)] ?? `the ${String(e.payload.effectKind)} step kept failing`;
-    void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+    void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', {
       title: `PR #${d.prNumber} needs a person: ${what}`,
       message: `buildd retried ${what.replace(' kept failing', '')} until it gave up, so nothing will move this PR on its own. Check the PR and land or re-run it.`,
       url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
@@ -521,7 +521,7 @@ const notify: EffectHandler = async (e) => {
     return { outcome: 'ok' };
   }
   const local = (e.payload.localHeadSha as string | null) ?? null;
-  void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+  void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', {
     title: `PR #${d.prNumber}: a fix never reached GitHub`,
     message: `The fix attempt ended but the PR head is still ${d.currentHeadSha?.slice(0, 7) ?? 'unchanged'}${local ? `; its local commit was ${local.slice(0, 7)}` : ''}. Push the branch or re-run the fix.`,
     url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
