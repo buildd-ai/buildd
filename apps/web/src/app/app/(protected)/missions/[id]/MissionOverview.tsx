@@ -18,6 +18,7 @@
  * never just the first. From 900px the main column stops at 720px and the
  * goal criteria and the agent counts sit in a right rail beside it.
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Criteria, { type Criterion } from '@/components/ui/Criteria';
@@ -148,7 +149,7 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
     <div className="flex scroll-mb-[calc(5rem+env(safe-area-inset-bottom))] flex-col gap-2.5 [&_button]:scroll-mb-[calc(5rem+env(safe-area-inset-bottom))]">
       <FocusCard
         meta={meta}
-        title={t.title}
+        title={displayTaskTitle(t.title)}
         state={state}
         repairs={delivery?.repairs || undefined}
         next={why ?? undefined}

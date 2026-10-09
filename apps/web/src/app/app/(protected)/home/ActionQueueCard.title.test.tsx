@@ -18,9 +18,14 @@ describe('ActionQueueCard — display title and refresh dependency', () => {
     expect(html).toContain('title="Ship mission: Widget Polish"');
   });
 
-  it('renders an ordinary title untouched and unwrapped', () => {
-    const html = renderToStaticMarkup(<ActionQueueCard item={{ ...base, taskTitle: 'fix(deps): pin the widget parser' }} />);
-    expect(html).toContain('fix(deps): pin the widget parser');
+  it('drops the commit prefix of an ordinary title and keeps the full one as the tooltip', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={{ ...base, taskTitle: 'feat(settings): clear maximum model tier for team' }} />);
+    expect(html).toContain('Clear maximum model tier for team');
+    expect(html).toContain('title="feat(settings): clear maximum model tier for team"');
+  });
+
+  it('does not wrap a plain title', () => {
+    const html = renderToStaticMarkup(<ActionQueueCard item={{ ...base, taskTitle: 'Pin the widget parser' }} />);
     expect(html).not.toContain('class="contents"');
   });
 
