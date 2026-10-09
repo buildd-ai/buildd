@@ -6,6 +6,12 @@
  * who owns its next move. Rules first; Jev decides what no rule covers; Buildd
  * takes the action Jev names; only a person-owned verdict reaches the owner.
  *
+ * Two modes. A page load, the badge and list_prs read (`decide` unset): one
+ * indexed ledger query, the rules, no model call and no write; a state with
+ * no stored verdict is queued (`enqueue`) for a look after the response. The
+ * look itself (`decide: true`) runs there and on an escalation push: it files
+ * the rule's row or asks Jev, and takes the action Jev names.
+ *
  * One look per state. The verdict for a PR is filed in the decision ledger
  * (capability `escalation_gate`, subject `pr`/<key>, fingerprint = the state
  * it was made on), and a read of the same state reuses it: a page refresh
@@ -72,6 +78,13 @@ export interface StoredVerdict {
 }
 
 export interface EscalationGateDeps {
+  /**
+   * true: file rule rows and ask Jev (a background look, an escalation push).
+   * Unset or false: read only. A request path never waits on the model.
+   */
+  decide?: boolean;
+  /** Read mode: the subjects with no stored verdict for their state, for a background look. Never throws into the read. */
+  enqueue?: (subjects: GatedSubject[]) => void;
   /** subjectKey → its newest ledger row, for one team. */
   loadStored?: (teamId: string, keys: string[]) => Promise<Map<string, StoredVerdict>>;
   resolveAccess?: (scope: { teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
@@ -198,6 +211,8 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
   const record = deps.record ?? (async () => {});
   const jevDeps = { resolveAccess: deps.resolveAccess, recordReceipts: deps.recordReceipts, run: deps.run };
   let budget = deps.maxModelCalls ?? ESCALATION_MAX_MODEL_CALLS;
+  const decide = deps.decide === true;
+  const queued: GatedSubject[] = [];
 
   const byTeam = new Map<string, GatedSubject[]>();
   for (const s of subjects) byTeam.set(s.teamId, [...(byTeam.get(s.teamId) ?? []), s]);
@@ -224,6 +239,11 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
         }
 
         const rule = escalationRule(s);
+        if (!decide) {
+          out.set(s.key, rule ?? { owner: 'person', by: 'fallback', reason: 'Not looked at yet, so it comes to you for now.' });
+          queued.push(s);
+          continue;
+        }
         const ledgerBase = {
           teamId, workspaceId: s.workspaceId, missionId: s.missionId, taskId: s.taskId,
           capability: ESCALATION_GATE_CAPABILITY, fingerprint, promptVersion: ESCALATION_GATE_PROMPT_VERSION,
@@ -269,6 +289,9 @@ export async function gateEscalations(subjects: GatedSubject[], deps: Escalation
         out.set(s.key, { owner: 'person', by: 'fallback', reason: 'The check failed, so it comes to you.' });
       }
     }));
+  }
+  if (queued.length > 0 && deps.enqueue) {
+    try { deps.enqueue(queued); } catch { /* the read stands */ }
   }
   return out;
 }

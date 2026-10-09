@@ -14,7 +14,10 @@
  *     the named next step). A protected path, a data migration, an
  *     irreversible action and a reviewer escalation on a mission's ship PR are
  *     the person's (`owner: 'person'`, with the rail).
- *  2. **Jev decides the rest** (./escalation-gate-decision.ts): act (Buildd
+ *  2. **Jev, only on a concern** (./escalation-gate-decision.ts): a reviewer
+ *     escalation no rule answers is the one place a model's judgment helps.
+ *     Anything else no rule answers is the person's by rule, with no call.
+ *     Jev answers: act (Buildd
  *     takes a named machine action), hold (Buildd waits until a deadline), or
  *     ask (the person, with a one-line reason). Live: no shadow phase, no
  *     experiment, no switch. A failed or unsure answer asks (`by: 'fallback'`),
@@ -99,7 +102,7 @@ export type EscalationAction =
 export const JEV_ACTIONS = ['re_review', 'address_review', 'ci_fix', 'conflict_fix'] as const;
 export type JevAction = (typeof JEV_ACTIONS)[number];
 
-export type EscalationRail = 'protected_path' | 'data_migration' | 'security' | 'mission_ship_escalation' | 'irreversible';
+export type EscalationRail = 'protected_path' | 'data_migration' | 'security' | 'mission_ship_escalation' | 'irreversible' | 'no_next_step';
 
 export type EscalationVerdict =
   | { owner: 'person'; by: 'rule' | 'jev' | 'fallback'; rail?: EscalationRail; reason: string }
@@ -108,8 +111,9 @@ export type EscalationVerdict =
 /** How long a Jev `hold` keeps a PR out of the inbox before it is the person's again. */
 export const ESCALATION_HOLD_MS = 2 * 60 * 60_000;
 export const ESCALATION_GATE_MIN_CONFIDENCE = 0.7;
-export const ESCALATION_GATE_PROMPT_VERSION = 'eg2';
-export const ESCALATION_GATE_DECISION_TIMEOUT_MS = 3_000;
+export const ESCALATION_GATE_PROMPT_VERSION = 'eg3';
+/** Jev's p50 in the merge-readiness backtest was ~0.2 s; past this the person is asked. */
+export const ESCALATION_GATE_DECISION_TIMEOUT_MS = 800;
 /** The ledger capability every escalation look is filed under. */
 export const ESCALATION_GATE_CAPABILITY = 'escalation_gate';
 
@@ -133,6 +137,7 @@ const RAIL_WORDS: Record<EscalationRail, string> = {
   security: 'The reviewer raised a security concern, so a person decides.',
   mission_ship_escalation: 'The reviewer escalated the mission\'s ship PR, the one human gate for this mission.',
   irreversible: 'It names an action that can\'t be undone.',
+  no_next_step: 'Buildd has no next step of its own for it and the reviewer raised nothing to weigh, so it comes to you.',
 };
 
 /** Paths only a person merges, whatever else holds: CI/deploy config and auth/secrets. */
@@ -153,8 +158,14 @@ function textsOf(s: EscalationSubject): string[] {
   return [s.detail, s.handoffReason].filter((t): t is string => !!t);
 }
 
+/** The escalations Jev weighs: the reviewer's judgment of the change. Everything else is rules only. */
+export function isReviewerConcern(s: EscalationSubject): boolean {
+  return s.why === 'reviewer_escalated' || s.why === 'review_exhausted';
+}
+
 /**
- * The deterministic verdict, or null when no rule applies (then Jev decides).
+ * The deterministic verdict, or null when Jev decides: a reviewer escalation
+ * no rule answers. Anything else no rule answers is the person's, by rule.
  * Order matters: Buildd's own in-flight work first (reviewing a diff about to
  * change is wasted), then repairs Buildd can start itself, then the person's
  * rails, then the waits.
@@ -176,7 +187,7 @@ export function escalationRule(s: EscalationSubject): EscalationVerdict | null {
   if (s.landingStranded || (s.handoffCause && STRANDED_CAUSES.has(s.handoffCause))) return buildd('retry_landing');
   if (s.ci === 'running' || s.ci === 'unknown') return buildd('wait_ci');
   if (isPolicyMerge(s)) return buildd('policy_merge');
-  return null;
+  return isReviewerConcern(s) ? null : person('no_next_step');
 }
 
 /**

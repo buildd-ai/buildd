@@ -36,7 +36,7 @@ import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
-import { ESCALATION_GATE_DEPS } from '@/modules';
+import { ESCALATION_GATE_READ_DEPS } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1373,7 +1373,7 @@ export default async function HomePage({
                   }];
                 });
                 const unique = [...new Map(gateSubjects.map(g => [g.subject.key, g.subject])).values()];
-                const verdicts = await gateEscalations(unique, ESCALATION_GATE_DEPS());
+                const verdicts = await gateEscalations(unique, ESCALATION_GATE_READ_DEPS());
                 const byWorker = new Map(gateSubjects.flatMap(g => {
                   const v = verdicts.get(g.subject.key);
                   return v ? [[g.workerId, { owner: v.owner, reason: v.reason }] as const] : [];
