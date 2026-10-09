@@ -1,5 +1,7 @@
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { CONVENTIONAL_PREFIX_RE, displayTaskTitle } from '@/lib/task-title';
+import type { StateKey } from '@/components/ui/states';
+import type { DeliveryStage } from '@/lib/workflow/projections';
 
 const BRACKET_RE = /^\s*\[([^\]]*)\]\s*/;
 
@@ -27,4 +29,20 @@ export function taskHeading(task: { title: string; label?: string | null }, role
     eyebrow: [type, scope, roleName, qualifier].filter((x): x is string => !!x),
     heading,
   };
+}
+
+/**
+ * A delivery's stage as a state on the one Lifecycle track (Build → Audit →
+ * Land), for the header of a task that is not running: a live run's own view
+ * leads with the track already. Superseded work has no track of its own.
+ */
+const LIFECYCLE_OF_STAGE: Record<DeliveryStage, StateKey | null> = {
+  working: 'running', awaiting_push: 'running',
+  review: 'review', fixing: 'fixing', repairing: 'fixing', blocked: 'recovering', needs_you: 'needs_you',
+  approved: 'landing', landing: 'landing',
+  merged: 'landed', closed: 'not_landed', abandoned: 'not_landed', failed: 'failed', superseded: null,
+};
+
+export function headerLifecycleState(stage: DeliveryStage | null | undefined): StateKey | null {
+  return stage ? LIFECYCLE_OF_STAGE[stage] : null;
 }
