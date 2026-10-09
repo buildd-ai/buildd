@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * `?state=mission-board-visual`: the real mission Overview (`board`), Lanes or History (`feed`) with a
+ * `?state=mission-board-visual`: the real mission Overview (`board`) or History (`feed`) with a
  * visual review model, wired as the mission page wires them (one provider,
  * the footer's Screens row, the Settings toggle), over the in-memory fixture
  * transport. See mission-board-visual-fixtures.ts for the query.
@@ -11,7 +11,6 @@ import type { VisualReviewModel } from '@buildd/shared';
 import { createFixtureVisualReviewTransport } from '@/components/visual-review/fixture-transport';
 import { buildDeliverySteps } from '@/lib/mission-delivery';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
-import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
 import MissionFeedLayout from '@/app/app/(protected)/missions/[id]/MissionFeedLayout';
 import MissionShippedHeader from '@/app/app/(protected)/missions/[id]/MissionShippedHeader';
 import { buildShippedHeaderView, type ShippedHeaderView } from '@/lib/mission-shipped-header';
@@ -123,8 +122,6 @@ function View({ params }: { params: MissionBoardVisualParams }) {
                 <TaskArtifactsSection artifacts={[]} taskId={visual.audit?.id ?? 'fixture-audit'} baseUrl="" missionId={visual.missionId} visual={{ round: visual.audit?.round ?? 1, model: visual }} />
               </section>
             </div>
-          ) : params.layout === 'lanes' ? (
-            <MissionLanes model={board} completionText={null} visual={visual} {...link} />
           ) : params.layout === 'feed' ? (
             <MissionFeedLayout model={board} completionText={null} timeZone="UTC" visual={visual} {...link} />
           ) : (

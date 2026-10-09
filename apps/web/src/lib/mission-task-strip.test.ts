@@ -338,7 +338,7 @@ describe('one adjacency derivation (AC-20, AC-21)', () => {
       ['mission-board.ts', 'buildMissionBoard'],
       ['condensed-timeline.ts', 'identifyChains'],
       ['condensed-timeline.ts', 'collapseTerminalChains'],
-      ['structure-layout.ts', 'computeStructureLayout'],
+      ['flow-timeline.ts', 'buildFlowTimeline'],
       ['mission-task-strip.ts', 'stripOrder'],
     ] as const) {
       expect(body(file, fn)).not.toContain('.dependsOn');

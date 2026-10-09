@@ -47,8 +47,6 @@ export interface MissionFeedLayoutProps extends BoardLinkContext {
   timeZone?: string | null;
   /** What the band cannot say (a decision gate, the integration PR), as on the Board. */
   notice?: ReactNode;
-  /** The dependency graph (StructureView), when the mission has dependencies. */
-  structure?: ReactNode;
   /** The mission's visual review, whenever an audit exists: the Band row, the Ask and the Tray. */
   visual?: VisualReviewModel | null;
   /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
@@ -64,7 +62,7 @@ export default function MissionFeedLayout(props: MissionFeedLayoutProps) {
 }
 
 function FeedView({
-  model: serverModel, notes = [], completionText = null, timeZone = null, notice, structure, visual: _visual, reviewLayout: _layout, review, ...link
+  model: serverModel, notes = [], completionText = null, timeZone = null, notice, visual: _visual, reviewLayout: _layout, review, ...link
 }: MissionFeedLayoutProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -140,16 +138,6 @@ function FeedView({
         ))}
       </section>
 
-      {structure && (
-        <details data-testid="mission-structure" className="group mt-4 border-t border-border-default">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 font-mono text-[12px] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
-            <span aria-hidden="true" className="text-text-muted">─</span>
-            <span className="flex-1">Dependencies</span>
-            <span aria-hidden="true" className="group-open:rotate-90">›</span>
-          </summary>
-          <div className="overflow-x-auto pb-4 pt-1">{structure}</div>
-        </details>
-      )}
     </div>
   );
 }

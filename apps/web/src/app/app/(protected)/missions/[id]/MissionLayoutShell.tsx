@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * Overview · History (and Lanes by URL). The shell mounts one layout at a time and switches on
+ * Overview · Flow · History. The shell mounts one layout at a time and switches on
  * the client: the tab writes `?layout=` with `replaceState` (never the router,
  * so the `force-dynamic` render does not re-run and the task sheet's own
  * history entries are left alone).
  *
- * Board and Lanes share `MissionBoardHeader`; the Feed keeps its masthead and
+ * Board and Flow share `MissionBoardHeader`; the Feed keeps its masthead and
  * carries the same tabs in it.
  */
 import Link from 'next/link';
@@ -48,11 +48,11 @@ export function MissionLayoutTabs({ className = '' }: { className?: string }) {
 export interface MissionLayoutShellProps {
   initial: MissionLayout;
   board: ReactNode;
-  lanes: ReactNode;
+  flow: ReactNode;
   feed: ReactNode;
 }
 
-export default function MissionLayoutShell({ initial, board, lanes, feed }: MissionLayoutShellProps) {
+export default function MissionLayoutShell({ initial, board, flow, feed }: MissionLayoutShellProps) {
   const [layout, set] = useState<MissionLayout>(initial);
   const setLayout = useCallback((l: MissionLayout) => {
     set(l);
@@ -66,7 +66,7 @@ export default function MissionLayoutShell({ initial, board, lanes, feed }: Miss
   return (
     <LayoutContext.Provider value={value}>
       <div data-testid="mission-layout" data-layout={layout}>
-        {layout === 'board' ? board : layout === 'lanes' ? lanes : feed}
+        {layout === 'board' ? board : layout === 'flow' ? flow : feed}
       </div>
     </LayoutContext.Provider>
   );
@@ -123,7 +123,7 @@ export function MissionClock({ startedAt, endedAt, activeMs, now }: { startedAt:
   );
 }
 
-/** The Board/Lanes header: back, title, state, clock, layout tabs, overflow; the goal line under it. */
+/** The Board/Flow header: back, title, state, clock, layout tabs, overflow; the goal line under it. */
 export function MissionBoardHeader({ back, title, chip, verified, actions, goal, description, serverNow, startedAt, endedAt, activeMs, children }: MissionBoardHeaderProps) {
   const now = useNow(serverNow, 1_000, endedAt == null);
   const done = endedAt != null;

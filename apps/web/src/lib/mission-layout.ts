@@ -1,23 +1,25 @@
 /**
- * The mission page's layouts: Overview (`board`, default) and History (`feed`); Lanes by URL only. `?layout=`
- * names one; `?view=timeline|structure` (the Feed's Timeline · Structure
- * disclosure) implies Feed, so its old links still land where they pointed.
+ * The mission page's three layouts: Overview (`board`, default), Flow and
+ * History (`feed`). `?layout=` names one. Old links still land where they
+ * pointed: `?layout=lanes` and `?view=structure` open Flow (it replaced Lanes
+ * and the Structure graph), and `?view=timeline` opens History.
  */
-export const MISSION_LAYOUTS = ['board', 'lanes', 'feed'] as const;
+export const MISSION_LAYOUTS = ['board', 'flow', 'feed'] as const;
 export type MissionLayout = (typeof MISSION_LAYOUTS)[number];
 
 export const MISSION_LAYOUT_LABEL: Record<MissionLayout, string> = {
   board: 'Overview',
-  lanes: 'Lanes',
+  flow: 'Flow',
   feed: 'History',
 };
 
-/** The two the page offers. Lanes is still reachable by `?layout=lanes`. */
-export const MISSION_LAYOUT_TABS: readonly MissionLayout[] = ['board', 'feed'];
+/** The tabs, in order: Overview · Flow · History. */
+export const MISSION_LAYOUT_TABS: readonly MissionLayout[] = ['board', 'flow', 'feed'];
 
 export function parseMissionLayout(layout: string | null | undefined, view?: string | null): MissionLayout {
   if ((MISSION_LAYOUTS as readonly string[]).includes(layout ?? '')) return layout as MissionLayout;
-  if (view === 'timeline' || view === 'structure') return 'feed';
+  if (layout === 'lanes' || view === 'structure') return 'flow';
+  if (view === 'timeline') return 'feed';
   return 'board';
 }
 

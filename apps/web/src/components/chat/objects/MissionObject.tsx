@@ -3,14 +3,14 @@
 /**
  * The mission as an object in the feed. The inline card and the docked pane
  * are the mission board's own components (LandedMeter, MissionBoard,
- * MissionLanes) over the same model the mission page builds, live over the
+ * FlowTimeline) over the same model the mission page builds, live over the
  * mission's Pusher channels.
  */
 import Link from 'next/link';
 import { useState } from 'react';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
-import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
+import FlowTimeline from '@/app/app/(protected)/missions/[id]/FlowTimeline';
 import { RoleGlyph, ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import { MissionLiveContext } from '@/app/app/(protected)/missions/[id]/MissionLiveStore';
 import type { BuilddObjectRef } from '../chat-contract';
@@ -174,11 +174,11 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
 export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: BuilddObjectRef; view: MissionObjectView; variant?: 'pane' | 'sheet' }) {
   const store = useObjectStore();
   const actions = useChatActions();
-  const [layout, setLayout] = useState<'board' | 'lanes'>('board');
+  const [layout, setLayout] = useState<'board' | 'flow'>('board');
   const tone = missionTone(view.stateLabel, view.status);
   const link = { missionId: view.id, from: null, initiativeId: null };
   const visual = view.visual ?? null;
-  // Board / Lanes take the model and wire review themselves; inside the
+  // The Board takes the model and wires review itself; inside the
   // chat's pane and sheet the deck renders inline, never as a Dialog over the
   // BottomSheet.
   const boardVisual = { visual, reviewLayout: 'sheet' as const };
@@ -211,7 +211,7 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           <span className="flex-1" />
           {variant === 'pane' && (
             <div role="tablist" aria-label="Mission layout" className="flex shrink-0 border-[1.5px] border-border-strong">
-              {(['board', 'lanes'] as const).map(l => (
+              {(['board', 'flow'] as const).map(l => (
                 <button
                   key={l}
                   type="button"
@@ -227,10 +227,10 @@ export function MissionPane({ objRef, view, variant = 'pane' }: { objRef: Buildd
           )}
         </header>
         {view.goal && <p className="mt-1.5 max-w-[90ch] font-mono text-[12.5px] text-text-muted">{view.goal}</p>}
-        {/* Board and Lanes lay the live store's progress over the model themselves.
+        {/* Board and Flow lay the live store's progress over the model themselves.
             The pane and the sheet are always narrow: the Board's compact layout. */}
-        {variant === 'pane' && layout === 'lanes'
-          ? <MissionLanes model={view.board} {...link} {...boardVisual} />
+        {variant === 'pane' && layout === 'flow'
+          ? <FlowTimeline model={view.board} compact {...link} />
           : <MissionBoard model={view.board} compact {...link} {...boardVisual} />}
       </div>
     </MissionLiveContext.Provider>

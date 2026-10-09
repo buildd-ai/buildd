@@ -2281,8 +2281,8 @@ count equals the count before the evaluator ran (Rule D5-6, D12-6, §11.21b).
 - `apps/web/src/components/StageChip.tsx` — `StageChip` (fill source only, no
   new prop — reused per Rule D7-1)
 - `apps/web/src/lib/stage.ts` — `deriveStage` (sole stage-to-fill path)
-- `apps/web/src/lib/structure-layout.ts` — `isStrandedTask` (Rule D7-2 requires
-  exporting this existing function; no logic change)
+- structure-layout.ts — isStrandedTask (Rule D7-2; the file was removed with
+  the Structure canvas, see `mission-flow-timeline.md`)
 - `packages/core/path-overlap.ts` — `isAdvisoryManifest`,
   `shouldSerializeByManifest` (Rule D3-2/D3-3, reused unchanged)
 - `apps/web/src/app/app/(protected)/missions/[id]/AttemptStrip.tsx` —
