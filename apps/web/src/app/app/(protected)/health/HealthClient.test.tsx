@@ -9,6 +9,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+import { MonthlySpend } from './usage/MonthlySpend';
 import { HealthClient } from './HealthClient';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import type { CredentialHealthItem, RecentFailure, ScheduleRow } from './page';
@@ -301,7 +302,9 @@ describe('HealthClient — LIFETIME grammar', () => {
         },
       },
     });
-    expect(html).toContain('since Sep 1');
+    expect(html).not.toContain('monthly-anchor');
+    const spend = renderToStaticMarkup(<MonthlySpend monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
+    expect(spend).toContain('since Sep 1');
   });
 });
 
@@ -325,7 +328,9 @@ describe('HealthClient — PROJECTION grammar', () => {
         },
       },
     });
-    expect(html).toContain('depletes in 4.3d · from 24h burn');
+    expect(html).not.toContain('budget-runway');
+    const spend = renderToStaticMarkup(<MonthlySpend monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
+    expect(spend).toContain('depletes in 4.3d · from 24h burn');
   });
 });
 
@@ -728,9 +733,8 @@ describe('HealthClient — budget forecast labels', () => {
     const html = render({
       budgetForecast: { oauthSessions: [], codex: null, claudeTenant: null, missions: [], monthly },
     });
-    expect(html).toContain('health-section-budget-forecast');
-    expect(html).not.toContain('?window=');
-    expect(html).toContain('usage limits and monthly spend');
+    expect(html).not.toContain('health-section-budget-forecast');
+    expect(html).not.toContain('Monthly budget');
   });
 
   it('labels monthly and mission spend as an estimate', () => {
@@ -743,7 +747,7 @@ describe('HealthClient — budget forecast labels', () => {
         monthly,
       },
     });
-    expect(html).toContain('$12.50 est.');
+    expect(html).not.toContain('$12.50 est.');
     expect(html).toContain('$2.00 est.');
   });
 

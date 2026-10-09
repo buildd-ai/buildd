@@ -1,3 +1,7 @@
+import { can } from '@/lib/permissions';
+import { getBudgetForecast, type MonthlyBudgetForecast } from '@/lib/budget-forecast';
+import { loadFlowUsage } from '@/lib/insights-flow-query';
+import type { RoleUsageData } from '../RoleUsage';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -19,7 +23,7 @@ import {
 } from '@/lib/action-events';
 
 export type UsageViewResult =
-  | { kind: 'ok'; view: UsageDrilldownView; wsFilter: string | null }
+  | { kind: 'ok'; view: UsageDrilldownView; wsFilter: string | null; roleUsage: RoleUsageData | null; monthly: MonthlyBudgetForecast | null }
   | { kind: 'no-workspaces' };
 
 /**
@@ -67,7 +71,8 @@ export async function loadUsageView({
   // every delta into an artefact of the cap.
   const previousStart = new Date(now - 2 * windowMs);
 
-  const [rows, previousRows, actionRows, actionWorkers] = await Promise.all([
+  const showRoleUsage = !includeInternals && await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId);
+  const [rows, previousRows, actionRows, actionWorkers, roleUsage, forecast] = await Promise.all([
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart }).catch(() => []),
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart: previousStart, windowEnd: windowStart })
       .catch(() => []),
@@ -75,6 +80,8 @@ export async function loadUsageView({
     // page. `null` from the pair below renders nothing rather than a zero.
     includeInternals ? fetchActionEvents({ workspaceIds: scopedWsIds, windowStart }).catch(() => null) : Promise.resolve(null),
     includeInternals ? countWorkersInWindow({ workspaceIds: scopedWsIds, windowStart }).catch(() => null) : Promise.resolve(null),
+    showRoleUsage ? loadFlowUsage(scopedWsIds, resolution.window, now).catch(() => null) : Promise.resolve(null),
+    !includeInternals ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null) : Promise.resolve(null),
   ]);
 
   const previousScan = describeScan(previousRows, previousStart, USAGE_ROW_LIMIT);
@@ -97,5 +104,5 @@ export async function loadUsageView({
       : null,
   });
 
-  return { kind: 'ok', view, wsFilter: wsFilter ?? null };
+  return { kind: 'ok', view, wsFilter: wsFilter ?? null, roleUsage, monthly: forecast?.monthly ?? null };
 }
