@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { taskHeading } from './task-header';
+import { headerLifecycleState, taskHeading } from './task-header';
 
 describe('taskHeading', () => {
   test('a conventional title becomes eyebrow parts + a readable subject', () => {
@@ -39,5 +39,20 @@ describe('taskHeading delegates to displayTaskTitle', () => {
   test('a ship title behind a retry wrap', () => {
     expect(taskHeading({ title: '[builder · after review #2] Ship mission: Widget Polish', label: null }, null).heading)
       .toBe('Ship Widget Polish');
+  });
+});
+
+describe('headerLifecycleState', () => {
+  test('a stage reads as the step it sits on', () => {
+    expect(headerLifecycleState('working')).toBe('running');
+    expect(headerLifecycleState('review')).toBe('review');
+    expect(headerLifecycleState('repairing')).toBe('fixing');
+    expect(headerLifecycleState('approved')).toBe('landing');
+    expect(headerLifecycleState('merged')).toBe('landed');
+    expect(headerLifecycleState('closed')).toBe('not_landed');
+  });
+  test('no track without a delivery, or for superseded work', () => {
+    expect(headerLifecycleState(null)).toBeNull();
+    expect(headerLifecycleState('superseded')).toBeNull();
   });
 });

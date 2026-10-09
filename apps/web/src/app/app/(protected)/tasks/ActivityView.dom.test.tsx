@@ -37,3 +37,32 @@ it('expands standalone waiting tasks in place and collapses them again', () => {
     container.remove();
   }
 });
+
+it('History pages: the first 20 deliveries, then "Show N more"; a filter starts the paging over', () => {
+  const nowMs = Date.parse('2026-10-08T12:00:00Z');
+  const history = Array.from({ length: 25 }, (_, i) => ({
+    id: `ep-${i}`, title: `Delivery ${i}`, href: `/app/tasks/ep-${i}`, missionId: null, missionTitle: null,
+    kind: (i === 3 ? 'needs' : 'landed') as 'needs' | 'landed', repairRounds: 0, at: nowMs - i * 3_600_000, steps: [],
+  }));
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ActivityView mode="history" now={{ groups: [], inMotion: 0, liveAgents: 0 }} history={history} nowMs={nowMs} hrefs={{ now: '/app/tasks', history: '/app/tasks?view=history' }} />));
+    const episodes = () => container.querySelectorAll('[data-testid="activity-episode"]').length;
+    const more = () => container.querySelector<HTMLButtonElement>('[data-testid="activity-history-more"]');
+    expect(episodes()).toBe(20);
+    expect(more()?.textContent).toBe('Show 5 more');
+    act(() => more()!.click());
+    expect(episodes()).toBe(25);
+    expect(more()).toBeNull();
+    const chip = [...container.querySelectorAll('button')].find(b => b.textContent === 'Sent to you')!;
+    act(() => chip.click());
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    expect(episodes()).toBe(1);
+    expect(container.querySelectorAll('[data-testid="activity-day"]').length).toBe(1);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
