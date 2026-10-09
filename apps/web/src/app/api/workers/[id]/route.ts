@@ -1387,6 +1387,16 @@ export async function PATCH(
   if (status === 'running' && !worker.startedAt) {
     updates.startedAt = new Date();
   }
+  // Leaving a park: a paused or question-parked worker (waiting_input, with
+  // the runner's `paused:` / `needs_input:` marker in `error`) resuming to
+  // running is no longer parked, so the marker goes. Otherwise a finished run
+  // keeps showing "paused: ..." as its error line.
+  if (
+    status === 'running' && error === undefined && worker.status === 'waiting_input'
+    && typeof worker.error === 'string' && /^(paused:|needs_input)/.test(worker.error)
+  ) {
+    updates.error = null;
+  }
   // Reactivation: clear completion state when worker resumes from completed/failed/error
   if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed' || worker.status === 'error')) {
     updates.completedAt = null;
