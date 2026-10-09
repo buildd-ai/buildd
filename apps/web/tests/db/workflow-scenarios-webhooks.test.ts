@@ -187,3 +187,63 @@ describe('close, reopen, and a force-push that changes nothing', () => {
     expect(w.mergeCalls(pr)).toEqual([]);
   });
 });
+
+describe('a CI-failure hint that is no longer true (task 438517a9, spec §6.3 T10)', () => {
+  const failureHints = (w: World) => w.gh.pendingWebhooks()
+    .filter((d) => d.name === 'check_suite' && (d.payload.check_suite as { conclusion?: string }).conclusion === 'failure')
+    .map((d) => structuredClone(d));
+
+  test('build fails on H, is re-run green, the reviewer approves H, then the failure hint arrives twice → APPROVED throughout: no T10, no CI attempt, no dispatch, and H still lands', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/stale-ci', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.handOn(pr);
+    w.gh.setCheck(w.repo, pr.head, 'build', { conclusion: 'failure' });
+    const hints = failureHints(w);
+    expect(hints).toHaveLength(1);
+    w.gh.discardWebhooks();
+    // The re-run passes (approve() greens every check on H) and the reviewer approves H.
+    await w.approve(pr);
+    expect(await w.delivery(pr)).toMatchObject({ state: 'APPROVED', currentHeadSha: pr.head });
+    const before = (await w.commands(pr)).length;
+
+    // The queued failure hint is delivered late, then redelivered.
+    for (const d of [...hints, ...hints]) await w.ingest(d);
+
+    const v = await w.view(pr);
+    expect(v.delivery).toMatchObject({ state: 'APPROVED', currentHeadSha: pr.head });
+    expect((await w.commands(pr)).slice(before)).toEqual([]);
+    expect(v.attempts.filter((a) => a.family === 'ci')).toEqual([]);
+    expect((await w.effects(pr)).filter((e) => e.kind === 'dispatch_ci_fix')).toEqual([]);
+    expect(await w.tasksOf(pr, 'ci_fix')).toEqual([]);
+    expect(await w.land(pr, pr.head)).toMatchObject({ merged: true });
+  });
+
+  test('H fails, is re-run green (that hint refused), then the re-run fails again → a genuinely new red at the same head is repaired, once, however often it is redelivered', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/flaky-ci', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.approve(pr);
+    w.gh.setCheck(w.repo, pr.head, 'build', { conclusion: 'failure' });
+    const first = failureHints(w);
+    w.gh.discardWebhooks();
+    w.gh.setCheck(w.repo, pr.head, 'build', { conclusion: 'success' });
+    await w.deliver();
+    for (const d of first) await w.ingest(d);
+    expect(await w.delivery(pr)).toMatchObject({ state: 'APPROVED' });
+    expect((await w.view(pr)).attempts.filter((a) => a.family === 'ci')).toEqual([]);
+
+    // Red again on the same head: this one is true now.
+    w.gh.setCheck(w.repo, pr.head, 'build', { conclusion: 'failure' });
+    const second = failureHints(w);
+    expect(second).toHaveLength(1);
+    w.gh.discardWebhooks();
+    for (const d of [...second, ...second, ...first]) await w.ingest(d);
+
+    const v = await w.view(pr);
+    expect(v.delivery).toMatchObject({ state: 'REPAIRING', stateReason: 'ci', currentHeadSha: pr.head });
+    const ci = v.attempts.filter((a) => a.family === 'ci');
+    expect(ci).toHaveLength(1);
+    expect(ci[0]).toMatchObject({ attemptNo: 1, boundHeadSha: pr.head });
+    expect((await w.commands(pr)).filter((c) => c === 'CiFailedObserved')).toHaveLength(1);
+    expect((await w.effects(pr)).filter((e) => e.kind === 'dispatch_ci_fix')).toHaveLength(1);
+  });
+});

@@ -78,6 +78,26 @@ describe('enqueueMissingEffects (§11 op 2)', () => {
     expect(enqueueMissingEffects(v, withFinal, new Map([...deadAll, ['push_recovery:d1:L2:final', 'dead']]))).toEqual([]);
   });
 
+  test('9e27996d: a chain with no try left to run (all done, the delivery still AWAITING_PUSH) owes the final try', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', pushPendingLocalHead: 'L2' }));
+    const keys = new Set(['push_recovery:d1:L2:1', 'push_recovery:d1:L2:2', 'push_recovery:d1:L2:head:H2']);
+    const allDone = new Map([...keys].map((k) => [k, 'done']));
+    expect(enqueueMissingEffects(v, keys, allDone)).toEqual([
+      { kind: 'push_recovery', dedupeKey: 'push_recovery:d1:L2:final', payload: { localHeadSha: 'L2', try: 3, maxTries: 3 } },
+    ]);
+    // A restarted chain's try still pending owns the move.
+    const restarted = new Set([...keys, 'push_recovery:d1:L2:head:H2:2']);
+    expect(enqueueMissingEffects(v, restarted, new Map([...allDone, ['push_recovery:d1:L2:head:H2:2', 'pending']]))).toEqual([]);
+  });
+
+  test('abe42d1b: a live chain under another local head is not doubled by one under the attempt’s reported head', () => {
+    const v = V(D({ state: 'AWAITING_PUSH', boundAttemptId: 'a1' }), [], [A({ status: 'ended', outcome: 'unproven', reportedShas: ['H2'] })]);
+    const none = new Set(['push_recovery:d1:none:1']);
+    expect(enqueueMissingEffects(v, none, new Map([['push_recovery:d1:none:1', 'pending']]))).toEqual([]);
+    // Once that chain has nothing left to run, the floor owes one under the head it reads.
+    expect(enqueueMissingEffects(v, none, new Map([['push_recovery:d1:none:1', 'done']]))[0]).toMatchObject({ dedupeKey: 'push_recovery:d1:H2:1' });
+  });
+
   test('67d34094: LANDING with no live merge_call or verify_merge owes one read-back per version', () => {
     const v = V(D({ state: 'LANDING', approvedHeads: ['H1'], version: 7 }));
     const mergeKey = 'merge_call:d1:H1:v6';

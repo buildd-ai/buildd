@@ -153,6 +153,13 @@ export type Command =
       preflightMiss?: string | null;
       trigger?: 'automatic' | 'human';
       triggerFactId?: string | null;
+      /**
+       * §6.3 T10: the check runs on `headSha` read live when the hint was
+       * handled. A read with nothing failing (green, or a re-run still going)
+       * means the hint is no longer true: `rejected(ci_not_red)`. Absent or
+       * null (unreadable) fails toward doing the work.
+       */
+      liveChecks?: { complete: boolean; failing: string[] } | null;
     })
   | (Base & {
       type: 'ConflictObserved';
