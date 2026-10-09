@@ -27,7 +27,7 @@ const ciFixTask = async (w: World, pr: Awaited<ReturnType<World['openPr']>>) => 
 };
 
 describe('probe: a verdict that lands while a no-op repair holds the delivery', () => {
-  test.failing('reviewer requests changes at H while CI flaked red on H; CI re-runs green before the fix claims → the request_changes at the CURRENT head is not lost (no second round at H, §8.2 / #3754 step 2)', async () => {
+  test('reviewer requests changes at H while CI flaked red on H; CI re-runs green before the fix claims → the request_changes at the CURRENT head is not lost (no second round at H, §8.2 / #3754 step 2)', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/flaky', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.handOn(pr);
@@ -58,7 +58,7 @@ describe('probe: a verdict that lands while a no-op repair holds the delivery', 
     expect(v.delivery!.state).toBe('CHANGES_REQUESTED');
   });
 
-  test.failing('…and the consequence: a second reviewer at the same unchanged head approves and the PR lands over the first reviewer\'s request_changes', async () => {
+  test('…and the consequence: a second reviewer at the same unchanged head approves and the PR lands over the first reviewer\'s request_changes', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/flaky-land', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.handOn(pr);
@@ -85,7 +85,7 @@ describe('probe: a verdict that lands while a no-op repair holds the delivery', 
     expect(w.gh.pr(w.repo, pr.prNumber).merged).toBe(false);
   });
 
-  test.failing('flaky CI repeatedly → each flake burns a review round number at the same head; the round budget (max_rounds) is spent by flakes, not by fix cycles (§8.2: max_rounds counts rounds of review)', async () => {
+  test('flaky CI repeatedly → each flake burns a review round number at the same head; the round budget (max_rounds) is spent by flakes, not by fix cycles (§8.2: max_rounds counts rounds of review)', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/flaky-budget', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.handOn(pr);
@@ -120,7 +120,7 @@ describe('probe: a verdict that lands while a no-op repair holds the delivery', 
 });
 
 describe('probe: BLOCKED_ON_TRUNK resumes into a state its head does not satisfy', () => {
-  test.failing('approved at H1, blocked on a red trunk, the author pushes new code H2 while blocked, trunk recovers → spec T26/§6.4: resume re-entered AT THE CURRENT HEAD (APPROVED needs coverage of H2, else round r+1); not an uncovered APPROVED nobody can land', async () => {
+  test('approved at H1, blocked on a red trunk, the author pushes new code H2 while blocked, trunk recovers → spec T26/§6.4: resume re-entered AT THE CURRENT HEAD (APPROVED needs coverage of H2, else round r+1); not an uncovered APPROVED nobody can land', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/blocked-push', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.approve(pr);
@@ -158,7 +158,7 @@ describe('probe: BLOCKED_ON_TRUNK resumes into a state its head does not satisfy
     expect(v.rounds.some((r) => r.headSha === h2 && (r.status === 'queued' || r.status === 'reviewing'))).toBe(true);
   });
 
-  test.failing('…and the consequence: the delivery is stranded: every landing door is refused (head_not_approved) and the §11 floor owes nothing', async () => {
+  test('…and the consequence: the delivery is stranded: every landing door is refused (head_not_approved) and the §11 floor owes nothing', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/blocked-stranded', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.approve(pr);

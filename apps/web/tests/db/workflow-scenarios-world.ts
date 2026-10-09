@@ -149,6 +149,10 @@ export async function world(o: { seed?: number; files?: Record<string, string>; 
       case 'synchronize':
         await seam.observeHead({ ...base, prNumber, hintedHeadSha: String(p.after ?? p.pull_request.head.sha), source: 'webhook:synchronize' });
         return;
+      case 'edited':
+        // The webhook route's kernel door for a retarget (pull_request.edited with changes.base).
+        if (p.changes?.base) await seam.observeBase({ ...base, prNumber, hintedFromBase: String(p.changes.base.ref?.from ?? ''), source: 'webhook:edited' });
+        return;
       case 'closed':
       case 'reopened':
         await seam.observePrState({ ...base, prNumber, source: `webhook:${p.action}` });
