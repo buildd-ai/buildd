@@ -806,7 +806,9 @@ describe('WorkerManager — state transitions', () => {
 
       manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      await waitFor(() => mockUpdateWorker.mock.calls.some(
+        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.error?.includes('needs_input')
+      ));
 
       // The final cleanup update stays waiting_input and includes waitingFor context
       const finalWaitingCalls = mockUpdateWorker.mock.calls.filter(
