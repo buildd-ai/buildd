@@ -96,6 +96,7 @@ const ENDPOINT_KIND_PROVIDER: Record<string, ProviderId> = {
   gateway: 'litellm',
   openrouter: 'openrouter',
   'anthropic-compatible': 'custom-endpoint',
+  cloudflare: 'custom-endpoint',
 };
 
 const REFRESH_FAMILIES = new Set(['claude_credential', 'codex_credential']);

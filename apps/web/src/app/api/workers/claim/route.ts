@@ -104,7 +104,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
 import {
   attachPersonalCredentials,
   decidePersonalCredential,
@@ -3408,6 +3408,7 @@ export async function POST(req: NextRequest) {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+        runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
   const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0
