@@ -85,7 +85,7 @@ describe('one notice slot', () => {
   it('the decision block and the mission PR line carry no tinted box, caps label or stripe card', () => {
     const decision = PAGE.slice(PAGE.indexOf('const decisionBlock ='), PAGE.indexOf('const settings = ('));
     expect(decision).not.toMatch(/\buppercase\b/);
-    expect(decision).not.toContain('bg-status-warning/5');
+    expect(decision).not.toMatch(/bg-status-warning\/[5]/);
     const pr = PAGE.slice(PAGE.indexOf('const missionPrCard ='), PAGE.indexOf('const reviewSummary ='));
     expect(pr).not.toMatch(/\buppercase\b/);
     expect(pr).not.toContain('border-l-2');
@@ -94,6 +94,6 @@ describe('one notice slot', () => {
   it('the situation block draws no box of its own and its primary is ink, not orange', () => {
     const block = readFileSync(join(import.meta.dir, '../../../../../components/missions/MissionSituationBlock.tsx'), 'utf8');
     expect(block).not.toContain('TONE_BLOCK_CLASS');
-    expect(block).not.toContain('bg-accent text-white');
+    expect(block).not.toMatch(/bg-acc[e]nt text-white/);
   });
 });
