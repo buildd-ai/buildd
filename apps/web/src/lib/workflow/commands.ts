@@ -31,8 +31,10 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
-  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `draft`, `unknown`, ...). */
   mergeableState?: string | null;
+  /** A draft PR (GitHub refuses to merge it); present only when true. */
+  draft?: boolean;
 }
 
 interface Base {
@@ -239,6 +241,8 @@ export type Command =
       detail?: string;
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
+      /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
+      retryAt?: string;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })

@@ -809,6 +809,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state === 'LANDING' && dd.currentHeadSha === cmd.headSha) return c.duplicate('landing_in_flight');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.stale('head_moved');
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
+      // e89035b6: GitHub refuses to merge a draft. Holding a PR as a draft is a wait, not a
+      // refusal: no merge call, the approval stands, and a door lands it once it is ready.
+      if (cmd.live.draft || cmd.live.mergeableState === 'draft') return c.rejected('pr_is_draft');
       // 24e1cfad: the live read targets another base than the delivery knows; the base-change
       // fact decides the approval first (the door records it before asking).
       if (cmd.live.baseRef && dd.baseRef && cmd.live.baseRef !== dd.baseRef) return c.stale('base_moved');
@@ -849,14 +852,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'LANDING') return c.stale('state_moved');
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const key = mergeResultKey(c.prKey, cmd);
-      const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null };
+      const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null, ...(cmd.retryAt ? { retryAt: cmd.retryAt } : {}) };
       if (cmd.outcome === 'merged' || cmd.outcome === 'indeterminate') {
         // The merged fact comes from a live read (verify_merge → PrMerged), never from this response.
         return c.apply(key, 'LANDING', {
           guardHead: true,
           effects: [{
             kind: 'verify_merge', dedupeKey: `verify_merge:${dd.id}:${cmd.headSha}:${cmd.landingVersion ?? 'x'}:${cmd.outcome}`,
-            payload: { headSha: cmd.headSha, outcome: cmd.outcome, landingVersion: cmd.landingVersion ?? null },
+            payload: { headSha: cmd.headSha, outcome: cmd.outcome, landingVersion: cmd.landingVersion ?? null, ...(cmd.retryAt ? { retryAt: cmd.retryAt } : {}) },
           }],
           evidence,
         });

@@ -6,7 +6,7 @@
  * from GitHub's merge answer to the T16 outcome, and the composition.
  */
 import { describe, expect, test } from 'bun:test';
-import { classifyMergeCall, withLandingEffects } from './pr-landing-effects';
+import { classifyMergeCall, mergeRetryAt, withLandingEffects } from './pr-landing-effects';
 
 describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
   const no = (message: string, indeterminate = false) => classifyMergeCall({ merged: false, message, indeterminate });
@@ -28,6 +28,37 @@ describe('classifyMergeCall: GitHub answer → MergeCallResult outcome', () => {
   });
   test('a textual conflict is a conflict repair', () => {
     expect(no('Merge conflict')).toBe('conflict');
+  });
+  test('a rate limit (403/429) is not a refusal: nothing landed, landing may be asked again', () => {
+    const st = (status: number, message: string, retryAfterMs?: number) => classifyMergeCall({ merged: false, message, status, ...(retryAfterMs != null ? { retryAfterMs } : {}) });
+    expect(st(403, 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.')).toBe('not_merged');
+    expect(st(429, 'You have exceeded a secondary rate limit.')).toBe('not_merged');
+    expect(st(429, 'Too Many Requests')).toBe('not_merged');
+    expect(st(403, 'API rate limit exceeded for installation ID 1.')).toBe('not_merged');
+    // A 403 GitHub sent reset headers with is a rate limit whatever its text says.
+    expect(st(403, 'Forbidden', 60_000)).toBe('not_merged');
+    // A 403 that is not a rate limit is still a refusal.
+    expect(st(403, 'Resource not accessible by integration')).toBe('refused');
+  });
+  test('a 5xx is GitHub failing, not refusing: indeterminate, verified by a live read', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(classifyMergeCall({ merged: false, message: 'Server Error', status })).toBe('indeterminate');
+    }
+  });
+  test('a draft PR is waiting on its author, not refused: nothing landed', () => {
+    expect(classifyMergeCall({ merged: false, message: 'Pull Request is in draft state', status: 405 })).toBe('not_merged');
+  });
+  test('the retry time honours retry-after / x-ratelimit-reset; a rate limit without one waits a minute', () => {
+    const now = Date.parse('2026-10-01T00:00:00Z');
+    const at = (r: Parameters<typeof mergeRetryAt>[0]) => mergeRetryAt(r, now);
+    expect(at({ merged: false, message: 'You have exceeded a secondary rate limit.', status: 429, retryAfterMs: 120_000 })).toBe('2026-10-01T00:02:00.000Z');
+    expect(at({ merged: false, message: 'You have exceeded a secondary rate limit.', status: 403 })).toBe('2026-10-01T00:01:00.000Z');
+    // Capped: a reset far away is still re-tried within the hour (primary limits reset hourly).
+    expect(at({ merged: false, message: 'API rate limit exceeded', status: 403, retryAfterMs: 5 * 3600_000 })).toBe('2026-10-01T01:00:00.000Z');
+    expect(at({ merged: false, message: 'Server Error', status: 503, retryAfterMs: 30_000 })).toBe('2026-10-01T00:00:30.000Z');
+    expect(at({ merged: false, message: 'Server Error', status: 500 })).toBeNull();
+    expect(at({ merged: false, message: 'Resource not accessible by integration', status: 403 })).toBeNull();
+    expect(at({ merged: true, message: 'merged', status: 200 })).toBeNull();
   });
   test('anything else GitHub definitely refused goes to a person', () => {
     expect(no('Required status check "build" is expected.')).toBe('refused');
