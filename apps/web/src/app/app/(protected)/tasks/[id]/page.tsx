@@ -6,7 +6,7 @@ import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-displa
 import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions, taskEstimates, taskEstimateActuals } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
@@ -195,7 +195,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, taskActuals] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -261,6 +261,15 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve(null),
+    // Task estimate (if enabled and frozen for this task)
+    db.query.taskEstimates.findFirst({
+      where: eq(taskEstimates.taskId, id),
+      orderBy: desc(taskEstimates.createdAt),
+    }),
+    // Task estimate actuals (actual time taken)
+    db.query.taskEstimateActuals.findFirst({
+      where: eq(taskEstimateActuals.taskId, id),
+    }),
   ]);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
@@ -964,6 +973,38 @@ export default async function TaskDetailPage({
         : []),
     ...(factWorker?.branch && !(prOutcome && isTerminal)
       ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
+      : []),
+    // Time: display actual elapsed + estimate with explanation
+    ...(taskActuals || taskEstimate
+      ? [{
+          key: 'time',
+          label: 'Time',
+          value: (() => {
+            const elapsedMinutes = taskActuals?.agentMinutes ?? null;
+            const p50 = taskEstimate?.p50Minutes ?? null;
+            const p80 = taskEstimate?.p80Minutes ?? null;
+
+            const formatMinutes = (m: number | null) => m ? Math.round(m) : null;
+            const elapsedStr = elapsedMinutes ? `${formatMinutes(elapsedMinutes)}m so far` : null;
+            const estimateStr = p50 && p80
+              ? `est. ${formatMinutes(p50)}-${formatMinutes(p80)}m`
+              : p50 ? `est. ${formatMinutes(p50)}m` : null;
+
+            const mainText = [elapsedStr, estimateStr].filter(Boolean).join(' · ') || '–';
+
+            // TODO: Add explanation from by-source data once we have a source for it
+            return (
+              <div className="space-y-0.5">
+                <div className="text-text-primary">{mainText}</div>
+                {taskEstimate?.explanation && (
+                  <div className="text-[12px] text-text-muted">
+                    {/* Explanation will be populated from estimate data */}
+                  </div>
+                )}
+              </div>
+            );
+          })(),
+        }]
       : []),
     ...(depTasks.length > 0
       ? [{
