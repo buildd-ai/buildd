@@ -165,24 +165,22 @@ describe('HealthClient — layout', () => {
     expect(trend).toBeGreaterThan(state);
   });
 
-  it('puts capacity, budget, credentials and schedules under State, and the trends after them', () => {
+  it('puts capacity, budget and credentials under State, and the trends after them', () => {
     const html = render({
       runners: [runner()],
       credentialHealth: [credential()],
       schedules: [schedule()],
       failureAnalytics: analytics(),
     });
-    const [runners, creds, schedules, failures] = orderOf(
+    const [runners, creds, failures] = orderOf(
       html,
       'health-section-runners',
       'health-section-credentials',
-      'health-section-schedules',
       'health-section-failure-analytics',
     );
     expect(runners).toBeGreaterThan(-1);
     expect(creds).toBeGreaterThan(runners);
-    expect(schedules).toBeGreaterThan(creds);
-    expect(failures).toBeGreaterThan(schedules);
+    expect(failures).toBeGreaterThan(creds);
   });
 
   it('carries ONE window control, in the header, not one per section', () => {
@@ -278,19 +276,10 @@ describe('HealthClient — STATE grammar', () => {
 });
 
 describe('HealthClient — LIFETIME grammar', () => {
-  // Schedule rows render inside a collapsed panel, so the LIFETIME strings
-  // themselves are covered in health-metric-grammar.test.ts. What matters here
-  // is that the panel is part of State and not a fourth top-level section.
-  it('keeps the schedules panel inside State', () => {
+  // Schedules live on /app/schedules; Health no longer carries a second copy.
+  it('renders no schedules panel', () => {
     const html = render({ schedules: [schedule()] });
-    const [state, schedules, trend] = orderOf(
-      html,
-      'health-section-state',
-      'health-section-schedules',
-      'health-section-trend',
-    );
-    expect(schedules).toBeGreaterThan(state);
-    expect(schedules).toBeLessThan(trend);
+    expect(html).not.toContain('health-section-schedules');
   });
 
   it('anchors monthly budget spend to the calendar month', () => {

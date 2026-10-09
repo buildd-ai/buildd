@@ -840,7 +840,12 @@ describe('Error Handling', () => {
       const events = collectEvents(manager);
 
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed time: loaded CI runners can exceed 200ms.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-unknown-err');
+        if (w?.milestones.some(m => m.label.includes('Error:'))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-unknown-err');
       // Should have an error milestone for the unexpected result subtype

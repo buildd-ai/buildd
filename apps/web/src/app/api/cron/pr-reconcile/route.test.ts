@@ -64,6 +64,8 @@ const REDRIVE_ZERO = {
   enumerated: 0, redriven: 0, merged: 0, exhausted: 0, raced: 0, notRedrivable: 0, errors: 0, deferred: 0, outcomes: {},
 };
 const mockRefreshRedrive = mock(() => Promise.resolve<any>(REDRIVE_ZERO));
+const mockEmit = mock(async () => {});
+mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
 mock.module('@/lib/refresh-redrive', () => ({ redriveDeferredRefreshes: mockRefreshRedrive }));
 
 const CI_RED_ZERO = {
@@ -77,7 +79,12 @@ const mockDrainDueEffects = mock(async () => ({ claimed: 0, done: 0, skipped: 0,
 const mockTrunk = mock(async () => ({ checked: 1, resolved: 1, recovered: 2, stillRed: 0, errors: 0 }));
 // …and the kernel's reconciliation floor (§11): re-imports heads / PR state, re-enqueues owed effects.
 const mockKernelFloor = mock(async () => ({ checked: 3, imported: 1, enqueued: 1, errors: 0 }));
-mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor }));
+// …and S15 cycles: a treadmill escalation past the landing cooldown gets a fresh refresh budget.
+const mockTreadmillCycles = mock(async (_o: { cooldownMs: number }) => ({ checked: 2, restarted: 1, refused: 1, errors: 0 }));
+mock.module('@/lib/workflow/seam', () => ({
+  drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor,
+  restartTreadmillCycles: mockTreadmillCycles,
+}));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -134,6 +141,7 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
     mockEarlyRelease.mockReset();
     mockEarlyRelease.mockResolvedValue(EARLY_RELEASE_ZERO);
+    mockEmit.mockReset();
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -198,6 +206,10 @@ describe('GET /api/cron/pr-reconcile', () => {
     // …and runs the kernel's reconciliation floor, so a lost synchronize/closed webhook is repaired (ddcbe113).
     expect(mockKernelFloor).toHaveBeenCalled();
     expect(body.kernelFloor).toMatchObject({ checked: 3, imported: 1, enqueued: 1 });
+    // …and re-opens spent treadmill cycles on the landing cooldown, not a new cron.
+    expect(mockTreadmillCycles).toHaveBeenCalled();
+    expect(mockTreadmillCycles.mock.calls[0]![0]).toEqual({ cooldownMs: 60 * 60_000 });
+    expect(body.treadmillCycles).toMatchObject({ restarted: 1, refused: 1 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {
@@ -226,6 +238,9 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(body.deadZone).toBeNull();
     expect(mockReconcile).toHaveBeenCalledTimes(1);
     expect(mockDeadZone).not.toHaveBeenCalled();
+    // The hourly pass is the floor for module backstops (merge readiness outcome labels).
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+    expect((mockEmit.mock.calls[0] as unknown[])[0]).toMatchObject({ type: 'sweep.pr_hourly' });
   });
 
   it('an unknown scope value falls back to the full sweep', async () => {

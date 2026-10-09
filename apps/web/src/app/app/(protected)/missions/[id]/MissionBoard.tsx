@@ -34,6 +34,7 @@ import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationB
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { stripOrder } from '@/lib/mission-task-strip';
+import { missionAgentLine } from '@/lib/mission-agents';
 import type { DeliveryTone } from '@/lib/workflow/delivery-display';
 import { screensToReview } from '@/lib/visual-review-model';
 import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
@@ -45,6 +46,7 @@ import {
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { describeMissionDuration } from '@/lib/mission-duration';
 import { axisTicks, formatAxisMinutes } from '@/components/fleet/slot-lanes-layout';
+import { repairBadge } from '@/lib/delivery-projection';
 
 export interface MissionBoardProps extends BoardLinkContext {
   model: MissionBoardModel;
@@ -82,6 +84,11 @@ export interface MissionBoardProps extends BoardLinkContext {
    * block points at the drawer instead of drawing a second call to action.
    */
   stripFocus?: StripFocus | null;
+  /**
+   * Each deliverable's own Build › Audit › Land and audit/repair evidence
+   * (`missionTaskDeliveries`): the drawer's stage row and disclosure.
+   */
+  deliveries?: LandedStripProps['deliveries'];
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -102,7 +109,7 @@ export default function MissionBoard(props: MissionBoardProps) {
 
 function BoardView({
   model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review,
-  workspaceId = null, executor = null, stripFocus = null, ...link
+  workspaceId = null, executor = null, stripFocus = null, deliveries = null, ...link
 }: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   // The Landed strip's selection: a store, so selecting re-renders the strip
@@ -140,7 +147,7 @@ function BoardView({
         missionId={link.missionId}
         visual={vm}
         onReview={review ? () => review.openDeck(null) : undefined}
-        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus } : null}
+        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus, deliveries } : null}
       />
       {notice && <div className="mt-4">{notice}</div>}
       {/* An agent's question gets its Ask; a delivery that needs you is its tile and the strip drawer. */}
@@ -185,12 +192,12 @@ function BoardView({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} executor={executor} />,
+                <Tile key={t.id} task={t} model={model} retry={retryBadge(t, deliveries)} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} executor={executor} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
                 <div className="mt-0.5 border-t border-border-default">
-                  {landed.map(t => [<LandedRow key={t.id} task={t} link={link} complete={model.complete} />, shotsFor(t.id)])}
+                  {landed.map(t => [<LandedRow key={t.id} task={t} retry={retryBadge(t, deliveries)} link={link} complete={model.complete} />, shotsFor(t.id)])}
                 </div>
               )}
             </div>
@@ -236,9 +243,10 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
   visual?: VisualReviewModel | null;
   onReview?: () => void;
   /** The interactive Landed strip (the mission page's Board); absent: the plain meter. */
-  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus'> | null;
+  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus' | 'deliveries'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
+  const agentLine = missionAgentLine(model);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
   // The deck's own count (screensToReview), so the caption and the deck agree.
   const awaiting = visual ? screensToReview(visual) : 0;
@@ -294,22 +302,10 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
       <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} ${L.goal}`} />
       <div data-testid="fleet-band" className={`${cell} ${L.fleet}`}>
         <SectionLabel>Fleet</SectionLabel>
-        <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
-        <div className="flex flex-wrap gap-3">
-          {model.runners.map(r => (
-            // Wraps: a ten-slot runner overran the half-width phone cell onto Needs you.
-            <span key={r.id} data-testid="fleet-runner" className="flex min-w-0 flex-wrap items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
-              <RunnerAvatar runner={r.name} />
-              {r.slots.map((s, i) => (
-                <span
-                  key={i}
-                  className={`block h-3.5 w-3.5 ${s ? (s.waiting ? 'border-2 border-accent' : 'border-[1.5px] border-accent bg-accent') : 'border-[1.5px] border-[var(--fleet-border-mid)]'}`}
-                />
-              ))}
-            </span>
-          ))}
-          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has claimed work.</span>}
-        </div>
+        {/* Runners are shared across missions, so they are not drawn here: only this mission's own agents. */}
+        <span data-testid="fleet-agents" data-count={agentLine.count} className="font-mono text-[15px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
+          {agentLine.text}
+        </span>
       </div>
       <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
@@ -471,6 +467,17 @@ export function AskBanner({ task, now }: { task: BoardTask; now: number }) {
 
 // ── Tiles ────────────────────────────────────────────────────────────────────
 
+/**
+ * A tile's ↻ badge. With the shared projection loaded it is the repair count
+ * (`repairBadge`), the same N the drawer, Activity and Missions print; a
+ * review run is audit, not a retry. Without it, the board's attempt count.
+ */
+export function retryBadge(t: BoardTask, deliveries: MissionBoardProps['deliveries']): string {
+  const d = deliveries?.[t.id];
+  if (d) return repairBadge(d.repairRounds);
+  return t.attempt > 1 ? `↻${t.attempt}` : '';
+}
+
 const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
@@ -483,7 +490,7 @@ const DELIVERY_TEXT: Record<DeliveryTone, string> = {
   needs: 'text-accent-text', live: 'text-text-secondary', stalled: 'text-status-warning', landed: 'text-status-success', closed: 'text-text-muted', failed: 'text-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popSide, compact = false, visualStuck = null, executor = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null; executor?: MissionExecutor | null }) {
+function Tile({ task: t, retry, model, now, span, link, popSide, compact = false, visualStuck = null, executor = null }: { task: BoardTask; retry: string; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null; executor?: MissionExecutor | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   // A delivery the kernel reads is never a live agent on this tile: its own worker ended.
@@ -501,8 +508,8 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
         {t.label}
       </span>
       <span className="flex-1" />
-      {t.attempt > 1 && (
-        <span className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{`↻${t.attempt}`}</span>
+      {retry && (
+        <span data-testid="board-tile-retry" className={`inline-flex h-5 shrink-0 items-center border px-1.5 font-mono text-[11px] ${t.status === 'fixing' || t.status === 'ci_failed' ? 'border-status-error text-status-error' : 'border-[var(--fleet-border-mid)] text-text-secondary'}`}>{retry}</span>
       )}
       {live && <SteerButton taskId={t.id} />}
       {!queued && <RunnerAvatar runner={t.runner} />}
@@ -684,7 +691,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
   );
 }
 
-function LandedRow({ task: t, link, complete }: { task: BoardTask; link: BoardLinkContext; complete: boolean }) {
+function LandedRow({ task: t, retry, link, complete }: { task: BoardTask; retry: string; link: BoardLinkContext; complete: boolean }) {
   return (
     <a
       href={taskSheetHref(link, t.id)}
@@ -696,7 +703,7 @@ function LandedRow({ task: t, link, complete }: { task: BoardTask; link: BoardLi
       <span className="grid h-3.5 w-3.5 shrink-0 place-items-center bg-status-success text-[11px] md:text-[10px] font-bold text-card">✓</span>
       <ScopeChip scope={t.scope} />
       <span className="min-w-0 truncate font-medium">{t.label}</span>
-      {t.attempt > 1 && <span className="inline-flex h-[18px] shrink-0 items-center border border-[var(--fleet-border-mid)] px-1.5 text-[11px]">{`↻${t.attempt}`}</span>}
+      {retry && <span data-testid="board-tile-retry" className="inline-flex h-[18px] shrink-0 items-center border border-[var(--fleet-border-mid)] px-1.5 text-[11px]">{retry}</span>}
       <span className="flex-1" />
       {complete && (t.lines ? (
         <span className="shrink-0 text-[11px] tabular-nums text-[var(--fleet-faint)]">
@@ -749,7 +756,7 @@ function Ticker({ model, now, link }: { model: MissionBoardModel; now: number; l
  * planning and what they are doing, live (milestones stream in over the same
  * store the tiles read), instead of an empty "Tasks 0/0" column.
  */
-function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable<MissionBoardModel['planning']>; now: number; link: BoardLinkContext }) {
+export function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable<MissionBoardModel['planning']>; now: number; link: BoardLinkContext }) {
   const live = useMissionLiveSnapshot()[p.taskId];
   const milestone = live?.milestones?.length ? live.milestones[live.milestones.length - 1].label : p.lastMilestone;
   const action = live?.currentAction ?? p.currentAction;
@@ -786,7 +793,7 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 // ── Completion ───────────────────────────────────────────────────────────────
 
-function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; text: string | null; visual: VisualReviewModel | null }) {
+export function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; text: string | null; visual: VisualReviewModel | null }) {
   const r = model.record;
   const review = visual && visual.summary.shots > 0 ? visual.summary : null;
   const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });

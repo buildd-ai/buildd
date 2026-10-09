@@ -25,6 +25,7 @@ import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
   learnOauthCapacity,
@@ -100,6 +101,12 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import {
+  attachPersonalCredentials,
+  decidePersonalCredential,
+  perRequestPersonalCredentialDeps,
+  type PersonalCredentialDecision,
+} from './personal-credential-injection';
 import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } from './claude-model-route';
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
@@ -1167,7 +1174,9 @@ export async function POST(req: NextRequest) {
             : undefined,
         ),
       ),
-      columns: { slug: true, model: true, workspaceId: true, teamId: true },
+      // Personal rows ride along (team-level, workspaceId NULL); which one a
+      // task may use is decided per task by its requester below.
+      columns: { ...ROLE_VISIBILITY_COLUMNS, model: true },
     });
   }
 
@@ -1205,10 +1214,18 @@ export async function POST(req: NextRequest) {
     managed_concurrency: 0,
     managed_runner_hours: 0,
     hosted_runner_hours: 0,
+    no_personal_credential: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
   } satisfies Required<NonNullable<ClaimDiagnostics['deferrals']>>;
+
+  // Each candidate's model-credential decision under the team's credential
+  // policy (./personal-credential-injection), keyed by task id. Teams with no
+  // policy decide `legacy` without a read beyond the team row, and the attach
+  // steps below then run exactly as they always have.
+  const personalCredentialDecisions = new Map<string, PersonalCredentialDecision>();
+  const personalCredentialDeps = perRequestPersonalCredentialDeps();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
   // deferred in the dispatch loop below. It already passed every SQL-level
@@ -2360,6 +2377,7 @@ export async function POST(req: NextRequest) {
     const taskTier = (task as any).tier as RegistryTier | null | undefined;
     const roleRow = pickRoleRowForTask(roleModelRows, {
       roleSlug, workspaceId: task.workspaceId, teamId: taskTeamId,
+      requesterUserId: slugHasPersonalRows(roleModelRows, roleSlug) ? await lazyRequester(task)() : null,
     });
     // Precedence: pin → tasks.tier → role exact id → matrix + role floor. An
     // inferred role never touches the model (role-routing.md §4.1).
@@ -2559,6 +2577,27 @@ export async function POST(req: NextRequest) {
         runnerVersion: body.environment?.claudeCliVersion ?? null,
       });
       continue;
+    }
+
+    // Credential policy (provider parity): a team that set personal_only runs
+    // a task only on its requester's own key, so a task this claim cannot give
+    // one is held here, before a worker exists, with the reason named. The
+    // backend is final by now (failover and provider toggles ran above).
+    if (taskTeamId) {
+      const credentialDecision = await decidePersonalCredential({
+        task: task as any,
+        teamId: taskTeamId,
+        workspaceId: task.workspaceId,
+        accountId: account.id,
+        runnerFeatures: body.runnerFeatures,
+        cloud: cloudExecutor,
+        interactive: !!interactiveSession,
+      }, personalCredentialDeps);
+      if (credentialDecision.kind === 'refuse') {
+        deferTask(task, 'no_personal_credential', { ...credentialDecision.detail });
+        continue;
+      }
+      personalCredentialDecisions.set(task.id, credentialDecision);
     }
 
     // Persist the routing decision in task context so the runner consumes it
@@ -3248,15 +3287,29 @@ export async function POST(req: NextRequest) {
   // instead) first (./agent-endpoint-injection): where it wins, it is the only
   // model credential attached, so the blocks below skip the backend-matching
   // ones for those workers.
+  //
+  // Before either: a requester's own key under the team's credential policy
+  // (./personal-credential-injection). Where it is attached (or, for an
+  // interactive session under personal_only, where nothing may be) it is the
+  // only model credential, so those workers are kept out of the endpoint
+  // ranking and every team model-credential attach below. Only a team that
+  // set a credential policy can produce such a worker.
+  const personalWorkers = cloudExecutor
+    ? new Set<string>()
+    : attachPersonalCredentials(claimedWorkers, personalCredentialDecisions);
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
+    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id)), filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
+  // Workers whose model credential is already decided: no team model credential for them.
+  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0
+    ? endpointWorkers
+    : new Set([...endpointWorkers, ...personalWorkers]);
   if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
-  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
+  if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, modelCredentialDecided);
 
   // Which GitHub credentials the agent gets: a mode marker only, gated on the
   // rollout stage and the runner declaring the feature. See ./github-credential-injection.
@@ -3281,9 +3334,9 @@ export async function POST(req: NextRequest) {
   // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
-    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
-    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
-    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
+    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
+    await attachClaudeCredentials(claimedWorkers, filteredTasks, account.id, modelCredentialDecided);
+    await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, modelCredentialDecided);
   } else {
     for (const cw of claimedWorkers) {
       const removed = stripClaimCredentials(cw as unknown as Record<string, unknown>);

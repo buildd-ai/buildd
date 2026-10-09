@@ -1,7 +1,8 @@
 import { redirect, notFound } from 'next/navigation';
 import { db } from '@buildd/core/db';
-import { workspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { workspaces, workspaceSkills, missions, tasks } from '@buildd/core/db/schema';
+import { eq, and, isNotNull, gte, desc, sql } from 'drizzle-orm';
+import { collectPolicySuggestions } from '@/lib/policy-suggestions';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -13,6 +14,8 @@ import { loadWorkspaceRepoFacts, memberHasRepoAccess } from '@/lib/member-repo-a
 import MemberRepoAccessSection from './MemberRepoAccessSection';
 
 export const dynamic = 'force-dynamic';
+
+const SUGGESTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export default async function WorkspaceMergePolicyPage({
   params,
@@ -53,6 +56,25 @@ export default async function WorkspaceMergePolicyPage({
 
   const effectivePolicy = resolvePolicy(workspace);
 
+  // Paths recent reviews flagged outside every risk class. Best-effort: the
+  // page renders without them.
+  const policyConfig = workspace.gitConfig?.policyConfig ?? null;
+  const policySuggestions = policyConfig
+    ? await db
+        .select({ context: tasks.context })
+        .from(tasks)
+        .where(and(
+          eq(tasks.workspaceId, workspaceId),
+          eq(tasks.category, 'review'),
+          gte(tasks.createdAt, new Date(Date.now() - SUGGESTION_WINDOW_MS)),
+          sql`${tasks.context}->'policySuggestions' is not null`,
+        ))
+        .orderBy(desc(tasks.createdAt))
+        .limit(200)
+        .then(rows => collectPolicySuggestions(rows.map(r => r.context), policyConfig))
+        .catch(() => [])
+    : [];
+
   const teams = await getUserTeamsWithDetails(user.id).catch(() => []);
   const moveTeams = moveTargets(user.id, teams, workspace.teamId, await getTeamsPermissionOverrides(teams.map((t) => t.id)));
 
@@ -74,9 +96,11 @@ export default async function WorkspaceMergePolicyPage({
           workspaceId={workspaceId}
           workspaceName={workspace.name}
           initial={effectivePolicy}
-          policyConfig={workspace.gitConfig?.policyConfig ?? null}
+          policyConfig={policyConfig}
+          policySuggestions={policySuggestions}
           roles={roles.map(r => ({ slug: r.slug, name: r.name }))}
           missionOverrides={missionOverrides}
+          canEdit={canManageSettings}
           headerAction={moveTeams && (
             <MoveToTeamButton
               workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}

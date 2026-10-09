@@ -16,11 +16,18 @@ assertions:
     key: "jevQuestionGate"
     file: "packages/core/db/schema.ts"
   # A hold parks without a notification (the park path resolves it), and a
-  # sweep surfaces it at its deadline (lib/question-hold.ts).
+  # sweep surfaces it at its deadline (lib/question-hold.ts). The park path
+  # stamps every park's disposition (lib/park-disposition.ts), which resolves
+  # the hold.
+  - id: "park-disposition-read-by-park-path"
+    type: "symbol_reachable"
+    symbol: "disposeParkedWaitingFor"
+    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    as: "read"
   - id: "hold-resurface-read-by-park-path"
     type: "symbol_reachable"
     symbol: "resolveHold"
-    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    entry: "apps/web/src/lib/park-disposition.ts"
     as: "read"
   - id: "hold-resurface-sweep"
     type: "symbol_reachable"

@@ -134,11 +134,22 @@ mock.module('@buildd/core/db', () => ({
 /** Role slugs effective for the planning task's workspace (role-routing §3.1). */
 let effectiveRoles = new Set<string>();
 const resolveEffectiveRoleSlugsCalls: string[] = [];
+const resolveEffectiveRoleSlugsRequesters: Array<string | null> = [];
 mock.module('./effective-roles', () => ({
-  resolveEffectiveRoleSlugs: (workspaceId: string) => {
+  resolveEffectiveRoleSlugs: (workspaceId: string, requesterUserId: string | null = null) => {
     resolveEffectiveRoleSlugsCalls.push(workspaceId);
+    resolveEffectiveRoleSlugsRequesters.push(requesterUserId);
     return Promise.resolve(effectiveRoles);
   },
+}));
+
+// Who the planning task is for (task → parents → mission → schedule). The walk
+// is covered in packages/core; here only what approvePlan does with the answer.
+let requesterAnswer: string | null = null;
+const requesterLookups: any[] = [];
+mock.module('@buildd/core/task-requester', () => ({
+  resolveTaskRequesterUserId: async (task: any) => { requesterLookups.push(task); return requesterAnswer; },
+  requesterOf: async () => requesterAnswer,
 }));
 
 const wakeCalls: Array<{ ids: string[]; cause: string }> = [];
@@ -184,6 +195,9 @@ function reset() {
   updateCalls.length = 0;
   effectiveRoles = new Set();
   resolveEffectiveRoleSlugsCalls.length = 0;
+  resolveEffectiveRoleSlugsRequesters.length = 0;
+  requesterAnswer = null;
+  requesterLookups.length = 0;
   wakeCalls.length = 0;
   predictions.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
@@ -761,6 +775,28 @@ describe('approvePlan — a plan step\'s role reaches the row only if the worksp
     expect(resolveEffectiveRoleSlugsCalls).toEqual(['ws-1']);
     expect(insertedValues.map(v => v.roleSlug)).toEqual(['builder', 'researcher']);
     expect(insertedValues[0].context.planRoleSlugRejected).toBeUndefined();
+  });
+
+  it("resolves step roles as the planning task's requester, so the owner's private role is kept", async () => {
+    planningTaskRow.createdByUserId = 'user-owner';
+    requesterAnswer = 'user-owner';
+    effectiveRoles = new Set(['my-reviewer']);
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Review the diff', roleSlug: 'my-reviewer' }] as any);
+    expect(requesterLookups.at(-1)).toMatchObject({ id: PLANNING_TASK_ID, createdByUserId: 'user-owner' });
+    expect(resolveEffectiveRoleSlugsRequesters).toEqual(['user-owner']);
+    expect(insertedValues[0].roleSlug).toBe('my-reviewer');
+  });
+
+  it("files every child for the planning task's requester", async () => {
+    requesterAnswer = 'user-owner';
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(insertedValues.map(v => v.createdByUserId)).toEqual(['user-owner', 'user-owner']);
+  });
+
+  it('files children with no creator when the planning task has no requester', async () => {
+    requesterAnswer = null;
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(insertedValues.map(v => v.createdByUserId)).toEqual([null, null]);
   });
 
   it('files an unknown step roleSlug role-less and records the rejected slug', async () => {

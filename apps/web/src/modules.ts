@@ -1,3 +1,6 @@
+import type { RunProgressReaders } from '@/lib/run-progress-read';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { resolvePolicy } from '@/lib/merge-policy';
 /**
  * Composition root: the one place optional modules are wired into core.
  *
@@ -86,6 +89,11 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
 
+/** Review-backed read hooks for core's run-progress projection. */
+export const RUN_PROGRESS_READERS: RunProgressReaders = {
+  review: readPrReviewStatus,
+  usesReviewer: (...args) => resolvePolicy(...args).tier === 'agent-review',
+};
 /**
  * The approved-merge slot (lib/workflow/delivery-view.ts): the reviews
  * module's merge policy says whether an APPROVED delivery waits on a person

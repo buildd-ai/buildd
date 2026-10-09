@@ -1,5 +1,5 @@
 {
-  "id": "1c683a54-3348-4916-8a7b-eda22bbdcf86",
+  "id": "f86806eb-7805-4177-9b52-a51551048896",
   "prevId": "aaa85147-fe1e-4f75-b441-f6219801f9ae",
   "version": "7",
   "dialect": "postgresql",
@@ -9275,6 +9275,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'open'"
+        },
+        "disposition": {
+          "name": "disposition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "superseded_by_pr_number": {
           "name": "superseded_by_pr_number",
@@ -18717,13 +18723,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "warm_handover": {
-          "name": "warm_handover",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'off'"
         },
         "permission_overrides": {
           "name": "permission_overrides",

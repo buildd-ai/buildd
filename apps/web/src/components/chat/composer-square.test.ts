@@ -53,10 +53,11 @@ describe('chat foreground', () => {
     expect(toolbar).not.toMatch(/mood-needs|accent/);
   });
 
-  it('the colour roles exist in both themes', () => {
+  it('the colour roles exist (aliases of the app tokens, so both themes)', () => {
     const css = read('app/globals.css');
     for (const v of ['--chat-ground', '--chat-surface', '--chat-rule', '--chat-rule-strong', '--chat-text', '--chat-muted', '--mood-calm', '--mood-needs', '--mood-needs-fill', '--mood-thinking', '--mood-landed']) {
-      expect(css.split(`${v}:`).length - 1).toBeGreaterThanOrEqual(2);
+      // One declaration on `:root, [data-theme]`: the roles alias app tokens, which flip per theme.
+      expect(css.split(`${v}:`).length - 1).toBeGreaterThanOrEqual(1);
     }
   });
 });

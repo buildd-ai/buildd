@@ -21,6 +21,13 @@ import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
  *
  * Returns clauses to AND into the claim's WHERE. `isRoleClaimable` is the JS
  * mirror; keep the two in step.
+ *
+ * Slug match only, by design: personal roles share slugs across owners, so a
+ * runner advertising a personal slug may pull any task with that slug. Which
+ * row the task then runs under is decided per task by who it is for
+ * (@buildd/core/role-visibility), so another member's private role is never
+ * applied to it — and task creation refuses a slug that names only someone
+ * else's private role.
  */
 export function roleSlugGate(availableSkills: readonly string[] | undefined): SQL[] {
   const skills = availableSkills ?? [];

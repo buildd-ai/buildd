@@ -757,7 +757,8 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
   it('turnGroups: a member never gets admin, even when routing names it', async () => {
     const { turnGroups } = await import('./turn');
     const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: false });
-    expect([...g].sort()).toEqual(['missions', 'notifications', 'tasks']);
+    // workers instead: it carries the member's own personal-role tools.
+    expect([...g].sort()).toEqual(['missions', 'notifications', 'tasks', 'workers']);
     const a = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: true });
     expect(a.has('admin')).toBe(true);
   });

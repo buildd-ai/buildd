@@ -256,6 +256,13 @@ mock.module('@buildd/core/agent-endpoint', () => ({
   AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint',
 }));
 
+// The provider resolver (personal agent credentials, provider parity slice 5).
+// Default: nothing resolves. Only a team with a credential policy reaches it.
+const mockResolveProviderCredential = mock(async (_i: any) => ({ none: true, reason: 'no_credential', why: [] }) as any);
+mock.module('@buildd/core/providers/resolve', () => ({
+  resolveProviderCredential: mockResolveProviderCredential,
+}));
+
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
     get: mockSecretsProviderGet,
@@ -3522,6 +3529,172 @@ describe('POST /api/workers/claim', () => {
         });
       });
 
+    // Provider parity slice 5: a requester's own key under the team's
+    // credential policy. The safety property: a personal key reaches only its
+    // owner's task, and only when the team explicitly chose a personal policy;
+    // a team with no policy gets exactly the claim it got before.
+    describe('credential policy and personal agent keys', () => {
+      const ALICE = 'user-alice';
+      const personal = (value: string, provider = 'anthropic') => ({
+        credential: { provider, shape: 'api_key', value, tokenExpiresAt: null },
+        provider, scope: 'personal',
+        source: { scope: 'personal', secretId: 'sec-personal', purpose: 'inference_key', label: provider, legacy: false },
+        why: [],
+      });
+      const FEATURES = ['agent_endpoint', 'personal_credentials'];
+      const FIXED_EXPIRY = new Date(Date.now() + 60_000);
+      const setup = (opts: { policy?: string | null; requester?: string | null; legacyColumn?: string } = {}) => {
+        setupTeamWithEveryCredential();
+        // One fixed expiry, so two claims compare byte for byte.
+        mockSecretsFindMany.mockResolvedValue([
+          { id: 'oauth-secret-1', purpose: 'oauth_token', label: null },
+          { id: 'apikey-secret-1', purpose: 'anthropic_api_key', label: null },
+          { id: 'mcp-secret-1', purpose: 'mcp_credential', label: 'SOME_MCP_KEY' },
+          { id: 'claude-cred-1', purpose: 'claude_credential', tokenExpiresAt: FIXED_EXPIRY },
+        ]);
+        mockTasksFindMany.mockReset();
+        mockTasksFindMany.mockResolvedValue([]);
+        mockTasksFindMany.mockResolvedValueOnce([{
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Test task',
+          dependsOn: [],
+          ...(opts.requester !== undefined ? { createdByUserId: opts.requester } : {}),
+          workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: { claimPlanner: 'record' } },
+        }]);
+        mockTeamsFindFirst.mockResolvedValue(opts.policy === undefined && !opts.legacyColumn
+          ? null
+          : { credentialPolicy: opts.policy ?? null, ...(opts.legacyColumn ? { inferenceKeyPolicy: opts.legacyColumn } : {}) });
+      };
+      const claim = async (body: Record<string, unknown> = {}) => {
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner', runnerFeatures: FEATURES, ...body },
+        }));
+        return { status: res.status, data: await res.json() };
+      };
+      beforeEach(() => {
+        mockResolveProviderCredential.mockReset();
+        mockResolveProviderCredential.mockImplementation(async (i: any) =>
+          i.requesterUserId === ALICE ? personal('sk-ant-alice-personal') : { none: true, reason: 'no_credential', why: [] });
+      });
+
+      it('credential_policy NULL: the claim payload is byte-identical to a team with no policy row at all, and no personal lookup runs', async () => {
+        await withEncryptionKey(async () => {
+          // Baseline: no team row, i.e. the claim as it was before policies existed.
+          setup({ requester: ALICE });
+          const before = await claim();
+          // NULL policy, even with the chat-only legacy column set to "own keys",
+          // a requester who HAS a personal key, and a runner declaring the feature.
+          setup({ policy: null, requester: ALICE, legacyColumn: 'own' });
+          const after = await claim();
+          expect(after.status).toBe(200);
+          expect(JSON.stringify(after.data)).toBe(JSON.stringify(before.data));
+          const w = after.data.workers[0];
+          expect(w.serverApiKey).toBe('decrypted-secret-value');
+          expect(w.serverOauthToken).toBe('decrypted-secret-value');
+          expect('credentialDecision' in w).toBe(false);
+          expect(JSON.stringify(after.data)).not.toContain('sk-ant-alice-personal');
+          expect(mockResolveProviderCredential).not.toHaveBeenCalled();
+        });
+      });
+
+      it('policy team: today\'s credentials plus a marker, never a personal lookup', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'team', requester: ALICE });
+          const { data } = await claim();
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('decrypted-secret-value');
+          expect(w.credentialDecision).toEqual({ surface: 'agent-claude', policy: 'team', scope: 'team', runnerLocalAllowed: true });
+          expect(mockResolveProviderCredential).not.toHaveBeenCalled();
+        });
+      });
+
+      it('personal_first, requester with a key: their key is the only model credential (no team key, seat, Claude token or refresh list); MCP secrets still delivered', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_first', requester: ALICE });
+          const { data } = await claim();
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('sk-ant-alice-personal');
+          for (const f of ['serverOauthToken', 'claudeAccessToken', 'claudeTokenExpiresAt', 'pendingCredentialRefreshes', 'modelEndpoint']) {
+            expect(w[f]).toBeUndefined();
+          }
+          expect(w.mcpSecrets).toEqual({ SOME_MCP_KEY: 'decrypted-secret-value' });
+          expect(w.credentialDecision).toEqual({ surface: 'agent-claude', policy: 'personal_first', scope: 'personal', provider: 'anthropic', runnerLocalAllowed: true });
+          expect(mockResolveProviderCredential.mock.calls[0][0]).toMatchObject({ requesterUserId: ALICE, surface: 'agent-claude', provider: 'anthropic', accountId: 'account-1', workspaceId: 'ws-1' });
+        });
+      });
+
+      it('personal_first, requester without a key: the same team credentials as before', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_first', requester: 'user-bob' });
+          const { data } = await claim();
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('decrypted-secret-value');
+          expect(w.serverOauthToken).toBe('decrypted-secret-value');
+          expect(w.credentialDecision.scope).toBe('team');
+          expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
+        });
+      });
+
+      it('personal_first, no requester: team credentials, and the resolver is never asked', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_first' });
+          const { data } = await claim();
+          expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+          expect(mockResolveProviderCredential).not.toHaveBeenCalled();
+        });
+      });
+
+      it('personal_first, a runner without the feature: the personal key is withheld, team credentials delivered', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_first', requester: ALICE });
+          const { data } = await claim({ runnerFeatures: ['agent_endpoint'] });
+          expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
+          expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
+        });
+      });
+
+      it('personal_only, requester with a key: their key, and a machine login may not displace it', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_only', requester: ALICE });
+          const { data } = await claim();
+          const w = data.workers[0];
+          expect(w.serverApiKey).toBe('sk-ant-alice-personal');
+          expect(w.serverOauthToken).toBeUndefined();
+          expect(w.credentialDecision.runnerLocalAllowed).toBe(false);
+        });
+      });
+
+      for (const [name, requester, features] of [
+        ['no requester', undefined, FEATURES],
+        ['requester without a key', 'user-bob', FEATURES],
+        ['a runner without the feature', ALICE, ['agent_endpoint']],
+      ] as const) {
+        it(`personal_only, ${name}: not claimed, no credential decrypted, the reason named`, async () => {
+          await withEncryptionKey(async () => {
+            setup({ policy: 'personal_only', ...(requester ? { requester } : {}) });
+            const { status, data } = await claim({ runnerFeatures: features });
+            expect(status).toBe(200);
+            expect(data.workers).toEqual([]);
+            expect(data.diagnostics?.deferrals?.no_personal_credential).toBe(1);
+            expect(JSON.stringify(data)).not.toContain('decrypted-secret-value');
+            expect(JSON.stringify(data)).not.toContain('sk-ant-alice-personal');
+            expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+          });
+        });
+      }
+
+      it('personal_only, explicitly named task without a requester: the caller is told why', async () => {
+        await withEncryptionKey(async () => {
+          setup({ policy: 'personal_only' });
+          const { data } = await claim({ taskId: 'task-1' });
+          expect(data.workers).toEqual([]);
+          expect(JSON.stringify(data)).toContain('personal keys only');
+        });
+      });
+    });
+
     describe('agent model endpoint (one ranking, only the winner attached)', () => {
       const endpoint = {
         kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-endpoint-example',
@@ -4661,9 +4834,14 @@ describe('POST /api/workers/claim', () => {
       // Role resolution: a team-default role (workspaceId null) with the given refs.
       // Used by both the model-floor prefetch and the connector-block role lookup.
       if (roleSlug) {
-        mockWorkspaceSkillsFindMany.mockResolvedValue([
-          { slug: roleSlug, isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs },
-        ]);
+        const row = { slug: roleSlug, isRole: true, enabled: true, workspaceId: null, teamId: 'team-1', model: 'inherit', connectorRefs };
+        // The first role query is the connector pre-filter (availability gate,
+        // HTTP-probing): these tests are about injection, and the gate has its
+        // own suite (connector-prefilter.test.ts), so it sees a role with no
+        // refs. Until role rows were matched on their team, this fixture's
+        // missing teamId hid the refs from the gate by accident.
+        mockWorkspaceSkillsFindMany.mockResolvedValueOnce([{ ...row, connectorRefs: [] }]);
+        mockWorkspaceSkillsFindMany.mockResolvedValue([row]);
       } else {
         mockWorkspaceSkillsFindMany.mockResolvedValue([]);
       }
@@ -5131,10 +5309,11 @@ describe('POST /api/workers/claim', () => {
       mockDbExecute.mockReturnValue(Promise.resolve({
         rows: [{ id: 'worker-cue', task_id: 'task-cue', branch: 'buildd/test', status: 'idle' }],
       }));
-      // Role owned by team-task, referencing conn-cue
-      mockWorkspaceSkillsFindMany.mockResolvedValue([
-        { slug: 'builder', isRole: true, enabled: true, workspaceId: null, model: 'inherit', connectorRefs: ['conn-cue'] },
-      ]);
+      // Role owned by team-task, referencing conn-cue. The first role query is
+      // the connector pre-filter (see setupConnectorClaim): it sees no refs.
+      const cueRole = { slug: 'builder', isRole: true, enabled: true, workspaceId: null, teamId: 'team-task', model: 'inherit', connectorRefs: ['conn-cue'] };
+      mockWorkspaceSkillsFindMany.mockResolvedValueOnce([{ ...cueRole, connectorRefs: [] }]);
+      mockWorkspaceSkillsFindMany.mockResolvedValue([cueRole]);
       // Connector owned by team-task (must resolve only for tasks in team-task workspaces)
       mockConnectorsFindMany.mockResolvedValue([
         {

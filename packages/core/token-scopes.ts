@@ -68,7 +68,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   spec_compare: 'tasks:read', list_discrepancies: 'tasks:read', get_discrepancy: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
-  claim_task: 'workers:write', update_progress: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
+  claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
   create_pr: 'tasks:write', record_pr_supersession: 'workers:write', send_agent_message: 'workers:admin',
   emit_event: 'tasks:write', query_events: 'tasks:read', post_note: 'tasks:write', suggest_schedule_update: 'workers:write',
   list_prs: 'tasks:read', get_pr: 'tasks:read', get_pr_review: 'tasks:read',
@@ -83,7 +83,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',
   manage_workspaces: 'workspaces:admin', manage_watched_projects: 'workspaces:admin',
-  manage_secrets: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
+  manage_secrets: 'secrets', manage_providers: 'secrets', manage_model_tiers: 'admin', manage_evidence_backends: 'admin', manage_experiments: 'admin',
   consolidate_knowledge: 'knowledge:admin', memory_delete: 'knowledge:admin',
 };
 

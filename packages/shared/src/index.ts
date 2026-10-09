@@ -18,3 +18,4 @@ export * from './local-session';
 export * from './derived-files';
 
 export * from './warm-handover';
+export * from './providers';

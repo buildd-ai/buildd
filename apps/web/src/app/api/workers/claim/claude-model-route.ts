@@ -15,9 +15,10 @@
  *   provider wins, and the server seat/key are withheld.
  * - the team agent model endpoint, when it wins `resolveAgentModelRoute` and
  *   the runner declares the endpoint feature: the only model credential sent.
- * - a live `anthropic_api_key` visible to the task: delivered as
- *   ANTHROPIC_API_KEY, which Claude Code prefers over an OAuth token. Metered
- *   per token, not seat-bound.
+ * - a live team Anthropic API key visible to the task, in canonical storage
+ *   (`inference_key` / `anthropic`) or the legacy `anthropic_api_key`:
+ *   delivered as ANTHROPIC_API_KEY, which Claude Code prefers over an OAuth
+ *   token. Metered per token, not seat-bound.
  * - otherwise the OAuth seat (server `oauth_token`, `claude_credential`, or
  *   the runner's own login).
  *
@@ -26,6 +27,7 @@
  * fails the task over.
  */
 import { resolveAgentModelRoute, type AgentModelDecision } from '@buildd/core/agent-endpoint';
+import { agentKeyPurposes, isAgentKeyRow } from '@buildd/core/providers/agent-keys';
 
 export type ClaudeModelRoute =
   | 'oauth_seat'
@@ -53,6 +55,10 @@ export interface AnthropicKeyRow {
   accountId: string | null;
   workspaceId: string | null;
   healthStatus?: string | null;
+  /** Absent: a legacy `anthropic_api_key` row (the only storage this used to read). */
+  purpose?: string;
+  label?: string | null;
+  userId?: string | null;
 }
 
 export interface ClaudeRouteDeps {
@@ -68,11 +74,11 @@ async function listAnthropicKeys(opts: { teamId: string; workspaceId: string; ac
   // Same scoping as attachServerManagedSecrets: team-wide, this account, this workspace.
   const rows = await db.query.secrets.findMany({
     where: teamCredentialWhere(
-      { teamId: opts.teamId, purpose: 'anthropic_api_key' },
+      { teamId: opts.teamId, purpose: agentKeyPurposes('anthropic') },
       or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)),
       or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
     ),
-    columns: { accountId: true, workspaceId: true, healthStatus: true },
+    columns: { accountId: true, workspaceId: true, healthStatus: true, purpose: true, label: true, userId: true },
   });
   return (rows ?? []) as AnthropicKeyRow[];
 }
@@ -101,6 +107,8 @@ export async function resolveClaudeModelRoute(
     // Re-check the scoping in code so a loose query cannot widen it.
     const live = keys.some(k =>
       k.healthStatus !== 'revoked'
+      && !k.userId
+      && (k.purpose === undefined || isAgentKeyRow({ purpose: k.purpose, label: k.label }, 'anthropic'))
       && (!k.workspaceId || k.workspaceId === input.workspaceId)
       && (!k.accountId || k.accountId === input.accountId));
     if (live) return 'anthropic_api_key';

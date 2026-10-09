@@ -51,6 +51,10 @@ describe('sidePanelPeers', () => {
     ...extra,
   });
 
+  it('names checks that are currently running', () => {
+    expect(sidePanelPeers([row('checks', 'Checks', { prNumber:1, prLifecycleStatus:'ci_running' })], { missionId:'m1', excludeTaskIds:new Set() })[0].phase).toBe('CI');
+  });
+
   // Regression (demo reshoot, merged step): a dependent that had been claimed
   // was listed under both "Also running" and "Unblocked by this". The rule: a
   // task that depends on this one is shown once, under "Unblocked by this",
@@ -77,13 +81,30 @@ describe('sidePanelPeers', () => {
     expect(fx.title).not.toContain(':');
   });
 
-  it('keeps only the same mission, one row per task, with the latest progress', () => {
+  it('keeps only the same mission, one row per task, with observed lifecycle evidence', () => {
     const peers = sidePanelPeers([
-      row('a', 'feat(a): one', { milestones: [{ type: 'status', progress: 10 }, { type: 'status', progress: 55 }] }),
+      row('a', 'feat(a): one', { milestones: [{ type: 'checkpoint', event: 'first_push', ts: 100 }] }),
       row('a', 'feat(a): one'),
       row('other', 'x', { task: { id: 'other', title: 'feat(b): two', label: null, missionId: 'm2' } }),
     ], { missionId: 'm1', excludeTaskIds: new Set() });
-    expect(peers.map(p => [p.taskId, p.pct])).toEqual([['a', 55]]);
+    expect(peers.map(p => [p.taskId, p.phase])).toEqual([['a', 'Pushed']]);
+  });
+
+  // C-4: the loader picks peers by updatedAt (every runner sync bumps it), so the
+  // rows used to reshuffle while being read. Render order is createdAt, then id.
+  it('orders peers by when their worker was created, not by input (updatedAt) order', () => {
+    const t0 = new Date('2026-01-01T00:00:00Z');
+    const t1 = new Date('2026-01-01T00:05:00Z');
+    const rows = [
+      row('late', 'feat(l): late', { id: 'w-late', createdAt: t1 }),
+      row('tie-b', 'feat(b): b', { id: 'w-b', createdAt: t0 }),
+      row('tie-a', 'feat(a): a', { id: 'w-a', createdAt: t0 }),
+    ];
+    const opts = { missionId: 'm1', excludeTaskIds: new Set<string>() };
+    const expected = ['tie-a', 'tie-b', 'late'];
+    expect(sidePanelPeers(rows, opts).map(p => p.taskId)).toEqual(expected);
+    expect(sidePanelPeers([rows[1], rows[2], rows[0]], opts).map(p => p.taskId)).toEqual(expected);
+    expect(sidePanelPeers([...rows].reverse(), opts).map(p => p.taskId)).toEqual(expected);
   });
 });
 

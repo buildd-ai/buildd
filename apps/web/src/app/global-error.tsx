@@ -23,7 +23,7 @@ export default function GlobalError({
               background: '#000',
               color: '#fff',
               border: 'none',
-              borderRadius: '0.5rem',
+              borderRadius: '4px',
               cursor: 'pointer',
             }}
           >

@@ -4,8 +4,9 @@
  * may-spend decision. NULL clears it (no buildd-side cap; the app's own
  * provider-key limit is the only ceiling).
  *
- * Who may: an owner or admin of the ACCOUNT'S team — a session member of that
- * team, or an admin-level key of that team (`canCallerAdminTeam`). Team role,
+ * Who may: whoever holds `manage_ai_budget` in the ACCOUNT'S team — by default
+ * an owner or admin session (the team's permission overrides apply), or an
+ * admin-level key of that team. Team permission,
  * never "the caller's account id equals this id": an app's own key cannot
  * raise its own cap unless it is an admin key. An account in a team the caller
  * does not belong to is a 404, the same as a missing one.

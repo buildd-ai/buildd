@@ -30,8 +30,9 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: {
     slug: 'slug', name: 'name', enabled: 'enabled', isRole: 'isRole',
     workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId',
-    requiredEnvVars: 'requiredEnvVars',
+    requiredEnvVars: 'requiredEnvVars', ownerUserId: 'ownerUserId', visibility: 'visibility',
   },
+  tasks: { id: 'tasks.id' }, missions: { id: 'missions.id' }, taskSchedules: { id: 'taskSchedules.id' },
   secrets: {
     id: 'id', teamId: 'teamId', purpose: 'purpose', label: 'label',
     accountId: 'accountId', workspaceId: 'workspaceId', updatedAt: 'updatedAt',
@@ -41,9 +42,7 @@ mock.module('@buildd/core/db/schema', () => ({
 function selectChain() {
   const chain: any = {
     from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
-    limit: () => mockSelectRows(),
+    where: () => mockSelectRows(),
   };
   return chain;
 }
@@ -93,7 +92,7 @@ function task(id: string, opts: {
 
 /** A workspace_skills role row carrying `requiredEnvVars`. */
 function roleRow(requiredEnvVars: Record<string, string> = {}, extra: Record<string, unknown> = {}) {
-  return { slug: 'builder', requiredEnvVars, ...extra } as any;
+  return { slug: 'builder', teamId: 'team-1', workspaceId: null, ownerUserId: null, visibility: 'team', requiredEnvVars, ...extra } as any;
 }
 
 /** A `secrets` row as `db.query.secrets.findMany` would return it (never the decrypted value). */
@@ -211,7 +210,7 @@ describe('attachRoleEnvSecrets', () => {
   });
 
   it('scopes the secrets lookup to the task team, the env-delivering purposes and the declared labels + env names', async () => {
-    mockSelectRows.mockResolvedValue([roleRow({ NODE_AUTH_TOKEN: 'REGISTRY_TOKEN_LABEL' })]);
+    mockSelectRows.mockResolvedValue([roleRow({ NODE_AUTH_TOKEN: 'REGISTRY_TOKEN_LABEL' }, { teamId: 'team-9' })]);
 
     const workers = [worker('t1')];
     await attachRoleEnvSecrets(workers, [task('t1', { roleSlug: 'builder', teamId: 'team-9' })], 'acct-1');
@@ -293,7 +292,7 @@ describe('unsatisfiedRoleEnv', () => {
 
 describe('runRoleEnvPreFilter', () => {
   it('flags a task whose role declares a var no channel can satisfy', async () => {
-    mockSelectRows.mockResolvedValue([roleRow({ SERVICE_API_KEY: 'svc', TENANT_ID: 'tenant', BUILDD_API_KEY: 'buildd-api-key' })]);
+    mockSelectRows.mockResolvedValue([roleRow({ SERVICE_API_KEY: 'svc', TENANT_ID: 'tenant', BUILDD_API_KEY: 'buildd-api-key' }, { slug: 'mailer' })]);
     mockSecretsFindMany.mockResolvedValue([secretRow('tenant')]);
 
     const gaps = await runRoleEnvPreFilter([task('t1', { roleSlug: 'mailer' })], 'acct-1');
@@ -302,7 +301,7 @@ describe('runRoleEnvPreFilter', () => {
   });
 
   it('does not flag a default role whose only declared var is BUILDD_API_KEY, and skips the secrets query', async () => {
-    mockSelectRows.mockResolvedValue([roleRow({ BUILDD_API_KEY: 'buildd-api-key' })]);
+    mockSelectRows.mockResolvedValue([roleRow({ BUILDD_API_KEY: 'buildd-api-key' }, { slug: 'reviewer' })]);
 
     const gaps = await runRoleEnvPreFilter([task('t1', { roleSlug: 'reviewer' }), task('t2', { roleSlug: 'reviewer' })], 'acct-1');
 
@@ -329,12 +328,27 @@ describe('runRoleEnvPreFilter', () => {
   });
 
   it('looks each distinct role up once per claim, not once per candidate', async () => {
-    mockSelectRows.mockResolvedValue([roleRow({ BUILDD_API_KEY: 'buildd-api-key' })]);
+    mockSelectRows.mockResolvedValue([roleRow({ BUILDD_API_KEY: 'buildd-api-key' }, { slug: 'reviewer' })]);
     const t1 = task('t1', { roleSlug: 'reviewer' });
     const t2 = { ...task('t2', { roleSlug: 'reviewer' }), workspaceId: t1.workspaceId };
 
     await runRoleEnvPreFilter([t1, t2], 'acct-1');
 
+    expect(mockSelectRows).toHaveBeenCalledTimes(1);
+  });
+
+  it("judges each task by its own requester: another member's private role's env is not demanded", async () => {
+    mockSelectRows.mockResolvedValue([
+      roleRow({}, { id: 'r-team' }),
+      roleRow({ NODE_AUTH_TOKEN: 'BOB_REG' }, { id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private' }),
+    ]);
+    const bobs = { ...task('t1', { roleSlug: 'builder' }), createdByUserId: 'u-bob' };
+    const alices = { ...task('t2', { roleSlug: 'builder' }), workspaceId: bobs.workspaceId, createdByUserId: 'u-alice' };
+
+    const gaps = await runRoleEnvPreFilter([bobs, alices], 'acct-1');
+
+    expect(gaps.get('t1')?.missing).toEqual(['NODE_AUTH_TOKEN']);
+    expect(gaps.has('t2')).toBe(false);
     expect(mockSelectRows).toHaveBeenCalledTimes(1);
   });
 

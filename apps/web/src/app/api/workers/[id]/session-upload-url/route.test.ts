@@ -210,3 +210,53 @@ describe('POST /api/workers/[id]/session-upload-url', () => {
     expect(arg.with?.workspace).toBeDefined();
   });
 });
+
+describe('POST /api/workers/[id]/session-upload-url — OAuth session owner check', () => {
+  // Invariant: only the principal that claimed the worker gets a signed upload
+  // URL for its session artifacts. An OAuth session shares its account with the
+  // whole team, so a session owns the worker only when its user is the recorded
+  // claimedByUserId; a teammate, an admin included, or a team-less session is 403.
+  const session = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: ACCOUNT, teamId: TEAM, sessionUserId, level: 'worker', ...extra });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockIsStorageConfigured.mockReset();
+    mockGenerateConstrainedUploadUrl.mockReset();
+    mockObjectExists.mockReset();
+
+    mockIsStorageConfigured.mockReturnValue(true);
+    mockGenerateConstrainedUploadUrl.mockResolvedValue('https://storage.example.invalid/signed');
+    mockObjectExists.mockResolvedValue(false);
+    mockWorkersFindFirst.mockResolvedValue(standardWorker({ claimedByUserId: 'user-a' }));
+  });
+
+  it('the session user that claimed the worker is allowed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-a'));
+    const res = await POST(req({ kind: 'transcript', sizeBytes: 100 }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockGenerateConstrainedUploadUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('another member of the same team on the same account is refused without signing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-b'));
+    const res = await POST(req({ kind: 'transcript', sizeBytes: 100 }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockGenerateConstrainedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it('an admin-level session that did not claim the worker is refused too', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-b', { level: 'admin' }));
+    const res = await POST(req({ kind: 'transcript', sizeBytes: 100 }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockGenerateConstrainedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it('a session with no team id is refused even when the user matches', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session('user-a', { teamId: null }));
+    const res = await POST(req({ kind: 'transcript', sizeBytes: 100 }, 'oauth-token'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockGenerateConstrainedUploadUrl).not.toHaveBeenCalled();
+  });
+});

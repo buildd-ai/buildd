@@ -15,6 +15,7 @@ const TEAMS = [
   { id: 'team-personal', name: 'Personal', slug: 'personal-user-1', role: 'owner', memberCount: 1 },
   { id: 'team-acme', name: 'Acme', slug: 'acme', role: 'owner', memberCount: 3 },
   { id: 'team-beta', name: 'Beta', slug: 'beta', role: 'member', memberCount: 2 },
+  { id: 'team-gamma', name: 'Gamma', slug: 'gamma', role: 'admin', memberCount: 4 },
 ];
 
 let cookie: string | undefined;
@@ -26,7 +27,21 @@ mock.module('next/headers', () => ({ cookies: async () => ({ get: (n: string) =>
 mock.module('next/navigation', () => ({ redirect: (to: string) => { throw new Error(`redirect ${to}`); } }));
 let accountRows: any[] = [];
 let accountQuery: any = null;
-mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
+// teams.findFirst serves getTeamPermissionOverrides (permissions.ts, real): the
+// stored teams.permission_overrides per team, or a thrown read.
+let storedOverrides: Record<string, unknown> = {};
+let overridesFail = false;
+const teamIdOf = (q: any): string | undefined => {
+  // The where clause is eq(teams.id, <id>); its params carry the id.
+  const chunks = q?.where?.queryChunks ?? [];
+  for (const c of chunks) if (c && typeof c === 'object' && 'value' in c && typeof c.value === 'string') return c.value;
+  return undefined;
+};
+mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async (q: any) => {
+  if (overridesFail) throw new Error('db down');
+  const id = teamIdOf(q);
+  return id && storedOverrides[id] ? { permissionOverrides: storedOverrides[id] } : null;
+} }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamsWithDetails: async () => TEAMS,
   getUserWorkspaceIds: async () => [],
@@ -39,6 +54,8 @@ beforeEach(() => {
   cookie = undefined;
   active = 'team-acme';
   activeCalls.length = 0;
+  storedOverrides = {};
+  overridesFail = false;
 });
 
 describe('loadSettingsContext — active team', () => {
@@ -46,7 +63,7 @@ describe('loadSettingsContext — active team', () => {
     const ctx = await loadSettingsContext();
     expect(ctx.currentTeamId).toBe('team-acme');
     expect(ctx.currentTeam?.name).toBe('Acme');
-    expect(ctx.isTeamAdmin).toBe(true);
+    expect(ctx.perms.manage_team_settings).toBe(true);
     expect(activeCalls).toEqual([['user-1', undefined]]);
   });
 
@@ -56,7 +73,7 @@ describe('loadSettingsContext — active team', () => {
     const ctx = await loadSettingsContext();
     expect(activeCalls).toEqual([['user-1', 'team-beta']]);
     expect(ctx.currentTeamId).toBe('team-beta');
-    expect(ctx.isTeamAdmin).toBe(false);
+    expect(ctx.perms.manage_team_settings).toBe(false);
   });
 
   it('has no active team when the user has none', async () => {
@@ -64,7 +81,71 @@ describe('loadSettingsContext — active team', () => {
     const ctx = await loadSettingsContext();
     expect(ctx.currentTeamId).toBeNull();
     expect(ctx.currentTeam).toBeNull();
-    expect(ctx.isTeamAdmin).toBe(false);
+    expect(Object.values(ctx.perms).every((v) => v === false)).toBe(true);
+  });
+});
+
+/**
+ * Every settings page draws its controls from `perms` / `permsByTeam`, so the
+ * flags must be the server's answer: the person's role in the team under that
+ * team's overrides (permissions.ts `can`), a personal team counting as owned.
+ */
+describe('loadSettingsContext — permission flags', () => {
+  // The flags each settings page reads, by page.
+  const PAGE_FLAGS = [
+    'manage_inference_providers', // providers, profile
+    'manage_team_settings', // AI features, budgets caps, provider routing
+    'manage_chat_retro', // AI features
+    'view_team_usage', // budgets
+    'manage_connectors', // MCP connectors
+    'manage_team_notifications', // notifications
+    'create_workspace', // workspaces
+    'manage_team_credentials', // runners, Vercel
+    'manage_team_model_keys', // Cloudflare
+    'manage_team_keys', // runners host-runner toggle
+  ] as const;
+
+  it('an admin holds every page flag; a member holds none', async () => {
+    const admin = await loadSettingsContext();
+    for (const p of PAGE_FLAGS) expect([p, admin.perms[p]]).toEqual([p, true]);
+    cookie = 'team-beta';
+    active = 'team-beta';
+    const member = await loadSettingsContext();
+    for (const p of PAGE_FLAGS) expect([p, member.perms[p]]).toEqual([p, false]);
+  });
+
+  it('flags for every team, keyed by id', async () => {
+    const ctx = await loadSettingsContext();
+    expect(Object.keys(ctx.permsByTeam).sort()).toEqual(['team-acme', 'team-beta', 'team-gamma', 'team-personal']);
+    expect(ctx.permsByTeam['team-personal'].create_workspace).toBe(true);
+    expect(ctx.permsByTeam['team-beta'].create_workspace).toBe(false);
+  });
+
+  it("a team's override that grants members a permission shows that control to a member", async () => {
+    storedOverrides = { 'team-beta': { manage_inference_providers: ['owner', 'admin', 'member'] } };
+    cookie = 'team-beta';
+    active = 'team-beta';
+    const ctx = await loadSettingsContext();
+    expect(ctx.perms.manage_inference_providers).toBe(true);
+    expect(ctx.perms.manage_team_settings).toBe(false);
+  });
+
+  it("a team's override that takes a permission from admins hides that control from an admin", async () => {
+    storedOverrides = { 'team-gamma': { manage_connectors: ['owner'] }, 'team-acme': { manage_connectors: ['owner'] } };
+    cookie = 'team-gamma';
+    active = 'team-gamma';
+    const ctx = await loadSettingsContext();
+    expect(ctx.perms.manage_connectors).toBe(false);
+    expect(ctx.perms.manage_team_settings).toBe(true);
+    // An owner always holds it, whatever the team stores.
+    expect(ctx.permsByTeam['team-acme'].manage_connectors).toBe(true);
+  });
+
+  it('a failed overrides read holds nothing, never the defaults', async () => {
+    overridesFail = true;
+    const ctx = await loadSettingsContext();
+    expect(ctx.currentTeamId).toBe('team-acme');
+    expect(Object.values(ctx.perms).every((v) => v === false)).toBe(true);
   });
 });
 

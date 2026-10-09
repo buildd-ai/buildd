@@ -243,8 +243,10 @@ export async function PATCH(
       updates[field] = value.toFixed(2);
     }
     // Whose key a person's chat turn spends; enforced by resolveInferenceKey.
-    // credentialPolicy is the new name; inferenceKeyPolicy stays accepted.
-    // Either one writes both columns so they never disagree.
+    // credentialPolicy is the new name, and setting it is how a team opts its
+    // agent runs in (they follow it only once it is non-NULL). The legacy
+    // inferenceKeyPolicy name governs chat only: it never opts a team in, and
+    // keeps credentialPolicy in step only for a team that already opted in.
     if (credentialPolicy !== undefined) {
       if (!isCredentialPolicy(credentialPolicy)) {
         return NextResponse.json({ error: 'credentialPolicy must be "team", "personal_first" or "personal_only"' }, { status: 400 });
@@ -254,7 +256,11 @@ export async function PATCH(
       if (!isInferenceKeyPolicy(inferenceKeyPolicy)) {
         return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
       }
-      Object.assign(updates, policyColumns(inferenceKeyPolicy));
+      updates.inferenceKeyPolicy = inferenceKeyPolicy;
+      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { credentialPolicy: true } });
+      if (isCredentialPolicy(current?.credentialPolicy)) {
+        updates.credentialPolicy = toCredentialPolicy(inferenceKeyPolicy);
+      }
     }
     // The tier a new chat caps at, and whether the cap is on
     // (apps/web/src/lib/chat/composer-prefs.ts). `null` default = auto: no cap.

@@ -31,9 +31,11 @@
  *   QA_PLAN                         — a capture plan: a path to a JSON file, or the JSON itself when it
  *                                     starts with `[`. `[{ route, states?: [{ key, steps }] }]`, steps
  *                                     from a closed list (click, hover, fill, press, select, waitFor,
- *                                     waitMs). Steps never commit: a write needs `commit: true`, which
+ *                                     waitMs, assertLayout). Steps never commit: a write needs `commit: true`, which
  *                                     only QA_PAGE_SOURCE=sandbox honours, and every other write is
- *                                     aborted in the browser. Not combinable with QA_ROUTES.
+ *                                     aborted in the browser. Not combinable with QA_ROUTES. A failed
+ *                                     assertLayout (overflow, a tap target under 44px below md) exits 4
+ *                                     after every shot is written.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -399,7 +401,9 @@ for (const route of routes) {
         beforeStep: (step) => g.allow(step.commit === true && PAGE_SOURCE === 'sandbox'),
         afterStep: () => g.allow(false),
       });
-      if (stepFailed) {
+      if (stepFailed?.assertion) {
+        console.error(`[capture] LAYOUT ${route.id}: ${stepFailed.error}`);
+      } else if (stepFailed) {
         console.warn(`[capture] STEP  ${route.id}: steps[${stepFailed.index}] (${describeStep(route.steps[stepFailed.index])}) failed: ${stepFailed.error}; shooting the page as it stands`);
       }
     }
@@ -494,6 +498,15 @@ const walls = [...new Set(captures.map((c) => c.configError).filter((e): e is Ca
 if (walls.length > 0) {
   for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
   process.exit(3);
+}
+
+// A layout gate also fails when a prerequisite or measurement failed: it
+// never passes without checking the requested scenario. Screenshots and
+// metadata are written before the nonzero exit.
+const layoutFailures = captures.filter((c) => c.stepFailed?.assertion);
+if (layoutFailures.length > 0) {
+  for (const c of layoutFailures) console.error(`[capture] LAYOUT FAILED ${c.id}: ${c.stepFailed!.error}`);
+  process.exit(4);
 }
 
 if (captures.some(c => c.providerError)) process.exit(1);

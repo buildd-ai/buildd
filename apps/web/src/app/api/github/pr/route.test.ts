@@ -1615,6 +1615,8 @@ describe('POST /api/github/pr', () => {
       mockGithubReposFindFirst.mockResolvedValue(REPO);
       optedInMission();
       noExistingPr();
+      // live ref check on the predecessor branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${predecessorBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({
@@ -1655,6 +1657,8 @@ describe('POST /api/github/pr', () => {
       noExistingPr();
       mockFindStackedReleaseForBase.mockImplementation((taskId: string, base: string) =>
         Promise.resolve(taskId === 't-2' && base === upstreamBranch));
+      // live ref check on the upstream branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${upstreamBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({
@@ -1689,6 +1693,8 @@ describe('POST /api/github/pr', () => {
       noExistingPr();
       // Default mock already resolves false — this is a plan-step stack, not
       // an early-release one.
+      // live ref check on the predecessor branch: still exists
+      mockGithubApi.mockResolvedValueOnce({ ref: `refs/heads/${predecessorBranch}` });
       mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
 
       const req = createMockRequest({
@@ -4093,6 +4099,54 @@ describe('PUT /api/github/pr', () => {
         const data = await res.json();
         expect(data.cause).toBe('human_tier');
         expect(data.error).toContain('human decision');
+      });
+
+      // The landing escape hatch (S15 cycles): a person past freshness / size; an agent run only under a person's task grant.
+      describe('overrides (freshness / size)', () => {
+        const putO = (body: Record<string, unknown>) => PUT(createPutRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', prNumber: 42, ...body },
+        }));
+        const auto = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } };
+
+        it('a person (OAuth MCP session) overrides with a reason; landPr gets a human actor', async () => {
+          enforceWorker(auto);
+          mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-7' } as any);
+          mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'm' }));
+          const res = await putO({ overrides: { freshness: true }, reason: 'base keeps moving' });
+          expect(res.status).toBe(200);
+          expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'user-7', override: { freshness: true }, overrideReason: 'base keeps moving' });
+        });
+
+        it('an override needs a reason, and a verdict override is not offered here', async () => {
+          enforceWorker(auto);
+          mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-7' } as any);
+          expect((await putO({ overrides: { freshness: true } })).status).toBe(400);
+          expect((await putO({ overrides: { verdict: true }, reason: 'x' })).status).toBe(400);
+          expect(mockLandPr).not.toHaveBeenCalled();
+        });
+
+        it('an agent run without a grant on its task is refused with the reason; nothing lands', async () => {
+          enforceWorker(auto);
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', context: {} });
+          const res = await putO({ overrides: { freshness: true }, reason: 'stuck' });
+          expect(res.status).toBe(403);
+          expect((await res.json()).error).toContain('granted');
+          expect(mockLandPr).not.toHaveBeenCalled();
+        });
+
+        it("an agent run under a person's grant for this PR overrides it, carrying who granted it", async () => {
+          enforceWorker(auto);
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', context: { landingOverride: { prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:user-9', grantedAt: 'x' } } });
+          mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'm' }));
+          const res = await putO({ overrides: { freshness: true }, reason: 'task goal' });
+          expect(res.status).toBe(200);
+          expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'agent', workerId: 'w-1', grant: { override: { freshness: true }, grantedBy: 'human:user-9', reason: 'task goal' } });
+          // …but not another kind, nor another PR.
+          mockLandPr.mockClear();
+          expect((await putO({ overrides: { size: true }, reason: 'task goal' })).status).toBe(403);
+          expect(mockLandPr).not.toHaveBeenCalled();
+        });
       });
 
       it('a fix in flight is a 409 naming the task', async () => {

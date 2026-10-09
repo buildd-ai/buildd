@@ -11,6 +11,8 @@ import { needsInputTaskHref } from '@/components/NeedsInputBanner';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { HomeShippedMission } from './NeedsYouStack';
 import { shippedDurationFacts, shippedSummaryHref } from './NeedsYouStack';
+import { DeliveryMilestones } from './DeliveryMilestones';
+import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
 
 const primary = 'inline-flex min-h-11 items-center justify-center border border-border-strong bg-accent px-3 text-body font-semibold text-[var(--on-accent)] disabled:opacity-50';
 const secondary = 'inline-flex min-h-11 items-center justify-center border border-border-strong px-3 text-body text-text-primary';
@@ -72,8 +74,9 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   else if (item.held) actions = <><button className={primary} disabled={busy} onClick={() => void act(`/api/missions/${encodeURIComponent(item.held!.id)}`, { arm: true }, 'started', 'PATCH')}>{busy ? 'Starting…' : 'Start'}</button><Link href={item.href} className={secondary}>Open</Link></>;
   else if (item.question) actions = <><form className="flex w-full flex-wrap gap-2" onSubmit={e => { e.preventDefault(); if (reply.trim()) void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: reply.trim() }, 'answered'); }}><input aria-label="Your answer" value={reply} onChange={e => setReply(e.target.value)} className="min-h-11 min-w-0 flex-1 border border-border-strong bg-transparent px-2 text-lede" placeholder="Your answer…" /><button className={primary} disabled={busy || !reply.trim()}>Reply</button></form>{item.question.question.options.slice(0, 4).map(({ label }) => <button key={label} className={secondary} disabled={busy} onClick={() => void act(`/api/workers/${encodeURIComponent(item.question!.workerId)}/respond`, { message: label }, 'answered')}>{label}</button>)}</>;
   else actions = <><Link className={primary} href={item.primary?.href ?? item.href}>{item.primary?.label ?? 'View'}</Link>{item.details && <Link className={secondary} href={item.details.href}>{item.details.label}</Link>}</>;
-  return <article data-testid="phone-needs-you-card" data-kind={item.kind} className="border-2 border-border-strong bg-[var(--chat-surface)] p-4 shadow-[4px_4px_0_var(--border-strong)]">
-    <div className="flex items-center justify-between gap-3 text-meta"><span className="flex items-center gap-2"><i aria-hidden="true" className={`h-2 w-2 shrink-0 ${square[item.tone]}`} />{item.label}</span><span className="shrink-0 text-text-muted">{item.meta}</span></div>
+  // A systemic cause wears its own edge and word, so it never reads as one more task.
+  return <article data-testid="phone-needs-you-card" data-kind={item.kind} data-systemic={item.systemic ? 'true' : undefined} className={`border-2 border-border-strong bg-[var(--chat-surface)] p-4 shadow-[4px_4px_0_var(--border-strong)] ${item.systemic ? 'border-l-[6px] border-l-status-error' : ''}`}>
+    <div className="flex items-center justify-between gap-3 text-meta"><span className="flex items-center gap-2"><i aria-hidden="true" className={`h-2 w-2 shrink-0 ${square[item.tone]}`} />{item.systemic ? `systemic · ${item.label}` : item.label}</span><span className="shrink-0 text-text-muted">{item.meta}</span></div>
     <h3 className="mt-3 break-words font-mono text-title font-bold">{item.title}</h3>
     <p className="mt-1 font-convo text-body text-text-secondary">{item.sentence}</p>
     <div className="mt-4 flex flex-wrap gap-2">{actions}</div>
@@ -82,16 +85,21 @@ function AttentionCard({ item, onDone }: { item: HomeAttentionItem; onDone: (key
   </article>;
 }
 
-export interface HomeFlightRow { key: string; title: string; agent: string; href: string; age: string; fixing: boolean }
-
-export function MobileHome({ items: serverItems, ask, setup = null, runnerConnected, live, capacity, mergedToday, inCi, shipped, flight, timeZone }: {
+export function MobileHome({ agents = null, landed = null, items: serverItems, ask, counts, milestones, quietMissions, shipped, setup = null, runnerConnected, timeZone }: {
   items: HomeAttentionItem[]; ask: ReactNode;
+  /** The Agents panel and Landed this week: after the decisions, Moving between them. */
+  agents?: ReactNode; landed?: ReactNode;
   /** The getting-started checklist while it applies: the phone's next step for a new team. */
   setup?: ReactNode;
   /** false when the team has no runner: there is no fleet to be working without you. */
   runnerConnected?: boolean;
-  live: number; capacity: number; mergedToday: number; inCi: number;
-  shipped: HomeShippedMission[]; flight: HomeFlightRow[]; timeZone?: string | null;
+  /** The count contracts (lib/delivery-projection.ts `deliveryCounts`). */
+  counts: DeliveryCounts;
+  /** 2–3 missions moving toward delivery (`selectHomeMilestones`). */
+  milestones: MissionDelivery[];
+  /** Open missions waiting on capacity, another mission or their owner: named, never listed. */
+  quietMissions: number;
+  shipped: HomeShippedMission[]; timeZone?: string | null;
 }) {
   const [done, setDone] = useState<Record<string, string>>({});
   // Optimism covers only this snapshot. Fresh server truth wins after every refresh.
@@ -104,18 +112,26 @@ export function MobileHome({ items: serverItems, ask, setup = null, runnerConnec
   const open = items.filter(i => !done[i.key]);
   const copy = homeAttentionCopy(open, { runnerConnected });
   useEffect(() => { publishHomeAttentionCount(copy.count); }, [copy.count]);
+  // Systemic causes first and apart: one problem behind many tasks is not a per-task decision.
+  const ordered = [...items.filter(i => i.systemic), ...items.filter(i => !i.systemic)];
   const m = shipped[0];
+  const agentsCount = `${counts.liveAgents} agent${counts.liveAgents === 1 ? '' : 's'} working`;
   return <div data-testid="phone-home" className="md:hidden text-text-primary">
-    <p className="mb-5 text-body text-text-muted">{live}/{capacity} working · {mergedToday} merged today · {inCi} in tests</p>
-    <h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
-    <p className="mb-6 mt-2 font-voice text-lede italic text-text-secondary">{copy.subline}</p>
+    <p data-testid="phone-home-counts" className="mb-5 text-body text-text-muted">{agentsCount}{counts.slots.total > 0 ? ` · ${counts.slots.used}/${counts.slots.total} slots` : ''} · {counts.openMissions} open mission{counts.openMissions === 1 ? '' : 's'}</p>
+    {copy.count === 0 && !setup
+      ? <div className="mb-6"><h1 className="sr-only">Home</h1><p data-testid="phone-all-clear" role="status" className="flex flex-wrap items-baseline gap-x-2 border-b border-border-default py-3 font-voice text-lede"><span aria-hidden="true" className="font-bold text-status-success">✓</span>All clear.<span className="font-convo text-meta text-text-muted">Buildd will ask if a decision comes up.</span></p></div>
+      : <><h1 className="font-voice text-display font-medium normal-case tracking-normal">{copy.headline}</h1>
+        <p className="mb-6 mt-2 font-voice text-lede italic text-text-secondary">{copy.subline}</p></>}
     {ask}
     {setup}
-    <section className="mb-8"><div className="mb-3 flex items-center justify-between"><h2 className="section-label">Needs you</h2><span data-testid="phone-needs-you-count" className="text-meta text-text-muted">{copy.count} open</span></div>
-      <div className="space-y-4">{items.map(item => done[item.key] ? <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p> : <AttentionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>
-      {copy.count === 0 && !setup && <p className="border border-border-default p-4 font-convo text-body text-text-secondary">All clear. Buildd will reach you when something needs a decision.</p>}
-    </section>
-    <section className="mb-8"><h2 className="section-label mb-3">Just shipped</h2>{m ? <article className="border border-border-default bg-[var(--chat-surface)] p-4"><div className="flex justify-between gap-2 text-meta"><span className="flex items-center gap-2 text-status-success"><i className="h-2 w-2 bg-status-success" />shipped {new Date(m.completedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) })}</span>{m.criteria && <span>{m.criteria.passed}/{m.criteria.total} criteria</span>}</div><h3 className="mt-3 text-title font-bold">{m.title}</h3><dl className="mt-4 grid grid-cols-3 gap-3 border-t border-border-default pt-3">{[[m.prs, 'PRs merged'], ...shippedDurationFacts(m)].slice(0, 3).map(([value, label]) => <div key={label}><dt className="text-meta text-text-muted">{label}</dt><dd className="text-heading">{value}</dd></div>)}</dl><Link className="mt-3 inline-flex min-h-11 items-center text-body" href={shippedSummaryHref(m.href)}>Read summary →</Link></article> : <p className="font-convo text-body text-text-muted">Nothing shipped today.</p>}</section>
-    <section><div className="mb-3 flex justify-between"><h2 className="section-label">In flight</h2><span className="text-meta text-text-muted">{flight.length} running</span></div><div className="border-t border-border-default">{flight.slice(0, 4).map(row => <Link key={row.key} href={row.href} className="flex min-h-14 items-center gap-3 border-b border-border-default py-2"><i className={`h-2 w-2 shrink-0 ${row.fixing ? 'bg-status-error' : 'bg-text-primary'}`} /><span className="min-w-0 flex-1"><span className="block truncate font-convo text-title font-medium">{row.title}</span><span className="text-meta text-text-muted">{row.agent}</span></span><span className="text-meta text-text-muted">{row.age}</span></Link>)}</div><Link href="/app/tasks" className="inline-flex min-h-11 items-center text-body text-text-secondary">All {flight.length} in Activity →</Link></section>
+    {items.length > 0 && <section className="mb-8"><div className="mb-3 flex items-center justify-between"><h2 className="section-label">Needs you</h2><span data-testid="phone-needs-you-count" className="text-meta text-text-muted">{copy.count} open</span></div>
+      <div className="space-y-4">{ordered.map(item => done[item.key] ? <p key={item.key} className="flex gap-2 border-b border-border-default py-3 text-body"><i className="mt-1 h-2 w-2 shrink-0 bg-status-success" /><Link href={item.href}>{done[item.key]} · {item.title}</Link></p> : <AttentionCard key={item.key} item={item} onDone={(key, label) => setDone(prev => ({ ...prev, [key]: label }))} />)}</div>
+      {quietMissions > 0 && <p data-testid="phone-not-listed" className="mt-2 text-meta text-text-muted">Not listed here: {quietMissions} mission{quietMissions === 1 ? '' : 's'} waiting on capacity, another mission or an owner. {quietMissions === 1 ? 'It moves' : 'Those move'} on {quietMissions === 1 ? 'its' : 'their'} own.</p>}
+    </section>}
+    {m && <section className="mb-8"><h2 className="section-label mb-3">Just shipped</h2><article className="border border-border-default bg-[var(--chat-surface)] p-4"><div className="flex justify-between gap-2 text-meta"><span className="flex items-center gap-2 text-status-success"><i className="h-2 w-2 bg-status-success" />shipped {new Date(m.completedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) })}</span>{m.criteria && <span>{m.criteria.passed}/{m.criteria.total} criteria</span>}</div><h3 className="mt-3 text-title font-bold">{m.title}</h3><dl className="mt-4 grid grid-cols-3 gap-3 border-t border-border-default pt-3">{[[m.prs, 'PRs merged'], ...shippedDurationFacts(m)].slice(0, 3).map(([value, label]) => <div key={label}><dt className="text-meta text-text-muted">{label}</dt><dd className="text-heading">{value}</dd></div>)}</dl><Link className="mt-3 inline-flex min-h-11 items-center text-body" href={shippedSummaryHref(m.href)}>Read summary →</Link></article></section>}
+    {agents && <div className="mb-8">{agents}</div>}
+    <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
+    {landed && <div className="mb-8">{landed}</div>}
+    <Link href="/app/tasks" className="inline-flex min-h-11 items-center text-body text-text-secondary">See everything in motion in Activity →</Link>
   </div>;
 }

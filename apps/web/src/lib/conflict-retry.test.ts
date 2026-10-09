@@ -408,6 +408,18 @@ describe('buildConflictRetryTask', () => {
       expect(result!.description).not.toContain('merge conflicts with the base branch');
     });
 
+    it('describes a slot taken on the base as a renumber past the base, with no other PR', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
+      }));
+      expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
+      expect(result!.description).toContain('its base already has `0093_landed.sql`');
+      expect(result!.description).toContain("past the base's newest migration");
+      expect(result!.description).not.toContain('PR #null');
+      expect(result!.description).not.toContain('/pull/null');
+      expect((result!.context.failureContext as any).summary).toContain('already on its base');
+    });
+
     it('names the bound PR head up front when it differs from the worker branch', () => {
       const result = buildConflictRetryTask(makeInput({
         migrationCollision: collision,

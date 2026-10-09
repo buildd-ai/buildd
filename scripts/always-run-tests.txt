@@ -112,3 +112,8 @@ packages/core/__tests__/workflow-write-sites.test.ts
 # PR fact-cache write-site guard: only recordPrFact writes
 # workers.pr_lifecycle_status / merged_at. Enumerates the repo.
 packages/core/__tests__/pr-fact-write-sites.test.ts
+# Enumerate every tracked source file for casts that claim a jsonb column's
+# shape (a waitingFor cast to string options crashed the task sheet). The file
+# that adds such a cast is anywhere in the repo, never next to these tests.
+apps/web/src/lib/waiting-for-options-guard.test.ts
+scripts/jsonb-casts.test.ts

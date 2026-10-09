@@ -16,6 +16,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import type { WaitingFor } from '@buildd/shared';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -277,7 +278,7 @@ export async function GET(
             outputTokens: worker.outputTokens,
             startedAt: worker.startedAt,
             completedAt: worker.completedAt,
-            waitingFor: worker.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+            waitingFor: worker.waitingFor as WaitingFor | null,
             branch: worker.branch,
             milestones: worker.milestones ?? [],
             account: worker.account

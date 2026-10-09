@@ -55,7 +55,8 @@ import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
-import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
+import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
+import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -350,7 +351,8 @@ export async function POST(req: NextRequest) {
     const integrationBase = missionBaseGuard.integrationBase;
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const isStackedPhase = missionBaseGuard.isStackedPhase;
+    let isStackedPhase = missionBaseGuard.isStackedPhase;
+    let stackedBaseMissing = false;
 
     // §6.10 tier 1 (S31): a workspace that opts in has the body and title it is
     // about to open scanned with CI's own prose rule, and a body CI would fail
@@ -986,6 +988,24 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    // A stacked phase's predecessor branch is deleted when its PR merges into
+    // the integration branch (often under a differently-named head). The phase
+    // then belongs on the integration branch like any other mission task, so
+    // check the ref live rather than 400 on a base that no longer exists.
+    if (isStackedPhase && integrationBase && typeof taskContext?.baseBranch === 'string') {
+      try {
+        await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/git/ref/heads/${taskContext.baseBranch}`,
+        );
+      } catch (err) {
+        if (/GitHub API error: 404/.test(err instanceof Error ? err.message : String(err))) {
+          stackedBaseMissing = true;
+          isStackedPhase = false;
+        }
+      }
+    }
+
     // ── PART 2: the integration branch may already be GONE ──────────────────
     //
     // A merging mission PR deletes the integration branch by design
@@ -1098,6 +1118,7 @@ export async function POST(req: NextRequest) {
         'main',
       ],
       integrationBaseMissing,
+      stackedBaseMissing,
     });
 
     // Create the PR via GitHub API
@@ -1536,6 +1557,22 @@ function mergePrRefreshResponse(outcome: RefreshOutcome): { kind: RefreshOutcome
  * two in-flight outcomes are 202 because nothing more is asked of the caller —
  * the next green on the named head lands the PR.
  */
+/**
+ * merge_pr's `overrides`: freshness and size only. The review verdict is not
+ * overridable here (a person uses the landing page or a fresh review), and red
+ * CI and deny paths are overridable nowhere.
+ */
+function parseMergeOverrides(raw: unknown): { kinds: LandingOverrideKind[] } | { error: string } {
+  if (raw == null) return { kinds: [] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { error: 'overrides must be an object: { freshness?: boolean, size?: boolean }' };
+  const o = raw as Record<string, unknown>;
+  const unknownKeys = Object.keys(o).filter((k) => !(LANDING_OVERRIDE_KINDS as readonly string[]).includes(k));
+  if (unknownKeys.length) {
+    return { error: `overrides accepts only ${LANDING_OVERRIDE_KINDS.join(' and ')} (got ${unknownKeys.join(', ')}); the review verdict, red CI and deny paths are not overridable from merge_pr` };
+  }
+  return { kinds: LANDING_OVERRIDE_KINDS.filter((k) => o[k] === true) };
+}
+
 function mergePrLandingResponse(
   outcome: LandingOutcome,
   pr: { prNumber: number; prUrl: string | null; tier: string },
@@ -1751,6 +1788,47 @@ export async function PUT(req: NextRequest) {
       });
     };
 
+    // The landing escape hatch (workflow-state-kernel.md S15 cycles): merging past base
+    // freshness or the size cap. A person (an OAuth MCP session) makes the call directly; an
+    // agent run only under a grant a person put on its own task (lib/landing-override-grant.ts).
+    // Never the review verdict, never red CI or a deny path.
+    const requestedOverrides = parseMergeOverrides(body.overrides);
+    if ('error' in requestedOverrides) {
+      return NextResponse.json({ error: requestedOverrides.error }, { status: 400 });
+    }
+    let landingActor: LandingActor = { kind: 'agent', workerId: worker.id ?? null };
+    let kernelOverride: { reason: string; kinds: LandingOverrideKind[]; grantedBy?: string } | null = null;
+    if (requestedOverrides.kinds.length > 0) {
+      const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
+      if (!reason) {
+        return NextResponse.json({ error: 'reason is required with overrides: say why this PR should merge past them' }, { status: 400 });
+      }
+      const override = Object.fromEntries(requestedOverrides.kinds.map((k) => [k, true])) as { freshness?: boolean; size?: boolean };
+      const personId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+      if (personId) {
+        landingActor = { kind: 'human', userId: personId, override, overrideReason: reason };
+        kernelOverride = { reason, kinds: requestedOverrides.kinds };
+      } else {
+        // The calling run's own task: its token's task, or the worker it names.
+        const callerTaskId = account.taskScope?.taskId ?? (workerId ? worker.taskId ?? null : null);
+        const callerTask = callerTaskId
+          ? await db.query.tasks.findFirst({ where: eq(tasks.id, callerTaskId), columns: { id: true, context: true } })
+          : null;
+        const granted = grantAllows(callerTask?.context, prNumber, requestedOverrides.kinds);
+        if (!granted.ok) {
+          recordMergeGate('rejected', granted.reason, { overrides: requestedOverrides.kinds });
+          void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'override_not_granted' });
+          return NextResponse.json({
+            error: granted.reason,
+            hint: 'Merging past freshness or the size cap is a person\'s call. Report the PR as blocked and let the owner merge it ("Merge anyway" on the landing page, or merge_pr with overrides from their own session).',
+          }, { status: 403 });
+        }
+        landingActor = { kind: 'agent', workerId: worker.id ?? null, grant: { override, grantedBy: granted.grant.grantedBy, reason } };
+        kernelOverride = { reason, kinds: requestedOverrides.kinds, grantedBy: granted.grant.grantedBy };
+      }
+      recordMergeGate('bypassed', `merge_pr override (${requestedOverrides.kinds.join(', ')}) by ${landingActor.kind === 'human' ? 'a person' : `an agent run under ${kernelOverride.grantedBy}'s grant`}: ${reason}`, { overrides: requestedOverrides.kinds });
+    }
+
     // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
     const repoAccess = await ensureRepoAccessForPr({
       workspace,
@@ -1911,7 +1989,7 @@ export async function PUT(req: NextRequest) {
           prNumber,
           eventHeadSha: null,
           door: 'merge_pr',
-          actor: { kind: 'agent', workerId: worker.id ?? null },
+          actor: landingActor,
           mode: landingMode,
           policy,
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
@@ -2171,8 +2249,10 @@ export async function PUT(req: NextRequest) {
       const kernel = kernelOwned
         ? await landThroughKernel({
             workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha,
-            door: force ? 'merge_pr_force' : 'merge_pr', actor: `agent:${worker.id ?? 'unknown'}`,
+            door: force ? 'merge_pr_force' : 'merge_pr',
+            actor: landingActor.kind === 'human' ? `human:${landingActor.userId}` : `agent:${worker.id ?? 'unknown'}`,
             mergeMethod: effectiveMergeMethod,
+            ...(kernelOverride ? { override: kernelOverride } : {}),
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           })
         : null;

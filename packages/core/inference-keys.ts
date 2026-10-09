@@ -51,10 +51,11 @@
  */
 
 import { db } from './db';
-import { secrets, teams } from './db/schema';
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { teams } from './db/schema';
+import { eq } from 'drizzle-orm';
 import { decrypt } from './secrets';
-import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
+import { effectiveKeyPolicy, toCredentialPolicy, type InferenceKeyPolicy } from './inference-key-policy';
+import type { PolicyScope } from './providers/policy';
 import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models/routes';
 
 import { PERSONAL_KEY_PROVIDERS, isPersonalKeyProvider, providerKeyCapability, type PersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
@@ -124,35 +125,16 @@ export interface ResolvedInferenceCredential {
   purpose: string | null;
 }
 
-interface CandidateRow {
-  id: string;
-  purpose: string;
-  label: string | null;
-  encryptedValue: string;
-  accountId: string | null;
-  userId: string | null;
-  workspaceId: string | null;
-  healthStatus: string;
-  updatedAt: Date | null;
-}
+/** The resolver's scope, in this module's vocabulary (`personal` was always `user` here). */
+const SCOPE: Record<PolicyScope, InferenceKeyScope> = {
+  personal: 'user', account: 'account', workspace: 'workspace', team: 'team', env: 'env',
+};
 
-/** Rank of a row for this caller, or null when it must not be used at all. */
-function scopeRank(r: CandidateRow, opts: ResolveInferenceKeyOptions, policy: InferenceKeyPolicy): { rank: number; scope: InferenceKeyScope } | null {
-  if (r.userId != null) {
-    if (policy === 'team' || !providerKeyCapability(opts.provider)?.personalKeys) return null;
-    return opts.userId && r.userId === opts.userId ? { rank: 0, scope: 'user' } : null;
-  }
-  // Everyone brings their own key: nothing shared stands in for a person's.
-  if (policy === 'own') return null;
-  if (r.workspaceId != null && r.workspaceId !== opts.workspaceId) return null;
-  if (r.accountId != null) {
-    if (opts.accountId) return r.accountId === opts.accountId ? { rank: 1, scope: 'account' } : null;
-    return { rank: 4, scope: 'account' };
-  }
-  if (r.workspaceId != null) return { rank: 2, scope: 'workspace' };
-  return { rank: 3, scope: 'team' };
-}
-
+/**
+ * A thin wrapper over `resolveProviderCredential` (`./providers/resolve`) on
+ * the chat surface: the precedence above is that resolver's chat ranking, and
+ * the parity tables in `__tests__/provider-resolve.test.ts` hold them equal.
+ */
 export async function resolveInferenceCredential(
   opts: ResolveInferenceKeyOptions,
 ): Promise<ResolvedInferenceCredential | null> {
@@ -167,53 +149,26 @@ export async function resolveInferenceCredential(
   // (no own key, no shared fallback), so team work takes its runner path.
   const policy: InferenceKeyPolicy = opts.keyPolicy ?? await loadInferenceKeyPolicy(opts.teamId);
 
-  let rows: CandidateRow[] = [];
-  try {
-    rows = (await db.query.secrets.findMany({
-      where: and(
-        eq(secrets.teamId, opts.teamId),
-        or(...purposes.map(p => eq(secrets.purpose, p as never))),
-        or(isNull(secrets.userId), opts.userId ? eq(secrets.userId, opts.userId) : sql`false`),
-        or(isNull(secrets.workspaceId), opts.workspaceId ? eq(secrets.workspaceId, opts.workspaceId) : sql`false`),
-      ),
-      columns: {
-        id: true, purpose: true, label: true, encryptedValue: true, accountId: true,
-        userId: true, workspaceId: true, healthStatus: true, updatedAt: true,
-      },
-    })) as CandidateRow[];
-  } catch (e) {
-    console.warn('[inference-keys] key lookup failed:', e);
-  }
-
-  const ranked = rows
-    .filter(r =>
-      purposes.includes(r.purpose) &&
-      (r.purpose !== INFERENCE_KEY_PURPOSE || (r.label ?? '').toLowerCase() === provider),
-    )
-    .map(r => ({ r, s: scopeRank(r, opts, policy) }))
-    .filter((x): x is { r: CandidateRow; s: { rank: number; scope: InferenceKeyScope } } => x.s !== null)
-    .sort((a, b) =>
-      a.s.rank - b.s.rank ||
-      purposes.indexOf(a.r.purpose) - purposes.indexOf(b.r.purpose) ||
-      (a.r.healthStatus === 'revoked' ? 1 : 0) - (b.r.healthStatus === 'revoked' ? 1 : 0) ||
-      (b.r.updatedAt?.getTime() ?? 0) - (a.r.updatedAt?.getTime() ?? 0),
-    );
-
-  for (const { r, s } of ranked) {
-    try {
-      const value = decrypt(r.encryptedValue);
-      if (value) return { provider, key: value, scope: s.scope, secretId: r.id, purpose: r.purpose };
-    } catch (e) {
-      console.error(`[inference-keys] failed to decrypt secret ${r.id}:`, e);
-    }
-  }
-
-  if (envKeysAllowed() && policy !== 'own') {
-    const envVar = ROUTES[provider].key?.envVar;
-    const value = envVar ? process.env[envVar] : undefined;
-    if (value) return { provider, key: value, scope: 'env', secretId: null, purpose: null };
-  }
-  return null;
+  const { resolveProviderCredential } = await import('./providers/resolve');
+  const result = await resolveProviderCredential({
+    teamId: opts.teamId,
+    workspaceId: opts.workspaceId ?? null,
+    accountId: opts.accountId ?? null,
+    requesterUserId: opts.userId ?? null,
+    surface: 'chat',
+    provider,
+    purposes,
+    team: { credentialPolicy: toCredentialPolicy(policy) },
+    decrypt,
+  });
+  if (result.none) return null;
+  return {
+    provider,
+    key: result.credential.value,
+    scope: SCOPE[result.scope],
+    secretId: result.source.secretId,
+    purpose: result.source.purpose,
+  };
 }
 
 /** The key alone. See `resolveInferenceCredential` for where it came from. */
