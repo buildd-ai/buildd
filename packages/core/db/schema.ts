@@ -1881,7 +1881,21 @@ export type WorkerWaitingFor = {
  * older rows carry only the label, so readers must degrade to parsing it.
  */
 export type WorkerMilestone =
-  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
+  | {
+      type: 'phase';
+      /** The assistant text that opened the phase (first sentence) — kept verbatim for audit. */
+      label?: string;
+      toolCount: number;
+      ts: number;
+      pending?: boolean;
+      /**
+       * Distinct operations the phase called, in order (`get_decision`, `Edit`,
+       * `Bash`): the MCP action or tool name, never its input. Lets readers name
+       * a phase by what it did when its text was only a lead-in to the calls.
+       * Absent on older runners.
+       */
+      ops?: string[];
+    }
   | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }

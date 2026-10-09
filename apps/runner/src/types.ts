@@ -74,7 +74,7 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
 
 // Milestone for progress tracking (typed union — no legacy format)
 export type Milestone =
-  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean; ops?: string[] }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number }
   | {
@@ -344,6 +344,7 @@ export interface LocalWorker {
   phaseStart: number | null;
   phaseToolCount: number;
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
+  phaseOps?: string[];   // Distinct operation names called in the current phase (phaseOpName), cap 6
   /**
    * The model this session was started with — the per-task model the claim route
    * resolved (task.context.model) or the runner-global default. Reported back so
