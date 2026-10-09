@@ -21,7 +21,7 @@ everything it adds. Nothing else reads it.
   `packages/core/__tests__/task-estimate-source.test.ts`
 - `apps/web/src/lib/task-estimate-hook.ts` (the post-insert hook) and its test
 - `packages/core/task-estimate-actuals.ts`, `task-estimate-actuals-source.ts`,
-  `task-estimate-readout.ts`, `task-estimate-readout-source.ts` and their tests
+  `task-estimate-readout.ts`, `task-estimate-accuracy-source.ts` and their tests
   (`__tests__/task-estimate-actuals.test.ts`, `__tests__/task-estimate-readout.test.ts`)
 - `apps/web/src/lib/task-estimate-experiment-subscribers.ts` and its test, its
   import and spread in `apps/web/src/modules.ts`, and the two

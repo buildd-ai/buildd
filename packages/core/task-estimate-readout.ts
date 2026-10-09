@@ -19,7 +19,7 @@
  * caller passes one version's rows and `computeTaskEstimateReadout` refuses
  * a mix rather than averaging it.
  *
- * Pure: rows in, a readout out. The query is `./task-estimate-readout-source.ts`.
+ * Pure: rows in, a readout out. The query is `./task-estimate-accuracy-source.ts`.
  */
 import { buildBacktestReport, scoreRows, type BacktestRow, type BacktestScore } from './estimate-backtest';
 import type { TaskEstimateExplanation } from './db/schema';

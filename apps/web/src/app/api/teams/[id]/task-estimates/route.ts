@@ -20,7 +20,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { ESTIMATOR_VERSION } from '@buildd/core/task-estimate';
 import { readTaskEstimatesSetting } from '@buildd/core/task-estimate-source';
-import { loadTeamClusters, runTaskEstimateReadout } from '@buildd/core/task-estimate-readout-source';
+import { loadTeamClusters, runTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy-source';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
 

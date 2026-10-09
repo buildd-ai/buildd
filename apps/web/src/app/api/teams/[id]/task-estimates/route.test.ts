@@ -17,7 +17,7 @@ mock.module('@buildd/core/db', () => ({
     teams: { findFirst: async () => ({ taskEstimates: setting }) },
   } },
 }));
-mock.module('@buildd/core/task-estimate-readout-source', () => ({
+mock.module('@buildd/core/task-estimate-accuracy-source', () => ({
   runTaskEstimateReadout: async (t: string) => { calls.push(`readout:${t}`); return { rows: 0, indeterminate: true }; },
   loadTeamClusters: async (t: string) => { calls.push(`clusters:${t}`); return [{ workspaceId: 'w', workspaceName: 'repo', tasks: 5, clusters: [{ label: 'apps/web', n: 4 }] }]; },
 }));

@@ -154,7 +154,7 @@
     "./task-estimate-actuals": "./task-estimate-actuals.ts",
     "./task-estimate-actuals-source": "./task-estimate-actuals-source.ts",
     "./task-estimate-readout": "./task-estimate-readout.ts",
-    "./task-estimate-readout-source": "./task-estimate-readout-source.ts",
+    "./task-estimate-accuracy-source": "./task-estimate-accuracy-source.ts",
     "./decision-ledger": "./decision-ledger.ts",
     "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
     "./token-delegation": "./token-delegation.ts",
