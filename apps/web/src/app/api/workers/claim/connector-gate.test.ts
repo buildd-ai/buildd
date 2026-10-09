@@ -544,6 +544,24 @@ describe('checkConnectorRouting — role row precedence', () => {
     expect(result).toHaveLength(1);
     expect(result![0].mode).toBe('never_mounted');
   });
+
+  it("reads the requester's own personal row, never another member's private one", async () => {
+    // Bob's private builder needs a dangling connector; the team default needs none.
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      { slug: ROLE_SLUG, workspaceId: null, connectorRefs: [], teamId: TEAM_ID, ownerUserId: null, visibility: 'team' },
+      { slug: ROLE_SLUG, workspaceId: null, connectorRefs: [CONNECTOR_ID], teamId: TEAM_ID, ownerUserId: 'u-bob', visibility: 'private' },
+    ]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockSecretsFindMany.mockResolvedValue([]);
+
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' })).toBeNull();
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID)).toBeNull();
+    const bobs = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-bob' });
+    expect(bobs?.[0].mode).toBe('never_mounted');
+    // The requester comes off the task itself when one is passed.
+    const viaTask = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { task: { createdByUserId: 'u-bob' } });
+    expect(viaTask?.[0].mode).toBe('never_mounted');
+  });
 });
 
 // ── oauth refresh grace ───────────────────────────────────────────────────────
@@ -768,9 +786,27 @@ describe('findAlternativeRole', () => {
     await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID);
 
     const { text, params } = lastWhere(mockWorkspaceSkillsFindMany);
-    expect(text).toContain('"workspace_skills"."slug" <> $4');
-    expect(text).toContain('"workspace_skills"."team_id" = $3');
-    expect(params).toEqual([true, true, TEAM_ID, ROLE_SLUG, WORKSPACE_ID]);
+    expect(text).toContain('"workspace_skills"."slug" <> $3');
+    expect(text).toContain('"workspace_skills"."team_id" = $4');
+    expect(params).toEqual([true, true, ROLE_SLUG, TEAM_ID, WORKSPACE_ID, 'team']);
+  });
+
+  it("never offers another member's private role, and lets the requester's own through", async () => {
+    // The visibility filter is in SQL here: rendered, a requester adds an
+    // owner = requester branch; no requester admits team and shared rows only.
+    const helper = { slug: 'helper', workspaceId: WORKSPACE_ID, connectorRefs: [], teamId: TEAM_ID };
+    serveRoleQueries([helper], { helper });
+
+    await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' });
+    const mine = lastWhere(mockWorkspaceSkillsFindMany);
+    expect(mine.text).toContain('("workspace_skills"."owner_user_id" is null or "workspace_skills"."visibility" = $6 or "workspace_skills"."owner_user_id" = $7)');
+    expect(mine.params.slice(-2)).toEqual(['team', 'u-alice']);
+
+    // And the JS pick drops a private row even if the query handed one back.
+    const bobs = { slug: 'bobs', workspaceId: null, connectorRefs: [], teamId: TEAM_ID, ownerUserId: 'u-bob', visibility: 'private' };
+    serveRoleQueries([bobs], { bobs });
+    expect(await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' })).toBeNull();
+    expect(await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-bob' })).toBe('bobs');
   });
 
   it('deduplicates a slug in favour of its workspace-scoped row', async () => {

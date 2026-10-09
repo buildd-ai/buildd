@@ -76,47 +76,75 @@ describe('resolveClaimModelInputs — an inferred role never touches the model',
 
 describe('pickRoleRowForTask — per-task scoping', () => {
   const rows = [
-    { slug: 'builder', model: 'opus', workspaceId: 'ws-a', teamId: 'team-1' },
-    { slug: 'builder', model: 'budget', workspaceId: 'ws-b', teamId: 'team-1' },
-    { slug: 'builder', model: 'standard', workspaceId: null, teamId: 'team-1' },
-    { slug: 'builder', model: 'premium', workspaceId: null, teamId: 'team-2' },
+    { slug: 'builder', model: 'opus', workspaceId: 'ws-a', teamId: 'team-1', ownerUserId: null, visibility: 'team' },
+    { slug: 'builder', model: 'budget', workspaceId: 'ws-b', teamId: 'team-1', ownerUserId: null, visibility: 'team' },
+    { slug: 'builder', model: 'standard', workspaceId: null, teamId: 'team-1', ownerUserId: null, visibility: 'team' },
+    { slug: 'builder', model: 'premium', workspaceId: null, teamId: 'team-2', ownerUserId: null, visibility: 'team' },
   ];
+  const T = { requesterUserId: null };
 
   it('two workspaces overriding the same slug each get their own row', () => {
-    expect(pickRoleRowForTask(rows, { roleSlug: 'builder', workspaceId: 'ws-a', teamId: 'team-1' })?.model).toBe('opus');
-    expect(pickRoleRowForTask(rows, { roleSlug: 'builder', workspaceId: 'ws-b', teamId: 'team-1' })?.model).toBe('budget');
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: 'builder', workspaceId: 'ws-a', teamId: 'team-1' })?.model).toBe('opus');
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: 'builder', workspaceId: 'ws-b', teamId: 'team-1' })?.model).toBe('budget');
   });
 
   it('row order does not change the answer', () => {
     const reversed = [...rows].reverse();
-    expect(pickRoleRowForTask(reversed, { roleSlug: 'builder', workspaceId: 'ws-a', teamId: 'team-1' })?.model).toBe('opus');
+    expect(pickRoleRowForTask(reversed, { ...T, roleSlug: 'builder', workspaceId: 'ws-a', teamId: 'team-1' })?.model).toBe('opus');
   });
 
   it('falls back to the task team default, never another workspace or team', () => {
-    expect(pickRoleRowForTask(rows, { roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-1' })?.model).toBe('standard');
-    expect(pickRoleRowForTask(rows, { roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-2' })?.model).toBe('premium');
-    expect(pickRoleRowForTask(rows, { roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-3' })).toBeNull();
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-1' })?.model).toBe('standard');
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-2' })?.model).toBe('premium');
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-3' })).toBeNull();
+  });
+
+  it("another member's private row is never applied; the requester's own wins over the team default", () => {
+    const withPersonal = [
+      ...rows,
+      { slug: 'builder', model: 'haiku', workspaceId: null, teamId: 'team-1', ownerUserId: 'u-bob', visibility: 'private' },
+      { slug: 'builder', model: 'sonnet', workspaceId: null, teamId: 'team-1', ownerUserId: 'u-alice', visibility: 'private' },
+    ];
+    const task = { roleSlug: 'builder', workspaceId: 'ws-c', teamId: 'team-1' };
+    expect(pickRoleRowForTask(withPersonal, { ...task, requesterUserId: 'u-alice' })?.model).toBe('sonnet');
+    expect(pickRoleRowForTask(withPersonal, { ...task, requesterUserId: 'u-carol' })?.model).toBe('standard');
+    expect(pickRoleRowForTask(withPersonal, { ...task, requesterUserId: null })?.model).toBe('standard');
+    // A workspace override still beats the requester's own row.
+    expect(pickRoleRowForTask(withPersonal, { ...task, workspaceId: 'ws-a', requesterUserId: 'u-alice' })?.model).toBe('opus');
   });
 
   it('no role → no row', () => {
-    expect(pickRoleRowForTask(rows, { roleSlug: null, workspaceId: 'ws-a', teamId: 'team-1' })).toBeNull();
+    expect(pickRoleRowForTask(rows, { ...T, roleSlug: null, workspaceId: 'ws-a', teamId: 'team-1' })).toBeNull();
   });
 });
 
 describe('countRoleInferenceCandidates', () => {
+  const base = { model: 'inherit', teamId: 'team-1', ownerUserId: null as string | null, visibility: 'team' };
+  const ctx = (requesterUserId: string | null) => ({ teamId: 'team-1', workspaceId: 'ws-1', requesterUserId });
   const routed = (whenToUse: string) => ({ routing: { whenToUse } });
 
   it('counts effective roles with routing text, override wins', () => {
     const n = countRoleInferenceCandidates([
-      { slug: 'builder', model: 'inherit', workspaceId: null, metadata: routed('Code changes that end in a PR') },
-      { slug: 'researcher', model: 'inherit', workspaceId: null, metadata: routed('Investigate without changing code') },
+      { ...base, slug: 'builder', workspaceId: null, metadata: routed('Code changes that end in a PR') },
+      { ...base, slug: 'researcher', workspaceId: null, metadata: routed('Investigate without changing code') },
       // Override opts researcher out in this workspace.
-      { slug: 'researcher', model: 'inherit', workspaceId: 'ws-1', metadata: { routing: { disabled: true } } },
-      { slug: 'writer', model: 'inherit', workspaceId: null, metadata: null },
-      { slug: 'visual-auditor', model: 'inherit', workspaceId: null, metadata: routed('Screenshots of UI work') },
-      { slug: 'other', model: 'inherit', workspaceId: 'ws-2', metadata: routed('Another workspace only') },
-    ], 'ws-1');
+      { ...base, slug: 'researcher', workspaceId: 'ws-1', metadata: { routing: { disabled: true } } },
+      { ...base, slug: 'writer', workspaceId: null, metadata: null },
+      { ...base, slug: 'visual-auditor', workspaceId: null, metadata: routed('Screenshots of UI work') },
+      { ...base, slug: 'other', workspaceId: 'ws-2', metadata: routed('Another workspace only') },
+    ], ctx(null));
     expect(n).toBe(1);
+  });
+
+  it("does not count another member's private role, counts the requester's own and shared ones", () => {
+    const rows = [
+      { ...base, slug: 'builder', workspaceId: null, metadata: routed('Code changes that end in a PR') },
+      { ...base, slug: 'bobs', workspaceId: null, ownerUserId: 'u-bob', visibility: 'private', metadata: routed('Bob only work here') },
+      { ...base, slug: 'alices', workspaceId: null, ownerUserId: 'u-alice', visibility: 'private', metadata: routed('Alice only work here') },
+      { ...base, slug: 'shared', workspaceId: null, ownerUserId: 'u-bob', visibility: 'team', metadata: routed('Anyone may use this') },
+    ];
+    expect(countRoleInferenceCandidates(rows, ctx('u-alice'))).toBe(3);
+    expect(countRoleInferenceCandidates(rows, ctx('u-carol'))).toBe(2);
   });
 });
 
