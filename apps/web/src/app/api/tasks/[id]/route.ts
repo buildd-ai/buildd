@@ -1,7 +1,8 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
 import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
-import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
+import { isTerminalTaskStatus, canDeleteTask, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
@@ -288,7 +289,30 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn, abort } = body;
+
+    // pause: true pauses the agent working on this task instead of cancelling
+    // it (lib/worker-pause.ts): the session is kept and Resume continues it.
+    // It is its own request, never mixed with other edits.
+    if (body?.pause !== undefined) {
+      if (body.pause !== true) return NextResponse.json({ error: 'pause must be true' }, { status: 400 });
+      if (Object.keys(body).some(k => k !== 'pause')) {
+        return NextResponse.json({ error: 'pause is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const liveWorker = await db.query.workers.findFirst({
+        where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+        columns: { id: true, status: true, runner: true, waitingFor: true },
+      });
+      if (!liveWorker) {
+        return NextResponse.json({ error: 'No agent is working on this task, so there is nothing to pause.', code: 'not_running' }, { status: 409 });
+      }
+      const refusal = pauseRefusal(liveWorker);
+      if (refusal) return NextResponse.json({ error: refusal.error, code: refusal.code, workerId: liveWorker.id }, { status: refusal.status });
+      if (!(await requestWorkerPause(liveWorker.id))) {
+        return NextResponse.json({ error: 'The agent stopped running before the pause landed.', code: 'not_running', workerId: liveWorker.id }, { status: 409 });
+      }
+      return NextResponse.json({ id, paused: 'requested', workerId: liveWorker.id });
+    }
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
     // there, via check_path_claim / POST /api/tasks/[id]/path-claim, which take a
@@ -585,6 +609,30 @@ export async function PATCH(
             { error: 'Cannot change status directly — task has an active worker. Use complete_task via the worker instead.' },
             { status: 409 }
           );
+        }
+      }
+      // Cancelling stops a live agent mid-run: its session ends and any work it
+      // has not pushed is lost. The caller has to ask for that (abort: true);
+      // without it the cancel is refused and nothing changes.
+      if (status === 'cancelled') {
+        if (abort !== undefined && typeof abort !== 'boolean') {
+          return NextResponse.json({ error: 'abort must be true or false' }, { status: 400 });
+        }
+        if (abort !== true) {
+          const liveWorker = await db.query.workers.findFirst({
+            where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+            columns: { id: true, status: true },
+          });
+          if (liveWorker) {
+            return NextResponse.json(
+              {
+                error: `An agent is working on this task right now (worker ${liveWorker.id}, ${liveWorker.status}). Cancelling stops it mid-run and loses anything it has not pushed. To keep its work, pause it instead (pause: true). To stop it anyway, send abort: true. To hold work that has not started, move its start time instead.`,
+                code: 'live_worker',
+                workerId: liveWorker.id,
+              },
+              { status: 409 },
+            );
+          }
         }
       }
       updateData.status = status;

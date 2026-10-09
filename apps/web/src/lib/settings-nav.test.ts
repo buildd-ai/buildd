@@ -15,8 +15,23 @@ const PROTECTED = resolve(import.meta.dir, '../app/app/(protected)');
 const pageFor = (href: string) => resolve(PROTECTED, `${href.replace(/^\/app\//, '')}/page.tsx`);
 
 describe('SETTINGS_NAV', () => {
-  it('groups sections as Account, Team, Connections, AI, Workspaces', () => {
-    expect(SETTINGS_NAV.map((g) => g.label)).toEqual(['Account', 'Team', 'Connections', 'AI', 'Workspaces']);
+  it('groups sections in three: you and your team, agents and workspaces, integrations', () => {
+    expect(SETTINGS_NAV.map((g) => g.label)).toEqual(['You and your team', 'Agents and workspaces', 'Integrations']);
+  });
+
+  it('keeps Team and Roles inside Settings', () => {
+    const you = SETTINGS_NAV[0].items.map((i) => i.id);
+    expect(you.slice(0, 3)).toEqual(['account', 'team', 'roles']);
+    expect(settingsItemFor('/app/settings/roles/builder/edit')?.id).toBe('roles');
+    expect(settingsItemFor('/app/settings/team/new')?.id).toBe('team');
+    expect(settingsItemFor('/app/settings/runners/tokens/new')?.id).toBe('runners');
+  });
+
+  it('has one model page: providers and AI features are no longer their own sections', () => {
+    const ids = SETTINGS_ITEMS.map((i) => i.id) as string[];
+    expect(ids).toContain('models');
+    expect(ids).not.toContain('providers');
+    expect(ids).not.toContain('ai');
   });
 
   it('gives every section its own route with a page.tsx', () => {
@@ -26,14 +41,9 @@ describe('SETTINGS_NAV', () => {
     }
   });
 
-  it('puts model providers right after runners: both are core connections', () => {
-    const connections = SETTINGS_NAV.find((g) => g.label === 'Connections')!.items.map((i) => i.id);
-    expect(connections.slice(0, 2)).toEqual(['runners', 'providers']);
-  });
-
-  it('lists Storage under Connections, linked to its own page', () => {
-    const connections = SETTINGS_NAV.find((g) => g.label === 'Connections')!.items;
-    const storage = connections.find((i) => i.id === 'storage');
+  it('lists Storage under Integrations, linked to its own page', () => {
+    const integrations = SETTINGS_NAV.find((g) => g.label === 'Integrations')!.items;
+    const storage = integrations.find((i) => i.id === 'storage');
     expect(storage?.href).toBe('/app/settings/storage');
     expect(settingsItemFor('/app/settings/storage')?.id).toBe('storage');
   });
@@ -56,9 +66,9 @@ describe('settingsNavFor', () => {
     expect(ids(false)).toHaveLength(SETTINGS_ITEMS.length - 1);
   });
 
-  it('lists Billing under Team, after Budgets, while billing is on', () => {
-    const team = settingsNavFor({ billing: true }).find((g) => g.label === 'Team')!.items.map((i) => i.id);
-    expect(team).toEqual(['team', 'budgets', 'billing']);
+  it('lists Billing after Budgets while billing is on', () => {
+    const you = settingsNavFor({ billing: true })[0].items.map((i) => i.id);
+    expect(you).toEqual(['account', 'team', 'roles', 'budgets', 'billing']);
   });
 });
 
@@ -78,7 +88,8 @@ describe('settingsItemFor', () => {
 
 describe('settingsBackHref', () => {
   it('goes from a section back to the index, and from a sub-page back to its section', () => {
-    expect(settingsBackHref('/app/settings/ai')).toBe('/app/settings');
+    expect(settingsBackHref('/app/settings/models')).toBe('/app/settings');
+    expect(settingsBackHref('/app/settings/roles/builder')).toBe('/app/settings/roles');
     expect(settingsBackHref('/app/settings/workspace/ws-1')).toBe('/app/settings/workspaces');
     expect(settingsBackHref('/app/settings')).toBeNull();
   });
@@ -91,11 +102,11 @@ describe('legacy settings links', () => {
   });
 
   it('resolves the anchors that shipped links point at', () => {
-    expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/runners');
-    expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/runners');
-    expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/ai');
+    expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/models');
+    expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/models');
+    expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connectors');
-    expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/providers');
+    expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#nope')).toBeNull();
     expect(legacySettingsTarget('')).toBeNull();
   });

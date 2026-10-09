@@ -24,6 +24,15 @@ describe('isNavActive', () => {
     it('matches nested /app/missions/abc', () => {
       expect(isNavActive('/app/missions/abc-123', '/app/missions')).toBe(true);
     });
+
+    // Releases and Initiatives left the nav for Missions (owner decision, Oct 9).
+    it.each(['/app/releases', '/app/releases/r-1', '/app/initiatives', '/app/initiatives/i-1'])('owns %s', (p) => {
+      expect(isNavActive(p, '/app/missions')).toBe(true);
+    });
+
+    it('does not own a look-alike path', () => {
+      expect(isNavActive('/app/releasesx', '/app/missions')).toBe(false);
+    });
   });
 
   describe('/app/tasks (Activity)', () => {
@@ -87,7 +96,12 @@ describe('isAccountRoute', () => {
     expect(isAccountRoute(p)).toBe(true);
   });
 
-  it.each(['/app/home', '/app/team', '/app/settingsx', '/app/youth'])('%s is not', (p) => {
+  // Team left the nav for Settings (owner decision, Oct 9): the avatar owns it.
+  it.each(['/app/team', '/app/team/builder'])('%s belongs to Settings', (p) => {
+    expect(isAccountRoute(p)).toBe(true);
+  });
+
+  it.each(['/app/home', '/app/teams', '/app/settingsx', '/app/youth'])('%s is not', (p) => {
     expect(isAccountRoute(p)).toBe(false);
   });
 });

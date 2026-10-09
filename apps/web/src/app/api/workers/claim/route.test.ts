@@ -9183,6 +9183,40 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(claimWhereExecutorExcludes()).toBeNull();
   });
 
+  // ── workspace "pause new starts" (task ad5d7e26) ───────────────────────────
+  // Rows are evaluated against real Postgres in tests/db/workspace-paused-gate.test.ts.
+  function claimWhereHasPauseGate(): boolean {
+    const call = (mockTasksFindMany.mock.calls as any[]).find(c => c[0]?.orderBy && c[0]?.limit >= 25);
+    const args: any[] = call?.[0]?.where?.args ?? [];
+    return args.some(a => a?.type === 'sql' && Array.isArray(a.strings) && a.strings.join('').includes('ws_p'));
+  }
+
+  it('workspace pause: a runner poll skips paused workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }));
+    expect(claimWhereHasPauseGate()).toBe(true);
+  });
+
+  it('workspace pause: a runner explicit claim is paused and the probe can name it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'runner-7' });
+    expect(probedGates()).toContain('workspacePaused');
+  });
+
+  it('workspace pause: a verified interactive session is never paused', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    expect(probedGates()).not.toContain('workspacePaused');
+    expect(claimWhereHasPauseGate()).toBe(false);
+  });
+
+  it('workspace pause: an admin force claim lifts it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(claimWhereHasPauseGate()).toBe(false);
+  });
+
   // ── friction 22b389df: a local mission's own audit task was unclaimable ────
   // The `[surface audit]` task ensureMissionSurfaceAudit appends carries
   // roleSlug='visual-auditor' (EXPLICIT_ROLE_SLUGS), which an interactive

@@ -6,7 +6,7 @@
  * to show a derived size. Top to bottom: derived Large (low disk), an
  * explicit Standard override, the default.
  */
-import RunnerSizeSection from '../../(protected)/workspaces/[id]/config/RunnerSizeSection';
+import RunnerSizeSection from '../../(protected)/settings/workspace/[workspaceId]/RunnerSizeSection';
 
 export default function RunnerSizeFixture() {
   return (

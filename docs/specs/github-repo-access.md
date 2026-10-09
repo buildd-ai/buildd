@@ -8,7 +8,7 @@ domain: integrations
 surfaces: [apps/web/src/lib/github-repo-access.ts, apps/web/src/lib/github-repo-access-store.ts, apps/web/src/lib/github-repo-access-gate.ts, apps/web/src/app/api/workspaces/[id]/github-access/route.ts]
 related: [pr-lifecycle-reconciliation, webhook-dataflow, team-permissions, mcp-action-contracts]
 keywords: [Workspace not linked to GitHub repo, github_repo_access_required, Repository access required, Connection required, Check connection, Grant GitHub access, Ask a GitHub administrator, repository_selection, Resource not accessible by integration, githubAccessBlock, installation suspended]
-verified_by: [apps/web/src/lib/github-repo-access.test.ts, apps/web/src/lib/github-repo-access-store.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workspaces/[id]/github-access/route.test.ts, apps/web/src/app/api/github/webhook/route.test.ts, apps/web/src/app/api/github/callback/route.test.ts, apps/web/src/lib/action-queue.test.ts, apps/web/src/app/app/(protected)/workspaces/[id]/config/RepoAccessCard.dom.test.tsx]
+verified_by: [apps/web/src/lib/github-repo-access.test.ts, apps/web/src/lib/github-repo-access-store.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workspaces/[id]/github-access/route.test.ts, apps/web/src/app/api/github/webhook/route.test.ts, apps/web/src/app/api/github/callback/route.test.ts, apps/web/src/lib/action-queue.test.ts, apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/RepoAccessCard.dom.test.tsx]
 supersedes: []
 assertions:
   - id: "diagnose-repo-access"
@@ -109,7 +109,7 @@ team owns is never borrowed.
 - `apps/web/src/app/api/workspaces/[id]/github-access/route.ts` — diagnosis (GET) and Check connection (POST).
 - `apps/web/src/app/api/github/webhook/route.ts`, `apps/web/src/app/api/github/callback/route.ts` — sync + resume on installation change.
 - `apps/web/src/lib/action-queue.ts` — `buildFailedTaskItems` (one card per workspace, admins only).
-- `apps/web/src/app/app/(protected)/workspaces/[id]/config/RepoAccessCard.tsx` — the settings card.
+- `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/RepoAccessCard.tsx` — the settings card.
 
 **Out of scope**
 

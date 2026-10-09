@@ -139,6 +139,10 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
  * unattended source state) in workspaces whose landing mode is `enforce` and whose
  * kill switch is on. The landing sweep's floor for kernel PRs, which may have no
  * legacy reviewer row at all (composition or human approval).
+ *
+ * A delivery that came back to APPROVED on a transient merge answer (a rate
+ * limit or a 5xx, 9bfe0d23) waits out the `retryAt` GitHub gave it: calling
+ * again before its reset is another strike against the same limit.
  */
 export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec): Promise<Array<{ workspaceId: string; prNumber: number }>> {
   const rows = ((await exec(sql`-- workflow:approved_for_landing
@@ -146,6 +150,11 @@ SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w 
 WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
   AND w.git_config->'landing'->>'mode' = 'enforce'
   AND ${kernelOnSql(sql`w.git_config`)}
+  AND NOT EXISTS (
+    SELECT 1 FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_version = d.version AND t.command = 'MergeCallResult'
+      AND (t.evidence->>'retryAt')::timestamptz > now()
+  )
 ORDER BY d.updated_at
 LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
   return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
@@ -244,7 +253,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
   if (result.result === 'stale' || result.result === 'rejected') {
     const message = result.result === 'stale'
       ? `This PR changed since you looked at it (${result.reason}); nothing was merged. Reload and try again.`
-      : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
+      : result.reason === 'pr_is_draft'
+        ? 'The PR is a draft; nothing was merged. It lands once it is marked ready for review.'
+        : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
     return { merged: false, outcome: result.result, reason: result.reason, message, mergeCommitSha: null, current: result.current, result };
   }
 

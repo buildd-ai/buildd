@@ -83,6 +83,13 @@ describe('record_pr_supersession', () => {
     expect(output).toContain('PR #2287 recorded as superseded by PR #2293');
     expect(output).toContain('https://github.com/org/repo/pull/2293');
   });
+
+  it('sends the calling worker alongside an explicit prNumber, so the route can check the PR is its own', async () => {
+    const calls: Array<{ path: string; init: any }> = [];
+    const api = apiRecording(calls, { ok: true, supersededPrNumber: 2287, supersedingPrNumber: 2293, supersedingPrUrl: 'u' });
+    await handleBuilddAction(api, 'record_pr_supersession', { prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }, context());
+    expect(JSON.parse(calls[0]!.init.body)).toMatchObject({ workerId: 'worker-1', prNumber: 2287 });
+  });
 });
 
 describe('get_pr renders a recorded supersession edge', () => {

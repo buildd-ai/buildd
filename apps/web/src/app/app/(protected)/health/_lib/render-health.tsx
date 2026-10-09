@@ -17,7 +17,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /** Shared body of every Health page: auth, team, the page's data, its sections. */
-export async function renderHealthPage(page: HealthPageKey, searchParams: HealthSearchParams) {
+export async function renderHealthPage(page: HealthPageKey, searchParams: HealthSearchParams, top?: React.ReactNode) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
@@ -28,5 +28,5 @@ export async function renderHealthPage(page: HealthPageKey, searchParams: Health
 
   const loaded = await loadHealth({ page, userId: user.id, teamIds, searchParams: await searchParams });
   if (loaded.kind === 'no-workspaces') return <Empty>No workspaces.</Empty>;
-  return <HealthClient page={page} {...loaded.data} />;
+  return <HealthClient page={page} {...loaded.data} top={top} />;
 }

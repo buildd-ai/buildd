@@ -70,7 +70,7 @@ async function mount(withFleetRow = false, manageableTeamIds?: string[]) {
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const next = () => host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-next"]')!;
-const chip = () => host.querySelector('[data-testid="cloudflare-row"] .status-pill')?.textContent;
+const chip = () => host.querySelector('[data-testid="cloudflare-row"] span[data-tone]')?.textContent;
 async function click(el: HTMLElement) { await act(async () => { el.click(); }); await flush(); }
 
 function setInput(el: HTMLInputElement, v: string) {

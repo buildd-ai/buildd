@@ -15,7 +15,8 @@ export interface PermissionSuggestion {
 
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question' | 'permission';
+  /** `pause`: the person paused the run (pause.ts); answering it resumes the same session. */
+  type: 'question' | 'permission' | 'pause';
   prompt: string;
   options?: Array<{
     label: string;
@@ -74,7 +75,7 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
 
 // Milestone for progress tracking (typed union — no legacy format)
 export type Milestone =
-  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean }
+  | { type: 'phase'; label: string; toolCount: number; ts: number; pending?: boolean; ops?: string[] }
   | { type: 'status'; label: string; progress?: number; ts: number }
   | { type: 'checkpoint'; event: CheckpointEventType; label: string; ts: number }
   | {
@@ -173,6 +174,8 @@ export interface LocalWorker {
   // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
   // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
   toolInFlight?: boolean;
+  // Set while a pause waits for the running tool to finish (pause.ts). Transient.
+  pauseRequestedAt?: number;
   // Transient (never persisted): set by loadAllWorkers when it rewrites a
   // 'working' worker to 'error' because SDK sessions cannot survive a runner
   // restart. restoreWorkersFromDisk reads it to notify the server, which would
@@ -344,6 +347,7 @@ export interface LocalWorker {
   phaseStart: number | null;
   phaseToolCount: number;
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
+  phaseOps?: string[];   // Distinct operation names called in the current phase (phaseOpName), cap 6
   /**
    * The model this session was started with — the per-task model the claim route
    * resolved (task.context.model) or the runner-global default. Reported back so
@@ -819,6 +823,9 @@ export interface LocalUIConfig {
   // responds asynchronously via the dashboard, creating a follow-up task.
   // Set to false to preserve the legacy blocking waiting_input behavior.
   inputAsRetry?: boolean;
+  // How a pause is applied (pause.ts): 'session' (host default), 'park' (--once with
+  // resumable runs), 'none' (--once without: refused). Set by run-once.
+  pauseMode?: 'session' | 'park' | 'none';
   // Tier 3 structural isolation root. When set, each workspace gets its own
   // git clone at <root>/<workspaceId>/ and credential dirs are scoped there
   // too — eliminating cross-workspace filesystem access.

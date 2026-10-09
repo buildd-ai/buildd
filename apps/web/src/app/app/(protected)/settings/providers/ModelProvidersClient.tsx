@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
 import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { Select } from '@/components/ui/Select';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
 import CredentialPolicySelector from './CredentialPolicySelector';
 import ProviderCard from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
@@ -13,21 +14,25 @@ import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSec
 import { ADVANCED_ANCHOR, SCOPE_TABS, isScopeTab } from './providers-view';
 
 /**
- * Settings → Providers. Every model provider in registry order, one card each,
- * at the scope picked in the tabs (Team / Workspace / Mine), with the team's
- * credential policy on top. Built on `/api/providers`: what a provider serves,
- * the scopes it can be stored at and what each stored row serves today come
- * from the response, never from a copy here. Keys never come back beyond last4.
+ * Settings → Models, the Keys and Routing sections. Keys: every model provider
+ * in registry order, one card each, at the scope picked in the tabs (Team /
+ * Workspace / Mine), with the team's credential policy on top. Built on
+ * `/api/providers`: what a provider serves, the scopes it can be stored at and
+ * what each stored row serves today come from the response, never from a copy
+ * here. Keys never come back beyond last4.
  *
- * Routing settings the cards don't cover (gateway, agent endpoint, decision
- * model) stay under Advanced.
+ * Routing: what the cards don't cover (gateway, agent endpoint, decision
+ * model). A gateway change reloads the cards, so both sections live in one
+ * component; `between` renders between them (the page's Runner sign-ins).
  */
-export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [] }: {
+export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], between }: {
   teamId: string;
-  /** Fallback for the Advanced sections until the list loads. */
+  /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
   /** The team's workspaces, for the Workspace tab and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
+  /** Rendered between Keys and Routing. */
+  between?: ReactNode;
 }) {
   const params = useSearchParams();
   const initialScope = params.get('scope');
@@ -43,11 +48,11 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [] 
       const qs = new URLSearchParams({ teamId });
       if (workspaceId) qs.set('workspaceId', workspaceId);
       const res = await fetch(`/api/providers?${qs}`);
-      if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? 'Could not load providers');
+      if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? LOAD_ERROR);
       setData(await res.json() as ListProvidersResponse);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load providers');
+      setError(e instanceof Error ? e.message : LOAD_ERROR);
     }
   }, [teamId, workspaceId]);
 
@@ -59,83 +64,95 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [] 
   const tabDisabled = (id: ProviderApiScope) => (id === 'workspace' && workspaces.length === 0) || (id === 'mine' && data?.caller.canSetMine === false);
 
   return (
-    <div className="space-y-8">
-      {flow && (
-        <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`text-body ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
-      )}
-      {error && <div className="notice notice-err text-meta">{error}</div>}
-
-      {data && (
-        <CredentialPolicySelector
-          teamId={teamId}
-          policy={data.policy}
-          canManage={data.caller.can.manage_team_settings}
-          onSaved={(policy) => setData((d) => (d ? { ...d, policy } : d))}
-        />
-      )}
-
-      <section aria-labelledby="providers-h">
-        <h2 id="providers-h" className="section-label mb-3">Providers</h2>
-        <div className="flex flex-wrap items-center gap-3 mb-3">
-          <div className="seg" role="tablist" aria-label="Scope">
-            {SCOPE_TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={scope === t.id}
-                data-testid={`scope-tab-${t.id}`}
-                className={`seg-item h-11 md:h-8 ${scope === t.id ? 'seg-item-active' : ''}`}
-                disabled={tabDisabled(t.id)}
-                onClick={() => setScope(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-          {scope === 'workspace' && workspaces.length > 0 && (
-            <div className="min-w-0 w-full sm:w-64">
-              <Select
-                value={workspaceId ?? ''}
-                onChange={(v) => setWorkspaceId(v || null)}
-                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
-                aria-label="Workspace"
-                sheetTitle="Workspace"
-                testId="scope-workspace"
-              />
-            </div>
+    <>
+      <Section title="Keys" id="keys" className="scroll-mt-20">
+        {/* Old links: /app/settings/providers and #provider-keys land here. */}
+        <span id="provider-keys" aria-hidden="true" />
+        <div className="space-y-6">
+          {flow && (
+            <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`text-body ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
           )}
-        </div>
+          {error && (
+            <Notice tone="err" action={{ label: 'Retry', onClick: () => { void load(); } }} data-testid="providers-load-error">
+              {LOAD_ERROR}
+            </Notice>
+          )}
 
-        <div className="space-y-2.5" role="tabpanel">
-          {data
-            ? data.providers.map((p) => (
-              <ProviderCard
-                key={p.id}
-                provider={p}
-                scope={scope}
-                data={data}
-                workspaceId={workspaceId}
-                onChanged={load}
-                labelOf={labelOf}
-              />
-            ))
-            : !error && <p className="text-body text-text-muted">Loading…</p>}
-        </div>
-      </section>
+          {data && (
+            <CredentialPolicySelector
+              teamId={teamId}
+              policy={data.policy}
+              canManage={data.caller.can.manage_team_settings}
+              onSaved={(policy) => setData((d) => (d ? { ...d, policy } : d))}
+            />
+          )}
 
-      <section id={ADVANCED_ANCHOR} aria-labelledby="advanced-h" className="scroll-mt-20 space-y-8">
-        <div>
-          <h2 id="advanced-h" className="section-label mb-1.5">Advanced</h2>
-          <p className="text-meta text-text-muted">
-            Gateway, agent routing and the decision model. Runner backends and seats are on{' '}
-            <Link href="/app/settings/runners#agent-backends" className="underline hover:text-text-primary">Runners</Link>.
-          </p>
+          <div>
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <div className="seg" role="tablist" aria-label="Scope">
+                {SCOPE_TABS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={scope === t.id}
+                    data-testid={`scope-tab-${t.id}`}
+                    className={`seg-item h-11 md:h-8 ${scope === t.id ? 'seg-item-active' : ''}`}
+                    disabled={tabDisabled(t.id)}
+                    onClick={() => setScope(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {/* Not a second scope picker: it picks which workspace. */}
+              {scope === 'workspace' && workspaces.length > 0 && (
+                <div className="min-w-0 w-full sm:w-64">
+                  <Select
+                    value={workspaceId ?? ''}
+                    onChange={(v) => setWorkspaceId(v || null)}
+                    options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+                    aria-label="Workspace"
+                    sheetTitle="Workspace"
+                    testId="scope-workspace"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2.5" role="tabpanel">
+              {data
+                ? data.providers.map((p) => (
+                  <ProviderCard
+                    key={p.id}
+                    provider={p}
+                    scope={scope}
+                    data={data}
+                    workspaceId={workspaceId}
+                    onChanged={load}
+                    labelOf={labelOf}
+                  />
+                ))
+                : !error && <p className="text-body text-text-muted">Loading…</p>}
+            </div>
+          </div>
         </div>
-        <GatewayCard teamId={teamId} canManage={canManageRouting} onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
-        <DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} />
-        <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} />
-      </section>
-    </div>
+      </Section>
+
+      {between}
+
+      <Section title="Routing" id={ADVANCED_ANCHOR} className="scroll-mt-20">
+        {/* Old #advanced links (the section's previous name). */}
+        <span id="advanced" aria-hidden="true" />
+        <div className="space-y-8">
+          <p className="text-meta text-text-muted">Gateway, agent endpoint and the decision model.</p>
+          <GatewayCard teamId={teamId} canManage={canManageRouting} onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
+          <DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} />
+          <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} />
+        </div>
+      </Section>
+    </>
   );
 }
+
+const LOAD_ERROR = "Couldn't load your providers.";
