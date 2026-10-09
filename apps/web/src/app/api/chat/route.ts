@@ -3,6 +3,7 @@ import { isChatTierName, type CreateConversationRequest, type ListConversationsR
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { createConversation, listConversations, toConversationDTO } from '@/lib/chat/store';
 import { isSensitiveWorkspace, requireChatCaller, resolveChatTeam } from '@/lib/chat/session';
+import { assertMemberRepoAccess } from '@/lib/member-repo-access';
 
 /**
  * GET  /api/chat?cursor=&limit=  → ListConversationsResponse (the caller's own, in teams they still belong to, newest first)
@@ -48,6 +49,8 @@ export async function POST(req: NextRequest) {
         message: 'This workspace is marked sensitive, so its data is not sent to a chat model.',
       }, { status: 403 });
     }
+    const repoAccessRefusal = await assertMemberRepoAccess(r.caller.user.id, workspaceId);
+    if (repoAccessRefusal) return repoAccessRefusal;
   }
   if (!teamId) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
 

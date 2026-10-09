@@ -670,6 +670,38 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Member repo access (lib/member-repo-access.ts).
+  it('accepts gitConfig.memberRepoAccess off/require_read and null to clear', async () => {
+    for (const value of ['off', 'require_read', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true }, githubRepoId: 'repo-1' });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, memberRepoAccess: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.memberRepoAccess value (returns 400)', async () => {
+    for (const value of ['on', true, 'require_write']) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {}, githubRepoId: 'repo-1' });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/memberRepoAccess/);
+    }
+  });
+
+  it('refuses gitConfig.memberRepoAccess require_read without a linked repo', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {}, githubRepoId: null });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: 'require_read' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/linked GitHub repository/);
+  });
+
   // Where the workspace's work runs (packages/shared/src/executor.ts).
   it('accepts gitConfig.executor cloud/host/any and null to clear', async () => {
     for (const value of ['cloud', 'host', 'any', null]) {
