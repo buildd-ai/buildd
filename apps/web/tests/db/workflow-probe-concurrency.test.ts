@@ -53,7 +53,7 @@ const realHandlers = (): EffectHandlers => withPrFactEffects(modules.workflowEff
 // FINDING 1: applyCommand gives up after one CAS retry and the callers drop it.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('FINDING: a command that loses the CAS race twice is dropped, and nothing re-derives it', () => {
-  test.failing('owner attempt ends while two other writes land on the delivery → the hand-on is applied (not stranded in WORKING)', async () => {
+  test('owner attempt ends while two other writes land on the delivery → the hand-on is applied (not stranded in WORKING)', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/cas-twice', files: { 'src/a.ts': 'export const a = 2;\n' } });
     expect((await w.delivery(pr)).state).toBe('WORKING');
@@ -171,7 +171,7 @@ describe('FINDING: an effect claimed in a batch whose lease runs out mid-batch i
 // FINDING 3: late PR open vs the runner's completion PATCH (check-then-act on two rows).
 // ─────────────────────────────────────────────────────────────────────────────
 describe('FINDING: the owner finishes while its PR is being opened → nobody hands the delivery on', () => {
-  test.failing('PATCH reads task.deliveryId (null) → opened webhook opens the delivery (worker still running) → PATCH writes completed and skips AttemptEnded → delivery leaves WORKING', async () => {
+  test('PATCH reads task.deliveryId (null) → opened webhook opens the delivery (worker still running) → PATCH writes completed and skips AttemptEnded → delivery leaves WORKING', async () => {
     w = await world();
     const ownerTaskId = await seedTask(w.workspaceId, { status: 'in_progress', title: 'feat: late open' });
     const branch = 'feat/late-open';
@@ -207,7 +207,7 @@ describe('FINDING: the owner finishes while its PR is being opened → nobody ha
 });
 
 describe('FINDING: the owner finishes while its PR is being opened (whole PATCH inside the open)', () => {
-  test.failing('opened webhook reads the owner task (in_progress) → the whole completion PATCH runs (deliveryId still null) → open binds and checks the worker with its stale task status → delivery leaves WORKING', async () => {
+  test('opened webhook reads the owner task (in_progress) → the whole completion PATCH runs (deliveryId still null) → open binds and checks the worker with its stale task status → delivery leaves WORKING', async () => {
     w = await world();
     const ownerTaskId = await seedTask(w.workspaceId, { status: 'in_progress', title: 'feat: late open 2' });
     const branch = 'feat/late-open-2';
@@ -243,7 +243,7 @@ describe('FINDING: the owner finishes while its PR is being opened (whole PATCH 
 });
 
 describe('FINDING: a crash between the kernel taking the PR and stamping tasks.delivery_id', () => {
-  test.failing('openKernelDelivery commits T1/T2/T3, then the function dies before `UPDATE tasks SET delivery_id` → the owner later completes normally → delivery leaves WORKING', async () => {
+  test('openKernelDelivery commits T1/T2/T3, then the function dies before `UPDATE tasks SET delivery_id` → the owner later completes normally → delivery leaves WORKING', async () => {
     w = await world();
     const ownerTaskId = await seedTask(w.workspaceId, { status: 'in_progress', title: 'feat: crash mid-open' });
     const branch = 'feat/crash-open';
