@@ -298,6 +298,31 @@ describe('firstDivergence', () => {
     expect(normalizeForCompare(now, now, redactProse).tolerated).toEqual([]);
   });
 
+  test('10658a4c: a version-bound key is tolerated against its bare recorded key, and only that', () => {
+    const t7 = (key: string, fx: string) => dec({ command: 'ReviewBudgetExhausted', toState: 'ESCALATED', idempotencyKey: key },
+      [{ kind: 'escalate_exhaustion', dedupeKey: fx, payload: { family: 'review_fix', rounds: 3 } }]);
+    const r = normalizeForCompare(t7('exhaust:d:H', 'exhaust:d:H'), t7('exhaust:d:H@v5', 'exhaust:d:H@v5'), redactProse);
+    expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('10658a4c')]);
+    const policy = (key: string) => dec({ command: 'PolicyEvidenceRecorded', toState: 'ESCALATED', idempotencyKey: key });
+    const p = normalizeForCompare(policy('policy:d:H:human'), policy('policy:d:H:human@v7'), redactProse);
+    expect(firstDivergence(p.recorded, p.replayed)).toBeNull();
+    // Another head, another prefix, or a suffix the recording also had: still a divergence.
+    for (const [rec, rep] of [['exhaust:d:H', 'exhaust:d:H2@v5'], ['end:w', 'end:w@v5']] as const) {
+      const n = normalizeForCompare(policy(rec), policy(rep), redactProse);
+      expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
+    }
+  });
+
+  test('10658a4c: a dead dispatch_review recorded as effect_dead is tolerated; any other dead effect is not', () => {
+    const dead = (effectKind: string, reason: string) => dec({ command: 'EffectDead', toState: 'ESCALATED', idempotencyKey: 'effectdead:e1', evidence: { effectKind, reason } },
+      [{ kind: 'notify', dedupeKey: 'notify:d:effectdead:e1', payload: { event: 'effect_dead', effectKind, reason } }]);
+    const r = normalizeForCompare(dead('dispatch_review', 'effect_dead'), dead('dispatch_review', 'review_unavailable'), redactProse);
+    expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
+    const n = normalizeForCompare(dead('dispatch_fix', 'effect_dead'), dead('dispatch_fix', 'review_unavailable'), redactProse);
+    expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
+  });
+
   test('remapIds swaps replay ids back to recorded ones at any depth', () => {
     expect(remapIds({ k: 'render:R1:3', n: ['R1'] }, new Map([['R1', 'D1']]))).toEqual({ k: 'render:D1:3', n: ['D1'] });
   });
