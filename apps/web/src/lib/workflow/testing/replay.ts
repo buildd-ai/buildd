@@ -16,8 +16,9 @@
  *
  * Out-of-band writes the transition log does not carry are re-applied from the
  * recorded rows and named in `inferred`: an effect's drain outcome (read by
- * the T13 own-refresh check) and an attempt's runner-reported local head
- * (`recordLocalHead`, read by §6.9 attribution).
+ * the T13 own-refresh check), an attempt's runner-reported local head
+ * (`recordLocalHead`, read by §6.9 attribution) and an attempt end no
+ * transition wrote (an unbound worker end, `outOfBandAttemptEnds`).
  *
  * What is not a decision is not compared (reconstruct.ts, by provenance):
  *  - `activity_note` facts are not steps (`OUT_OF_BAND_FACT_KINDS`);
@@ -40,7 +41,7 @@ import type { KernelView } from '../types';
 import type { CorpusDelivery, CorpusEffect, CorpusFact, CorpusTransition } from './corpus';
 import { firstDivergence, normalizeForCompare, remapIds, summary, type Divergence, type StepDecision } from './diff';
 import { recordedReader, UnansweredRead } from './recorded-github';
-import { allocatedIds, buildSteps, isDecisionEffect, outOfBandEffects, outOfBandFacts, reconstructCommand, stepTime, type Step } from './reconstruct';
+import { allocatedIds, buildSteps, isDecisionEffect, outOfBandAttemptEnds, outOfBandEffects, outOfBandFacts, reconstructCommand, stepTime, type Step } from './reconstruct';
 import { redactProse } from './sanitize';
 
 /** What the replay left out of the comparison, by provenance: never a decision. */
@@ -184,6 +185,22 @@ async function applyOutOfBand(
   }
 }
 
+/**
+ * Write the attempt ends the transition log does not carry (`outOfBandAttemptEnds`)
+ * with their recorded status and outcome. Returns whether any row changed.
+ */
+async function applyAttemptEnds(exec: Exec, ends: ReturnType<typeof outOfBandAttemptEnds>, replayDid: string, inferred: Set<string>): Promise<boolean> {
+  let changed = false;
+  for (const e of ends) {
+    const rows = await rowsOf(exec, sql`UPDATE workflow_attempts SET status = ${e.status}::text, outcome = ${e.outcome}::text, ended_at = now(), updated_at = now()
+      WHERE id = ${e.attemptId}::uuid AND delivery_id = ${replayDid}::uuid AND status IN ('queued', 'running') RETURNING id`);
+    if (!rows.length) continue;
+    changed = true;
+    inferred.add(e.timed ? 'attempt end (out-of-band row, re-applied at its recorded time)' : 'attempt end (out-of-band, unbound worker end; time not recorded)');
+  }
+  return changed;
+}
+
 export async function replayDelivery(c: CorpusDelivery, opts: ReplayOptions): Promise<DeliveryReport> {
   const { exec } = opts;
   const steps = buildSteps(c);
@@ -212,9 +229,12 @@ export async function replayDelivery(c: CorpusDelivery, opts: ReplayOptions): Pr
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
       await applyOutOfBand(exec, pendingOutOfBand, stepTime(s), replayDid, transitionIds, toReplay(), inferred);
-      const view: KernelView = replayDid
+      let view: KernelView = replayDid
         ? await loadView({ deliveryId: replayDid }, exec)
         : await loadView({ workspaceId: c.delivery.workspaceId, ownerTaskId: c.delivery.ownerTaskId }, exec);
+      if (replayDid && await applyAttemptEnds(exec, outOfBandAttemptEnds(c, view, stepTime(s)), replayDid, inferred)) {
+        view = await loadView({ deliveryId: replayDid }, exec);
+      }
       replayDid = view.delivery?.id ?? replayDid;
       const before = view.delivery?.version ?? 0;
       const pool = s.expected ? allocatedIds(c, s.expected) : [];
