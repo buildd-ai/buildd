@@ -792,7 +792,25 @@ describe('session-end classification', () => {
     const worker = manager.getWorker('w-ask-park');
     expect(worker?.status).toBe('waiting');
     expect((worker?.waitingFor as any)?.context).toContain('genuinely_blocked');
-    expect((worker?.waitingFor as any)?.disposition).toBeUndefined();
+    // Tagged with the gate's own disposition, so the server admits it to Needs You.
+    expect((worker?.waitingFor as any)?.disposition).toBe('ask');
+  });
+
+  test('genuinely_blocked + the gate recovered it: parks tagged with the repair task, never as an ask', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('CI is already failing on the base branch, unrelated to this change.'), successResult('sess-1')],
+    ];
+    mockCheckQuestion.mockImplementation(async () => ({
+      verdict: 'decide', outcome: 'recovered', disposition: 'decide', repairTaskId: 'repair-1',
+      reason: 'Not sent to a person: repair task filed.', version: null, latencyMs: 5,
+    }));
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-recovered-park', { outputRequirement: 'pr_required' });
+
+    expect(failedCall()).toBeUndefined();
+    const wf = manager.getWorker('w-recovered-park')?.waitingFor as any;
+    expect(wf?.disposition).toBe('recovered');
+    expect(wf?.repairTaskId).toBe('repair-1');
   });
 
   test('genuinely_blocked + Jev holds: parks tagged hold, not a push', async () => {
