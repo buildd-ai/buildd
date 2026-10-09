@@ -190,7 +190,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null, principal?: ActionContext['principal']) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -251,6 +251,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
     authType,
+    principal,
     getWorkspaceId,
     getLevel: async () => accountLevel,
     getScopes: async () => tokenScopes,
@@ -1010,7 +1011,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     workerParam,
     runnerSupportsGroupTools: workerParam ? await workerRunnerSupportsGroupTools(workerParam) : null,
   });
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account), (account as { sessionUserId?: string }).sessionUserId ?? null);
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account), (account as { sessionUserId?: string }).sessionUserId ?? null,
+    // Who is behind the call: personal roles need a person (mcp-tools.ts PERSONAL_ROLE_ACTIONS).
+    account.taskScope ? 'task_token' : (account as { sessionUserId?: string }).sessionUserId ? 'person' : 'key');
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless
