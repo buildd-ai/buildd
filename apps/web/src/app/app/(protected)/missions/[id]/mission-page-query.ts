@@ -72,6 +72,9 @@ export const MISSION_WORKER_COLUMNS = {
   milestones: true,
   linesAdded: true,
   linesRemoved: true,
+  // The Landed drawer's audit evidence: the head this worker pushed, which a
+  // review verdict must match to count (lib/activity-delivery.ts).
+  lastCommitSha: true,
 } as const;
 
 export const MISSION_TASK_COLUMNS = {
@@ -160,10 +163,12 @@ export {
 /**
  * `tasks.result` keys the page reads: the completion summary
  * (`selectMissionCompletionSummary` → `authoredSummary`) and the heartbeat
- * status and summary (`getHeartbeatStatus`, `HeartbeatTimeline`).
+ * status and summary (`getHeartbeatStatus`, `HeartbeatTimeline`), and a
+ * reviewer run's verdict (`reviewOf`: `effectiveVerdict`, else
+ * `structuredOutput.verdict`) for the Landed drawer's audit evidence.
  */
-export const RESULT_DIGEST_KEYS = ['summary', 'summarySource', 'reaperAutoCompleted'] as const;
-export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary'] as const;
+export const RESULT_DIGEST_KEYS = ['summary', 'summarySource', 'reaperAutoCompleted', 'effectiveVerdict'] as const;
+export const RESULT_STRUCTURED_OUTPUT_KEYS = ['status', 'summary', 'verdict'] as const;
 
 /**
  * `tasks.context` keys the attempt strip reads (`attemptKind`,
@@ -189,6 +194,8 @@ export const CONTEXT_DIGEST_KEYS = [
   // Organizer runs timeline: what started each run (lib/mission-checkins.ts).
   'triggerSource',
   'triggerTaskId',
+  // The head a reviewer run read (`reviewOf`): binds its verdict to a commit.
+  'headSha',
 ] as const;
 export const CONTEXT_FAILURE_KEYS = ['errorType'] as const;
 
