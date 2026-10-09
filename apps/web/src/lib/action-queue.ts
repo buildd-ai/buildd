@@ -359,6 +359,10 @@ export interface EscalationGateMark {
   owner: 'person' | 'buildd';
   /** One line: the rail that makes it the person's, or the step Buildd is taking. */
   reason: string;
+  /** The rail that made it the person's (a policy rail batches into a digest). */
+  rail?: string | null;
+  /** The tenant the verdict was read for; a digest never spans two. */
+  teamId?: string | null;
 }
 
 export interface EscalationRawItem {
