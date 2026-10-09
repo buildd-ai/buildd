@@ -18,6 +18,7 @@ import { ACTIVITY_COMMENT_MARKER, type PrActivityEntry } from '@/lib/pr-activity
 import type { ClaimedEffect, EffectHandler } from './effects';
 import { insertFollowupEffectSql } from './effects';
 import { loadView, type Exec } from './kernel';
+import { workspaceKernelOnSql } from './authority';
 import { workspaceRepo, type WorkspaceRepo } from './github-facts';
 import { parseRenderVersion, renderDeliveryActivity, type ActivityTransition, type DivertedNote } from './pr-activity-render';
 
@@ -152,6 +153,7 @@ export function kernelDeliveryForActivitySql(p: { workspaceId?: string | null; r
   return sql`-- workflow:activity_delivery
 SELECT id, workspace_id FROM workflow_deliveries
 WHERE repo_full_name = ${p.repoFullName}::text AND pr_number = ${p.prNumber}::int AND authority = 'kernel' ${ws}
+  AND ${workspaceKernelOnSql(sql`workflow_deliveries.workspace_id`)}
 ORDER BY created_at DESC LIMIT 1`;
 }
 
