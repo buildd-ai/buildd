@@ -75,7 +75,7 @@ export async function tryDispatchMigrationCollisionRetry(
       workspaceId,
       entry: {
         kind: 'migration_collision_fixing',
-        detail: `PR #${collision.otherPrNumber}`,
+        detail: collision.otherPrNumber == null ? `${collision.otherFile} on the base` : `PR #${collision.otherPrNumber}`,
       },
     }).catch(() => {
       // Best-effort — the dispatched task is the real state; the comment is UX only.

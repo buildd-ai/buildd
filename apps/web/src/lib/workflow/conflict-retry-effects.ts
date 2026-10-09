@@ -259,9 +259,16 @@ const renumberMigration: EffectHandler = async (e) => {
   const inspect = deps.inspect ?? (await import('@/lib/migration-inspector')).inspectPullRequestMigrations;
   const safety = await inspect({ installationId, repoFullName, prNumber, headSha: b.attempt.boundHeadSha!, files: [], baseRef });
   if (safety.safe || !('collision' in safety) || !safety.collision) {
-    if (!safety.safe && /could not/.test(safety.reason)) throw new Error(`migration collision unverifiable: ${safety.reason}`);
+    if (!safety.safe && safety.kind === 'uninspectable') throw new Error(`migration collision unverifiable: ${safety.reason}`);
     return notNeeded(b, source, 'collision_resolved');
   }
+  // A slot taken on the base also needs the branch refreshed and its journal
+  // and snapshot regenerated; renaming the .sql alone would leave the journal
+  // colliding with the base. That is agent work.
+  if (safety.collision.against === 'base' || safety.collision.otherPrNumber == null) {
+    return refusedToAgent(b, source, e.payload, { reason: 'base_collision', migrationCollision: safety.collision as unknown as Record<string, unknown> });
+  }
+  const otherPrNumber = safety.collision.otherPrNumber;
   const headFile = await api()(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=100`)
     .then((x) => (Array.isArray(x) ? (x as Array<{ filename: string }>) : []))
     .catch(() => []);
@@ -269,7 +276,7 @@ const renumberMigration: EffectHandler = async (e) => {
   const m = path ? MIGRATION_FILE.exec(path) : null;
   if (!path || !m) return refusedToAgent(b, source, e.payload, { reason: 'migration_path_unknown' });
   const dir = (m[1] ?? '').replace(/\/$/, '');
-  const other = await api()(installationId, `/repos/${repoFullName}/pulls/${safety.collision.otherPrNumber}`) as { head?: { sha?: string } } | null;
+  const other = await api()(installationId, `/repos/${repoFullName}/pulls/${otherPrNumber}`) as { head?: { sha?: string } } | null;
   const trunk = pr?.base?.repo?.default_branch ?? baseRef ?? 'main';
   const [head, base, trunkDir, otherDir] = await Promise.all([
     dirAt(installationId, repoFullName, dir, b.attempt.boundHeadSha!),
@@ -296,7 +303,7 @@ const renumberMigration: EffectHandler = async (e) => {
   }) as { sha?: string } | null;
   const created = await api()(installationId, `/repos/${repoFullName}/git/commits`, {
     method: 'POST',
-    body: JSON.stringify({ message: `chore(migrations): renumber ${plan.from} to ${plan.to} (collides with #${safety.collision.otherPrNumber})`, tree: tree?.sha, parents: [b.attempt.boundHeadSha] }),
+    body: JSON.stringify({ message: `chore(migrations): renumber ${plan.from} to ${plan.to} (collides with #${otherPrNumber})`, tree: tree?.sha, parents: [b.attempt.boundHeadSha] }),
   }) as { sha?: string } | null;
   if (!created?.sha) throw new Error('renumber commit not created');
   // Fast-forward only: a push that raced us makes GitHub refuse, and the next head is handled by T3.

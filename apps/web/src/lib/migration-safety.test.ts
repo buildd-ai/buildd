@@ -198,6 +198,7 @@ describe('classifyPullRequestMigrations', () => {
       safe: false,
       operationClass: 'CONTRACT',
       reason: 'could not inspect generated migration packages/core/drizzle/0094_missing.sql',
+      kind: 'uninspectable',
     });
   });
 
@@ -248,6 +249,7 @@ describe('classifyPullRequestMigrations', () => {
       reason:
         'migration number collision: 0093_safe.sql conflicts with open PR #100 migration 0093_other.sql',
       collision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 },
+      kind: 'collision',
     });
   });
 
