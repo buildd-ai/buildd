@@ -15,6 +15,7 @@ import {
   insertFollowupEffectSql,
   runEffects,
   EFFECT_MAX_ATTEMPTS,
+  KERNEL_ONLY_EFFECTS,
 } from './effects';
 import type { Exec } from './kernel';
 
@@ -108,5 +109,30 @@ describe('runEffects', () => {
     // 67d34094: the dead effect is handed to the escalation, not only reported.
     expect(escalated).toEqual(s.dead);
     expect(d.seen.find((q) => q.tag === 'fail_effect')!.params[1]).toBe('no handler for merge_call');
+  });
+
+  // §14 kill switch (task 8a0571d8).
+  test('a delivery the kernel no longer owns never runs a kernel-only effect: acked skipped:legacy_owns', async () => {
+    for (const authority of ['legacy', 'switched_off']) {
+      for (const kind of KERNEL_ONLY_EFFECTS) {
+        let ran = false;
+        const x = exec([claimed({ kind, authority })]);
+        const s = await runEffects({ exec: x.exec, handlers: { [kind]: async () => { ran = true; } } });
+        expect({ authority, kind, ran, skipped: s.skipped }).toEqual({ authority, kind, ran: false, skipped: 1 });
+        expect(x.seen.at(-1)).toEqual({ tag: 'ack_effect', params: ['skipped:legacy_owns', 'e1'] });
+      }
+    }
+    expect([...KERNEL_ONLY_EFFECTS].sort()).toEqual(['merge_call', 'push_recovery', 'refresh_branch', 'renumber_migration']);
+  });
+  test('a switched-off delivery is released once by the drain; its committed dispatches and projections still drain', async () => {
+    const x = exec([claimed({ authority: 'switched_off' }), claimed({ id: 'e2', kind: 'render_activity', authority: 'switched_off' })]);
+    const ran: string[] = [];
+    await runEffects({ exec: x.exec, handlers: { dispatch_fix: async () => { ran.push('dispatch_fix'); }, render_activity: async () => { ran.push('render_activity'); } } });
+    expect(ran).toEqual(['dispatch_fix', 'render_activity']);
+    expect(x.seen.filter((q) => q.tag === 'release_to_legacy').map((q) => q.params)).toEqual([['d1']]);
+  });
+  test('the claim reads who decides in the same statement, through the one switch reading', () => {
+    const { sql: text } = render(claimDueEffectsSql(10));
+    expect(text).toContain("WHEN d.authority = 'legacy' THEN 'legacy' WHEN (COALESCE((w.git_config)->>'workflowKernel', 'true') IN ('true', 'on')) THEN 'kernel' ELSE 'switched_off' END");
   });
 });
