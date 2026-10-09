@@ -21,7 +21,7 @@
  * "after <scope>" chips. Hover (or focus) shows the task's detail; a click
  * opens the task sheet.
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
@@ -33,7 +33,7 @@ import {
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import type { MissionExecutor } from '@/lib/task-actions';
-import { stripOrder } from '@/lib/mission-task-strip';
+import { defaultStripSelection, stripOrder, stripSlots } from '@/lib/mission-task-strip';
 import type { DeliveryTone } from '@/lib/workflow/delivery-display';
 import { screensToReview } from '@/lib/visual-review-model';
 import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
@@ -113,6 +113,13 @@ function BoardView({
     () => (workspaceId && stripIds.length > 0 ? { store: stripStore, taskIds: stripIds } : null),
     [workspaceId, stripStore, stripIds],
   );
+  // The task the strip's drawer already shows in full: its column tile would
+  // draw the same card a second time, so the column skips it.
+  const stripSlotList = useMemo(() => (stripValue ? stripSlots(model) : []), [stripValue, model]);
+  const chosenId = useSyncExternalStore(stripStore.subscribe, stripStore.getSelected, () => null);
+  const drawerTaskId = stripValue
+    ? (chosenId && stripSlotList.some(s => s.id === chosenId) ? chosenId : defaultStripSelection(stripSlotList, stripFocus?.taskId))
+    : null;
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
     .filter(t => t.status === 'running' || t.status === 'fixing')
@@ -161,28 +168,31 @@ function BoardView({
       >
         {model.phases.map((p, i) => {
           const tasks = p.taskIds.map(id => model.tasks[id]);
-          const active = tasks.filter(t => !BOARD_LANDED.has(t.status)).sort((a, b) => ORDER[a.status] - ORDER[b.status]);
+          // One unlabeled phase is the whole mission: its header says the total,
+          // and the Landed band above already carries done/total.
+          const wholeMission = !p.label && model.phases.length === 1;
+          const active = tasks.filter(t => !BOARD_LANDED.has(t.status) && t.id !== drawerTaskId).sort((a, b) => ORDER[a.status] - ORDER[b.status]);
           const landed = tasks.filter(t => BOARD_LANDED.has(t.status));
           return (
             <div key={p.key} data-testid="board-column" data-phase={p.key} className="flex min-w-0 flex-col gap-2.5">
               <div className="flex items-center gap-2.5 border-b-2 border-border-strong pb-2">
-                <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>
+                {!wholeMission && <span className="font-mono text-[11px] font-bold text-text-primary">{p.ordinal}</span>}
                 {/* One line: a wrapped header pushes its underline below its neighbours'. */}
                 <SectionLabel
                   data-testid="board-phase-label"
-                  title={p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                  title={wholeMission ? 'Tasks' : p.label ?? 'Unphased'}
                   className={`min-w-0 truncate !text-text-primary ${compact ? 'flex-1' : ''}`}
                 >
-                  {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
+                  {wholeMission ? `${p.total} ${p.total === 1 ? 'task' : 'tasks'}` : p.label ?? 'Unphased'}
                 </SectionLabel>
                 {/* The squares give way first (clipped) so a long phase never
                     pushes the label to "1 TA…" or the count off the screen. */}
-                <span aria-hidden="true" data-testid="board-phase-progress" className="ml-auto flex min-w-0 shrink-[100] gap-0.5 overflow-hidden">
+                {!wholeMission && <span aria-hidden="true" data-testid="board-phase-progress" className="ml-auto flex min-w-0 shrink-[100] gap-0.5 overflow-hidden">
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
-                </span>
-                <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
+                </span>}
+                {!wholeMission && <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>}
               </div>
               {active.map(t => [
                 <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,

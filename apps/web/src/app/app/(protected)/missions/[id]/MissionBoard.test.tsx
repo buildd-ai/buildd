@@ -107,6 +107,14 @@ describe('MissionBoard — running', () => {
     }
   });
 
+  it('an unlabeled single phase heads the list with its total, no ordinal or repeated progress', () => {
+    const m = boardFixture('running');
+    const phase = { ...m.phases[0], label: null };
+    const html = renderToStaticMarkup(<MissionBoard model={{ ...m, phases: [phase] }} missionId="mission-1" />);
+    expect(html).toContain(`${phase.total} ${phase.total === 1 ? 'task' : 'tasks'}`);
+    expect(html).not.toContain('data-testid="board-phase-progress"');
+  });
+
   it('a running tile has an elapsed strip with one notch per milestone', () => {
     expect(html).toContain('data-testid="board-tile-strip"');
     expect(count(html, 'data-testid="board-tile-notch"')).toBe(2);
