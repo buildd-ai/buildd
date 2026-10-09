@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/tests/db/agent-connection-owner.test.ts, apps/web/src/lib/worker-owner.test.ts, apps/web/tests/db/grant-scope-matrix.test.ts, apps/web/src/lib/grant-scope.test.ts, apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -626,6 +626,24 @@ team's other workspaces would otherwise allow.
   spans the granted workspaces only; without it, a session granted more than
   one workspace and naming none is refused (the multi-workspace guard, counted
   over the grant).
+- An agent connection's workers belong to the person who connected it.
+  Every grant session in a team is the same shared account, and an `agent`
+  grant carries no `sessionUserId` (it is never a person), so the account
+  cannot tell one member's agent from another's. A claim therefore records
+  the connecting user on the worker (`workers.claimed_by_user_id`): the
+  person for a `person` grant, the grant's user (`oauthUserId`) for an
+  `agent` grant (`claimingUserId()` in `apps/web/src/lib/worker-owner.ts`).
+  Every "is this my worker" check compares that user, not the account:
+  acting as the worker (`callerOwnsWorker`, and its SQL form
+  `ownedByCaller` for park/resume), `workers/mine`, the interactive-claim
+  session user that keeps an MCP claim alive, and acting on the worker's PR
+  as its own run (create/adopt, update, close, merge, supersede:
+  `notThisAgentsWorker()` in
+  `apps/web/src/lib/agent-capabilities/worker-pr.ts`). On the shared
+  account an agent connection's own worker is one its user claimed;
+  another member's worker, or one a key claimed there, is not.
+  An agent connection is still not a person: person-only actions refuse it.
+  `bld_` keys and `bldt_` task tokens own by account as before.
 
 **Acceptance criteria**:
 - AC-49: GIVEN a grant to a `restricted` workspace with no account link WHEN
@@ -652,8 +670,27 @@ team's other workspaces would otherwise allow.
   refused, also with `claimAcrossAccessible: "true"`; WITH
   `claimAcrossAccessible: true` THEN it claims the two granted tasks and not
   the sibling's.
+- AC-56: GIVEN users A and B of one team, each with an agent connection to
+  the same workspace WHEN A claims a task THEN the worker is on the shared
+  account and records A as its claimer.
+- AC-57: GIVEN that worker WHEN B's connection lists `workers/mine`, reads
+  it, or reports progress or completion on it THEN it is not listed and the
+  read and writes are refused 403 with the worker unchanged; A's connection
+  lists, reads and updates it.
+- AC-58: GIVEN that worker with a PR WHEN B's connection creates a PR for it
+  or closes or merges its PR as its own run THEN it is refused, before
+  anything reaches GitHub; A's connection is allowed.
+- AC-59: GIVEN a worker a key claimed on the shared account WHEN an agent
+  connection checks ownership THEN it does not own it.
+- AC-60: GIVEN person connections of A and B WHEN A claims THEN A owns the
+  worker and B (in person or through B's agent connection) does not.
 
 **Code surface**:
+- Ownership: `apps/web/src/lib/worker-owner.ts` — `claimingUserId()`,
+  `agentConnectionUserId()`, `callerOwnsWorker()`;
+  `apps/web/src/lib/worker-park.ts` — `ownedByCaller()`;
+  `apps/web/src/lib/agent-capabilities/worker-pr.ts` —
+  `notThisAgentsWorker()`; `apps/web/src/app/api/workers/mine/route.ts`
 - Rule: `apps/web/src/lib/grant-scope.ts` — `assertGrantedWorkspace()`,
   `constrainToGranted()`, `isGrantSession()`
 - Route confinement: `apps/web/src/lib/token-route-policy.ts` —
@@ -665,7 +702,8 @@ team's other workspaces would otherwise allow.
   `apps/web/src/lib/worker-pr-access.ts`, `apps/web/src/lib/pr-resolve.ts`
 - Claims: `apps/web/src/app/api/workers/claim/route.ts`
 - Tests: `apps/web/tests/db/grant-scope-matrix.test.ts` (real Postgres),
-  `apps/web/src/lib/grant-scope.test.ts`
+  `apps/web/tests/db/agent-connection-owner.test.ts` (real Postgres, AC-56..60),
+  `apps/web/src/lib/grant-scope.test.ts`, `apps/web/src/lib/worker-owner.test.ts`
 ---
 
 ## Managing connections

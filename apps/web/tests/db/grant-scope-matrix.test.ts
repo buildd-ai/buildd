@@ -337,6 +337,8 @@ describe('PRs: same-numbered PRs in sibling and same-named foreign repos', () =>
     const s = await setup();
     const mine = await worker(s.granted, s.accountA);
     const other = await worker(s.sibling, s.accountA);
+    // Claimed by this session's user: workers/mine lists only a grant user's own claims.
+    await q(sql`UPDATE workers SET claimed_by_user_id = ${s.userId}::uuid WHERE id IN (${mine}::uuid, ${other}::uuid)`);
     const res = await mineRoute.GET(req(s, '/api/workers/mine'));
     expect(res.status).toBe(200);
     const ids = ((await res.json()) as { workers: Array<{ id: string }> }).workers.map(x => x.id);
