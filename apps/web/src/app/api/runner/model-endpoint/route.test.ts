@@ -13,20 +13,36 @@ const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockGetPermissions = mock(() => Promise.resolve([] as any[]));
 const mockResolveRoute = mock((_o: any) => Promise.resolve(null as any));
 const mockResolveAnthropicAuth = mock((_o: any) => Promise.resolve(null as any));
+const mockTeamsFindFirst = mock((_o?: any) => Promise.resolve(null as any));
+const mockResolveProvider = mock((_o: any) => Promise.resolve(null as any));
+const mockRequester = mock((_t: any) => Promise.resolve(null as string | null));
+const mockGateway = mock((_o: any, _f?: any) => Promise.resolve(null as any));
+
+// Real pure pieces, taken before anything is mocked: the endpoint helpers and
+// the resolver's own ranking, so the policy × requester table below runs the
+// real policy and requester rules over fixture rows.
+const realAgentEndpoint = { ...(await import('@buildd/core/agent-endpoint')) };
+const realResolve = { ...(await import('@buildd/core/providers/resolve')) };
+const realProviders = { ...(await import('@buildd/core/providers')) };
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
-mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveRoute }));
+mock.module('@buildd/core/agent-endpoint', () => ({ ...realAgentEndpoint, resolveAgentModelRoute: mockResolveRoute }));
 mock.module('@/lib/claude-credential', () => ({ resolveAnthropicAuth: mockResolveAnthropicAuth }));
+mock.module('@buildd/core/providers/resolve', () => ({ ...realResolve, resolveProviderCredential: mockResolveProvider }));
+mock.module('@buildd/core/task-requester', () => ({ resolveTaskRequesterUserId: mockRequester }));
+mock.module('@buildd/core/litellm-gateway', () => ({ resolveLiteLLMGateway: mockGateway }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockTasksFindFirst },
       workers: { findMany: mockWorkersFindMany },
+      teams: { findFirst: mockTeamsFindFirst },
     },
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
+  teams: { id: 'id' },
   tasks: { id: 'id' },
   workers: { taskId: 'task_id', status: 'status' },
   workspaces: { id: 'id', teamId: 'team_id', accessMode: 'access_mode' },
@@ -94,6 +110,240 @@ beforeEach(() => {
   mockGetPermissions.mockResolvedValue([]);
   mockResolveRoute.mockResolvedValue({ winner: 'endpoint', endpoint: ENDPOINT });
   mockResolveAnthropicAuth.mockResolvedValue(null);
+  mockTeamsFindFirst.mockReset();
+  mockResolveProvider.mockReset();
+  mockRequester.mockReset();
+  mockGateway.mockReset();
+  // Default: a team that has never set credential_policy.
+  mockTeamsFindFirst.mockResolvedValue({ credentialPolicy: null, inferenceKeyPolicy: null });
+  mockResolveProvider.mockImplementation((input: any) => Promise.resolve(selectFrom(ROWS, input)));
+  mockRequester.mockResolvedValue(null);
+  mockGateway.mockResolvedValue(null);
+});
+
+// ── Fixtures for the policy path ─────────────────────────────────────────────
+
+const REQUESTER = 'user-requester';
+const OTHER_USER = 'user-other';
+
+function row(o: Partial<{ id: string; purpose: string; label: string | null; value: string; workspaceId: string | null; accountId: string | null; userId: string | null }>) {
+  return {
+    id: o.id ?? 'row',
+    purpose: o.purpose ?? 'inference_key',
+    label: o.label === undefined ? 'anthropic' : o.label,
+    // The fixture "decrypt" below is the identity, so the value is stored as-is.
+    encryptedValue: o.value ?? 'sk-ant-fixture',
+    accountId: o.accountId ?? null,
+    workspaceId: o.workspaceId ?? null,
+    userId: o.userId ?? null,
+    healthStatus: null,
+    tokenExpiresAt: null,
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  };
+}
+
+const TEAM_KEY = row({ id: 'team-key', value: 'sk-ant-team-fixture' });
+const MY_KEY = row({ id: 'my-key', value: 'sk-ant-mine-fixture', userId: REQUESTER });
+const THEIR_KEY = row({ id: 'their-key', value: 'sk-ant-theirs-fixture', userId: OTHER_USER });
+let ROWS: ReturnType<typeof row>[] = [TEAM_KEY, MY_KEY, THEIR_KEY];
+
+/**
+ * resolveProviderCredential without the database: the real ranking, policy and
+ * requester rules (selectProviderCredential) over fixture rows, with the
+ * eligibility and policy the real resolver derives from its input.
+ */
+function selectFrom(rows: ReturnType<typeof row>[], input: any) {
+  return realResolve.selectProviderCredential(rows, {
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    requesterUserId: input.requesterUserId,
+    surface: input.surface,
+    eligible: realResolve.eligibleProviders(input.surface).eligible,
+    policy: realProviders.surfacePolicy(input.team, input.surface),
+  }, (v: string) => v);
+}
+
+function withPolicy(credentialPolicy: string | null, inferenceKeyPolicy: string | null = null) {
+  mockTeamsFindFirst.mockResolvedValue({ credentialPolicy, inferenceKeyPolicy });
+}
+
+describe('credential_policy NULL: exactly the egress decision this route always made', () => {
+  it('never asks the provider resolver; the legacy ranking and Anthropic lookup run as before', async () => {
+    mockResolveRoute.mockResolvedValue({ winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' });
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { 'x-api-key': ANTHROPIC_KEY }, purpose: 'anthropic_api_key', secretId: 'secret-2' });
+    mockRequester.mockResolvedValue(REQUESTER);
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: ANTHROPIC_KEY });
+    expect(mockResolveRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
+    expect(mockResolveAnthropicAuth).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
+    expect(mockResolveProvider).not.toHaveBeenCalled();
+    // A personal key is never in play, so the requester is not even looked up.
+    expect(mockRequester).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the endpoint wins', { winner: 'endpoint', endpoint: ENDPOINT }, null, 200],
+    ['no endpoint, no key', null, null, 404],
+    ['a seat wins', { winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' }, { headers: {}, purpose: 'oauth_token', secretId: 's' }, 404],
+  ] as const)('%s ⇒ the legacy answer', async (_l, route, auth, status) => {
+    mockResolveRoute.mockResolvedValue(route as any);
+    mockResolveAnthropicAuth.mockResolvedValue(auth as any);
+    expect((await POST(req())).status).toBe(status);
+    expect(mockResolveProvider).not.toHaveBeenCalled();
+  });
+
+  it('the chat-only inference_key_policy does not opt agent egress in', async () => {
+    withPolicy(null, 'own');
+    await POST(req());
+    expect(mockResolveProvider).not.toHaveBeenCalled();
+    expect(mockResolveRoute).toHaveBeenCalled();
+  });
+
+  it('an unreadable team row reads as unset: the legacy path, not a refusal', async () => {
+    mockTeamsFindFirst.mockImplementation(() => Promise.reject(new Error('db down')));
+    expect((await POST(req())).status).toBe(200);
+    expect(mockResolveProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('credential_policy set: the provider resolver decides, for this task’s requester', () => {
+  it('asks resolveProviderCredential on the cloud-egress surface with the requester and the team row', async () => {
+    withPolicy('personal_first');
+    mockRequester.mockResolvedValue(REQUESTER);
+    await POST(req());
+    expect(mockResolveProvider).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      accountId: 'account-1',
+      requesterUserId: REQUESTER,
+      surface: 'cloud-egress',
+      team: { credentialPolicy: 'personal_first', inferenceKeyPolicy: null },
+    });
+    expect(mockRequester).toHaveBeenCalledTimes(1);
+    expect(mockResolveRoute).not.toHaveBeenCalled();
+    expect(mockResolveAnthropicAuth).not.toHaveBeenCalled();
+  });
+
+  // policy × requester, over a team key, the requester's own key and someone else's.
+  it.each([
+    ['team', REQUESTER, 200, 'sk-ant-team-fixture'],
+    ['team', null, 200, 'sk-ant-team-fixture'],
+    ['personal_first', REQUESTER, 200, 'sk-ant-mine-fixture'],
+    ['personal_first', null, 200, 'sk-ant-team-fixture'],
+    ['personal_first', 'user-stranger', 200, 'sk-ant-team-fixture'],
+    ['personal_only', REQUESTER, 200, 'sk-ant-mine-fixture'],
+    ['personal_only', null, 404, 'no_personal_credential'],
+    ['personal_only', 'user-stranger', 404, 'no_personal_credential'],
+  ] as const)('policy=%s requester=%s ⇒ %d %s', async (policy, requester, status, want) => {
+    withPolicy(policy);
+    mockRequester.mockResolvedValue(requester);
+    const res = await POST(req());
+    expect(res.status).toBe(status);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = await res.json();
+    if (status === 200) {
+      expect(body).toEqual({ source: 'anthropic_api_key', key: want });
+    } else {
+      expect(body.reason).toBe(want);
+    }
+    // Someone else's personal key never leaves, whatever the policy.
+    expect(JSON.stringify(body)).not.toContain('sk-ant-theirs-fixture');
+  });
+
+  it('the canonical Anthropic key keeps the anthropic_api_key flag (its precedence over MODEL_PROXY_URL), as the legacy purpose does', async () => {
+    withPolicy('team');
+    ROWS = [row({ id: 'legacy', purpose: 'anthropic_api_key', label: null, value: 'sk-ant-legacy-fixture' })];
+    try {
+      expect(await (await POST(req())).json()).toEqual({ source: 'anthropic_api_key', key: 'sk-ant-legacy-fixture' });
+      ROWS = [row({ id: 'canonical', value: 'sk-ant-canonical-fixture' })];
+      expect(await (await POST(req())).json()).toEqual({ source: 'anthropic_api_key', key: 'sk-ant-canonical-fixture' });
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
+  it('a seat never wins on cloud egress: a seat alone ⇒ 404 no_credential', async () => {
+    withPolicy('team');
+    ROWS = [
+      row({ id: 'seat', purpose: 'oauth_token', label: null, value: 'seat-token-fixture', workspaceId: 'ws-1' }),
+    ];
+    try {
+      const res = await POST(req());
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.reason).toBe('no_credential');
+      expect(JSON.stringify(body)).not.toContain('seat-token-fixture');
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
+  it('an anthropic-compatible agent_endpoint at workspace scope beats the team key and is served as an endpoint', async () => {
+    withPolicy('team');
+    const blob = { kind: 'anthropic-compatible', baseUrl: 'https://proxy.example.com', apiKey: KEY, authHeader: 'x-api-key', models: { 'claude-sonnet-5': 'team-sonnet' } };
+    ROWS = [TEAM_KEY, row({ id: 'endpoint', purpose: 'agent_endpoint', label: null, value: JSON.stringify(blob), workspaceId: 'ws-1' })];
+    try {
+      expect(await (await POST(req())).json()).toEqual({
+        kind: 'anthropic-compatible', baseUrl: 'https://proxy.example.com', key: KEY, authHeader: 'x-api-key', models: { 'claude-sonnet-5': 'team-sonnet' },
+      });
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
+  it('a gateway reference resolves its gateway at the same scope or broader', async () => {
+    withPolicy('team');
+    ROWS = [row({ id: 'gw-ref', purpose: 'agent_endpoint', label: null, value: JSON.stringify({ kind: 'gateway' }) })];
+    mockGateway.mockResolvedValue({ baseURL: 'https://gateway.example.com/v1', apiKey: 'sk-gateway-fixture' });
+    try {
+      const res = await POST(req());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        kind: 'gateway', baseUrl: 'https://gateway.example.com', key: 'sk-gateway-fixture', authHeader: 'authorization', models: {},
+      });
+      // A team-wide reference never picks up one workspace's gateway.
+      expect(mockGateway).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: null }, { ignoreKeyPolicy: true });
+
+      mockGateway.mockResolvedValue(null);
+      expect((await POST(req())).status).toBe(404);
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
+  it('an OpenRouter key is served on OpenRouter’s Anthropic-compatible root', async () => {
+    withPolicy('team');
+    ROWS = [row({ id: 'or', label: 'openrouter', value: 'sk-or-fixture' })];
+    try {
+      expect(await (await POST(req())).json()).toEqual({
+        kind: 'openrouter', baseUrl: realAgentEndpoint.OPENROUTER_AGENT_BASE_URL, key: 'sk-or-fixture', authHeader: 'authorization', models: {},
+      });
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
+  it('a failed requester walk is team work: personal_first falls back to the team key, never a personal one', async () => {
+    withPolicy('personal_first');
+    mockRequester.mockImplementation(() => Promise.reject(new Error('walk failed')));
+    expect(await (await POST(req())).json()).toEqual({ source: 'anthropic_api_key', key: 'sk-ant-team-fixture' });
+  });
+
+  it('a codex task is still 404 before any lookup', async () => {
+    withPolicy('team');
+    mockTasksFindFirst.mockResolvedValue(taskRow({ task: { backend: 'codex' } }));
+    expect((await POST(req())).status).toBe(404);
+    expect(mockResolveProvider).not.toHaveBeenCalled();
+  });
+
+  it('500 on a resolver throw, without echoing any key', async () => {
+    withPolicy('team');
+    mockResolveProvider.mockImplementationOnce(() => Promise.reject(new Error(`boom ${KEY}`)));
+    const res = await POST(req());
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(await res.json())).not.toContain(KEY);
+  });
 });
 
 describe('POST /api/runner/model-endpoint', () => {

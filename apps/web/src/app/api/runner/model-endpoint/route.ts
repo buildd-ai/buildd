@@ -31,10 +31,44 @@
  * a team with nothing at all, is also 404 and egress falls through to the
  * Worker's own route.
  *
+ * ## Credential policy (provider parity, slice 6)
+ *
+ * A team with `credential_policy` NULL gets exactly the decision above: the
+ * legacy path runs unchanged (`resolveAgentModelRoute`, then
+ * `resolveAnthropicAuth`). That is the per-team opt-in; there is no flag.
+ *
+ * Once a team sets `credential_policy`, the route asks the one resolver
+ * instead: `resolveProviderCredential` with `surface: 'cloud-egress'` and the
+ * task's requester (`resolveTaskRequesterUserId`), so the policy and the
+ * requester rule decide which scopes are eligible (a personal key serves only
+ * its owner's task; `personal_only` with no requester resolves nothing).
+ * Seats are impossible on this surface (registry reason), so they never win.
+ * The winner becomes the wire answer:
+ *   - an Anthropic API key, canonical (`inference_key`/anthropic) or legacy
+ *     (`anthropic_api_key`) ⇒ `{ source: 'anthropic_api_key', key }`, so the
+ *     dispatcher still ranks it ahead of `MODEL_PROXY_URL`;
+ *   - an `agent_endpoint` ⇒ the endpoint (a gateway reference resolves its
+ *     gateway at the same scope or broader, as `resolveAgentEndpoint` does);
+ *   - an OpenRouter key ⇒ an `openrouter` endpoint on OpenRouter's
+ *     Anthropic-compatible root;
+ *   - nothing ⇒ 404 with `reason` (`no_credential` | `no_personal_credential`).
+ *
  * Design: docs/design/agent-model-endpoint.md §3.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveAgentModelRoute } from '@buildd/core/agent-endpoint';
+import { eq } from 'drizzle-orm';
+import { db } from '@buildd/core/db';
+import { tasks, teams } from '@buildd/core/db/schema';
+import {
+  OPENROUTER_AGENT_BASE_URL,
+  resolveAgentModelRoute,
+  resolveEndpointFromBlob,
+  type AgentEndpointRoute,
+} from '@buildd/core/agent-endpoint';
+import { resolveLiteLLMGateway } from '@buildd/core/litellm-gateway';
+import { surfacePolicy, type TeamPolicyColumns } from '@buildd/core/providers';
+import { resolveProviderCredential, type ProviderCredentialResult } from '@buildd/core/providers/resolve';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
@@ -85,6 +119,30 @@ export async function POST(req: NextRequest) {
   if ((task as { backend?: string | null }).backend === 'codex') return fail(404, 'No agent model endpoint for this task');
 
   try {
+    const team = await loadTeamPolicy(ws.teamId);
+    if (surfacePolicy(team, 'cloud-egress').enforced) {
+      const requesterUserId = await loadRequester(task.id);
+      const result = await resolveProviderCredential({
+        teamId: ws.teamId,
+        workspaceId: ws.id,
+        accountId: account.id,
+        requesterUserId,
+        surface: 'cloud-egress',
+        team,
+      });
+      const answer = await wireAnswer(result, ws);
+      if (!answer.ok) {
+        void recordCapabilityDecision({ ...audit, decision: 'refused', resource: 'model', reasonCode: answer.reason });
+        return NextResponse.json(
+          { error: 'No agent model endpoint for this task', reason: answer.reason },
+          { status: 404, headers: NO_STORE },
+        );
+      }
+      void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: answer.resource });
+      return NextResponse.json(answer.body, { headers: NO_STORE });
+    }
+
+    // credential_policy NULL: exactly the decision this route always made.
     const decision = await resolveAgentModelRoute({ teamId: ws.teamId, workspaceId: ws.id, accountId: account.id });
     if (decision && decision.winner === 'endpoint') {
       const e = decision.endpoint;
@@ -108,4 +166,72 @@ export async function POST(req: NextRequest) {
     console.error(`[model-endpoint] resolution failed for task ${taskId}`);
     return fail(500, 'Could not resolve the model endpoint');
   }
+}
+
+// ── Policy path ──────────────────────────────────────────────────────────────
+
+/** The team's policy columns. Unreadable reads as unset, i.e. the legacy path. */
+async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null> {
+  try {
+    return (await db.query.teams.findFirst({
+      where: eq(teams.id, teamId),
+      columns: { credentialPolicy: true, inferenceKeyPolicy: true },
+    })) ?? null;
+  } catch {
+    console.warn('[model-endpoint] team policy lookup failed; using the legacy path');
+    return null;
+  }
+}
+
+/** Who the task is for. A failed walk reads as team work, never as someone's. */
+async function loadRequester(taskId: string): Promise<string | null> {
+  try {
+    const row = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+      columns: { createdByUserId: true, parentTaskId: true, missionId: true, scheduleId: true },
+    });
+    return row ? await resolveTaskRequesterUserId(row) : null;
+  } catch {
+    console.warn(`[model-endpoint] requester lookup failed for task ${taskId}; treating it as team work`);
+    return null;
+  }
+}
+
+type WireAnswer =
+  | { ok: true; body: Record<string, unknown>; resource: string }
+  | { ok: false; reason: string };
+
+function endpointBody(route: AgentEndpointRoute) {
+  return { kind: route.kind, baseUrl: route.baseUrl, key: route.apiKey, authHeader: route.authHeader, models: route.models };
+}
+
+/** The resolver's winner as the dispatcher's egress handler reads it. */
+async function wireAnswer(result: ProviderCredentialResult, ws: { id: string; teamId: string }): Promise<WireAnswer> {
+  if (result.none) return { ok: false, reason: result.reason };
+  const { credential, scope } = result;
+  if (credential.provider === 'anthropic' && credential.shape === 'api_key') {
+    // Canonical or legacy storage alike: the team's (or requester's) own
+    // metered key, so it keeps its precedence over MODEL_PROXY_URL.
+    return { ok: true, body: { source: 'anthropic_api_key', key: credential.value }, resource: 'anthropic_api_key' };
+  }
+  if (credential.endpoint) {
+    const blob = credential.endpoint;
+    // Same scope or broader: a team-wide reference never picks up one
+    // workspace's gateway (resolveAgentEndpoint's rule).
+    const gateway = blob.kind === 'gateway'
+      ? await resolveLiteLLMGateway({ teamId: ws.teamId, workspaceId: scope === 'workspace' ? ws.id : null }, { ignoreKeyPolicy: true })
+      : null;
+    const route = resolveEndpointFromBlob(blob, gateway);
+    if (!route) return { ok: false, reason: 'no_credential' };
+    return { ok: true, body: endpointBody(route), resource: `agent_endpoint:${route.kind}` };
+  }
+  if (credential.provider === 'openrouter' && credential.shape === 'api_key') {
+    const route = resolveEndpointFromBlob(
+      { kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: credential.value, authHeader: 'authorization' },
+      null,
+    );
+    return route ? { ok: true, body: endpointBody(route), resource: 'openrouter' } : { ok: false, reason: 'no_credential' };
+  }
+  // Nothing else is servable on cloud egress (the registry rules seats out).
+  return { ok: false, reason: 'no_credential' };
 }
