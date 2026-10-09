@@ -517,8 +517,24 @@ describe('POST /api/github/pr/review — idempotency', () => {
       const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
       expect(res.status).toBe(200);
       expect((await res.json()).alreadyRequested).toBe(true);
-      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ forced: true, actor: 'force' });
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ forced: true, actor: 'agent:account-1' });
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('an OAuth session asks as the person behind it', async () => {
+      mockAuthenticateApiKey.mockReturnValue({ ...ACCOUNT, sessionUserId: 'user-7' });
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'applied' } });
+      await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+      expect(mockRequestKernelReview.mock.calls[0][0]).toMatchObject({ forced: true, actor: 'human:user-7' });
+    });
+
+    it('a forced request the kernel refuses for want of a person is a 409 that says who can force', async () => {
+      mockRequestKernelReview.mockResolvedValue({ handled: true, result: { result: 'rejected', reason: 'force_requires_human', current } });
+      const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('force_requires_human');
+      expect(body.hint).toContain('person');
     });
 
     it('a request the table refuses is a 409 with the current view', async () => {
@@ -613,7 +629,22 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
   });
 
+  it('force at the head the verdict already covers is refused for an API key', async () => {
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-1',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'request-changes', confidence: 0.9, summary: 'no' } },
+      context: { prNumber: 42, headSha: 'sha-42' }, // == OPEN_PR.head.sha
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('force_requires_human');
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
   it('force does NOT build a delta when the terminal verdict is already at the current head', async () => {
+    mockAuthenticateApiKey.mockReturnValue({ ...ACCOUNT, sessionUserId: 'user-7' });
     mockFindReviewTaskForPr.mockReturnValue({
       id: 'review-task-1',
       status: 'completed',
