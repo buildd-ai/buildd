@@ -20,7 +20,7 @@ mock.module('next/navigation', () => ({
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { MobileHome } = await import('./MobileHome');
+const { HomeBody } = await import('./HomeBody');
 const { default: NeedsInputBanner } = await import('@/components/NeedsInputBanner');
 const { NeedsInputContext } = await import('@/components/needs-input-context');
 const { deriveHomeAttention } = await import('@/lib/home-attention');
@@ -48,7 +48,7 @@ function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAtte
   act(() => root.render(
     <NeedsInputContext.Provider value={{ tasks, count: tasks.filter(t => !t.answerSent).length, alertPermission: 'unsupported', enableAlerts() {} }}>
       <NeedsInputBanner />
-      <MobileHome items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} shipped={[]} />
+      <HomeBody items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} shipped={[]} />
     </NeedsInputContext.Provider>,
   ));
 }
@@ -57,9 +57,9 @@ const text = (id: string) => container.querySelector(`[data-testid="${id}"]`)?.t
 describe('phone Home and the needs-input banner', () => {
   it('a waiting task the banner knows is in the inbox and the count, and the banner hides on a phone', () => {
     mount([waiting]);
-    expect(text('phone-needs-you-count')).toBe('2 open');
+    expect(text('needs-you-count')).toBe('2 open');
     expect(container.textContent).toContain('2 things need you.');
-    const cards = [...container.querySelectorAll('[data-testid="phone-needs-you-card"]')];
+    const cards = [...container.querySelectorAll('[data-testid="needs-you-card"]')];
     expect(cards.map(c => c.getAttribute('data-kind')).sort()).toEqual(['question', 'queue']);
     expect(container.textContent).toContain('Ship to canary first?');
     expect(phoneBannerHiddenSnapshot()).toBe(true);
@@ -69,12 +69,12 @@ describe('phone Home and the needs-input banner', () => {
 
   it('a task already in the inbox from the server is not listed twice', () => {
     mount([waiting], [{ workerId: 'w-1', taskId: 'task-waiting', label: 'rollout', runnerName: null, askedAt: null, href: '/app/tasks/task-waiting', question: { headline: 'Ship to canary first?', body: null, options: [], noteId: null } }]);
-    expect(text('phone-needs-you-count')).toBe('2 open');
+    expect(text('needs-you-count')).toBe('2 open');
   });
 
   it('an answered task is not admitted: it no longer needs the person', () => {
     mount([{ ...waiting, waitingFor: null, answerSent: true }]);
-    expect(text('phone-needs-you-count')).toBe('1 open');
+    expect(text('needs-you-count')).toBe('1 open');
   });
 
   it('the hold is released when Home unmounts, so other pages keep the banner', () => {

@@ -40,11 +40,11 @@ let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
-async function mount() {
+async function mount(props: { hasActionableWork?: boolean } = {}) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ProviderOnboardingCard teamId="t-1" />); });
+  await act(async () => { root.render(<ProviderOnboardingCard teamId="t-1" {...props} />); });
 }
 const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
 
@@ -79,7 +79,7 @@ describe('ProviderOnboardingCard', () => {
     expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({ url: '/api/teams/t-1', body: { inferenceKeyPolicy: 'own' } });
   });
 
-  it('"Not now" folds it to one line that remembers, and Resume brings it back', async () => {
+  it('"Not now" folds it to one line that remembers, and the line brings it back', async () => {
     await mount();
     await act(async () => { button('Not now').click(); });
     expect(host.querySelector('[data-testid="provider-onboarding"]')?.getAttribute('data-folded')).toBe('true');
@@ -88,8 +88,20 @@ describe('ProviderOnboardingCard', () => {
     host.remove();
     await mount();
     expect(host.querySelector('[data-testid="provider-onboarding"]')?.getAttribute('data-folded')).toBe('true');
-    await act(async () => { button('Resume').click(); });
+    expect(host.textContent).toContain('Chat needs a model provider');
+    await act(async () => { (host.querySelector('[data-testid="provider-onboarding"]') as HTMLButtonElement).click(); });
     expect(host.querySelector('[data-testid="provider-onboarding"]')?.getAttribute('data-folded')).toBe('false');
+  });
+
+  // Owner acceptance (Oct 9): with decisions on Home and nothing stored, the
+  // full provider form still opened at the top: the stored-choice read on mount
+  // overwrote the fold. A decision present means one line, like Get started.
+  it('is one line when a decision is on Home, even with no stored choice', async () => {
+    await mount({ hasActionableWork: true });
+    const card = host.querySelector('[data-testid="provider-onboarding"]');
+    expect(card?.getAttribute('data-folded')).toBe('true');
+    expect(card?.textContent).toContain('Chat needs a model provider');
+    expect(host.querySelector('input[type="password"]')).toBeNull();
   });
 
   it('says why a Connect OpenRouter round trip failed', async () => {
