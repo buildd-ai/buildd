@@ -37,23 +37,25 @@ describe('WaitingOnYouReviewCard mission context', () => {
 });
 
 describe('WaitingOnYouReviewCard recommendation', () => {
-  it('shows what the reviewer said to do next', () => {
+  it('leads with what the reviewer said to do next and folds the reason', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouReviewCard
         item={item({
-          escalationReason: 'Touches the token refresh path',
+          escalationReason: 'Touches the token refresh path. It also renames a column the runner reads.',
           recommendation: 'Confirm the refresh lock by hand, then merge.',
         })}
       />,
     );
-    expect(html).toContain('Agent recommends:');
     expect(html).toContain('Confirm the refresh lock by hand, then merge.');
+    expect(html).toContain('Details');
+    expect(html).not.toContain('renames a column');
   });
 
-  it('stays quiet when there is no recommendation', () => {
+  it('without a recommendation, the reason itself is the decision line', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouReviewCard item={item({ escalationReason: 'Touches auth' })} />,
     );
+    expect(html).toContain('Touches auth');
     expect(html).not.toContain('Agent recommends');
     expect(html).not.toContain('left no handoff recommendation');
   });

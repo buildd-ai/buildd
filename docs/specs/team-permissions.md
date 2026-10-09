@@ -7,7 +7,7 @@ summary: Every team-scoped permission decision MUST resolve through one named-pe
 domain: auth
 surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries]
-keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, canCallerAdminTeam, permission registry, rbac]
+keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, permission registry, permission overrides, rbac]
 verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/permission-overrides.test.ts, apps/web/src/lib/migrate-access.test.ts, apps/web/src/app/api/teams/[id]/permissions/route.test.ts, apps/web/src/lib/team-access-team-scope.test.ts, apps/web/src/app/api/roles/personal.test.ts, apps/web/src/app/api/roles/[id]/personal.test.ts, apps/web/src/app/api/roles/[id]/share/route.test.ts, apps/web/src/app/api/roles/[id]/promote/route.test.ts]
 supersedes: []
 assertions:
@@ -23,10 +23,10 @@ assertions:
     type: "symbol"
     name: "roleHas"
     path: "apps/web/src/lib/permission-registry.ts"
-  - id: "admin-team-wrapper"
+  - id: "permission-team-ids-where"
     type: "symbol"
-    name: "canCallerAdminTeam"
-    path: "apps/web/src/lib/team-access.ts"
+    name: "teamIdsWhere"
+    path: "apps/web/src/lib/permissions.ts"
   - id: "permissions-test"
     type: "test_file"
     path: "apps/web/src/lib/permissions.test.ts"
@@ -94,10 +94,11 @@ it (or none).
   client code can check a role without loading the db.
 - `apps/web/src/lib/permissions.ts` — `can`, `teamIdsWhere`,
   `getUserTeamRoles`; re-exports the registry.
-- `apps/web/src/lib/team-access.ts` — `canCallerAdminTeam`,
-  `getCallerAdminTeamIds`, `getUserAdminTeamIds`: thin wrappers over the
-  registry's admin tier (owner/admin, or an admin-level key), kept until their
-  call sites move to a named permission.
+- `apps/web/src/lib/team-access.ts` — `holdsInWorkspace` (a permission in a
+  workspace's team). There is no generic "team admin" helper: every call site
+  names its permission, so the team's overrides apply to it.
+  `apps/web/src/lib/team-access-team-scope.test.ts` fails if a hard-coded
+  owner/admin helper is reintroduced.
 - `packages/core/db/schema.ts` — `teamMembers.role`, `accounts.level`.
 - `apps/web/src/lib/personal-roles.ts` — who may see, edit and share a
   personal agent role, and what config it may carry (see Personal roles).
@@ -231,14 +232,14 @@ Rules that need no permission, enforced in the same routes:
 | `apps/web/src/app/api/secrets/route.ts:134` | team model key, Cloudflare token | owner, admin, personal team | admin | `manage_team_model_keys` |
 | `apps/web/src/app/api/secrets/route.ts:134` | any other team-, workspace- or account-wide secret | owner, admin, personal team | admin | `manage_team_credentials` |
 | `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh stays open to members) | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/api/inference-keys/route.ts:37` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/verify/route.ts:29` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:37` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts:40` | finish OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/route.ts:26` | agent endpoint writes | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/route.ts:27` | agent endpoint model list | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/suggest/route.ts:24` | agent endpoint model suggest | owner, admin, personal team | — | `manage_inference_providers` |
-| `apps/web/src/app/api/teams/[id]/litellm-gateway/route.ts:22` | LiteLLM gateway writes | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/route.ts:40` | team-scope inference keys | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/verify/route.ts:31` | verify a team-scope key | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/openrouter/start/route.ts:38` | start OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/inference-keys/openrouter/callback/[state]/route.ts:41` | finish OpenRouter link | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/route.ts:34` | agent endpoint writes | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/route.ts:28` | agent endpoint model list | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/agent-endpoint/models/suggest/route.ts:25` | agent endpoint model suggest | owner, admin, personal team | — | `manage_inference_providers` |
+| `apps/web/src/app/api/teams/[id]/litellm-gateway/route.ts:23` | LiteLLM gateway writes | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/lib/chat-availability.ts:47` | UI: may set up chat keys | owner, admin | — | `manage_inference_providers` |
 | `apps/web/src/app/api/model-tiers/route.ts:87` | write model tiers | owner, admin | admin (route policy) | `manage_model_tiers` |
 | `apps/web/src/lib/tier-pool-access.ts:22` | write model traffic pools | owner, admin | — | `manage_model_tiers` |
@@ -260,7 +261,8 @@ Rules that need no permission, enforced in the same routes:
 | `apps/web/src/app/app/(protected)/settings/workspaces/rows.ts:30` | UI: teams a workspace can be created in | owner, admin, personal team | — | `manage_workspace_settings` |
 | `apps/web/src/lib/migrate-access.ts:46` | migrate a workspace (both teams) | owner, admin, personal team | admin (route policy) | `migrate_workspace` |
 | `apps/web/src/app/api/github/installations/[id]/route.ts:41` | disconnect a GitHub installation | via the line below | — | `manage_github_installation` |
-| `apps/web/src/lib/github-installation-access.ts:70` | manage a GitHub installation | owner, admin, personal team, or the installer | — | `manage_github_installation` |
+| `apps/web/src/lib/github-installation-access.ts:71` | manage a GitHub installation | owner, admin, personal team, or the installer | — | `manage_github_installation` |
+| `apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts:66` | set or clear a schedule's delegation | owner, admin | admin | `delegate_schedule_access` |
 | `apps/web/src/app/api/workspaces/[id]/memory/[memoryId]/route.ts:111` | review memories | owner, admin | admin, or `admin`/`knowledge:admin` scope | `review_memory` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/memory/page.tsx:107` | UI: memory review | owner, admin | — | `review_memory` |
 
@@ -347,8 +349,8 @@ route moves onto the permission. All are overridable.
 3. **Force-reassign for any key.** A session needs owner/admin to force a
    reassign, but any API key with access to the workspace may — including
    `trigger` keys. Reproduced as minimum level `trigger`.
-4. **Personal-team fallback is uneven.** Sites built on
-   `getUserAdminTeamIds` or the settings context treat the personal team as
+4. **Personal-team fallback is uneven.** Sites built on `can` /
+   `teamIdsWhere` or the settings context treat the personal team as
    owned; sites that read the membership row directly (team settings, chat
    retro, members, invitations, evidence backends, experiments) do not. The
    registry always applies the fallback, so migrating a direct-read site adds

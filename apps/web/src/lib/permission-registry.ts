@@ -172,6 +172,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  delegate_schedule_access: {
+    description: "Set or clear a schedule's delegation: which other workspaces of the team its tasks may read analytics from or file tasks in.",
+    defaultRoles: OWNER_ADMIN,
+    minKeyLevel: 'admin',
+  },
   // ── Work in flight ───────────────────────────────────────────────────────
   steer_workers: {
     description: 'Send instructions to a running worker.',
@@ -224,7 +229,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: read
   { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'activate_chat_retro_dogfood', 'view_team_usage', 'manage_billing', 'manage_team_notifications'] },
   { title: 'API keys and runners', permissions: ['manage_team_keys'] },
   { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_team_credentials', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
-  { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
+  { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory', 'delegate_schedule_access'] },
   { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases'] },
   { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles', 'create_personal_roles'] },
 ];

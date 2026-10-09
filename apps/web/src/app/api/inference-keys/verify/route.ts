@@ -1,7 +1,8 @@
 import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { reverifyProviderKey } from '@/lib/provider-keys';
 import type { VerifyProviderKeyRequest } from '@buildd/shared';
 
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
   if (body.scope !== 'user' && body.scope !== 'team') {
     return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
   }
-  if (body.scope === 'team' && !(await getUserAdminTeamIds(userId)).includes(teamId)) {
+  if (body.scope === 'team' && !(await can({ kind: 'user', userId }, 'manage_inference_providers', teamId))) {
     return NextResponse.json({ error: 'Only a team owner or admin can manage the team key.' }, { status: 403 });
   }
 
