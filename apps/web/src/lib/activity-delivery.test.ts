@@ -88,6 +88,33 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect(row.delivery).toBe(m.tasks[0].delivery);
   });
 
+  it('open tasks of a completed mission with no non-landed tasks are regrouped as standalone', () => {
+    const completed1 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    const completed2 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    // A new open task with no parent, added after mission completion
+    const newOpen = task({ missionId: 'm1', missionTitle: 'Completed', status: 'pending', createdAt: ago(5) });
+    const rows = [completed1, completed2, newOpen];
+    // Create mission with only the landed tasks
+    const m1 = projectMissionDelivery({
+      id: 'm1', title: 'Completed', status: 'active', href: '/app/missions/m1',
+      tasks: [completed1, completed2].map((t): MissionTaskRow => ({ ...t, dependsOn: null })),
+    }, rules);
+    const n = now(rows, [m1]);
+    const groups = n.groups.map(g => ({ title: g.title, rows: g.rows.length }));
+    // The new open task is not included in the mission projection, so it appears standalone
+    // But when grouped, if the mission is landed, the task should be regrouped
+    expect(n.groups.map(g => g.missionId)).toContain(null);
+  });
+
+  it('standalone group has no href so waiting tasks are folded but not linkable', () => {
+    const standaloneWaiting = [...Array.from({ length: 5 }, () => task())];
+    const g = now(standaloneWaiting).groups[0];
+    expect(g.missionId).toBeNull();
+    expect(g.href).toBeNull();
+    expect(g.rows.length).toBe(WAITING_ROWS_PER_GROUP);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+  });
+
   it('retries and reviews fold into their deliverable; an orphaned attempt still shows', () => {
     const parent = inAudit();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: parent.id, status: 'in_progress', workers: [{ status: 'running' }] });

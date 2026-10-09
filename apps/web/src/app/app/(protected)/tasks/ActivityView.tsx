@@ -175,6 +175,7 @@ function Empty({ text }: { text: string }) {
 // ── Now ─────────────────────────────────────────────────────────────────────
 
 function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: number; openRowIds: readonly string[] }) {
+  const [showHiddenWaiting, setShowHiddenWaiting] = useState(false);
   return (
     <section data-testid="activity-group" data-mission={group.missionId ?? 'standalone'} className="mt-6">
       <div className="flex items-start justify-between gap-3 border-b border-border-strong pb-1.5">
@@ -190,8 +191,9 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
       {group.moreWaiting > 0 && (
         group.href
           ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you ›</Link>
-          : <p className="py-2 text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you</p>
+          : <button type="button" onClick={() => setShowHiddenWaiting(!showHiddenWaiting)} className="flex min-h-11 items-center py-2 text-meta text-text-muted"><span aria-hidden="true" className={`mr-1.5 inline-block transition-transform ${showHiddenWaiting ? 'rotate-90' : ''}`}>›</span>+{group.moreWaiting} more waiting, not on you</button>
       )}
+      {showHiddenWaiting && group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} missionHref={group.href} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
     </section>
   );
 }
