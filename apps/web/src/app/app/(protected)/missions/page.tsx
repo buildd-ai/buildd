@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
+import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -74,6 +75,7 @@ export default async function MissionsPage({
     seats,
     activeRows,
     completedRowsPage,
+    planEnabled,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
     // needs the account ids, so it genuinely follows the accounts read.
@@ -96,6 +98,8 @@ export default async function MissionsPage({
     })(),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
+    // "Plan ›" is behind the team's task-estimates switch, like the other estimate surfaces.
+    taskEstimatesEnabled(activeTeamId),
   ]);
 
   const { maxSeats, activeSeats } = seats;
@@ -152,6 +156,11 @@ export default async function MissionsPage({
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* Releases and Initiatives left the primary nav; this is their door. */}
+          {planEnabled && (
+            <Link href="/app/missions/plan" data-testid="missions-plan-link" className="btn btn-quiet h-11 md:h-8">
+              Plan ›
+            </Link>
+          )}
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
           </Link>
