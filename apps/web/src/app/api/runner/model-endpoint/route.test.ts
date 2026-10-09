@@ -28,7 +28,10 @@ const realProviders = { ...(await import('@buildd/core/providers')) };
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
 mock.module('@buildd/core/agent-endpoint', () => ({ ...realAgentEndpoint, resolveAgentModelRoute: mockResolveRoute, resolveAgentEndpoint: mockGateway }));
-mock.module('@/lib/claude-credential', () => ({ resolveAnthropicAuth: mockResolveAnthropicAuth }));
+mock.module('@/lib/claude-credential', () => ({
+  resolveAnthropicAuth: mockResolveAnthropicAuth,
+  isAnthropicApiKeyAuth: (a: { purpose: string }) => a.purpose === 'inference_key' || a.purpose === 'anthropic_api_key',
+}));
 mock.module('@buildd/core/providers/resolve', () => ({ ...realResolve, resolveProviderCredential: mockResolveProvider }));
 mock.module('@buildd/core/task-requester', () => ({ resolveTaskRequesterUserId: mockRequester }));
 mock.module('@buildd/core/db', () => ({
@@ -179,6 +182,17 @@ describe('credential_policy NULL: exactly the egress decision this route always 
     expect(mockResolveProvider).not.toHaveBeenCalled();
     // A personal key is never in play, so the requester is not even looked up.
     expect(mockRequester).not.toHaveBeenCalled();
+  });
+
+  // Provider parity: the team key in canonical storage (`inference_key` /
+  // `anthropic`) reaches cloud egress exactly as the legacy row does.
+  it('a canonical team Anthropic key reaches egress with the same wire answer as the legacy one', async () => {
+    mockResolveRoute.mockResolvedValue(null);
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { 'x-api-key': ANTHROPIC_KEY }, purpose: 'inference_key', secretId: 'secret-3' });
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: ANTHROPIC_KEY });
+    expect(mockResolveProvider).not.toHaveBeenCalled();
   });
 
   it.each([
