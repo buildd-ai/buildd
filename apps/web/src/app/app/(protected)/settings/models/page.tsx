@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access';
 import ModelTiersClient from './ModelTiersClient';
-import TierLimitsSection from './TierLimitsSection';
+import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
 import LegacyAnchorRedirect from '../_components/LegacyAnchorRedirect';
@@ -40,7 +40,7 @@ export default async function ModelTiersPage() {
         {teamId ? (
           <>
             <ModelTiersClient teamId={teamId} teamName={team?.name ?? null} isAdmin={isAdmin} />
-            <TierLimitsSection teamId={teamId} isAdmin={isAdmin} />
+            <TierLimitSection teamId={teamId} isAdmin={isAdmin} />
             <ChatTierPolicySection teamId={teamId} isAdmin={isAdmin} />
             <ModelUpgradePolicySection teamId={teamId} isAdmin={isAdmin} />
           </>

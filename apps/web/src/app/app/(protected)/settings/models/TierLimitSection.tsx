@@ -81,7 +81,7 @@ function Limit({ id, label, caps, onPick, bound, boundBy, disabled, surface }: {
   );
 }
 
-export default function TierLimitsSection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
+export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
   const [data, setData] = useState<Ceilings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [people, setPeople] = useState<Person[]>([]);

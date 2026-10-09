@@ -92,3 +92,9 @@ export function withCap(caps: SurfaceCeilings | undefined, key: 'all' | CeilingS
 export const hasSurfaceCaps = (caps: SurfaceCeilings | undefined) => !!(caps?.agent || caps?.chat);
 
 export const SURFACE_TITLE: Record<CeilingSurface, string> = { agent: 'Coding', chat: 'Chat' };
+
+/** True when `tier` ranks above the server's effective maximum (null = no limit). Labelling only. */
+export function overMaximum(tier: string, max: string | null | undefined): boolean {
+  if (!max) return false;
+  return (CEILING_TIER_ORDER as readonly string[]).includes(tier) && tierRank(tier as CeilingTier) > tierRank(max as CeilingTier);
+}

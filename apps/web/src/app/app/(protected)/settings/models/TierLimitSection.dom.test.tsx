@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { default: TierLimitsSection } = await import('./TierLimitsSection');
+const { default: TierLimitSection } = await import('./TierLimitSection');
 
 type Eff = { max: string | null; binding: unknown; layers: { source: string; tier: string }[]; identified: boolean; overCapAuto: string; explanation: string };
 const eff = (layers: { source: string; tier: string }[]): Eff => {
@@ -62,7 +62,7 @@ async function mount(isAdmin: boolean) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<TierLimitsSection teamId="t1" isAdmin={isAdmin} />); });
+  await act(async () => { root.render(<TierLimitSection teamId="t1" isAdmin={isAdmin} />); });
   await flush(); await flush();
 }
 const q = (id: string) => host.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
@@ -73,7 +73,7 @@ async function pick(triggerId: string, optionLabel: string) {
   return opt;
 }
 
-describe('TierLimitsSection', () => {
+describe('TierLimitSection', () => {
   it('shows the server effective maximum with its source', async () => {
     await mount(true);
     expect(q('effective-agent')!.textContent).toContain('up to Premium');
