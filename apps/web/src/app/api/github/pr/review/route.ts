@@ -43,7 +43,19 @@ import {
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 
-type Account = { id: string; teamId: string; taskScope?: TaskScope };
+type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null };
+
+/**
+ * The person behind a request, when there is one: an OAuth session (MCP or
+ * chat) carries the signed-in user. An API key or a per-task token is never a
+ * person, whatever its level.
+ */
+function requestingPerson(account: Account): string | null {
+  if (account.taskScope) return null;
+  return typeof account.sessionUserId === 'string' && account.sessionUserId ? account.sessionUserId : null;
+}
+
+const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
 /**
  * Which workspaces a caller may resolve a PR in. An API key reaches its own
@@ -233,9 +245,10 @@ export async function POST(req: NextRequest) {
   // A PR the workflow kernel owns is reviewed only in kernel rounds: the request
   // is T5 (ReviewRequested) against the live head. `force` re-reviews a head
   // that already has a verdict; it never stacks a second reviewer on a round.
+  const person = requestingPerson(account as Account);
   const kernel = await requestKernelReview({
     workspaceId: workspace.id, repoFullName: repo.fullName, prNumber, installationId: repo.installationId,
-    forced: body.force === true, actor: body.force === true ? 'force' : `agent:${account.id}`,
+    forced: body.force === true, actor: person ? `human:${person}` : `agent:${account.id}`,
   }).catch((err) => {
     console.error(`[pr-review] workflow kernel review request failed for PR #${prNumber}:`, err);
     return null;
@@ -244,7 +257,13 @@ export async function POST(req: NextRequest) {
     const r = kernel.result;
     const accepted = r.result === 'applied'
       || (r.result === 'rejected' && (r.reason === 'review_in_flight' || r.reason === 'head_already_reviewed'));
-    if (!accepted) return bad(`Review not requested: ${r.reason}`, 409, { code: r.reason, current: r.current, kernel: true });
+    if (!accepted) {
+      return bad(`Review not requested: ${r.reason}`, 409, {
+        code: r.reason, current: r.current, kernel: true,
+        ...(r.reason === 'force_requires_human' ? { hint: FORCE_NEEDS_PERSON } : {}),
+        ...(r.reason === 'escalation_needs_human' ? { hint: 'this PR is escalated to a person for a reason another review does not answer; the owner resolves it from the dashboard' } : {}),
+      });
+    }
     // §8.1: the reviewer that answers is the round's at the live head, never the
     // newest reviewer row of the PR number (§14 Slice A retired that rule here).
     const latest = kernel.reviewTaskId
@@ -263,7 +282,9 @@ export async function POST(req: NextRequest) {
       ok: true,
       kernel: true,
       alreadyRequested: r.result !== 'applied',
-      ...(r.result === 'rejected' && r.reason === 'head_already_reviewed' ? { hint: 'this head already has a verdict; pass force to re-review' } : {}),
+      ...(r.result === 'rejected' && r.reason === 'head_already_reviewed'
+        ? { hint: person ? 'this head already has a verdict; pass force to re-review' : 'this head already has a verdict; a new round starts when the PR head moves (a forced re-review is a person\'s call)' }
+        : {}),
       prNumber,
       reviewTaskId: latest?.id ?? null,
       taskId: existingWorker?.taskId ?? null,
@@ -277,6 +298,16 @@ export async function POST(req: NextRequest) {
   const existingReview = await findReviewTaskForPr(workspace.id, prNumber);
   const inFlight = existingReview?.status === 'pending' || existingReview?.status === 'in_progress';
   const force = body.force === true;
+
+  // A forced re-review of the head that already has a verdict is a person's
+  // call here too. An agent may force a review of a head nobody has judged yet
+  // (the head moved, or the last reviewer left no verdict).
+  if (force && !person && !inFlight) {
+    const prior = resolvePriorVerdict(existingReview);
+    if (prior && prior.headSha === (pr.head?.sha ?? '')) {
+      return bad('Review not requested: force_requires_human', 409, { code: 'force_requires_human', hint: FORCE_NEEDS_PERSON });
+    }
+  }
 
   // Idempotency: one reviewer per PR at a time. `force` re-reviews a finished
   // review but never stacks a second agent onto a running one — two reviewers
