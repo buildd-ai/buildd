@@ -406,31 +406,26 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 @layer components {
   .section-label {
     font-family: var(--font-sans);
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    color: var(--text-primary);
+    font-size: var(--type-eyebrow);
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text-muted);
   }
 }
 
 @layer components {
   .type-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
   }
 }
 
 @layer components {
   .health-pill {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
     padding: 2px 8px;
     border-radius: var(--radius-pill);
     border: 1px solid var(--border-strong);
@@ -515,10 +510,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* Section header label */
   .section-label-missions {
     font-family: var(--font-sans);
-    font-size: 10px;
+    font-size: var(--type-eyebrow);
     font-weight: 600;
-    letter-spacing: 2px;
-    text-transform: uppercase;
   }
 
   /* Imminent run highlight */
@@ -564,14 +557,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     background: color-mix(in srgb, var(--status-success) 12%, transparent);
   }
 
+  /* The one primary action on a view: ink, like .btn-ink. Orange is kept for
+   * needs-you and live state, so it is never a button fill. */
   .btn-primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--on-ink);
   }
   .btn-primary:hover:not(:disabled) {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
+    background: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
   }
 
   /* The L3 primary: charcoal, the one filled button on a decision card. */
@@ -621,10 +616,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     background: transparent;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
     white-space: nowrap;
   }
   .status-pill::before {
@@ -652,31 +645,35 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 
   /* ── Segmented control ──
-   * One shared 1px control frame with hairline dividers. Used wherever a
-   * small set of mutually exclusive options replaces a select. */
+   * A quiet --q-tint trough; the chosen option is lifted onto the card with a
+   * hairline (same look as components/ui/Segmented). Used wherever a small set
+   * of mutually exclusive options replaces a select. */
   .seg {
     display: inline-flex;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-pill);
-    overflow: hidden;
+    gap: 2px;
+    padding: 3px;
+    background: var(--q-tint);
+    border-radius: var(--radius-card);
   }
   .seg-item {
     padding: 0 12px;
     height: 32px;
     background: transparent;
-    color: var(--text-secondary);
+    border-radius: var(--radius-pill);
+    color: var(--text-muted);
     font-family: var(--font-sans);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease;
   }
-  .seg-item + .seg-item { border-left: 1px solid var(--border); }
   .seg-item:hover:not(:disabled) { color: var(--text-primary); }
   .seg-item-active {
-    background: var(--accent);
-    color: #fff;
+    background: var(--card);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 0 0 1px var(--border);
   }
   .seg-item:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -700,10 +697,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .field-label {
     display: block;
     font-family: var(--font-sans);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 1px;
-    text-transform: uppercase;
     color: var(--text-muted);
     margin-bottom: 6px;
   }
@@ -714,8 +709,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
  * call site writes one class instead of a `text-[Npx] md:text-[Npx]` pair.
  * Mobile values first; the md block only changes the roles that differ. */
 :root {
-  --type-chip: 11px;
-  --type-eyebrow: 11px;
+  --type-chip: 12px;
+  --type-eyebrow: 13px;
   --type-meta: 12px;
   --type-body: 13px;
   --type-title: 14px;
@@ -725,7 +720,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 @media (width >= 48rem) {
   :root {
-    --type-chip: 10px;
+    --type-chip: 11px;
     --type-lede: 15px;
     --type-heading: 24px;
     --type-display: 40px;
@@ -739,7 +734,6 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   @media (width < 48rem) {
     .type-label,
     .health-pill,
-    .section-label-missions,
     .status-pill,
     .field-label {
       font-size: 11px;
