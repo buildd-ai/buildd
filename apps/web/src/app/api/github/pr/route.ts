@@ -57,6 +57,7 @@ import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
 import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -1804,7 +1805,7 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ error: 'reason is required with overrides: say why this PR should merge past them' }, { status: 400 });
       }
       const override = Object.fromEntries(requestedOverrides.kinds.map((k) => [k, true])) as { freshness?: boolean; size?: boolean };
-      const personId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+      const personId = requestingPerson(null, account);
       if (personId) {
         landingActor = { kind: 'human', userId: personId, override, overrideReason: reason };
         kernelOverride = { reason, kinds: requestedOverrides.kinds };

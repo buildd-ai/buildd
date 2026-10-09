@@ -1275,7 +1275,7 @@ describe('S16–S21', () => {
     const blocked = await canCompleteMission(m2, { evaluateCriteria: false });
     expect(blocked).toMatchObject({ ok: false, code: 'awaiting_merge' });
     expect(blocked.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
-    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:owner@example.com' })).toEqual({ ok: true });
     expect(await delivery(closed.deliveryId)).toMatchObject({ state: 'ABANDONED', stateReason: 'plan changed' });
     expect((await transitions(closed.deliveryId)).at(-1)!.evidence.actor).toBe('human:owner@example.com');
     expect((await prRows(closed)).every((r) => r.abandoned_reason === 'plan changed' && r.abandoned_recorded_by === 'owner@example.com')).toBe(true);

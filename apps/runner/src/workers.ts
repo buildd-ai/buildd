@@ -3285,6 +3285,8 @@ export class WorkerManager {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
+    } else if (agentBuilddAuth.source === 'none') {
+      sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=none reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
       sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.detail ?? 'unknown'}`, task.id);
     }
