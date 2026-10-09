@@ -40,7 +40,7 @@ export default function Criteria({
           >
             <span aria-hidden="true" className={c.ok ? 'text-status-success' : 'text-text-muted'}>{c.ok ? '✓' : '○'}</span>
             <span className="[overflow-wrap:anywhere]">
-              <span className="sr-only">{c.ok ? 'Met: ' : 'Not yet: '}</span>
+              <span className="sr-only">{c.ok ? 'Met: ' : 'Unmet: '}</span>
               {c.text}
             </span>
             {c.value != null && <span className="font-mono text-meta text-text-muted">{c.value}</span>}

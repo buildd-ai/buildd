@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { STATES, STATE_KEYS, STATUS_PILL, statusPill } from './states';
+import type { StripState } from '@/lib/mission-task-strip';
+import { STATES, STATE_KEYS, STATUS_PILL, statusPill, type StripDisplayState } from './states';
+
+// The table's copy of the strip states must stay the strip's own union (type-checked both ways).
+const toStrip = (s: StripDisplayState): StripState => s;
+const fromStrip = (s: StripState): StripDisplayState => s;
+void toStrip; void fromStrip;
 
 const css = readFileSync(join(import.meta.dir, '../../app/globals.css'), 'utf8');
 

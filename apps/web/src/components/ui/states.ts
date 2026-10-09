@@ -9,9 +9,12 @@
  * Every state is distinguishable without colour: each has its own glyph, and
  * its cell has its own (pattern, frame) pair. `states.test.ts` holds both.
  */
-import type { StripState } from '@/lib/mission-task-strip';
+/** The strip spec's display states (§3.1); the same union as `StripState` in lib/mission-task-strip.ts. */
+export type StripDisplayState =
+  | 'landed' | 'review' | 'running' | 'fixing' | 'waiting' | 'ci_failed' | 'failed'
+  | 'ready' | 'blocked' | 'queued';
 
-export type StateKey = StripState | 'landing' | 'recovering' | 'not_landed' | 'needs_you';
+export type StateKey = StripDisplayState | 'landing' | 'recovering' | 'not_landed' | 'needs_you';
 
 /** Hue family: ok (green), run (blue), act (orange, live), bad (red), q (neutral), dec (a decision). */
 export type StateTone = 'ok' | 'run' | 'act' | 'bad' | 'q' | 'dec';

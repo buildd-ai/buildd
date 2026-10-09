@@ -1,9 +1,8 @@
 'use client';
 
 import { useRef, type CSSProperties, type KeyboardEvent } from 'react';
-import { stripKeyTarget, type StripMark } from '@/lib/mission-task-strip';
 import { STATES, type StateKey } from './states';
-import { stripRunColumns, stripRunLabel, stripRuns, tickOf } from './task-strip';
+import { stripKeyTarget, stripRunColumns, stripRunLabel, stripRuns, tickOf, type StripMark } from './task-strip';
 
 export interface TaskStripCell {
   id: string;

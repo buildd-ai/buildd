@@ -42,6 +42,21 @@ export function stripRunLabel(run: StripRun): string | null {
   return `${run.count} ${run.state === 'landed' ? 'merged' : STATES[run.state].word.toLowerCase()}`;
 }
 
+/** A tick's relation to the selected cell (spec §5.2). Same values as `StripMark` in lib/mission-task-strip.ts. */
+export type StripMark = 'direct' | 'transitive';
+
+/** The strip toolbar's keys: ← → step and wrap, Home / End jump. Anything else is not ours. */
+export function stripKeyTarget(key: string, i: number, n: number): number | null {
+  if (n === 0) return null;
+  switch (key) {
+    case 'ArrowRight': return (i + 1) % n;
+    case 'ArrowLeft': return (i - 1 + n) % n;
+    case 'Home': return 0;
+    case 'End': return n - 1;
+    default: return null;
+  }
+}
+
 /** `07`: the tick under the cell at index `i`. */
 export const tickOf = (i: number) => String(i + 1).padStart(2, '0');
 
