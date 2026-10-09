@@ -64,6 +64,8 @@ const REDRIVE_ZERO = {
   enumerated: 0, redriven: 0, merged: 0, exhausted: 0, raced: 0, notRedrivable: 0, errors: 0, deferred: 0, outcomes: {},
 };
 const mockRefreshRedrive = mock(() => Promise.resolve<any>(REDRIVE_ZERO));
+const mockEmit = mock(async () => {});
+mock.module('@/lib/core-emit', () => ({ emit: mockEmit }));
 mock.module('@/lib/refresh-redrive', () => ({ redriveDeferredRefreshes: mockRefreshRedrive }));
 
 const CI_RED_ZERO = {
@@ -139,6 +141,7 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
     mockEarlyRelease.mockReset();
     mockEarlyRelease.mockResolvedValue(EARLY_RELEASE_ZERO);
+    mockEmit.mockReset();
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -235,6 +238,9 @@ describe('GET /api/cron/pr-reconcile', () => {
     expect(body.deadZone).toBeNull();
     expect(mockReconcile).toHaveBeenCalledTimes(1);
     expect(mockDeadZone).not.toHaveBeenCalled();
+    // The hourly pass is the floor for module backstops (merge readiness outcome labels).
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+    expect((mockEmit.mock.calls[0] as unknown[])[0]).toMatchObject({ type: 'sweep.pr_hourly' });
   });
 
   it('an unknown scope value falls back to the full sweep', async () => {

@@ -194,3 +194,75 @@ export function rowProvider(row: { purpose: string; label: string | null }): { p
   }
   return null;
 }
+
+// ── A stored row's own rule (routes that write a purpose + label directly) ──
+
+/** The registry storage a stored row sits in, with its shape, or null. */
+function storageOf(row: { purpose: string; label?: string | null }): { provider: ProviderId; shape: CredentialShape; storage: CredentialStorage } | null {
+  const owner = rowProvider({ purpose: row.purpose, label: row.label ?? null });
+  if (!owner) return null;
+  const shape = providerDescriptor(owner.provider).shapes.find(s => s.id === owner.shape);
+  if (!shape) return null;
+  const label = (row.label ?? '').toLowerCase();
+  const storage = [shape.storage, ...shape.legacy].find(st => st.purpose === row.purpose && (st.label === undefined || st.label === label));
+  return storage ? { provider: owner.provider, shape, storage } : null;
+}
+
+/**
+ * What writing (or removing) a shared row of this purpose + label needs, by
+ * the same rule as `/api/providers` (`writePermissions`): a key agent runs
+ * read that is also a chat key needs both `manage_team_model_keys` and
+ * `manage_team_credentials`. For a route that is handed a raw purpose
+ * (`/api/secrets`, `/api/inference-keys`). Null when the row is not an API key
+ * or seat token in the registry (a gateway, an endpoint, a non-model secret):
+ * the route keeps its own rule for those.
+ */
+export function storedWritePermissions(row: { purpose: string; label?: string | null }): WritePermission[] | null {
+  const found = storageOf(row);
+  if (!found || found.shape.id === 'gateway' || found.shape.id === 'endpoint') return null;
+  return writePermissions(found.shape, found.storage);
+}
+
+/** Prefixes the legacy agent purposes have always required. */
+const LEGACY_PREFIX: Record<string, string> = {
+  oauth_token: 'sk-ant-oat',
+  anthropic_api_key: 'sk-ant-api',
+  // Loose on purpose: OpenAI keys come in several live shapes (sk-, sk-proj-, sk-svcacct-).
+  openai_api_key: 'sk-',
+};
+
+/**
+ * The prefix a shared (team or workspace) row of this purpose + label must
+ * have, or undefined. A legacy agent purpose keeps its own. A canonical key
+ * that agent runs read keeps the prefix of its legacy alias, so a pasted
+ * subscription token (`sk-ant-oat…`) is refused as an Anthropic API key
+ * wherever it is written.
+ */
+export function requiredKeyPrefix(row: { purpose: string; label?: string | null }): string | undefined {
+  const own = LEGACY_PREFIX[row.purpose];
+  if (own) return own;
+  const found = storageOf(row);
+  if (!found) return undefined;
+  if (!storageServes(providerDescriptor(found.provider), found.storage).some(s => AGENT_SURFACES.includes(s))) return undefined;
+  for (const legacy of found.shape.legacy) {
+    const prefix = LEGACY_PREFIX[legacy.purpose];
+    if (prefix) return prefix;
+  }
+  return undefined;
+}
+
+/**
+ * Where a write of this shape lands at each scope, and what it needs: the
+ * `writesTo` of `GET /api/providers`, so the Providers page shows the
+ * server's own rule instead of restating it. Null for a scope closed to the
+ * provider; `mine` needs no permission (membership and the team policy decide).
+ */
+export function shapeWritesTo(provider: ProviderId, shape: CredentialShape): Record<ProviderApiScope, { purpose: string; label: string | null; permissions: WritePermission[] } | null> {
+  const out = {} as Record<ProviderApiScope, { purpose: string; label: string | null; permissions: WritePermission[] } | null>;
+  for (const scope of PROVIDER_API_SCOPES) {
+    if (scopeRefusal(provider, scope)) { out[scope] = null; continue; }
+    const st = writeStorage(provider, shape, scope);
+    out[scope] = { purpose: st.purpose, label: st.label ?? null, permissions: scope === 'mine' ? [] : writePermissions(shape, st) };
+  }
+  return out;
+}

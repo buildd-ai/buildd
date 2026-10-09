@@ -7,11 +7,12 @@ import { hasTokenScope, requiredScopeForAction } from './token-scopes';
  */
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
+import { hasConcretePathManifest, pathsOverlap } from './path-overlap';
 import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendPinned } from './backend-policy';
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -59,6 +60,130 @@ import type {
  */
 const GET_PR_BODY_PREVIEW_CHARS = 2000;
 const GET_TASK_DESCRIPTION_PREVIEW_CHARS = 400;
+
+// ── Default response caps ────────────────────────────────────────────────────
+// The most-called actions send these much by default; every cut says how much
+// it cut and names the param (or action) that returns the rest. Sizes are held
+// by packages/core/__tests__/mcp-response-budgets.test.ts.
+
+/** claim_task: open PRs listed when the task declares no paths to match them against. */
+export const CLAIM_OPEN_PRS_UNSCOPED = 3;
+/** claim_task: a memory's content preview (non-index mode). */
+const CLAIM_MEMORY_PREVIEW_CHARS = 120;
+/** get_task: newest workers, artifacts and loop iterations shown without all:true. */
+export const GET_TASK_WORKERS_SHOWN = 3;
+export const GET_TASK_ARTIFACTS_SHOWN = 10;
+export const GET_TASK_LOOP_ITERATIONS_SHOWN = 5;
+/** get_pr: failing checks and fix attempts shown without all:true. */
+export const GET_PR_FAILING_SHOWN = 5;
+export const GET_PR_ATTEMPTS_SHOWN = 5;
+/** explain on a workspace: ranked subjects per page (default / max). */
+export const EXPLAIN_WORKSPACE_LIMIT_DEFAULT = 5;
+export const EXPLAIN_WORKSPACE_LIMIT_MAX = 25;
+/** explain on a workspace: causal links kept per subject summary. */
+const EXPLAIN_WORKSPACE_BECAUSE_SHOWN = 2;
+/** manage_missions get: description preview, criterion evidence, linked tasks. */
+const MISSION_DESCRIPTION_PREVIEW_CHARS = 600;
+const MISSION_CRITERION_EVIDENCE_CHARS = 300;
+export const MISSION_TASKS_SHOWN = 15;
+
+/**
+ * explain on a workspace: one page of the ranked subjects, each as a summary
+ * (what it is, its state, what it waits on, the one-line situation, the next
+ * action and the first causal links). The full answer for one subject is
+ * explain on that subject; the next page is offset. Ranking is the route's.
+ */
+export function pageWorkspaceExplain(data: { subjects?: any[]; considered?: number; quiet?: number }, params: Record<string, unknown>) {
+  const subjects = Array.isArray(data.subjects) ? data.subjects : [];
+  const rawLimit = typeof params.limit === 'number' && Number.isFinite(params.limit) ? Math.trunc(params.limit) : EXPLAIN_WORKSPACE_LIMIT_DEFAULT;
+  const limit = Math.min(Math.max(rawLimit, 1), EXPLAIN_WORKSPACE_LIMIT_MAX);
+  const offset = typeof params.offset === 'number' && Number.isFinite(params.offset) ? Math.max(Math.trunc(params.offset), 0) : 0;
+  const page = subjects.slice(offset, offset + limit);
+  const after = Math.max(subjects.length - offset - page.length, 0);
+  const summary = (a: any) => {
+    const because = Array.isArray(a.because) ? a.because : [];
+    const s = a.subject ?? {};
+    const one = s.taskId ? `taskId: "${s.taskId}"` : s.prNumber != null ? `prNumber: ${s.prNumber}` : s.missionId ? `missionId: "${s.missionId}"` : null;
+    return {
+      subject: s,
+      state: a.state,
+      waitingOn: a.waitingOn,
+      situation: a.situation,
+      nextAction: a.nextAction ?? null,
+      because: because.slice(0, EXPLAIN_WORKSPACE_BECAUSE_SHOWN),
+      ...(because.length > EXPLAIN_WORKSPACE_BECAUSE_SHOWN ? { becauseOmitted: because.length - EXPLAIN_WORKSPACE_BECAUSE_SHOWN } : {}),
+      ...(one ? { full: `explain {${one}}` } : {}),
+    };
+  };
+  return {
+    scope: 'workspace',
+    ...(data.considered != null ? { considered: data.considered } : {}),
+    ...(data.quiet != null ? { quiet: data.quiet } : {}),
+    waiting: subjects.length,
+    offset,
+    shown: page.length,
+    omitted: subjects.length - page.length,
+    ...(after > 0 || offset > 0
+      ? { more: `${after > 0 ? `offset: ${offset + page.length} for the next ${Math.min(after, limit)}` : 'last page'}; limit up to ${EXPLAIN_WORKSPACE_LIMIT_MAX}. Each subject's full evidence (history, gates, provenance): its \`full\` call.` }
+      : { more: "Each subject's full evidence (history, gates, provenance): its `full` call." }),
+    subjects: page.map(summary),
+  };
+}
+
+/** `items` cut to `max`, with the count of what was left out. */
+function capList<T>(items: readonly T[], max: number, all: boolean): { shown: T[]; omitted: number } {
+  if (all || items.length <= max) return { shown: [...items], omitted: 0 };
+  return { shown: items.slice(0, max), omitted: items.length - max };
+}
+
+/**
+ * claim_task's open-PR section: one line per PR (a PR adopted by a review
+ * task appears twice in the claim payload, once per task title), narrowed to
+ * the PRs whose task paths overlap this task's manifest when it declares
+ * concrete paths, otherwise the newest few. Always says how many it left out.
+ */
+export function formatClaimOpenPRs(
+  openPRs: Array<{ prNumber?: number | null; prUrl?: string | null; branch?: string | null; taskTitle?: string | null; pathManifest?: string[] | null }>,
+  taskManifest: string[] | null | undefined,
+): string {
+  const seen = new Set<string>();
+  const unique = openPRs.filter(pr => {
+    const key = pr.prNumber != null ? `#${pr.prNumber}` : String(pr.prUrl ?? pr.branch ?? '');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (unique.length === 0) return '';
+  const line = (pr: (typeof unique)[number]) =>
+    `- PR #${pr.prNumber ?? '?'} (${pr.branch ?? 'no branch'}): "${pr.taskTitle || 'Unknown task'}"`;
+  const scoped = hasConcretePathManifest(taskManifest ?? null);
+  const shown = scoped
+    ? unique.filter(pr => Array.isArray(pr.pathManifest) && pr.pathManifest.length > 0 && pathsOverlap(pr.pathManifest, taskManifest!))
+    : unique.slice(0, CLAIM_OPEN_PRS_UNSCOPED);
+  const omitted = unique.length - shown.length;
+  const rest = omitted > 0 ? `\n(${omitted} other open PR${omitted === 1 ? '' : 's'} in this workspace${scoped ? ' touch none of your paths' : ''} — list_prs lists them all.)` : '';
+  if (shown.length === 0) {
+    return `\n\n## Open PRs\nNone of the ${unique.length} open PR${unique.length === 1 ? '' : 's'} in this workspace touch your declared paths — list_prs lists them.`;
+  }
+  const lead = scoped
+    ? 'Open PRs touching your declared paths. Read one (get_pr) before editing the same files, or rebase on its branch:'
+    : 'Open PRs from other agents in this repo. Avoid the same files, or rebase on their branches:';
+  return `\n\n## Open PRs\n${lead}\n${shown.map(line).join('\n')}${rest}`;
+}
+
+/** The claimed task as claim_task shows it: ids, branch and a description preview. */
+function formatClaimedAssignment(w: { id: string; branch?: string | null; taskId?: string | null; task: { id?: string; title: string; description?: string | null } }, branchNote: string): string {
+  const taskId = w.task.id ?? w.taskId ?? null;
+  const desc = w.task.description || 'No description';
+  const long = desc.length > GET_TASK_DESCRIPTION_PREVIEW_CHARS;
+  return [
+    `**Worker ID:** ${w.id}`,
+    `**Task:** ${w.task.title}${taskId ? ` (${taskId})` : ''}`,
+    `**Branch:** ${w.branch || 'Not set'}${branchNote}`,
+    `**Description:** ${long ? truncate(desc, GET_TASK_DESCRIPTION_PREVIEW_CHARS) : desc}`,
+    ...(long ? [`Read the full instructions before starting: get_task {taskId${taskId ? `: "${taskId}"` : ''}, fullDescription: true}.`] : []),
+  ].join('\n');
+}
 
 /**
  * `hint` values from the worker completion route (apps/web/src/app/api/workers/[id]/route.ts)
@@ -701,7 +826,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), alreadyShippedIn? (PR number), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown") } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. alreadyShippedIn is for a pr_required task whose work already landed in a merged PR it does not own (another task shipped it first): pass that PR number and completion succeeds without a PR of its own once GitHub confirms it is merged in the workspace repo; any commits or edits of this worker\'s own also need discardEdits. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats; costBasis as in update_progress. workerId auto-resolved from context if omitted',
@@ -712,13 +837,13 @@ export function buildParamsDescription(actions: readonly string[]): string {
     close_pr: '{ workerId?, prNumber (required), workspaceId? (disambiguate when prNumber exists in multiple repos) } — workerId is resolved from prNumber when absent, same as merge_pr. Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     update_pr: '{ workerId?, prNumber (required), body? , draft? (false — marks a draft PR ready for review instead of editing the body; one of body/draft is required) } — Replace a pull request\'s body, or mark it ready for review with draft:false (gh pr ready is blocked for builders) via the workspace\'s GitHub App installation, same as close_pr but rewriting content instead of state. Use this instead of the GitHub connector\'s update_pull_request (returns 403 Resource not accessible by integration on most installations) and instead of create_pr\'s dedup-adoption path for a PR create_pr did not open or was not asked to refresh — e.g. correcting a PR body after the fact (removing a disclosed URL, fixing a no-prod-data gate trip). Only an agent run or team member that owns the PR (its own worker\'s, or one its task names) may call this; a task token is confined to its own task\'s PR the same way close_pr is.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId?, overrides? ({ freshness?: true, size?: true }), reason? (required with overrides) } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps. **overrides** is the escape hatch for a PR whose landing escalated because the base kept moving (or the size cap): it merges past base freshness / the size cap, never the review verdict, red CI or a deny path, and is recorded with the reason. A person\'s own session (OAuth MCP, chat) may use it; an agent run is refused unless a person granted it on the run\'s task at creation (create_task context.landingOverride: { prNumbers, overrides: ["freshness"|"size"] }).',
-    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures?, all? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag (the latest 5, and the first 5 failing checks, unless all:true; each cut says how many it left out). Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), supersedingRepo? (owner/name), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist (same repo, or supersedingRepo: another repo of this workspace or mission) and already be MERGED, and must differ from the PR being superseded; a 403/404/409 names which check failed. buildd auto-records this when a closed PR\'s content verifies in a merged PR; an unverified candidate is a mission-card suggestion. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), tier? (premium-plus|premium|standard|budget, or null to clear — pins the tier; setting a tier without model also drops an existing model pin), model? (Anthropic model id such as claude-…, or null to clear — pins an exact model and outranks tier), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. tier/model take effect on the next claim or retry; they do not change a running session. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
+    create_task: '{ title (required), description (required), label? (2–4 word noun-phrase shown as the task\'s chip next to its conventional-commit scope, max 48 chars — e.g. title "feat(fx): rates service with a 15-minute cache" → label "rates service"; no type prefix or filler words; derived from the title if omitted), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design|research — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller, except for [friction] tasks, which stay on trunk and only record context.relatedMissionId), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, headBranch? (pins the exact git branch claim_task assigns this task\'s worker, replacing the generated buildd/<id8>-<slug> name — the same mechanism a mission\'s shared integration branch uses internally, exposed here for a one-off task whose work must land on an existing or shared branch outside mission machinery. create_pr\'s ownership check also treats a PR headed at this branch as the task\'s own. Say it here, not in the title or description: free-text branch instructions are invisible to both claim_task and create_pr, so a task that merely describes the branch in prose gets a fresh generated one anyway and then has its PR refused as head_not_owned when it tries to use the described branch instead), verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex), emitsPlan? (boolean, default false — spec-to-build opt-in: forces mode: "planning" and context.requiresPlanApproval: true, both non-overridable by the caller, and requires a non-empty pathManifest naming the spec document this task authors (400 otherwise). Use only when the task\'s entire deliverable is a breakdown that should become an approved, traceable plan — never inferred, always explicit) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
@@ -746,7 +871,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean (check-ins, default true for a new auto mission: an hourly stuck check that starts the organizer only when the mission is stuck; the next step is planned when work finishes either way. false opts out), heartbeatChecklist?: string (the organizer checklist), activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", decomposition?: "auto" | "none" (create only, default "auto" — filing the task chain yourself right after create? pass decomposition:"none" so the organizer\'s first planning pass is born coordinate-only instead of racing your own create_task calls with its own decomposition; "auto" lets the organizer decompose from the mission description as today. Equivalent to orchestrationMode:"auto" PLUS decompositionSkipped set before the organizer\'s planning task exists — the reactive pre-filed-task detection in runMission() only runs ONCE, at that same creation request, so it is always too early to see tasks you file afterward), costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out. Independently, a mission whose merged PRs changed UI files cannot complete without a passed audit; the refusal says so), surfaceAuditWaiver?: string (update only, a person\'s call: the reason (10+ chars) a mission that changed UI ships without a visual audit. Recorded on the mission and lets completion through; an in-task agent is refused), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), all? (get: every linked task, the full description and full criterion evidence; default is 15 tasks with unfinished ones first, a 600-char description and 300-char evidence, each cut saying how much it left out), fullDescription? (get: the full description only), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean (check-ins, default true for a new auto mission: an hourly stuck check that starts the organizer only when the mission is stuck; the next step is planned when work finishes either way. false opts out), heartbeatChecklist?: string (the organizer checklist), activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", decomposition?: "auto" | "none" (create only, default "auto" — filing the task chain yourself right after create? pass decomposition:"none" so the organizer\'s first planning pass is born coordinate-only instead of racing your own create_task calls with its own decomposition; "auto" lets the organizer decompose from the mission description as today. Equivalent to orchestrationMode:"auto" PLUS decompositionSkipped set before the organizer\'s planning task exists — the reactive pre-filed-task detection in runMission() only runs ONCE, at that same creation request, so it is always too early to see tasks you file afterward), costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out. Independently, a mission whose merged PRs changed UI files cannot complete without a passed audit; the refusal says so), surfaceAuditWaiver?: string (update only, a person\'s call: the reason (10+ chars) a mission that changed UI ships without a visual audit. Recorded on the mission and lets completion through; an in-task agent is refused), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "planned" | "active" | "paused" | "completed" | "archived" (set by a person; nothing derives or auto-advances it), priority?: number, ownerUserId?: string (a member of the initiative\'s team; null falls back to the creator; create defaults to the caller), targetDate?: "YYYY-MM-DD" | null (optional calendar target). Initiatives carry no KPIs: put checkable outcomes in mission goalCriteria. } — an initiative is an execution-free container above missions (initiative → mission → task), like a Linear initiative. Progress is missions done over missions. "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init" | "readiness" | "scaffold" | "author_spec", workspaceId? (required for get/update/create_repo/init/readiness/scaffold/author_spec), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; gitConfig.criteriaGrader: "auto"|"api"|"runner" sets the workspace default grader for prose goal criteria; gitConfig.executor: "cloud"|"host"|"any"|null sets where its tasks run (cloud: host runners never claim them; host: cloud claims never do; null derives cloud from a cloud dispatch webhook, else any); who merges PRs is gitConfig.mergePolicy ({ tier: "auto-threshold" (merge on green CI) | "agent-review" | "human" }), not the legacy autoMergePR / autoMergeOnGreenCI flags, which nothing reads; to apply a detected policyConfig from action=init, use gitConfig.policyConfig; merge-policy paths are detected by action=init, never typed), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. action=readiness: read-only repo checklist + nextStep; load skill workspace-onboarding. action=scaffold: itemIds? (none = no-op), dryRun? (default true, creates nothing), confirm? (true = one PR task; human merges). action=author_spec: answers (the shared interview Q1-Q8 object: title, description, capabilities[{name,invariants,accepted,rejected,codePaths?}], outOfScope?, verification?, protectedAreas?), owner?, dryRun? (default true, returns the draft spec markdown only), confirm? (true = one PR task adding that one file). [admin]',
@@ -755,7 +880,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
-    explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field; a task or PR subject also carries `evidenceObjects[]` (id, kind, bytes, state; read with read_evidence). Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A pending task whose latest dispatch wake is undelivered past due, handed off to Dispatch with no receipt, or failed carries that as a because[] link with refs.outboxId. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
+    explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos), limit?, offset? (workspace scope: page size, default 5, max 25) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field; a task or PR subject also carries `evidenceObjects[]` (id, kind, bytes, state; read with read_evidence). Workspace scope returns only the subjects that are waiting on something, ranked — not a dump: one page of summaries (state, waitingOn, situation, nextAction, the first causal links) with the omitted count, each naming the explain call that returns its full evidence. A pending task whose latest dispatch wake is undelivered past due, handed off to Dispatch with no receipt, or failed carries that as a because[] link with refs.outboxId. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns errors caught from agent tool output: every non-zero Bash exit (redacted command, exit code, output tail) plus known patterns (cd: No such file, git fatal, OOM, etc.). taskId also returns the evidence record written when the task ended (error class, key lines, last failing command, CI checks) and any mismatch flags — the answer to "why did it fail". workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude learned floor pressure (forecast, not provider usage; source, observation age, sample basis) and Codex exhaustion, monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — learned pressure is advisory and must not be treated as a hard budget wall; use provider exhaustion or monthly depletion for startAfter: "budget_reset".',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
@@ -1988,10 +2113,7 @@ export async function handleBuilddAction(
       if (workerIsActive && taskIsActive && !explicitOther) {
         return text(
           `Current assignment already active (no new task claimed):\n\n` +
-          `**Worker ID:** ${worker.id}\n` +
-          `**Task:** ${worker.task.title}\n` +
-          `**Branch:** ${worker.branch || 'Not set'}\n` +
-          `**Description:** ${worker.task.description || 'No description'}\n\n` +
+          `${formatClaimedAssignment(worker, '')}\n\n` +
           'Continue using this worker ID for progress reporting and completion.',
         );
       }
@@ -2113,6 +2235,9 @@ export async function handleBuilddAction(
 
       const appBase = ctx.appBaseUrl || 'https://buildd.dev';
       const taskUrl = `${appBase}/app/tasks/${task.id}`;
+      // Workers, artifacts and loop iterations are capped to the newest few
+      // unless all:true; each cut says how many it left out.
+      const showAll = params.all === true;
 
       const lines: string[] = [];
       lines.push(`**Task:** ${task.title} (${task.id})`);
@@ -2153,7 +2278,13 @@ export async function handleBuilddAction(
         if (history.length === 0) {
           lines.push('No iterations evaluated yet.');
         } else {
-          for (const entry of history) {
+          // Newest last, as stored: keep the latest iterations.
+          const omittedIterations = showAll ? 0 : Math.max(history.length - GET_TASK_LOOP_ITERATIONS_SHOWN, 0);
+          if (omittedIterations > 0) lines.push(`(${omittedIterations} earlier iteration${omittedIterations === 1 ? '' : 's'} omitted — pass all:true for every one.)`);
+          const kept = history.slice(omittedIterations);
+          for (const [i, entry] of kept.entries()) {
+            // The latest iteration's evidence at full preview; earlier ones short.
+            const evidenceChars = showAll || i === kept.length - 1 ? 300 : 100;
             const evidence = entry.evidence && typeof entry.evidence === 'object'
               ? entry.evidence as Record<string, unknown>
               : {};
@@ -2161,7 +2292,7 @@ export async function handleBuilddAction(
             const duration = durationMs === null ? '' : ` · ${(durationMs / 1000).toFixed(2)}s`;
             const excerptValue = evidence.output ?? evidence.stderr ?? evidence.stdout;
             const excerpt = typeof excerptValue === 'string'
-              ? `\n  Evidence: ${excerptValue.slice(0, 300)}${excerptValue.length > 300 ? '…' : ''}`
+              ? `\n  Evidence: ${excerptValue.slice(0, evidenceChars)}${excerptValue.length > evidenceChars ? `… (+${excerptValue.length - evidenceChars} chars)` : ''}`
               : '';
             lines.push(`- **Iteration ${(entry.iteration ?? 0) + 1}:** ${entry.satisfied ? 'met' : 'unmet'} · ${entry.conditionType}${duration}\n  ${entry.summary ?? 'No summary'}${excerpt}`);
           }
@@ -2227,10 +2358,12 @@ export async function handleBuilddAction(
       const workers = Array.isArray(task.workers) ? task.workers : [];
       if (workers.length > 0) {
         lines.push('', `## Workers (${workers.length})`);
-        for (const w of workers) {
+        // Newest first, as the route orders them. Every worker's page is the
+        // task URL above, so it is not repeated per worker.
+        const { shown: shownWorkers, omitted: omittedWorkers } = capList(workers, GET_TASK_WORKERS_SHOWN, showAll);
+        for (const w of shownWorkers as any[]) {
           const wlines: string[] = [];
           wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
-          wlines.push(`  Worker URL: ${taskUrl}`);
           if (w.currentAction) wlines.push(`  Current action: ${w.currentAction}`);
           if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
           if (w.supersededByPrNumber) {
@@ -2238,7 +2371,7 @@ export async function handleBuilddAction(
           }
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
-          if (w.error) wlines.push(`  Error: ${w.error}`);
+          if (w.error) wlines.push(`  Error: ${showAll ? w.error : truncate(String(w.error), 400)}`);
           // A gate-rejected completion (outputRequirement 400) persists the
           // agent's summary here instead of discarding it — surface it
           // plainly as a REJECTED deliverable, never as a satisfied one.
@@ -2255,12 +2388,15 @@ export async function handleBuilddAction(
           }
           lines.push(wlines.join('\n'));
         }
+        if (omittedWorkers > 0) lines.push(`(${omittedWorkers} older worker${omittedWorkers === 1 ? '' : 's'} omitted — pass all:true for every one.)`);
       }
 
       const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
       if (artifacts.length > 0) {
         lines.push('', `## Artifacts (${artifacts.length})`);
-        for (const a of artifacts) {
+        const { shown: shownArtifacts, omitted: omittedArtifacts } = capList(artifacts, GET_TASK_ARTIFACTS_SHOWN, showAll);
+        if (omittedArtifacts > 0) lines.push(`(${omittedArtifacts} more not shown — pass all:true, or list_artifacts.)`);
+        for (const a of shownArtifacts as any[]) {
           const meta = a.key ? `, key: ${a.key}` : '';
           const share = a.shareUrl ? `\n  Share: ${a.shareUrl}` : '';
           lines.push(`- **${a.title}** (${a.type}${meta})\n  ID: ${a.id}${share}`);
@@ -2307,7 +2443,7 @@ export async function handleBuilddAction(
       // owns that name — but the generated one below always works and needs
       // no extra checks, so prefer it over inventing another name.
       const claimed = workers.map((w: any) =>
-        `**Worker ID:** ${w.id}\n**Task:** ${w.task.title}\n**Branch:** ${w.branch} (push here — create_pr's head must be this branch, or another name nobody else is using)\n**Description:** ${w.task.description || 'No description'}`
+        formatClaimedAssignment(w, " (push here — create_pr's head must be this branch, or another name nobody else is using)")
       ).join('\n\n---\n\n');
 
       // Proactively fetch relevant memory. Invariant: only memory from the
@@ -2356,7 +2492,7 @@ export async function handleBuilddAction(
             if (index.lines.length > 0) memorySection = `\n\n## Relevant Memory\n${index.lines.join('\n')}`;
           } else if (memories.length > 0) {
             const memoryLines = memories.map((m: any) => {
-              const truncContent = m.content.length > 200 ? m.content.slice(0, 200) + '...' : m.content;
+              const truncContent = m.content.length > CLAIM_MEMORY_PREVIEW_CHARS ? `${m.content.slice(0, CLAIM_MEMORY_PREVIEW_CHARS)}… (+${m.content.length - CLAIM_MEMORY_PREVIEW_CHARS} chars${m.id ? `: recall {id: "${m.id}"}` : ''})` : m.content;
               return `- **[${m.type}] ${m.title}**: ${truncContent}`;
             });
             memorySection = `\n\n## Relevant Memory\nREAD these memories before starting work:\n${memoryLines.join('\n')}\n\nCall recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.`;
@@ -2367,14 +2503,10 @@ export async function handleBuilddAction(
       }
 
       // Open PRs section: inform agent about concurrent work
-      let openPRsSection = '';
       const firstWorkerPRs = workers[0]?.openPRs;
-      if (firstWorkerPRs && firstWorkerPRs.length > 0) {
-        const prLines = firstWorkerPRs.map((pr: any) =>
-          `- PR #${pr.prNumber} (branch: ${pr.branch}): "${pr.taskTitle || 'Unknown task'}" — ${pr.prUrl}`
-        );
-        openPRsSection = `\n\n## Open PRs in this workspace\nThese PRs are from other agents working in the same repo. Avoid modifying the same files if possible, or rebase on top of their branches.\n${prLines.join('\n')}`;
-      }
+      const openPRsSection = Array.isArray(firstWorkerPRs) && firstWorkerPRs.length > 0
+        ? formatClaimOpenPRs(firstWorkerPRs, workers[0]?.task?.pathManifest)
+        : '';
 
       return text(`Claimed ${workers.length} task(s):\n\n${claimed}${openPRsSection}${memorySection}\n\nUse the worker ID to report progress and completion.`);
     }
@@ -2906,9 +3038,11 @@ export async function handleBuilddAction(
         ? 'CI: none configured'
         : `CI: ${checks.state} (${checks.passed}/${checks.total} passed${checks.failed > 0 ? `, ${checks.failed} failed` : ''}${checks.pending > 0 ? `, ${checks.pending} pending` : ''})`;
 
+      const showAll = params.all === true;
       const failing = Array.isArray(checks.failedChecks) ? checks.failedChecks as Array<{ name: string; url: string | null }> : [];
+      const { shown: shownFailing, omitted: omittedFailing } = capList(failing, GET_PR_FAILING_SHOWN, showAll);
       const failingLine = failing.length > 0
-        ? `Failing: ${failing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}`
+        ? `Failing: ${shownFailing.map(c => (c.url ? `${c.name} (${c.url})` : c.name)).join(', ')}${omittedFailing > 0 ? ` (+${omittedFailing} more — all:true lists every one)` : ''}`
         : '';
 
       const reviewLine = reviews.approved > 0 || reviews.changesRequested > 0
@@ -2981,8 +3115,10 @@ export async function handleBuilddAction(
             mismatch: Array<{ kind: string; detail: string }>;
           }>
         : [];
+      // Oldest first, as the route returns them: keep the latest attempts.
+      const omittedAttempts = showAll ? 0 : Math.max(attemptRows.length - GET_PR_ATTEMPTS_SHOWN, 0);
       const attemptsSection = attemptRows.length > 0
-        ? `\n\n**Fix attempts (${attemptRows.length}):**\n${attemptRows.map((a) => {
+        ? `\n\n**Fix attempts (${attemptRows.length}):**${omittedAttempts > 0 ? `\n(${omittedAttempts} earlier attempt${omittedAttempts === 1 ? '' : 's'} omitted — all:true lists every one.)` : ''}\n${attemptRows.slice(omittedAttempts).map((a) => {
             const pr2 = a.prNumber ? ` PR #${a.prNumber}` : '';
             const why = a.evidence ? ` — ${a.evidence.errorClass}${a.evidence.keyLines[0] ? `: ${truncate(a.evidence.keyLines[0], 160)}` : ''}` : '';
             const flags = a.mismatch.length > 0 ? ` ⚠️ ${a.mismatch.map((m) => m.kind).join(', ')}` : '';
@@ -3454,7 +3590,17 @@ export async function handleBuilddAction(
           const workerData = await api(`/api/workers/${ctx.workerId}`);
           const callerMissionId = workerData?.task?.missionId || workerData?.task?.context?.missionId;
           if (callerMissionId) {
-            taskBody.missionId = callerMissionId;
+            // A friction report is a platform fix, not mission work: linking it
+            // would make the mission's integration branch its PR base and trap
+            // the fix behind the mission. Keep only a related-mission pointer.
+            const ctxIn = taskBody.context as Record<string, unknown> | undefined;
+            const isFriction = String(params.title ?? '').startsWith('[friction]')
+              || typeof ctxIn?.frictionSignature === 'string';
+            if (isFriction) {
+              taskBody.context = { ...(ctxIn ?? {}), relatedMissionId: callerMissionId };
+            } else {
+              taskBody.missionId = callerMissionId;
+            }
           }
         } catch {
           // Non-fatal — skip auto-linking if worker lookup fails
@@ -4601,10 +4747,11 @@ export async function handleBuilddAction(
       }
 
       const data = await api(`/api/explain?${parts.join('&')}`);
-      // Returned verbatim as JSON. `explain` is evidence, not a report: any
-      // prose rendering here would be this tool narrating, which is exactly the
-      // job it leaves to the caller.
-      return text(JSON.stringify(data, null, 2));
+      // Returned as JSON. `explain` is evidence, not a report: any prose
+      // rendering here would be this tool narrating, which is exactly the job
+      // it leaves to the caller. Compact JSON: indentation was a quarter of it.
+      if (data?.scope === 'workspace' && !params.prNumber) return text(JSON.stringify(pageWorkspaceExplain(data, params)));
+      return text(JSON.stringify(data));
     }
 
     case 'get_error_traces': {
@@ -5399,6 +5546,12 @@ export async function handleBuilddAction(
             const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
+          } else {
+            // Like create_task: a connector/session bound to a workspace puts
+            // the mission there, rather than minting a workspace-less mission
+            // whose tasks land in a workspace the mission itself isn't in.
+            const bound = ctx.workspaceId || (await ctx.getWorkspaceId());
+            if (bound) body.workspaceId = bound;
           }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
@@ -5461,9 +5614,24 @@ export async function handleBuilddAction(
           if ('message' in target) return text(target.message);
           const missionId = target.id;
           const data = await api(`/api/missions/${missionId}`);
-          const taskList = (data.tasks || []).map((t: any) =>
+          // Unfinished tasks first (route order kept within each half), capped
+          // unless all:true; the cut says how many of each status it left out.
+          const showAll = params.all === true;
+          const allTasks: any[] = data.tasks || [];
+          const orderedTasks = [...allTasks.filter(t => !isTerminalTaskStatus(t.status)), ...allTasks.filter(t => isTerminalTaskStatus(t.status))];
+          const { shown: shownTasks, omitted: omittedTaskCount } = capList(orderedTasks, MISSION_TASKS_SHOWN, showAll);
+          const omittedByStatus = new Map<string, number>();
+          for (const t of orderedTasks.slice(shownTasks.length)) omittedByStatus.set(t.status, (omittedByStatus.get(t.status) ?? 0) + 1);
+          const taskList = shownTasks.map((t: any) =>
             `  - [${t.status}] ${t.title} (${t.id})`
-          ).join('\n');
+          ).join('\n') + (omittedTaskCount > 0
+            ? `\n  (${omittedTaskCount} more: ${[...omittedByStatus].map(([k, n]) => `${n} ${k}`).join(', ')} — all:true, or list_tasks {missionId, status})`
+            : '');
+          const description = typeof data.description === 'string' && data.description
+            ? (!showAll && params.fullDescription !== true && data.description.length > MISSION_DESCRIPTION_PREVIEW_CHARS
+              ? `${truncate(data.description, MISSION_DESCRIPTION_PREVIEW_CHARS)} (fullDescription:true for all of it)`
+              : data.description)
+            : '';
           const schedCtx = data.schedule?.taskTemplate?.context;
           const heartbeatRunning = schedCtx?.heartbeat && data.schedule?.enabled !== false && data.status !== 'paused';
           const isManual = data.orchestrationMode === 'manual';
@@ -5491,9 +5659,14 @@ export async function handleBuilddAction(
             const state = data.goalCriteriaState as Record<string, any> | null | undefined;
             if (state?.criteria && state.criteria.length > 0) {
               criteriaInfo += ` overall=${state.overall} (as of ${state.evaluatedAt})`;
-              criteriaInfo += '\n' + (state.criteria as any[]).map((c: any) =>
-                `  • [${c.verdict}] ${c.label ?? c.description ?? c.type}${c.evidence ? ': ' + c.evidence : ''}`
-              ).join('\n');
+              let evidenceCut = false;
+              criteriaInfo += '\n' + (state.criteria as any[]).map((c: any) => {
+                const ev = typeof c.evidence === 'string' && !showAll && c.evidence.length > MISSION_CRITERION_EVIDENCE_CHARS
+                  ? (evidenceCut = true, truncate(c.evidence, MISSION_CRITERION_EVIDENCE_CHARS))
+                  : c.evidence;
+                return `  • [${c.verdict}] ${c.label ?? c.description ?? c.type}${ev ? ': ' + ev : ''}`;
+              }).join('\n');
+              if (evidenceCut) criteriaInfo += '\n  (Full evidence: action=get_criteria_state.)';
             } else {
               criteriaInfo += ' (not yet evaluated — use action=evaluate or action=get_criteria_state)';
               criteriaInfo += '\n' + criteriaArr.map((c: any) =>
@@ -5507,7 +5680,7 @@ export async function handleBuilddAction(
             }
           }
 
-          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${data.description ? `Description: ${data.description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
+          return text(`**${data.title}** [${data.status}]${data.blocked ? ' [BLOCKED]' : ''}${data.isHeld ? ' [HELD]' : ''}${data.executor === 'local' ? ' [LOCAL]' : ''}\nID: ${data.id}\nProgress: ${data.progress}% (${data.completedTasks}/${data.totalTasks})\n${description ? `Description: ${description}\n` : ''}${modeInfo}${heldInfo}${executorInfo}${concurrentInfo}${depInfo}${budgetInfo}${pacingInfo}${startInfo}${criteriaInfo}${taskList ? `\nLinked tasks:\n${taskList}` : '\nNo linked tasks.'}`);
         }
         case 'update': {
           // No UUID missionId: the mission is FOUND by title (missionId, else

@@ -705,6 +705,40 @@ describe('verifyClaudeCredential', () => {
     expect(result.verified).toBe(false);
     expect(result.error).toContain('401');
   });
+
+  // The team's Anthropic key in canonical storage is read by agent runs, so
+  // the liveness ping covers it like the legacy anthropic_api_key.
+  it('pings a team Anthropic key in canonical storage with x-api-key', async () => {
+    mockFindFirst.mockResolvedValue({
+      encryptedValue: 'enc:sk-ant-api03-key',
+      purpose: 'inference_key',
+      label: 'anthropic',
+      userId: null,
+      healthStatus: 'healthy',
+    });
+    const fetchMock = mock(async (_u: string, _init: any) => ({ ok: true, status: 200, json: async () => ({}) }));
+    global.fetch = fetchMock as any;
+
+    const result = await verifyClaudeCredential('secret-1');
+    expect(result.verified).toBe(true);
+    const headers = (fetchMock.mock.calls[0][1] as any).headers;
+    expect(headers['x-api-key']).toBe('sk-ant-api03-key');
+    expect(headers['Authorization']).toBeUndefined();
+  });
+
+  it('does not ping another provider\'s key or a personal key', async () => {
+    const fetchMock = mock(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+    global.fetch = fetchMock as any;
+    for (const row of [
+      { purpose: 'inference_key', label: 'openrouter', userId: null },
+      { purpose: 'inference_key', label: 'anthropic', userId: 'u-1' },
+    ]) {
+      mockFindFirst.mockResolvedValue({ encryptedValue: 'enc:x', healthStatus: 'healthy', ...row });
+      expect((await verifyClaudeCredential('secret-1')).error).toBe('Credential not found');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
 });
 
 // ── resolveAnthropicAuth ──────────────────────────────────────────────────────
