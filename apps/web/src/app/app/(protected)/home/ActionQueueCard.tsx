@@ -19,7 +19,7 @@ import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
-import { actionCardTitle } from '@/lib/card-title-display';
+import { displayTaskTitle } from '@/lib/task-title';
 
 /**
  * Every variant below renders `taskTitle`; shorten generated titles once here
@@ -28,7 +28,7 @@ import { actionCardTitle } from '@/lib/card-title-display';
  * folded one in (see `foldMissionRefreshes`).
  */
 export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
-  const short = item.taskTitle ? actionCardTitle(item.taskTitle) : item.taskTitle;
+  const short = item.taskTitle ? displayTaskTitle(item.taskTitle) : item.taskTitle;
   const shortened = !!item.taskTitle && short !== item.taskTitle;
   const card = <ActionQueueCardBody item={shortened ? { ...item, taskTitle: short } : item} />;
   const refresh = item.refreshFirst;
