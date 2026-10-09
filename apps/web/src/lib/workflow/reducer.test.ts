@@ -718,6 +718,24 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
     const three = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
     expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], three), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
   });
+  test('438517a9: a hint the live read contradicts (nothing failing on the head now) moves nothing, from any T10 state', () => {
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED'] as const) {
+      const v = V(D({ state, approvedHeads: ['H1'] }));
+      expectResult(ci(v, { liveChecks: { complete: true, failing: [] } }), 'rejected', 'ci_not_red');
+      // A re-run still going is not red either: its own completion is the next hint.
+      expectResult(ci(v, { liveChecks: { complete: false, failing: [] } }), 'rejected', 'ci_not_red');
+    }
+    // Red now: applied, and the read is the transition's evidence.
+    const red = applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), { liveChecks: { complete: false, failing: ['build'] } }));
+    expect(red.toState).toBe('REPAIRING');
+    expect(red.evidence).toMatchObject({ liveChecks: { complete: false, failing: ['build'] } });
+    // No read (unreadable, or a person's Fix CI) fails toward doing the work.
+    expect(applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })))).evidence).not.toHaveProperty('liveChecks');
+    // A genuinely new red after a skipped attempt at the same head is the next ledger row, still bounded by the cap.
+    const skipped = [A({ id: 'c1', family: 'ci', attemptNo: 1, status: 'skipped' })];
+    const again = applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] }), [], skipped), { liveChecks: { complete: true, failing: ['build'] } }));
+    expect(again.idempotencyKey).toMatch(/^ci:.+:H1:2$/);
+  });
   test('an old-SHA failure is recorded only; CHANGES_REQUESTED keeps state', () => {
     expectResult(ci(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');
     const cr = applied(ci(V(D({ state: 'CHANGES_REQUESTED' }))));
