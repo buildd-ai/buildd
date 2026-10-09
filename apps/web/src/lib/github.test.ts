@@ -22,7 +22,7 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview, mergePullRequest, checkSuitesAllPassed } from './github';
+import { postPrReview, mergePullRequest, checkSuitesAllPassed, retryAfterFromHeaders } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -153,7 +153,33 @@ describe('postPrReview', () => {
   });
 });
 
+describe('retryAfterFromHeaders', () => {
+  const now = Date.parse('2026-10-01T00:00:00Z');
+  it('reads retry-after in seconds', () => {
+    expect(retryAfterFromHeaders(new Headers({ 'retry-after': '90' }), now)).toBe(90_000);
+  });
+  it('reads x-ratelimit-reset (epoch seconds) when the quota is spent', () => {
+    expect(retryAfterFromHeaders(new Headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 + 300) }), now)).toBe(300_000);
+    // A reset already past is "now", never negative.
+    expect(retryAfterFromHeaders(new Headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(now / 1000 - 5) }), now)).toBe(0);
+  });
+  it('ignores x-ratelimit-reset while quota remains, and anything unparseable', () => {
+    expect(retryAfterFromHeaders(new Headers({ 'x-ratelimit-remaining': '12', 'x-ratelimit-reset': String(now / 1000 + 300) }), now)).toBeNull();
+    expect(retryAfterFromHeaders(new Headers({ 'retry-after': 'soon' }), now)).toBeNull();
+    expect(retryAfterFromHeaders(new Headers(), now)).toBeNull();
+  });
+});
+
 describe('mergePullRequest', () => {
+  it('carries a rate limit\'s retry-after on the refusal', async () => {
+    global.fetch = mock(async () => new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+      status: 429, headers: { 'content-type': 'application/json', 'retry-after': '60' },
+    })) as unknown as typeof fetch;
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
+    expect(result).toMatchObject({ merged: false, status: 429, retryAfterMs: 60_000 });
+    expect(result.indeterminate).toBeFalsy();
+  });
+
   it('returns merged on a 200 with a parseable body', async () => {
     global.fetch = mock(async () => jsonResponse(200, { message: 'Pull Request successfully merged' })) as unknown as typeof fetch;
 
