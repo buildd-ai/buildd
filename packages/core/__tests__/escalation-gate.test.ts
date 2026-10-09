@@ -173,12 +173,16 @@ describe('escalationRule: the backtest\'s findings', () => {
     ['a draft', { draft: true }, null],
     ['an XL diff', { sizeXl: true }, null],
     ['not policy only', { policyOnly: false }, null],
-    // a90fc99b: the merge policy itself says a person merges, so a rule never lands it.
-    ['the workspace merge policy is the human tier', { why: 'human_tier' as const }, null],
   ])('not when %s', (_n, over, action) => {
     const v = escalationRule(policyOnly(over as Partial<EscalationSubject>));
     if (action) expect(v).toMatchObject({ action });
     else expect(v).toBeNull();
+  });
+
+  it('a90fc99b: under the human merge tier a rule never lands it; the merge is the person\'s', () => {
+    const v = escalationRule(policyOnly({ why: 'human_tier' }));
+    expect(v).toMatchObject({ owner: 'person' });
+    expect(v).not.toMatchObject({ action: 'policy_merge' });
   });
 
   it('workflow and secrets paths always go to a person', () => {
