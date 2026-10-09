@@ -278,7 +278,8 @@ describe('strict workspace resolution', () => {
 describe('per-request resolution of a multi-team grant', () => {
   test('acts in the named workspace\'s team at the role there, confined to that workspace', async () => {
     const s = await setup();
-    const bound = (id: string) => new Request('http://localhost/api/tasks', { headers: { [GRANT_WORKSPACE_HEADER]: id } });
+    // A grant session is workspace-confined on REST: a collection read names its workspace.
+    const bound = (id: string) => new Request(`http://localhost/api/tasks?workspaceId=${id}`, { headers: { [GRANT_WORKSPACE_HEADER]: id } });
     const inA = await authenticateApiKey(s.jwt, bound(s.a.workspaceId)) as Record<string, unknown> | null;
     expect(inA).toMatchObject({ teamId: s.a.teamId, level: 'admin', workspaceIds: [s.a.workspaceId] });
     const inB = await authenticateApiKey(s.jwt, bound(s.b.workspaceId)) as Record<string, unknown> | null;
@@ -307,7 +308,8 @@ describe('per-request resolution of a multi-team grant', () => {
   test('on a one-team grant, a binding to an ungranted workspace of that team is no session', async () => {
     const s = await setup();
     const jwt = await grantToken({ userId: s.userId, clientId: s.clientId, actsAs: 'person', workspaceIds: [s.a.workspaceId] });
-    const bound = (id: string) => new Request('http://localhost/api/tasks', { headers: { [GRANT_WORKSPACE_HEADER]: id } });
+    // A grant session is workspace-confined on REST: a collection read names its workspace.
+    const bound = (id: string) => new Request(`http://localhost/api/tasks?workspaceId=${id}`, { headers: { [GRANT_WORKSPACE_HEADER]: id } });
     expect(await authenticateApiKey(jwt, bound(s.a.workspaceId))).not.toBeNull();
     expect(await authenticateApiKey(jwt, bound(s.sibling))).toBeNull();
   });

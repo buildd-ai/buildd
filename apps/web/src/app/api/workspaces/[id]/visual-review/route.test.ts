@@ -94,7 +94,7 @@ describe('GET /api/workspaces/[id]/visual-review', () => {
     mockResolveTeamIds.mockResolvedValue(['team-a']);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     expect((await call(WS, 'bld_x')).status).toBe(200);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-1' }), WS);
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(false);
     expect((await call(WS, 'bld_x')).status).toBe(404);
   });

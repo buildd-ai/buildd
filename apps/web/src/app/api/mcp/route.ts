@@ -1000,7 +1000,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     }
   }
 
-  if (account.workspaceIds != null && (!workspaceId || !tokenWorkspaceAllowed(account.workspaceIds, workspaceId) || !(await verifyAccountWorkspaceAccess(account.id, workspaceId)))) return new Response(JSON.stringify({error:'forbidden'}), {status:403});
+  if (account.workspaceIds != null && (!workspaceId || !tokenWorkspaceAllowed(account.workspaceIds, workspaceId) || !(await verifyAccountWorkspaceAccess(account, workspaceId)))) return new Response(JSON.stringify({error:'forbidden'}), {status:403});
 
   // A `?worker=` id is the worker this session acts as; it must be one the
   // calling account runs, or one in its own team's workspaces.

@@ -87,7 +87,7 @@ export async function GET(
   } else if (auth.type === 'api') {
     // A per-task token lists artifacts only in its own task's workspace.
     if (!taskScopeAllowsWorkspace(auth.account, id)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-    const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+    const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
@@ -176,7 +176,7 @@ export async function POST(
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
-  const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, id);
+  const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, id);
   if (!hasAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

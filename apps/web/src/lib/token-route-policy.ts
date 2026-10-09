@@ -1,4 +1,5 @@
 import { hasTokenScope, type TokenScope } from '@buildd/core/token-scopes';
+import { isGrantSession } from './grant-scope';
 
 /** One capability map for REST authentication and legacy administrator gates. */
 export function requiredTokenScope(pathname: string, method: string): TokenScope | null {
@@ -41,16 +42,44 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   return 'admin';
 }
 
-type ScopedToken = { scopes?: readonly string[] | null; workspaceIds?: readonly string[] | null };
+type ScopedToken = { scopes?: readonly string[] | null; workspaceIds?: readonly string[] | null; oauthGrantId?: string | null };
 type RouteRequest = { url: string; method: string };
 
+/**
+ * A grant session (lib/grant-scope.ts) is workspace-confined even when it
+ * carries no scopes (a write grant acts at the member's role level), so the
+ * workspace-restriction rules below apply to it as they do to a scoped token.
+ */
+const GRANT_DENIED_ROUTES: readonly RegExp[] = [
+  /^\/api\/runner(?:\/|$)/,
+  /^\/api\/quality-scout\/runs(?:\/|$)/,
+  /^\/api\/knowledge\/ingest-jobs\/claim$/,
+  /^\/api\/workers\/heartbeat$/,
+  /^\/api\/workers\/local-sessions(?:\/|$)/,
+  /^\/api\/webhooks(?:\/|$)/,
+  /^\/api\/tasks\/cleanup$/,
+];
+
+function isWorkspaceConfined(token: ScopedToken): boolean {
+  return token.workspaceIds != null && (token.scopes != null || isGrantSession(token));
+}
+
 export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest): boolean {
-  if (token.scopes == null) return true;
+  if (token.scopes == null && !isGrantSession(token)) return true;
   if (!request) return false;
   const url = new URL(request.url);
   // MCP dispatch performs its own action and workspace checks after authentication.
   if (url.pathname === '/api/mcp' || /^\/api\/mcp-oauth\//.test(url.pathname)) return true;
-  if (token.workspaceIds != null) {
+  // A grant session with no workspace list reaches nothing (fail closed).
+  if (isGrantSession(token) && token.workspaceIds == null) return false;
+  // Runner plumbing (credential and token minting, heartbeats, background job
+  // claims, local-session presence, inbound webhooks) acts for a runner or the
+  // whole team account, never for one granted workspace: a grant session, a
+  // person's MCP connection, never reaches it.
+  // (Reading a Scout run's command log is read_evidence, not runner plumbing.)
+  const scoutEvidenceRead = request.method === 'GET' && /^\/api\/quality-scout\/runs\/[^/]+\/evidence$/.test(url.pathname);
+  if (isGrantSession(token) && !scoutEvidenceRead && GRANT_DENIED_ROUTES.some(re => re.test(url.pathname))) return false;
+  if (isWorkspaceConfined(token) && token.workspaceIds != null) {
     if (requiredTokenScope(url.pathname, request.method) === 'secrets' || requiredTokenScope(url.pathname, request.method) === 'admin') return false;
     if (/^\/api\/experiments(?:\/|$)/.test(url.pathname)) return false;
     if (/^\/api\/connectors(?:\/|$)/.test(url.pathname)) return false;
@@ -80,6 +109,8 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }
+  // A write grant has no scopes: its role level gates actions in-handler.
+  if (token.scopes == null) return true;
   const scope = requiredTokenScope(url.pathname, request.method);
   return scope !== null && hasTokenScope(token.scopes, scope);
 }
