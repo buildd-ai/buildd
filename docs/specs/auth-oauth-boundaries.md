@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/tests/db/mcp-grant-management.test.ts, apps/web/src/app/api/mcp-grants/[id]/route.test.ts, apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx, apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -38,6 +38,14 @@ assertions:
   - id: "account-consent-tests"
     type: "test_file"
     path: "apps/web/tests/db/mcp-oauth-consent.test.ts"
+  - id: "manage-connection-route"
+    type: "route"
+    method: "PATCH"
+    path: "/api/mcp-grants/[id]"
+    file: "apps/web/src/app/api/mcp-grants/[id]/route.ts"
+  - id: "manage-connection-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/mcp-grant-management.test.ts"
 ---
 # Auth & OAuth Boundaries
 
@@ -560,6 +568,97 @@ deprecated.
 **Not covered here**: REST routes that act team-wide from `account.teamId`
 without consulting `account.workspaceIds` are grant-limited by a separate
 task.
+---
+
+## Managing connections
+
+**Capability statement**: A person MUST be able to see every MCP connection
+they made, what each one reaches and how it acts, and add or remove
+workspaces, switch read/write, downgrade it to an agent, or revoke it, from
+Settings › Connected apps. Every change applies on the app's next request.
+
+**API** (`apps/web/src/app/api/mcp-grants/`, `apps/web/src/lib/mcp-grant-admin.ts`):
+- `GET /api/mcp-grants` → `{ connections, legacy, teams }`: the person's
+  active grants (app name, `actsAs`, `read` | `read-write`, last token issue,
+  reachable workspaces with team names, and a count of granted workspaces no
+  longer reachable); their legacy per-workspace connections (app, workspace,
+  last active); and their teams with every workspace, for the picker.
+- `PATCH /api/mcp-grants/[id]` `{ addWorkspaceIds?, removeWorkspaceIds?,
+  access?, actsAs?: 'agent' }` → `{ connection }`. Unknown fields are refused.
+- `DELETE /api/mcp-grants/[id]` → `{ revoked: true }`.
+
+**Invariants**:
+- Dashboard session only (`getCurrentUser`). An API key, a task token or an
+  MCP grant token cannot read or change connections, so a connection cannot
+  widen itself.
+- A person reads and edits only their own grants. Every statement carries the
+  owner in its `WHERE`; another user's grant, a revoked one and an unknown id
+  all answer the same 404 and change nothing, refresh tokens included.
+- Adding a workspace re-checks membership at the edit, never trusting the list
+  the page was shown. One unreachable id refuses the whole change (403
+  `workspace_not_accessible`), nothing is written, and no refusal repeats an
+  id from the request.
+- A connection keeps at least one reachable workspace; removing the last one
+  is refused (400), and the person revokes it instead.
+- `acts_as` can go from `'person'` to `'agent'` here, never back. A PATCH
+  with `actsAs: 'person'` is refused (403 `person_needs_consent`) before
+  anything is read, even bundled with an otherwise valid change. Acting as
+  the person needs a fresh consent with `buildd:act-as-person`.
+- The grant row stays the authority. Grant sessions are never cached, so a
+  shrink, a read-only switch or a downgrade applies on the next request on an
+  access token already issued. The scope string on the grant's outstanding
+  refresh tokens is rewritten to match, so the next token response does not
+  claim a person scope the grant no longer has.
+- Revoke marks the grant revoked and revokes every refresh token under it, in
+  every family, scoped to the owner (`revokeGrant`). The access token stops
+  resolving on its next request and every refresh token is refused.
+- Legacy per-workspace connections are listed, not edited, with a hint to
+  move to the one account-level connection.
+- The page lives in Settings under "You and your team", apart from MCP
+  connectors (the outside tools agents call). The workspace picker reuses
+  the consent page's state model and reducer (`applyNav`,
+  `filteredWorkspaces`, `CONSENT_PAGE_SIZE`).
+
+**Acceptance criteria**:
+- AC-42: GIVEN a signed-in person WHEN `GET /api/mcp-grants` runs THEN it lists
+  only their own active grants and their own teams, never another user's grant
+  or an outside team's workspace.
+- AC-43: GIVEN another user's grant id WHEN PATCH or DELETE names it THEN the
+  answer is 404 with no id in the body, and the grant, its workspaces and its
+  refresh tokens are unchanged.
+- AC-44: GIVEN an add naming a workspace outside the person's teams, an
+  unknown id, or a workspace whose team they just left WHEN PATCH runs THEN it
+  is refused with 403, nothing is written, and no id is echoed.
+- AC-45: GIVEN a live grant token WHEN a workspace is added, a workspace is
+  removed, or access is switched to read only THEN the next request on the
+  same token reaches the added workspace, no longer reaches the removed one,
+  and is a read-scoped session.
+- AC-46: GIVEN a `'person'` grant WHEN PATCH sets `actsAs: 'agent'` THEN the
+  next request is not a person (`requestingPerson()` is null) and the next
+  token response has no person scope. GIVEN an `'agent'` grant WHEN PATCH
+  sets `actsAs: 'person'` THEN it is refused with 403 and the row stays
+  `'agent'`.
+- AC-47: GIVEN a grant with refresh tokens in two families WHEN DELETE runs
+  THEN every refresh token under it is revoked, each refresh is refused, the
+  access token stops resolving, and a second DELETE is 404.
+- AC-48: GIVEN legacy per-workspace refresh tokens WHEN the person lists
+  connections THEN each reachable app and workspace is listed once, and one
+  in a team they are not on is not.
+
+**Code surface**:
+- API: `apps/web/src/app/api/mcp-grants/route.ts`,
+  `apps/web/src/app/api/mcp-grants/[id]/route.ts`
+- Library: `apps/web/src/lib/mcp-grant-admin.ts` — `listUserConnections()`,
+  `updateUserGrant()`, `consentTeamsForUser()`;
+  `apps/web/src/lib/mcp-grant-patch.ts` — `parseGrantPatch()`;
+  `apps/web/src/lib/mcp-grants.ts` — `revokeGrant()`
+- UI: `apps/web/src/app/app/(protected)/settings/connections/` —
+  `ConnectionsSection.tsx`, `WorkspacePicker.tsx`; dev fixture
+  `/app/dev/fixtures?state=mcp-connections`
+- Tests: `apps/web/tests/db/mcp-grant-management.test.ts` (real Postgres),
+  `apps/web/src/app/api/mcp-grants/[id]/route.test.ts`,
+  `apps/web/src/app/api/mcp-grants/route.test.ts`,
+  `apps/web/src/app/app/(protected)/settings/connections/ConnectionsSection.dom.test.tsx`
 ---
 
 ## CLI Device-Code Auth

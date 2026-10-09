@@ -18,9 +18,10 @@ import {
   type ConsentTeam,
 } from '@/lib/oauth/account-consent';
 import { createGrant } from '@/lib/mcp-grants';
+import { consentTeamsForUser } from '@/lib/mcp-grant-admin';
 import { db } from '@buildd/core/db';
-import { teamMembers, teams, workspaces } from '@buildd/core/db/schema';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { teamMembers, workspaces } from '@buildd/core/db/schema';
+import { eq, inArray } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
@@ -92,34 +93,6 @@ async function workspacesForUser(userId: string) {
     orderBy: (w, { asc }) => [asc(w.name)],
   });
   return rows.map((w) => ({ ...w, role: roleByTeam.get(w.teamId) ?? null }));
-}
-
-/**
- * The user's teams, each with every workspace it holds, for the account-level
- * consent page. Read fresh on every render and on approval, so a selection is
- * always checked against current membership.
- */
-async function consentTeamsForUser(userId: string): Promise<ConsentTeam[]> {
-  const memberships = await db
-    .select({ teamId: teams.id, name: teams.name, role: teamMembers.role })
-    .from(teamMembers)
-    .innerJoin(teams, eq(teams.id, teamMembers.teamId))
-    .where(eq(teamMembers.userId, userId))
-    .orderBy(asc(teams.name), asc(teams.id));
-  if (memberships.length === 0) return [];
-  const rows = await db
-    .select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId })
-    .from(workspaces)
-    .where(inArray(workspaces.teamId, memberships.map((m) => m.teamId)))
-    .orderBy(asc(workspaces.name), asc(workspaces.id));
-  return memberships
-    .map((m) => ({
-      id: m.teamId,
-      name: m.name,
-      role: (m.role as string | null) ?? null,
-      workspaces: rows.filter((w) => w.teamId === m.teamId).map((w) => ({ id: w.id, name: w.name })),
-    }))
-    .filter((t) => t.workspaces.length > 0);
 }
 
 /** The authorize parameters, read from the GET query or the consent POST body. */

@@ -89,7 +89,7 @@ function normaliseScopes(v: unknown): McpGrantScope[] | null {
 }
 
 /** Workspaces among `workspaceIds` whose team the user is a member of now. */
-async function memberWorkspaces(userId: string, workspaceIds: string[]): Promise<GrantedWorkspace[]> {
+export async function memberWorkspaces(userId: string, workspaceIds: string[]): Promise<GrantedWorkspace[]> {
   if (workspaceIds.length === 0) return [];
   const rows = await db
     .select({ workspaceId: workspaces.id, teamId: workspaces.teamId, role: teamMembers.role })
@@ -258,8 +258,10 @@ export function grantPrincipal(grant: Pick<ResolvedGrant, 'actsAs' | 'userId'>):
 }
 
 /**
- * Revoke a grant and every refresh token issued under it. Access tokens on it
- * stop resolving on their next request. True when this call revoked it.
+ * Revoke a grant and every refresh token issued under it, in every family.
+ * Access tokens on it stop resolving on their next request. True when this
+ * call revoked it. Both statements are scoped to `userId`, so naming another
+ * user's grant id revokes nothing, not even its refresh tokens.
  */
 export async function revokeGrant(grantId: string, userId: string): Promise<boolean> {
   if (!isUuid(grantId) || !isUuid(userId)) return false;
@@ -269,7 +271,12 @@ export async function revokeGrant(grantId: string, userId: string): Promise<bool
     .set({ revokedAt: now, updatedAt: now })
     .where(and(eq(mcpOauthGrants.id, grantId), eq(mcpOauthGrants.userId, userId), isNull(mcpOauthGrants.revokedAt)))
     .returning({ id: mcpOauthGrants.id });
-  await revokeRefreshTokensForGrant(grantId);
+  // Also on a repeat call for the user's own grant, so a token minted in a
+  // race with the first revoke cannot outlive it.
+  await db
+    .update(oauthRefreshTokens)
+    .set({ revokedAt: now })
+    .where(and(eq(oauthRefreshTokens.grantId, grantId), eq(oauthRefreshTokens.userId, userId), isNull(oauthRefreshTokens.revokedAt)));
   return rows.length > 0;
 }
 
