@@ -22,6 +22,8 @@ interface ReleaseRowProps {
   metrics: { taskCount: number; missionCount: number };
   stateBadge: { label: string; cls: string };
   archetypeBadge: { label: string; cls: string };
+  supersededByVersion?: string | null;
+  supersededByReleaseId?: string | null;
 }
 
 function relativeTime(iso: string | Date | null): string {
@@ -45,6 +47,8 @@ export function ReleaseRow({
   metrics,
   stateBadge,
   archetypeBadge,
+  supersededByVersion,
+  supersededByReleaseId,
 }: ReleaseRowProps) {
   return (
     // The card is a <div>, not the <Link>, for two reasons. `.card` sets
@@ -112,7 +116,19 @@ export function ReleaseRow({
             </div>
           )}
 
-          {release.failureReason && (
+          {supersededByVersion && supersededByReleaseId && (
+            <div className="mt-2 text-[11px] text-text-muted font-mono">
+              Superseded by{' '}
+              <Link
+                href={`/app/releases/${supersededByReleaseId}`}
+                className="relative text-primary hover:underline"
+              >
+                {supersededByVersion}
+              </Link>
+            </div>
+          )}
+
+          {release.failureReason && !supersededByVersion && (
             <div className="mt-2 text-[11px] text-status-error font-mono">{release.failureReason}</div>
           )}
         </div>
