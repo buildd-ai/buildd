@@ -55,7 +55,7 @@ describe('replay', () => {
     // It covers the families the harness has to rebuild commands for.
     const commands = new Set(corpus.flatMap((c) => c.transitions.map((t) => t.command)));
     for (const c of ['DeliveryOpened', 'PrBound', 'HeadObserved', 'AttemptEnded', 'ReviewVerdictRecorded', 'FixDispatched', 'FixClaimed',
-      'CiFailedObserved', 'LandingRequested', 'MergeCallResult', 'PrMerged', 'PrClosedUnmerged', 'Abandon']) expect(commands).toContain(c);
+      'CiFailedObserved', 'ConflictObserved', 'LandingRequested', 'MergeCallResult', 'PrMerged', 'PrClosedUnmerged', 'Abandon']) expect(commands).toContain(c);
   });
 });
 
@@ -183,5 +183,51 @@ describe('out-of-band rows are not the step’s decision', () => {
     const e = c.effects.find((x) => x.kind === 'push_recovery')!;
     e.dedupeKey = `push_recovery:${did}:${String(live.headSha)}:1`;
     expect(await replayDelivery(c, { exec })).toMatchObject({ result: 'diverged' });
+  }, 60_000);
+});
+
+/**
+ * bc92e43f: a conflict repair escalating to an agent a second time. The first agent's
+ * worker ended after its push had already taken the delivery back to review: that end
+ * writes the attempt row and no transition. Unless the replay writes it too, the second
+ * refusal (`effect:refresh_branch`, REPAIRING -> REPAIRING) meets a still-open agent
+ * attempt and is rejected `fix_in_flight`.
+ */
+describe('an attempt end no transition wrote', () => {
+  const escalation = () => {
+    const c = readCorpus(FIXTURE).find((x) => x.transitions.filter((t) => t.command === 'ConflictObserved' && t.actor === 'effect:refresh_branch').length === 2)!;
+    const late = c.attempts.find((a) => a.family === 'conflict' && a.mode === 'agent' && a.attemptNo === 1)!;
+    return { c, late };
+  };
+
+  test('the synthetic corpus records the shape: an ended agent attempt whose end time is no transition\'s', () => {
+    const { c, late } = escalation();
+    expect(late.status).toBe('ended');
+    expect(typeof late.endedUs).toBe('number');
+    expect(c.transitions.some((t) => t.tUs === late.endedUs)).toBe(false);
+    const last = [...c.transitions].sort((a, b) => a.toVersion - b.toVersion).at(-1)!;
+    expect(last).toMatchObject({ command: 'ConflictObserved', actor: 'effect:refresh_branch', fromState: 'REPAIRING', toState: 'REPAIRING', evidence: { mode: 'agent' } });
+  });
+
+  test('is written at its recorded time, and the escalation replays identically', async () => {
+    const r = await replayDelivery(escalation().c, { exec });
+    expect(r).toMatchObject({ result: 'identical' });
+    expect(r.inferred).toContain('attempt end (out-of-band row, re-applied at its recorded time)');
+  }, 60_000);
+
+  test('a corpus exported before end times were recorded infers it from the attempt no longer being bound', async () => {
+    const { c } = escalation();
+    for (const a of c.attempts) delete a.endedUs;
+    const r = await replayDelivery(c, { exec });
+    expect(r).toMatchObject({ result: 'identical' });
+    expect(r.inferred).toContain('attempt end (out-of-band, unbound worker end; time not recorded)');
+  }, 60_000);
+
+  test('without it, the escalation is rejected and reported as diverged', async () => {
+    const { c, late } = escalation();
+    c.attempts = c.attempts.map((a) => (a.id === late.id ? { ...a, status: 'running', outcome: 'delivered', endedUs: null } : a));
+    expect(await replayDelivery(c, { exec })).toMatchObject({
+      result: 'diverged', step: 'command ConflictObserved (effect:refresh_branch)', replayed: 'no transition (rejected: fix_in_flight)',
+    });
   }, 60_000);
 });
