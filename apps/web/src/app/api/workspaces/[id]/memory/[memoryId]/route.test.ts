@@ -79,8 +79,6 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
   // review_memory defaults to owner + admin.
   holdsInWorkspace: async () => hasAccess && RANK[role] >= RANK.admin,
-  canCallerAdminTeam: async (caller: any, teamId: string) =>
-    caller.kind === 'account' && caller.level === 'admin' && caller.teamId === teamId,
 }));
 mock.module('@buildd/core/db', () => ({
   db: { query: { teams: { findFirst: async () => null }, accounts: { findFirst: async () => apiAccount } } },

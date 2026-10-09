@@ -3,7 +3,18 @@ import { NextRequest } from 'next/server';
 
 const mockRequireSessionUser = mock(async () => ({ user: { id: 'u-1' } }) as any);
 const mockGetUserTeamIds = mock(async () => ['t-1'] as string[]);
-const mockGetUserAdminTeamIds = mock(async () => [] as string[]);
+// The caller's team roles and the team's permission overrides, read by the
+// real permission check (lib/permissions.ts) through this db mock.
+let roles: Record<string, string> = {};
+let overrides: Record<string, unknown> | null = null;
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      teamMembers: { findMany: async () => Object.entries(roles).map(([teamId, role]) => ({ teamId, role })) },
+      teams: { findFirst: async () => ({ id: 'not-a-personal-team', permissionOverrides: overrides }) },
+    },
+  },
+}));
 const mockResolveActiveTeamId = mock(async (_u: string, cookie: string | null) => cookie ?? 't-1');
 const mockList = mock(async (teamId: string, userId: string, canManage: boolean) => ({
   teamId, canManageTeamKeys: canManage, providers: [], _userId: userId,
@@ -18,7 +29,6 @@ mock.module('@/lib/chat/models', () => ({ resolveChatModel: mockResolveChatModel
 mock.module('@/lib/auth-helpers', () => ({ requireSessionUser: mockRequireSessionUser }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
-  getUserAdminTeamIds: mockGetUserAdminTeamIds,
   resolveActiveTeamId: mockResolveActiveTeamId,
 }));
 mock.module('@/lib/provider-keys', () => ({
@@ -42,8 +52,7 @@ beforeEach(() => {
   mockRequireSessionUser.mockResolvedValue({ user: { id: 'u-1' } });
   mockGetUserTeamIds.mockReset();
   mockGetUserTeamIds.mockResolvedValue(['t-1']);
-  mockGetUserAdminTeamIds.mockReset();
-  mockGetUserAdminTeamIds.mockResolvedValue([]);
+  roles = {}; overrides = null;
   mockSet.mockClear();
   mockDelete.mockClear();
   mockList.mockClear();
@@ -67,7 +76,7 @@ describe('auth', () => {
 
 describe('GET', () => {
   it('lists for the caller, telling it whether it can manage team keys', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue(['t-1']);
+    roles = { ['t-1']: 'admin' };
     const res = await GET(req('GET', '/api/inference-keys?teamId=t-1'));
     expect(res.status).toBe(200);
     expect(mockList).toHaveBeenCalledWith('t-1', 'u-1', true);
@@ -128,7 +137,7 @@ describe('PUT', () => {
   });
 
   it('an admin can set the team key', async () => {
-    mockGetUserAdminTeamIds.mockResolvedValue(['t-1']);
+    roles = { ['t-1']: 'admin' };
     const res = await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }));
     expect(res.status).toBe(200);
     expect(mockSet.mock.calls[0][0].scope).toBe('team');
@@ -172,11 +181,32 @@ describe('provider-symmetric authorization', () => {
       expect(mockSet.mock.calls.at(-1)![0]).toMatchObject({ provider, userId: 'u-1', scope: 'user' });
       expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(403);
       expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(403);
-      mockGetUserAdminTeamIds.mockResolvedValue(['t-1']);
+      roles = { ['t-1']: 'admin' };
       expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(200);
       expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(200);
     });
   }
+  it('team keys follow the team permission overrides for manage_inference_providers', async () => {
+    const body = { teamId: 't-1', provider: 'openai', value: 'example-api-key-for-tests', scope: 'team' };
+    roles = { ['t-1']: 'admin' };
+    overrides = { manage_inference_providers: ['owner'] };
+    expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(403);
+    expect((await DELETE(req('DELETE', '/api/inference-keys?teamId=t-1&provider=openai&scope=team'))).status).toBe(403);
+    expect(mockSet).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    await GET(req('GET', '/api/inference-keys?teamId=t-1'));
+    expect(mockList).toHaveBeenLastCalledWith('t-1', 'u-1', false);
+
+    roles = { ['t-1']: 'member' };
+    overrides = { manage_inference_providers: ['owner', 'admin', 'member'] };
+    expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(200);
+    expect(mockSet.mock.calls.at(-1)![0]).toMatchObject({ teamId: 't-1', scope: 'team' });
+    expect((await DELETE(req('DELETE', '/api/inference-keys?teamId=t-1&provider=openai&scope=team'))).status).toBe(200);
+    expect(mockDelete).toHaveBeenCalledWith({ teamId: 't-1', userId: 'u-1', provider: 'openai', scope: 'team' });
+    await GET(req('GET', '/api/inference-keys?teamId=t-1'));
+    expect(mockList).toHaveBeenLastCalledWith('t-1', 'u-1', true);
+  });
+
   it('excludes team gateways from the standalone personal key API', async () => {
     expect((await PUT(req('PUT', '/api/inference-keys', { provider: 'litellm', scope: 'user', value: 'example-key' }))).status).toBe(400);
     expect(mockSet).not.toHaveBeenCalled();
