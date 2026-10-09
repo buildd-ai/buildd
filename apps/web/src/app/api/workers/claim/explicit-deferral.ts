@@ -152,6 +152,14 @@ export function describeExplicitDeferral(
         detail: `The team's credential policy is personal keys only, and ${(cause && why[cause]) || 'no personal key can be used for it'}. Add a personal ${backendKey} key under Settings, or have an admin change the team's credential policy.`,
       };
     }
+    case 'provider_not_allowed': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'The Coding provider policy does not allow this run.'} ${remedy ?? 'Ask a team admin to change the Coding provider policy.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
     case 'tier_policy': {
       const message = str(detail.message);
       const remedy = str(detail.remedy);
