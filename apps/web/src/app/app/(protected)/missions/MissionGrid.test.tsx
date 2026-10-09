@@ -131,11 +131,11 @@ describe('MissionGrid portfolio', () => {
     expect(html).not.toMatch(/class="[^"]*section-label/);
   });
 
-  it('filter chips are quiet pills with the count inside; the selected one is filled with ink', () => {
+  it('filter chips are quiet pills (the pill radius token) with the count inside; the selected one is filled with ink', () => {
     const chips = html.match(/<button[^>]*data-testid="portfolio-filter"[\s\S]*?<\/button>/g)!;
     expect(chips.map(c => c.match(/data-filter="(\w+)"/)![1])).toEqual(['all', 'needs', 'motion', 'waiting']);
     for (const c of chips) {
-      expect(c).toContain('rounded-full');
+      expect(c).toContain('rounded-[var(--radius-pill)]');
       expect(c).not.toContain('border-2');
     }
     expect(chips[0]).toContain('aria-pressed="true"');
@@ -224,7 +224,7 @@ describe('MissionGrid — empty and single-workspace', () => {
     const html = renderToStaticMarkup(<MissionGrid rows={[]} actions={<a data-testid="new-mission-link" href="#">+ New</a>} now={NOW} />);
     expect(html.replace(/<[^>]+>/g, '')).toContain('0 open');
     expect(html).toContain('data-testid="new-mission-link"');
-    expect(html).toContain('No missions yet.');
+    expect(html).toContain('No missions. A mission is');
     expect(html).not.toContain('data-testid="portfolio-tools"');
     expect(html).not.toContain('Clear filters');
   });

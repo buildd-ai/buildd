@@ -106,7 +106,7 @@ export function MissionGrid({
                     className="group/chip flex min-h-11 shrink-0 items-center md:min-h-8"
                   >
                     <span
-                      className={`inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-body font-medium md:h-7 ${
+                      className={`inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-pill)] border px-3 text-body font-medium md:h-7 ${
                         on
                           ? 'border-text-primary bg-text-primary text-[var(--on-ink)]'
                           : 'border-border-default text-text-secondary group-hover/chip:border-border-strong group-hover/chip:text-text-primary'
@@ -161,7 +161,7 @@ export function MissionGrid({
         {visible.length === 0 && (
           <div data-testid="portfolio-empty" className="border-t border-border-default py-6 text-body text-text-secondary">
             {rows.length === 0
-              ? 'No missions yet. A mission is a goal Buildd plans into tasks and delivers.'
+              ? 'No missions. A mission is a goal Buildd plans into tasks and delivers.'
               : open.length === 0 ? 'No open missions.' : 'No missions match.'}
             {filtered && open.length > 0 && (
               <button
