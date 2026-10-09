@@ -1145,7 +1145,7 @@ function ConsumptionSection({
           </span>
         )}
       </div>
-      <div className="card p-4 space-y-4">
+      <div className="border-y border-border-default py-4 space-y-4">
         {/* The per-task cost/turn/tool-call tiles that used to sit here now live
             on the usage drill-down, whole — not copied. Publishing them in two
             places is how the same number ends up stated under two windows. */}
@@ -1327,7 +1327,7 @@ function SubagentDelegationSection({
             : sectionDenominator(0, 'sessions')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           <>
             <div className="flex items-baseline justify-between gap-3">
@@ -1394,7 +1394,7 @@ function ErrorPatternSection({
             : sectionDenominator(0, 'workers')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           panel.value.patterns.length === 0 ? (
             <p className="text-xs text-text-muted">No error-trace pattern fired in this window.</p>
@@ -1733,7 +1733,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
           {sectionDenominator(stats.total, stats.total === 1 ? 'task' : 'tasks')} ({window})
         </span>
       </div>
-      <div className="card px-4 py-3 space-y-2">
+      <div className="border-y border-border-default px-4 py-3 space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-sm text-text-secondary">
             {stats.completed}/{stats.total} tasks completed ({window})
@@ -1856,7 +1856,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
       </div>
 
       {totals.events === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">
             Nothing was refused, deferred, warned or bypassed in this window.
           </p>
@@ -1975,7 +1975,7 @@ function FailureAnalyticsSection({
       </div>
 
       {totals.started === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">No workers ran in this window.</p>
         </div>
       ) : (
