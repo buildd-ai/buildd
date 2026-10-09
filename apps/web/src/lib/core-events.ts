@@ -310,7 +310,13 @@ export type CoreEvent =
       repoFullName: string;
       pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
       worker: { id: string; workspaceId: string; taskId: string };
-    };
+    }
+  /**
+   * The hourly PR merge-state pass ran (`/api/cron/pr-reconcile`, merge-state
+   * and full scopes): the floor for module backstops whose webhook is lossy.
+   * Subscribers must be bounded (the route has a 60s budget) and idempotent.
+   */
+  | { type: 'sweep.pr_hourly'; at: Date };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {
