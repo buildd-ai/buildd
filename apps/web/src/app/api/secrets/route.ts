@@ -9,13 +9,18 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
+import { requeueAfterAgentCredential, writeSharedSecret } from '@/lib/providers/write-path';
+import { modelCredentialPurposes } from '@buildd/core/providers/manage';
 import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
 import { isTaskToken } from '@/lib/task-token';
 import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-credential-shared';
 
-/** Backend-auth purposes whose (re)store should recover auth-failed tasks. */
-const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential', 'openai_api_key']);
+/**
+ * Model-credential purposes (the provider registry's storages). Their writes go
+ * through the one provider write path (`@/lib/providers/write-path`), which
+ * `/api/providers` also uses; this route keeps its request and response shapes.
+ */
+const MODEL_PURPOSES = new Set(modelCredentialPurposes());
 
 /**
  * Purposes whose value is a raw credential string (not a JSON blob). Values pasted
@@ -265,13 +270,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const provider = getSecretsProvider();
     // replaceScoped (not set(null)): a re-save REPLACES the existing credential at
     // the same scope instead of appending a duplicate row. Duplicates are a real
     // hazard here — the claim-time resolver picks one row per (team, purpose) with
     // no ordering, so a stale/revoked leftover could be handed to a worker while a
     // fresh token sits unused. See docs/credentials-architecture.md.
-    const id = await provider.replaceScoped(sanitizedValue, {
+    const metadata = {
       teamId: targetTeamId,
       // MCP credentials, decision/inference keys, and role-env secrets are team-wide
       // (shared by everyone in the team), so don't scope them to the caller's account
@@ -280,18 +284,14 @@ export async function POST(req: NextRequest) {
       workspaceId,
       purpose,
       label,
-    });
+    };
+    const id = MODEL_PURPOSES.has(purpose)
+      ? await writeSharedSecret({ ...metadata, value: sanitizedValue })
+      : await getSecretsProvider().replaceScoped(sanitizedValue, metadata);
 
     // Storing a healthy backend credential recovers tasks that failed on the old
     // (revoked/expired) one — self-heal instead of a manual re-run slog. Best-effort.
-    let requeued = 0;
-    if (CLAUDE_CREDENTIAL_PURPOSES.has(purpose)) {
-      try {
-        requeued = (await requeueAuthFailedTasks(targetTeamId)).requeued.length;
-      } catch (err) {
-        console.warn('[secrets] requeue-on-recovery failed (non-fatal):', err);
-      }
-    }
+    const requeued = await requeueAfterAgentCredential(targetTeamId, purpose);
 
     return NextResponse.json({ id, requeued });
   } catch (error) {

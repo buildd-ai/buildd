@@ -20,6 +20,7 @@ const ALLOWED = new Set([
   'packages/core/litellm-gateway.ts', // team gateway (inference_key/litellm): isNull(userId) explicit, never personal
   'apps/web/src/lib/litellm-gateway-settings.ts', // manages that team row: isNull(userId) explicit
   'apps/web/src/lib/personal-roles.ts', // personal role env check: eq(userId, owner) explicit, only the owner's rows
+  'apps/web/src/lib/providers/credentials.ts', // model-credential delete at one scope: isNull(userId) or eq(userId, caller) explicit
 ]);
 
 /** Call sites that read connector / MCP / role-env / webhook credentials by label or purpose. */
