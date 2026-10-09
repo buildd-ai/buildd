@@ -141,8 +141,8 @@ describe('MissionGrid portfolio', () => {
   });
 
   it('raises an exception line only when there is one', () => {
-    expect(rowHtml('m03')).toContain('reconciled automatically');
-    expect(rowHtml('m01')).not.toContain('reconciled automatically');
+    expect(rowHtml('m03')).toContain('checking automatically');
+    expect(rowHtml('m01')).not.toContain('checking automatically');
   });
 
   it('a recurring mission names its next run', () => {

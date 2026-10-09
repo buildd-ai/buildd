@@ -24,31 +24,35 @@ export const SECTION_META: Record<MissionSectionKey, { label: string; order: str
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting'];
 
 const SECTION_OF: Record<DeliveryKind, MissionSectionKey> = {
-  // A closed, unmerged PR is reconciled by the platform (it checks whether another
-  // PR carries the work), so it is not an ask. A real escalation is `needs`.
-  needs: 'needs',
-  notlanded: 'motion', unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
+  // `notlanded` is split in `sectionOf`: only a closed PR still being reconciled
+  // is moving; an abandoned PR or a failed task is a person's call.
+  needs: 'needs', notlanded: 'needs', unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
   waiting: 'waiting', held: 'waiting', planning: 'waiting',
   // A landed mission still open is about to complete: it is moving, not waiting.
   landed: 'motion',
 };
 
-export const sectionOf = (r: PortfolioRow): MissionSectionKey => SECTION_OF[r.delivery.kind];
+export const sectionOf = (r: PortfolioRow): MissionSectionKey =>
+  r.delivery.kind === 'notlanded' && r.delivery.reconciling ? 'motion' : SECTION_OF[r.delivery.kind];
 
 /** A mission's delivery kind as the shared state vocabulary (glyph + word). */
 export const STATE_OF_KIND: Record<DeliveryKind, StateKey | null> = {
-  needs: 'needs_you', notlanded: 'recovering', unavailable: 'recovering',
+  needs: 'needs_you', notlanded: 'not_landed', unavailable: 'recovering',
   repair: 'fixing', audit: 'review', landing: 'landing', build: 'running', landed: 'landed',
   // Not started: no state pill; the row says why in words.
   waiting: null, held: null, planning: null,
 };
+
+/** The state pill for a mission: a closed PR being reconciled reads Recovering, not Not landed. */
+export const stateOfDelivery = (d: PortfolioRow['delivery']): StateKey | null =>
+  d.kind === 'notlanded' && d.reconciling ? 'recovering' : STATE_OF_KIND[d.kind];
 
 const byId = (a: PortfolioRow, b: PortfolioRow) => a.delivery.id.localeCompare(b.delivery.id);
 /** Epoch ms, a missing time last. */
 const at = (r: PortfolioRow) => r.lastAdvancedAt ?? Infinity;
 
 /** Slipping rank: repair, then an audit that cannot run, then everything else. */
-const SLIP: Partial<Record<DeliveryKind, number>> = { repair: 0, unavailable: 1, notlanded: 1 };
+const SLIP: Partial<Record<DeliveryKind, number>> = { repair: 0, unavailable: 1 };
 const WAIT: Record<string, number> = { waiting: 0, planning: 1, held: 2 };
 
 const ORDER: Record<MissionSectionKey, (a: PortfolioRow, b: PortfolioRow) => number> = {
