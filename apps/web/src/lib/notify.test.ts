@@ -73,6 +73,12 @@ mock.module('@buildd/core/secrets', () => ({
   encrypt: (v: string) => v,
 }));
 
+// The escalation gate's push check (lib/escalation-notify.ts): PR 9 is Buildd's.
+const pageChecks: Array<{ workspaceId: string; prNumber: number }> = [];
+mock.module('./escalation-notify', () => ({
+  mayPageEscalation: async (s: { workspaceId: string; prNumber: number }) => { pageChecks.push(s); return s.prNumber !== 9; },
+}));
+
 const { notifyTeamOf } = await import('./notify');
 
 const sent: Array<{ token: string; user: string; title: string; priority: number }> = [];
@@ -80,6 +86,7 @@ const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   sent.length = 0;
+  pageChecks.length = 0;
   lastWhere = null;
   process.env.PUSHOVER_USER = 'operator-user';
   process.env.PUSHOVER_TOKEN = 'operator-app';
@@ -129,5 +136,24 @@ describe('notifyTeamOf', () => {
   it('keeps the payload priority', async () => {
     await notifyTeamOf({ workspaceId: 'ws-a' }, 'needsAttention', { title: 't', message: 'm', priority: 1 });
     expect(sent[0].priority).toBe(1);
+  });
+
+  it('a PR escalation Buildd owns does not page; one a person owns does', async () => {
+    await notifyTeamOf({ workspaceId: 'ws-a', prNumber: 9 }, 'needsAttention', { title: 'PR #9 escalated', message: 'm' });
+    expect(sent).toEqual([]);
+    await notifyTeamOf({ workspaceId: 'ws-a', prNumber: 10 }, 'needsAttention', { title: 'PR #10 escalated', message: 'm' });
+    expect(sent.map(s => s.token)).toEqual(['app-a']);
+  });
+
+  it('a task-addressed PR escalation is checked against the task workspace', async () => {
+    await notifyTeamOf({ taskId: 't-b', prNumber: 9 }, 'needsAttention', { title: 't', message: 'm' });
+    expect(pageChecks).toEqual([{ workspaceId: 'ws-b', prNumber: 9 }]);
+    expect(sent).toEqual([]);
+  });
+
+  it('an alert with no PR number is not gated', async () => {
+    await notifyTeamOf({ workspaceId: 'ws-a' }, 'needsAttention', { title: 't', message: 'm' });
+    expect(pageChecks).toEqual([]);
+    expect(sent).toHaveLength(1);
   });
 });
