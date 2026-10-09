@@ -315,6 +315,7 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   promote_discrepancy: [''],
   send_agent_message: [''],
   trigger_release: [''],
+  merge_pr: [''],
   consolidate_knowledge: [''],
   memory_delete: [''],
   create_schedule: [''],

@@ -147,3 +147,14 @@ describe('runner status from chat', () => {
     expect(CHAT_READ_TOOLS as readonly string[]).toContain('list_runners');
   });
 });
+
+describe('merge_pr from chat (the landing escape hatch)', () => {
+  it('is a write on the conversation workspace that reaches only the dashboard merge route, and always asks', () => {
+    const op = CHAT_TOOL_SPECS.merge_pr.ops[''];
+    expect(op.class).toBe('write');
+    expect(op.alwaysAsk).toBe(true);
+    expect(op.target).toEqual({ param: 'workspaceId', is: 'workspace' });
+    expect([...op.routes].sort()).toEqual(['GET /api/workspaces', 'POST /api/prs/:prNumber/merge']);
+    expect(op.routes).not.toContain('PUT /api/github/pr');
+  });
+});

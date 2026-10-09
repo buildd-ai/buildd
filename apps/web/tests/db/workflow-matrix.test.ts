@@ -1111,6 +1111,45 @@ describe('S9–S15', () => {
     const mech = (await loadView({ deliveryId: o.deliveryId })).attempts.filter((a) => a.mode === 'mechanical');
     expect(mech.map((a) => [a.attemptNo, a.outcome])).toEqual([[1, 'delivered'], [1, 'delivered'], [1, 'delivered']].map(([, out], i) => [i + 1, out]));
     expect(reviewersCreated.length).toBe(1);
+
+    // S15 cycles: past the cooldown (0 here) the sweep's real SQL finds the treadmill escalation and
+    // restarts it pinned to its version; the next behind is refreshed again instead of escalating.
+    const restarted = await seam.restartTreadmillCycles({ cooldownMs: 0, limit: 50 });
+    expect(restarted.restarted).toBeGreaterThanOrEqual(1);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: head });
+    const marker = (await loadView({ deliveryId: o.deliveryId })).attempts.find((a) => a.triggerReason === 'treadmill_cycle');
+    expect(marker).toMatchObject({ status: 'skipped', boundHeadSha: null, attemptNo: 4 });
+    expect(await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+    // A delivery that is not a treadmill escalation is never picked up.
+    await seam.restartTreadmillCycles({ cooldownMs: 0, limit: 50 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+  });
+
+  test("S15 (escape hatch): a person's freshness override lands a treadmill-escalated delivery; the bypass names its kinds", async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    override.refresh_branch = async () => ({ outcome: 'ok' });
+    let head = 'H1';
+    for (let i = 1; i <= 3; i++) {
+      await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+      await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } });
+      const next = `F${i}`;
+      await push(o, next, { ancestors: [head], equivalent: true });
+      head = next;
+    }
+    await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    const res = await applyCommand({
+      type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: head, live: live(), rails: { passed: true },
+      override: { reason: 'base keeps moving', kinds: ['freshness'] },
+    }, { ref: { deliveryId: o.deliveryId } });
+    expect(res).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'LANDING' });
+    const t = (await q(sql`SELECT bypass FROM workflow_transitions WHERE delivery_id = ${o.deliveryId}::uuid AND command = 'LandingRequested' AND bypass IS NOT NULL`)) as Array<{ bypass: Record<string, unknown> }>;
+    expect(t.at(-1)?.bypass).toMatchObject({ actor: 'human:owner', kinds: ['freshness'], overrodeState: 'ESCALATED' });
   });
 
   // Intended: landPr and the landing sweep raise MergeCallResult(behind) from their real merge call,
