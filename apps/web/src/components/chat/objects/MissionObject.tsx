@@ -11,7 +11,7 @@ import { useState } from 'react';
 import type { BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
-import { LandedMeter, RoleGlyph, ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
+import { RoleGlyph, ScopeChip } from '@/app/app/(protected)/missions/[id]/MissionBoardParts';
 import { MissionLiveContext } from '@/app/app/(protected)/missions/[id]/MissionLiveStore';
 import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
@@ -20,6 +20,8 @@ import type { MissionObjectView } from './object-views';
 import { Eyebrow, OpenButton, StateChip, missionTone } from './parts';
 import { refKey } from '../chat-contract';
 import { ChatVisualDeck, MissionVisualRow, hasVisualReview } from './mission-visual';
+import TaskStrip, { type TaskStripCell } from '@/components/ui/TaskStrip';
+import type { StateKey } from '@/components/ui/states';
 import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 
 const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
@@ -37,6 +39,17 @@ const STATUS_TEXT: Record<BoardStatus, { text: string; cls: string }> = {
 const ROW_ORDER: Record<BoardStatus, number> = {
   waiting: 0, ci_failed: 1, fixing: 1, failed: 1, running: 2, review: 3, ready: 4, blocked: 5, merged: 6, done: 6,
 };
+
+const STRIP_STATE: Record<BoardStatus, StateKey> = {
+  waiting: 'waiting', running: 'running', review: 'review', ci_failed: 'ci_failed', fixing: 'fixing', failed: 'failed',
+  ready: 'ready', blocked: 'blocked', merged: 'landed', done: 'landed',
+};
+
+/** The mission's tasks in plan order as the shared strip's cells. */
+export function missionStripCells(model: MissionBoardModel): TaskStripCell[] {
+  return model.phases.flatMap(p => p.taskIds).map(id => model.tasks[id]).filter(Boolean)
+    .map(t => ({ id: t.id, state: STRIP_STATE[t.status], title: t.label }));
+}
 
 /** The rows the inline card lists: what needs you first, then live work, then the rest. */
 export function missionCardRows(model: MissionBoardModel, max = 6): { rows: BoardTask[]; more: number } {
@@ -92,7 +105,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         </div>
         <OpenButton inPane={inPane} onOpen={open} />
       </div>
-      {model.landed.total > 0 && <LandedMeter model={model} variant="strip" />}
+      {model.landed.total > 0 && <TaskStrip size="sm" cells={missionStripCells(model)} label="Mission tasks" />}
       {view.strand && <ContinueOnRunnerCta strand={view.strand} />}
       {hasVisualReview(view.visual) && (
         <MissionVisualRow objRef={objRef} visual={view.visual} className="border-t border-border-default pt-2.5" />
@@ -106,7 +119,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
         data-testid="object-card"
         data-kind="mission"
         data-in-pane={inPane ? 'true' : undefined}
-        className="border-2 border-border-strong bg-card shadow-[var(--card-shadow)]"
+        className="overflow-hidden rounded-[var(--radius-card)] border border-border-default bg-card"
       >
         {compact}
         {!inPane && (
@@ -119,7 +132,7 @@ export function MissionCard({ objRef, view }: { objRef: BuilddObjectRef; view: M
             <div className="px-5 pb-3 pt-4">
               <h3 className="font-mono text-[19px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.title}</h3>
               {view.goal && <p className="mt-1 font-[family-name:var(--font-outfit)] text-[15px] leading-relaxed text-text-secondary">{view.goal}</p>}
-              {model.landed.total > 0 && <div className="mt-4"><LandedMeter model={model} variant="band" /></div>}
+              {model.landed.total > 0 && <div className="mt-4"><TaskStrip size="sm" cells={missionStripCells(model)} label="Mission tasks" /></div>}
               {view.strand && <ContinueOnRunnerCta strand={view.strand} className="mt-3" />}
               <div className="mt-2 flex items-center justify-between font-mono text-[12px] text-text-muted">
                 <span>{counts}</span>
