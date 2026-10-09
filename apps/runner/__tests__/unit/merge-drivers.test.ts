@@ -16,6 +16,7 @@ import {
   formatDerivedMergeSummary,
   formatDerivedFinishFallback,
   canFinishWithoutAgent,
+  formatPreMergeMilestone,
 } from '../../src/merge-drivers';
 
 function git(cwd: string, ...args: string[]): string {
@@ -469,5 +470,20 @@ describe('canFinishWithoutAgent', () => {
     expect(canFinishWithoutAgent({ ...base, status: 'conflicts', conflicted: ['b.ts'] })).toBe(false);
     expect(canFinishWithoutAgent({ ...base, status: 'up_to_date' })).toBe(false);
     expect(canFinishWithoutAgent({ ...base, status: 'error', error: 'x' })).toBe(false);
+  });
+});
+
+describe('formatPreMergeMilestone', () => {
+  const base = { conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
+  test('every outcome gets a "Pre-merge:" line, naming what mergiraf resolved', () => {
+    expect(formatPreMergeMilestone({ ...base, status: 'merged', regenerated: ['bun install'] }))
+      .toBe('Pre-merge: base merged by the runner; regenerated 1 derived file command(s)');
+    expect(formatPreMergeMilestone({ ...base, status: 'merged', structurallyResolved: ['a/b.ts', 'c.json'] }))
+      .toBe('Pre-merge: base merged by the runner; mergiraf resolved 2: a/b.ts, c.json');
+    expect(formatPreMergeMilestone({ ...base, status: 'conflicts', conflicted: ['x.ts'], structurallyResolved: ['y.ts'] }))
+      .toBe('Pre-merge: 1 file(s) left for the agent; mergiraf resolved 1: y.ts');
+    expect(formatPreMergeMilestone({ ...base, status: 'up_to_date' })).toBe('Pre-merge: already up to date with the base');
+    expect(formatPreMergeMilestone({ ...base, status: 'error', error: 'git merge timed out after 600s\nmore' }))
+      .toBe('Pre-merge: failed, agent merges instead (git merge timed out after 600s)');
   });
 });
