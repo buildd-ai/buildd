@@ -25,6 +25,7 @@ import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
@@ -388,7 +389,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.task.id },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);
@@ -400,12 +401,30 @@ export async function attemptEnded(p: {
   if (!d) return { handled: false };
   let live: LivePr | null = null;
   let proof: { liveContainsLocal: boolean } | undefined;
+  let ci: Extract<Command, { type: 'AttemptEnded' }>['ci'] = null;
+  let trunk: TrunkClassification | null = null;
   if (d.repoFullName && d.prNumber != null) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     if (repo) {
       const reader = readerFor(deps, repo.installationId);
       live = await reader.readPr(d.repoFullName, d.prNumber);
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused (T10 does
+      // not move WORKING). The owner's hand-off reads the head's checks now and acts on a red.
+      if (attemptKind === 'owner' && d.state === 'WORKING' && live && live.state === 'open' && !live.merged && reader.checkRuns) {
+        const liveChecks = await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null);
+        if (liveChecks) {
+          // §6.10: classified as T10 would; a trunk-caused red is handed on and then T25's.
+          const cls = liveChecks.failing.length > 0
+            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
+            : null;
+          if (cls?.incident) trunk = cls;
+          else {
+            const configured = (repo.gitConfig as { maxCiRetries?: unknown } | null)?.maxCiRetries;
+            ci = { liveChecks, signature: cls?.signature ?? UNKNOWN_CI_SIGNATURE, maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries') };
+          }
+        }
+      }
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
@@ -422,10 +441,20 @@ export async function attemptEnded(p: {
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
+    ...(ci ? { ci } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
+  }
+  if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
+    await applyCommand(
+      { type: 'TrunkRedObserved', actor: p.source, incidentId: trunk.incident.id, signature: trunk.signature, headSha: live.headSha, thresholdMet: true },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (trunk.incident.opened) {
+      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+    }
   }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
@@ -777,6 +806,13 @@ export async function observeCiFailure(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
 
+  // §6.3 T10: the hint is a pointer; whether CI is red on the head is read now.
+  // Nothing failing (re-run green, or re-running) and the reducer refuses it.
+  const liveChecks = live.headSha === p.headSha && reader.checkRuns
+    ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null)
+    : null;
+  const notRed = !!liveChecks && liveChecks.failing.length === 0;
+
   // §6.10: classify the failure by its signature, and route a trunk-caused one
   // to its incident (T25) instead of a per-PR attempt. Only for a head the
   // delivery is acting on, in a state a CI failure moves.
@@ -785,7 +821,7 @@ export async function observeCiFailure(p: {
   let signature = p.signature;
   let incident: TrunkClassification['incident'] = null;
   const ciState = !!d && (TRUNK_SOURCE_STATES.has(d.state) || (d.state === 'REPAIRING' && d.stateReason === 'ci'));
-  if (d && ciState && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
+  if (d && ciState && !notRed && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
     const cls = await classifyCiFailure({
       workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
@@ -796,7 +832,7 @@ export async function observeCiFailure(p: {
   }
   const preflightMiss = await preflightMissFor(reader, p, deps);
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}) },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}), ...(liveChecks ? { liveChecks } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);

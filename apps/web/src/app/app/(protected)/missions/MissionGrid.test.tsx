@@ -98,14 +98,14 @@ describe('MissionGrid portfolio', () => {
 
   it('groups open missions into Needs you / In motion / Waiting, each with its ordering named', () => {
     const sec = (k: string) => html.match(new RegExp(`<section[^>]*data-section="${k}"[\\s\\S]*?</section>`))![0];
-    expect(sec('needs')).toContain('Needs you');
-    expect(sec('needs')).toContain('oldest first');
+    // No fixture mission asks the owner for anything: no Needs you section at all.
+    expect(html).not.toContain('data-section="needs"');
     expect(sec('motion')).toContain('In motion');
     expect(sec('motion')).toContain('slipping first');
     expect(sec('waiting')).toContain('Waiting');
     expect(sec('waiting')).toContain('next to start first');
     const ids = (k: string) => [...sec(k).matchAll(/data-mission-id="(m\d+)"/g)].map(m => m[1]);
-    expect(ids('needs')).toEqual(['m03']); // not landed
+    expect(ids('motion')).toContain('m03'); // not landed is reconciled automatically
     expect(ids('motion')).toContain('m01');
     expect(ids('waiting').indexOf('m04')).toBeLessThan(ids('waiting').indexOf('m05')); // waiting before held
     expect(sec('motion')).toMatch(/data-testid="mission-section-destinations"[^>]*>[^<]*landing on trunk/);
@@ -137,12 +137,12 @@ describe('MissionGrid portfolio', () => {
 
   it('shows a state as glyph + word, and a decision on a needs-input mission', () => {
     expect(rowHtml('m02')).toContain('Auditing');
-    expect(rowHtml('m03')).toContain('Not landed');
+    expect(rowHtml('m03')).toContain('Recovering');
   });
 
   it('raises an exception line only when there is one', () => {
-    expect(rowHtml('m03')).toContain('did not land');
-    expect(rowHtml('m01')).not.toContain('did not land');
+    expect(rowHtml('m03')).toContain('checking automatically');
+    expect(rowHtml('m01')).not.toContain('checking automatically');
   });
 
   it('a recurring mission names its next run', () => {

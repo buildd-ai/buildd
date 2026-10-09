@@ -172,6 +172,12 @@ export interface WorkerUsageWrite {
   now: Date;
 }
 
+/**
+ * A `touch` this soon after a session's end is a straggler from before it
+ * (hooks run up to 5 s, PostToolUse in parallel with SessionEnd), not a resume.
+ */
+export const END_STRAGGLER_MS = 60_000;
+
 /** A session's last usage report may land just after its task completed. */
 export const USAGE_GRACE_MS = 10 * 60 * 1000;
 
@@ -308,6 +314,12 @@ export async function handleLocalSessionEvent(
 
     case 'touch': {
       let presence = await store.find(owner, event.client, hash);
+      // A hook that was in flight when the session closed lands just after its
+      // end. It is not the client coming back: re-opening would show a closed
+      // session as online and keep the claims a `clear` left behind alive.
+      if (presence?.endedAt && now.getTime() - presence.endedAt.getTime() < END_STRAGGLER_MS) {
+        return result('already_ended', presence);
+      }
       // A missed or failed start heals here, so presence never depends on one hook firing.
       if (!presence || presence.endedAt) {
         presence = await ensurePresence();

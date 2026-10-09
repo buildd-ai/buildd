@@ -185,6 +185,12 @@ export interface TaskDelivery {
   waitingOn: 'dependency' | 'capacity' | null;
   /** What repair is for, when the kind is repair. */
   repairReason: 'ci' | 'conflict' | 'review' | null;
+  /**
+   * Not landed because its PR closed unmerged, and the platform is still
+   * checking whether another PR carries the work. Abandoned PRs and failed or
+   * cancelled tasks are never reconciling: those are for a person.
+   */
+  reconciling: boolean;
 }
 
 /** The PR a task's delivery is about: a merged one wins, else the newest with a URL. */
@@ -210,12 +216,14 @@ export function projectTaskDelivery(input: TaskDeliveryInput): TaskDelivery {
     needsHuman: kind === 'needs',
     waitingOn: null,
     repairReason: null,
+    reconciling: false,
     ...extra,
   });
 
   if (ship === 'merged' || ship === 'superseded') return make('landed');
   if (live.some(w => w.status === 'waiting_input') || verdict === 'escalated') return make('needs');
-  if (ship === 'closed_unsuperseded' || ship === 'abandoned') return make('notlanded');
+  if (ship === 'closed_unsuperseded') return make('notlanded', { reconciling: true });
+  if (ship === 'abandoned') return make('notlanded');
 
   if (ship === 'open') {
     const ci = pr?.prLifecycleStatus;
@@ -301,6 +309,8 @@ export interface MissionDelivery {
   evidence: string;
   next: string;
   exception: { tone: DeliveryTone; text: string } | null;
+  /** The chip is a closed PR the platform is still reconciling (see `TaskDelivery.reconciling`). */
+  reconciling?: boolean;
   tasks: Array<{ id: string; title: string; delivery: TaskDelivery }>;
 }
 
@@ -378,7 +388,8 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   const rank = (k: DeliveryKind) => MISSION_PRIORITY.indexOf(k);
   const candidates = tasks.filter(t => t.delivery.kind !== 'landed');
   const focusable = candidates.filter(t => !isFriction(t)).length > 0 ? candidates.filter(t => !isFriction(t)) : candidates;
-  const focus = [...focusable].sort((a, b) => rank(a.delivery.kind) - rank(b.delivery.kind) || a.id.localeCompare(b.id))[0] ?? null;
+  // A not-landed task a person must resolve outranks one still being reconciled.
+  const focus = [...focusable].sort((a, b) => rank(a.delivery.kind) - rank(b.delivery.kind) || Number(a.delivery.reconciling) - Number(b.delivery.reconciling) || a.id.localeCompare(b.id))[0] ?? null;
 
   let kind: DeliveryKind;
   let exception: MissionDelivery['exception'] = null;
@@ -391,7 +402,11 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   } else kind = focus?.delivery.kind ?? 'landed';
 
   if (!exception && focus) {
-    if (focus.delivery.kind === 'notlanded') exception = { tone: 'error', text: `${focus.title} finished but did not land` };
+    if (focus.delivery.kind === 'notlanded') {
+      exception = focus.delivery.reconciling
+        ? { tone: 'warning', text: `The PR for ${focus.title} closed; checking automatically whether another PR carries it` }
+        : { tone: 'error', text: `${focus.title} did not land and needs your decision` };
+    }
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${focus.title} could not run; it retries on its own` };
     else if (kind === 'waiting') exception = { tone: 'muted', text: focus.delivery.waitingOn === 'dependency' ? 'Waiting on earlier work, not on you' : 'Waiting on capacity, not on you' };
   }
@@ -416,6 +431,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
     evidence,
     next,
     exception,
+    reconciling: kind === 'notlanded' && !!focus?.delivery.reconciling,
     tasks,
   };
 }
@@ -443,7 +459,9 @@ function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | 
     case 'unavailable':
       return { evidence: `The audit for ${t} could not run.`, next: 'The audit retries on its own' };
     case 'notlanded':
-      return { evidence: `${t} finished but its PR closed without merging.`, next: 'Checking whether another PR carries it' };
+      return d?.reconciling
+        ? { evidence: `The PR for ${t} closed without merging.`, next: 'Checking whether another PR carries it' }
+        : { evidence: `${t} did not land: its PR was abandoned or the task failed.`, next: 'Open it to retry or drop it' };
     case 'waiting':
       return { evidence: `${t} has not started.`, next: d?.waitingOn === 'dependency' ? `After its dependencies land` : 'Starts when a slot frees up' };
     case 'held':
