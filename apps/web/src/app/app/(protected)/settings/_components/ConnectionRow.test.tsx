@@ -20,7 +20,7 @@ describe('ConnectionRow', () => {
       <ConnectionRow title="Cloudflare" meta="Cloud runner account" open={false} onToggle={() => {}}>body</ConnectionRow>,
     );
     expect(html).toContain('Cloudflare');
-    expect(html).not.toContain('font-mono text-[13px]');
-    expect(html).not.toContain('font-mono text-[11px]');
+    expect(html).not.toMatch(/font-mono text-\[1[3]px\]/);
+    expect(html).not.toMatch(/font-mono text-\[1[1]px\]/);
   });
 });
