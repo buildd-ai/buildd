@@ -15,7 +15,8 @@ export interface PermissionSuggestion {
 
 // Waiting for user input (question/permission)
 export interface WaitingFor {
-  type: 'question' | 'permission';
+  /** `pause`: the person paused the run (pause.ts); answering it resumes the same session. */
+  type: 'question' | 'permission' | 'pause';
   prompt: string;
   options?: Array<{
     label: string;
@@ -173,6 +174,8 @@ export interface LocalWorker {
   // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
   // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
   toolInFlight?: boolean;
+  // Set while a pause waits for the running tool to finish (pause.ts). Transient.
+  pauseRequestedAt?: number;
   // Transient (never persisted): set by loadAllWorkers when it rewrites a
   // 'working' worker to 'error' because SDK sessions cannot survive a runner
   // restart. restoreWorkersFromDisk reads it to notify the server, which would
@@ -820,6 +823,9 @@ export interface LocalUIConfig {
   // responds asynchronously via the dashboard, creating a follow-up task.
   // Set to false to preserve the legacy blocking waiting_input behavior.
   inputAsRetry?: boolean;
+  // How a pause is applied (pause.ts): 'session' (host default), 'park' (--once with
+  // resumable runs), 'none' (--once without: refused). Set by run-once.
+  pauseMode?: 'session' | 'park' | 'none';
   // Tier 3 structural isolation root. When set, each workspace gets its own
   // git clone at <root>/<workspaceId>/ and credential dirs are scoped there
   // too — eliminating cross-workspace filesystem access.
