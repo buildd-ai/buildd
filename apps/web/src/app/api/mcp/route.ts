@@ -28,6 +28,7 @@ import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
+import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
 import { claimingUserId } from "@/lib/worker-owner";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
@@ -132,10 +133,12 @@ function extractBearerToken(req: Request): string | null {
  * (lib/interactive-session.ts): it tells the REST routes this call comes from
  * a person's MCP session, which a client-supplied `runner: 'mcp'` cannot.
  */
-function createApi(apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.NEXTAUTH_URL || "https://buildd.dev";
+/**
+ * `baseUrl` is this server's own origin (lib/self-origin.ts). Every call
+ * forwards the caller's bearer, so it is never a hardcoded host: a route that
+ * cannot resolve it refuses before building the API.
+ */
+function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
 
   return async (endpoint, options = {}) => {
     const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -1040,7 +1043,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   });
 
   // Create per-request API wrapper, server, and transport
-  const api = createApi(apiKey, signInteractiveSession({
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+  const api = createApi(selfOrigin, apiKey, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
     sessionKey,
@@ -1194,6 +1199,9 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
   });
   const principal: ActionContext['principal'] = grant.actsAs === 'person' ? 'person' : 'key';
 
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+
   let server: Server;
   if (target && !refusal) {
     const account = await authenticateGrantSession(jwt, target.workspaceId);
@@ -1207,14 +1215,14 @@ async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Respons
     // its claims are its connecting user's (lib/worker-owner.ts).
     const claimUserId = claimingUserId(account);
     scheduleInteractiveTouch({ accountId: account.id, userId: claimUserId, sessionKey, level: account.level });
-    const api = createApi(jwt, signInteractiveSession({ accountId: account.id, userId: claimUserId, sessionKey }), target.workspaceId);
+    const api = createApi(selfOrigin, jwt, signInteractiveSession({ accountId: account.id, userId: claimUserId, sessionKey }), target.workspaceId);
     const isSensitive = (await resolveWorkspaceDataClass(target.workspaceId)) === 'sensitive';
     server = createMcpServer(api, account.level as 'worker' | 'admin', target.workspaceId, undefined, account.teamId, workerParam || undefined, 'oauth', appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, false, sessionUserId, principal, { listWorkspaces, instructions });
   } else {
     // Discovery only: initialize, tools/list, list_workspaces, or a refused
     // call. No workspace is bound, so a self-call here authenticates as nothing.
     const level = choices.some((c) => c.level === 'admin') ? 'admin' : 'worker';
-    const api = createApi(jwt, null);
+    const api = createApi(selfOrigin, jwt, null);
     server = createMcpServer(api, level, undefined, undefined, undefined, workerParam || undefined, 'oauth', appBaseUrl, false, undefined, toolSurface, grantTokenScopes(grant.scopes), choices.map((c) => c.workspaceId), false, null, principal, { listWorkspaces, instructions, refusal: refusal ?? (calls.length > 0 ? grantWorkspaceRefusal({ kind: 'required', choices }) : undefined) });
   }
 
