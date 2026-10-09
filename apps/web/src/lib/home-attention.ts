@@ -28,6 +28,77 @@ export interface HomeAttentionItem {
   strand?: StrandCta;
   question?: HomeQuestion;
   held?: HomeHeldMission;
+  /**
+   * One cause across many subjects (a dead key, a lost connector): shown once,
+   * apart from per-subject decisions. `subjects` names what it hits.
+   */
+  systemic?: { count: number; subjects: string[] };
+}
+
+/**
+ * Work the platform is already recovering on its own: an agent-handled chip, a
+ * fix or CI run in flight, or a conflict retry with attempts left. It is never
+ * a Needs you card. A human review is exempt: protected paths need a person
+ * whatever CI is doing.
+ */
+export function isAutoRecovering(i: ActionQueueItem, isActionable: (chip: ActionQueueItem['chip']) => boolean): boolean {
+  if (!isActionable(i.chip)) return true;
+  if (i.humanReview || i.chip !== 'BLOCKED') return false;
+  if (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running') return true;
+  return !!i.conflictRetryTaskId && !i.deadZoneExhausted;
+}
+
+/** Causes that are about the setup, not one task: collapse when repeated. */
+const SYSTEMIC_ACTIONS: ReadonlySet<AttentionActionType> = new Set(['view', 'reconnect', 'resolve']);
+
+/**
+ * The same failure on several subjects is one problem, not N cards: fold
+ * setup-cause queue items (failed, reconnect, blocked) that share label and
+ * reason into one systemic item. Per-subject decisions (merge, review, answer,
+ * a per-PR fix) are never folded. A lost connector is systemic on its own,
+ * because every agent using it is paused.
+ */
+export function collapseSystemic(items: readonly HomeAttentionItem[]): HomeAttentionItem[] {
+  const groups = new Map<string, HomeAttentionItem[]>();
+  const keyOf = (i: HomeAttentionItem) => {
+    if (i.kind !== 'queue' || !SYSTEMIC_ACTIONS.has(i.actionType)) return null;
+    return `${i.label}\u0000${i.sentence.trim().toLowerCase()}`;
+  };
+  for (const i of items) {
+    const k = keyOf(i);
+    if (k) groups.set(k, [...(groups.get(k) ?? []), i]);
+  }
+  const out: HomeAttentionItem[] = [];
+  const emitted = new Set<string>();
+  for (const i of items) {
+    const k = keyOf(i);
+    const group = k ? groups.get(k)! : [i];
+    if (group.length < 2) {
+      out.push(i.queue?.chip === 'RECONNECT' ? { ...i, systemic: { count: 1, subjects: [i.title] } } : i);
+      continue;
+    }
+    if (emitted.has(k!)) continue;
+    emitted.add(k!);
+    const subjects = [...new Set(group.map(g => g.title))];
+    // One fix for all of them (a settings page) is the action; else the list.
+    const fix = i.queue?.fixHref;
+    const sameFix = !!fix && group.every(g => g.queue?.fixHref === fix);
+    const named = subjects.slice(0, 2).join(', ');
+    const rest = subjects.length - 2;
+    const primary = sameFix ? { label: i.queue?.fixLabel?.trim() || 'Fix', href: fix! } : { label: 'See all in Activity', href: '/app/tasks' };
+    out.push({
+      ...i,
+      key: `systemic:${group.map(g => g.key).sort().join('|')}`,
+      title: i.sentence,
+      sentence: `Seen on ${named}${rest > 0 ? ` and ${rest} more` : ''}.`,
+      meta: `${group.length} affected`,
+      href: primary.href,
+      primary,
+      details: null,
+      systemic: { count: group.length, subjects },
+    });
+  }
+  return out;
 }
 
 
@@ -133,7 +204,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     }
   }
   for (const [key, i] of prs) {
-    if (!isActionable(i.chip)) continue;
+    if (isAutoRecovering(i, isActionable)) continue;
     if (i.chip === 'QUESTION' && questions.some(q => (q.taskId && q.taskId === i.taskId) || q.workerId === i.workerId)) continue;
     const docFix = queue.find(row => row.docFixTaskId && row.docFixTaskId === i.taskId);
     const displayItem = docFix ? { ...i, docFixTaskId: docFix.docFixTaskId } : i;
@@ -152,7 +223,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     const key = `mission:${m.id}`;
     if (!items.has(key)) items.set(key, { key, kind: 'held', label: 'held', tone: 'warning', title: m.title, sentence: 'The work is ready for you to start.', meta: `${m.ready} ready`, href: m.href, actionType: 'start', owner: 'human', held: m });
   }
-  return [...items.values()];
+  return collapseSystemic([...items.values()]);
 }
 
 /** A waiting task as the layout's needs-input feed carries it (components/needs-input-context.ts). */

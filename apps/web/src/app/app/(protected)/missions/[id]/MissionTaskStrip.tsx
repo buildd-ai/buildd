@@ -29,10 +29,16 @@
  *   re-renders the strip and this drawer, not the board.
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
+ * - Two progress readings, kept apart: the strip is the mission's dependency
+ *   progress (landed n/m, what holds what); the drawer's Build › Audit › Land
+ *   row is the selected task's own delivery flow (`deliveries`, from the
+ *   shared projection). Its "Audit and repair" disclosure lists that task's
+ *   revisions, gates and repair rounds: attempts and review runs are evidence
+ *   inside their task's drawer, never cells or cards of their own.
  */
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
-import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import { taskPageHref } from '@/lib/mission-task-href';
@@ -48,6 +54,8 @@ import {
   type BoardLinkContext,
 } from './MissionBoardParts';
 import TaskActionZone from './TaskActionZone';
+import { DeliveryEvidence, DeliveryStages } from '@/components/delivery/DeliveryParts';
+import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 
 /** The situation block's task, handed to the drawer (its reason is the accessor's sentence). */
 export interface StripFocus {
@@ -64,6 +72,8 @@ export interface LandedStripProps {
   focus: StripFocus | null;
   /** The big "9 of 10", drawn by the band. */
   count: ReactNode;
+  /** Each deliverable's own Build › Audit › Land and evidence, by task id (`missionTaskDeliveries`). Absent: no stage row. */
+  deliveries?: Readonly<Record<string, TaskDeliveryDetail>> | null;
 }
 
 const STATUS_PILL: Record<StripState, string> = {
@@ -82,7 +92,7 @@ export function stripDrawerPill(t: Pick<BoardTask, 'delivery'>, state: StripStat
 
 const STEP_BTN = 'inline-flex h-11 items-center justify-center border-[1.5px] border-border-default font-mono text-text-primary hover:bg-surface-3 disabled:opacity-40';
 
-export function LandedStrip({ model, compact, link, workspaceId, executor, focus, count }: LandedStripProps) {
+export function LandedStrip({ model, compact, link, workspaceId, executor, focus, count, deliveries = null }: LandedStripProps) {
   const strip = useMissionStrip();
   const slots = useMemo(() => stripSlots(model), [model]);
   const subscribe = strip?.store.subscribe ?? noopSubscribe;
@@ -170,6 +180,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
             reason={focus?.taskId === slot.id ? focus.reason : null}
             selectionReason={stripSelectionReason(model, slot.id, tickOf)}
             now={model.now}
+            delivery={deliveries?.[slot.id] ?? null}
           />
         )}
       </div>
@@ -210,6 +221,7 @@ interface StripDrawerProps {
   /** What the selection marks, as a sentence (`stripSelectionReason`). */
   selectionReason: string | null;
   now: number;
+  delivery: TaskDeliveryDetail | null;
 }
 
 /**
@@ -238,7 +250,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
   }
 }
 
-const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone, caret, compact, link, workspaceId, executor, reason, selectionReason, now }: StripDrawerProps & { ref: React.Ref<HTMLDivElement> }) {
+const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone, caret, compact, link, workspaceId, executor, reason, selectionReason, now, delivery }: StripDrawerProps & { ref: React.Ref<HTMLDivElement> }) {
   const router = useRouter();
   const onChanged = useCallback(() => router.refresh(), [router]);
   const landed = state === 'landed';
@@ -291,6 +303,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
         </div>
         <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
+        {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
       <div className="mt-3 flex min-w-0 flex-col gap-2">
@@ -348,6 +361,52 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     </div>
   );
 });
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/**
+ * The selected task's own delivery: its Build › Audit › Land row, then an
+ * "Audit and repair" disclosure over its revisions and repair rounds. Closed
+ * by default; it starts open while the task is repairing, which is when the
+ * evidence is the point. Re-keyed per task, so it never carries over.
+ */
+function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
+  const [open, setOpen] = useState(delivery.kind === 'repair');
+  const id = useId();
+  const summary = [
+    delivery.revisions > 0 ? plural(delivery.revisions, 'revision') : null,
+    delivery.repairs > 0 ? plural(delivery.repairs, 'repair') : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <div data-testid="landed-strip-drawer-delivery" className="flex flex-col gap-1.5">
+      <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
+      <DeliveryStages kind={delivery.kind} stages={delivery.stages} />
+      {delivery.evidence.length > 0 && (
+        <>
+          <button
+            type="button"
+            data-testid="landed-strip-drawer-evidence-toggle"
+            aria-expanded={open}
+            aria-controls={id}
+            onClick={() => setOpen(o => !o)}
+            className="flex min-h-11 w-full items-center justify-between gap-2 border-b border-border-default text-left font-mono text-body font-semibold text-text-primary"
+          >
+            <span className="min-w-0">
+              Audit and repair
+              {summary && <span className="ml-2 text-meta font-normal text-text-muted">{summary}</span>}
+            </span>
+            <span aria-hidden="true" className={`shrink-0 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>›</span>
+          </button>
+          {open && (
+            <div id={id} data-testid="landed-strip-drawer-evidence">
+              {delivery.evidence.map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 /**
  * A summary cell's drawer (CAP-3): how many tasks it holds and where to see

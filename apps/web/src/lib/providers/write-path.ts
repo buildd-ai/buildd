@@ -17,6 +17,52 @@
  * lazily so a route pulls in only the storage it writes.
  */
 import type { ChatProvider } from '@buildd/shared';
+import { requiredKeyPrefix, storedWritePermissions, type WritePermission } from '@buildd/core/providers/manage';
+
+// ── The rule for a key agent runs read, wherever it is written ──────────────
+
+/**
+ * The permissions a shared (team or workspace) write or removal of this
+ * purpose + label needs, by the rule `/api/providers` applies: a key agent
+ * runs read that is also a chat key (`inference_key` + anthropic/openai)
+ * needs both `manage_team_model_keys` and `manage_team_credentials`. Null for
+ * a row the registry rule does not cover (a gateway, an endpoint, a non-model
+ * secret): the route keeps its own permission for those.
+ */
+export function sharedWritePermissions(purpose: string, label?: string | null): WritePermission[] | null {
+  return storedWritePermissions({ purpose, label });
+}
+
+/**
+ * Why this value cannot be stored as a shared row of this purpose + label, or
+ * null. A key agent runs read must have its API-key prefix, so a pasted
+ * subscription token (`sk-ant-oat…`) is refused before anything is written.
+ */
+export function sharedKeyPrefixRefusal(purpose: string, label: string | null | undefined, value: string): string | null {
+  const prefix = requiredKeyPrefix({ purpose, label });
+  return prefix && !value.startsWith(prefix) ? `Token must start with ${prefix}…` : null;
+}
+
+/**
+ * Store the team's chat key for a provider (canonical `inference_key`). When
+ * agent runs read it too (Anthropic, OpenAI), the value must carry the API-key
+ * prefix and auth-failed tasks are re-queued once it is stored. The caller
+ * authorizes first (`sharedWritePermissions('inference_key', provider)`).
+ */
+export async function writeTeamChatKey(input: { teamId: string; userId: string; provider: ChatProvider; value: string }) {
+  const refusal = sharedKeyPrefixRefusal('inference_key', input.provider, sanitizeKey(input.value));
+  if (refusal) return { ok: false as const, status: 400, error: refusal };
+  const r = await writeChatKey({ ...input, scope: 'team' });
+  if (!r.ok) return r;
+  return { ...r, requeued: await requeueAfterAgentCredential(input.teamId, 'inference_key', input.provider) };
+}
+
+/** Trim, and strip one pair of wrapping quotes (pasted keys often carry them). */
+export function sanitizeKey(raw: string): string {
+  let v = raw.trim();
+  if (v.length >= 2 && ((v[0] === '"' && v.at(-1) === '"') || (v[0] === "'" && v.at(-1) === "'"))) v = v.slice(1, -1).trim();
+  return v;
+}
 
 /** Model-credential purposes whose (re)store should put auth-failed tasks back in the queue. */
 export const AGENT_AUTH_PURPOSES: ReadonlySet<string> = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential', 'openai_api_key']);
