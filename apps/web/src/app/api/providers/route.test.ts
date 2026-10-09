@@ -231,17 +231,59 @@ describe('GET /api/providers', () => {
 // ── PUT ──────────────────────────────────────────────────────────────────────
 
 describe('PUT /api/providers', () => {
-  it('a team Anthropic key is stored where every surface reads it, team-wide, never account-scoped', async () => {
+  // Provider parity: agent runs read the canonical storage, so a team Anthropic
+  // key is the team chat key (`inference_key` / `anthropic`), written by the
+  // chat key function, and it serves chat and agent runs alike. (It used to go
+  // to the legacy `anthropic_api_key`, the only storage the host claim read.)
+  it('a team Anthropic key is stored once, in canonical storage, and serves chat and agent runs', async () => {
     asAdmin();
     const { status, body } = await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'anthropic', scope: 'team', value: V.newKey } })));
     expect(status).toBe(200);
-    expect(replaceScoped).toHaveBeenCalledTimes(1);
-    const [, meta] = replaceScoped.mock.calls[0] as unknown as [string, Record<string, unknown>];
-    expect(meta).toMatchObject({ teamId: 't-1', purpose: 'anthropic_api_key' });
-    expect(meta.accountId).toBeUndefined();
-    expect(body.credentials.some((c: any) => c.last4 === '7777')).toBe(true);
+    expect(setProviderKey).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic', scope: 'team', teamId: 't-1' }));
+    expect(replaceScoped).not.toHaveBeenCalled();
+    const stored = body.credentials.find((c: any) => c.last4 === '7777');
+    expect(stored).toMatchObject({ purpose: 'inference_key', label: 'anthropic', legacy: false, scope: 'team', accountScoped: false });
+    expect(stored.servesToday).toEqual(['chat', 'agent-claude', 'cloud-egress']);
+    // An agent credential: tasks that failed on the old key go back in the queue.
     expect(body.requeued).toBe(0);
     expect(requeue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a workspace Anthropic key is stored in canonical storage at that workspace, never account-scoped', async () => {
+    asAdmin();
+    const { status, body } = await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'anthropic', scope: 'workspace', workspaceId: 'ws-1', value: V.newKey } })));
+    expect(status).toBe(200);
+    const [, meta] = replaceScoped.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(meta).toMatchObject({ teamId: 't-1', purpose: 'inference_key', label: 'anthropic', workspaceId: 'ws-1' });
+    expect(meta.accountId).toBeUndefined();
+    expect(body.credentials.find((c: any) => c.last4 === '7777').servesToday).toEqual(['chat', 'agent-claude', 'cloud-egress']);
+    expect(requeue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a team OpenAI key is stored in canonical storage and serves chat and Codex runs', async () => {
+    asAdmin();
+    const value = 'sk-proj-FIXTURE-team-openai-value-0000';
+    FIXTURES.push(value);
+    const { status, body } = await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'openai', scope: 'team', value } })));
+    expect(status).toBe(200);
+    expect(setProviderKey).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', scope: 'team' }));
+    const stored = body.credentials.find((c: any) => c.last4 === '0000');
+    expect(stored).toMatchObject({ purpose: 'inference_key', label: 'openai', legacy: false });
+    expect(stored.servesToday).toEqual(['chat', 'agent-codex']);
+  });
+
+  it('a team Anthropic key needs both the model-key and the agent-credential permission', async () => {
+    asAdmin();
+    const may: string[] = [];
+    const { can } = await import('@/lib/permissions');
+    const spy = mock(async (caller: any, p: string, teamId: string) => { may.push(p); return can(caller, p as never, teamId); });
+    mock.module('@/lib/permissions', () => ({ can: spy }));
+    try {
+      expect((await call(await PUT(req('PUT', '/api/providers', { body: { provider: 'anthropic', scope: 'team', value: V.newKey } })))).status).toBe(200);
+    } finally {
+      mock.module('@/lib/permissions', () => ({ can }));
+    }
+    expect(may).toEqual(expect.arrayContaining(['manage_team_model_keys', 'manage_team_credentials']));
   });
 
   it('a team OpenRouter key is the chat key, written by the chat key function', async () => {

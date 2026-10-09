@@ -69,6 +69,8 @@
 import { gatewayUrlProblem, normalizeGatewayUrl, resolveLiteLLMGateway, type LiteLLMGateway } from './litellm-gateway';
 import { openRouterModelId } from './openrouter-id';
 import { verifyByFetch, type LookupAll, type VerifyOutcome } from './net/public-address';
+import { agentKeyPurposes, isAgentKeyRow, type AgentKeyProvider } from './providers/agent-keys';
+import type { TeamReadablePurpose } from './secrets/team-scope';
 
 export const AGENT_ENDPOINT_PURPOSE = 'agent_endpoint' as const;
 
@@ -420,7 +422,13 @@ export function endpointWinsRanking(endpointScope: AgentEndpointScope, competito
   return RANK[endpointScope] >= best;
 }
 
-export const COMPETING_MODEL_PURPOSES = ['anthropic_api_key', 'oauth_token', 'claude_credential'] as const;
+/**
+ * The Anthropic API key competes from either storage (provider parity): its
+ * canonical `inference_key` / `anthropic` row or the legacy `anthropic_api_key`.
+ * An `inference_key` row competes only with the backend's own provider label
+ * (`competingScopes`), never another provider's chat key.
+ */
+export const COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('anthropic'), 'oauth_token', 'claude_credential'];
 
 /**
  * The Codex-side equivalent: a team/workspace OpenAI key (`openai_api_key`) or
@@ -431,7 +439,7 @@ export const COMPETING_MODEL_PURPOSES = ['anthropic_api_key', 'oauth_token', 'cl
  * beats a broader team endpoint — mirroring the Claude path exactly, just
  * against the credentials a Codex run would actually otherwise use.
  */
-export const CODEX_COMPETING_MODEL_PURPOSES = ['openai_api_key', 'codex_credential'] as const;
+export const CODEX_COMPETING_MODEL_PURPOSES: readonly string[] = [...agentKeyPurposes('openai'), 'codex_credential'];
 
 export interface CompetingCredentialRow {
   purpose: string;
@@ -439,6 +447,8 @@ export interface CompetingCredentialRow {
   workspaceId: string | null;
   healthStatus?: string | null;
   tokenExpiresAt?: Date | null;
+  label?: string | null;
+  userId?: string | null;
 }
 
 /**
@@ -452,10 +462,15 @@ export function competingScopes(
   rows: readonly CompetingCredentialRow[],
   ctx: { workspaceId: string; accountId?: string | null },
   purposes: readonly string[] = COMPETING_MODEL_PURPOSES,
+  /** Whose API key competes: an `inference_key` row counts only with this provider's label. */
+  keyProvider: AgentKeyProvider = 'anthropic',
 ): ModelCredentialScope[] {
   const out: ModelCredentialScope[] = [];
   for (const r of rows) {
     if (!purposes.includes(r.purpose)) continue;
+    // A personal row is the requester's alone; it never decides team routing.
+    if (r.userId) continue;
+    if (r.purpose === 'inference_key' && !isAgentKeyRow(r, keyProvider)) continue;
     if (r.healthStatus === 'revoked') continue;
     if (r.purpose === 'claude_credential' && !r.tokenExpiresAt) continue;
     if (r.workspaceId && r.workspaceId !== ctx.workspaceId) continue;
@@ -604,6 +619,7 @@ export async function resolveAgentModelRoute(opts: {
   const endpoint = await resolveAgentEndpoint(opts);
   if (!endpoint) return null;
   const purposes = opts.backend === 'codex' ? CODEX_COMPETING_MODEL_PURPOSES : COMPETING_MODEL_PURPOSES;
+  const keyProvider: AgentKeyProvider = opts.backend === 'codex' ? 'openai' : 'anthropic';
   let scopes: ModelCredentialScope[];
   try {
     const { db } = await import('./db');
@@ -612,13 +628,13 @@ export async function resolveAgentModelRoute(opts: {
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
       where: teamCredentialWhere(
-        { teamId: opts.teamId, purpose: purposes },
+        { teamId: opts.teamId, purpose: purposes as TeamReadablePurpose[] },
         opts.accountId ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)) : isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
       ),
-      columns: { purpose: true, accountId: true, workspaceId: true, healthStatus: true, tokenExpiresAt: true },
+      columns: { purpose: true, label: true, userId: true, accountId: true, workspaceId: true, healthStatus: true, tokenExpiresAt: true },
     });
-    scopes = competingScopes(rows ?? [], opts, purposes);
+    scopes = competingScopes(rows ?? [], opts, purposes, keyProvider);
   } catch (e) {
     console.warn('[agent-endpoint] competitor lookup failed:', e);
     scopes = endpoint.scope === 'workspace' ? [] : ['workspace'];
