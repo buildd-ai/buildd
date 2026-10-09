@@ -89,9 +89,9 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
       },
       {
         id: 'providers',
-        label: 'Model providers',
+        label: 'Providers',
         href: '/app/settings/providers',
-        description: 'OpenRouter, Anthropic or OpenAI keys for server-side AI.',
+        description: 'Model keys and subscriptions for chat and agent runs.',
       },
       {
         id: 'github',

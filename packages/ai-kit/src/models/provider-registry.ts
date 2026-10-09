@@ -191,7 +191,10 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
     shapes: [
       {
         id: 'api_key',
-        storage: { purpose: 'inference_key', label: 'anthropic', readBy: ['chat'] },
+        // One stored key for every surface: the host claim, the Claude route
+        // decision, endpoint ranking and cloud egress read canonical and legacy
+        // alike, canonical first within a scope (@buildd/core/providers/agent-keys).
+        storage: { purpose: 'inference_key', label: 'anthropic', readBy: ['chat', 'agent-claude', 'cloud-egress'] },
         legacy: [{ purpose: 'anthropic_api_key', readBy: ['chat', 'agent-claude', 'cloud-egress'] }],
         refreshes: false,
       },
@@ -239,7 +242,8 @@ export const PROVIDER_REGISTRY: readonly ProviderDescriptor[] = [
     shapes: [
       {
         id: 'api_key',
-        storage: { purpose: 'inference_key', label: 'openai', readBy: ['chat'] },
+        // Codex runs read the canonical key and the legacy alias, canonical first.
+        storage: { purpose: 'inference_key', label: 'openai', readBy: ['chat', 'agent-codex'] },
         legacy: [{ purpose: 'openai_api_key', readBy: ['agent-codex'] }],
         refreshes: false,
       },

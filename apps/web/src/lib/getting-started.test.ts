@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { AGENT_CREDENTIAL_PURPOSES, firstTaskState, gettingStartedChecklist } from './getting-started';
+import { AGENT_CREDENTIAL_PURPOSES, AGENT_INFERENCE_KEY_LABELS, firstTaskState, gettingStartedChecklist } from './getting-started';
 
 const none = { runnerConnected: false, hasAgentCredential: false, firstTask: 'none' as const };
 
@@ -67,7 +67,12 @@ describe('gettingStartedChecklist: one ordered list, done state from real data',
     for (const p of ['anthropic_api_key', 'oauth_token', 'claude_credential', 'codex_credential', 'openai_api_key', 'agent_endpoint']) {
       expect(AGENT_CREDENTIAL_PURPOSES as readonly string[]).toContain(p);
     }
+    // A chat key is counted only through its label (AGENT_INFERENCE_KEY_LABELS).
     expect(AGENT_CREDENTIAL_PURPOSES as readonly string[]).not.toContain('inference_key');
+  });
+
+  it('counts the Anthropic and OpenAI keys in canonical storage (agent runs read them), and no other chat key', () => {
+    expect([...AGENT_INFERENCE_KEY_LABELS]).toEqual(['anthropic', 'openai']);
   });
 });
 

@@ -18,7 +18,9 @@ mock.module('@buildd/core/db/schema', () => ({
     teamId: 'team_id',
     accountId: 'account_id',
     workspaceId: 'workspace_id',
+    userId: 'user_id',
     purpose: 'purpose',
+    label: 'label',
     encryptedValue: 'encrypted_value',
     healthStatus: 'health_status',
   },
@@ -34,6 +36,7 @@ mock.module('drizzle-orm', () => ({
   and: (...conds: any[]) => ({ __and: true, conds }),
   or: (...conds: any[]) => ({ __or: true, conds }),
   isNull: (field: any) => ({ __isNull: true, field }),
+  inArray: (field: any, values: any[]) => ({ __inArray: true, field, values }),
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ __sql: true, strings, values }),
 }));
 
@@ -44,6 +47,9 @@ import { hasOpenAiApiKey, resolveOpenAiApiKey } from './openai-credential';
 function row(extra: Record<string, unknown>) {
   return {
     id: 'sec-1',
+    purpose: 'openai_api_key',
+    label: null,
+    userId: null,
     encryptedValue: 'enc:sk-team-key',
     accountId: null,
     workspaceId: null,
@@ -115,5 +121,66 @@ describe('hasOpenAiApiKey', () => {
     // No account-scoped OR-branch should be present in the where tree.
     const accountBranch = (args.where.conds as any[]).find((c) => c?.conds?.some?.((b: any) => b?.field === 'account_id'));
     expect(accountBranch).toBeUndefined();
+  });
+});
+
+/**
+ * Provider parity: a team's OpenAI key is one stored credential. Its canonical
+ * storage is `inference_key` / label `openai` (the key chat reads); the legacy
+ * `openai_api_key` is still read, ranked below canonical within one scope.
+ */
+describe('canonical and legacy OpenAI key storage', () => {
+  const canonical = (extra: Record<string, unknown> = {}) => row({ purpose: 'inference_key', label: 'openai', ...extra });
+
+  it('a team with only a legacy row resolves exactly as before', async () => {
+    mockDbFindMany.mockResolvedValue([row({ id: 'sec-legacy', encryptedValue: 'enc:sk-legacy' })]);
+    expect(await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toEqual({ apiKey: 'sk-legacy', secretId: 'sec-legacy' });
+  });
+
+  it('a team with only a canonical row gets that key for Codex runs', async () => {
+    mockDbFindMany.mockResolvedValue([canonical({ id: 'sec-canonical', encryptedValue: 'enc:sk-canonical' })]);
+    expect(await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toEqual({ apiKey: 'sk-canonical', secretId: 'sec-canonical' });
+    expect(await hasOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toBe(true);
+  });
+
+  it('canonical beats legacy in the same scope, whichever comes first', async () => {
+    for (const rows of [
+      [row({ id: 'sec-legacy', encryptedValue: 'enc:sk-legacy' }), canonical({ id: 'sec-canonical', encryptedValue: 'enc:sk-canonical' })],
+      [canonical({ id: 'sec-canonical', encryptedValue: 'enc:sk-canonical' }), row({ id: 'sec-legacy', encryptedValue: 'enc:sk-legacy' })],
+    ]) {
+      mockDbFindMany.mockResolvedValue(rows);
+      expect((await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' }))?.secretId).toBe('sec-canonical');
+    }
+  });
+
+  it('the more specific scope still wins: a workspace legacy row beats a team canonical row', async () => {
+    mockDbFindMany.mockResolvedValue([
+      canonical({ id: 'sec-team-canonical', encryptedValue: 'enc:sk-team' }),
+      row({ id: 'sec-ws-legacy', encryptedValue: 'enc:sk-ws', workspaceId: 'ws-1' }),
+    ]);
+    expect((await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' }))?.secretId).toBe('sec-ws-legacy');
+  });
+
+  it('another provider’s chat key is not an OpenAI key', async () => {
+    mockDbFindMany.mockResolvedValue([
+      row({ id: 'sec-anthropic', purpose: 'inference_key', label: 'anthropic' }),
+      row({ id: 'sec-openrouter', purpose: 'inference_key', label: 'openrouter' }),
+    ]);
+    expect(await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toBeNull();
+    expect(await hasOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toBe(false);
+  });
+
+  // A personal OpenAI key is the requester's alone (./personal-credential-injection,
+  // under the team's policy). The team read pins user_id IS NULL in SQL and
+  // drops a personal row again in code.
+  it('never returns a personal canonical row', async () => {
+    mockDbFindMany.mockResolvedValue([canonical({ id: 'sec-personal', userId: 'user-1' })]);
+    expect(await resolveOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toBeNull();
+    expect(await hasOpenAiApiKey({ teamId: 'team-1', workspaceId: 'ws-1' })).toBe(false);
+    for (const call of mockDbFindMany.mock.calls) {
+      const where = (call as any[])[0].where;
+      expect(where.conds).toContainEqual({ __isNull: true, field: 'user_id' });
+      expect(where.conds).toContainEqual({ __inArray: true, field: 'purpose', values: ['inference_key', 'openai_api_key'] });
+    }
   });
 });
