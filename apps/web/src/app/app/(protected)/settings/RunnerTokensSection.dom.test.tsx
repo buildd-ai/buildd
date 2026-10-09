@@ -41,6 +41,16 @@ async function expandToken() {
 }
 
 describe('RunnerTokensSection token details', () => {
+  it('links token creation to the creation page from populated and empty states', async () => {
+    await mount({});
+    const newToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('+ New token'));
+    expect(newToken?.getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+
+    await act(async () => { root.render(<RunnerTokensSection accounts={[]} />); });
+    const createToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('Create a runner token'));
+    expect(createToken?.getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+  });
+
   it('flags an expired token in the compact row and an unused one in the detail', async () => {
     await mount({ expiresAt: '2000-01-01T00:00:00Z' });
     expect(host.textContent).toContain('Expired');
