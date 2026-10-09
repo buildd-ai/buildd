@@ -650,7 +650,7 @@ export function productionSweepDeps(): SweepDeps {
       const { systemCache } = await import('@buildd/core/db/schema');
       const { eq } = await import('drizzle-orm');
       const [row] = await db.select({ value: systemCache.value }).from(systemCache).where(eq(systemCache.key, watermarkKey(workspaceId))).limit(1);
-      const v = row?.value as { at?: string } | undefined;
+      const v = row?.value as { at?: unknown } | undefined;
       return typeof v?.at === 'string' ? v.at : null;
     },
     async setWatermark(workspaceId, at) {
@@ -678,9 +678,8 @@ export function productionSweepDeps(): SweepDeps {
       const { systemCache } = await import('@buildd/core/db/schema');
       const { eq } = await import('drizzle-orm');
       const [row] = await db.select({ value: systemCache.value }).from(systemCache).where(eq(systemCache.key, SELF_HEALTH_KEY)).limit(1);
-      const prev = typeof (row?.value as { consecutive?: number } | undefined)?.consecutive === 'number'
-        ? (row!.value as { consecutive: number }).consecutive
-        : 0;
+      const consecutive = (row?.value as { consecutive?: unknown } | undefined)?.consecutive;
+      const prev = typeof consecutive === 'number' ? consecutive : 0;
       const next = ok ? 0 : prev + 1;
       await db
         .insert(systemCache)
