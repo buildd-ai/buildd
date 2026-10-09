@@ -4,10 +4,9 @@
  * (workflow-scenarios-world.ts). Each test states the behaviour the spec
  * (docs/specs/workflow-state-kernel.md §14, AC-11, S22) promises.
  *
- * Every finding test asserts the CORRECT behaviour and is marked `test.failing`
- * because it fails on dev today (probe task e769323f). Bun reports a
- * `test.failing` that starts passing as a failure, so the PR that fixes a
- * finding must turn its test(s) back into plain `test`.
+ * Every finding test asserts the CORRECT behaviour. They were filed as
+ * `test.failing` by the probe (task e769323f) and turned back into plain
+ * `test` by the fix (tasks 2383c886, 500ce42e, 8a0571d8, 163b59e7).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
@@ -27,7 +26,7 @@ async function switchOff(workspaceId: string, value: unknown = false): Promise<v
 const noDrain = { drain: async () => null };
 
 describe('kill switch: effects queued before the switch', () => {
-  test.failing('a merge_call queued before the switch is turned off, answered "behind" after it → the kernel makes a NEW decision (refresh) and pushes to the PR branch while switched off', async () => {
+  test('a merge_call queued before the switch is turned off → the drain releases the delivery and skips it (legacy_owns): no merge answer, no refresh, no push', async () => {
     w = await world();
     w.gh.protect(w.repo, 'dev', { strict: true });
     const pr = await w.openPr({ branch: 'feat/ks-behind', files: { 'src/a.ts': 'export const a = 2;\n' } });
@@ -50,7 +49,7 @@ describe('kill switch: effects queued before the switch', () => {
       .toEqual({ updateBranch: 0, lastCommand: 'LandingRequested', state: 'LANDING' });
   });
 
-  test.failing('a merge_call still pending when the switch goes off → the kernel merges the PR after the operator turned it off', async () => {
+  test('a merge_call still pending for a delivery already released → never merges', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/ks-merge', files: { 'src/a.ts': 'export const a = 2;\n' } });
     await w.approve(pr);
@@ -67,7 +66,7 @@ describe('kill switch: effects queued before the switch', () => {
 });
 
 describe('kill switch: sweeps that read deliveries without resolving authority', () => {
-  test.failing('trunk recovery sweep with the kill switch off → TrunkRecovered is applied and the PR branch refreshed by the kernel, the delivery never released', async () => {
+  test('trunk recovery sweep with the kill switch off → resolves authority first: no TrunkRecovered, no branch refresh', async () => {
     w = await world();
     const a = await w.openPr({ branch: 'feat/ks-red-a', files: { 'src/a.ts': 'export const a = 2;\n' } });
     const b = await w.openPr({ branch: 'feat/ks-red-b', files: { 'src/c.ts': 'export const c = 2;\n' } });
@@ -99,7 +98,7 @@ describe('kill switch: sweeps that read deliveries without resolving authority',
 });
 
 describe('kill switch: value forms', () => {
-  test.failing('workflowKernel: "false" (string) → openKernelDelivery claims the PR (owned: true, so the caller dispatches no first review) yet every later touch releases it to legacy', async () => {
+  test('workflowKernel: "false" (string) → the PR-opened door declines (kernel_off), so legacy files the first review at open', async () => {
     w = await world({ gitConfig: { workflowKernel: 'false' } });
     // openPr needs a delivery to exist; drive the door by hand instead.
     const ownerTaskId = (await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, title, status) VALUES (${w.workspaceId}::uuid, 'feat: str-false', 'in_progress') RETURNING id`))[0].id;
@@ -115,32 +114,39 @@ describe('kill switch: value forms', () => {
       .toEqual({ owned: false, authorities: [] });
   });
 
-  test.failing('workflowKernel: "false" (string) → the PR the door claimed is released when its owner attempt ends, and nobody ever files its first review', async () => {
-    w = await world({ gitConfig: { workflowKernel: 'false' } });
-    const ownerTaskId = (await q<{ id: string }>(sql`INSERT INTO tasks (workspace_id, title, status) VALUES (${w.workspaceId}::uuid, 'feat: str-false-2', 'in_progress') RETURNING id`))[0].id;
-    w.gh.createBranch(w.repo, 'feat/str-false-2', 'dev');
-    const head = w.gh.push(w.repo, 'feat/str-false-2', { 'src/a.ts': 'export const a = 4;\n' }, { message: 'x' });
-    const prNumber = w.gh.openPr(w.repo, { head: 'feat/str-false-2', base: 'dev', title: 'feat: str-false-2' });
-    const [wk] = await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, last_commit_sha, pr_number, pr_url, commit_count)
-      VALUES (${w.workspaceId}::uuid, ${ownerTaskId}::uuid, 'w', 'test', 'feat/str-false-2', 'running', ${head}, ${prNumber}, ${`https://github.com/${w.repo}/pull/${prNumber}`}, 1) RETURNING id`);
-    const opened = await seam.openKernelDelivery({ workspaceId: w.workspaceId, ownerTaskId, repoFullName: w.repo, prNumber, installationId: w.installationId, source: 'webhook:opened' });
-    expect(opened.owned).toBe(true); // reviewer-subscribers: `if (kernel.owned) return true` — no legacy reviewer filed
-    // The owner attempt ends (worker PATCH → seam.attemptEnded).
-    await q(sql`UPDATE workers SET status = 'completed' WHERE id = ${wk.id}::uuid`);
-    const [t] = await q<{ delivery_id: string | null; delivery_role: string | null }>(sql`SELECT delivery_id, delivery_role FROM tasks WHERE id = ${ownerTaskId}::uuid`);
+  test('workflowKernel: "false" (string) set after the door opened the delivery → the owner end releases it and legacy files its first review', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/str-false-2', files: { 'src/a.ts': 'export const a = 4;\n' } });
+    await switchOff(w.workspaceId, 'false');
+    await q(sql`UPDATE workers SET status = 'completed' WHERE id = ${pr.workerId}::uuid`);
     const ended = await seam.attemptEnded({
-      task: { id: ownerTaskId, workspaceId: w.workspaceId, deliveryId: t.delivery_id, deliveryRole: t.delivery_role, context: null },
-      workerId: wk.id, status: 'completed', localHeadSha: head, commitCount: 1, source: 'runner',
+      task: { id: pr.ownerTaskId, workspaceId: w.workspaceId, deliveryId: pr.deliveryId, deliveryRole: 'owner', context: null },
+      workerId: pr.workerId, status: 'completed', localHeadSha: pr.head, commitCount: 1, source: 'runner',
     });
-    const [d] = await q<{ authority: string; state: string }>(sql`SELECT authority, state FROM workflow_deliveries WHERE workspace_id = ${w.workspaceId}::uuid`);
+    const [d] = await q<{ authority: string; state: string }>(sql`SELECT authority, state FROM workflow_deliveries WHERE id = ${pr.deliveryId}::uuid`);
     const reviewers = await q(sql`SELECT id FROM tasks WHERE workspace_id = ${w.workspaceId}::uuid AND (category = 'review' OR delivery_role = 'review')`);
     expect({ handled: ended.handled, authority: d.authority, state: d.state, reviewers: reviewers.length })
-      .toEqual({ handled: true, authority: 'kernel', state: 'AWAITING_REVIEW', reviewers: 1 });
+      .toEqual({ handled: false, authority: 'legacy', state: 'WORKING', reviewers: 1 });
+  });
+
+  test('the TypeScript and SQL readings of the switch agree on every value form', async () => {
+    const { kernelEnabled, kernelOnSql } = await import('../../src/lib/workflow/authority');
+    const forms: unknown[] = [undefined, null, true, false, 'true', 'false', 'on', 'off', 'TRUE', 'False', '', 'no', 'disabled', 0, 1, {}, []];
+    const configs: unknown[] = [null, [], 'scalar', ...forms.map((v) => (v === undefined ? {} : { workflowKernel: v }))];
+    const got: Array<{ cfg: string; ts: boolean; sql: boolean }> = [];
+    for (const cfg of configs) {
+      const [row] = await q<{ on: boolean }>(sql`SELECT ${kernelOnSql(sql`${cfg === null ? null : JSON.stringify(cfg)}::jsonb`)} AS on`);
+      got.push({ cfg: JSON.stringify(cfg), ts: kernelEnabled(cfg), sql: row.on });
+    }
+    expect(got.filter((g) => g.ts !== g.sql)).toEqual([]);
+    // Only absent / null / true / 'true' / 'on' keep the kernel on.
+    expect(got.filter((g) => g.ts).map((g) => g.cfg))
+      .toEqual(['null', '[]', '"scalar"', '{}', '{"workflowKernel":null}', '{"workflowKernel":true}', '{"workflowKernel":"true"}', '{"workflowKernel":"on"}']);
   });
 });
 
 describe('kill switch: flipped while the owner is still working', () => {
-  test.failing('PR opened with the kernel on (legacy first review skipped), switch turned off before the owner ends → the owner end releases the delivery and nothing ever files a review: the PR is stranded open', async () => {
+  test('PR opened with the kernel on (legacy first review skipped), switch turned off before the owner ends → the owner end releases the delivery and legacy files its first review', async () => {
     w = await world();
     const pr = await w.openPr({ branch: 'feat/ks-strand', files: { 'src/a.ts': 'export const a = 5;\n' } });
     expect((await w.delivery(pr)).state).toBe('WORKING');
