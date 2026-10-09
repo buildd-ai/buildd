@@ -248,6 +248,8 @@ const VIEW_TITLE: Record<HealthView, string> = {
 interface Props {
   /** Which page is rendering; defaults to every section. */
   page?: HealthView;
+  /** Rendered under the page header (Runners: the workspace pause control). */
+  top?: React.ReactNode;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
   orphanedPrs: OrphanedPrRow[];
   runners: RunnerHeartbeat[];
@@ -326,6 +328,7 @@ export function HealthClient({
   runnerLanes = null,
   now,
   page = 'all',
+  top = null,
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
@@ -512,6 +515,8 @@ export function HealthClient({
           )}
         </div>
       </div>
+
+      {top}
 
       {overview && <OverviewHeadline tone={overview.headline.tone} text={overview.headline.text} />}
 
