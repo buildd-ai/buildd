@@ -269,6 +269,13 @@ export const GATE_SLUGS = {
    * reconciler action that later revokes or re-bases such a release.
    */
   EARLY_RELEASE: 'early_release',
+  /**
+   * Model-tier ceilings (docs/specs/model-tier-ceilings.md). `rejected` = a
+   * task create/update or chat request explicitly asked for a tier or model
+   * above the effective maximum (`detail` is the policy_denied error). Claim
+   * holds are the claim loop's `tier_policy` deferral, not this slug.
+   */
+  TIER_CEILING: 'tier_ceiling',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
