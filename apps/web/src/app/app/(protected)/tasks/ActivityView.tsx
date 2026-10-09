@@ -14,6 +14,7 @@ import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import Lifecycle from '@/components/ui/Lifecycle';
 import { DeliveryStatePill } from '@/components/delivery/DeliveryStatePill';
 import StatePill from '@/components/ui/StatePill';
+import Disclosure from '@/components/ui/Disclosure';
 import type { StateKey } from '@/components/ui/states';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
@@ -193,7 +194,9 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
       {group.moreWaiting > 0 && (
         group.href
           ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you ›</Link>
-          : <p className="py-2 text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you</p>
+          : <Disclosure summary={`+${group.moreWaiting} more waiting, not on you`}>
+              {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} missionHref={group.href} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
+            </Disclosure>
       )}
     </section>
   );

@@ -97,6 +97,8 @@ export interface NowGroup {
   rows: NowRow[];
   /** Waiting rows past the cap, summarised as a count. */
   moreWaiting: number;
+  /** Hidden waiting rows (past the cap) for expansion. */
+  hiddenWaitingRows: NowRow[];
 }
 
 export interface ActivityNow {
@@ -422,8 +424,11 @@ export function buildActivityNow(input: {
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
     if (!delivery.open || delivery.kind === 'landed') continue;
     if (delivery.kind === 'notlanded' && input.now - latestAt(d) > NOT_LANDED_NOW_WINDOW_MS) continue;
-    const key = d.root.missionId;
-    const g = groups.get(key) ?? { rows: [], title: d.root.missionTitle ?? null };
+    // Open tasks of a completed mission are regrouped as standalone.
+    const isMissionCompleted = mission?.kind === 'landed';
+    const key = isMissionCompleted ? null : d.root.missionId;
+    const title = isMissionCompleted ? null : (d.root.missionTitle ?? null);
+    const g = groups.get(key) ?? { rows: [], title };
     g.rows.push(toRow(d, delivery));
     groups.set(key, g);
   }
@@ -444,6 +449,7 @@ export function buildActivityNow(input: {
       next: m?.next ?? null,
       rows: [...moving, ...waiting.slice(0, WAITING_ROWS_PER_GROUP)],
       moreWaiting: Math.max(0, waiting.length - WAITING_ROWS_PER_GROUP),
+      hiddenWaitingRows: waiting.slice(WAITING_ROWS_PER_GROUP),
     };
   });
   // Missions by their chip's attention, then id: an order that only changes when a state does.
