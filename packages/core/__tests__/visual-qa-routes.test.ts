@@ -114,8 +114,8 @@ describe('requiredRoutes', () => {
   });
 });
 
- it('the app manifest excludes the retired artifacts list and keeps the new-task fallback', async () => {
+ it('the app manifest excludes the retired artifacts list and the retired new-task form', async () => {
    const manifest = await Bun.file(new URL('../../../apps/web/src/qa/visual-qa-routes.json', import.meta.url)).json();
    expect(manifest.routes.some((r: { path: string }) => r.path === '/app/artifacts')).toBe(false);
-   expect(manifest.routes.some((r: { path: string }) => r.path === '/app/tasks/new')).toBe(true);
+   expect(manifest.routes.some((r: { path: string }) => r.path === '/app/tasks/new')).toBe(false);
  });

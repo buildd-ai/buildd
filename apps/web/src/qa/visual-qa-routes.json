@@ -203,20 +203,6 @@
           "specClaim": "Shipped, live UI"
         }
       ]
-    },
-    {
-      "id": "task-new",
-      "path": "/app/tasks/new",
-      "title": "New task (chat fallback and prefilled links)",
-      "specRef": "apps/web/src/components/NewWorkLink.tsx; apps/web/src/app/app/(protected)/tasks/new/page.tsx",
-      "category": "core",
-      "expectations": [
-        {
-          "id": "task-new-form",
-          "desc": "The fallback task form renders with workspace and title inputs and no visible error.",
-          "specClaim": "Task creation stays available when chat cannot open and for prefilled links."
-        }
-      ]
     }
   ],
   "verdictVocabulary": {

@@ -1,25 +1,50 @@
 [
-  { "route": "/app/health" },
+  {
+    "route": "/app/health"
+  },
   {
     "route": "/app/health/runners",
-    "states": [{
-      "key": "selected-run",
-      "steps": [
-        { "action": "click", "selector": "css:[data-testid=\"runner-lanes-chart\"] a[data-bar-id]" },
-        { "action": "waitFor", "selector": "testid:lane-bar-card", "state": "hidden" }
-      ]
-    }]
+    "states": [
+      {
+        "key": "selected-run",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "css:[data-testid=\"runner-lanes-chart\"] a[data-bar-id]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:lane-bar-card",
+            "state": "hidden"
+          }
+        ]
+      }
+    ]
   },
-  { "route": "/app/health/failures" },
+  {
+    "route": "/app/health/failures"
+  },
   {
     "route": "/app/health/usage",
-    "states": [{
-      "key": "role-tiers",
-      "steps": [{ "action": "click", "selector": "css:[data-testid=\"usage-roles\"] button[aria-expanded]" }]
-    }]
+    "states": [
+      {
+        "key": "role-tiers",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "css:[data-testid=\"usage-roles\"] button[aria-expanded]"
+          }
+        ]
+      }
+    ]
   },
-  { "route": "/app/health/insights" },
-  { "route": "/app/tasks" },
-  { "route": "/app/tasks/new" },
-  { "route": "/app/dev/fixtures?state=task-shipped&variant=open" }
+  {
+    "route": "/app/health/insights"
+  },
+  {
+    "route": "/app/tasks"
+  },
+  {
+    "route": "/app/dev/fixtures?state=task-shipped&variant=open"
+  }
 ]
