@@ -936,6 +936,24 @@ export interface WaitingFor {
   recommended?: QuestionRecommendation;
   /** Deterministic origin facts the runner adds. */
   where?: QuestionWhere;
+  /**
+   * Human-attention disposition (packages/core/needs-you.ts), stamped
+   * by the worker PATCH route on every park: only `ask` (or a `hold` past its
+   * `resurfaceAt`) is admitted to Needs You. A runner may send `ask`/`hold`
+   * from its question-gate reply, or `recovered` with a `repairTaskId` the
+   * server verifies; anything else is re-checked server-side.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  dispositionBy?: 'gate' | 'server_recheck' | 'permission' | 'backfill';
+  /** The question gate's outcome that produced the disposition, when the gate did. */
+  gateOutcome?: string;
+  /** The hard rail that forced an `ask`. */
+  rail?: string;
+  /** The repair task that owns a `recovered` park. */
+  repairTaskId?: string;
+  holdReason?: string;
+  /** ISO timestamp a `hold` is surfaced at. */
+  resurfaceAt?: string;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
@@ -1614,6 +1632,20 @@ export interface ClaimDiagnostics {
      * (counted hours) is used. Only when an allowance is set.
      */
     hosted_runner_hours?: number;
+    /**
+     * The team's credential policy needs the requester's own key for this task
+     * (`personal_only`) and this claim cannot deliver one: no requester, no key
+     * stored (for a cloud claim: no personal route for egress), or a runner
+     * without the personal-credential feature.
+     */
+    no_personal_credential?: number;
+    /**
+     * The task's tier or model is above the effective model-tier ceiling for
+     * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
+     * Held, not failed: it runs when the ceiling is raised or the task is
+     * re-tiered. The gate event's detail is the structured policy_denied error.
+     */
+    tier_policy?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1681,6 +1713,26 @@ export interface WorkerPromptBundlesResponse {
   roleInstructions?: RoleInstructions;
 }
 
+/**
+ * How a claimed worker's model credential was chosen, when the team has set a
+ * credential policy (`teams.credential_policy`). No secret material. Absent
+ * when the team has no policy: the claim is exactly what it was before.
+ */
+export interface ClaimCredentialDecision {
+  surface: 'agent-claude' | 'agent-codex';
+  policy: 'team' | 'personal_first' | 'personal_only';
+  /**
+   * `personal`: the requester's own key is the only model credential attached.
+   * `team`: the team's credentials, chosen as before.
+   * `none`: no model credential (an interactive session under personal_only).
+   */
+  scope: 'personal' | 'team' | 'none';
+  /** Provider of the personal key, when `scope` is `personal`. */
+  provider?: string;
+  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  runnerLocalAllowed: boolean;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1743,6 +1795,8 @@ export interface ClaimTasksResponse {
      * means "leave Claude Code's default".
      */
     toolSearchDisabled?: boolean;
+    /** How the model credential was chosen; set only for a team with a credential policy. */
+    credentialDecision?: ClaimCredentialDecision;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
@@ -3533,8 +3587,8 @@ export interface FleetSlotWorker {
   roleName: string | null;
   roleColor: string | null;
   status: string;
-  /** 0..100, or null when the runner has not reported progress. */
-  progress: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;

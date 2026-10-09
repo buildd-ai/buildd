@@ -31,6 +31,8 @@ export interface SlotLaneBar {
   /** Epoch ms; null while live (drawn to `now`). */
   end: number | null;
   tone: SlotLaneTone;
+  /** Fill the bar with this state's strip-cell texture (`state-cell`) instead of the tone's. */
+  cell?: { state: string; tone: string; pattern: string; frame: string };
   /** Small leading tag, e.g. a scope chip. */
   scope?: string | null;
   label: string;
@@ -54,8 +56,8 @@ export interface SlotLaneBar {
 export interface SlotLane {
   id: string;
   label: string;
-  /** One-letter avatar. Defaults to the label's first letter. */
-  badge?: string;
+  /** One-letter avatar. Defaults to the label's first letter; null draws none. */
+  badge?: string | null;
   bars: readonly SlotLaneBar[];
   /** Draw at least this many slot rows. */
   minSlots?: number;
@@ -99,6 +101,8 @@ export interface SlotLanesProps {
    * place of the native tooltip, which a row of thin ticks made useless.
    */
   hoverCard?: boolean;
+  /** Spans tinted flat behind the bars, across every lane (e.g. idle while work waited). */
+  shade?: ReadonlyArray<{ from: number; to: number }>;
 }
 
 function formatSpan(ms: number): string {
@@ -170,7 +174,7 @@ const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
 export default function SlotLanes({
   lanes, from, to, now = null, nowLabel, phases, phasesLabel = 'Phase', marks, marksLabel,
   onHover, pinnedId = null, testId = 'slot-lanes', className = '',
-  labels = true, bare = false, tickLabel, hoverCard = false,
+  labels = true, bare = false, tickLabel, hoverCard = false, shade,
 }: SlotLanesProps) {
   const labelPx = labels ? LABEL_COL_PX : 0;
   const pct = (t: number) => `${axisFraction(t, from, to) * 100}%`;
@@ -299,15 +303,26 @@ export default function SlotLanes({
         >
           {labels ? (
           <div className="flex items-center gap-[7px] border-r border-border-default pl-3 font-mono text-meta text-text-secondary">
-            <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-meta font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
-              {lane.badge ?? lane.label.slice(0, 1)}
-            </span>
+            {lane.badge !== null && (
+              <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-meta font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
+                {lane.badge ?? lane.label.slice(0, 1)}
+              </span>
+            )}
             {slot === 0 && <span className="min-w-0 truncate">{lane.label}</span>}
             <span className="text-[var(--fleet-faint)]">{`·${slot + 1}`}</span>
           </div>
           ) : <div />}
           <div className="relative overflow-hidden">
             {grid}
+            {(shade ?? []).map((sh, si) => (
+              <i
+                key={si}
+                aria-hidden="true"
+                data-testid="slot-lanes-shade"
+                className="absolute inset-y-0 bg-[var(--q-tint)]"
+                style={{ left: pct(sh.from), width: width(sh.from, sh.to) }}
+              />
+            ))}
             {bars.map((b, bi) => {
               const end = drawEnd(b);
               // Wholly outside the axis: clamped, it would draw as an empty
@@ -344,7 +359,7 @@ export default function SlotLanes({
                 : tick
                   // The short-run marker: a solid tick at the run's start, never an empty box.
                   ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
-                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${b.cell ? 'state-cell border-border-strong' : TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
               const nowRight = (1 - axisFraction(end, from, to)) * 100;
               // An open bar is anchored by its right edge at NOW: a box has a
               // minimum drawn width, and anchored at its start a fresh bar
@@ -362,7 +377,8 @@ export default function SlotLanes({
                 'data-testid': 'lane-bar',
                 'data-bar-id': b.id,
                 'data-bar-group': b.group ?? b.id,
-                'data-tone': b.tone,
+                'data-tone': b.cell && !tick && !claimed ? b.cell.tone : b.tone,
+                ...(b.cell && !tick && !claimed ? { 'data-state': b.cell.state, 'data-pattern': b.cell.pattern, 'data-frame': b.cell.frame } : {}),
                 ...(short ? { 'data-shape': 'short', 'aria-label': shortTitle } : {}),
                 ...(claimed ? { 'data-shape': 'claimed', 'aria-label': claimedTitle } : {}),
                 // The card replaces the native tooltip; two at once is noise.

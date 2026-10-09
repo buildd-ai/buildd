@@ -110,6 +110,23 @@ describe('derivePrReviewStatus — review progress', () => {
     });
     expect(escalated.state).toBe('escalated');
     expect(escalated.escalationReason).toBe('Touches auth');
+    expect(escalated.recommendation).toBeNull();
+    expect(escalated.blockers).toEqual([]);
+  });
+
+  it('reads the structured recommendation and blockers off an escalation', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'completed',
+        result: verdictResult('escalate', {
+          escalationReason: 'Adds a table.',
+          recommendation: 'Approve the additive migration.',
+          blockers: [{ kind: 'migration', text: 'Adds a table' }, { kind: 'ci' }],
+        }),
+      }),
+    });
+    expect(status.recommendation).toBe('Approve the additive migration.');
+    expect(status.blockers).toEqual([{ kind: 'migration', text: 'Adds a table' }]);
   });
 
   it('treats a completed review with no verdict as a failed review, not an approval', () => {

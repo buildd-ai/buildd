@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-08
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts, packages/core/human-attention.ts, apps/web/src/lib/recoverable-blocker-repair.ts, apps/web/src/lib/home-attention.ts]
+surfaces: [apps/web/src/lib/worker-instructions.ts, apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts, packages/core/human-attention.ts, apps/web/src/lib/recoverable-blocker-repair.ts, apps/web/src/lib/home-attention.ts, packages/core/needs-you.ts, apps/web/src/lib/park-disposition.ts, apps/web/src/lib/note-question-disposition.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
-keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts, packages/core/__tests__/human-attention.test.ts, apps/web/src/lib/home-attention.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/question-hero.test.ts]
+keywords: [deliver_pending, receive_messages, instructionIds, instructionsAcknowledged, turn boundary, waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
+verified_by: [apps/web/src/lib/worker-instructions.test.ts, apps/web/src/app/api/workers/[id]/cmd/route.test.ts, apps/web/src/app/api/tasks/[id]/messages/route.test.ts, apps/runner/__tests__/unit/worker-sync-instructions.test.ts, apps/runner/__tests__/unit/instruction-acks.test.ts, apps/runner/__tests__/unit/backends/codex-multiturn.test.ts, packages/core/__tests__/mcp-tools-receive-messages.test.ts, apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts, packages/core/__tests__/human-attention.test.ts, apps/web/src/lib/home-attention.test.ts, apps/web/src/app/app/(protected)/tasks/[id]/question-hero.test.ts, packages/core/__tests__/needs-you.test.ts, apps/web/src/lib/note-question-disposition.test.ts, apps/web/src/app/api/tasks/waiting-input/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -303,6 +303,29 @@ path unchanged.
   context or the worker's `needs_input:` error WHEN Home, task detail or chat
   render it THEN the card shows that context, not just the question and a
   generic line.
+- AC-HITL-44 (Needs You admission, `packages/core/needs-you.ts`):
+  a card appears in Needs You — Home's fleet questions and action queue, the
+  `/api/tasks/waiting-input` feed behind the needs-input banner, the DECIDE
+  chip — and the needs-input notification fires, only when a human-attention
+  disposition says a person owns the next move: `ask`, or `hold` once its
+  `resurfaceAt` passed. `recovered` (a repair task owns it) and a park with no
+  disposition are never admitted. GIVEN any `waitingFor` WHEN the worker PATCH
+  stores it (`apps/web/src/lib/park-disposition.ts`) THEN it carries one: a
+  permission/confirmation prompt is `ask`; a gate-tagged `ask`/`hold` keeps the
+  gate's disposition (a hold the server will not honour becomes `ask`); a
+  runner-tagged `recovered` stands only when its `repairTaskId` is a task in the
+  workspace; an untagged question (a runner without the `question_gate`
+  feature, a failed gate call) is re-checked server-side — kill switch, hard
+  rails, stage 0 — with no model call, and a recoverable blocker files or
+  reuses its repair task and is stored `recovered`, nobody notified. A
+  sensitive workspace keeps the disposition fields and drops the prose.
+- AC-HITL-45: GIVEN an agent or outside caller posts a `question` note
+  (`post_note`) WHEN the notes route stores it
+  (`apps/web/src/lib/note-question-disposition.ts`) THEN it carries
+  `mission_notes.disposition`: `recovered` (stored answered, the agent told
+  which repair task owns it) for a recoverable blocker with no hard rail and a
+  task to name, else `ask`; only `ask` reaches the DECIDE chip. A person's or
+  the system's notes carry none and are unaffected.
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact,
@@ -436,78 +459,120 @@ path unchanged.
 
 ## Channel B — `/instruct`: steering a live session
 
+One queue, explicit ids, four states. A steering message reaches the agent at
+its **next turn boundary**, whether or not the agent ever reports progress.
+
 **Invariants**:
-- A message MUST be refused (HTTP 400) for a `completed` or `failed` worker. A
-  live-session channel that accepts messages for the dead is a silent drop.
-- Exactly one transport per message, never both: `priority: 'urgent'` fires
-  `WORKER_COMMAND` `{ action: 'message' }` on the worker channel and leaves
-  `pendingInstructions` null; anything else writes `pendingInstructions` and
-  fires no Pusher event. Sending both delivered the same instruction twice (once
-  by push, once on the next sync) and produced duplicate milestones — PR #307.
-- `pendingInstructions` is a single `text` column, not a queue. A second
-  non-urgent message that arrives before the first is drained REPLACES it.
-- Every message MUST be appended to `instructionHistory` with a
-  `deliveryState`, capped at 30 entries; a `sensitive` workspace stores
-  `{ type, timestamp, deliveryState }` and drops the text.
-- Queued delivery is at-most-once and unacknowledged: the next non-terminal
-  PATCH returns the text in `instructions` and nulls `pendingInstructions` in
-  the same guarded UPDATE, and flips the LAST `pending` history entry to
-  `delivered` via `lastIndexOf`. `deliveryState: 'delivered'` therefore records
-  what the server did, NOT that any agent read it.
+- A message MUST be refused (HTTP 400) for a `completed` or `failed` worker, and
+  refused (409) for any other terminal status unless `priority: 'urgent'` (which
+  can still reach a session the runner holds in memory, and queues nothing).
+- `/instruct` and `/cmd { action: 'message' }` share ONE enqueue path,
+  `queueInstruction` (`apps/web/src/lib/worker-instructions.ts`): append to the
+  `pendingInstructions` queue (never replace) and append a history entry with a
+  server-generated `id`. `/cmd` is urgent priority.
+- Text rides Pusher only where the queue cannot carry it: a runner that cannot
+  acknowledge (`supportsInstructionAck = false`, urgent) or an urgent message to
+  a terminal worker. Everything queued instead fires a **text-free**
+  `worker:command { action: 'deliver_pending' }`, at every priority, and the
+  runner syncs that worker immediately.
+- Every message MUST be appended to `instructionHistory`, capped at 30 entries;
+  a `sensitive` workspace stores the envelope without the text.
+- **One consumer per worker.** On a runner-managed worker the runner's sync
+  (`consumeInstructions: true, consumer: 'runner'`) is the only consumer; a
+  PATCH declaring `consumer: 'agent'` (the agent's MCP `update_progress` /
+  `receive_messages`) is served nothing — not instructions, not note replies,
+  not worker→worker messages — and moves nothing. On an interactive worker
+  (`runner = 'mcp'`) the agent is the consumer. Two consumers of one queue raced
+  and could hand the model the same text twice.
+- The consumer is served `instructions`, `instructionsAck` (the queued text) and
+  `instructionIds` (history ids of the served entries, plus served mission-note
+  ids). The queue is cleared only by a compare-and-set on the echoed
+  `instructionsDelivered` text, never on serve.
+- **Four states, one derivation.** `messageDeliveryStatus(entry, workerStatus)`
+  is the only reader of the stored state; every surface (task page, Steer
+  canvas, `GET /api/tasks/[id]/messages`, `get_task_messages`) shows its result:
+  - **Queued** (`pending`): waits for the agent's next turn.
+  - **Delivered** (`delivered` + `deliveredAt`): the consumer echoed
+    `instructionIdsDelivered` (or, for an older runner, the text). In the
+    session, not read yet. Only a consumer's echo writes it.
+  - **Acknowledged** (`acknowledged` + `acknowledgedAt`): the consumer echoed
+    `instructionsAcknowledged: [id]`. Observed, never inferred: Claude — the
+    assistant frame whose `user_message_uuid(s)` names the injected message's
+    `uuid`; Codex — the backend took it as the next turn's prompt
+    (`input_consumed`); an AskUserQuestion answer or a resume prompt — the next
+    top-level assistant frame; an MCP consumer — the tool result carrying it
+    (delivered and acknowledged in one PATCH).
+  - **Undelivered** (derived, never stored): queued, or delivered by id
+    (`awaitsAck`), and the worker is terminal. A text-matched delivery from an
+    older runner never acknowledges and so never turns Undelivered.
+  No state is derived from `workers.turns` (it counts check-ins, not turns).
+- Mission-note replies and guidance served to an id-speaking consumer are
+  marked `deliveredTo` on its `instructionIdsDelivered` echo, not at serve time.
+  An older consumer (no `consumer` field) keeps serve-time marking.
 - The runner MUST apply an instruction as a user message on the existing
   session, linked to the pending tool call when one exists
   (`buildUserMessage` with `parentToolUseId`), so an answer to `AskUserQuestion`
-  resolves that tool call instead of starting an unrelated turn.
+  resolves that tool call instead of starting an unrelated turn. Claude: the
+  message carries `uuid` and no `priority` (a queued user message already folds
+  into the running turn at its next boundary). Codex: only after
+  `turn.completed`; a message queued during a turn keeps the session alive for
+  one more turn instead of being dropped when that turn ends.
+- A runner-managed `working` worker that is not dirty is synced at least every
+  30s, so a missed `deliver_pending` still bounds delivery.
 - Delivering a message MUST NOT kill the session it steers. A resumed session
   passes `resume` and MUST NOT also pass `sessionId` — the CLI rejects the pair
   without `--fork-session`, which turned every steering message on a resumed
   worker into a crash (PR #1794).
-- Authorisation: a session user with workspace access, OR an admin-level API
-  token. The admin-token branch performs **no** workspace check, so an
-  admin key can steer any worker in any team; a non-admin key gets 401 even for
-  its own workers. `send_agent_message` mirrors this by being an `adminActions`
-  entry.
 - `send_agent_message` MUST resolve the target by **worker** status, never task
   status (`tasks.status` stays `assigned` for the whole run), and MUST pick the
-  newest non-terminal worker — `GET /api/tasks/[id]?include=workers` orders
-  `desc(createdAt)`. With no non-terminal worker it MUST fail loudly and
+  newest non-terminal worker. With no non-terminal worker it MUST fail loudly and
   distinguish "still pending, never claimed" from "all workers terminal".
 
 **Acceptance criteria**:
-- AC-HITL-8: GIVEN a `running` worker WHEN `POST /instruct` is called with
-  `priority: 'urgent'` THEN `triggerEvent` is called exactly once with the
-  worker channel and `worker:command`, AND the written `pendingInstructions` is
-  null AND the new history entry reads `deliveryState: 'delivered'`.
-- AC-HITL-9: GIVEN the same worker WHEN `POST /instruct` is called with no
-  priority THEN no Pusher event is emitted, `pendingInstructions` holds the
-  message and the history entry reads `deliveryState: 'pending'`.
+- AC-HITL-8: GIVEN an ack-capable worker WHEN `POST /instruct` (any priority) or
+  `POST /cmd { action: 'message' }` is called THEN `pendingInstructions` holds
+  the message, the history entry has an `id` and `deliveryState: 'pending'`, and
+  exactly one `worker:command { action: 'deliver_pending' }` is emitted with no
+  `text`.
+- AC-HITL-9: GIVEN a runner that cannot acknowledge WHEN `POST /instruct` is
+  urgent THEN the text goes over Pusher, `pendingInstructions` is untouched and
+  the entry reads `deliveryState: 'delivered'`.
 - AC-HITL-10: GIVEN a worker with `status: 'completed'` WHEN `POST /instruct` is
   called THEN HTTP 400 `Cannot instruct completed or failed workers` and no row
   is written.
-- AC-HITL-11: GIVEN a worker with `pendingInstructions` set WHEN the runner
-  PATCHes any non-terminal status THEN the response `instructions` equals that
-  text and the column is nulled in the same write.
+- AC-HITL-11: GIVEN a runner-managed worker WHEN a PATCH declares
+  `consumer: 'agent'` THEN no `instructions` are served and the queue and history
+  are untouched; GIVEN `runner = 'mcp'` THEN it is served with `instructionIds`.
 - AC-HITL-12: GIVEN a task whose only workers are `completed`/`failed` WHEN
   `send_agent_message` is called THEN it throws naming "no active worker" and
   never calls `/instruct`.
 - AC-HITL-13: GIVEN a `sensitive` workspace WHEN `POST /instruct` is called THEN
   the stored history entry has no `message` field.
+- AC-HITL-42: GIVEN `instructionsAcknowledged: [id]` THEN exactly that entry is
+  `acknowledged` with `acknowledgedAt`, unknown ids are ignored, and the PATCH
+  does not count as a turn.
+- AC-HITL-43: `messageDeliveryStatus` maps `{pending, delivered (by id),
+  acknowledged} × {live, terminal}` to `queued / delivered / acknowledged /
+  undelivered`, and terminal + acknowledged stays acknowledged.
+- AC-HITL-44: GIVEN an id-speaking consumer served a note reply THEN `deliveredTo`
+  is written only on its `instructionIdsDelivered` echo.
 
 **Code surface**:
-- `apps/web/src/app/api/workers/[id]/instruct/route.ts:26` (admin token),
-  `:53` (terminal refusal), `:81` (history + `deliveryState`), `:97`
-  (single-transport write), `:104` (urgent push)
-- Drain + delivery: `apps/web/src/app/api/workers/[id]/route.ts:2017`,
-  `:2043` (`finalWriteGuard`), `:2307` (`instructions` in the response)
-- Runner: `apps/runner/src/worker-sync.ts:278` (apply on sync),
-  `apps/runner/src/pusher-manager.ts:274` (apply on push),
-  `apps/runner/src/workers.ts:4429` (`sendMessage`, resume vs enqueue),
-  `apps/runner/src/recovery.ts:414` (`resumeSession`, two-layer fallback)
-- MCP: `packages/core/mcp-tools.ts:3891` (`send_agent_message`), `:3902`
-  (worker-status liveness resolution)
-- Read model: `apps/web/src/app/api/tasks/[id]/messages/route.ts` and the
-  `get_task_messages` action, both of which read `instructionHistory` of the
-  newest worker and flag entries still `pending` as undelivered.
+- Enqueue: `apps/web/src/lib/worker-instructions.ts` (`queueInstruction`,
+  `messageDeliveryStatus`), `apps/web/src/lib/worker-instruction-push.ts`,
+  `apps/web/src/app/api/workers/[id]/instruct/route.ts`,
+  `apps/web/src/app/api/workers/[id]/cmd/route.ts`
+- Serve + settle: `apps/web/src/app/api/workers/[id]/route.ts` (consumer rule,
+  `instructionIds`, delivered/acknowledged, note `deliveredTo` on ack)
+- Runner: `apps/runner/src/worker-sync.ts` (consumer, inject by id, quiet-worker
+  sync, `requestSync`), `apps/runner/src/pusher-manager.ts` (`deliver_pending`),
+  `apps/runner/src/workers.ts` (`sendMessage` uuid, ack on assistant echo and
+  `input_consumed`), `apps/runner/src/instruction-acks.ts`,
+  `apps/runner/src/backends/codex-backend.ts` (`input_consumed`)
+- MCP: `packages/core/mcp-tools.ts` (`receive_messages`, `update_progress`,
+  `get_task_messages`, `send_agent_message`)
+- Read model: `apps/web/src/app/api/tasks/[id]/messages/route.ts` returns each
+  human message's derived `state`.
 
 ---
 
@@ -576,11 +641,9 @@ path unchanged.
   PATCH route's `reactivatingTerminalWorker` protections, so a recover on a dead
   runner leaves a row that merely looks alive until `cleanupStaleWorkers` reaps
   it again.
-- `/cmd` performs no state check and writes no row: a `message` sent through it
-  is invisible to `instructionHistory`, and therefore to
-  `/api/tasks/[id]/messages` and `get_task_messages`. Any surface that presents
-  instruction history as the record of human input is incomplete by exactly this
-  path.
+- `/cmd { action: 'message' }` is Channel B at urgent priority: it queues and
+  records through `queueInstruction` like `/instruct` (see above). Its other
+  actions perform no state check and write no row.
 
 **Acceptance criteria**:
 - AC-HITL-17: GIVEN a live reviewer worker whose status changes between the read
@@ -737,14 +800,17 @@ Each item is a claim this spec deliberately does NOT make as an invariant,
 because the code does not enforce it. They are the falsifiable list of things to
 fix or to test.
 
-1. **An urgent answer can be lost with no trace but a lie.** `/instruct` with
+1. ~~**An urgent answer can be lost with no trace but a lie.**~~ Closed: urgent
+   messages to an ack-capable consumer are queued and acknowledged (Channel B).
+   Historical text: `/instruct` with
    `priority: 'urgent'` writes `deliveryState: 'delivered'` and stores nothing.
    `triggerEvent` is not acknowledged; `pusher-manager.ts:274` and
    `worker-sync.ts:278` both discard the boolean `sendMessage` returns. If the
    runner is offline, mid-restart, or the worker is not in a state that accepts a
    message, the answer is gone and the history says it was delivered. No test
    asserts a retry or a re-queue, because there is none.
-2. **A queued answer can be overwritten.** `pendingInstructions` is one `text`
+2. ~~**A queued answer can be overwritten.**~~ Closed: the queue appends and
+   entries settle by id. Historical text: `pendingInstructions` is one `text`
    column: two non-urgent messages before a sync and the first is lost. Only the
    LAST `pending` history entry is flipped to `delivered` (`lastIndexOf`), so the
    dropped one stays `pending` forever — that stale `pending` is the only signal,
@@ -768,7 +834,9 @@ fix or to test.
    `error` worker can never be drained. `send_agent_message` shares the defect —
    its liveness filter excludes only `completed`/`failed`, so it will select an
    `error` worker as active.
-6. **Mission-note replies have no delivered marker.** The note-delivery block
+6. ~~**Mission-note replies have no delivered marker.**~~ Closed:
+   `mission_notes.delivered_to`, stamped on the consumer's id echo. Historical
+   text: The note-delivery block
    re-selects every `user` reply to an `answered` question owned by this worker on
    EVERY non-terminal PATCH, and `mission_notes` has no delivered-at column, so
    the same human reply is re-injected into the session on each 10s sync. `type:
@@ -788,7 +856,8 @@ fix or to test.
    `status: 'running'` first and only then pushes a command that may reach
    nobody. `runner-liveness` already lists the Pusher recovery path as out of
    scope; this endpoint is the human-facing half of the same unguarded path.
-10. **`/cmd` messages are unaudited.** A human message sent via
+10. ~~**`/cmd` messages are unaudited.**~~ Closed: `/cmd` messages queue and
+    record through `queueInstruction`. Historical text: A human message sent via
     `{ action: 'message' }` bypasses `instructionHistory` entirely, so the
     task's message list and `get_task_messages` under-report human input.
 11. **Approve-after-reject is accepted.** `/reject-plan` records nothing on the

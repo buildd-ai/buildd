@@ -5,16 +5,16 @@ import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { appendInstructionHistory } from '@/lib/worker-instructions';
+import { queueInstruction } from '@/lib/worker-instructions';
+import { pushInstructionDelivery } from '@/lib/worker-instruction-push';
 
 // POST /api/workers/[id]/cmd - Send command to worker via Pusher
 //
-// `action: 'message'` is human input to the agent, so it is recorded in
-// `workers.instructionHistory` exactly like /instruct does. It used to fire the
-// Pusher event and persist nothing, which left the task UI's message list and
-// `get_task_messages` under-reporting every message sent through this route.
+// `action: 'message'` is human input to the agent, so it is queued and recorded
+// in `workers.instructionHistory` exactly like /instruct does (queueInstruction).
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -45,9 +45,10 @@ export async function POST(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  // Verify access: API key checks account ownership, session checks workspace membership
+  // Verify access: a bearer caller must be the principal that claimed the worker
+  // (lib/worker-owner.ts); the dashboard session path checks workspace membership
   if (account) {
-    if (worker.accountId !== account.id) {
+    if (!callerOwnsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   } else if (user) {
@@ -69,28 +70,37 @@ export async function POST(
     );
   }
 
-  // Record human input before pushing it, so a Pusher failure still leaves a
-  // trace of what was sent. deliveryState stays 'pending' until the runner
-  // confirms the text reached the agent session (PATCH `instructionsDelivered`);
-  // runners that predate that protocol never confirm, so their messages are
-  // recorded as delivered here — the same assumption the old /instruct made.
-  let deliveryState: 'pending' | 'delivered' | undefined;
-  if (action === 'message' && typeof text === 'string' && text.length > 0) {
+  // Human input goes through the same queue as /instruct, at urgent priority
+  // (this route always delivered immediately). Recorded and queued before
+  // anything is pushed, so a missed Pusher event is recovered from the queue on
+  // the next check-in instead of being lost while history said pending forever.
+  // The text itself rides Pusher only to a runner that cannot acknowledge.
+  if (action === 'message') {
+    if (typeof text !== 'string' || text.length === 0) {
+      return NextResponse.json({ ok: true, action });
+    }
     const isSensitive = (worker.workspace as { dataClass?: string } | null)?.dataClass === 'sensitive';
-    deliveryState = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true
-      ? 'pending'
-      : 'delivered';
+    const queued = queueInstruction(
+      {
+        instructionHistory: worker.instructionHistory,
+        pendingInstructions: worker.pendingInstructions ?? null,
+        turns: worker.turns,
+        status: worker.status,
+        runner: (worker as { runner?: string | null }).runner,
+        supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck,
+      },
+      { message: text, isSensitive, priority: 'urgent' },
+    );
     await db
       .update(workers)
       .set({
-        instructionHistory: appendInstructionHistory(worker.instructionHistory, {
-          message: text,
-          isSensitive,
-          deliveryState,
-        }),
+        instructionHistory: queued.instructionHistory,
+        pendingInstructions: queued.pendingInstructions,
         updatedAt: new Date(),
       })
       .where(eq(workers.id, id));
+    await pushInstructionDelivery(id, queued);
+    return NextResponse.json({ ok: true, action, deliveryState: queued.deliveryState, messageId: queued.id });
   }
 
   // Push command via Pusher
@@ -100,5 +110,5 @@ export async function POST(
     { action, text, timestamp: Date.now() }
   );
 
-  return NextResponse.json({ ok: true, action, ...(deliveryState ? { deliveryState } : {}) });
+  return NextResponse.json({ ok: true, action });
 }

@@ -2,7 +2,7 @@
 title: Agent Capabilities
 status: active
 owner: max
-last_verified: 2026-10-05
+last_verified: 2026-10-08
 summary: An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permission-registry.ts, apps/web/src/lib/operator-capability.ts, apps/web/src/lib/operator-capability-source.ts, apps/web/src/lib/default-roles.ts]
@@ -106,12 +106,18 @@ entry in `AGENT_CAPABILITIES` (`apps/web/src/lib/permission-registry.ts`).
 
 ## Admin UX
 
-**Capability statement**: An admin MUST be able to read and edit a role's
-`metadata.operator` grant — team ceiling and workspace opt-in separately —
-through the same team/workspace role settings surface used for every other
-role field, never a parallel admin system, and never see a credential value.
+**Capability statement**: A holder of `manage_agent_roles` in the role's team
+(owner and admin by default, see `docs/specs/team-permissions.md`) MUST be able
+to read and edit a role's `metadata.operator` grant — team ceiling and
+workspace opt-in separately — through the same team/workspace role settings
+surface used for every other role field, never a parallel admin system, and
+never see a credential value.
 
 **Invariants**:
+- Writing a grant needs `manage_agent_roles` in the role's team, with the
+  team's permission overrides applied; anyone else sees the section read-only.
+  A personal role never holds a grant (`operatorGrant` on one is a 400), and
+  operator grants are never read from a personal row.
 - `PATCH /api/roles/[id]` accepts `operatorGrant` (an `OperatorGrantConfig`, or
   `null` to clear) and writes it to `metadata.operator` on that row via
   `withOperatorGrantMetadata`, alongside `metadata.routing` and every other

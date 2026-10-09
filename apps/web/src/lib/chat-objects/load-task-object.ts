@@ -1,3 +1,4 @@
+import type { RunEvidenceInput } from '@buildd/core/run-evidence';
 /**
  * A task as a live chat object: its Board label, role, and the latest worker's
  * live state (runner, current action, PR).
@@ -24,12 +25,13 @@ const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 
 /** The task page's Now strip state for a live worker (as RealTimeWorkerView derives it); null otherwise. Pure. */
 export function taskNowState(
-  worker: { status: string; currentAction: string | null; prUrl: string | null; startedAt: number | null; milestones: unknown } | null,
+  worker: RunEvidenceInput & { status: string; currentAction: string | null; prUrl: string | null; startedAt: number | null; milestones: unknown } | null,
   nowMs: number,
 ): TaskObjectView['now'] {
   if (!worker || !LIVE.has(worker.status)) return null;
   const milestones = Array.isArray(worker.milestones) ? (worker.milestones as Milestone[]) : [];
   return deriveNow(milestones, {
+    ...worker,
     status: worker.status,
     currentAction: worker.currentAction,
     prUrl: worker.prUrl,
@@ -73,7 +75,7 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
       columns: {
         id: true, status: true, runner: true, startedAt: true, completedAt: true, currentAction: true,
         waitingFor: true, prNumber: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, milestones: true,
-        turns: true, updatedAt: true, error: true,
+        turns: true, updatedAt: true, error: true, createdAt: true, dirtyWorktree: true, observedTouches: true, commitCount: true, lastCommitSha: true, filesChanged: true, prIsDraft: true,
       },
     }),
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as { teamId?: string } | null)?.teamId, slug: task.roleSlug }),
@@ -86,6 +88,8 @@ export async function loadTaskObject(taskId: string, userId: string): Promise<Ta
   const { scope, label } = boardTaskLabel({ title: task.title, label: (task as { label?: string | null }).label ?? null });
   const renderedAt = Date.now();
   const now = latest ? taskNowState({
+    ...latest,
+    outputRequirement: task.outputRequirement,
     status: latest.status,
     currentAction: latest.currentAction ?? null,
     prUrl: latest.prUrl ?? null,

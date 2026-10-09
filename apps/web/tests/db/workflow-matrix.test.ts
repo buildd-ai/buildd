@@ -264,8 +264,16 @@ async function open(): Promise<Delivery> {
 async function openAndHandOn(): Promise<Delivery> {
   const o = await open();
   const workerId = await seedWorker(o.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: o.prNumber, commitCount: 1 });
-  const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
-  expect(ended.handled).toBe(true);
+  // The checks a test sets are the ones T10 reads after the hand-off: CI has not reported when the
+  // owner ends here (a red already on the head at the hand-off is e9f1674b's, workflow-scenarios-ci).
+  const checks = gh.checks;
+  gh.checks = undefined;
+  try {
+    const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    expect(ended.handled).toBe(true);
+  } finally {
+    gh.checks = checks;
+  }
   return o;
 }
 
@@ -1750,6 +1758,9 @@ describe('S24–S27', () => {
   const incidentsOf = (signature: string) => q<{ id: string; status: string; signature: string; trunk_fix_task_id: string | null; affected_deliveries: string[] }>(
     sql`SELECT id, status, signature, trunk_fix_task_id, affected_deliveries FROM trunk_incidents WHERE workspace_id = ${workspaceId}::uuid AND signature = ${signature} ORDER BY first_seen_at`);
   const trunkFixTasks = (incidentId: string) => q<{ id: string; status: string; title: string }>(sql`SELECT id, status, title FROM tasks WHERE context->>'trunkIncidentId' = ${incidentId}`);
+  // Each scenario starts on a green trunk: a red base runs one fixer for all its incidents, so an
+  // incident an earlier scenario left open on the shared base would absorb this one's fix.
+  beforeEach(() => q(sql`UPDATE trunk_incidents SET status = 'resolved', resolved_at = now() WHERE workspace_id = ${workspaceId}::uuid AND status <> 'resolved'`));
 
   test('S24: one signature red on trunk and on several PRs → one incident, one trunk fix, zero per-PR attempts (queued ones skipped), BLOCKED_ON_TRUNK; recovery resumes with the ci budget untouched', async () => {
     gh.baseHead = 'B0'; gh.checks = { B0: [], H1: ['Unit tests'] };
@@ -1859,6 +1870,92 @@ describe('S24–S27', () => {
     const p2 = await openAndHandOn();
     expect(await ciFail(p2)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
     expect(await incidentsOf('ci:integration')).toHaveLength(1);
+  });
+
+  // ── S24 (one fixer per base): a red base runs one trunk fix, whatever its incidents ──
+  /** Every trunk-fix task filed for one base of this workspace, oldest first. */
+  const trunkFixTasksOnBase = (baseRef: string) => q<{ id: string; status: string; title: string; description: string }>(
+    sql`SELECT id, status, title, description FROM tasks WHERE workspace_id = ${workspaceId}::uuid AND context->>'trunkIncidentId' IS NOT NULL
+        AND context->>'baseBranch' = ${baseRef} ORDER BY created_at, id`);
+  const incidentsOnBase = (baseRef: string) => q<{ id: string; status: string; signature: string; trunk_fix_task_id: string | null }>(
+    sql`SELECT id, status, signature, trunk_fix_task_id FROM trunk_incidents WHERE workspace_id = ${workspaceId}::uuid AND base_ref = ${baseRef} ORDER BY first_seen_at, id`);
+
+  test('S24 (one fixer per base): a second incident on a base whose fix is still open joins that fixer and steers it; no second task', async () => {
+    const base = 'mission/two-fixers-a';
+    // The base's runs are read before every check finished: only Lint fails so far.
+    gh.baseRef = base; gh.baseHead = 'MA1'; gh.checks = { MA1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const [first] = await trunkFixTasksOnBase(base);
+    expect(first).toBeDefined();
+    // The fixer is running (a budget failover keeps it this same task, merely re-pended on another backend).
+    await q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${first.id}::uuid`);
+    const fixerWorker = await seedWorker(first.id, { status: 'running' });
+
+    // The base now fails more on the same head; another PR fails only the new check. The open
+    // incident (Lint) does not explain it, so a second incident opens on the base's wider signature.
+    gh.checks.MA1 = ['Lint', 'Unit tests']; gh.checks.H1 = ['Unit tests'];
+    const b = await openAndHandOn();
+    expect(await ciFail(b)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    expect(await ciFail(b)).toMatchObject({ handled: true, result: { result: 'stale' } });
+
+    const incs = await incidentsOnBase(base);
+    expect(incs.map((i) => i.signature)).toEqual(['ci:lint', 'ci:lint|unit tests']);
+    // Exactly one fix task for the base: the second incident is linked to the running fixer.
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes.map((t) => t.id)).toEqual([first.id]);
+    expect(incs.map((i) => [i.status, i.trunk_fix_task_id])).toEqual([['fixing', first.id], ['fixing', first.id]]);
+    expect((await effects(b.deliveryId, 'dispatch_trunk_fix'))[0]).toMatchObject({ status: 'done', outcome: 'ok:joined_open_fix' });
+    // Steered, not duplicated: the live fixer is told about the check it was not filed for, once.
+    const [w] = await q<{ pending_instructions: string | null }>(sql`SELECT pending_instructions FROM workers WHERE id = ${fixerWorker}::uuid`);
+    expect(w.pending_instructions).toContain('unit tests');
+    expect(w.pending_instructions!.split(`trunk-incident:${incs[1].id}`).length).toBe(2);
+    expect(await taskRow(first.id)).toMatchObject({ status: 'in_progress' });
+    expect((await taskRow(first.id)).task.context).toMatchObject({ trunkIncidentId: incs[0].id });
+  });
+
+  test('S24 (one fixer per base): two incidents opened before either fix is dispatched file one task, in either drain order', async () => {
+    const base = 'mission/two-fixers-b';
+    gh.baseRef = base; gh.baseHead = 'MB1'; gh.checks = { MB1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    await ciFail(a, { d: crashedDeps });
+    gh.checks.MB1 = ['Lint', 'Unit tests']; gh.checks.H1 = ['Unit tests'];
+    const b = await openAndHandOn();
+    await ciFail(b, { d: crashedDeps });
+    expect((await incidentsOnBase(base)).map((i) => i.trunk_fix_task_id)).toEqual([null, null]);
+    // The newer incident drains first.
+    await drain(b.deliveryId);
+    await drain(a.deliveryId);
+    const incs = await incidentsOnBase(base);
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes).toHaveLength(1);
+    expect(incs.map((i) => [i.status, i.trunk_fix_task_id])).toEqual([['fixing', fixes[0].id], ['fixing', fixes[0].id]]);
+  });
+
+  test('S24 (one fixer per base): after recovery, a new red on the same base files a new fix, even while the old fixer is still open', async () => {
+    const base = 'mission/two-fixers-c';
+    gh.baseRef = base; gh.baseHead = 'MC1'; gh.checks = { MC1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    await ciFail(a);
+    const [first] = await trunkFixTasksOnBase(base);
+    await q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${first.id}::uuid`);
+
+    // The base recovers: the incident resolves and the PR resumes.
+    gh.baseHead = 'MC2'; gh.checks.MC2 = [];
+    await seam.reconcileTrunkIncidents(deps);
+    expect((await incidentsOnBase(base)).map((i) => i.status)).toEqual(['resolved']);
+    expect((await delivery(a.deliveryId)).state).toBe('AWAITING_REVIEW');
+
+    // It breaks again on the same check: a new incident, and a new fix of its own.
+    gh.baseHead = 'MC3'; gh.checks.MC3 = ['Lint'];
+    const c = await openAndHandOn();
+    expect(await ciFail(c)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const incs = await incidentsOnBase(base);
+    expect(incs.map((i) => i.status)).toEqual(['resolved', 'fixing']);
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes.map((t) => t.id)).toEqual([first.id, incs[1].id]);
+    expect(incs[1].trunk_fix_task_id).toBe(incs[1].id);
+    expect((await effects(c.deliveryId, 'dispatch_trunk_fix'))[0]).toMatchObject({ status: 'done', outcome: 'ok' });
   });
 
   test('S25: a fix whose head moved between the verdict and the dispatch is skipped at dispatch: no ledger row, no task; replay is a no-op', async () => {

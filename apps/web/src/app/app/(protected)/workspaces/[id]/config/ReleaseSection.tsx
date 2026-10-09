@@ -5,7 +5,8 @@ import Link from 'next/link';
 import type { WorkspaceReleaseConfig, ReleaseTrigger, ReleaseStrategy } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { Select } from '@/components/ui/Select';
-import Chip, { type ChipTone } from '@/components/ui/Chip';
+import StatePill, { StatusPill } from '@/components/ui/StatePill';
+import type { StateKey } from '@/components/ui/states';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -62,31 +63,24 @@ function relativeTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function DeployStateBadge({ state }: { state: string | null | undefined }) {
-  if (!state) return <span className="text-text-muted text-xs">unknown</span>;
-  const colorMap: Record<string, string> = {
-    READY: 'bg-status-success/15 text-status-success',
-    BUILDING: 'bg-amber-500/15 text-amber-600 animate-pulse',
-    ERROR: 'bg-status-error/15 text-status-error',
-    CANCELED: 'bg-surface-4 text-text-muted',
-    TIMEOUT: 'bg-status-error/15 text-status-error',
-  };
-  const cls = colorMap[state] ?? 'bg-surface-4 text-text-muted';
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium ${cls}`}>
-      {state}
-    </span>
-  );
-}
-
-const RELEASE_TONES: Record<string, ChipTone> = {
-  completed: 'success',
-  failed: 'error',
+/** Vercel's deploy state, as a StatePill. An unknown state keeps its own word. */
+const DEPLOY_PILL: Record<string, { state: StateKey; label: string }> = {
+  READY: { state: 'landed', label: 'Deployed' },
+  BUILDING: { state: 'running', label: 'Building' },
+  ERROR: { state: 'failed', label: 'Error' },
+  CANCELED: { state: 'not_landed', label: 'Canceled' },
+  TIMEOUT: { state: 'failed', label: 'Timed out' },
 };
 
-function StatusBadge({ status }: { status: string | null | undefined }) {
+function DeployStateBadge({ state }: { state: string | null | undefined }) {
+  if (!state) return <span className="text-text-muted text-xs">unknown</span>;
+  const pill = DEPLOY_PILL[state] ?? { state: 'ready' as const, label: state };
+  return <StatePill state={pill.state} label={pill.label} title={state} />;
+}
+
+function ReleaseStatus({ status }: { status: string | null | undefined }) {
   if (!status) return <span className="text-text-muted text-xs">unknown</span>;
-  return <Chip tone={RELEASE_TONES[status] ?? 'muted'} variant="soft">{status}</Chip>;
+  return <StatusPill status={status} />;
 }
 
 export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo }: Props) {
@@ -489,7 +483,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                             {r.deployState ? (
                               <DeployStateBadge state={r.deployState} />
                             ) : (
-                              <StatusBadge status={r.status} />
+                              <ReleaseStatus status={r.status} />
                             )}
                           </td>
                         </tr>

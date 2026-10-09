@@ -157,6 +157,13 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Enforceable model-tier ceilings (most restrictive layer wins): the team's
+  // cap, per-workspace caps, what an auto tier over the cap does, and an audit
+  // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
+  // which only seeds a new chat. Read/written only through
+  // packages/core/model-tier-ceiling-store.ts; contract in
+  // docs/specs/model-tier-ceilings.md.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').TeamTierCeilingPolicy | null>(),
 
   // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
   // gate — read packages/core/entitlements.ts entitlements(team), which also
@@ -203,6 +210,10 @@ export const teamMembers = pgTable('team_members', {
   // value is a choice (all workspaces / auto); an absent key was never chosen.
   // Seeds every new conversation (apps/web/src/lib/chat/composer-prefs.ts).
   chatComposerPrefs: jsonb('chat_composer_prefs').$type<{ workspaceId?: string | null; tier?: string | null }>(),
+  // This person's model-tier ceilings in this team: `admin` (set by a team
+  // admin, the member cannot lift it) and `self` (their own, only lowers).
+  // NULL = none. See teams.modelTierCeilings.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').MemberTierCeilings | null>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),
@@ -1864,7 +1875,8 @@ export type WorkerWaitingFor = {
  */
 export type WorkerMilestone =
   | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
+  | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }
   | {
       type: 'action';
@@ -2043,14 +2055,24 @@ export const workers = pgTable('workers', {
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
+    /** Server-generated at enqueue; consumers settle and acknowledge by it. Absent on older entries. */
+    id?: string;
     type: 'instruction' | 'response';
     /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
     message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
-    // (the runner) confirmed the text reached the agent session. Never set to
-    // 'delivered' at write time — that recorded deliveries that never happened.
-    deliveryState?: 'pending' | 'delivered';
+    // 'pending' = queued (shown as Queued); 'delivered' = a consumer (the
+    // runner, or an MCP read) confirmed the text reached the agent session;
+    // 'acknowledged' = the agent's turn read it (observed, never inferred).
+    // Never set to 'delivered' at write time — that recorded deliveries that
+    // never happened. Undelivered is derived (run ended first), never stored.
+    // Read through messageDeliveryStatus (apps/web/src/lib/worker-instructions.ts).
+    deliveryState?: 'pending' | 'delivered' | 'acknowledged';
+    deliveredAt?: number;
+    acknowledgedAt?: number;
+    /** Settled by id: its consumer reports reads, so an unread one is undelivered once the run ends. */
+    awaitsAck?: true;
+    turnAtSend?: number;
   }>>(),
   // Transitional capability flag: true once this worker's runner has checked in
   // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation
@@ -2777,6 +2799,10 @@ export const missionNotes = pgTable('mission_notes', {
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Human-attention disposition of an agent/outside-caller question note
+  // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
+  // 'recovered' means a repair task owns it. NULL on every other note.
+  disposition: text('disposition').$type<'ask' | 'recovered'>(),
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
@@ -3044,7 +3070,10 @@ export const workspaceSkills = pgTable('workspace_skills', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND ${t.ownerUserId} IS NULL`),
+  // Team-level namespace: one (team, slug) across team roles AND shared
+  // personal roles, so two concurrent shares of one slug cannot both land.
+  // Private personal rows are outside it (ownerSlugIdx covers them).
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND (${t.ownerUserId} IS NULL OR ${t.visibility} = 'team')`),
   // Personal roles: one (team, owner, slug)
   ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL

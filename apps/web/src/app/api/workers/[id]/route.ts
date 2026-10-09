@@ -19,7 +19,9 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { markHoldDue, resolveHold, type HoldResolution } from '@/lib/question-hold';
+import { markHoldDue, type HoldResolution } from '@/lib/question-hold';
+import { disposeParkedWaitingFor } from '@/lib/park-disposition';
+import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from '@/lib/question-gate-check';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
@@ -84,7 +86,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
 import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
-import { COMPLETION_POLICIES } from '@/modules';
+import { COMPLETION_POLICIES, RECOVERABLE_BLOCKER_REPAIR } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { reportWorkerModelIncident } from '@/lib/model-compatibility-incident';
@@ -112,7 +114,7 @@ import { formatWorkerMessages, type WorkerMessage } from '@buildd/core/worker-me
 import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
-import { markInstructionsDelivered } from '@/lib/worker-instructions';
+import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -574,6 +576,9 @@ async function recordPostSupersessionError(
 }
 
 // GET /api/workers/[id] - Get worker details
+/** The `waitingFor` fields a sensitive workspace keeps: no prose, only what Needs You admission and hold resurfacing read. */
+const SENSITIVE_PARK_FIELDS: ReadonlySet<string> = new Set(['disposition', 'dispositionBy', 'gateOutcome', 'rail', 'repairTaskId']);
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -713,6 +718,11 @@ export async function PATCH(
   // the agent. Captured pre-redaction for the same reason as the instruction
   // echo — these are compared against the stored queue, never persisted as text.
   const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
+  // Ids of human messages / mission notes the consumer injected, and of the
+  // human messages the agent's turn has since read. Compared against stored
+  // ids only, never persisted as text.
+  const rawInstructionIdsDelivered: unknown = body.instructionIdsDelivered;
+  const rawInstructionsAcknowledged: unknown = body.instructionsAcknowledged;
   body = redactSecretsInBody(body, secretValues);
 
   const basisParse = parseCostBasis(body.costBasis);
@@ -929,14 +939,23 @@ export async function PATCH(
   // move the queue now:
   //
   //  - `consumeInstructions: true` — the runner's sync loop. It receives the
-  //    payload plus `instructionsAck`, injects it, and confirms with
-  //    `instructionsDelivered: <text>`; the queue is cleared on that
-  //    confirmation, never before.
+  //    payload plus `instructionsAck` (and, with `consumer: 'runner'`,
+  //    `instructionIds`), injects it, and confirms with
+  //    `instructionsDelivered: <text>` (+ `instructionIdsDelivered`); the queue
+  //    is cleared on that confirmation, never before.
+  //  - `consumer: 'agent'` — the agent's own MCP calls (receive_messages,
+  //    update_progress). A consumer ONLY on an interactive worker (runner =
+  //    'mcp'), where no runner exists. On a runner-managed worker the runner is
+  //    the sole consumer: two consumers of one queue raced, and the runner's
+  //    de-duplication only knew what it had injected itself, so the agent could
+  //    see the same text twice. Such a PATCH gets nothing at all.
   //  - a `milestones` / `appendMilestones` array and no flag — a client that
   //    predates the confirmation protocol (an older runner sync, an external
   //    worker posting progress). It gets the old drain-on-read behaviour, because
   //    it will never send a confirmation and re-serving forever would make it
-  //    re-deliver the same message on every progress update.
+  //    re-deliver the same message on every progress update. REMOVE once no
+  //    runner older than the consumeInstructions protocol checks in (every
+  //    worker row with a recent heartbeat has supportsInstructionAck = true).
   //  - anything else — receives a read-only copy (no state change), so an
   //    external worker implementation that reads `instructions` keeps working
   //    while the queue survives for the real consumer.
@@ -946,11 +965,27 @@ export async function PATCH(
   const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
     ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
     : [];
-  const declaresInstructionConsumer = body.consumeInstructions === true;
+  const stringIds = (raw: unknown): string[] => Array.isArray(raw)
+    ? raw.filter((v): v is string => typeof v === 'string' && v.length > 0).slice(0, 100)
+    : [];
+  const instructionIdsDelivered = stringIds(rawInstructionIdsDelivered);
+  const instructionIdsAcknowledged = stringIds(rawInstructionsAcknowledged);
+  const declaredConsumer = body.consumer === 'agent' || body.consumer === 'runner' ? body.consumer as 'agent' | 'runner' : null;
+  // The agent consumes only where no runner does (see above).
+  const agentIsConsumer = declaredConsumer === 'agent' && (worker as { runner?: string | null }).runner === INTERACTIVE_WORKER_RUNNER;
+  const agentExcluded = declaredConsumer === 'agent' && !agentIsConsumer;
+  // A consumer that speaks ids settles notes on ack rather than at serve time.
+  const speaksIds = declaredConsumer !== null;
+  const declaresInstructionConsumer = !agentExcluded && (body.consumeInstructions === true || agentIsConsumer);
   const legacyInstructionConsumer = !declaresInstructionConsumer
+    && !agentExcluded
+    && !declaredConsumer
     && !instructionAckText
     && (Array.isArray(milestones) || Array.isArray(appendMilestones));
   const instructionConsumer = declaresInstructionConsumer || legacyInstructionConsumer;
+  // A bare delivery/read acknowledgement carries nothing else.
+  const isBareAck = (instructionAckText || deliveredMessageIds.length > 0 || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0)
+    && status === undefined && currentAction === undefined && milestones === undefined;
 
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
@@ -974,28 +1009,43 @@ export async function PATCH(
   // Auto-increment turns for MCP workers that don't send explicit turn counts.
   // A bare delivery acknowledgement is bookkeeping, not a turn — counting it
   // would inflate turns (and the OAuth budget window that reads them). This
-  // covers both queues: instructionsDelivered and workerMessagesDelivered are
-  // each sent as their own PATCH carrying nothing else.
-  else if (!((instructionAckText || deliveredMessageIds.length > 0) && status === undefined && currentAction === undefined && milestones === undefined)) {
+  // covers both queues and both stages: instructionsDelivered /
+  // instructionIdsDelivered, instructionsAcknowledged and workerMessagesDelivered
+  // are each sent as their own PATCH carrying nothing else.
+  else if (!isBareAck) {
     updates.turns = sql`${workers.turns} + 1` as any;
   }
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   // Sensitive: generic state string instead of prose action description
   if (currentAction !== undefined) updates.currentAction = isSensitive ? 'working' : currentAction;
   // Sensitive: keep {type, ts} only — strip label and metadata prose
-  if (milestones !== undefined) {
-    updates.milestones = isSensitive
-      ? (milestones as any[]).map((m: any) => ({ type: m.type, ts: m.ts }))
-      : milestones;
-  }
-  // appendMilestones: merge new milestones into existing (for MCP workers)
-  if (appendMilestones && Array.isArray(appendMilestones)) {
+  if (milestones !== undefined || Array.isArray(appendMilestones)) {
     const existing = (worker.milestones as any[]) || [];
-    const toAppend = isSensitive
-      ? appendMilestones.map((m: any) => ({ type: m.type, ts: m.ts }))
-      : appendMilestones;
-    const merged = [...existing, ...toAppend];
-    updates.milestones = merged.length > 50 ? merged.slice(-50) : merged;
+    // Runner snapshots do not contain server-appended agent narration. Preserve
+    // that narration while letting the runner refresh its own action entries.
+    const incoming = milestones !== undefined
+      ? [...milestones, ...existing.filter(m => m.origin === 'agent')]
+      : [...existing];
+    if (Array.isArray(appendMilestones)) {
+      incoming.push(...appendMilestones.map((m: any) => ({
+        ...m,
+        ...((m.type === 'status' || m.type === 'plan') && { origin: 'agent' }),
+      })));
+    }
+    // Plan and status may share a timestamp, so their type is part of identity.
+    const unique = new Map<string, any>();
+    for (const m of incoming) unique.set(`${m.ts}:${m.type}:${m.event ?? ''}`, m);
+    const merged = [...unique.values()].sort((a, b) => a.ts - b.ts);
+    const cap = milestones !== undefined ? 100 : 50;
+    // Checkpoints are lifecycle facts; cap narration and actions first.
+    while (merged.length > cap) {
+      const index = merged.findIndex(m => m.type !== 'checkpoint');
+      if (index === -1) break;
+      merged.splice(index, 1);
+    }
+    updates.milestones = isSensitive
+      ? merged.map(m => ({ type: m.type, ts: m.ts, ...(m.origin === 'agent' && { origin: 'agent' }) }))
+      : merged;
   }
   // appendMcpCalls: merge new MCP tool calls into existing log
   if (appendMcpCalls && Array.isArray(appendMcpCalls)) {
@@ -1146,6 +1196,8 @@ export async function PATCH(
   }
   // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
   let hold: HoldResolution | null = null;
+  // Whether this PATCH's park may reach a person now (lib/park-disposition.ts).
+  let parkAdmitted = false;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -1161,33 +1213,63 @@ export async function PATCH(
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
       ? withSanitizedBrief(waitingFor)
       : waitingFor;
-    // A held question (lib/question-hold.ts): the server decides whether the
-    // runner's `hold` tag stands — never on a hard rail, a sensitive
-    // workspace or with the gate off — and bounds its deadline.
+    // Needs You admission (lib/park-disposition.ts): every park is stamped
+    // with a human-attention disposition before it is stored — the gate's
+    // own (`ask`, or a `hold` lib/question-hold.ts decides whether to honour),
+    // or the server's re-check of an untagged park (an older runner, a failed
+    // gate call): hard rails, then stage 0, which routes a recoverable
+    // platform blocker to a repair task instead of a person.
     let stored = briefed;
-    if (briefed && briefed.type === 'question' && (briefed as { disposition?: unknown }).disposition === 'hold') {
-      const holdTask = worker.taskId
-        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { pathManifest: true } })
+    if (briefed) {
+      const parkTask = worker.taskId
+        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { title: true, pathManifest: true, missionId: true } })
         : null;
-      hold = resolveHold({
+      const gitConfig = wsForSensitivity?.gitConfig ?? null;
+      const parked = await disposeParkedWaitingFor({
         waitingFor: briefed as Record<string, unknown>,
         stored: worker.waitingFor as Record<string, unknown> | null,
+        scope: worker.taskId && wsForSensitivity?.teamId
+          ? {
+              teamId: wsForSensitivity.teamId,
+              workspaceId: worker.workspaceId,
+              accountId: worker.accountId ?? null,
+              taskId: worker.taskId,
+              missionId: parkTask?.missionId ?? null,
+              workerId: id,
+              taskTitle: parkTask?.title ?? null,
+              sensitive: isSensitive,
+              gateEnabled: gateEnabledFromGitConfig(gitConfig),
+              hardRail: { ...hardRailContextFromGitConfig(gitConfig), pathManifest: parkTask?.pathManifest ?? null },
+            }
+          : null,
+        gitConfig,
         sensitive: isSensitive,
-        gitConfig: wsForSensitivity?.gitConfig ?? null,
-        pathManifest: holdTask?.pathManifest ?? null,
+        pathManifest: parkTask?.pathManifest ?? null,
         nowMs: Date.now(),
+        repairTaskExists: async (repairId) => isUuid(repairId) && !!(await db.query.tasks.findFirst({
+          where: and(eq(tasks.id, repairId), eq(tasks.workspaceId, worker.workspaceId)),
+          columns: { id: true },
+        })),
+        deps: { fileRepair: RECOVERABLE_BLOCKER_REPAIR },
       });
-      stored = hold.waitingFor as typeof briefed;
+      hold = parked.hold;
+      parkAdmitted = parked.admitted;
+      stored = parked.waitingFor as typeof briefed;
     }
+    // Sensitive: no prose, but the disposition fields are not prose and must
+    // survive — Needs You admission reads them.
+    const sensitiveStored = stored
+      ? Object.fromEntries(Object.entries(stored).filter(([k]) => SENSITIVE_PARK_FIELDS.has(k)))
+      : null;
     updates.waitingFor = (isSensitive && waitingFor !== null)
-      ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
+      ? { ...sensitiveStored, type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
       : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
   }
   // Notification when agent needs input — sensitive: generic message only.
-  // Team Pushover channel + the originating chat conversation. A held question
-  // is not notified now: the resurface sweep notifies it at its deadline if it
-  // is still unanswered (lib/question-hold.ts).
-  if (waitingFor?.type === 'question' && !hold?.held) {
+  // Team Pushover channel + the originating chat conversation. Only an
+  // admitted park notifies: a held question is notified by the resurface
+  // sweep at its deadline (lib/question-hold.ts), a recovered one never.
+  if (waitingFor?.type === 'question' && parkAdmitted) {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
     // Short by design: the question, one line of context, the recommended default.
     const note = questionNotificationText(
@@ -4248,11 +4330,25 @@ export async function PATCH(
   let pendingInstructions: string | null = null;
   // Echo token for the confirmation round-trip (declared consumers only).
   let instructionsAck: string | null = null;
+  // History-entry ids of the served queue (+ note ids, appended below), for a
+  // consumer that confirms by id.
+  const instructionIds: string[] = [];
+
+  if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
+    // A consumer confirmed delivery: this is the ONLY place 'delivered' is
+    // written. By id when the consumer sent ids, else by the echoed text.
+    let history: unknown = worker.instructionHistory;
+    if (instructionAckText || instructionIdsDelivered.length > 0) {
+      history = markInstructionsDelivered(history, instructionAckText ?? '', instructionIdsDelivered);
+    }
+    // The agent's turn read them (runner-observed echo, or an MCP tool result).
+    if (instructionIdsAcknowledged.length > 0) {
+      history = markInstructionsAcknowledged(history, instructionIdsAcknowledged);
+    }
+    updates.instructionHistory = history as typeof updates.instructionHistory;
+  }
 
   if (instructionAckText) {
-    // A consumer confirmed delivery: this is the ONLY place 'delivered' is written.
-    updates.instructionHistory = markInstructionsDelivered(worker.instructionHistory, instructionAckText);
-
     // Clear the queue only while it still holds exactly the text that was
     // delivered. A fresh instruction may have been appended after the hand-off;
     // clearing then would destroy text nobody has seen. Atomic compare-and-set
@@ -4270,10 +4366,11 @@ export async function PATCH(
       }
     }
   } else if (queuedInstructions) {
-    pendingInstructions = queuedInstructions;
+    if (!agentExcluded) pendingInstructions = queuedInstructions;
     if (declaresInstructionConsumer) {
       // Held until confirmed. Nothing is cleared here.
       instructionsAck = queuedInstructions;
+      instructionIds.push(...pendingInstructionIds(worker.instructionHistory, queuedInstructions));
     } else if (legacyInstructionConsumer) {
       // Pre-confirmation runner: drain on read, as before. It cannot confirm, so
       // holding the queue would re-inject the same text on every 10s sync.
@@ -4312,8 +4409,9 @@ export async function PATCH(
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
   // Fire-and-forget: emit never throws, and the ledger write adds no latency.
-  // A held question records nothing now; the resurface pass records it.
-  if (waitingFor?.type === 'question' && worker.taskId && !hold?.held) {
+  // Only an admitted park: a held question records nothing now (the resurface
+  // pass records it), a recovered one never.
+  if (waitingFor?.type === 'question' && worker.taskId && parkAdmitted) {
     void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
   // A held question's deadline, for the resurface sweep's gated tick. After
@@ -4918,6 +5016,25 @@ export async function PATCH(
   //
   // Only a consumer is served: a milestone-only PATCH that ignores the response
   // would otherwise mark notes delivered that nothing ever injected.
+  //
+  // A consumer that speaks ids (`consumer` declared) gets the note ids in
+  // `instructionIds` and `deliveredTo` is stamped when it echoes them back.
+  //
+  // Per-row atomic append (no read-modify-write, so two concurrent check-ins
+  // for different workers cannot clobber each other), idempotent for a
+  // repeated ack. Human-message ids in the same list match no note row.
+  const stampNotesDelivered = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    await db
+      .update(missionNotes)
+      .set({
+        deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
+      })
+      .where(and(
+        inArray(missionNotes.id, ids),
+        sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`,
+      ));
+  };
   let noteInstructions = '';
   if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
@@ -4988,18 +5105,29 @@ export async function PATCH(
         noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
       }
 
-      // Stamp at hand-off, with a per-row atomic append (no read-modify-write, so
-      // two concurrent check-ins for different workers cannot clobber each other).
       if (servedNoteIds.length > 0) {
-        await db
-          .update(missionNotes)
-          .set({
-            deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
-          })
-          .where(inArray(missionNotes.id, servedNoteIds));
+        if (speaksIds) {
+          // Stamped on the consumer's ack (instructionIdsDelivered, above), not
+          // here: a consumer that is served but never injects must not mark a
+          // reply delivered that nobody read. Until then it is served again.
+          instructionIds.push(...servedNoteIds);
+        } else {
+          // Older consumers never echo ids: stamp at hand-off, as before.
+          await stampNotesDelivered(servedNoteIds);
+        }
       }
     } catch (err) {
       console.error(`[Worker ${id}] Note delivery failed:`, err);
+    }
+  }
+
+  // Ack half of note delivery. Ids that are not note ids (human-message ids)
+  // match no row, so one list carries both.
+  if (instructionIdsDelivered.length > 0) {
+    try {
+      await stampNotesDelivered(instructionIdsDelivered);
+    } catch (err) {
+      console.error(`[Worker ${id}] Note delivery ack failed:`, err);
     }
   }
 
@@ -5025,7 +5153,13 @@ export async function PATCH(
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
-    ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
+    // Ids for the by-id round trip: `instructionIdsDelivered` once injected,
+    // then `instructionsAcknowledged` (human-message ids) once the agent's turn
+    // read them.
+    ...(instructionIds.length > 0 ? { instructionIds } : {}),
+    // Worker→worker messages follow the same single-consumer rule as the human
+    // queue: the agent is not served them on a runner-managed worker.
+    ...(retainedWorkerMessages.length > 0 && !agentExcluded ? { pendingMessages: retainedWorkerMessages } : {}),
     ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
     // The working-set ACK: what this delta leased, released or found held,
     // and whether coverage is complete for its generation.

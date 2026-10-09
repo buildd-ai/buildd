@@ -40,7 +40,7 @@ afterEach(() => {
   container.remove();
 });
 
-const review = { subjectKey: 'review', chip: 'REVIEW' as const, prNumber: 7, workspaceId: 'ws-1', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Review PR', reason: 'Review required' } };
+const review = { subjectKey: 'review', chip: 'REVIEW' as const, prNumber: 7, workspaceId: 'ws-1', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Review PR', reason: 'Protected paths changed.', decision: 'Protected paths changed.', blockers: [] } };
 const waiting: WaitingTask = { id: 'task-waiting', title: 'Pick the rollout order', workspaceId: 'ws-1', missionId: null, waitingFor: { type: 'question', prompt: 'Ship to canary first?', options: ['Yes', 'No'] } };
 
 function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAttention>[0]['questions'] = []) {
@@ -48,7 +48,7 @@ function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAtte
   act(() => root.render(
     <NeedsInputContext.Provider value={{ tasks, count: tasks.filter(t => !t.answerSent).length, alertPermission: 'unsupported', enableAlerts() {} }}>
       <NeedsInputBanner />
-      <MobileHome items={items} ask={null} live={0} capacity={1} mergedToday={0} inCi={0} shipped={[]} flight={[]} />
+      <MobileHome items={items} ask={null} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 1 } }} milestones={[]} quietMissions={0} shipped={[]} />
     </NeedsInputContext.Provider>,
   ));
 }

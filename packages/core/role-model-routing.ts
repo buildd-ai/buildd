@@ -17,6 +17,7 @@
 import type { Tier as RouterTier } from './model-router';
 import { TIERS, type Tier } from './model-tier-defaults';
 import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
+import { effectiveVisibleRoles, pickVisibleRoleRow, type RoleVisibilityContext, type VisibleRoleRow } from './role-visibility';
 
 /** Role `model` values that are tier vocabulary, not an exact model id. */
 export const ROLE_MODEL_ALIASES: ReadonlySet<string> = new Set<string>([
@@ -37,51 +38,45 @@ export function roleFloorTier(model: string | null | undefined): Tier | null {
   return (TIERS as readonly string[]).includes(model) ? (model as Tier) : null;
 }
 
-export interface RoleModelRow {
-  slug: string;
+export interface RoleModelRow extends VisibleRoleRow {
   model: string | null;
-  workspaceId: string | null;
-  teamId?: string | null;
 }
 
 /**
- * The role row that governs a task: the task workspace's override row, else
- * the team default (`workspaceId IS NULL`) of the task's team. Same resolution
- * as `checkConnectorRouting` (claim/connector-gate.ts). A row overriding the
- * slug in ANY OTHER workspace is never used — the claim route once keyed
- * floors by slug across all of a runner's workspaces, so two workspaces
- * overriding the same slug could swap floors.
+ * The role row that governs a task, by `pickVisibleRoleRow`
+ * (role-visibility.ts): the task workspace's override, else the requester's
+ * own personal row, else a shared personal row, else the team default of the
+ * task's team. A row overriding the slug in ANY OTHER workspace is never used
+ * — the claim route once keyed floors by slug across all of a runner's
+ * workspaces, so two workspaces overriding the same slug could swap floors —
+ * and another member's private role is never used either.
  */
 export function pickRoleRowForTask<R extends RoleModelRow>(
   rows: readonly R[],
-  task: { roleSlug: string | null | undefined; workspaceId: string; teamId: string | null | undefined },
+  task: {
+    roleSlug: string | null | undefined;
+    workspaceId: string;
+    teamId: string | null | undefined;
+    requesterUserId: string | null;
+  },
 ): R | null {
-  if (!task.roleSlug) return null;
-  const bySlug = rows.filter(r => r.slug === task.roleSlug);
-  const override = bySlug.find(r => r.workspaceId === task.workspaceId);
-  if (override) return override;
-  if (!task.teamId) return null;
-  return bySlug.find(r => r.workspaceId === null && r.teamId === task.teamId) ?? null;
+  return pickVisibleRoleRow(rows, task.roleSlug, task);
 }
 
 /**
  * How many roles a later role inference could choose between for a task in
- * `workspaceId` — role-routing.md §2/§3's candidate rule, minus the per-task
- * filters: the effective row per slug (workspace override wins), not an
- * explicit slug, not `routing.disabled`, and with `routing.whenToUse` text.
- * Rows are expected to be enabled roles of the task's team.
+ * `ctx.workspaceId` — role-routing.md §2/§3's candidate rule, minus the
+ * per-task filters: the effective row per slug (`effectiveVisibleRoles`, so
+ * another member's private role never counts), not an explicit slug, not
+ * `routing.disabled`, and with `routing.whenToUse` text. Rows are expected to
+ * be enabled roles of the task's team.
  */
 export function countRoleInferenceCandidates(
   rows: readonly (RoleModelRow & { metadata?: unknown })[],
-  workspaceId: string,
+  ctx: RoleVisibilityContext,
 ): number {
-  const effective = new Map<string, RoleModelRow & { metadata?: unknown }>();
-  for (const r of rows) {
-    if (r.workspaceId !== null && r.workspaceId !== workspaceId) continue;
-    if (!effective.has(r.slug) || r.workspaceId === workspaceId) effective.set(r.slug, r);
-  }
   let n = 0;
-  for (const r of effective.values()) {
+  for (const r of effectiveVisibleRoles(rows, ctx)) {
     if (EXPLICIT_ROLE_SLUGS.includes(r.slug)) continue;
     const routing = (r.metadata as { routing?: { whenToUse?: unknown; disabled?: unknown } } | null | undefined)?.routing;
     if (!routing || routing.disabled === true) continue;

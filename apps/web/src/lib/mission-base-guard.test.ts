@@ -177,3 +177,17 @@ describe('mission base guard — exemptions (unchanged from the derivation)', ()
     expect(guard.allows(TRUNK)).toBe(true);
   });
 });
+
+describe('mission base guard — conflict retry adopting its bound PR', () => {
+  it('allows the PR the retry is repairing even when its base is trunk', () => {
+    const guard = taskGuard({ taskClass: 'attempt', conflictRetryPrNumber: 4051 });
+    expect(guard.allows(TRUNK, 4051)).toBe(true);
+    expect(guard.refusal(TRUNK, { prNumber: 4051, action: 'adopt' })).toBeNull();
+  });
+
+  it('still refuses a different PR on trunk', () => {
+    const guard = taskGuard({ taskClass: 'attempt', conflictRetryPrNumber: 4051 });
+    expect(guard.allows(TRUNK, 9999)).toBe(false);
+    expect(guard.allows(TRUNK)).toBe(false);
+  });
+});

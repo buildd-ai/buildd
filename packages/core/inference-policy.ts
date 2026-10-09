@@ -48,6 +48,7 @@ export type InferenceCapability =
   | 'post_session_triage'
   | 'task_verdict'
   | 'early_release'
+  | 'merge_readiness'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -237,6 +238,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Early release',
     description: 'When a task waits on another task\'s pull request, a decision model says whether it can safely start now instead of waiting for the merge. Anything it is unsure about waits.',
     costHint: '~$0.00003 per waiting task',
+  },
+  // Merge readiness (apps/web/src/lib/merge-readiness-decision.ts). Asked only
+  // when a person taps "Assess" on a review card, once per PR head and facts.
+  // Advisory: it is shown, never acted on, and feeds no merge gate.
+  merge_readiness: {
+    id: 'merge_readiness',
+    kind: 'opt_in',
+    label: 'Merge readiness',
+    description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
+    costHint: '~$0.00003 per tap',
   },
   chat: {
     id: 'chat',

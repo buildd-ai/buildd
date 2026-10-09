@@ -1,12 +1,12 @@
 /**
- * The `?state=mission-board-visual` dev fixture: the real MissionBoard,
- * MissionLanes and MissionFeedLayout with a visual review model, so the
+ * The `?state=mission-board-visual` dev fixture: the real MissionBoard
+ * and MissionFeedLayout with a visual review model, so the
  * mission-page wiring (docs/design/visual-qa-human-review.md, "Where it
  * shows") can be seen and screenshotted with no database.
  *
  *   ?state=mission-board-visual&phase=<phase>     the Board with the audit in that phase
  *   &reason=unsure|question|round_cap              which needs_you
- *   &layout=board|lanes|feed|task                  which mission layout (task: the audit's task sheet and page)
+ *   &layout=board|feed|task                        which mission layout (task: the audit's task sheet and page)
  *   &complete=1                                    the mission is done (completion record)
  *   &shipped=lede|noshots|mechanical               with complete=1: the What shipped header variant
  *
@@ -22,7 +22,7 @@ import { MISSION_BOARD_VISUAL_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_BOARD_VISUAL_STATE = MISSION_BOARD_VISUAL_FIXTURE_STATE;
 /** `task`: the audit task's sheet and page sections, not a mission layout. */
-export const MISSION_BOARD_VISUAL_LAYOUTS = ['board', 'lanes', 'feed', 'task'] as const;
+export const MISSION_BOARD_VISUAL_LAYOUTS = ['board', 'feed', 'task'] as const;
 export type MissionBoardVisualLayout = (typeof MISSION_BOARD_VISUAL_LAYOUTS)[number];
 
 const REASONS: readonly VisualReviewNeedsYouReason[] = ['unsure', 'question', 'round_cap'];
@@ -69,7 +69,6 @@ export function missionBoardVisualLinks(): { label: string; href: string }[] {
     { label: 'complete: what shipped', href: `${base}&phase=reviewed&complete=1&shipped=lede` },
     { label: 'complete: no screenshots', href: `${base}&phase=reviewed&complete=1&shipped=noshots` },
     { label: 'complete: mechanical only', href: `${base}&phase=reviewed&complete=1&shipped=mechanical` },
-    { label: 'lanes', href: `${base}&phase=needs_you&layout=lanes` },
     { label: 'feed', href: `${base}&phase=needs_you&layout=feed` },
   ];
 }

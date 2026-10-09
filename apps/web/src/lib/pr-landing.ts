@@ -75,6 +75,7 @@ import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
+import { isFailingCheckRun } from '@/lib/ci-verdict';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -811,7 +812,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     switch (refusal) {
       case 'ci': {
-        const red = (observed.checkRuns ?? []).some((r) => r.conclusion === 'failure');
+        // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
+        // unfinished run, or a non-passing commit status, is a wait.
+        const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
         return red ? needsFix('ci_fix', reason) : waiting(reason);
       }
       case 'stale_head':

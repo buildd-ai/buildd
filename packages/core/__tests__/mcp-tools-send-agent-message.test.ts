@@ -76,6 +76,44 @@ describe('send_agent_message', () => {
     expect(result.content[0].text).toContain(WORKER_ID);
   });
 
+  // Run-progress audit §2.3(7) / §3.2: the pick skipped only completed/failed/
+  // error, so a superseded worker could be steered, and with several live rows
+  // it took whichever the API listed first.
+  it('treats a superseded worker as terminal', async () => {
+    const LIVE = '33333333-3333-3333-3333-333333333333';
+    mockApi
+      .mockResolvedValueOnce({
+        id: TASK_ID,
+        status: 'assigned',
+        workers: [
+          { id: WORKER_ID, status: 'superseded', createdAt: '2026-01-01T00:05:00Z' },
+          { id: LIVE, status: 'running', createdAt: '2026-01-01T00:00:00Z' },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, deliveryState: 'pending' });
+    await handleBuilddAction(mockApi as unknown as ApiFn, 'send_agent_message', { taskId: TASK_ID, message: 'hi' }, ctx());
+    expect(mockApi.mock.calls[1][0]).toBe(`/api/workers/${LIVE}/instruct`);
+  });
+
+  it('picks the newest live worker by createdAt, then id, whatever order the API lists them in', async () => {
+    const A = '33333333-3333-3333-3333-33333333333a';
+    const B = '33333333-3333-3333-3333-33333333333b';
+    const OLD = '33333333-3333-3333-3333-333333333330';
+    const rows = [
+      { id: OLD, status: 'running', createdAt: '2026-01-01T00:00:00Z' },
+      { id: A, status: 'running', createdAt: '2026-01-01T00:05:00Z' },
+      { id: B, status: 'waiting_input', createdAt: '2026-01-01T00:05:00Z' },
+    ];
+    for (const workers of [rows, [...rows].reverse(), [rows[1], rows[0], rows[2]]]) {
+      mockApi = mock();
+      mockApi
+        .mockResolvedValueOnce({ id: TASK_ID, status: 'assigned', workers })
+        .mockResolvedValueOnce({ ok: true, deliveryState: 'pending' });
+      await handleBuilddAction(mockApi as unknown as ApiFn, 'send_agent_message', { taskId: TASK_ID, message: 'hi' }, ctx());
+      expect(mockApi.mock.calls[1][0]).toBe(`/api/workers/${B}/instruct`);
+    }
+  });
+
   it('succeeds when worker.status is "running"', async () => {
     mockApi
       .mockResolvedValueOnce({
@@ -257,7 +295,12 @@ describe('send_agent_message', () => {
         ctx(),
       );
 
-      expect(result.content[0].text).toContain('UNDELIVERED');
+      // Queued, not delivered: the agent receives it at its next turn boundary,
+      // and get_task_messages is where delivery and reading show up.
+      const out = result.content[0].text;
+      expect(out).toContain('Queued');
+      expect(out).toContain('next turn boundary');
+      expect(out).toContain('get_task_messages');
     });
   });
 

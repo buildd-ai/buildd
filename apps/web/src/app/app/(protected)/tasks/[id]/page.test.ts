@@ -178,7 +178,7 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
   it('Worker History: badge and PR link share one wrapper that wraps under the text below md', () => {
     const meta = pageSource.match(/data-testid="worker-history-meta"[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(meta).toContain('pl-11 md:pl-0');
-    expect(meta).toContain('<StatusBadge');
+    expect(meta).toContain('<StatusPill');
     expect(meta).toContain('worker.prUrl &&');
   });
 
@@ -193,18 +193,18 @@ describe('"Also running" — tasks/[id]/page.tsx', () => {
     expect(pageSource).toContain('loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES })');
     const loader = await Bun.file(new URL('./also-running-loader.ts', import.meta.url)).text();
     // The peer query must select the column the lineage walk reads, and filter on it.
-    expect(loader).toContain('missionId: true, parentTaskId: true } } },');
+    expect(loader).toMatch(/missionId: true, parentTaskId: true[^}]*}/);
     expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
   });
 });
 
 describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
-  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+  it('renders each related task through StatusPill + deriveDisplayStatus, never the raw status enum', () => {
     const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
     expect(related).not.toContain('{sub.status}');
     expect(related).not.toContain('{task.parentTask.status}');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(task.parentTask.status)} />');
   });
 });
 
@@ -231,6 +231,34 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
   });
 });
 
+// C-5 (attempt ordering): every worker/task list the page reads is ordered by
+// immutable columns with an id tiebreak, so two rows created in the same instant
+// never swap between renders, and the selections derived from them (latest,
+// active, PR worker, attempt numbering) never flip.
+describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
+  it('never orders workers by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
+    const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
+    // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never orders tasks by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*asc\(tasks\.createdAt\)\s*[,}]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+  });
+
+  it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
+    expect(pageSource).toContain("from '@/lib/attempt-order'");
+    expect(pageSource).toContain('selectTaskWorkers(');
+    expect(pageSource).not.toMatch(/taskWorkers\.find\(w => w\.prUrl && w\.prNumber\)/);
+  });
+
+  it('numbers CI-retry attempts in task chrono order', () => {
+    expect(pageSource).toContain('oldestFirst(ciAttemptRows, compareTasksChrono)');
+  });
+});
 describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
   it('derives the verdict from the record and only applies a cached decision; it never calls the model', () => {
     expect(pageSource).toContain('deriveTaskVerdict(buildVerdictInput({');

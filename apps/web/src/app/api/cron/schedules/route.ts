@@ -863,8 +863,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         // The template's role, if it still names a role this workspace has.
         // A stale slug files the task role-less rather than stranding it at
         // claim (role-routing §1 row 11, §3.1).
+        // The schedule's creator is who its tasks are for, so their own
+        // private role counts; anyone else's never does.
         const templateRole = template.roleSlug
-          && (await resolveEffectiveRoleSlugs(taskWorkspaceId)).has(template.roleSlug)
+          && (await resolveEffectiveRoleSlugs(taskWorkspaceId, schedule.createdByUserId ?? null)).has(template.roleSlug)
           ? template.roleSlug
           : null;
         if (template.roleSlug && !templateRole) {

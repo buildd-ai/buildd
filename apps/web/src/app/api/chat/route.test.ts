@@ -1,6 +1,23 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+
+
 let callerResponse: Response | null = null;
 const created: any[] = [];
 const listed: any[] = [];
@@ -76,6 +93,25 @@ describe('POST /api/chat', () => {
     expect(created[0].tier).toBe('premium');
     await post({ tier: 'gpt-5-turbo' });
     expect(created[1].tier).toBeNull();
+  });
+
+  it('a tier above the person\'s ceiling is refused with policy_denied, and nothing is created', async () => {
+    ceilingTest.inputs = { team: { membersCapped: true }, members: { 'u-1': { self: { chat: 'standard' } } } };
+    try {
+      const res = await post({ tier: 'premium' });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'policy_denied', maxTier: 'standard', binding: { source: 'member_self' }, requested: { origin: 'chat_pin' } });
+      expect(created).toHaveLength(0);
+      // Within the ceiling, and auto, still create.
+      expect((await post({ tier: 'budget' })).status).toBe(201);
+      expect((await post({})).status).toBe(201);
+    } finally { ceilingTest.inputs = {}; }
+  });
+
+  it('a coding-agent-only cap does not touch chat', async () => {
+    ceilingTest.inputs = { team: { team: { agent: 'budget' } } };
+    try { expect((await post({ tier: 'premium' })).status).toBe(201); } finally { ceilingTest.inputs = {}; }
   });
 
   it('refuses without a session', async () => {

@@ -9,7 +9,7 @@
  * `/api/workers/[id]/reattach`) and the sweeps (stale-workers.ts) share one
  * definition, and so tests can render them to SQL.
  */
-import { and, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
 import { PARKABLE_WORKER_STATUSES } from '@buildd/shared';
 
@@ -30,36 +30,58 @@ export function parkedUntilFor(now: Date, isMissionTask: boolean): Date {
 }
 
 /**
- * `taskId` (optional, every predicate below): a per-task token's task. When
- * set, the row must also be on that task, so the token touches only its own
- * worker.
+ * The caller a predicate below is scoped to: the authenticated account, plus
+ * the OAuth session user and per-task token scope when there are any.
  */
-const onTask = (taskId?: string) => (taskId ? [eq(workers.taskId, taskId)] : []);
+export interface WorkerCaller {
+  id: string;
+  teamId?: string | null;
+  sessionUserId?: string | null;
+  taskScope?: { taskId: string } | null;
+}
 
-export function parkWhere(workerId: string, accountId: string, taskId?: string) {
+/**
+ * SQL form of callerOwnsWorker (lib/worker-owner.ts), for the conditional
+ * UPDATEs below, which must not read the row first. Same account, and the same
+ * claimer: the session user for an OAuth session, no recorded claimer for a
+ * bld_ key. A per-task token is further confined to its own task. Matches no
+ * row on a missing account id, or a session with no team id.
+ */
+export function ownedByCaller(caller: WorkerCaller): SQL {
+  const sessionUser = caller.sessionUserId ?? null;
+  if (!caller.id || (sessionUser !== null && !caller.teamId)) return sql`false`;
+  const taskId = caller.taskScope?.taskId;
+  return and(
+    eq(workers.accountId, caller.id),
+    sessionUser === null
+      ? isNull(workers.claimedByUserId)
+      : and(eq(workers.claimedByUserId, sessionUser), isNotNull(workers.workspaceId)),
+    ...(taskId ? [eq(workers.taskId, taskId)] : []),
+  )!;
+}
+
+export function parkWhere(workerId: string, caller: WorkerCaller) {
   return and(
     eq(workers.id, workerId),
-    eq(workers.accountId, accountId),
+    ownedByCaller(caller),
     inArray(workers.status, [...PARKABLE_STATUSES]),
-    ...onTask(taskId),
   );
 }
 
-export function unparkWhere(workerId: string, accountId: string, taskId?: string) {
-  return and(eq(workers.id, workerId), eq(workers.accountId, accountId), ...onTask(taskId));
+export function unparkWhere(workerId: string, caller: WorkerCaller) {
+  return and(eq(workers.id, workerId), ownedByCaller(caller));
 }
 
 /**
  * One conditional UPDATE is the whole re-attach: it clears the park, so of two
  * processes racing for the same worker exactly one gets the row back.
  */
-export function reattachWhere(workerId: string, accountId: string, now: Date, taskId?: string) {
+export function reattachWhere(workerId: string, caller: WorkerCaller, now: Date) {
   return and(
     eq(workers.id, workerId),
-    eq(workers.accountId, accountId),
+    ownedByCaller(caller),
     inArray(workers.status, [...PARKABLE_STATUSES]),
     gt(workers.parkedUntil, now),
-    ...onTask(taskId),
   );
 }
 

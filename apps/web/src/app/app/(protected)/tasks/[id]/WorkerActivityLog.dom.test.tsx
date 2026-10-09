@@ -49,3 +49,19 @@ describe('log tools chip', () => {
     el.remove();
   });
 });
+
+describe('log row label', () => {
+  it('is a 44px tap target below md, not its 20px line of text', async () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    await act(async () => { root.render(<WorkerActivityTimeline milestones={milestones} startedAt={T0} nowMs={T0 + 40_000} live />); });
+
+    const labels = [...el.querySelectorAll('[data-testid="worker-log-entry"] > div > button:not([data-testid])')];
+    expect(labels.length).toBeGreaterThan(0);
+    for (const b of labels) expect(b.className.split(' ')).toEqual(expect.arrayContaining(['min-h-11', 'md:min-h-0']));
+
+    await act(async () => root.unmount());
+    el.remove();
+  });
+});

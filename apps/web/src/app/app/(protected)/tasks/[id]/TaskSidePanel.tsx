@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import type { ReactNode } from 'react';
-import StatusBadge, { STATUS_LABELS } from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import { deliveryReading, type DeliveryTone } from '@/lib/workflow/delivery-display';
 
 /** The header pill's palette, one entry per canonical tone. Success green is for a landed delivery only. */
@@ -59,9 +59,9 @@ export function HeaderStatusPill({ status, merged, delivery = null }: { status: 
     case 'completed':
       return <span className={`${base} text-status-success border-status-success bg-status-success/10`}>{dot()}Completed</span>;
     case 'failed':
-      return <span className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}{STATUS_LABELS.failed}</span>;
+      return <span className={`${base} text-status-error border-status-error bg-status-error/10`}>{dot()}Failed</span>;
     default:
-      return <StatusBadge status={status} />;
+      return <StatusPill status={status} />;
   }
 }
 
@@ -94,12 +94,12 @@ export interface PeerTask {
   title: string;
   /** The raw title, for the hover tooltip. */
   fullTitle?: string;
-  pct: number | null;
+  phase: string;
   href: string;
   waiting?: boolean;
 }
 
-/** Other live agents in the same mission (or workspace), with their progress. */
+/** Other live agents in the same mission (or workspace), with their lifecycle phase. */
 export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { title: string; peers: PeerTask[]; testId?: string }) {
   if (peers.length === 0) return null;
   return (
@@ -114,9 +114,7 @@ export function AlsoRunning({ title, peers, testId = 'task-also-running' }: { ti
                 {p.scope && <span className="shrink-0 px-1.5 border border-border-strong text-[11px] text-text-secondary">{p.scope}</span>}
                 <span className="min-w-0 truncate">{p.title}</span>
               </span>
-              <span className="w-20 h-[6px] shrink-0 bg-surface-4" aria-label={p.pct != null ? `${p.pct}%` : 'no progress reported'}>
-                <span className="block h-full bg-accent" style={{ width: `${Math.max(2, p.pct ?? 0)}%` }} />
-              </span>
+              <span className="shrink-0 font-mono text-chip uppercase text-text-muted">{p.phase}</span>
             </Link>
           </li>
         ))}

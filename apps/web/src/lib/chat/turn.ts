@@ -56,6 +56,11 @@ import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
 import type { LimitVerdict } from './limits';
 import { withTurnRef } from './turn-signal';
+import { loadTierCeiling } from '@buildd/core/model-tier-ceiling-store';
+import { enforceModelCeiling } from '@buildd/core/model-tier-ceiling';
+import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import type { CatalogEntry } from '@buildd/core/model-catalog';
+import { enforceTierCeiling, tierWithin, type TierCeiling } from '@buildd/shared';
 import {
   DEFAULT_TURN_TIMING, TURN_STOPPED_NOTE, USAGE_SETTLE_MS, settleWithin, withDeadlineWatchdog, withStoppedNote, wrapUpStep,
   type TurnTiming,
@@ -103,6 +108,14 @@ export interface TurnDeps {
    */
   routingAccess?: (scope: { teamId: string; workspaceId: string | null; userId: string }) => Promise<DecisionAccess>;
   resolveModel?: (opts: { tier: ChatTier; teamId: string; workspaceId: string | null; userId: string; pool?: ChatPoolContext }) => Promise<ResolvedChatModel>;
+  /**
+   * The person's model-tier ceiling for chat (docs/specs/model-tier-ceilings.md).
+   * Defaults to the DB read; read fresh on every turn, so a lowered ceiling
+   * holds on the next turn of an already-open, already-pinned conversation.
+   */
+  tierCeiling?: (subject: { teamId: string; workspaceId: string | null; userId: string }) => Promise<TierCeiling>;
+  /** The price catalog the served model is banded by. Defaults to the cached OpenRouter catalog. */
+  catalog?: () => Promise<readonly CatalogEntry[]>;
   /** Persist a tier-pool assignment for a saved assistant turn. */
   recordPoolAssignment?: typeof recordChatPoolAssignment;
   makeApi: ChatToolDeps['makeApi'];
@@ -349,11 +362,35 @@ export async function runChatTurn(args: {
     now,
   };
   const modelWs = scopeWs?.id ?? null;
+
+  // The model-tier ceiling, every turn. A pinned tier above it (including one
+  // pinned before the ceiling was lowered) is refused with policy_denied; an
+  // automatic tier (routing's pick, an approval continuation) is served at
+  // the ceiling instead unless the team chose deny. Never raised.
+  const ceiling = await (deps.tierCeiling ?? ((s) => loadTierCeiling(s, 'chat')))({ teamId: conv.teamId, workspaceId: modelWs, userId: user.id });
+  if (ceiling.max) {
+    const v = enforceTierCeiling({ ceiling, tier: route.tier, origin: conv.tier && message.role === 'user' ? 'chat_pin' : 'auto' });
+    if (!v.ok) return Response.json(v.denied, { status: 403 });
+    route = { ...route, tier: v.tier as ChatTier };
+  }
   let model = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
-  if (!model.ok && route.tier !== FALLBACK_TIER) {
+  if (!model.ok && route.tier !== FALLBACK_TIER && tierWithin(FALLBACK_TIER, ceiling.max)) {
     model = await resolveModel({ tier: FALLBACK_TIER, teamId: conv.teamId, workspaceId: modelWs, userId: user.id, pool });
   }
   if (!model.ok) return unavailable('no_key', 409, { provider: model.provider });
+  if (ceiling.max) {
+    // By what the served model costs, not its tier label: a pool arm or a
+    // registry row priced above the ceiling falls back to the incumbent, and
+    // a team mapping that itself crosses the ceiling is refused.
+    const catalog = await (deps.catalog ?? (() => getCachedOpenRouterCatalog().catch(() => [])))();
+    if (!enforceModelCeiling({ ceiling, model: model.modelId, origin: 'auto', catalog }).ok) {
+      const incumbent = await resolveModel({ tier: route.tier, teamId: conv.teamId, workspaceId: modelWs, userId: user.id });
+      const served = incumbent.ok ? enforceModelCeiling({ ceiling, model: incumbent.modelId, origin: 'auto', catalog }) : null;
+      if (!incumbent.ok) return unavailable('no_key', 409, { provider: incumbent.provider });
+      if (served && !served.ok) return Response.json(served.denied, { status: 403 });
+      model = incumbent;
+    }
+  }
   const resolved = model;
 
   // A rule stated in this message: its card is proposed off the critical path
@@ -669,6 +706,7 @@ export function turnGroups(args: {
       if (g) groups.add(g);
     }
   }
-  if (!args.canAdmin) groups.delete('admin');
+  // A member asking about roles gets their own (create/share_personal_role, in workers) instead.
+  if (!args.canAdmin && groups.delete('admin')) groups.add('workers');
   return groups;
 }

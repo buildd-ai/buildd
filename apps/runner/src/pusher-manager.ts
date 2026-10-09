@@ -56,6 +56,8 @@ export interface PusherManagerCallbacks {
   emitCommand: (workerId: string, command: WorkerCommand) => void;
   abort: (workerId: string, cancelQueued?: boolean) => Promise<void>;
   sendMessage: (workerId: string, text: string) => Promise<void>;
+  /** Sync one worker now (collects its queued messages). Optional for older embedders. */
+  syncWorker?: (workerId: string) => Promise<void>;
   rollback: (workerId: string, checkpointUuid: string) => Promise<void>;
   recover: (workerId: string, mode: 'diagnose' | 'complete' | 'restart') => Promise<void>;
   sendHeartbeat: () => void;
@@ -337,9 +339,17 @@ export class PusherManager {
         break;
       }
       case 'message':
+        // Only a runner that cannot acknowledge is sent text over Pusher now
+        // (and an urgent message to a terminal worker the queue cannot reach).
         if (command.text) {
           await this.callbacks.sendMessage(workerId, command.text);
         }
+        break;
+      case 'deliver_pending':
+        // A message was queued for this worker. The command carries no text:
+        // collect it from the queue now, by id, so it is injected at the next
+        // turn boundary and acknowledged like any other.
+        await this.callbacks.syncWorker?.(workerId);
         break;
       case 'rollback':
         if (command.checkpointUuid) {

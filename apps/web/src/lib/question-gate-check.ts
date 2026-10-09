@@ -52,8 +52,9 @@ import {
   readQuestionDecideRun,
   readQuestionGateRun,
 } from '@buildd/core/question-gate-decision';
-import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf } from '@buildd/core/question-brief';
-import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RepairTaskSpec } from '@buildd/core/human-attention';
+import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText, recommendedOf, type BriefedQuestion } from '@buildd/core/question-brief';
+import { classifyRecoverableBlocker, recoveredAnswerText, repairTaskSpec, type RecoverableBlocker, type RepairTaskSpec } from '@buildd/core/human-attention';
+import type { AttentionDisposition, DispositionBy } from '@buildd/core/needs-you';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
@@ -158,6 +159,101 @@ function unsupportedModel(access: DecisionAccess & { ok: true }): boolean {
   return !!access.endpoint && access.endpoint.kind !== 'systemone';
 }
 
+/**
+ * The hard rail for a question: the workspace/path rails and its own text, or
+ * the pre-call half of the `irreversible` rail — the prompt/context naming an
+ * irreversible action (the picked option is the other half, in stage 2). A
+ * person must see such a question, never Jev or auto-repair.
+ */
+function railFor(scope: Pick<QuestionCheckScope, 'hardRail'>, question: BriefedQuestion): HardRailKind | null {
+  return detectHardRail({ ...scope.hardRail, questionText: briefedQuestionText(question) })
+    ?? (detectIrreversibleAction([question.prompt, question.context]) ? 'irreversible' : null);
+}
+
+/**
+ * Stage 0: file or reuse the repair task when the question's own text is a
+ * recoverable platform blocker. Null when it is not one, no filer was
+ * supplied, or filing failed — the caller then asks. Callers check the rail
+ * first. Records the `recovered:<kind>` ledger row on success.
+ */
+async function recoverBlocker(
+  scope: QuestionCheckScope,
+  question: BriefedQuestion,
+  deps: Pick<QuestionCheckDeps, 'fileRepair'> & { record: NonNullable<QuestionCheckDeps['record']> },
+  started: number,
+  now: () => number,
+): Promise<{ blocker: RecoverableBlocker; repair: { id: string; reused: boolean } } | null> {
+  const blocker = classifyRecoverableBlocker(briefedQuestionText(question));
+  if (!blocker || !deps.fileRepair) return null;
+  const spec = repairTaskSpec(blocker, {
+    scopeId: scope.missionId ?? scope.workspaceId,
+    blockedTaskId: scope.taskId,
+    blockedTaskTitle: scope.taskTitle,
+    evidence: [question.context, question.prompt].filter(Boolean).join(' '),
+  });
+  const repair = await deps.fileRepair({
+    workspaceId: scope.workspaceId, missionId: scope.missionId, blockedTaskId: scope.taskId, spec,
+  }).catch(() => null);
+  if (!repair) return null;
+  await deps.record({
+    teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
+    capability: 'question_gate', fingerprint: fingerprintOf({ blocker: blocker.kind, taskId: scope.taskId }),
+    ruleAnswer: 'recover', appliedAnswer: 'recover', applied: true, status: 'applied',
+    reason: `recovered:${blocker.kind}`, latencyMs: now() - started,
+  }).catch(() => {});
+  return { blocker, repair };
+}
+
+/**
+ * The human-attention disposition stamped on a park (see
+ * `@buildd/core/needs-you`). `gateOutcome` is the question gate's
+ * own outcome when the gate produced it; `rail` the hard rail that forced an
+ * `ask`; `repairTaskId` the repair task that owns a `recovered` one.
+ */
+export interface ParkDisposition {
+  disposition: AttentionDisposition;
+  dispositionBy: DispositionBy;
+  gateOutcome?: QuestionGateOutcome;
+  rail?: HardRailKind;
+  repairTaskId?: string;
+  /** A recovered one only: what to tell the agent instead of a person's answer. Never stored. */
+  reason?: string;
+}
+
+/**
+ * Server-side admission for a question parked WITHOUT a gate disposition: a
+ * runner that predates the `question_gate` feature, a Codex or session-end
+ * park, or a gated runner whose /question-check call failed. Runs the
+ * deterministic half of the gate — the kill switch, the hard rails, stage 0
+ * (recover) — but no model call: this is on the worker PATCH's path, and a
+ * question that reaches here is asked exactly as it was before the gate
+ * existed unless it is a recoverable blocker. Never throws.
+ */
+export async function recheckParkedQuestion(
+  scope: QuestionCheckScope,
+  question: BriefedQuestion,
+  deps: Pick<QuestionCheckDeps, 'fileRepair' | 'record' | 'now'> = {},
+): Promise<ParkDisposition> {
+  const now = deps.now ?? (() => Date.now());
+  const started = now();
+  const by: DispositionBy = 'server_recheck';
+  if (!scope.gateEnabled) return { disposition: 'ask', dispositionBy: by, gateOutcome: 'off' };
+  try {
+    const rail = railFor(scope, question);
+    if (rail) return { disposition: 'ask', dispositionBy: by, gateOutcome: 'hard_rail', rail };
+    const recovered = await recoverBlocker(scope, question, { fileRepair: deps.fileRepair, record: deps.record ?? defaultRecord }, started, now);
+    if (recovered) {
+      return {
+        disposition: 'recovered', dispositionBy: by, gateOutcome: 'recovered', repairTaskId: recovered.repair.id,
+        reason: recoveredAnswerText(recovered.blocker, { repairTaskId: recovered.repair.id, reused: recovered.repair.reused, recommended: recommendedOf(question)?.label }),
+      };
+    }
+  } catch {
+    // Fail open: a person is asked.
+  }
+  return { disposition: 'ask', dispositionBy: by };
+}
+
 export async function checkQuestion(
   scope: QuestionCheckScope,
   req: QuestionGateRequest,
@@ -177,40 +273,18 @@ export async function checkQuestion(
   // Deterministic and model-free, so it runs for sensitive workspaces too (no
   // text leaves the workspace: the repair task is filed in it). A hard rail
   // always wins — those questions go to a person whatever they describe.
-  const questionText = briefedQuestionText(req.question);
-  // The question's own prompt/context naming an irreversible action is the
-  // pre-call half of the `irreversible` rail (the picked option is the other
-  // half, in stage 2): a person must see it, never Jev or auto-repair.
-  const rail: HardRailKind | null = detectHardRail({ ...scope.hardRail, questionText })
-    ?? (detectIrreversibleAction([req.question.prompt, req.question.context]) ? 'irreversible' : null);
-  const blocker = rail ? null : classifyRecoverableBlocker(questionText);
-  if (blocker && deps.fileRepair) {
-    const spec = repairTaskSpec(blocker, {
-      scopeId: scope.missionId ?? scope.workspaceId,
-      blockedTaskId: scope.taskId,
-      blockedTaskTitle: scope.taskTitle,
-      evidence: [req.question.context, req.question.prompt].filter(Boolean).join(' '),
-    });
-    const repair = await deps.fileRepair({
-      workspaceId: scope.workspaceId, missionId: scope.missionId, blockedTaskId: scope.taskId, spec,
-    }).catch(() => null);
-    if (repair) {
-      await record({
-        teamId: scope.teamId, workspaceId: scope.workspaceId, missionId: scope.missionId, taskId: scope.taskId,
-        capability: 'question_gate', fingerprint: fingerprintOf({ blocker: blocker.kind, taskId: scope.taskId }),
-        ruleAnswer: 'recover', appliedAnswer: 'recover', applied: true, status: 'applied',
-        reason: `recovered:${blocker.kind}`, latencyMs: now() - started,
-      }).catch(() => {});
-      return {
-        verdict: 'decide',
-        outcome: 'recovered',
-        disposition: 'decide',
-        reason: recoveredAnswerText(blocker, { repairTaskId: repair.id, reused: repair.reused, recommended: recommendedOf(req.question)?.label }),
-        repairTaskId: repair.id,
-        version: null,
-        latencyMs: now() - started,
-      };
-    }
+  const rail = railFor(scope, req.question);
+  const recovered = rail ? null : await recoverBlocker(scope, req.question, { ...deps, record }, started, now);
+  if (recovered) {
+    return {
+      verdict: 'decide',
+      outcome: 'recovered',
+      disposition: 'decide',
+      reason: recoveredAnswerText(recovered.blocker, { repairTaskId: recovered.repair.id, reused: recovered.repair.reused, recommended: recommendedOf(req.question)?.label }),
+      repairTaskId: recovered.repair.id,
+      version: null,
+      latencyMs: now() - started,
+    };
   }
 
   // ── Stage 1: the brief check ────────────────────────────────────────────

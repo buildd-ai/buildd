@@ -22,6 +22,7 @@
 import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import { secrets } from '../db/schema';
 import type { SecretPurpose } from './types';
+import { agentKeyStorageIndex, type AgentKeyProvider } from '../providers/agent-keys';
 
 /**
  * Purposes a row may carry a `userId` for. Everything else is team-owned only.
@@ -42,8 +43,17 @@ export function isPersonalSecretPurpose(purpose: string): purpose is PersonalSec
 /** Purposes that are never personal, so a team read of them is always well-defined. */
 export type TeamCredentialPurpose = Exclude<SecretPurpose, PersonalSecretPurpose>;
 
+/**
+ * Purposes a team read may name: the never-personal ones, plus `inference_key`,
+ * the canonical storage of a team's model API key. A personal `inference_key`
+ * shares the purpose (and label) with the team's, which is why it is not a
+ * `TeamCredentialPurpose`; through this helper the read is still only the
+ * team's row, because `user_id IS NULL` is pinned below whatever is asked for.
+ */
+export type TeamReadablePurpose = TeamCredentialPurpose | 'inference_key';
+
 export interface TeamCredentialFilter {
-  purpose: TeamCredentialPurpose | readonly TeamCredentialPurpose[];
+  purpose: TeamReadablePurpose | readonly TeamReadablePurpose[];
   /** Owning team(s). Omit only for cross-team sweeps (crons). */
   teamId?: string | readonly string[];
   /** Label(s): connector id, env-var name, provider name. */
@@ -118,6 +128,35 @@ export function pickMostSpecificCredential<T extends ScopedCredentialRow>(
     .sort((a, b) =>
       revoked(a.r) - revoked(b.r) ||
       b.rank - a.rank ||
+      (b.r.updatedAt?.getTime() ?? 0) - (a.r.updatedAt?.getTime() ?? 0))[0]?.r;
+}
+
+/** The columns the agent-key pick needs on top of precedence's. */
+export interface AgentKeyCandidateRow extends ScopedCredentialRow {
+  purpose: string;
+  label?: string | null;
+}
+
+/**
+ * The team's API key for an agent backend (`../providers/agent-keys`): rows
+ * that are not this provider's key are dropped, then `pickMostSpecificCredential`'s
+ * order (live over revoked, most specific scope, newest) with one step before
+ * recency: within a scope, canonical storage over a legacy alias. A team that
+ * has only legacy rows gets exactly the row `pickMostSpecificCredential` picks.
+ */
+export function pickTeamAgentApiKey<T extends AgentKeyCandidateRow>(
+  rows: readonly T[],
+  target: CredentialScopeTarget,
+  provider: AgentKeyProvider,
+): T | undefined {
+  const revoked = (r: T) => (r.healthStatus === 'revoked' ? 1 : 0);
+  return rows
+    .map(r => ({ r, rank: credentialScopeRank(r, target), storage: agentKeyStorageIndex(r, provider) }))
+    .filter(x => x.rank >= 0 && x.storage >= 0)
+    .sort((a, b) =>
+      revoked(a.r) - revoked(b.r) ||
+      b.rank - a.rank ||
+      a.storage - b.storage ||
       (b.r.updatedAt?.getTime() ?? 0) - (a.r.updatedAt?.getTime() ?? 0))[0]?.r;
 }
 

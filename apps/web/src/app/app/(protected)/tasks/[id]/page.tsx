@@ -1,6 +1,9 @@
+import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
+import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
@@ -39,7 +42,7 @@ import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
-import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
@@ -174,7 +177,7 @@ export default async function TaskDetailPage({
       },
       parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
-      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true } },
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: [asc(tasks.createdAt), asc(tasks.id)] },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -237,7 +240,7 @@ export default async function TaskDetailPage({
               // Every worker, newest first — NOT limit 1. The gate asks whether
               // ANY worker holds an open PR, the same read the list and the
               // claim route make; the newest alone hid an older open PR.
-              orderBy: desc(workers.createdAt),
+              orderBy: [desc(workers.createdAt), desc(workers.id)],
             },
           },
         })
@@ -245,7 +248,7 @@ export default async function TaskDetailPage({
     // Workers for this task
     db.query.workers.findMany({
       where: eq(workers.taskId, id),
-      orderBy: desc(workers.createdAt),
+      orderBy: [desc(workers.createdAt), desc(workers.id)],
       with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
@@ -258,7 +261,7 @@ export default async function TaskDetailPage({
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
             dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
             goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
-            integrationBranchEnabled: true,
+            integrationBranchEnabled: true, mergePolicy: true, requiresReview: true,
           },
           with: {
             tasks: {
@@ -313,7 +316,10 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+  // Latest / live / PR worker by (createdAt, id), never by row position: two
+  // workers created in the same instant must not trade places between renders.
+  const workerPicks = selectTaskWorkers(taskWorkers, isLiveWorkerStatus);
+  const prWorker = workerPicks.prWorker ?? null;
   // Stored evidence objects (pointers only; the text is read on demand by the
   // section). Best-effort: a failed lookup shows the empty list, never an error page.
   const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
@@ -341,7 +347,9 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
+    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -391,11 +399,11 @@ export default async function TaskDetailPage({
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              orderBy: desc(workers.createdAt),
+              orderBy: [desc(workers.createdAt), desc(workers.id)],
               with: { account: { columns: { name: true } } },
             },
           },
-          orderBy: asc(tasks.createdAt),
+          orderBy: [asc(tasks.createdAt), asc(tasks.id)],
         })
       : Promise.resolve([]),
     // What this task unblocks, once it has landed.
@@ -434,6 +442,9 @@ export default async function TaskDetailPage({
     // joined here rather than awaited after the phase is derived.
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
   ]);
+  // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
+  const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
+    .map(t => ({ ...t, workers: newestFirst(t.workers, compareWorkersChrono) }));
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
   const runnerName = runnerDisplayResolver(runnerHeartbeats);
@@ -524,7 +535,7 @@ export default async function TaskDetailPage({
     const chainBase = await db.query.tasks.findMany({
       where: eq(tasks.parentTaskId, planParentId),
       columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
-      orderBy: asc(tasks.createdAt),
+      orderBy: [asc(tasks.createdAt), asc(tasks.id)],
     });
 
     if (chainBase.length > 0) {
@@ -546,7 +557,7 @@ export default async function TaskDetailPage({
         ? await db.query.workers.findMany({
             where: inArray(workers.taskId, chainIds),
             columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true, status: true, mergedAt: true, prLifecycleStatus: true, runner: true, localUiUrl: true },
-            orderBy: desc(workers.createdAt),
+            orderBy: [desc(workers.createdAt), desc(workers.id)],
           })
         : [];
       const latestWorker = new Map<string, typeof chainWorkers[0]>();
@@ -613,7 +624,7 @@ export default async function TaskDetailPage({
 
   // Never revive an ended worker merely because it retained a question.
   const activeWorkerRow = !isTerminalTaskStatus(task.status)
-    ? taskWorkers.find(w => isLiveWorkerStatus(w.status)) : undefined;
+    ? workerPicks.activeWorker : undefined;
   const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
@@ -688,7 +699,7 @@ export default async function TaskDetailPage({
   }
 
   // Most recent worker that created a PR — surfaced prominently in the header
-  const workerWithPr = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+  const workerWithPr = prWorker;
 
   // Whether the latest worker has an open PR — keeps Pusher subscription alive for
   // completed tasks until CI resolves (prevents stale badge after task finishes).
@@ -973,9 +984,9 @@ export default async function TaskDetailPage({
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
                 // One line each: the runner, then its attempt number. "(retry)"
                 // is what "attempt 2" already says, and it wrapped on its own.
-                <li key={i} className="flex min-w-0 items-baseline gap-2">
+                <li key={w.id} className="flex min-w-0 min-h-11 md:min-h-0 items-center md:items-baseline gap-2">
                   <span className="min-w-0 truncate">{runnerLabel(w)}</span>
-                  <span className="shrink-0 text-text-muted">attempt {i + 1}</span>
+                  <span className="shrink-0 whitespace-nowrap text-text-muted">attempt {i + 1}</span>
                 </li>
               ))}
             </ul>
@@ -1112,14 +1123,15 @@ export default async function TaskDetailPage({
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
                   // pl-11 = icon w-7 + gap-4 lines them up with it).
-                  <div key={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
+                  <div key={worker.id} data-worker-id={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 min-h-11 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
                     <div className={`w-7 h-7 flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
-                      <div className="text-[13px] font-medium text-text-primary truncate" title={worker.name}>
-                        {runnerLabel(worker) ?? worker.name}
-                        {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
+                      {/* One line: the runner name truncates first, the attempt label never wraps or cuts. */}
+                      <div className="flex min-w-0 text-body font-medium" title={worker.name}>
+                        <span className="min-w-0 truncate text-text-primary">{runnerLabel(worker) ?? worker.name}</span>
+                        {attemptLabel && <span className="shrink-0 whitespace-nowrap font-normal text-text-muted">&nbsp;· {attemptLabel}</span>}
                       </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
                         {/* Generated names are capped mid-slug; cut at a token, full name on hover. */}
@@ -1242,7 +1254,7 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     <div data-testid="worker-history-meta" className="flex items-center gap-2 pl-11 md:pl-0 shrink-0">
-                      <StatusBadge status={
+                      <StatusPill status={
                         worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
                           ? worker.exitCause
                           : worker.status
@@ -1573,9 +1585,7 @@ export default async function TaskDetailPage({
                     >
                       {dep.title}
                     </Link>
-                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                      {dep.status}
-                    </span>
+                    <StatusPill status={deriveDisplayStatus(dep.status)} />
                   </div>
                 ))}
               </div>
@@ -1665,7 +1675,7 @@ export default async function TaskDetailPage({
                   >
                     {task.parentTask.title}
                   </Link>
-                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
+                  <StatusPill status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
@@ -1683,7 +1693,7 @@ export default async function TaskDetailPage({
                         >
                           {sub.title}
                         </Link>
-                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
+                        <StatusPill status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1780,6 +1790,10 @@ export default async function TaskDetailPage({
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
               delivery={deliveryPill}
+              outputRequirement={task.outputRequirement}
+              deliverableArtifactCount={evidenceArtifactCount}
+              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
+              reviewState={evidenceReview?.state}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
@@ -1793,6 +1807,11 @@ export default async function TaskDetailPage({
                 costUsd: activeWorker.costUsd?.toString() || null,
                 inputTokens: activeWorker.inputTokens,
                 outputTokens: activeWorker.outputTokens,
+                createdAt: activeWorker.createdAt?.toISOString() || null,
+                mergedAt: activeWorker.mergedAt?.toISOString() || null,
+                dirtyWorktree: activeWorker.dirtyWorktree,
+                observedTouches: activeWorker.observedTouches,
+                prIsDraft: activeWorker.prIsDraft,
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,
@@ -1879,9 +1898,7 @@ export default async function TaskDetailPage({
           >
             <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
             <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
-            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
-              {nextChainTask.status}
-            </span>
+            <StatusPill status={deriveDisplayStatus(nextChainTask.status)} />
             <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
           </Link>
         )}
@@ -2049,6 +2066,11 @@ export default async function TaskDetailPage({
               instructionHistory={(activeWorker.instructionHistory as any[]) || []}
               runner={activeWorker.runner}
               taskTerminal={isTerminal}
+              earlierRun={(() => {
+                // The run before this one, for the messages it ended before reading.
+                const prev = workerPicks.ordered.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
+                return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
+              })()}
             />
           )}
 

@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
@@ -8,6 +9,8 @@ import { and, eq, inArray, desc } from 'drizzle-orm';
 import { emit } from '@/lib/core-emit';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
+import { lazyRequester } from '@buildd/core/role-visibility';
+import { checkStatedRole } from '@/lib/stated-role';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -138,7 +141,7 @@ export async function GET(
     if (include.has('workers') || include.has('artifacts')) {
       taskWorkers = await db.query.workers.findMany({
         where: eq(workers.taskId, id),
-        orderBy: [desc(workers.createdAt)],
+        orderBy: [desc(workers.createdAt), desc(workers.id)],
         columns: {
           id: true,
           status: true,
@@ -354,6 +357,15 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Model-tier ceiling: a re-tier or re-pin above the effective maximum is
+      // refused here; lowering is always allowed. The claim re-checks anyway.
+      const ceilingRejection = await rejectOverCeiling({
+        subject: { teamId: task.workspace?.teamId, workspaceId: task.workspaceId, userId: lazyRequester(task) },
+        surface: 'agent',
+        request: { tier, model },
+        gate: { surface: 'PATCH /api/tasks/[id]', workspaceId: task.workspaceId, taskId: task.id },
+      });
+      if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
@@ -365,7 +377,6 @@ export async function PATCH(
       }
     }
     if (project !== undefined) updateData.project = project;
-    if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
     // Link (or unlink) the task to an external issue tracker item (e.g. a Linear
     // issue). Setting this is what enables the PR-merge completion comment in the
     // GitHub webhook (maybePostWorkTrackerIssueUpdate reads task.externalIssueId).
@@ -377,6 +388,25 @@ export async function PATCH(
         return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
       }
       updateData.missionId = missionId || null;
+    }
+    if (roleSlug !== undefined) {
+      // Same gate as creation (POST /api/tasks): an edit may not move a task
+      // onto another member's private role. Who the task is for is read with
+      // any (already scope-checked) mission change in this same PATCH applied.
+      const nextRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
+      if (nextRoleSlug && nextRoleSlug !== task.roleSlug) {
+        const statedRole = await checkStatedRole(nextRoleSlug, {
+          teamId: task.workspace?.teamId ?? null,
+          workspaceId: task.workspaceId,
+          requesterUserId: lazyRequester(
+            missionId !== undefined ? { ...task, missionId: missionId || null } : task,
+          ),
+        });
+        if (statedRole.refused) {
+          return NextResponse.json(statedRole.refused, { status: 400 });
+        }
+      }
+      updateData.roleSlug = roleSlug || null;
     }
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
@@ -436,6 +466,8 @@ export async function PATCH(
           roleSlug: roleSlug !== undefined ? (roleSlug || null) : task.roleSlug,
           workspaceId: task.workspaceId,
           teamId: (task as any).workspace?.teamId ?? null,
+          // Who the task is for decides which personal role's refs count.
+          requesterUserId: await lazyRequester(task)(),
         });
         if (!check.ok) {
           return NextResponse.json({ error: check.error }, { status: 400 });

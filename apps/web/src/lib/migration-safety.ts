@@ -3,11 +3,31 @@ export type OperationClass = 'EXPAND' | 'CONTRACT';
 export interface MigrationCollision {
   /** This PR's colliding migration filename (basename only). */
   file: string;
-  /** The other open PR's colliding migration filename (basename only). */
+  /** The other side's colliding migration filename (basename only). */
   otherFile: string;
-  /** The other open PR's number. */
-  otherPrNumber: number;
+  /** The other open PR's number; null when the slot is taken on the base itself. */
+  otherPrNumber: number | null;
+  /**
+   * `'base'`: the slot is already used by a migration on the PR's own base
+   * (e.g. dev merged a migration with the same number after this branch
+   * forked). Absent: another open PR holds it.
+   */
+  against?: 'base';
 }
+
+/**
+ * Why a migration verdict is unsafe. Callers route on this, never on `reason`:
+ *  - `destructive`: the SQL itself is CONTRACT (drop, rename, type change,
+ *    data migration, ambiguous). A person decides.
+ *  - `lineage`: the PR deletes, rewrites or reorders existing migrations.
+ *  - `mixed`: safe EXPAND plus CONTRACT in one PR; an agent splits it.
+ *  - `collision`: a mechanical renumber (see `MigrationSafety.collision`).
+ *  - `uninspectable`: GitHub could not be read; the inspector retries once,
+ *    then fails closed.
+ * Absent means `destructive` (see `unsafeKind`), so a verdict without one
+ * still fails closed.
+ */
+export type MigrationUnsafeKind = 'destructive' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
 
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }
@@ -15,6 +35,7 @@ export type MigrationSafety =
       safe: false;
       reason: string;
       operationClass: 'CONTRACT';
+      kind?: MigrationUnsafeKind;
       /**
        * Present only when the sole reason for `!safe` is a migration-number
        * collision AND this PR's own SQL is independently non-destructive. A
@@ -34,6 +55,12 @@ export type MigrationSafety =
        */
       mixedSplit?: true;
     };
+
+/** The structured kind of an unsafe verdict; one without a kind counts as destructive. */
+export function unsafeKind(safety: MigrationSafety): MigrationUnsafeKind | null {
+  if (safety.safe) return null;
+  return safety.kind ?? (safety.collision ? 'collision' : safety.mixedSplit ? 'mixed' : 'destructive');
+}
 
 const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
 
@@ -307,6 +334,7 @@ export function classifyPullRequestMigrations(
         safe: false,
         operationClass: 'CONTRACT',
         reason: `could not inspect generated migration ${migration.filename}`,
+        kind: 'uninspectable',
       };
     }
 
@@ -337,6 +365,7 @@ export function classifyPullRequestMigrations(
       reason:
         `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then land the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
       mixedSplit: true,
+      kind: 'mixed',
     };
   }
 
@@ -351,6 +380,7 @@ export function classifyPullRequestMigrations(
       operationClass: 'CONTRACT',
       reason: `migration number collision: ${collision.file} conflicts with open PR #${collision.otherPrNumber} migration ${collision.otherFile}`,
       collision,
+      kind: 'collision',
     };
   }
 

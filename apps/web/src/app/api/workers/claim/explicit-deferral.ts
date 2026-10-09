@@ -140,6 +140,26 @@ export function describeExplicitDeferral(
         detail: `The team's monthly managed runner-hours are used up. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows.`,
       };
     }
+    case 'no_personal_credential': {
+      const backendKey = detail.surface === 'agent-codex' ? 'OpenAI' : 'Anthropic';
+      const why: Record<string, string> = {
+        no_requester: 'it was not started by a person (a schedule, webhook or automation filed it), so there is no one whose key could pay for it',
+        requester_has_no_key: `the person it is for has not added their own ${backendKey} API key`,
+        runner_lacks_feature: 'the runner that asked for it is too old to be trusted with a personal key; an updated runner can take it',      };
+      const cause = str(detail.cause);
+      return {
+        code: reason,
+        detail: `The team's credential policy is personal keys only, and ${(cause && why[cause]) || 'no personal key can be used for it'}. Add a personal ${backendKey} key under Settings, or have an admin change the team's credential policy.`,
+      };
+    }
+    case 'tier_policy': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'Its model tier is above the model-tier maximum that applies to it.'} ${remedy ?? 'Lower the task tier, or ask a team admin to raise the maximum.'} It stays queued and is re-checked on every claim.`,
+      };
+    }
     case 'hosted_runner_hours': {
       const at = str(detail.resetsAt);
       const used = num(detail.used);

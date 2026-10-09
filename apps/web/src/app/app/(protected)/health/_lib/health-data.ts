@@ -41,7 +41,10 @@ import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
-import { FAILED_WORKER_STATUSES } from '@buildd/shared';
+import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
+import { loadRunnersFleet } from '@/lib/home-fleet';
+import type { IdleStretch } from '@/lib/idle-while-queued';
+import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
@@ -183,7 +186,7 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
+  | 'runnerLanes' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
@@ -191,10 +194,11 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   // Problems: broken credentials, stranded backends, offline runners, failing schedules.
   // failureGroups feeds the Overview's top failures (TopFailureGroups) and the
   // status sentence's failure count; budgetForecast feeds the Budget row.
-  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast']),
+  // agentAccess: access problems count on Overview and are listed on Failures.
+  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
-  failures: new Set(['failureAnalytics', 'failureGroups']),
-  runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules', 'agentAccess']),
+  failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
+  runners: new Set(['runners', 'runnerLanes', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -226,6 +230,8 @@ export interface HealthData {
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
+  runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
   now: number;
 }
 
@@ -395,18 +401,22 @@ export async function loadHealth({
     // health as a STATE with its own freshness, which needs the healthy rows.
     need('credentials')
       ? (async (): Promise<CredentialHealthItem[]> => {
-      const credRows = await db.query.secrets.findMany({
+      // Claude credentials in every storage agent runs read (the Anthropic
+      // key's canonical `inference_key` row too), plus Codex. `inference_key`
+      // also holds other providers' and personal keys: isBackendHealthRow drops them.
+      const credRows = (await db.query.secrets.findMany({
         where: and(
           eq(secrets.teamId, activeTeamId),
           or(
-            eq(secrets.purpose, 'oauth_token'),
-            eq(secrets.purpose, 'anthropic_api_key'),
+            ...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p)),
             eq(secrets.purpose, 'codex_credential'),
           ),
         ),
         columns: {
           id: true,
           purpose: true,
+          label: true,
+          userId: true,
           healthStatus: true,
           consecutiveAuthFailures: true,
           lastFailureAt: true,
@@ -414,7 +424,7 @@ export async function loadHealth({
           lastSuccessAt: true,
           lastVerifiedAt: true,
         },
-      });
+      })).filter(isBackendHealthRow);
       return (credRows as any[]).map((r: any) => ({
         id: r.id,
         purpose: r.purpose,
@@ -655,6 +665,10 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
 
   // Team experiments (model routing A/B). Admins-only rows are dropped for
   // members inside the loader; a failure hides the section, never the page.
+  const runnerLanes = need('runnerLanes')
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now }).catch(() => null)
+    : null;
+
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId).catch(() => null) : null;
 
   return {
@@ -679,6 +693,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       dispatchHealth: dispatchHealth ?? null,
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
+      runnerLanes,
       now,
     },
   };

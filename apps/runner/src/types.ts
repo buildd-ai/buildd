@@ -28,8 +28,16 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
-  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
-  disposition?: 'hold';
+  /**
+   * The question gate's human-attention disposition (packages/core/needs-you.ts):
+   * `ask`, `hold` (Jev held it), or `recovered` (a repair task owns it). Absent when no gate
+   * reply exists — the server then re-checks the park itself.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  /** The gate outcome behind `disposition`, the rail that forced an ask, the repair task of a recovered park. */
+  gateOutcome?: string;
+  rail?: string;
+  repairTaskId?: string;
   holdReason?: string;
   /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
@@ -46,6 +54,7 @@ export const CheckpointEvent = {
   FIRST_READ: 'first_read',
   FIRST_EDIT: 'first_edit',
   FIRST_COMMIT: 'first_commit',
+  FIRST_PUSH: 'first_push',
   TASK_COMPLETED: 'task_completed',
   TASK_ERROR: 'task_error',
 } as const;
@@ -58,6 +67,7 @@ export const CHECKPOINT_LABELS: Record<CheckpointEventType, string> = {
   first_read: 'First file read',
   first_edit: 'First file edit',
   first_commit: 'First commit',
+  first_push: 'First push',
   task_completed: 'Task completed',
   task_error: 'Task failed',
 };
@@ -400,6 +410,10 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // How the claim chose the model credential (no secret). `scope` personal/none =
+  // this worker's alone; `runnerLocalAllowed: false` = the machine's own seat,
+  // login and provider must not be used. Absent on older servers / no team policy.
+  credentialDecision?: import('@buildd/shared').ClaimCredentialDecision;
   // The team's agent model endpoint (docs/design/agent-model-endpoint.md), when it
   // won the claim's ranking. The only model credential this worker's agent gets.
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
@@ -775,7 +789,8 @@ export interface TaskResult {
 
 // Command from server
 export interface WorkerCommand {
-  action: 'pause' | 'resume' | 'abort' | 'message' | 'rollback' | 'recover';
+  // deliver_pending: a message was queued for this worker; sync to collect it (no text).
+  action: 'pause' | 'resume' | 'abort' | 'message' | 'deliver_pending' | 'rollback' | 'recover';
   text?: string;
   timestamp: number;
   // rollback fields

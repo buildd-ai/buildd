@@ -88,9 +88,11 @@ describe('mission detail wiring', () => {
   const page = readFileSync(join(dir, 'page.tsx'), 'utf8');
   const timeline = readFileSync(join(dir, 'CondensedTimeline.tsx'), 'utf8');
 
-  it('assembles strips with the canonical grouping API, not a local regroup', () => {
-    expect(page).toContain('buildAttemptStrips');
+  it('reads attempts through the canonical API, never a local regroup', () => {
+    // The page no longer assembles strips: the Structure graph that drew them
+    // is gone (mission-flow-timeline.md). What it still reads comes from here.
     expect(page).toMatch(/from\s+['"]@\/lib\/attempt-strip['"]/);
+    expect(page).not.toMatch(/attachAttempts\(/);
   });
 
   it('partitions the footer so attempts stop being filed as orchestrator runs', () => {
