@@ -144,7 +144,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'ready for your merge', tone: 'ink', title: subject, sentence: reason, actionType: 'merge', primary: { label: 'Merge', href: pr ?? subjectHref ?? '' }, details: pr ? { label: 'Review PR', href: pr } : null });
     }
     case 'REVIEW': {
-      const reason = i.humanReview ? [i.humanReview.reason, i.machineStatus].filter(Boolean).join(' · ') : text(i.verdictSummary) ?? text(i.escalationReason);
+      const reason = i.humanReview ? [i.humanReview.decision ?? i.humanReview.reason, i.machineStatus].filter(Boolean).join(' · ') : text(i.verdictSummary) ?? text(i.escalationReason);
       return make({ label: 'review needed', tone: 'warning', title: subject, sentence: text(reason), actionType: 'review', primary: { label: text(i.humanReview?.label) ?? 'Review PR', href: pr ? `${pr}/files` : subjectHref ?? '' }, details: subjectHref ? { label: 'View task', href: subjectHref } : null });
     }
     case 'QUESTION':

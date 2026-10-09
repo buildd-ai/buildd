@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
-import { AgentRecommendation } from './AgentRecommendation';
+import { ReviewDecision } from './ReviewDecision';
+import { reviewDecisionLine } from '@/lib/attention-line';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -280,10 +281,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       )}
 
       <ActionCardContextLine item={item} className="mt-0.5" />
-      {item.escalationReason && (
-        <p className="text-meta text-text-secondary mt-0.5 line-clamp-2">{item.escalationReason}</p>
+      {(item.escalationReason || item.recommendation) && (
+        <ReviewDecision
+          decision={reviewDecisionLine({ recommendation: item.recommendation, reason: item.escalationReason ?? '' })}
+          detail={item.escalationReason}
+          blockers={[]}
+        />
       )}
-      <AgentRecommendation recommendation={item.recommendation} />
 
       {item.prNumber != null && (
         <>

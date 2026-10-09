@@ -6,7 +6,8 @@ import { useRouter } from 'next/navigation';
 import type { MergePolicy, MergePolicyTier, WorkspacePolicyConfig } from '@buildd/shared';
 import MissionPolicyDrawer from '@/components/MissionPolicyDrawer';
 import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
-import { describePolicyConfig } from '@/lib/workspace-health';
+import { describePolicyConfig, riskClassLabel } from '@/lib/workspace-health';
+import { applyPolicySuggestions, type PolicySuggestion } from '@/lib/policy-suggestions';
 import { Select } from '@/components/ui/Select';
 
 interface Role {
@@ -26,6 +27,8 @@ interface Props {
   initial: MergePolicy;
   /** The applied risk-class policy — its detected paths are what gate merges. */
   policyConfig: WorkspacePolicyConfig | null;
+  /** Risk-adjacent paths recent reviews found outside every class (lib/policy-suggestions.ts). */
+  policySuggestions?: PolicySuggestion[];
   roles: Role[];
   missionOverrides: MissionOverride[];
   /** Right of the page title (the workspace's "Move to team…"). */
@@ -73,6 +76,7 @@ export default function MergePolicyEditor({
   workspaceName,
   initial,
   policyConfig,
+  policySuggestions = [],
   roles,
   missionOverrides: initialOverrides,
   headerAction,
@@ -298,6 +302,15 @@ export default function MergePolicyEditor({
 
       {/* Protected paths — detected from the repo, never typed */}
       <DetectedPathsSection policyConfig={policyConfig} onRescan={() => setRescanOpen(true)} />
+      {policyConfig && (
+        <PolicySuggestionsSection
+          workspaceId={workspaceId}
+          policyConfig={policyConfig}
+          suggestions={policySuggestions}
+          canEdit={canEdit}
+          onApplied={() => router.refresh()}
+        />
+      )}
 
       <PolicyRescanSheet
         workspaceId={workspaceId}
@@ -468,6 +481,90 @@ export function DetectedPathsSection({
             : 'No risk-class policy. Re-scan to detect protected paths.'}
         </p>
       )}
+    </section>
+  );
+}
+
+/**
+ * Paths a reviewed PR touched that look risky but no class covers. Recorded by
+ * the reviewer dispatch, so this is detection, not typing: each one comes from
+ * a real PR's file list. Adding one writes it into its class like a re-scan
+ * result would.
+ */
+export function PolicySuggestionsSection({
+  workspaceId,
+  policyConfig,
+  suggestions,
+  canEdit,
+  onApplied,
+}: {
+  workspaceId: string;
+  policyConfig: WorkspacePolicyConfig;
+  suggestions: PolicySuggestion[];
+  canEdit: boolean;
+  onApplied: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (suggestions.length === 0) return null;
+
+  async function add(chosen: PolicySuggestion[]) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policyConfig: applyPolicySuggestions(policyConfig, chosen) }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || 'Could not update the policy.');
+        return;
+      }
+      onApplied();
+    } catch {
+      setError('Network error.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-3" data-testid="merge-policy-suggestions">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium text-text-primary">Flagged in review</h2>
+          <p className="mt-1 text-xs text-text-muted">Risky paths recent PRs touched that no class covers.</p>
+        </div>
+        {canEdit && suggestions.length > 1 && (
+          <button type="button" className="btn min-h-11 shrink-0 self-start" disabled={busy} onClick={() => void add(suggestions)}>
+            Add all
+          </button>
+        )}
+      </div>
+      <ul className="divide-y divide-border-default border border-border-default bg-card">
+        {suggestions.map(s => (
+          <li key={s.path} className="flex items-center justify-between gap-3 px-4 py-2">
+            <div className="min-w-0">
+              <p className="font-mono text-xs text-text-primary break-all">{s.path}</p>
+              <p className="text-xs text-text-muted">{riskClassLabel(s.class)}</p>
+            </div>
+            {canEdit && (
+              <button
+                type="button"
+                data-testid="merge-policy-suggestion-add"
+                className="btn btn-quiet min-h-11 md:min-h-0 shrink-0"
+                disabled={busy}
+                onClick={() => void add([s])}
+              >
+                Add
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && <p className="text-xs text-status-error">{error}</p>}
     </section>
   );
 }
