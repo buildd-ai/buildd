@@ -1639,6 +1639,13 @@ export interface ClaimDiagnostics {
      * without the personal-credential feature.
      */
     no_personal_credential?: number;
+    /**
+     * The task's tier or model is above the effective model-tier ceiling for
+     * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
+     * Held, not failed: it runs when the ceiling is raised or the task is
+     * re-tiered. The gate event's detail is the structured policy_denied error.
+     */
+    tier_policy?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -3580,8 +3587,8 @@ export interface FleetSlotWorker {
   roleName: string | null;
   roleColor: string | null;
   status: string;
-  /** 0..100, or null when the runner has not reported progress. */
-  progress: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;

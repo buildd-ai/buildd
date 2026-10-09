@@ -154,6 +154,14 @@ describe('setupWorktree — shared/default branch guard', () => {
     expect(worktrees.get(DEFAULT_BRANCH)).toBe(MAIN_WORKTREE);
   });
 
+  test('points the new branch upstream at its own remote branch, not the base', async () => {
+    await setupWorktree(MAIN_WORKTREE, 'buildd/task-a', DEFAULT_BRANCH, 'worker-a', { baseBranch: DEFAULT_BRANCH });
+
+    const cmds = syncCalls.map(c => c.cmd);
+    expect(cmds).toContain('git config "branch.buildd/task-a.remote" origin');
+    expect(cmds).toContain('git config "branch.buildd/task-a.merge" "refs/heads/buildd/task-a"');
+  });
+
   test('never runs `git worktree add -b <default-branch>` or deletes the default branch', async () => {
     await setupWorktree(MAIN_WORKTREE, 'buildd/task-a', DEFAULT_BRANCH, 'worker-a', { baseBranch: DEFAULT_BRANCH });
 

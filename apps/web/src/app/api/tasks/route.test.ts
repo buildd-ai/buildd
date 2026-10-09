@@ -1,4 +1,21 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+
 
 // The trigger-hint batch needs a real driver; here it runs the write as-is and
 // records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
@@ -3960,6 +3977,74 @@ describe('POST /api/tasks', () => {
       const data = await response.json();
       expect(data.routing.tier).toBe('premium');
       expect(data.routing.reason).toContain('role "builder" floor premium raised standard → premium');
+    });
+
+    describe('model-tier ceiling', () => {
+      afterEach(() => { ceilingTest.inputs = {}; });
+
+      it('team premium cap: an explicit premium-plus task is refused with policy_denied and not filed', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'premium' } } };
+        setupRoutingAuth();
+        const captured = captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium-plus' },
+        }));
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: 'policy_denied', code: 'tier_above_ceiling', maxTier: 'premium', binding: { source: 'team' } });
+        expect(captured.values).toBeNull();
+      });
+
+      it("a stated role whose floor is above the ceiling is refused", async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'standard' } } };
+        setupRoutingAuth();
+        captureInsert();
+        mockWorkspaceSkillsFindMany.mockResolvedValue([{ slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: null }]);
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', roleSlug: 'builder' },
+        }));
+        expect(response.status).toBe(403);
+        expect((await response.json()).requested).toMatchObject({ tier: 'premium', origin: 'role_model' });
+      });
+
+      it('an API-key caller with no person behind it gets the team cap, not a personal one', async () => {
+        ceilingTest.inputs = { team: { membersCapped: true, team: { all: 'premium' } }, members: { 'user-x': { self: { all: 'budget' } } } };
+        setupRoutingAuth();
+        captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium' },
+        }));
+        expect(response.status).toBe(200);
+      });
+
+      it("the routing preview shows an automatic premium pick at the ceiling, as the claim will serve it", async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'standard' } } };
+        setupRoutingAuth();
+        captureInsert();
+        mockWorkspaceSkillsFindMany.mockResolvedValue([{ slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: null }]);
+        // No stated role: the matrix alone picks premium for complex engineering.
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', kind: 'engineering', complexity: 'complex' },
+        }));
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.routing.tier).toBe('standard');
+        expect(data.routing.reason).toContain('capped at standard by the team tier maximum');
+      });
+
+      it('no ceiling: a premium-plus task files as before', async () => {
+        setupRoutingAuth();
+        const captured = captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium-plus' },
+        }));
+        expect(response.status).toBe(200);
+        expect(captured.values.tier).toBe('premium-plus');
+      });
     });
 
     it('says an inferred role will not change the model when a role-less task has candidates', async () => {

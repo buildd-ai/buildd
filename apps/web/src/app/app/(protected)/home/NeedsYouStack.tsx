@@ -117,7 +117,7 @@ export function NeedsYouStack({
           </span>
         )}
       </div>
-      <div className="space-y-4">
+      <div data-testid="needs-you-cards" className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))]">
         {shipped.map(m => <ShippedCard key={m.id} m={m} timeZone={timeZone} />)}
         {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
         {held.map(m => <HeldMissionCard key={m.id} m={m} />)}

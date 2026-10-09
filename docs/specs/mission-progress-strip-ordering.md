@@ -181,7 +181,7 @@ crosses a level.
 
 Phase stays a tie-breaker (key 4), not a primary grouping. `phase` and
 `dependsOn` are independent fields and nothing cross-validates them
-(`structure-layout.ts` header comment); a phase-first order breaks ORD-1
+(the removed Structure layout's header comment said so); a phase-first order breaks ORD-1
 whenever a later-phase task is a dependency of an earlier-phase one. The
 non-interactive `LandedMeter` variants (`band` without `selection`, `strip`)
 keep their phase-grouped layout and captions: they are unaddressable (§2.6).
@@ -358,8 +358,8 @@ There are four edge walks over mission tasks today:
    tasks.
 3. `buildMissionBoard` — its own `deps` / `unblocks` loops with its own
    satisfaction rule (§3.1, ST-1).
-4. `computeStructureLayout` — its own `blockerMap` / `dependentsOf` and
-   assignRanks (deleted).
+4. computeStructureLayout (the Structure canvas, since removed) — its own
+   blockerMap / dependentsOf and assignRanks.
 
 **Rule ADJ-1**: identifyChains' pass 1 is extracted into one exported pure
 helper in `apps/web/src/lib/condensed-timeline.ts` (proposed name:
@@ -376,7 +376,8 @@ buildMissionAdjacency). Input: tasks with `id`, `status`, `dependsOn`,
 
 **Rule ADJ-2**: `identifyChains`, `collapseTerminalChains`,
 `buildMissionBoard` (its `deps`, `unblocks` and ready/blocked decision),
-`computeStructureLayout` (its rank pass) and the strip (§2, §3, §5) all read
+the Flow timeline (`buildFlowTimeline`, which reads the board's deps and the
+strip order; `mission-flow-timeline.md`) and the strip (§2, §3, §5) all read
 that one result. None of them walks `dependsOn` itself afterwards.
 
 **Rule ADJ-3**: frontier(T) is `reduceToFrontier` — exported from
@@ -665,7 +666,7 @@ else the first active cell; else the first held cell; else the last cell.
 | `MissionBoardParts.tsx` `StripCells` | the "Task {i + 1} of {n}, …" aria-label | §4 aria-label |
 | `MissionBoardParts.tsx` `STRIP_CELL_CLASS` | `ready` and `blocked` sharing one class | §3.2 table |
 | `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from feedLanded (deleted); the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (ADJ-2, ST-1, ST-2) |
-| `structure-layout.ts` assignRanks (deleted) and its local `blockerMap` build | private Kahn | moved into the shared helper (ADJ-1); `computeStructureLayout` reads its levels |
+| structure-layout.ts assignRanks and its local blockerMap build (the file is since removed with the Structure canvas) | private Kahn | moved into the shared helper (ADJ-1) |
 | `condensed-timeline.ts` `identifyChains` pass 1 and `collapseTerminalChains` edge loop | two local adjacency builds | the shared helper |
 | `MissionProgressBar.tsx` `FullBar`, `StackedBar`, mini branch | three inline copies of `const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }` + sort | one exported state-compaction helper, used by all three (ADDR-2 keeps them state-compacted; there must be one copy, not three) |
 
@@ -734,7 +735,7 @@ Each criterion is checkable against a board model built from fixtures
   `--strip-gap` resolves to 1px and every marked tick has a rendered width
   ≥ 1px (W-1, W-3).
 - **AC-20**: GIVEN the codebase after the change, WHEN `buildMissionBoard`,
-  `identifyChains`, `collapseTerminalChains`, `computeStructureLayout` and
+  `identifyChains`, `collapseTerminalChains`, `buildFlowTimeline` and
   `stripOrder` are searched, THEN none of them reads `.dependsOn` directly;
   each consumes the shared adjacency helper's result (ADJ-2).
 - **AC-21**: GIVEN `MissionProgressBar.tsx` after the change, WHEN searched,
@@ -765,8 +766,8 @@ Each criterion is checkable against a board model built from fixtures
   shared adjacency helper
 - `apps/web/src/lib/task-presentation.ts` — `isGateSatisfied`,
   `deriveChainPosition`, `reduceToFrontier`
-- `apps/web/src/lib/structure-layout.ts` — `computeStructureLayout`,
-  assignRanks (deleted)
+- `apps/web/src/lib/flow-timeline.ts` — `buildFlowTimeline` (reads the
+  shared adjacency through the board; the Structure layout it replaced is removed)
 - `apps/web/src/components/MissionProgressBar.tsx` — `MissionProgressBar`
   (delete list only)
 - `apps/web/src/app/globals.css` — `fleet-hatch`, `fleet-hatch-future`,

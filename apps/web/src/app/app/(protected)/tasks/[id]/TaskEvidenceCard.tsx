@@ -131,9 +131,9 @@ export default function TaskEvidenceCard({
                 {evidence.diff.files} file{evidence.diff.files === 1 ? '' : 's'} · <span className="text-status-success">+{evidence.diff.added}</span>
                 <span className="text-status-error">/-{evidence.diff.removed}</span>
               </span>
-              {evidence.links.prUrl && <a href={evidence.links.prUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">PR</a>}
-              {evidence.links.ciRunUrl && <a href={evidence.links.ciRunUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">CI run</a>}
-              <a href="#agent-error-traces" className="hover:underline">Full trace</a>
+              {evidence.links.prUrl && <a href={evidence.links.prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-11 items-center hover:underline md:min-h-0 md:min-w-0">PR</a>}
+              {evidence.links.ciRunUrl && <a href={evidence.links.ciRunUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 min-w-11 items-center hover:underline md:min-h-0 md:min-w-0">CI run</a>}
+              <a href="#agent-error-traces" className="inline-flex min-h-11 min-w-11 items-center hover:underline md:min-h-0 md:min-w-0">Full trace</a>
             </div>
           </div>
         </details>

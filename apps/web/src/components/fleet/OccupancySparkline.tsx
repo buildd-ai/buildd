@@ -18,7 +18,12 @@ export function sparklineCaption(series: OccupancySeries): string {
   return `Past 24h · Peak ${peak} · Avg ${fmtLevel(avg)}`;
 }
 
-export function OccupancySparkline({ series, href }: { series: OccupancySeries; href?: string }) {
+/** A stretch of the window to tint flat (idle while work waited). */
+export interface SparklineShade { from: number; to: number }
+
+export function OccupancySparkline({ series, href, shade = [] }: { series: OccupancySeries; href?: string; shade?: readonly SparklineShade[] }) {
+  const span = series.window.to - series.window.from;
+  const x = (t: number) => Math.round((Math.min(Math.max(t, series.window.from), series.window.to) - series.window.from) / span * W * 100) / 100;
   const values = series.buckets.map(b => b.runner.avg);
   const idle = series.summary.runner.peak === 0;
   const { line, area } = levelPaths(values, niceScaleMax(values), W, H);
@@ -29,8 +34,11 @@ export function OccupancySparkline({ series, href }: { series: OccupancySeries; 
 
   const body = (
     <>
-      {!idle && (
+      {(!idle || shade.length > 0) && (
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-6 w-full" role="img" aria-label={label}>
+          {span > 0 && shade.map((r, i) => (
+            <rect key={i} data-testid="occupancy-shade" x={x(r.from)} y={0} width={Math.max(1, x(r.to) - x(r.from))} height={H} fill="var(--q-tint)" />
+          ))}
           <path d={area} fill="var(--accent-soft)" opacity={0.6} />
           <path d={line} fill="none" stroke="var(--accent)" strokeWidth={1.25} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
         </svg>

@@ -206,3 +206,10 @@ describe('appendMilestone', () => {
     expect(list.map(m => m.label)).toEqual(['s1', 's2', 's3', 's4']);
   });
 });
+
+test('cap preserves checkpoints when only statuses remain', () => {
+  const checkpoint: Milestone = { type: 'checkpoint', event: 'first_commit', label: 'First commit', ts: 1 };
+  const list: Milestone[] = [checkpoint, { type: 'status', label: 'old', ts: 2 }];
+  appendMilestone(list, { type: 'status', label: 'new', ts: 3 }, 2);
+  expect(list).toEqual([checkpoint, { type: 'status', label: 'new', ts: 3 }]);
+});

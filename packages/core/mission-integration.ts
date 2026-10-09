@@ -270,18 +270,27 @@ export function resolveTaskPrBase(args: {
   fallbacks?: Array<string | null | undefined>;
   /** True when the integration branch is known to be absent on the remote. */
   integrationBaseMissing?: boolean;
+  /**
+   * True when a stacked phase's predecessor branch is known to be gone — its PR
+   * merged (into the integration branch) under a differently-named head and the
+   * branch was deleted. The phase then takes the integration branch like any
+   * other task of the mission.
+   */
+  stackedBaseMissing?: boolean;
 }): TaskPrBaseResolution {
   const integrationBase = missionIntegrationBase(args.mission);
   const rawContextBase = (args.task?.context as Record<string, unknown> | null | undefined)
     ?.baseBranch;
   const contextBaseBranch = typeof rawContextBase === 'string' ? rawContextBase : undefined;
   const isMissionPrOwner = args.task ? isMissionPrTask(args.task) : false;
-  const isStackedPhase = isStackedPhaseBase({
-    contextBaseBranch,
-    head: args.head ?? null,
-    mission: args.mission,
-    dependsOn: args.task?.dependsOn ?? null,
-  });
+  const isStackedPhase =
+    !args.stackedBaseMissing &&
+    isStackedPhaseBase({
+      contextBaseBranch,
+      head: args.head ?? null,
+      mission: args.mission,
+      dependsOn: args.task?.dependsOn ?? null,
+    });
   const enforced =
     !!integrationBase && !isMissionPrOwner && !isStackedPhase && !args.integrationBaseMissing;
 
@@ -299,7 +308,10 @@ export function resolveTaskPrBase(args: {
   // marker, and one equal to a vanished integration branch is the very ref we
   // are routing around — neither is a base.
   const usableCtxBase =
-    ctxBase && ctxBase !== args.head && !(args.integrationBaseMissing && ctxBase === integrationBase)
+    ctxBase &&
+    ctxBase !== args.head &&
+    !(args.integrationBaseMissing && ctxBase === integrationBase) &&
+    !(args.stackedBaseMissing && ctxBase !== integrationBase)
       ? ctxBase
       : undefined;
   if (usableCtxBase) {

@@ -6,13 +6,19 @@ import { INTERACTIVE_WORKER_RUNNER, LIVE_WORKER_STATUSES } from '@buildd/shared'
 import InstructWorkerForm from './InstructWorkerForm';
 import InstructionHistory from './InstructionHistory';
 import { parseErrorMessage } from './RealTimeWorkerView';
+import { messageDeliveryStatus, type InstructionHistoryEntry } from '@/lib/worker-instructions';
 
 interface Props {
   workerId: string;
   status: string;
   /** An open question is answered in the hero; /instruct is the wrong path for it. */
   hasUnansweredQuestion: boolean;
-  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
+  instructionHistory: InstructionHistoryEntry[];
+  /**
+   * The previous run of this task, when there is one: its messages the run
+   * ended before reading are shown here, each with Resend (to this run).
+   */
+  earlierRun?: { workerId: string; status: string; history: InstructionHistoryEntry[] } | null;
   /** `workers.runner`. 'mcp' is a local claim_task session buildd cannot stop. */
   runner?: string | null;
   /** The task already ended (completed/failed/cancelled). */
@@ -28,7 +34,7 @@ interface Props {
  * can stop it. It gets "Release slot" instead: buildd stops counting it and
  * frees its seat; the session itself keeps running.
  */
-export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false }: Props) {
+export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false, earlierRun = null }: Props) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -60,6 +66,22 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
   }
 
   const abort = () => post(`/api/workers/${workerId}/cmd`, { action: 'abort' }, 'Failed to abort worker');
+  // Same path and priority as the steer form: queued for this run's next turn.
+  const resend = (message: string) => post(`/api/workers/${workerId}/instruct`, { message, priority: 'urgent' }, 'Failed to resend');
+
+  const undelivered = earlierRun
+    ? earlierRun.history.filter(e => e.type === 'instruction' && messageDeliveryStatus(e, earlierRun.status).state === 'undelivered')
+    : [];
+  const earlier = undelivered.length > 0 && earlierRun && !taskTerminal && !hasUnansweredQuestion ? (
+    <InstructionHistory
+      history={undelivered}
+      workerStatus={earlierRun.status}
+      onResend={resend}
+      resending={loading}
+      title="Not delivered · the previous run ended first"
+      testId="earlier-run-undelivered"
+    />
+  ) : null;
   const release = () => post(
     `/api/workers/${workerId}/release-slot`,
     { reason: taskTerminal ? 'task already ended' : 'released from the task page' },
@@ -112,7 +134,8 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
           )}
         </div>
         {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
-        {!taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} />}
+        {earlier}
+        {!taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
       </div>
     );
   }
@@ -149,7 +172,8 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         </div>
       )}
       {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
-      {!hasUnansweredQuestion && <InstructionHistory history={instructionHistory} />}
+      {earlier}
+      {!hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
     </div>
   );
 }

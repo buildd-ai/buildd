@@ -62,8 +62,8 @@ class TestInputStream implements AsyncIterable<unknown> {
   private resolvers: Array<(r: IteratorResult<unknown>) => void> = [];
   private done = false;
 
-  enqueueText(text: string) {
-    const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
+  enqueueText(text: string, uuid?: string) {
+    const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, ...(uuid ? { uuid } : {}) };
     if (this.resolvers.length > 0) this.resolvers.shift()!({ value: msg, done: false });
     else this.queue.push(msg);
   }
@@ -139,6 +139,61 @@ describe('CodexBackend multi-turn input stream (Phase 1B)', () => {
     expect(events.at(-1)?.type).toBe('complete');
     // Two turn_complete events (one per turn).
     expect(events.filter((e) => e.type === 'turn_complete').length).toBe(2);
+  });
+
+  // B-8: Codex has no mid-turn injection. A steering message sent while a turn
+  // runs waits for turn.completed; taking it as the next turn's prompt is what
+  // makes it read, and the backend says so with input_consumed.
+  test('a message enqueued mid-turn is consumed only after turn.completed, then reported as input_consumed', async () => {
+    perTurnEvents = [
+      [
+        { type: 'item.completed', item: { id: 'c1', type: 'command_execution', command: 'ls', aggregated_output: '', exit_code: 0, status: 'completed' } },
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ],
+      [{ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }],
+    ];
+    const inputStream = new TestInputStream();
+    const backend = new CodexBackend({ inputStream });
+    const events: BackendEvent[] = [];
+    let turns = 0;
+    let runsWhenEnqueued = -1;
+    for await (const event of backend.runStreamed({ ...BASE })) {
+      events.push(event);
+      // Mid-turn: the first item of turn 1, before its turn.completed.
+      if (event.type === 'progress' && runsWhenEnqueued < 0) {
+        runsWhenEnqueued = runCalls.length;
+        inputStream.enqueueText('switch to the device flow', 'u-steer');
+      }
+      if (event.type === 'turn_complete' && ++turns === 2) inputStream.end();
+    }
+    expect(runsWhenEnqueued).toBe(1);
+    // Not consumed mid-turn: it became turn 2's prompt.
+    expect(runCalls.map((r) => r.prompt)).toEqual(['initial prompt', 'switch to the device flow']);
+    const consumed = events.filter((e) => e.type === 'input_consumed');
+    expect(consumed).toEqual([{ type: 'input_consumed', uuids: ['u-steer'] }]);
+    // Reported after turn 1 completed and before turn 2's events.
+    const idxConsumed = events.findIndex((e) => e.type === 'input_consumed');
+    const idxFirstTurnComplete = events.findIndex((e) => e.type === 'turn_complete');
+    expect(idxConsumed).toBeGreaterThan(idxFirstTurnComplete);
+  });
+
+  test('a consumed message with no uuid (a runner nudge) reports nothing', async () => {
+    perTurnEvents = [
+      [{ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }],
+      [{ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }],
+    ];
+    const inputStream = new TestInputStream();
+    const backend = new CodexBackend({ inputStream });
+    const events: BackendEvent[] = [];
+    let turns = 0;
+    for await (const event of backend.runStreamed({ ...BASE })) {
+      events.push(event);
+      if (event.type === 'turn_complete') {
+        if (++turns === 1) inputStream.enqueueText('nudge');
+        else inputStream.end();
+      }
+    }
+    expect(events.some((e) => e.type === 'input_consumed')).toBe(false);
   });
 
   test('complete fires only after stream end, not between turns', async () => {

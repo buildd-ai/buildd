@@ -69,7 +69,7 @@ export function triggerClasses(size: 'sm' | 'md', open: boolean, disabled: boole
 
 /**
  * The brand select: a button that opens a listbox (WAI-ARIA "select-only
- * combobox"). Square, 1px ink border, hard-offset popover, IBM Plex Mono.
+ * combobox"): 1px control border, pill radius, a hairline popover.
  *
  * Keyboard: ↓/↑/Enter/Space open; ↓/↑ move, Home/End jump, PageUp/PageDown
  * step ten; typing jumps to a matching label (repeat a letter to cycle);

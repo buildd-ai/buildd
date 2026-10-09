@@ -6,6 +6,7 @@
  *
  * Design: docs/prototypes/cross-surface-delivery (`#missions`).
  */
+import type { StateKey } from '@/components/ui/states';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
 
 /** One portfolio row: the projection plus the list's own sort and filter facts. */
@@ -25,6 +26,8 @@ export interface PortfolioRow {
   completedAt: number | null;
   /** Recurring missions: minutes to the next scheduled run. */
   nextScanMins: number | null;
+  /** One display state per task, in strip order (lib/mission-strip-order.ts); absent draws an empty strip. */
+  strip?: StateKey[];
 }
 
 /** Completed missions inside this window show in the history disclosure; older ones sit behind "show older". */

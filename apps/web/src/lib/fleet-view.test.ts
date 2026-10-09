@@ -37,7 +37,7 @@ describe('buildFleetSnapshot', () => {
   const snap = buildFleetSnapshot(
     [hb('h1', 'http://atlas.local:8766'), hb('h2', 'http://birch.local:8766')],
     [
-      worker('export', 'http://atlas.local:8766', { progress: 25 }),
+      worker('export', 'http://atlas.local:8766', { phase: 'Pushed' }),
       worker('money', 'http://atlas.local:8766', { status: 'completed', startedAt: min(40), completedAt: min(20), prNumber: 412 }),
       worker('checkout', 'http://birch.local:8766', { status: 'waiting_input', waitingFor: { prompt: 'Per line or total?' } }),
       worker('ghost', 'http://gone.local:1', { status: 'completed', startedAt: min(30), completedAt: min(25) }),
@@ -52,7 +52,7 @@ describe('buildFleetSnapshot', () => {
     expect(atlas.slots[0].lane.bars.map(b => b.scope)).toEqual(['money', 'export']);
     expect(atlas.slots[0].lane.bars.map(b => b.label)).toEqual(['something', 'something']);
     expect(atlas.slots[0].lane.bars[0].title).toBe('feat(money): something');
-    expect(atlas.slots[0].worker).toMatchObject({ label: 'export', progress: 25, roleColor: '#123456', roleName: 'Builder' });
+    expect(atlas.slots[0].worker).toMatchObject({ label: 'export', phase: 'Pushed', roleColor: '#123456', roleName: 'Builder' });
     expect(atlas.slots[1].worker).toBeNull();
   });
 
@@ -473,7 +473,7 @@ describe('fleet online window', () => {
   it('is the window Home and Settings load the fleet with', async () => {
     const src = await Bun.file(new URL('./home-fleet.ts', import.meta.url)).text();
     expect(src).not.toMatch(/onlineThresholdMs:\s*RUNNER_ONLINE_THRESHOLD_MS/);
-    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(3);
+    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(4);
   });
 });
 
