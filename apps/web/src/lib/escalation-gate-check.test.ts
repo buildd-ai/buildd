@@ -42,6 +42,7 @@ function harness(over: Partial<EscalationGateDeps> = {}, stored = new Map<string
   let modelCalls = 0;
   const run = (over.run ?? jevRun('act', 're_review')) as any;
   const deps: EscalationGateDeps = {
+    decide: true,
     loadStored: async () => stored,
     resolveAccess: async () => ({ ok: true, apiKey: 'sk', model: 'jev' }) as any,
     recordReceipts: async () => {},
@@ -161,6 +162,58 @@ describe('gateEscalations', () => {
     const h = harness({ loadStored: async (teamId) => { seen.push(teamId); return new Map(); } });
     await gateEscalations([subject({ teamId: 't1', key: 'a', ci: 'running' }), subject({ teamId: 't2', key: 'b', ci: 'running' })], h.deps);
     expect(seen.sort()).toEqual(['t1', 't2']);
+  });
+});
+
+describe('read mode: what a page load or list_prs does', () => {
+  const reader = (over: Partial<EscalationGateDeps> = {}, stored = new Map<string, StoredVerdict>()) => {
+    const enqueued: string[] = [];
+    const h = harness({ decide: false, enqueue: list => { enqueued.push(...list.map(s => s.key)); }, ...over }, stored);
+    return { ...h, enqueued };
+  };
+
+  it('is the default: no model call, no ledger write', async () => {
+    const records: any[] = [];
+    let calls = 0;
+    const out = await gateEscalations([subject()], {
+      loadStored: async () => new Map(), record: async r => { records.push(r); },
+      resolveAccess: async () => ({ ok: true, apiKey: 'sk', model: 'jev' }) as any,
+      run: (async () => { calls += 1; return jevRun('act', 're_review')(); }) as any,
+    });
+    expect(calls).toBe(0);
+    expect(records).toHaveLength(0);
+    expect(out.get('pr:ws:7')).toMatchObject({ owner: 'person', by: 'fallback' });
+  });
+
+  it('a subject Jev would decide shows as before and is queued for a background look', async () => {
+    const r = reader();
+    const out = await gateEscalations([subject()], r.deps);
+    expect(r.calls()).toBe(0);
+    expect(r.records).toHaveLength(0);
+    expect(out.get('pr:ws:7')).toMatchObject({ owner: 'person', by: 'fallback' });
+    expect(r.enqueued).toEqual(['pr:ws:7']);
+  });
+
+  it('a rule answers at once, and the look is still queued so the ledger gets its row', async () => {
+    const r = reader();
+    const s = subject({ ci: 'running', why: 'human_tier' });
+    expect((await gateEscalations([s], r.deps)).get(s.key)).toMatchObject({ owner: 'buildd', by: 'rule', action: 'wait_ci' });
+    expect(r.records).toHaveLength(0);
+    expect(r.enqueued).toEqual([s.key]);
+  });
+
+  it('a stored verdict for the same state is read, not queued again', async () => {
+    const s = subject();
+    const stored = new Map([[s.key, { fingerprint: escalationFingerprint(s), appliedAnswer: 'buildd:jev:re_review:', createdAt: new Date(NOW - 60_000) }]]);
+    const r = reader({}, stored);
+    expect((await gateEscalations([s], r.deps)).get(s.key)).toMatchObject({ owner: 'buildd', by: 'jev', action: 're_review' });
+    expect(r.enqueued).toEqual([]);
+    expect(r.calls()).toBe(0);
+  });
+
+  it('a queue failure never changes what the page shows', async () => {
+    const r = reader({ enqueue: () => { throw new Error('boom'); } });
+    expect((await gateEscalations([subject()], r.deps)).get('pr:ws:7')).toMatchObject({ owner: 'person' });
   });
 });
 
