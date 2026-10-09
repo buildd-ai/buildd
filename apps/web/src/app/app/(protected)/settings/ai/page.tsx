@@ -9,15 +9,15 @@ export const dynamic = 'force-dynamic';
 
 /** Settings → AI → AI features (was /app/settings#inference-spending). */
 export default async function AiSettingsPage() {
-  const { currentTeam, isTeamAdmin } = await loadSettingsContext();
+  const { currentTeam, perms } = await loadSettingsContext();
   const hasTeamKey = currentTeam ? await hasTeamInferenceKey(currentTeam.id).catch(() => false) : false;
 
   return (
     <SettingsPage title="AI features">
       {currentTeam ? (
         <>
-          <ModelFeatures teamId={currentTeam.id} canManage={isTeamAdmin} hasTeamKey={hasTeamKey} />
-          <ChatRetroSection teamId={currentTeam.id} isAdmin={isTeamAdmin} />
+          <ModelFeatures teamId={currentTeam.id} canManage={perms.manage_team_settings} hasTeamKey={hasTeamKey} />
+          <ChatRetroSection teamId={currentTeam.id} isAdmin={perms.manage_chat_retro} />
         </>
       ) : (
         <p className="text-sm text-text-secondary">Join or create a team first.</p>

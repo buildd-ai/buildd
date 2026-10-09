@@ -20,9 +20,15 @@ interface VercelToken {
 
 interface Props {
   teams: Team[];
+  /**
+   * Teams where the person may store or delete a token
+   * (`manage_team_credentials`). Another team's tokens are listed read-only.
+   * Omitted = every team.
+   */
+  manageableTeamIds?: string[];
 }
 
-export default function VercelSection({ teams }: Props) {
+export default function VercelSection({ teams, manageableTeamIds }: Props) {
   const { confirm, confirmDialog } = useConfirm();
   const [selectedTeamId, setSelectedTeamId] = useState<string>(teams[0]?.id || '');
   const [tokens, setTokens] = useState<VercelToken[]>([]);
@@ -109,6 +115,8 @@ export default function VercelSection({ teams }: Props) {
 
   if (teams.length === 0) return null;
 
+  const canManage = !manageableTeamIds || manageableTeamIds.includes(selectedTeamId);
+
   return (
     <SettingsSection title="Vercel">
         <p className="text-sm text-text-secondary">
@@ -163,19 +171,23 @@ export default function VercelSection({ teams }: Props) {
                   <div className="font-medium truncate">{t.label || 'Vercel API token'}</div>
                   <div className="text-xs text-text-tertiary">Added {new Date(t.createdAt).toLocaleDateString()}</div>
                 </div>
-                <button
-                  onClick={() => deleteToken(t.id)}
-                  disabled={busy}
-                  className="btn btn-danger"
-                >
-                  Delete
-                </button>
+                {canManage && (
+                  <button
+                    onClick={() => deleteToken(t.id)}
+                    disabled={busy}
+                    className="btn btn-danger"
+                  >
+                    Delete
+                  </button>
+                )}
               </li>
             ))}
           </ul>
         )}
 
-        {tokens.length > 0 && !addOpen ? (
+        {!canManage ? (
+          <p data-testid="vercel-read-only" className="text-xs text-text-muted">Admins can change this.</p>
+        ) : tokens.length > 0 && !addOpen ? (
           <button
             onClick={() => setAddOpen(true)}
             className="btn btn-quiet"
