@@ -19,8 +19,41 @@ import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
+import { actionCardTitle } from '@/lib/action-card-title';
 
+/**
+ * Every variant below renders `taskTitle`; shorten generated titles once here
+ * (display only — the full title stays the tooltip and the detail page), and
+ * add the mission refresh that must land before this ship PR, when the queue
+ * folded one in (see `foldMissionRefreshes`).
+ */
 export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
+  const short = item.taskTitle ? actionCardTitle(item.taskTitle) : item.taskTitle;
+  const shortened = !!item.taskTitle && short !== item.taskTitle;
+  const card = <ActionQueueCardBody item={shortened ? { ...item, taskTitle: short } : item} />;
+  const refresh = item.refreshFirst;
+  if (!shortened && !refresh) return card;
+  const refreshHref = refresh?.taskId
+    ? actionCardTaskLink(item, { taskId: refresh.taskId, page: true })
+    : refresh?.prUrl ?? null;
+  return (
+    <div className="contents" title={shortened ? item.taskTitle : undefined}>
+      {card}
+      {refresh && (
+        <p data-testid="refresh-first" className="-mt-px border-l-2 border-status-warning bg-surface-2 px-4 py-2 text-meta text-text-secondary">
+          Waits on the branch refresh{refresh.prNumber != null && <> · PR #{refresh.prNumber}</>}
+          {refreshHref && (
+            <Link href={refreshHref} className="ml-2 inline-flex items-center min-h-11 md:min-h-0 font-mono font-medium text-accent-text hover:underline">
+              Open refresh →
+            </Link>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
     const arc = resolveActionCardContext(item);
     if (item.chip === 'MERGE') {
       return (
