@@ -7,6 +7,7 @@
  * `pr-review-request.ts`.
  */
 
+import { parseReviewBlockers, type ReviewBlocker } from './review-decision';
 
 /** Bound on a single callback delivery. A hanging endpoint must not stall a verdict. */
 export const REVIEW_CALLBACK_TIMEOUT_MS = 5_000;
@@ -50,6 +51,10 @@ export interface PrReviewStatus {
   summary: string | null;
   feedback: string | null;
   escalationReason: string | null;
+  /** The reviewer's one-line next step for a person (escalate only). */
+  recommendation: string | null;
+  /** Structured reasons behind an escalation; empty on rows that predate them. */
+  blockers: ReviewBlocker[];
   /**
    * Why the review never produced a verdict, when `state === 'review_failed'`.
    * Sourced from the review task's own worker (its `error`/`exitCause`), which
@@ -216,6 +221,8 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     feedback: stringOrNull(output.feedback),
     escalationReason:
       stringOrNull(result.effectiveVerdictReason) ?? stringOrNull(output.escalationReason),
+    recommendation: stringOrNull(output.recommendation),
+    blockers: parseReviewBlockers(output.blockers),
     failureReason,
     iteration: numberOrNull(ctx.iteration),
     maxIterations: numberOrNull(ctx.maxIterations),
