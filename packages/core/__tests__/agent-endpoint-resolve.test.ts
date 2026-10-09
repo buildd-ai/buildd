@@ -103,6 +103,59 @@ describe('resolveAgentEndpoint', () => {
     expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
   });
 
+  const orKey = (o: Partial<Row> & { id: string; value: string }): Row => ({
+    purpose: 'inference_key', label: 'openrouter', workspaceId: null, accountId: null, userId: null,
+    healthStatus: 'healthy', updatedAt: new Date('2026-01-01'), encryptedValue: o.value, ...o,
+  });
+  const orRef = JSON.stringify({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authHeader: 'authorization' });
+
+  it('an openrouter reference routes the stored OpenRouter key, even under key policy own', async () => {
+    policy = 'own';
+    rows = [endpointRow({ id: 'ref', encryptedValue: orRef }), orKey({ id: 'or', value: 'sk-or-stored' })];
+    const r = await resolveAgentEndpoint({ teamId: 't', workspaceId: WS });
+    expect(r).toMatchObject({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or-stored', secretId: 'ref', scope: 'team' });
+    expect(r?.openAiBaseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+
+  it('an openrouter reference resolves at its own scope or broader, never narrower or personal', async () => {
+    // Team reference: a workspace key or a person's key never serves it.
+    rows = [
+      endpointRow({ id: 'ref', encryptedValue: orRef }),
+      orKey({ id: 'ws-key', value: 'sk-or-ws', workspaceId: WS }),
+      orKey({ id: 'mine', value: 'sk-or-mine', userId: 'u-1' }),
+      orKey({ id: 'acct', value: 'sk-or-acct', accountId: ACC }),
+    ];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    // Workspace reference: its own workspace key over the team's.
+    rows = [
+      endpointRow({ id: 'ref', workspaceId: WS, encryptedValue: orRef }),
+      orKey({ id: 'team-key', value: 'sk-or-team' }),
+      orKey({ id: 'ws-key', value: 'sk-or-ws', workspaceId: WS }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-ws');
+    // ...and the team key when the workspace has none.
+    rows = [endpointRow({ id: 'ref', workspaceId: WS, encryptedValue: orRef }), orKey({ id: 'team-key', value: 'sk-or-team' })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-team');
+  });
+
+  it('an openrouter reference reads the legacy decision_key, canonical first', async () => {
+    rows = [
+      endpointRow({ id: 'ref', encryptedValue: orRef }),
+      orKey({ id: 'legacy', purpose: 'decision_key', label: null, value: 'sk-or-legacy', updatedAt: new Date('2026-06-01') }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-legacy');
+    rows.push(orKey({ id: 'canon', value: 'sk-or-canon' }));
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-canon');
+  });
+
+  it('an openrouter reference with no stored key resolves to nothing; a legacy inline key still routes', async () => {
+    rows = [endpointRow({ id: 'ref', encryptedValue: orRef })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    // Inline (legacy) wins over the stored key: the row says which key it uses.
+    rows = [endpointRow({ id: 'inline', encryptedValue: openRouter('sk-or-inline') }), orKey({ id: 'or', value: 'sk-or-stored' })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-inline');
+  });
+
   it('an unreadable row is skipped, never thrown', async () => {
     rows = [endpointRow({ id: 'bad', workspaceId: WS, encryptedValue: 'garbage' }), endpointRow({ id: 'team' })];
     expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('team');
