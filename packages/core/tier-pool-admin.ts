@@ -414,10 +414,10 @@ export async function syncIncumbentToRegistry(args: {
 
     let allocation = (pool.allocation ?? {}) as Allocation;
     let dialStateJson: string | null = null;
-    const state = (pool.dialState as { state?: string } | null)?.state;
+    const state = pool.dialState?.state;
     if (pool.mode === 'dial' && state && state !== 'always') {
       dialStateJson = JSON.stringify({
-        ...(pool.dialState as object), state: 'learning', since: new Date().toISOString(), alternateArmId: null,
+        ...pool.dialState, state: 'learning', since: new Date().toISOString(), alternateArmId: null,
       });
       allocation = Object.fromEntries(arms.filter(a => a.status === 'active').map(a => [a.id, a.id === incumbent.id ? 1 : 0]));
     }
