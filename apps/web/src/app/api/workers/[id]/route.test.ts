@@ -5243,6 +5243,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase, undraft, and merge PR #2165',
         description: 'Get PR #2165 merged to dev.',
+        context: { prReach: { prNumbers: [2165], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5269,7 +5270,59 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet?.result?.prNumber).toBe(2165);
     });
 
-    // The fallback adopts a PR the task names, so ownership passes on that
+    it('pr_required + a merged PR the task only names in its text → not recorded', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/2165', prNumber: 2165 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+        context: { prNumber: 2165 },
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'feature/pr-2165' } });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(capturedTaskSet?.result?.prNumber).not.toBe(2165);
+    });
+
+    // The fallback adopts a PR the task's records link, so ownership passes on that
     // basis — except for a protected head: naming a release PR does not make
     // it this task's deliverable (lib/agent-capabilities/pr-ownership.ts).
     it('pr_required + referenced PR is merged but its head is the protected default branch → not recorded', async () => {
@@ -5389,6 +5442,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase, undraft, and merge PR #2165',
         description: 'Get PR #2165 merged to dev.',
+        context: { prReach: { prNumbers: [2165], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5448,6 +5502,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5511,6 +5566,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5550,6 +5606,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
