@@ -133,6 +133,35 @@ async function closedAbandoned(ws: string) {
   return s;
 }
 
+/**
+ * A conflict repair escalates to an agent, twice. The first agent's push takes the
+ * delivery back to review and its worker ends afterwards, unbound: the attempt row
+ * ends and no transition is written. A second conflict on the new head is refused
+ * mechanically and the effect hands it to a second agent (REPAIRING -> REPAIRING).
+ */
+async function conflictEscalation(ws: string) {
+  const s = await open(ws);
+  s.head('h1');
+  must(await s.observe(), 'head h1');
+  must(await s.ownerEnd(), 'owner end');
+  const conflict = (h: string) =>
+    applyCommand({ type: 'ConflictObserved', actor: 'door:conflict', headSha: h, mergeable: 'dirty', migrationCollision: false, detail: null, maxAgentAttempts: 3 }, { ref: s.ref });
+  const refused = (h: string) =>
+    applyCommand({ type: 'ConflictObserved', actor: 'effect:refresh_branch', headSha: h, mergeable: 'dirty', migrationCollision: false, mechanicalRefused: true, maxAgentAttempts: 3, refusal: { reason: 'merge conflict', mode: 'textual' }, detail: null }, { ref: s.ref });
+  must(await conflict(s.current()), 'conflict 1');
+  must(await refused(s.current()), 'refused 1');
+  const a1 = (await s.view()).attempts.find((a) => a.family === 'conflict' && a.mode === 'agent')!;
+  const fixTask = await seedTask(ws, { status: 'in_progress' });
+  must(await applyCommand({ type: 'FixClaimed', actor: `claim:${fixTask}`, attemptId: a1.id, revalidation: { live: await s.live(), approved: false } }, { ref: s.ref }), 'conflict fix claimed');
+  s.head('h2');
+  must(await s.observe(), 'conflict fix push');
+  const late = await applyCommand({ type: 'AttemptEnded', actor: 'runner', workerId: randomUUID(), attemptId: a1.id, taskId: fixTask, outcome: 'success', localHeadSha: s.current(), commitCount: 1, live: await s.live() }, { ref: s.ref });
+  if (late.result !== 'stale') throw new Error(`seed: the unbound conflict fix end was ${late.result}`);
+  must(await conflict(s.current()), 'conflict 2');
+  must(await refused(s.current()), 'refused 2');
+  return s;
+}
+
 /** The owner never opened a PR and ran out of retries. */
 async function failedWithoutPr(ws: string) {
   const taskId = await seedTask(ws, { status: 'failed' });
@@ -153,7 +182,8 @@ export async function seedKernelCorpus(workspaceId: string): Promise<{ deliveryI
   const c = await ciExhausted(workspaceId);
   const d = await closedAbandoned(workspaceId);
   const e = await failedWithoutPr(workspaceId);
-  const all = [a, b, c, d];
+  const f = await conflictEscalation(workspaceId);
+  const all = [a, b, c, d, f];
   return {
     deliveryIds: [...all.map((x) => x.deliveryId), e.deliveryId],
     taskIds: [...all.map((x) => x.taskId), e.taskId],
