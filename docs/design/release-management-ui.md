@@ -14,7 +14,7 @@ assertions:
   - id: "release-section"
     type: "symbol"
     name: "ReleaseSection"
-    path: "apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx"
+    path: "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx"
 ---
 
 # release-management-ui

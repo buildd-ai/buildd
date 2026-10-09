@@ -38,6 +38,11 @@ describe('VercelSection', () => {
     expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for prod health alerts.');
   });
 
+  it('has exactly one primary action', async () => {
+    await mount();
+    expect(host.querySelectorAll('.btn-primary').length).toBe(1);
+  });
+
   it('keeps the encryption note near the add-token form', async () => {
     await mount();
     expect(host.textContent).toContain('Encrypted, team-wide, never sent to runners.');

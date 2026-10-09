@@ -3,10 +3,10 @@
 /**
  * `?state=team-members&viewer=owner|admin|member`: the team detail page's
  * member list seen by each role (team-members-fixtures.ts). Wrapped like
- * teams/[id]/page.tsx so the capture matches the real page's width.
+ * the old team detail page so the capture keeps a page's width.
  */
 import { useEffect, useState } from 'react';
-import TeamDetailClient from '../../(protected)/teams/[id]/TeamDetailClient';
+import TeamDetailClient from '../../(protected)/settings/team/TeamDetailClient';
 import {
   parseTeamMembersViewer,
   teamMembersFixtureLinks,

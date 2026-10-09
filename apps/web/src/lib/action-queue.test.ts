@@ -1447,7 +1447,7 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
     expect(item.taskTitle).toBe('Write a haiku about onboarding into hello.md');
     expect(item.failureMessage).toContain('no working model key');
     expect(item.failureMessage).not.toContain('/login');
-    expect(item.fixHref).toBe('/app/settings/runners#agent-key');
+    expect(item.fixHref).toBe('/app/settings/models#agent-key');
     expect(item.fixLabel).toBe('Add an agent key');
   });
 
@@ -1464,7 +1464,7 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
 
   it('a Codex sign-in failure points at the Codex row', () => {
     const [item] = buildFailedTaskItems([failed({ backend: 'codex', workerError: 'No Codex auth found' })]);
-    expect(item.fixHref).toBe('/app/settings/runners#agent-backends');
+    expect(item.fixHref).toBe('/app/settings/models#sign-ins');
     expect(item.failureMessage).toContain('Codex');
   });
 
@@ -1508,7 +1508,7 @@ describe('buildFailedTaskItems — tasks waiting on GitHub access', () => {
     expect(items).toHaveLength(1);
     expect(items[0].failureMessage).toContain('acme/web');
     expect(items[0].failureMessage).toContain('3 tasks are waiting');
-    expect(items[0].fixHref).toBe('/app/workspaces/ws-1/config#github-access');
+    expect(items[0].fixHref).toBe('/app/settings/workspace/ws-1#github-access');
     expect(items[0].fixLabel).toBe('Fix GitHub access');
   });
 
@@ -1523,6 +1523,6 @@ describe('buildFailedTaskItems — tasks waiting on GitHub access', () => {
 
   it('separate workspaces get separate cards', () => {
     const items = buildFailedTaskItems([waiting('t-1', 'ws-1'), waiting('t-2', 'ws-2')], { githubAccessFixableWorkspaceIds: new Set(['ws-1', 'ws-2']) });
-    expect(items.map(i => i.fixHref)).toEqual(['/app/workspaces/ws-1/config#github-access', '/app/workspaces/ws-2/config#github-access']);
+    expect(items.map(i => i.fixHref)).toEqual(['/app/settings/workspace/ws-1#github-access', '/app/settings/workspace/ws-2#github-access']);
   });
 });
