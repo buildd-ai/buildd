@@ -1,7 +1,7 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
@@ -3963,8 +3963,6 @@ export class WorkerManager {
         );
       }
 
-      // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
-      cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
       // Keep task-tracking tools available on newer Claude models.
       cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
       // Nothing re-invokes a session after its turn ends, so background work
@@ -4556,8 +4554,8 @@ export class WorkerManager {
         : null;
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
-      // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
+      // tool activity hook (clears toolInFlight after each tool),
+      // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -4634,13 +4632,12 @@ export class WorkerManager {
           }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
-          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          { hooks: [this.hookFactory.createToolActivityHook(worker)] },
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.hookFactory.createPermissionRequestHook(worker)] }],
-        TeammateIdle: [{ hooks: [this.hookFactory.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.hookFactory.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.hookFactory.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.hookFactory.createSubagentStopHook(worker)] }],

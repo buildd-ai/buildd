@@ -18,6 +18,11 @@ export function sparklineCaption(series: OccupancySeries): string {
   return `Past 24h · Peak ${peak} · Avg ${fmtLevel(avg)}`;
 }
 
+/**
+ * Colors go in `style`, never in `fill=`/`stroke=` attributes: WebKit (every iOS
+ * browser) does not resolve var() in SVG presentation attributes and paints the
+ * default black, which hid the line behind solid bars.
+ */
 /** A stretch of the window to tint flat (idle while work waited). */
 export interface SparklineShade { from: number; to: number }
 
@@ -37,10 +42,10 @@ export function OccupancySparkline({ series, href, shade = [] }: { series: Occup
       {(!idle || shade.length > 0) && (
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-6 w-full" role="img" aria-label={label}>
           {span > 0 && shade.map((r, i) => (
-            <rect key={i} data-testid="occupancy-shade" x={x(r.from)} y={0} width={Math.max(1, x(r.to) - x(r.from))} height={H} fill="var(--q-tint)" />
+            <rect key={i} data-testid="occupancy-shade" x={x(r.from)} y={0} width={Math.max(1, x(r.to) - x(r.from))} height={H} style={{ fill: 'var(--q-tint)' }} />
           ))}
-          <path d={area} fill="var(--accent-soft)" opacity={0.6} />
-          <path d={line} fill="none" stroke="var(--accent)" strokeWidth={1.25} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+          <path d={area} style={{ fill: 'var(--accent-soft)', opacity: 0.6 }} />
+          <path d={line} fill="none" style={{ stroke: 'var(--accent)' }} strokeWidth={1.25} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
         </svg>
       )}
       <span data-testid="occupancy-caption" className="mt-1 block truncate font-mono text-[11px] text-text-muted">{caption}</span>

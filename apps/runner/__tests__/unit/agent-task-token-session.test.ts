@@ -210,6 +210,20 @@ function makeTask(workerId: string, backend?: 'codex', taskExtra: Record<string,
   };
 }
 
+/**
+ * Wait for the worker's session to reach a terminal state rather than sleeping
+ * a fixed interval: a fixed wait races the mocked backend under load.
+ */
+async function waitForSessionEnd(manager: InstanceType<typeof WorkerManager>, workerId: string, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = manager.getWorker(workerId)?.status;
+    if (status === 'done' || status === 'error' || status === 'waiting_input') return;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  throw new Error(`worker ${workerId} did not finish within ${timeoutMs}ms (status: ${manager.getWorker(workerId)?.status})`);
+}
+
 async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: string, backend?: 'codex', taskExtra: Record<string, unknown> = {}) {
   mockMessages = [
     { type: 'system', subtype: 'init', session_id: `sess-${workerId}` },
@@ -225,12 +239,7 @@ async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: st
     ...(backend === 'codex' ? { codexCredential: { credentialType: 'api_key', apiKey: 'sk-test-codex', expiresAt: null } } : {}),
   }] }));
   await manager.claimAndStart(task as any);
-  await new Promise(r => setTimeout(r, 250));
-  // Slow CI runners can need longer than the fixed settle above; wait for the backend to start.
-  const deadline = Date.now() + 5000;
-  while (backend === 'codex' && !backendRuns.some(r => r.backend === 'codex') && Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 50));
-  }
+  await waitForSessionEnd(manager, workerId);
   return task;
 }
 

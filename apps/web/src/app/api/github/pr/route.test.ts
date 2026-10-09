@@ -3809,7 +3809,8 @@ describe('PUT /api/github/pr', () => {
     // green, clean, small PR by default so each test states its own refusal
     // rather than inheriting one from a missing fixture.
     mockGithubApi.mockImplementation((_inst: number, path: string) => {
-      if (/\/check-runs$/.test(path)) {
+      if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+      if (/\/check-runs(\?|$)/.test(path)) {
         return Promise.resolve({
           check_runs: [
             { name: 'typecheck', status: 'completed', conclusion: 'success' },
@@ -4086,7 +4087,9 @@ describe('PUT /api/github/pr', () => {
         expect(data.needsPerson).toBe(true);
         expect(data.hint).not.toContain('merges automatically');
         expect(data.hint).not.toContain('No further merge_pr call');
-        expect(data.hint).toMatch(/request_pr_review/);
+        expect(data.hint).toMatch(/a person must act/);
+        // A forced re-review is a person's call, so the hint never sends an agent to one.
+        expect(data.hint).not.toMatch(/force/);
       });
 
       it('a human decision is a 403 naming the cause', async () => {
@@ -4250,7 +4253,8 @@ describe('PUT /api/github/pr', () => {
         iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
       } as any);
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
         }
         if (/\/files/.test(path)) {
@@ -4294,7 +4298,8 @@ describe('PUT /api/github/pr', () => {
         iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
       } as any);
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({
             check_runs: [
               { name: 'typecheck', status: 'completed', conclusion: 'success' },
@@ -4346,7 +4351,8 @@ describe('PUT /api/github/pr', () => {
     it('refuses when CI is not green, naming the failing check', async () => {
       workerOk();
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({
             check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
           });
@@ -4373,7 +4379,8 @@ describe('PUT /api/github/pr', () => {
         },
       });
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
         }
         if (/\/files/.test(path)) {
@@ -4415,7 +4422,8 @@ describe('PUT /api/github/pr', () => {
     describe("size cap on a task PR into its own mission's integration branch", () => {
       const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
       const ghFor = (baseRef: string) => (_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
         }
         if (/\/files/.test(path)) {
@@ -4479,7 +4487,8 @@ describe('PUT /api/github/pr', () => {
           calls.push(`${init?.method ?? 'GET'} ${path}`);
           if (/\/update-branch$/.test(path)) return updateBranch();
           if (/\/compare\//.test(path)) return Promise.resolve({ behind_by: 3 });
-          if (/\/check-runs$/.test(path)) {
+          if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+          if (/\/check-runs(\?|$)/.test(path)) {
             return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
           }
           if (/\/files/.test(path)) {
@@ -4742,7 +4751,8 @@ describe('PUT /api/github/pr', () => {
         integrationBranchEnabled: true,
       });
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({
             check_runs: [
               { name: 'typecheck', status: 'completed', conclusion: 'success' },
@@ -5393,7 +5403,8 @@ describe('PUT /api/github/pr', () => {
         prState: 'open', merged: false, mergeBlocked: null,
       } as any);
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
-        if (/\/check-runs$/.test(path)) {
+        if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return Promise.resolve({ total_count: 0, statuses: [] });
+        if (/\/check-runs(\?|$)/.test(path)) {
           return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
         }
         if (/\/files/.test(path)) return Promise.resolve([]);

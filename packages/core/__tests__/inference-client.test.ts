@@ -646,6 +646,34 @@ describe('inferenceCall — maxTokens', () => {
   });
 });
 
+// ── Model-tier ceiling ────────────────────────────────────────────────────────
+
+describe('inferenceCall — model-tier ceiling (team/workspace layers; a feature is not a person)', () => {
+  it('a premium feature call is served at the team ceiling', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: null, modelTierCeilings: { team: { chat: 'standard' } } };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[3]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher, tier: 'premium' }));
+    expect(res.ok).toBe(true);
+    expect((mockResolveTierEntry.mock.calls.at(-1) as any[])[0]).toBe('standard');
+  });
+
+  it("with overCapAuto 'deny' the call is refused before spending", async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: null, modelTierCeilings: { team: { all: 'budget' }, overCapAuto: 'deny' } };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher, tier: 'standard' }));
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toEqual({ kind: 'policy_denied', tier: 'standard', maxTier: 'budget' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('a coding-agent-only cap and an unrelated workspace cap leave inference alone', async () => {
+    teamRow = { chatDisabled: false, inferenceFeatureModes: null, modelTierCeilings: { team: { agent: 'budget' }, workspaces: { 'other-ws': { all: 'budget' } } } };
+    const fetcher = mock(() => Promise.resolve(anthropicReply('{"verdicts":[3]}'))) as any;
+    await inferenceCall(baseParams({ fetcher, tier: 'premium' }));
+    expect((mockResolveTierEntry.mock.calls.at(-1) as any[])[0]).toBe('premium');
+  });
+});
+
 // ── Capability policy ─────────────────────────────────────────────────────────
 
 describe('inferenceCall — capability policy', () => {

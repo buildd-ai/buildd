@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
@@ -28,6 +29,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
@@ -286,7 +288,7 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn } = body;
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
     // there, via check_path_claim / POST /api/tasks/[id]/path-claim, which take a
@@ -356,6 +358,15 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Model-tier ceiling: a re-tier or re-pin above the effective maximum is
+      // refused here; lowering is always allowed. The claim re-checks anyway.
+      const ceilingRejection = await rejectOverCeiling({
+        subject: { teamId: task.workspace?.teamId, workspaceId: task.workspaceId, userId: lazyRequester(task) },
+        surface: 'agent',
+        request: { tier, model },
+        gate: { surface: 'PATCH /api/tasks/[id]', workspaceId: task.workspaceId, taskId: task.id },
+      });
+      if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
@@ -443,6 +454,37 @@ export async function PATCH(
         };
       } else {
         delete baseCtx.heldBy;
+      }
+      updateData.context = baseCtx;
+    }
+    // Reschedule: move a queued task's start later, or back to ASAP (startAt:
+    // null), without cancelling it. The claim route already honours startAt
+    // and the outbox trigger re-wakes on the new time. Only before a worker
+    // has the task: a started run is paused or cancelled, not rescheduled.
+    if (startAt !== undefined || startIn !== undefined) {
+      if (task.status !== 'pending' || task.claimedBy) {
+        const state = task.status === 'pending' ? 'claimed by a worker' : task.status;
+        return NextResponse.json(
+          { error: `This task is already ${state}, so it has no start time to move. A start time only applies while a task is waiting; cancel it, or wait for it to finish.` },
+          { status: 409 },
+        );
+      }
+      let deferred;
+      try {
+        deferred = startAt === null && startIn === undefined
+          ? { startAt: null, resolution: null }
+          : resolveDeferredStart({ startAt, startIn });
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid start time' }, { status: 400 });
+      }
+      updateData.startAt = deferred.startAt;
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      if (deferred.resolution) {
+        baseCtx.startResolution = deferred.resolution;
+        baseCtx.rescheduledBy = { at: new Date().toISOString(), userId: user && !apiAccount ? user.id : null };
+      } else {
+        delete baseCtx.startResolution;
+        delete baseCtx.rescheduledBy;
       }
       updateData.context = baseCtx;
     }

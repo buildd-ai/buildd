@@ -1607,7 +1607,7 @@ function mergePrLandingResponse(
         // automatic merge there strands the PR behind a caller who stops trying.
         ...(outcome.needsPerson ? { needsPerson: true } : {}),
         hint: outcome.needsPerson
-          ? 'Nothing will land this on its own: a person must act. Request a fresh review (request_pr_review with force: true) so an approval moves it back to APPROVED, or have a person merge it with a verdict override from the landing page.'
+          ? 'Nothing will land this on its own: a person must act. The owner can re-review it from the dashboard, so an approval moves it back to APPROVED, or merge it with a verdict override from the landing page.'
           : 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
         pr: prRef,
       }, { status: 202 });

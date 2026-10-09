@@ -9,7 +9,7 @@
  *  - returns "not mine" fast for a task or PR with no kernel delivery, so a PR
  *    that was open at cutover finishes on the legacy path unchanged;
  *  - resolves the kill switch first (authority.ts), releasing the delivery to
- *    legacy when `gitConfig.workflowKernel` is false;
+ *    legacy when the `gitConfig.workflowKernel` switch is off;
  *  - takes its own live GitHub read (R2) and carries it into the command;
  *  - drains the delivery's due effects before returning, so the common path
  *    never waits for a cron (§10.3).
@@ -19,12 +19,13 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
+import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
@@ -378,7 +379,12 @@ export async function attemptEnded(p: {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
-  if (!deliveryId) return { handled: false };
+  if (!deliveryId) {
+    // §14: the owner's end is where the kernel would have queued round 1. A delivery the kill
+    // switch released before that has had no review from either authority: legacy files it now.
+    if (attemptKind === 'owner') await handOffToLegacy(p.task.deliveryId, deps);
+    return { handled: false };
+  }
 
   if (attemptKind === 'review') {
     // A completed reviewer is answered by its verdict (T6). One that ended
@@ -388,7 +394,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.task.id },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);
@@ -400,12 +406,30 @@ export async function attemptEnded(p: {
   if (!d) return { handled: false };
   let live: LivePr | null = null;
   let proof: { liveContainsLocal: boolean } | undefined;
+  let ci: Extract<Command, { type: 'AttemptEnded' }>['ci'] = null;
+  let trunk: TrunkClassification | null = null;
   if (d.repoFullName && d.prNumber != null) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     if (repo) {
       const reader = readerFor(deps, repo.installationId);
       live = await reader.readPr(d.repoFullName, d.prNumber);
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused (T10 does
+      // not move WORKING). The owner's hand-off reads the head's checks now and acts on a red.
+      if (attemptKind === 'owner' && d.state === 'WORKING' && live && live.state === 'open' && !live.merged && reader.checkRuns) {
+        const liveChecks = await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null);
+        if (liveChecks) {
+          // §6.10: classified as T10 would; a trunk-caused red is handed on and then T25's.
+          const cls = liveChecks.failing.length > 0
+            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
+            : null;
+          if (cls?.incident) trunk = cls;
+          else {
+            const configured = (repo.gitConfig as { maxCiRetries?: unknown } | null)?.maxCiRetries;
+            ci = { liveChecks, signature: cls?.signature ?? UNKNOWN_CI_SIGNATURE, maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries') };
+          }
+        }
+      }
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
@@ -422,13 +446,69 @@ export async function attemptEnded(p: {
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
+    ...(ci ? { ci } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
+  if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
+    await applyCommand(
+      { type: 'TrunkRedObserved', actor: p.source, incidentId: trunk.incident.id, signature: trunk.signature, headSha: live.headSha, thresholdMet: true },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (trunk.incident.opened) {
+      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+    }
+  }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
+}
+
+// ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────
+
+/**
+ * A delivery the kill switch released before its first round was queued is
+ * legacy's, and legacy files a PR's first review only when the PR opens, a
+ * moment that has passed. Run legacy's first review now (the
+ * `LEGACY_FIRST_REVIEW` slot), once per owner task, for an open PR in a
+ * workspace whose switch is still off. A delivery released for any other
+ * reason (switch on) was handed over by a legacy decision that already
+ * answered it. Never throws: answers what it did.
+ */
+export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): Promise<string> {
+  const exec = deps.exec ?? seamExec;
+  let claimedFor: string | null = null;
+  try {
+    const view = await loadView({ deliveryId }, deps.exec);
+    const d = view.delivery;
+    if (!d || d.authority !== 'legacy') return 'not_released';
+    if (!d.repoFullName || d.prNumber == null) return 'no_pr';
+    if (d.currentRound > 0 || view.rounds.length > 0) return 'already_reviewed';
+    if (RESOLVED_OR_CLOSED.has(d.state)) return 'closed';
+    const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
+    if (!repo) return 'no_repo';
+    if (kernelEnabled(repo.gitConfig)) return 'switch_on';
+    if (((await exec(claimLegacyHandoffSql(d.ownerTaskId, deliveryId))).rows ?? []).length === 0) return 'already_handed_off';
+    claimedFor = d.ownerTaskId;
+    const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
+    if (!live) throw new Error('live_read_failed');
+    if (live.state !== 'open' || live.merged) return 'pr_not_open';
+    const { LEGACY_FIRST_REVIEW } = await import('@/modules');
+    const r = await LEGACY_FIRST_REVIEW({
+      workspaceId: d.workspaceId, deliveryId, ownerTaskId: d.ownerTaskId, repoFullName: d.repoFullName, prNumber: d.prNumber,
+      installationId: repo.installationId, headSha: live.headSha, baseRef: live.baseRef ?? d.baseRef,
+      htmlUrl: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
+      policyEvidence: d.policyEvidence ? { headSha: d.policyEvidence.headSha, outcome: d.policyEvidence.outcome, reason: d.policyEvidence.reason } : null,
+    });
+    console.log(`[workflow] delivery ${deliveryId} handed to legacy after switch-off: ${r.outcome}`);
+    return r.outcome;
+  } catch (err) {
+    // Let the next owner end try again rather than lose the review.
+    if (claimedFor) await exec(unclaimLegacyHandoffSql(claimedFor)).catch(() => {});
+    console.error(`[workflow] legacy hand-off of delivery ${deliveryId} failed:`, err);
+    return 'error';
+  }
 }
 
 // ── §9 completion gate ──────────────────────────────────────────────────────
@@ -588,6 +668,25 @@ export async function observeHead(p: {
     // The delivery is the kernel's: a failed read is answered by the next fact
     // or the push_recovery/sweep path, never by the legacy re-dispatch.
     console.error(`[workflow] HeadObserved ${p.repoFullName}#${p.prNumber} failed:`, err);
+  }
+  await drainDelivery(deliveryId, deps);
+  return true;
+}
+
+// ── T29: the PR's base changed (webhook `edited` with `changes.base`) ────────
+
+/** Webhook `edited` with `changes.base`: T29 from a live read. `false` = not the kernel's PR. */
+export async function observeBase(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; hintedFromBase: string | null; source: string;
+}, deps: SeamDeps = {}): Promise<boolean> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return false;
+  const reader = readerFor(deps, p.installationId);
+  try {
+    const live = await reader.readPr(p.repoFullName, p.prNumber);
+    if (live) await catchUpBase({ ...p, deliveryId, live }, reader, deps.exec);
+  } catch (err) {
+    console.error(`[workflow] BaseChanged ${p.repoFullName}#${p.prNumber} failed:`, err);
   }
   await drainDelivery(deliveryId, deps);
   return true;
@@ -776,6 +875,15 @@ export async function observeCiFailure(p: {
   if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  // The incident a red head joins is its base's: the base GitHub holds now, recorded first.
+  await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.source}:ci`, deliveryId, live }, reader, deps.exec);
+
+  // §6.3 T10: the hint is a pointer; whether CI is red on the head is read now.
+  // Nothing failing (re-run green, or re-running) and the reducer refuses it.
+  const liveChecks = live.headSha === p.headSha && reader.checkRuns
+    ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null)
+    : null;
+  const notRed = !!liveChecks && liveChecks.failing.length === 0;
 
   // §6.10: classify the failure by its signature, and route a trunk-caused one
   // to its incident (T25) instead of a per-PR attempt. Only for a head the
@@ -785,10 +893,10 @@ export async function observeCiFailure(p: {
   let signature = p.signature;
   let incident: TrunkClassification['incident'] = null;
   const ciState = !!d && (TRUNK_SOURCE_STATES.has(d.state) || (d.state === 'REPAIRING' && d.stateReason === 'ci'));
-  if (d && ciState && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
+  if (d && ciState && !notRed && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
     const cls = await classifyCiFailure({
-      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
+      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: p.headSha,
       deliveryId, gitConfig: repo?.gitConfig ?? null, reader, exec: deps.exec,
     });
     if (cls.signature !== UNKNOWN_CI_SIGNATURE) signature = cls.signature;
@@ -796,12 +904,12 @@ export async function observeCiFailure(p: {
   }
   const preflightMiss = await preflightMissFor(reader, p, deps);
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}) },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}), ...(liveChecks ? { liveChecks } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
   await drainDelivery(deliveryId, deps);
-  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }
 
@@ -818,6 +926,7 @@ async function joinRepairingDeliveries(p: {
   const rows = ((await exec(repairingCiOnBaseSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, excludeDeliveryId: p.excludeDeliveryId }))).rows ?? []) as Array<{ id: string; current_head_sha: string | null; trigger_reason: string | null }>;
   for (const r of rows) {
     if (!r.current_head_sha || !r.trigger_reason || !trunkExplains(r.trigger_reason, p.incident.signature)) continue;
+    if (!(await kernelDeliveryById(String(r.id), deps.exec))) continue;
     await exec(openOrJoinIncidentSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, signature: p.incident.signature, deliveryId: String(r.id) }));
     await applyCommand(
       { type: 'TrunkRedObserved', actor: 'kernel:trunk_breaker', incidentId: p.incident.id, signature: p.incident.signature, headSha: r.current_head_sha, thresholdMet: true },
@@ -863,6 +972,8 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
   for (const b of blocked) {
     try {
+      // The kill switch: resolving releases a switched-off delivery, and a released one is legacy's.
+      if (!(await kernelDeliveryById(String(b.id), deps.exec))) continue;
       const repo = await (deps.repoFor ?? workspaceRepo)(String(b.workspace_id));
       let predates = false;
       if (repo && b.repo_full_name && b.current_head_sha) {
@@ -938,6 +1049,7 @@ export async function reconcileKernelDeliveries(
         const r = await ingestFact(fact, { exec: deps.exec, github: once });
         if (r.result === 'applied') s.imported++;
       }
+      if (!closedNow && row.state !== 'CLOSED_UNMERGED' && await catchUpBase({ ...base, deliveryId, live }, once, deps.exec)) s.imported++;
       let enqueued = 0;
       const view = await loadView({ deliveryId }, deps.exec);
       if (view.delivery) {

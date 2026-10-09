@@ -632,11 +632,13 @@ mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUncha
 const mockOpenKernelDelivery = mock(async (_p: any): Promise<any> => ({ owned: false }));
 const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
 const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
+const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/workflow/seam', () => ({
   openKernelDelivery: mockOpenKernelDelivery,
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
+  observeBase: mockObserveBase,
   observeCiFailure: mock(async () => ({ handled: false })),
   policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
@@ -5681,6 +5683,24 @@ describe('pull_request → workers.prBaseRef sync', () => {
     mockWorkersFindFirst.mockReturnValue(null);
     await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
     expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
+  });
+
+  // 24e1cfad: the kernel's base-change fact. A retarget changes the diff an approval reviewed.
+  it('hands a retarget to the workflow kernel (T29 base fact from a live read)', async () => {
+    mockObserveBase.mockClear();
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+    expect(mockObserveBase).toHaveBeenCalledTimes(1);
+    expect(mockObserveBase.mock.calls[0][0]).toMatchObject({
+      workspaceId: 'ws-9', repoFullName: 'test-org/test-repo', prNumber: 9, installationId: 12345, hintedFromBase: 'dev', source: 'webhook:edited',
+    });
+  });
+
+  it('does not hand a title/body edit to the kernel', async () => {
+    mockObserveBase.mockClear();
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ changes: { title: { from: 'old' } } })));
+    expect(mockObserveBase).not.toHaveBeenCalled();
   });
 
   it('a failed intent retarget never fails the webhook', async () => {

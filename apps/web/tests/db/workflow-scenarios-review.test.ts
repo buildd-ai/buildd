@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
-import { q } from './harness';
+import { q, seedTask } from './harness';
 import { seam, world, type World } from './workflow-scenarios-world';
 
 let w: World;
@@ -141,7 +141,7 @@ describe('stacked PRs', () => {
     expect(await w.land(a, a.head)).toMatchObject({ merged: true });
     await w.deliver();
 
-    // GitHub retargets the top PR when its base merges (here: by hand, as the fake does not).
+    // GitHub retargets the top PR when its base merges (here: by hand; the fake's PATCH sends `edited` with `changes.base`).
     await w.gh.request('PATCH', `/repos/${w.repo}/pulls/${b.prNumber}`, { base: 'dev' });
     expect(await w.taskStatus(b.ownerTaskId)).toBe('in_progress');
     const landed = await w.land(b, b.head);
@@ -149,5 +149,98 @@ describe('stacked PRs', () => {
     expect(await w.delivery(b)).toMatchObject({ state: 'MERGED' });
     expect(w.gh.files(w.repo, 'dev')).toMatchObject({ 'src/a.ts': 'export const a = 2;\n', 'src/b.ts': 'export const b = 2;\n' });
     expect(await w.taskStatus(b.ownerTaskId)).toBe('completed');
+  });
+});
+
+/** A reviewer task's attempt ends `failed` without a verdict, as the runner (or the reaper) reports it. */
+async function reviewerFails(w: World, pr: Awaited<ReturnType<World['openPr']>>, rv: { id: string; context: Record<string, unknown> }, workerId?: string) {
+  const id = workerId ?? (await q<{ id: string }>(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, commit_count)
+    VALUES (${w.workspaceId}::uuid, ${rv.id}::uuid, 'review', 'test', 'review', 'failed', 0) RETURNING id`))[0].id;
+  const r = await seam.attemptEnded({
+    task: { id: rv.id, workspaceId: w.workspaceId, deliveryId: pr.deliveryId, deliveryRole: 'review', context: rv.context },
+    workerId: id, status: 'failed', localHeadSha: null, commitCount: 0, source: 'runner', reviewFailure: 'prose_verdict',
+  });
+  return { workerId: id, result: r.result };
+}
+
+describe('a reviewer failure counts once per reviewer (04a79514)', () => {
+  test('R1 fails with a prose verdict → round re-queued, R2 dispatched; the same R1 failure reported again → duplicate: no third reviewer, no second retry, version unchanged', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/rv-fail-twice', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.handOn(pr);
+    const r1 = await w.reviewer(pr);
+    const first = await reviewerFails(w, pr, r1);
+    expect(first.result).toMatchObject({ result: 'applied' });
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(2);
+    const before = await w.delivery(pr);
+    const effectsBefore = (await w.effects(pr)).length;
+
+    // A retried PATCH / the reaper reports the very same failure.
+    const again = await reviewerFails(w, pr, r1, first.workerId);
+    expect(again.result).toMatchObject({ result: 'duplicate' });
+    const after = await w.delivery(pr);
+    expect(after).toMatchObject({ state: 'AWAITING_REVIEW', version: before.version, currentRound: 1 });
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(2);
+    expect((await w.effects(pr)).length).toBe(effectsBefore);
+    expect((await w.view(pr)).rounds).toEqual([expect.objectContaining({ round: 1, failureCount: 1 })]);
+  });
+
+  test('R1 fails, R2 takes the round; R1 is reported failed again by other workers (the reaper, a runner retry of R1) → duplicate; a stray reviewer task for the round that was never its reviewer fails → stale(reviewer_not_current); R2\'s budget is untouched', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/rv-fail-late', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.handOn(pr);
+    const r1 = await w.reviewer(pr);
+    await reviewerFails(w, pr, r1);
+    const r2 = await w.reviewer(pr);
+    expect(r2.id).not.toBe(r1.id);
+    for (let i = 0; i < 2; i++) expect((await reviewerFails(w, pr, r1)).result).toMatchObject({ result: 'duplicate' });
+
+    // A second reviewer task filed for the same round (a racing dispatch) that the round never recorded.
+    const stray = await seedTask(w.workspaceId, { status: 'pending', title: 'review r1 (stray)' });
+    await q(sql`UPDATE tasks SET delivery_id = ${pr.deliveryId}::uuid, delivery_role = 'review', category = 'review', context = ${JSON.stringify(r2.context)}::jsonb WHERE id = ${stray}::uuid`);
+    expect((await reviewerFails(w, pr, { id: stray, context: r2.context })).result).toMatchObject({ result: 'stale', reason: 'reviewer_not_current' });
+
+    expect(await w.delivery(pr)).toMatchObject({ state: 'AWAITING_REVIEW' });
+    expect((await w.view(pr)).rounds).toEqual([expect.objectContaining({ round: 1, failureCount: 1, reviewerTaskId: r2.id })]);
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(3);
+    // R2's own failure is the round's second, still a retry (REVIEW_CONTRACT_RETRIES = 2).
+    expect((await reviewerFails(w, pr, r2)).result).toMatchObject({ result: 'applied', decision: { toState: 'AWAITING_REVIEW' } });
+    expect((await w.view(pr)).rounds).toEqual([expect.objectContaining({ round: 1, failureCount: 2 })]);
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(4);
+  });
+});
+
+describe('a round queued just before a not-needed repair (a6cbd241)', () => {
+  test('round 1 at H1; someone pushes H2 with no webhook; a conflict door reads mergeable unknown and uses its dirty hint → round 2 queued at H2 but its dispatch skipped, the repair is not needed → back to AWAITING_REVIEW; the floor dispatches round 2\'s reviewer', async () => {
+    w = await world();
+    const pr = await w.openPr({ branch: 'feat/queued-then-repair', files: { 'src/a.ts': 'export const a = 2;\n' } });
+    await w.handOn(pr);
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(1);
+
+    const h2 = w.gh.push(w.repo, pr.branch, { 'src/p1.ts': 'x\n' }, { pusher: 'a-person' });
+    w.setFaults({ mergeableUnknownReads: 1 });
+    await seam.observeConflict({ workspaceId: w.workspaceId, repoFullName: w.repo, prNumber: pr.prNumber, installationId: w.installationId,
+      hint: 'dirty', isDependencyBot: false, maxAgentAttempts: 2, source: 'door:conflict' });
+    w.setFaults({ mergeableUnknownReads: 0 });
+
+    let v = await w.view(pr);
+    expect(v.delivery).toMatchObject({ state: 'AWAITING_REVIEW', currentHeadSha: h2, currentRound: 2 });
+    expect(v.rounds.find((r) => r.round === 2)).toMatchObject({ status: 'queued', headSha: h2, reviewerTaskId: null });
+    expect(await w.commands(pr)).toEqual(expect.arrayContaining(['ConflictObserved', 'RepairNotNeeded']));
+    expect((await w.effects(pr)).find((e) => e.dedupe_key === `dispatch_review:${pr.deliveryId}:2`)).toMatchObject({ status: 'done', outcome: expect.stringMatching(/^skipped:/) });
+
+    // The floor owes the open round's exit: a reviewer for round 2 at H2.
+    await w.floor(pr);
+    await w.deliver();
+    v = await w.view(pr);
+    const round2 = v.rounds.find((r) => r.round === 2)!;
+    expect(round2.reviewerTaskId).toBeTruthy();
+    const r2 = await w.reviewer(pr);
+    expect(r2.context).toMatchObject({ workflowRoundId: round2.id, headSha: h2 });
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(2);
+
+    // A second floor pass owes nothing more.
+    await w.floor(pr);
+    expect(await w.tasksOf(pr, 'review')).toHaveLength(2);
   });
 });

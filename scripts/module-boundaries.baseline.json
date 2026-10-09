@@ -546,15 +546,6 @@
     "apps/web/src/app/app/(protected)/home/ActionQueueCard.tsx": {
       "apps/web/src/lib/action-card-context.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/home/FleetLanes.tsx": {
-      "apps/web/src/lib/fleet-view.ts": "health-quality"
-    },
-    "apps/web/src/app/app/(protected)/home/FleetStrip.tsx": {
-      "apps/web/src/components/chat/SteerButton.tsx": "chat",
-      "apps/web/src/lib/fleet-view.ts": "health-quality",
-      "apps/web/src/lib/mission-list-card.ts": "missions",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
-    },
     "apps/web/src/app/app/(protected)/home/HomeMissions.tsx": {
       "apps/web/src/components/chat/ChatEntry.tsx": "chat",
       "apps/web/src/components/missions/MissionCard.tsx": "missions",
@@ -588,7 +579,6 @@
       "apps/web/src/components/onboarding/ConnectOwnKeyCard.tsx": "onboarding",
       "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": "onboarding",
       "apps/web/src/components/onboarding/ProviderOnboardingCard.tsx": "onboarding",
-      "apps/web/src/lib/action-card-context.ts": "missions",
       "apps/web/src/lib/action-queue.ts": "missions",
       "apps/web/src/lib/chat-availability.ts": "chat",
       "apps/web/src/lib/chat/conversations.ts": "chat",
@@ -607,16 +597,12 @@
       "apps/web/src/lib/mission-pr.ts": "missions",
       "apps/web/src/lib/mission-task-href.ts": "missions",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
-      "apps/web/src/lib/release-baseline.ts": "releases",
       "apps/web/src/lib/reviewer-evidence.ts": "knowledge",
       "apps/web/src/lib/reviewer-gate.ts": "reviews-merge",
       "apps/web/src/lib/reviewer-stall-facts.ts": "reviews-merge",
       "apps/web/src/lib/strand-choice-shadow.ts": "jev-decisions",
-      "packages/core/derived-metric.ts": "health-quality",
       "packages/core/mission-helpers.ts": "missions",
-      "packages/core/mission-integration.ts": "missions",
-      "packages/core/release-archetype.ts": "releases",
-      "packages/core/release-queue-scope.ts": "releases"
+      "packages/core/mission-integration.ts": "missions"
     },
     "apps/web/src/app/app/(protected)/layout.tsx": {
       "apps/web/src/components/chat/ChatCanvas.tsx": "chat",
@@ -744,10 +730,6 @@
     },
     "apps/web/src/components/LandingActionConfirm.tsx": {
       "apps/web/src/lib/landing-action-view.ts": "reviews-merge"
-    },
-    "apps/web/src/components/MissionProgress.tsx": {
-      "apps/web/src/lib/mission-helpers.ts": "missions",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/components/MissionProgressBar.tsx": {
       "apps/web/src/lib/mission-helpers.ts": "missions",

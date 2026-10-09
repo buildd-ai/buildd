@@ -93,6 +93,48 @@ export function allocatedIds(c: CorpusDelivery, t: CorpusTransition): string[] {
   ];
 }
 
+/** The effects that answer a refused mechanical repair with `ConflictObserved{mechanicalRefused: true}`. */
+const REFUSING_EFFECTS: ReadonlySet<string> = new Set(['effect:refresh_branch', 'effect:renumber_migration']);
+
+const OPEN_STATUSES: ReadonlySet<string> = new Set(['queued', 'running']);
+const ENDED_STATUSES: ReadonlySet<string> = new Set(['ended', 'cancelled', 'skipped']);
+
+/** An attempt end the transition log does not carry, to write before a step. */
+export interface OutOfBandAttemptEnd { attemptId: string; status: string; outcome: string | null; timed: boolean }
+
+/**
+ * Attempt rows the record shows ended by a statement that wrote no transition,
+ * still open in the replay before the step at `beforeUs`. The case that has
+ * one: a repair worker that ends after its attempt stopped being bound
+ * (AttemptEnded `unbound`, reducer.ts) ends the row and is answered `stale`.
+ *
+ * With the recorded end time (`endedUs`): ended out of band when no recorded
+ * transition shares that statement's `tUs`, and due once that time has passed.
+ * Without it (a corpus exported before it was recorded) the time is unknown:
+ * an `ended` row that was claimed (`running`) and that the replay no longer
+ * binds is ended before the next step, the earliest the unbound path could
+ * have written it, and the report lists it as inferred. A `queued` row that is
+ * not bound is waiting for its claim (a review fix binds at FixClaimed), not
+ * for an end. A cancellation or skip is always a transition's
+ * write (`cancel_open`) and is left to that transition.
+ */
+export function outOfBandAttemptEnds(c: CorpusDelivery, view: KernelView, beforeUs: number): OutOfBandAttemptEnd[] {
+  const statements = new Set(c.transitions.map((t) => t.tUs));
+  const out: OutOfBandAttemptEnd[] = [];
+  for (const a of c.attempts) {
+    if (!ENDED_STATUSES.has(a.status)) continue;
+    const replayed = view.attempts.find((x) => x.id === a.id);
+    if (!replayed || !OPEN_STATUSES.has(replayed.status)) continue;
+    const end = { attemptId: a.id, status: a.status, outcome: a.outcome };
+    if (typeof a.endedUs === 'number') {
+      if (!statements.has(a.endedUs) && a.endedUs < beforeUs) out.push({ ...end, timed: true });
+    } else if (a.status === 'ended' && replayed.status === 'running' && view.delivery?.boundAttemptId !== a.id) {
+      out.push({ ...end, timed: false });
+    }
+  }
+  return out;
+}
+
 export interface ReconstructCtx {
   /** The replay's delivery as it stands before this step. */
   view: KernelView;
@@ -106,6 +148,11 @@ export type Reconstructed = { ok: true; cmd: Command; inferred: string[] } | { o
 type J = Record<string, unknown>;
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+const liveChecksOf = (v: unknown): { complete: boolean; failing: string[] } | null => {
+  const o = v as { complete?: unknown; failing?: unknown } | null;
+  return o && typeof o === 'object' && typeof o.complete === 'boolean' && Array.isArray(o.failing) && o.failing.every((f) => typeof f === 'string')
+    ? { complete: o.complete, failing: o.failing as string[] } : null;
+};
 
 /** `prefix:a:b:c` → ['a','b','c']; repo names and SHAs carry no colons. */
 function keyParts(key: string, prefix: string): string[] | null {
@@ -169,6 +216,8 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
         ...(E.carryForward ? { carryForward: E.carryForward as 'content_equivalent' | 'own_refresh' } : {}),
         taskRetryBudgetLeft: requeue,
         reviewRequired: E.policy !== 'no_review',
+        // e9f1674b: the hand-off's live check read; its budget is in the evidence only when it acted.
+        ...(liveChecksOf(E.liveChecks) ? { ci: { liveChecks: liveChecksOf(E.liveChecks)!, signature: str(E.signature) ?? 'ci_failed', maxAttempts: num(E.max) ?? 0 } } : {}),
       });
     }
     case 'ReviewRequested': {
@@ -233,6 +282,7 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       return ok({
         type: 'CiFailedObserved', actor, headSha: h, signature: str(E.signature) ?? '', maxAttempts,
         preflightMiss: str(E.preflightMiss), trigger: inserted?.trigger === 'human' ? 'human' : 'automatic', triggerFactId,
+        ...(liveChecksOf(E.liveChecks) ? { liveChecks: liveChecksOf(E.liveChecks) } : {}),
       });
     }
     case 'ConflictObserved': {
@@ -243,15 +293,20 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       const inserted = corpus.attempts.find((a) => a.tUs === t.tUs);
       const effect = fx.find((e) => ['refresh_branch', 'renumber_migration', 'dispatch_conflict_fix', 'escalate_exhaustion'].includes(e.kind));
       const p = (effect?.payload ?? {}) as J;
-      const openMech = view.attempts.some((a: AttemptSnapshot) => a.mode === 'mechanical' && a.boundHeadSha === h && (a.status === 'queued' || a.status === 'running'));
       const mechanical = E.mode === 'mechanical';
+      // Who sent it is recorded: a mechanical repair's own effect hands a refusal to an agent
+      // (conflict-retry-effects.ts `refusedToAgent`, always mechanicalRefused), the door never does.
+      // Only an actor neither says is read off the replay's ledger.
+      const openMech = view.attempts.some((a: AttemptSnapshot) => a.mode === 'mechanical' && a.boundHeadSha === h && (a.status === 'queued' || a.status === 'running'));
+      const refusedBy = REFUSING_EFFECTS.has(actor) ? true : actor.startsWith('door:') ? false : null;
+      if (refusedBy == null && !mechanical) inferred.push('mechanicalRefused');
       const maxAgent = mechanical ? num(p.maxAgent) : num(p.maxAttempts) ?? (inserted?.mode === 'agent' ? inserted.maxAttempts : null) ?? num(p.attempts);
       if (maxAgent == null) inferred.push('maxAgentAttempts');
       return ok({
         type: 'ConflictObserved', actor, headSha: h,
         mergeable: kind === 'behind' ? 'behind' : 'dirty',
         migrationCollision: kind === 'migration',
-        mechanicalRefused: !mechanical && openMech,
+        mechanicalRefused: !mechanical && (refusedBy ?? openMech),
         ...(mechanical && inserted ? { maxMechanical: inserted.maxAttempts } : {}),
         maxAgentAttempts: maxAgent ?? 3,
         refusal: (p.refusal ?? null) as J | null,
@@ -352,7 +407,12 @@ export function reconstructCommand(t: CorpusTransition, ctx: ReconstructCtx): Re
       if (!roundId || !E.reason) return miss('no round or reason');
       // The contract-retry cap is configuration, not recorded: read off where the round went.
       inferred.push('maxContractRetries');
-      return ok({ type: 'ReviewRoundFailed', actor, roundId, reason: E.reason as never, maxContractRetries: t.toState === 'AWAITING_REVIEW' ? Number.MAX_SAFE_INTEGER : 0 });
+      // A reviewer's failure carries its reviewer (the key's identity); a recording from before that, or a kernel-side one, does not.
+      const reviewerTaskId = str(E.reviewerTaskId);
+      return ok({
+        type: 'ReviewRoundFailed', actor, roundId, reason: E.reason as never, maxContractRetries: t.toState === 'AWAITING_REVIEW' ? Number.MAX_SAFE_INTEGER : 0,
+        ...(reviewerTaskId ? { reviewerTaskId } : {}),
+      });
     }
     case 'PolicyEvidenceRecorded': {
       if (!E.policyEvidence) return miss('no policy evidence');

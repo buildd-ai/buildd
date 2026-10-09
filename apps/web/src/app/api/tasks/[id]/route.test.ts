@@ -1,5 +1,24 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+// No network: an exact model pin is banded by family when the catalog is empty.
+mock.module('@buildd/core/model-catalog-cache', () => ({ getCachedOpenRouterCatalog: async () => [] }));
+
 
 const TASK_ID = '11111111-1111-1111-1111-111111111111';
 const MISSING_TASK_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -1092,6 +1111,32 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(sets[0].context.other).toBe(1);
     });
 
+    describe('model-tier ceiling', () => {
+      afterEach(() => { ceilingTest.inputs = {}; });
+
+      it('re-tiering above the team ceiling is refused with policy_denied and nothing is written', async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'premium' } } };
+        const { res, sets } = await patch(baseTask(), { tier: 'premium-plus' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: 'policy_denied', maxTier: 'premium', requested: { tier: 'premium-plus', origin: 'task_tier' } });
+        expect(sets).toHaveLength(0);
+      });
+
+      it('an exact premium-plus model pin is refused; an in-band one and a lower tier are allowed', async () => {
+        ceilingTest.inputs = { team: { workspaces: { 'ws-1': { all: 'premium' } } } };
+        const denied = await patch(baseTask(), { model: 'claude-fable-5-1' });
+        expect(denied.res.status).toBe(403);
+        expect((await denied.res.json()).code).toBe('model_above_ceiling');
+        expect((await patch(baseTask(), { model: 'claude-opus-4-8' })).res.status).toBe(200);
+        expect((await patch(baseTask(), { tier: 'budget' })).res.status).toBe(200);
+      });
+
+      it('clearing a tier or pin is never refused', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'budget' } } };
+        expect((await patch(baseTask({ model: 'claude-opus-4-8', modelPinned: true }), { model: null, tier: null })).res.status).toBe(200);
+      });
+    });
+
     it('model: null clears the pin so routing decides at the next claim', async () => {
       const { res, sets } = await patch(
         baseTask({ model: 'claude-opus-4-8', modelPinned: true, other: 1 }),
@@ -1891,6 +1936,80 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
+  // Reschedule: move a queued task's start later (or back to ASAP) without
+  // cancelling it. Only before a worker has it; a started task is refused.
+  describe('reschedule (startAt / startIn)', () => {
+    const queued = (over: Record<string, unknown> = {}) => ({
+      id: TASK_ID, title: 'checkout', status: 'pending', claimedBy: null, workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context: { model: 'x' }, ...over,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('startAt (ISO) defers a pending task and records who and how', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const at = new Date(Date.now() + 3_600_000).toISOString();
+      const res = await patch({ startAt: at });
+      expect(res.status).toBe(200);
+      expect(sets[0].startAt).toEqual(new Date(at));
+      expect(sets[0].context).toMatchObject({ model: 'x', startResolution: 'explicit' });
+      expect(sets[0].context.rescheduledBy).toMatchObject({ userId: 'user-123' });
+    });
+
+    it('startIn resolves relative to now', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const before = Date.now();
+      expect((await patch({ startIn: '4h' })).status).toBe(200);
+      const t = (sets[0].startAt as Date).getTime();
+      expect(t).toBeGreaterThanOrEqual(before + 4 * 3_600_000);
+      expect(t).toBeLessThan(before + 4 * 3_600_000 + 60_000);
+      expect(sets[0].context.startResolution).toBe('relative');
+    });
+
+    it('startAt: null means start as soon as possible', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued({ startAt: new Date(Date.now() + 3_600_000) }));
+      const sets = capture();
+      expect((await patch({ startAt: null })).status).toBe(200);
+      expect(sets[0].startAt).toBeNull();
+      expect(sets[0].context.startResolution).toBeUndefined();
+    });
+
+    it('refuses a past time, a bad duration, and both at once', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      capture();
+      expect((await patch({ startAt: new Date(Date.now() - 60_000).toISOString() })).status).toBe(400);
+      expect((await patch({ startIn: 'soon' })).status).toBe(400);
+      expect((await patch({ startAt: new Date(Date.now() + 60_000).toISOString(), startIn: '1h' })).status).toBe(400);
+    });
+
+    it.each([
+      ['claimed', { status: 'pending', claimedBy: 'worker-1' }],
+      ['assigned', { status: 'assigned' }],
+      ['in_progress', { status: 'in_progress' }],
+      ['completed', { status: 'completed' }],
+    ])('refuses a task that is %s, saying why', async (_label, over) => {
+      mockTasksFindFirst.mockResolvedValue(queued(over));
+      const sets = capture();
+      const res = await patch({ startIn: '1h' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/start time/i);
+      expect(sets).toHaveLength(0);
+    });
+  });
+
   describe('resultSummary correction', () => {
     it('corrects the stored summary on a completed task and stamps an audit trail', async () => {
       const mockTask = {
@@ -2256,6 +2375,7 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
     ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
     ['held', { held: false }],
     ['tier', { tier: 'premium' }],
+    ['startIn', { startIn: '1h' }],
   ])('refuses %s, naming it, and writes nothing', async (field, body) => {
     const res = await patch(body);
     expect(res.status).toBe(403);

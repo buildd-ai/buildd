@@ -402,6 +402,23 @@ mock.module('@buildd/core/model-routing-experiment-source', () => ({
 const mockDrawAgentPoolArm = mock((_args: any): Promise<any> => Promise.resolve(null));
 const mockApplyAgentPoolArm = mock((_draw: any, _args: any): any => null);
 const mockRecordAgentPoolAssignment = mock((_draw: any, _args: any) => Promise.resolve());
+// Model-tier ceilings: the real rule (@buildd/shared) over a per-test policy
+// instead of the DB. Default: no ceiling anywhere, so every other test in
+// this file routes exactly as before ceilings existed.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any>, requesterAsked: 0, fail: false };
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  tierCeilingLoader: () => async (subject: any, surface: any) => {
+    if (ceilingTest.fail) throw new Error('db down');
+    const team = ceilingTest.inputs.team ?? null;
+    let userId: string | null = null;
+    if (team?.membersCapped) {
+      ceilingTest.requesterAsked++;
+      userId = typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null;
+    }
+    return realResolveTierCeiling({ team, workspaceId: subject.workspaceId, userId, member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null }, surface);
+  },
+}));
 mock.module('@buildd/core/tier-pool-source', () => ({
   drawAgentPoolArm: mockDrawAgentPoolArm,
   applyAgentPoolArm: mockApplyAgentPoolArm,
@@ -2273,6 +2290,105 @@ describe('POST /api/workers/claim', () => {
       mockDrawModelRoutingArm.mockResolvedValue({ arm: 'control' });
       await POST(claimReq());
       expect(mockRecordModelRoutingAssignment).not.toHaveBeenCalled();
+    });
+
+    describe('model-tier ceilings', () => {
+      afterEach(() => { ceilingTest.inputs = {}; ceilingTest.fail = false; ceilingTest.requesterAsked = 0; });
+      const withTask = (patch: Record<string, unknown>) => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), ...patch }]);
+        return sets;
+      };
+      const claim = async () => {
+        const res = await POST(claimReq());
+        return (await res.json()) as any;
+      };
+
+      it('no ceiling: the router pick and lookups are unchanged', async () => {
+        const sets = withTask({ complexity: 'complex' });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        expect(sets.find(v => v.status === 'assigned').context.tierCeiling).toBeUndefined();
+        expect(ceilingTest.requesterAsked).toBe(0);
+      });
+
+      it('team premium cap holds an explicit premium-plus task with policy_denied', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'premium' } } };
+        const sets = withTask({ tier: 'premium-plus' });
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+        expect(sets.find(v => v.status === 'assigned')).toBeUndefined();
+      });
+
+      it('an exact premium-plus model pin is held under a premium cap', async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'premium' } } };
+        withTask({ context: { model: 'claude-fable-5-1', modelPinned: true } });
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+
+      it('a chat-only cap does not touch coding agents', async () => {
+        ceilingTest.inputs = { team: { team: { chat: 'budget' } } };
+        withTask({ tier: 'premium' });
+        expect((await claim()).workers.length).toBe(1);
+      });
+
+      it('workspace cap applies to its workspace only', async () => {
+        ceilingTest.inputs = { team: { workspaces: { 'ws-other': { all: 'budget' } } } };
+        withTask({ tier: 'premium' });
+        expect((await claim()).workers.length).toBe(1);
+        ceilingTest.inputs = { team: { workspaces: { 'ws-1': { all: 'standard' } } } };
+        withTask({ tier: 'premium' });
+        expect((await claim()).diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+
+      it("the router's own premium pick is downgraded to the cap and the reason recorded", async () => {
+        ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+        const sets = withTask({ complexity: 'complex', kind: 'planning' });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        const set = sets.find(v => v.status === 'assigned');
+        expect(set.context.resolvedTier.tier).toBe('standard');
+        expect(set.context.tierCeiling).toMatchObject({ from: 'premium', to: 'standard', max: 'standard', binding: { source: 'team' } });
+      });
+
+      it('requester caps: the person behind the task is held by their own and admin-set maximum', async () => {
+        ceilingTest.inputs = { team: { membersCapped: true }, members: { 'user-9': { self: { all: 'standard' } } } };
+        withTask({ tier: 'premium', createdByUserId: 'user-9' });
+        expect((await claim()).diagnostics?.deferrals?.tier_policy).toBe(1);
+        ceilingTest.inputs = { team: { membersCapped: true }, members: { 'user-9': { admin: { agent: 'budget' }, self: { all: 'premium-plus' } } } };
+        withTask({ tier: 'standard', createdByUserId: 'user-9' });
+        expect((await claim()).diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+
+      it('unknown requester: personal caps are not applied, team cap still is', async () => {
+        ceilingTest.inputs = { team: { membersCapped: true, team: { all: 'premium' } }, members: { 'user-9': { self: { all: 'budget' } } } };
+        withTask({ tier: 'premium', createdByUserId: null });
+        expect((await claim()).workers.length).toBe(1);
+      });
+
+      it('a treatment arm above the cap is not served; the control is', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+        const sets = withTask({});
+        const draw: any = { arm: 'treatment', eligibility: {} };
+        mockDrawModelRoutingArm.mockResolvedValue(draw);
+        mockApplyModelRoutingTreatment.mockResolvedValue({ tier: 'premium', model: 'claude-opus-5', provider: 'anthropic', source: 'default' });
+        const data = await claim();
+        expect(data.workers.length).toBe(1);
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(draw.served).toBe(false);
+        expect(draw.eligibility.fallback).toBe('tier_ceiling');
+      });
+
+      it('an unreadable ceiling holds the task rather than assuming none', async () => {
+        ceilingTest.fail = true;
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
     });
 
     describe('tier pool wiring', () => {
@@ -9144,6 +9260,77 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // has its own credentials and should not be blocked by account budget.
     expect(data.workers).toHaveLength(1);
     expect(data.diagnostics).toBeUndefined();
+  });
+
+  // Owner rule (task 69f5b7cd): a person's interactive session can always
+  // claim. The account's worker limit is the slots its runners are assigned;
+  // a full fleet must not lock the person out, and the person's own sessions
+  // must not eat a runner's slots.
+  describe('account worker limit: runners only', () => {
+    /** Flatten the stubbed `sql` tag (strings + nested fragments) to text. */
+    function sqlText(node: any): string {
+      if (!node || typeof node !== 'object') return node === undefined ? '' : String(node);
+      if (node.type !== 'sql') return '?';
+      if (node.raw !== undefined) return node.raw;
+      if (node.parts) return node.parts.map(sqlText).join(sqlText(node.sep));
+      return node.strings.reduce((acc: string, str: string, i: number) => acc + str + (i < node.values.length ? sqlText(node.values[i]) : ''), '');
+    }
+    function workerInsertSql(): string {
+      const texts = (mockDbExecute.mock.calls as any[]).map(c => sqlText(c[0]));
+      return texts.findLast(t => t.includes('INSERT INTO')) ?? '';
+    }
+    const runnerFleet = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `w${i}`, taskId: `t${i}`, runner: 'runner-7', status: 'running' }));
+    const sessions = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, taskId: `st${i}`, runner: 'mcp', status: 'running' }));
+
+    it('an interactive claim succeeds while runners fill the account limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+      mockWorkersFindMany.mockResolvedValue(runnerFleet(5));
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'mcp' }, interactiveHeaders());
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      // The atomic insert carries no account-count predicate for a session.
+      expect(workerInsertSql()).not.toContain('count(*)');
+    });
+
+    it('an interactive claim is not refused by the OAuth session limit either', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth', maxConcurrentSessions: 2, activeSessions: 2 });
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'mcp' }, interactiveHeaders());
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+    });
+
+    it("a runner's claim is not refused because a person's sessions are live", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue([...runnerFleet(2), ...sessions(3)]);
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'runner-7' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+      // The insert's own count leaves interactive workers out as well.
+      const insert = workerInsertSql();
+      expect(insert).toContain('count(*)');
+      expect(insert).toContain('runner IS DISTINCT FROM mcp');
+    });
+
+    it('a runner is still refused at its own limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue([...runnerFleet(5), ...sessions(2)]);
+      const res = await claim({ runner: 'runner-7' });
+      expect(res.status).toBe(429);
+      const data = await res.json();
+      expect(data.error).toBe('Max concurrent workers limit reached');
+      expect(data.current).toBe(5);
+    });
+
+    it('an unverified "mcp" runner id gets no exemption', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue(runnerFleet(5));
+      const res = await claim({ runner: 'mcp' });
+      expect(res.status).toBe(429);
+    });
   });
 
   // The team pause log records a wall the RUNNER's seat hit (e.g. "You've hit
