@@ -129,7 +129,8 @@ assertions while the rest of the file passes. `apps/runner/install.sh` now provi
 on fresh installs the same best-effort way it provisions other tooling (`apt-get`/`brew`, never
 fatal to the rest of the install; without root or passwordless escalation it unpacks the `.deb` into `~/.local/bin` using a user-owned apt state dir) — install.sh only runs at install time, so an older sandbox that predates that change, or one on a
 platform neither package manager covers, can still be missing it. Confirm with `command -v zstd`;
-if it's absent, this is a known sandbox-provisioning gap, not a product bug — production code
+if it's absent, run `bash apps/runner/install.sh --repair` (idempotent; zstd only, no runner reinstall;
+put `~/.local/bin` on PATH) — this is a known sandbox-provisioning gap, not a product bug — production code
 (`zstdAvailable()` in `warm-repo.ts`) already falls back to a plain, uncompressed tarball when
 the binary is missing, so don't change `warm-repo.ts` to work around it.
 
