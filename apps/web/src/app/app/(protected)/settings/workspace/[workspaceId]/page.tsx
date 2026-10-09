@@ -179,15 +179,13 @@ export default async function WorkspaceSettingsPage({
           <div className={ROWS}>
             {canManageSettings && (
               <WorkspaceHealthCard
-                workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
-                teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
+                workspace={{ id: workspace.id, name: workspace.name }}
                 items={checkWorkspaceHealth({
                   name: workspace.name,
                   repo: workspace.repo,
                   configStatus: workspace.configStatus,
                   accessMode: workspace.accessMode,
                   gitConfig: workspace.gitConfig as Record<string, unknown> | null,
-                  userTeamCount: userTeams.length,
                 })}
               />
             )}
