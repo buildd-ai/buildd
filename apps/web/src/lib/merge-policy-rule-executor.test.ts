@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import type { GatedSubject } from './escalation-gate-check';
-import { escalationRuleExecutor, policyAllowsRuleMerge } from './escalation-rule-executor';
+import { escalationRuleExecutor, policyAllowsRuleMerge } from './merge-policy-rule-executor';
 
 const s = (over: Partial<GatedSubject> = {}): GatedSubject => ({
   key: 'pr:ws:7', workspaceId: 'ws', prNumber: 7, taskId: 't7', missionId: null, title: 't', why: 'reviewer_escalated',

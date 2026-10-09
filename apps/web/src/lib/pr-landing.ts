@@ -76,7 +76,7 @@ import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { isFailingCheckRun } from '@/lib/ci-verdict';
-import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/landing-fix-dispatch';
+import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -219,7 +219,7 @@ export interface LandPrDeps {
   dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string; /** Nothing was filed, and why. */ skipped?: string } | null>;
   /**
    * With no `dispatchFix` wired (every door today), red CI and a migration
-   * collision still get their fix: lib/landing-fix-dispatch.ts hands them to
+   * collision still get their fix: lib/pr-landing-fix-dispatch.ts hands them to
    * the CI retry and the collision renumber that already decide those. These
    * are its dependencies, for tests.
    */

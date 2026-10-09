@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test';
-import { collisionFromReason, dispatchLandingFix } from './landing-fix-dispatch';
+import { collisionFromReason, dispatchLandingFix } from './pr-landing-fix-dispatch';
 import type { FixDispatchInput } from './pr-landing';
 
 const base: FixDispatchInput = {

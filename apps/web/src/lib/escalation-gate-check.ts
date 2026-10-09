@@ -102,7 +102,7 @@ export interface EscalationGateDeps {
   act?: (subject: GatedSubject, action: JevAction) => Promise<void>;
   /**
    * Run a Buildd-owned RULE verdict's step that no sweep takes on its own
-   * (lib/escalation-rule-executor.ts: `policy_merge`). Called once per state,
+   * (lib/merge-policy-rule-executor.ts: `policy_merge`). Called once per state,
    * on the look that files the verdict, never on a reuse.
    */
   actRule?: (subject: GatedSubject, action: EscalationAction) => Promise<void>;

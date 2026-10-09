@@ -14,7 +14,7 @@ import { resolveDecisionAccess } from '@buildd/core/decision-client';
 import { recordDecision } from '@buildd/core/decision-ledger';
 import { escalationActionFiler, gateEscalations, type EscalationGateDeps, type GatedSubject } from './escalation-gate-check';
 import { escalationFingerprint } from '@buildd/core/escalation-gate';
-import { escalationRuleExecutor } from './escalation-rule-executor';
+import { escalationRuleExecutor } from './merge-policy-rule-executor';
 import { insertDecisionReceipts } from './memory-decisions';
 import { fileRecoverableBlockerRepair } from './recoverable-blocker-repair';
 
