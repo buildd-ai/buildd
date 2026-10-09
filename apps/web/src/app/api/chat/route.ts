@@ -4,6 +4,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { createConversation, listConversations, toConversationDTO } from '@/lib/chat/store';
 import { isSensitiveWorkspace, requireChatCaller, resolveChatTeam } from '@/lib/chat/session';
 import { assertMemberRepoAccess } from '@/lib/member-repo-access';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 
 /**
  * GET  /api/chat?cursor=&limit=  → ListConversationsResponse (the caller's own, in teams they still belong to, newest first)
@@ -55,6 +56,15 @@ export async function POST(req: NextRequest) {
   if (!teamId) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
 
   const tier = isChatTierName(body.tier) ? body.tier : null;
+  // A chat that starts pinned above the person's tier maximum is refused
+  // (policy_denied); every turn re-checks too (lib/chat/turn.ts).
+  const ceilingRejection = await rejectOverCeiling({
+    subject: { teamId, workspaceId, userId: r.caller.user.id },
+    surface: 'chat',
+    request: { tier, tierOrigin: 'chat_pin' },
+    gate: { surface: 'POST /api/chat', workspaceId, callerOrigin: 'dashboard' },
+  });
+  if (ceilingRejection) return ceilingRejection;
   const conversation = await createConversation({ teamId, workspaceId, userId: r.caller.user.id, tier });
   return NextResponse.json({ conversation: toConversationDTO(conversation) }, { status: 201 });
 }

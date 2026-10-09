@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
@@ -356,6 +357,15 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Model-tier ceiling: a re-tier or re-pin above the effective maximum is
+      // refused here; lowering is always allowed. The claim re-checks anyway.
+      const ceilingRejection = await rejectOverCeiling({
+        subject: { teamId: task.workspace?.teamId, workspaceId: task.workspaceId, userId: lazyRequester(task) },
+        surface: 'agent',
+        request: { tier, model },
+        gate: { surface: 'PATCH /api/tasks/[id]', workspaceId: task.workspaceId, taskId: task.id },
+      });
+      if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
