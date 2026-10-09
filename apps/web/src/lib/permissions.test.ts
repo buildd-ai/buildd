@@ -52,6 +52,7 @@ const EXPECTED: Record<Permission, Row> = {
   migrate_workspace: { roles: OA, keys: ADMIN_KEY },
   manage_github_installation: { roles: OA, keys: NONE },
   review_memory: { roles: OA, keys: ADMIN_KEY },
+  delegate_schedule_access: { roles: OA, keys: ADMIN_KEY },
   steer_workers: { roles: OA, keys: ADMIN_KEY },
   force_reassign_task: { roles: OA, keys: ANY_KEY },
   manage_releases: { roles: OA, keys: ADMIN_KEY },
