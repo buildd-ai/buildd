@@ -103,7 +103,7 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
                 href={hrefs[m]}
                 aria-current={mode === m ? 'page' : undefined}
                 data-testid={`activity-tab-${m}`}
-                className={`inline-flex min-h-10 items-center px-4 font-mono text-body font-semibold ${i > 0 ? 'border-l border-border-default' : ''} ${mode === m ? 'bg-text-primary text-surface-1' : 'text-text-muted'}`}
+                className={`inline-flex min-h-11 items-center px-4 font-mono text-body font-semibold md:min-h-10 ${i > 0 ? 'border-l border-border-default' : ''} ${mode === m ? 'bg-text-primary text-surface-1' : 'text-text-muted'}`}
               >
                 {m === 'now' ? 'Now' : 'History'}
               </Link>
@@ -191,7 +191,7 @@ function FilterGroup<K extends string>({ label, options, value, onChange }: { la
           type="button"
           aria-pressed={value === o.key}
           onClick={() => onChange(o.key)}
-          className={`min-h-9 whitespace-nowrap px-2.5 font-mono text-meta ${value === o.key ? 'border-2 border-border-strong font-semibold text-text-primary' : 'border border-border-default text-text-muted'}`}
+          className={`min-h-11 whitespace-nowrap px-2.5 md:min-h-9 font-mono text-meta ${value === o.key ? 'border-2 border-border-strong font-semibold text-text-primary' : 'border border-border-default text-text-muted'}`}
         >
           {o.label}
         </button>
