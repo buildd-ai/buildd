@@ -69,6 +69,58 @@ export function teamCredentialWhere(filter: TeamCredentialFilter, ...extra: (SQL
   return and(isNull(secrets.userId), ...conds)!;
 }
 
+/** The scope a credential is being resolved for: a task in workspace W claimed by account A. */
+export interface CredentialScopeTarget {
+  accountId?: string | null;
+  workspaceId?: string | null;
+}
+
+/** The columns precedence needs. Any missing one reads as NULL. */
+export interface ScopedCredentialRow {
+  accountId?: string | null;
+  workspaceId?: string | null;
+  userId?: string | null;
+  healthStatus?: string | null;
+  updatedAt?: Date | null;
+}
+
+/**
+ * Specificity of a row for a target, per docs/credentials-architecture.md
+ * ("most specific wins"): a workspace match outranks an account match, which
+ * outranks a team-wide row. Returns -1 for a row that does not apply at all: a
+ * personal row (`userId` set), or one scoped to another workspace or account.
+ */
+export function credentialScopeRank(row: ScopedCredentialRow, target: CredentialScopeTarget): number {
+  if (row.userId) return -1;
+  if (row.workspaceId && row.workspaceId !== target.workspaceId) return -1;
+  if (row.accountId && row.accountId !== target.accountId) return -1;
+  return (row.workspaceId ? 2 : 0) + (row.accountId ? 1 : 0);
+}
+
+/**
+ * The one precedence pick for single-valued agent credentials: drop rows that
+ * do not apply, then prefer a live row over a revoked one (a revoked leftover
+ * must never shadow a working credential, whatever its scope), then the most
+ * specific scope, then the most recently updated. A revoked row is still
+ * returned when it is the only candidate.
+ *
+ * Callers still filter in SQL with `teamCredentialWhere`; this re-check of
+ * `userId` and scope is defense in depth for the pick itself.
+ */
+export function pickMostSpecificCredential<T extends ScopedCredentialRow>(
+  rows: readonly T[],
+  target: CredentialScopeTarget,
+): T | undefined {
+  const revoked = (r: T) => (r.healthStatus === 'revoked' ? 1 : 0);
+  return rows
+    .map(r => ({ r, rank: credentialScopeRank(r, target) }))
+    .filter(x => x.rank >= 0)
+    .sort((a, b) =>
+      revoked(a.r) - revoked(b.r) ||
+      b.rank - a.rank ||
+      (b.r.updatedAt?.getTime() ?? 0) - (a.r.updatedAt?.getTime() ?? 0))[0]?.r;
+}
+
 /**
  * Write-side counterpart: throws when a row would be created with a `userId`
  * for a purpose that has no personal semantics. Called by the secrets provider
