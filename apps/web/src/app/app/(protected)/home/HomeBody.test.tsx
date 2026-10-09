@@ -20,7 +20,7 @@ const deliveries = [
   projectMissionDelivery({ id: 'm-wait', title: 'Runner on arm64', status: 'active', href: '/app/missions/m-wait', tasks: [{ id: 'e1', title: 'Arm build', status: 'pending', workers: [] }] }),
 ];
 const counts = { openMissions: 11, executingMissions: 1, liveAgents: 1, slots: { used: 1, total: 4 } };
-const render = (items = deriveHomeAttention({ queue: [], questions: [], held: [], missions: [] })) => renderToStaticMarkup(<HomeBody items={items} ask={<form data-testid="ask" />} counts={counts} milestones={selectHomeMilestones(deliveries)} quietMissions={2} shipped={[]} />);
+const render = (items = deriveHomeAttention({ queue: [], questions: [], held: [], missions: [] })) => renderToStaticMarkup(<HomeBody items={items} ask={<form data-testid="ask" />} counts={counts} milestones={selectHomeMilestones(deliveries)} quietMissions={2} />);
 describe('Home inbox', () => {
   it('zero Needs you is one quiet line, then 3 missions moving toward delivery', () => {
     const html = render();
@@ -40,33 +40,42 @@ describe('Home inbox', () => {
     expect(html).toContain('not yet on trunk');
     expect(html).toContain('11 open missions');
   });
-  it('delivery rows are a hairline list: no card frame, no tone edge, the full title, one status line', () => {
+  // The shared mission row (ui/MissionRow), the same one Missions draws:
+  // title, the small strip, one state line, Next. No box, no tone edge.
+  it('delivery rows are the shared mission row: title, small strip, one state line, Next', () => {
     const html = render();
     const rows = html.split('data-testid="home-delivery-row"').slice(1).map(r => r.slice(0, r.indexOf('</a>')));
     expect(rows).toHaveLength(3);
     for (const r of rows) {
+      expect(r).toContain('data-testid="mission-row"');
+      expect(r).toContain('data-testid="task-strip"');
       expect(r).not.toMatch(/border-l-4|border-l-status|bg-\[var\(--chat-surface\)\]/);
-      expect(r).not.toContain('line-clamp-2');
-      // The phase is named once: the word, not the word and a Build › Audit › Land track again.
-      expect(r.match(/data-testid="delivery-chip"/g)).toHaveLength(1);
+      expect(r).not.toContain('line-clamp');
       expect(r).not.toContain('Stage:');
+      expect(r).toContain('>Next<');
     }
     // An exception replaces the evidence it would repeat.
     const trunk = rows.find(r => r.includes('First-run checklist'))!;
     expect(trunk).toContain('not yet on trunk');
     expect(trunk).not.toContain('Every task landed on the mission branch.');
   });
-  it('a shipped mission names its span as filed to shipped, not "open"', () => {
-    const shipped = [{ id: 's', title: 'Done thing', href: '/app/missions/s', completedAt: '2026-10-09T10:00:00Z', prs: 1, fixes: 0, durationMs: 46 * 3_600_000, activeMs: 40 * 60_000, criteria: null }];
-    const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} counts={counts} milestones={[]} quietMissions={0} shipped={shipped} />);
-    expect(html).toContain('1d 22h');
-    expect(html).toContain('to ship');
-    expect(html).toContain('agent work');
-    expect(html).toContain('PR merged');
-    expect(html).not.toMatch(/>open</);
+  // Surface audit: the counts line repeated the Agents panel ("N of M busy")
+  // and the Moving header ("N open missions"); Just shipped repeated Landed
+  // this week's first row. Each now says it once.
+  it('no counts line and no Just shipped: Agents, Moving and Landed already say it', () => {
+    const html = render();
+    expect(html).not.toContain('home-counts');
+    expect(html).not.toContain('slots');
+    expect(html).not.toContain('just-shipped');
+    expect(html).not.toContain('Just shipped');
   });
-  it('separates agents, slots and open missions in the count line', () => {
-    expect(render()).toContain('1 agent working · 1/4 slots · 11 open missions');
+  it('one quiet line points at Activity; no second "See everything" link', () => {
+    const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] }));
+    expect(html).not.toContain('See everything in motion');
+    expect(html.match(/href="\/app\/tasks"/g)).toHaveLength(1);
+    const also = html.match(/<p[^>]*data-testid="home-also"[\s\S]*?<\/p>/)?.[0] ?? '';
+    expect(also).toContain('2 more missions are waiting on capacity or another mission.');
+    expect(also).toContain('href="/app/tasks"');
   });
   it('names what is not listed when something does need you', () => {
     const html = render(deriveHomeAttention({ queue: [{ subjectKey: 'd', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Keep the old route?' }], questions: [], held: [], missions: [] }));
@@ -121,14 +130,14 @@ it('renders a mixed list with named actions, concrete reasons and no generic fal
 // Surface audit: with no runner the phone hid Get started and said
 // "The fleet is working without you." It shows the next step instead.
 it('a team with no runner sees the getting-started step, not "working without you"', () => {
-  const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 0 } }} milestones={[]} quietMissions={0} shipped={[]} />);
+  const html = renderToStaticMarkup(<HomeBody items={[]} ask={null} setup={<section data-testid="getting-started">Connect a runner</section>} runnerConnected={false} counts={{ openMissions: 0, executingMissions: 0, liveAgents: 0, slots: { used: 0, total: 0 } }} milestones={[]} quietMissions={0} />);
   expect(html).toContain('data-testid="getting-started"');
   expect(html).toContain('Connect a runner');
   expect(html).not.toContain('working without you');
   expect(html).toContain('No runner is connected yet');
   // The checklist is the next step; the "All clear" reassurance would contradict it.
   expect(html).not.toContain('All clear');
-  expect(html.indexOf('getting-started')).toBeLessThan(html.indexOf('See everything in motion'));
+  expect(html.indexOf('home-subline')).toBeLessThan(html.indexOf('getting-started'));
 });
 
 // Owner acceptance (Oct 9): the phone said "8 things need you" over brutalist
@@ -144,15 +153,16 @@ describe('one decisions list at every width', () => {
     { subjectKey: 'a', chip: 'APPROVE' as const, taskId: 't-a', taskTitle: 'Plan to approve' },
   ];
   const items = deriveHomeAttention({ queue, questions: [], held: [], missions: [] });
-  const shipped = [{ id: 's', title: 'Shipped thing', href: '/app/missions/s', completedAt: '2026-10-09T10:00:00Z', prs: 2, fixes: 0, durationMs: 3_600_000, activeMs: 3_600_000, criteria: null }];
-  const html = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={7} shipped={shipped} />);
+  const html = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={7} />);
   const cards = html.match(/data-testid="needs-you-card"/g) ?? [];
 
   it('the headline count, the list count and the cards are one number', () => {
     expect(items).toHaveLength(8);
     expect(cards).toHaveLength(8);
     expect(html).toContain('8 things need you.');
-    expect(html).toContain('>8 open<');
+    // The headline is the section's header: no second "Needs you · N open" count.
+    expect(html).not.toContain('>8 open<');
+    expect(html).not.toContain('needs-you-count');
   });
 
   it('renders at every width: nothing in it is phone-only or desktop-only', () => {
@@ -163,7 +173,7 @@ describe('one decisions list at every width', () => {
   });
 
   it('every card is the L3 decision frame with a charcoal primary: no shadow, no 2px frame, no filled orange', () => {
-    const list = html.slice(html.indexOf('data-testid="needs-you-cards"'), html.indexOf('data-testid="just-shipped"'));
+    const list = html.slice(html.indexOf('data-testid="needs-you-cards"'), html.indexOf('data-testid="home-also"'));
     for (const c of list.split('data-testid="needs-you-card"').slice(1)) {
       const open = c.slice(0, c.indexOf('>'));
       expect(open).toContain('card-decision');
@@ -172,6 +182,8 @@ describe('one decisions list at every width', () => {
     expect(list).not.toMatch(/\bbg-accent\b|text-\[var\(--on-accent\)\]/);
     expect(list).toContain('btn btn-ink');
     expect(list).not.toMatch(/<h3[^>]*font-mono/);
+    // No all-caps tracked kicker: the kind is a sentence-case eyebrow.
+    expect(list).not.toMatch(/\buppercase\b|tracking-\[/);
   });
 
   it('a review card is the ReviewDecision structure: one decision line, fact tags, Details folded', () => {
@@ -182,25 +194,18 @@ describe('one decisions list at every width', () => {
     expect(review).toContain('Details');
   });
 
-  it('just shipped renders once, as a quiet row after the list, never as a tile among the decisions', () => {
-    expect(html.match(/Shipped thing/g)).toHaveLength(1);
-    const list = html.slice(html.indexOf('data-testid="needs-you-cards"'), html.indexOf('data-testid="just-shipped"'));
-    expect(list).not.toContain('Shipped thing');
-    expect(html.indexOf('data-testid="just-shipped"')).toBeGreaterThan(html.indexOf('data-testid="needs-you-cards"'));
-  });
-
   it('names the hidden missions plainly', () => {
     expect(html).toContain('7 more missions are waiting on capacity or another mission.');
   });
 
   it('one waiting mission reads in the singular', () => {
-    const one = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={1} shipped={[]} />);
+    const one = renderToStaticMarkup(<HomeBody items={items} ask={null} counts={counts} milestones={[]} quietMissions={1} />);
     expect(one).toContain('1 more mission is waiting on capacity or another mission.');
   });
 
   it('a merge card carries the MergeAdvice line', () => {
     const withAdvice = deriveHomeAttention({ queue: [{ ...queue[0], mergeAdvice: { prNumber: 1, workspaceId: 'ws', token: null, unavailable: null, advice: { decision: 'merge_now', source: 'rule', reasonCode: 'blocked', line: 'Safe to merge as-is.', recorded: true, model: null, at: '2026-10-09T10:00:00Z' } } } as never], questions: [], held: [], missions: [] });
-    const out = renderToStaticMarkup(<HomeBody items={withAdvice} ask={null} counts={counts} milestones={[]} quietMissions={0} shipped={[]} />);
+    const out = renderToStaticMarkup(<HomeBody items={withAdvice} ask={null} counts={counts} milestones={[]} quietMissions={0} />);
     expect(out).toContain('data-testid="merge-advice-line"');
     expect(out).toContain('Safe to merge as-is.');
   });
@@ -213,5 +218,17 @@ describe('Home page composes one list', () => {
     for (const gone of ['<NeedsYouStack', '<ActionQueueCard', '<ActivityTicker', '<ReleaseWidget', 'waiting-in-flight', 'homeHeadlineSentence(', '<MobileHome']) {
       expect(page).not.toContain(gone);
     }
+  });
+
+  // Chat setup lives on the Chat page; Home links there in one line. The clock,
+  // "+ Mission" and swipe chrome are gone at every width.
+  it('page.tsx carries no chat composer or setup card on desktop, no clock, no + Mission, no swipe chrome', async () => {
+    const page = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
+    for (const gone of ['<ProviderOnboardingCard', '<ConnectOwnKeyCard', 'compact={audience', '+ Mission', 'home-new-mission', 'toLocaleTimeString', '<SwipeProvider', 'Describe the work, or ask…']) {
+      expect(page).not.toContain(gone);
+    }
+    // The composer, when chat works, is phone-only; desktop gets one quiet Ask link.
+    expect(page).toMatch(/<div className="md:hidden">\s*<HomeChatCard/);
+    expect(page).toContain('data-testid="home-ask-link"');
   });
 });

@@ -7,13 +7,16 @@ import { firstSentence } from '@/lib/attention-line';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import { ReviewDecision } from '@/components/ReviewDecision';
 import { MergeAdvice } from '@/components/MergeAdvice';
+import Eyebrow from '@/components/ui/Eyebrow';
+
+const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const primary = 'btn btn-ink min-h-11';
 const secondary = 'btn min-h-11';
 
 /**
  * One owner decision, the same card at every width: the L3 decision frame
- * (1.5px frame on --inset, no shadow), an orange kicker, the subject, then the
+ * (1.5px frame on --inset, no shadow), a sentence-case orange eyebrow, the subject, then the
  * ReviewDecision body (one decision line, fact tags, Details folded), the
  * MergeAdvice line when the PR has one, and a charcoal primary action.
  */
@@ -82,7 +85,7 @@ export function DecisionCard({ item, onDone }: { item: HomeAttentionItem; onDone
   const status = q?.machineStatus ?? (q?.refreshFirst ? 'Waits on the branch refresh' : null);
   return <article data-testid="needs-you-card" data-kind={item.kind} data-systemic={item.systemic ? 'true' : undefined} className="card-decision flex min-w-0 flex-col p-4">
     <div className="flex items-center justify-between gap-3 text-meta">
-      <span className="font-mono font-semibold uppercase tracking-[1px] text-accent-text">{item.systemic ? `Systemic · ${item.label}` : item.label}</span>
+      <Eyebrow tone="accent">{sentenceCase(item.systemic ? `Systemic · ${item.label}` : item.label)}</Eyebrow>
       <span className="shrink-0 font-mono text-text-muted">{item.meta}</span>
     </div>
     <h3 className="mt-2 text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{item.title}</h3>
