@@ -1,7 +1,7 @@
 /**
  * TaskStrip's rules as data, so they are tested without a DOM.
  */
-import { STATES, type StateKey } from './states';
+import type { StateKey } from './states';
 
 /** The small strip aggregates only above this many tasks. */
 export const STRIP_AGGREGATE_ABOVE = 16;
@@ -36,10 +36,12 @@ export function stripRunColumns(runs: readonly StripRun[]): string {
   return runs.map(r => (r.count > 1 ? `${r.count}fr` : 'minmax(6px,1fr)')).join(' ');
 }
 
-/** The word inside a wide segment (`12 merged`); short segments carry none. */
+/**
+ * The words inside a wide merged segment (`12 merged`). Only the solid fill
+ * carries text: on a hatch it is unreadable, so held runs keep their tooltip.
+ */
 export function stripRunLabel(run: StripRun): string | null {
-  if (run.count <= 3) return null;
-  return `${run.count} ${run.state === 'landed' ? 'merged' : STATES[run.state].word.toLowerCase()}`;
+  return run.state === 'landed' && run.count > 3 ? `${run.count} merged` : null;
 }
 
 /** A tick's relation to the selected cell (spec §5.2). Same values as `StripMark` in lib/mission-task-strip.ts. */

@@ -34,10 +34,10 @@ describe('stripRuns (small strip aggregation)', () => {
     expect(stripRunColumns([{ state: 'landed', count: 9 }, { state: 'running', count: 1 }])).toBe('9fr minmax(6px,1fr)');
   });
 
-  it('labels only wide segments', () => {
+  it('labels only wide merged segments; a hatch carries no text', () => {
     expect(stripRunLabel({ state: 'landed', count: 9 })).toBe('9 merged');
-    expect(stripRunLabel({ state: 'queued', count: 4 })).toBe('4 queued');
-    expect(stripRunLabel({ state: 'queued', count: 3 })).toBeNull();
+    expect(stripRunLabel({ state: 'landed', count: 3 })).toBeNull();
+    expect(stripRunLabel({ state: 'queued', count: 6 })).toBeNull();
   });
 });
 
