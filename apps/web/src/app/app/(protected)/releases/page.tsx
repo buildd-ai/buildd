@@ -41,7 +41,7 @@ export default async function ReleasesPage({
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <ReleasesHeader />
         <p className="text-body text-text-secondary">
-          No team yet. <Link href="/app/settings/team/new" className="text-text-primary underline underline-offset-2">Create a team</Link> to track releases.
+          No team. <Link href="/app/settings/team/new" className="text-text-primary underline underline-offset-2">Create a team</Link> to track releases.
         </p>
       </div>
     );
@@ -168,7 +168,7 @@ export default async function ReleasesPage({
       <ReleasesHeader countLine={allReleases.length > 0 ? releaseCountLine(allReleases.length, Number(total)) : undefined} />
 
       {allReleases.length === 0 ? (
-        <p className="text-body text-text-secondary">No releases yet.</p>
+        <p className="text-body text-text-secondary">No releases.</p>
       ) : (
         <>
           {/* The next release: the one L2 card on the page, everything below is

@@ -68,7 +68,7 @@ export default async function InitiativesListPage() {
       </div>
 
       {cards.length === 0 ? (
-        <p className="text-body text-text-secondary">No initiatives yet. An initiative groups the missions behind one goal.</p>
+        <p className="text-body text-text-secondary">No initiatives. An initiative groups the missions behind one goal.</p>
       ) : (
         <InitiativeList groups={groups} />
       )}

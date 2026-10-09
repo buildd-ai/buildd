@@ -20,7 +20,7 @@ import { AskBanner } from './MissionBoard';
 import { SectionLabel, taskSheetHref, useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import {
-  MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
+  MissionVisualAsk, WithMissionVisualReview,
   type MissionVisualReviewValue, type VisualReviewLayout,
 } from './MissionVisualReview';
 
@@ -51,6 +51,8 @@ export interface MissionFeedLayoutProps extends BoardLinkContext {
   visual?: VisualReviewModel | null;
   /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
   reviewLayout?: VisualReviewLayout;
+  /** The mission's notes and the composer that asks the organizer (MissionNotesSheet). */
+  notesEntry?: ReactNode;
 }
 
 export default function MissionFeedLayout(props: MissionFeedLayoutProps) {
@@ -62,7 +64,7 @@ export default function MissionFeedLayout(props: MissionFeedLayoutProps) {
 }
 
 function FeedView({
-  model: serverModel, notes = [], completionText = null, timeZone = null, notice, visual: _visual, reviewLayout: _layout, review, ...link
+  model: serverModel, notes = [], completionText = null, timeZone = null, notice, visual: _visual, reviewLayout: _layout, notesEntry, review, ...link
 }: MissionFeedLayoutProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
   const now = useNow(model.now, 15_000, !model.complete);
@@ -82,14 +84,6 @@ function FeedView({
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => <AskBanner key={id} task={model.tasks[id]} now={now} />)}
       {review && <MissionVisualAsk review={review} board={model} className="mt-4" />}
-      {review && review.model.phase !== 'off' && (
-        <section data-testid="feed-visual-section" className="mt-[22px]">
-          <SectionLabel className="mb-2 block">Screens</SectionLabel>
-          <div className="border-2 border-border-strong bg-card p-3.5">
-            <MissionVisualTray review={review} board={model} columns="fit" hideLine besideAsk />
-          </div>
-        </section>
-      )}
 
       <section data-testid="mission-event-feed" className="mt-6 max-w-[720px]">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -101,6 +95,7 @@ function FeedView({
             items={[{ value: 'changes', label: 'Changes' }, { value: 'everything', label: 'Everything' }]}
           />
         </div>
+        {notesEntry && <div data-testid="feed-notes-entry" className="mb-3">{notesEntry}</div>}
         {history.length === 0 && <p data-testid="feed-empty" className="text-body text-text-muted">Nothing has changed yet.</p>}
         {history.map((d, di) => (
           <div key={d.key}>

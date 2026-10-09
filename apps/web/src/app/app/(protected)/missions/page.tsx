@@ -170,7 +170,7 @@ export default async function MissionsPage({
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-body text-text-secondary">No missions yet. A mission groups the tasks behind one goal.</p>
+        <p className="text-body text-text-secondary">No missions. A mission groups the tasks behind one goal.</p>
       ) : (
         <MissionGrid rows={rows} slots={{ live: activeSeats, max: maxSeats }} now={now} />
       )}

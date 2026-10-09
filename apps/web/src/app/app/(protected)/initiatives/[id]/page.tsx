@@ -138,7 +138,7 @@ export default async function InitiativeDetailPage({ params }: { params: Promise
           </div>
         </div>
         {card.missions.length === 0 ? (
-          <p className="text-body text-text-secondary">No missions yet.</p>
+          <p className="text-body text-text-secondary">No missions in this initiative.</p>
         ) : (
           <div className="border-b border-border-default">
             <InitiativeMissionLines missions={card.missions} detail />
