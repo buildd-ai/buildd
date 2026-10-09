@@ -2192,3 +2192,63 @@ describe('createReviewerTask — role, work-kind and inherited phase', () => {
     expect(insertedTask?.missionPhaseLabel).toBeNull();
   });
 });
+
+// ── Structured escalation output ─────────────────────────────────────────────
+
+describe('REVIEWER_TASK_OUTPUT_SCHEMA — blockers', () => {
+  it('declares optional structured blockers with a closed kind vocabulary', () => {
+    const blockers = (REVIEWER_TASK_OUTPUT_SCHEMA.properties as any).blockers;
+    expect(blockers.type).toBe('array');
+    expect(blockers.items.properties.kind.enum).toContain('migration');
+    expect(blockers.items.required).toEqual(['kind', 'text']);
+    expect(REVIEWER_TASK_OUTPUT_SCHEMA.required).not.toContain('blockers');
+    expect(validatesAgainstReviewerSchema({ verdict: 'escalate', confidence: 0.5, summary: 's' })).toBe(true);
+  });
+
+  it('policy suggestions are server-owned, not model output', () => {
+    expect(REVIEWER_TASK_OUTPUT_SCHEMA.properties).not.toHaveProperty('policySuggestions');
+  });
+
+  it('asks for a one-sentence recommendation', () => {
+    const desc = (REVIEWER_TASK_OUTPUT_SCHEMA.properties as any).recommendation.description as string;
+    expect(desc).toContain('140');
+    expect(desc.toLowerCase()).toContain('one imperative sentence');
+  });
+});
+
+describe('createReviewerTask — policy suggestions', () => {
+  const params = (policyConfig?: unknown) => ({
+    workspaceId: 'ws-1',
+    originalTaskId: 'original-ps',
+    originalTask: { title: 'Policy suggestion', description: null, backend: 'claude', missionId: null },
+    worker: { branch: 'buildd/ps' },
+    prNumber: 46,
+    prUrl: 'https://example.test/o/r/pull/46',
+    headSha: 'ps46',
+    reviewerRole: 'reviewer',
+    installationId: 1,
+    repoFullName: 'example/project',
+    prFiles: [
+      { filename: 'apps/api/package.json', status: 'modified', additions: 1, deletions: 1 },
+      { filename: 'apps/api/src/handler.ts', status: 'modified', additions: 1, deletions: 1 },
+    ],
+    policyConfig,
+  });
+
+  it('records uncovered risk-adjacent paths on the reviewer task and keeps them out of escalationReason', async () => {
+    insertedTask = undefined;
+    await createReviewerTask(params({ preset: 'balanced', riskClasses: [] }) as any);
+    expect((insertedTask?.context as any).policySuggestions).toEqual([
+      { path: 'apps/api/package.json', class: 'dependency_bump' },
+    ]);
+    expect(String(insertedTask?.description)).toContain('apps/api/package.json');
+    expect(String(insertedTask?.description)).not.toContain('Include in your escalationReason');
+    expect(String(insertedTask?.description)).not.toContain('include any proposed policy additions');
+  });
+
+  it('leaves no key when there is no policy to be uncovered by', async () => {
+    insertedTask = undefined;
+    await createReviewerTask(params() as any);
+    expect((insertedTask?.context as any).policySuggestions).toBeUndefined();
+  });
+});

@@ -40,7 +40,7 @@ afterEach(() => {
   container.remove();
 });
 
-const review = { subjectKey: 'review', chip: 'REVIEW' as const, prNumber: 7, workspaceId: 'ws-1', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Review PR', reason: 'Review required' } };
+const review = { subjectKey: 'review', chip: 'REVIEW' as const, prNumber: 7, workspaceId: 'ws-1', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', humanReview: { label: 'Review PR', reason: 'Protected paths changed.', decision: 'Protected paths changed.', blockers: [] } };
 const waiting: WaitingTask = { id: 'task-waiting', title: 'Pick the rollout order', workspaceId: 'ws-1', missionId: null, waitingFor: { type: 'question', prompt: 'Ship to canary first?', options: ['Yes', 'No'] } };
 
 function mount(tasks: WaitingTask[], questions: Parameters<typeof deriveHomeAttention>[0]['questions'] = []) {

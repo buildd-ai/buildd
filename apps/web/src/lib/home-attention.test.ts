@@ -151,9 +151,10 @@ describe('Needs You card contract', () => {
     }
   });
   it('replays a real human decision as exactly one concrete card', () => {
-    const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b', undefined, 'REVIEW'), prNumber: 43, prUrl: 'https://example.test/pull/43' }].map(i => ({ ...i, humanReview: { reason: 'Review required · protected migration paths', label: 'Review PR' } as any })), missions: [], questions: [], held: [] });
+    const items = deriveHomeAttention({ queue: [pr('a', undefined, 'REVIEW'), { ...pr('b', undefined, 'REVIEW'), prNumber: 43, prUrl: 'https://example.test/pull/43' }].map(i => ({ ...i, humanReview: { reason: 'Protected migration paths changed. The full reasoning follows.', decision: 'Approve the migration.', blockers: [], label: 'Review PR' } as any })), missions: [], questions: [], held: [] });
     expect(items).toHaveLength(2);
-    expect(items[0].sentence).toBe('Review required · protected migration paths');
+    // The card's sentence is the decision line, never the full reasoning.
+    expect(items[0].sentence).toBe('Approve the migration.');
     expect(items[0].primary?.href).toBe('https://example.test/o/r/pull/42/files');
   });
   it('summarises mixed action types instead of calling everything a merge', () => {
