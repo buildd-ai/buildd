@@ -5,6 +5,9 @@
  * follows the same verdict, so the owner is never paged for a PR the inbox
  * says Buildd is handling.
  *
+ * The push is the state change, so this is where the look happens
+ * (`decide: true`): Jev is asked here, after the event, never on a page load.
+ *
  * Fails toward paging: no verdict (the PR is not an inbox candidate yet, the
  * read failed, the gate did not run) pages exactly as before.
  */
@@ -23,7 +26,7 @@ export interface EscalationPageDeps {
 
 async function defaultLoadVerdicts(workspaceId: string, prNumber: number): Promise<EscalationVerdict[]> {
   const { loadPrAttention } = await import('./pr-attention');
-  const attention = await loadPrAttention([workspaceId], { prNumbers: [prNumber] });
+  const attention = await loadPrAttention([workspaceId], { prNumbers: [prNumber], gate: { decide: true, enqueue: undefined } });
   return attention.openPrWorkers.flatMap(w => {
     const v = attention.gateVerdicts.get(w.id);
     return v ? [v] : [];

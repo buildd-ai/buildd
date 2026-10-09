@@ -116,8 +116,8 @@ describe('escalationRule: ordering', () => {
     expect(escalationRule(base({ why: 'landing_handoff', ci: 'green', handoffCause: 'refresh_exhausted' }))).toMatchObject({ owner: 'buildd', action: 'retry_landing' });
   });
 
-  it('conflict fixes used up is not a rule: Jev decides', () => {
-    expect(escalationRule(base({ conflict: true, why: 'conflict_fixes_spent' }))).toBeNull();
+  it('conflict fixes used up, with no reviewer concern to weigh, is the person\'s by rule (no Jev call)', () => {
+    expect(escalationRule(base({ conflict: true, why: 'conflict_fixes_spent' }))).toMatchObject({ owner: 'person', by: 'rule' });
   });
 
   it('a reviewer escalation on a green, ordinary PR is Jev\'s', () => {
@@ -132,6 +132,27 @@ describe('escalationRule: ordering', () => {
   it('a security concern in the escalation goes to a person; a passing mention does not', () => {
     expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Security concern: the token is logged' }))).toMatchObject({ owner: 'person', rail: 'security' });
     expect(escalationRule(base({ why: 'reviewer_escalated', detail: 'Adds a settings page; no auth changes' }))).toBeNull();
+  });
+});
+
+describe('Jev only on a concern', () => {
+  it.each([
+    ['human_tier'], ['approved_needs_merge'], ['landing_handoff'], ['kernel_needs_you'], ['conflict_fixes_spent'],
+  ] as const)('%s with no rule is the person\'s by rule, with the reason it reached them', why => {
+    const v = escalationRule(base({ why, ci: 'green' }));
+    expect(v).toMatchObject({ owner: 'person', by: 'rule' });
+    expect(v!.reason.length).toBeGreaterThan(0);
+  });
+
+  it('only a reviewer escalation with no rule answer reaches Jev', () => {
+    expect(escalationRule(base({ why: 'reviewer_escalated', ci: 'green' }))).toBeNull();
+    expect(escalationRule(base({ why: 'review_exhausted', ci: 'green' }))).toBeNull();
+  });
+
+  it('Jev answers in under a second (backtest p50 ~0.2 s)', async () => {
+    const { ESCALATION_GATE_DECISION_TIMEOUT_MS } = await import('../escalation-gate');
+    expect(ESCALATION_GATE_DECISION_TIMEOUT_MS).toBeLessThanOrEqual(1_000);
+    expect(ESCALATION_GATE_DECISION_TIMEOUT_MS).toBeGreaterThanOrEqual(500);
   });
 });
 
