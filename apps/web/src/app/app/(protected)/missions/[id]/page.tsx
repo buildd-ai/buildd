@@ -12,7 +12,7 @@ import { getDeliveryViewsForTasks, replacedFailedTaskIds } from '@/lib/workflow/
 import { ownerDeliveryDisplays } from '@/lib/workflow/delivery-display';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
 import { isSurfaceAuditTask, surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
@@ -22,10 +22,10 @@ import { isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
 import { describeLastCheck, selectOrganizerRuns } from '@/lib/mission-checkins';
 import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { buildSteeringEvents, countOrchestratorPlans, orchestratorSummary, describeOrchestratorRun, extractRunSummary } from '@/lib/mission-steering-events';
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import MissionVerifiedPill from './MissionVerifiedPill';
 import MissionOverflowMenu from './MissionOverflowMenu';
+import MissionNoticeSlot, { noticeNeedsPerson } from './MissionNoticeSlot';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
@@ -37,8 +37,6 @@ import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
 import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
-import type { BookkeepingTask } from './CondensedTimeline';
-import { partitionBookkeeping } from '@/lib/attempt-strip';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import { buildMissionFeedView, type MissionFeedViewTask } from './mission-feed-view';
 import { pulseDoneCounts } from '@/lib/mission-pulse';
@@ -46,20 +44,17 @@ import { MISSION_DETAIL_WITH, TASK_DIGEST_SELECTION, taskDigestWhere, indexTaskD
 import MissionCheckIns from './MissionCheckIns';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
 import QuietHoursConfig from './QuietHoursConfig';
-import HeartbeatTimeline from './HeartbeatTimeline';
 import MissionBackendSelector from './MissionBackendSelector';
 import MissionMonitoringToggle from './MissionMonitoringToggle';
 import ScheduleWizard from './ScheduleWizard';
 import MissionConfig from './MissionConfig';
 import { MissionNotesSheet } from './MissionFeed';
-import MissionSecondaryPanel from './MissionSecondaryPanel';
 import { mastheadBack, parseMissionOrigin } from './MissionDetailView';
 import MissionLayoutShell, { MissionBoardHeader, MissionLayoutTabs } from './MissionLayoutShell';
 import FlowTimeline from './FlowTimeline';
 import { expectedMinutesFromPredictions, sameFilesFromRows } from '@/lib/flow-timeline';
 import MissionOverview from './MissionOverview';
 import MissionFeedLayout from './MissionFeedLayout';
-import MissionSheetRow from './MissionSheetRow';
 import { missionSummaryLine } from '@/lib/mission-summary-line';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -75,12 +70,11 @@ import { MissionSurfaceAuditWaiverProvider } from './MissionSurfaceAuditWaiver';
 import { loadSurfaceAuditWaiver } from '@/lib/mission-surface-audit-gate';
 import MissionVisualReviewSetting from './MissionVisualReviewSetting';
 import MissionScreensRow from './MissionScreensRow';
-import MissionVisualReviewAction from './MissionVisualReviewAction';
 import MissionRecordsSheet from './MissionRecordsSheet';
 import { MissionReleaseSection } from './MissionReleaseSection';
 import { buildDeliverySteps, deliveryReleaseInput, missionPrCount, missionTrunkMergedAt } from '@/lib/mission-delivery';
 import { classifyReleaseState } from '@/lib/release-state';
-import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
+import { taskPageHref } from '@/lib/mission-task-href';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
@@ -89,7 +83,7 @@ import { getLinksForEntity } from '@buildd/core/external-links';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
-import { DisplayTimezoneProvider, ZonedTime } from '@/components/DisplayTimezone';
+import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { getTeamTimezoneSetting } from '@/lib/team-timezone';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
@@ -473,13 +467,6 @@ export default async function MissionDetailPage({
   // Configuration from schedule template
   const configModel = (templateContext?.model as string) || null;
 
-  // Settings panel summary — non-default values for the collapsed header
-  const configSummaryParts: string[] = [];
-  if (configModel) configSummaryParts.push(configModel.replace(/^claude-/, '').replace(/-latest$/, ''));
-  if (mission.maxConcurrentTasks != null) configSummaryParts.push(`${mission.maxConcurrentTasks} concurrent`);
-  if (costBudgetUsd != null) configSummaryParts.push(`$${parseFloat(costBudgetUsd).toFixed(0)} budget`);
-  const configSummary = configSummaryParts.length > 0 ? configSummaryParts.join(', ') : null;
-
   // Organizer runs from every trigger (event, wake, check-in, manual, retry),
   // newest first, labelled by tasks.context.triggerSource.
   const organizerRuns = selectOrganizerRuns(
@@ -540,29 +527,6 @@ export default async function MissionDetailPage({
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
   );
 
-  // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
-  const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
-
-  // U8: attempts sit on their parent task's row, so the footer keeps only
-  // genuine housekeeping —
-  // orchestration planning runs, plus any attempt whose parent row is not
-  // rendered (dropping those would delete the run's only published trace).
-  const renderedTaskIds = new Set(timelineTasks.map(t => t.id));
-  const { footer: footerTasks } = partitionBookkeeping(allTasks, renderedTaskIds);
-
-  // Collect bookkeeping tasks for the expandable footer
-  const bookkeepingTasks: BookkeepingTask[] = footerTasks.map(t => {
-    const lw = (t.workers as any[])?.[0];
-    return {
-      id: t.id,
-      title: t.title,
-      taskUpdatedAt: t.updatedAt.toISOString(),
-      latestWorker: lw ? { prUrl: lw.prUrl ?? null, mergedAt: lw.mergedAt ? String(lw.mergedAt) : null } : null,
-      status: t.status,
-      resultSummary: extractRunSummary(digestOf(t.id).result),
-    };
-  });
-
   // Verified step: a raw pass count, not `deriveCriteriaGatePresentation`'s
   // label/tone. `passed: null` when the gate has never been evaluated, so the
   // step says `?/N` rather than misreporting `0/N`.
@@ -588,33 +552,6 @@ export default async function MissionDetailPage({
     ) || []
   ) || [];
 
-  // ── Flight strip navigator (docs/design/mission-flight-strip.md §7) ────────
-  // Bars come from deliverable (taskClass='work') spans only — an orchestrator
-  // planning task has no lane and would otherwise render as a misclassified
-  // BUILD bar. Steering marks are supplied separately, on the options bag.
-  const flightStripTasks = timelineTasks.map(t => ({
-    id: t.id, status: t.status, taskClass: t.taskClass, roleSlug: t.roleSlug, kind: t.kind, title: t.title,
-    creationSource: t.creationSource, mode: t.mode,
-  }));
-  const flightStripWorkers = timelineTasks.flatMap(t =>
-    ((t.workers ?? []) as any[]).map(w => ({
-      id: w.id, taskId: t.id, status: w.status, startedAt: w.startedAt, completedAt: w.completedAt,
-      updatedAt: w.updatedAt, exitCause: w.exitCause,
-    }))
-  );
-  const steeringEvents = buildSteeringEvents(
-    allTasks.map(t => ({
-      id: t.id, mode: t.mode, creationSource: t.creationSource,
-      workers: ((t.workers ?? []) as any[]).map(w => ({ turns: w.turns, startedAt: w.startedAt })),
-    })),
-    humanSteeringNotes,
-  );
-  const flightStripData = computeMissionFlightStrip(flightStripTasks, flightStripWorkers, {
-    missionCompletedAt: (mission as any).completedAt ?? null,
-    steeringEvents,
-  });
-  const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
-  const orchestratorLabel = orchestratorSummary(orchestratorPlans, (mission.schedule as { totalRuns?: number | null; totalChecks?: number | null } | null) ?? null);
   const missionRecords = selectMissionRecords(allArtifacts);
 
   // Goal criteria — hoisted so the header's Verified pill and its bottom
@@ -808,37 +745,33 @@ export default async function MissionDetailPage({
   const shippedStep = deliverySteps.find(s => s.key === 'shipped');
   const visualStep = deliverySteps.find(s => s.key === 'visual') ?? null;
   const missionPrCard = shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: feedCounts.total > 0 && feedCounts.done >= feedCounts.total }) && missionIntegrationPr ? (
-    // Mission integration PR (Option A′) — the mission's review gate, and a
-    // different object from the task PRs that fed the branch.
-    <div className={`card p-3 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
-            <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
-              {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
-            </span>
-            <span className="text-[11px] md:text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
-          </div>
-          <p className="text-[13px] text-text-secondary">
-            {missionIntegrationPr.state === 'not_opened'
-              ? `Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.`
-              : missionIntegrationPr.state === 'merged'
-                ? `This mission's work reached the target branch through one PR from its integration branch.`
-                : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
-          </p>
-        </div>
-        {missionIntegrationPr.prUrl && (
-          <a
-            href={missionIntegrationPr.prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="shrink-0 text-[12px] font-mono text-text-secondary hover:text-text-primary transition-colors"
-          >
-            #{missionIntegrationPr.prNumber} →
-          </a>
-        )}
-      </div>
+    // Mission integration PR (Option A′): the mission's review gate, and a
+    // different object from the task PRs that fed the branch. One line.
+    <div data-testid="mission-pr-line" className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <p className="min-w-0 text-body text-text-secondary">
+        <span className="font-semibold text-text-primary">Mission PR</span>
+        <span className={`ml-2 font-mono text-meta ${missionIntegrationPr.state === 'merged' ? 'text-status-success' : missionIntegrationPr.state === 'closed' ? 'text-status-error' : 'text-text-muted'}`}>
+          {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
+        </span>
+        <span className="ml-2 font-mono text-meta text-text-muted [overflow-wrap:anywhere]">{missionIntegrationPr.branch}</span>
+        <span className="mt-0.5 block">
+          {missionIntegrationPr.state === 'not_opened'
+            ? 'Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.'
+            : missionIntegrationPr.state === 'merged'
+              ? "This mission's work reached the target branch through one PR from its integration branch."
+              : "The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only."}
+        </span>
+      </p>
+      {missionIntegrationPr.prUrl && (
+        <a
+          href={missionIntegrationPr.prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 font-mono text-meta text-text-secondary hover:text-text-primary"
+        >
+          #{missionIntegrationPr.prNumber} →
+        </a>
+      )}
     </div>
   ) : null;
 
@@ -864,7 +797,7 @@ export default async function MissionDetailPage({
 
   const budgetDetail = budgetUsd == null ? null : mission.status === 'budget_exhausted' ? (
     <div className="flex items-start justify-between gap-3">
-      <p className="text-[12px] text-text-secondary">
+      <p className="text-body text-text-secondary">
         {spendUsd != null
           ? `${formatEstimatedUsd(spendUsd, 4)} of $${budgetUsd.toFixed(2)} budget spent. No new tasks will start.`
           : `Budget of $${budgetUsd.toFixed(2)} reached. No new tasks will start.`}
@@ -931,15 +864,11 @@ export default async function MissionDetailPage({
           evidence: failingState?.evidence ?? null,
         });
         return (
-          <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
-            <div className="flex items-start gap-2">
-              <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Decision needed
-              </span>
-              <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
-                {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
-              </span>
-            </div>
+          <div data-testid="mission-decision">
+            <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
+              <span className="font-semibold text-accent-text">Decision needed. </span>
+              {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
+            </p>
             <MissionDecisionSheet
               missionId={id}
               goalCriteria={goalCriteria}
@@ -954,14 +883,16 @@ export default async function MissionDetailPage({
         );
       })();
 
+  // The mission's settings: rendered inside the ⋯ sheet, the one place the
+  // mission is configured (MissionOverflowMenu).
   const settings = (
-    <MissionSecondaryPanel variant="row" configSummary={configSummary}>
+    <>
       {/* Where this mission sits, and the chips that used to crowd the header. */}
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-text-muted">
         {mission.workspace && !isSystemWorkspace(mission.workspace.name) && (
           <span>
             Workspace:{' '}
-            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-accent-text hover:underline">
+            <Link href={`/app/workspaces/${mission.workspace.id}`} className="text-text-primary underline underline-offset-4">
               {displayWorkspaceName(mission.workspace.name)}
             </Link>
           </span>
@@ -1013,7 +944,7 @@ export default async function MissionDetailPage({
 
       {!['completed', 'archived'].includes(mission.status) && (
         <div>
-          <h2 className="section-label mb-2">Agent backend</h2>
+          <h3 className="mb-2 text-body font-semibold text-text-primary">Agent backend</h3>
           <MissionBackendSelector missionId={id} initialBackend={((mission as { defaultBackend?: 'claude' | 'codex' | null }).defaultBackend) ?? null} />
           <p className="text-[11px] text-text-muted mt-1.5">Default engine for this mission&apos;s tasks. Auto uses the role or workspace default.</p>
         </div>
@@ -1029,12 +960,7 @@ export default async function MissionDetailPage({
         auditWaiver={showAuditWaiver ? auditWaiverProps : null}
       />
 
-      {/* Organizer runs, from every trigger */}
-      {organizerRuns.length > 0 && (
-        <HeartbeatTimeline
-          runs={organizerRuns.map(r => ({ ...r, result: digestOf(r.id).result }))}
-        />
-      )}
+      {/* Organizer runs are in History › Everything, not repeated here. */}
 
       {isHeartbeat && (
         <>
@@ -1053,8 +979,8 @@ export default async function MissionDetailPage({
       )}
 
       {!['completed', 'archived'].includes(mission.status) && (
-        <div className="card p-4">
-          <h2 className="section-label mb-4">Configuration</h2>
+        <div>
+          <h3 className="mb-3 text-body font-semibold text-text-primary">Configuration</h3>
           <MissionConfig
             missionId={id}
             workspaceId={mission.workspaceId}
@@ -1067,7 +993,7 @@ export default async function MissionDetailPage({
           {mission.workspaceId && (
             <div className="mt-4 pt-3 border-t border-border-default">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] text-text-muted uppercase tracking-wider font-semibold">Merge Policy</span>
+                <span className="text-body font-semibold text-text-primary">Merge policy</span>
               </div>
               <MissionMergePolicyRow
                 missionId={id}
@@ -1089,15 +1015,15 @@ export default async function MissionDetailPage({
       {/* Diagnostics — steering-cost stats live here, not in the header
           chip row (addendum D2: no internal jargon on cards or headers).
           Collapsed by default: this is debug detail, not a primary setting. */}
-      <details className="card p-4 group" data-testid="mission-diagnostics">
-        <summary className="cursor-pointer text-[11px] text-text-muted list-none">
+      <details className="group border-t border-border-default pt-3" data-testid="mission-diagnostics">
+        <summary className="min-h-11 cursor-pointer list-none text-body text-text-secondary md:min-h-0">
           <span aria-hidden className="inline-block w-3 group-open:rotate-90 transition-transform">▸</span> Advanced
         </summary>
         <div className="mt-2">
           <MissionAuthorshipStats health={authorshipHealth} />
         </div>
       </details>
-    </MissionSecondaryPanel>
+    </>
   );
 
   // ── Board / Flow (MissionBoard, FlowTimeline) ─────────────────────────────
@@ -1140,8 +1066,15 @@ export default async function MissionDetailPage({
   // one sentence and its one action above the columns.
   // The integration PR card and the review summary ride along on every layout.
   const quietState = ['running', 'active', 'complete'].includes(displayState);
+  const budgetExhausted = budgetUsd != null && mission.status === 'budget_exhausted';
   const boardNotice = quietState && !missionPrCard && !reviewSummary ? null : (
-    <>
+    <MissionNoticeSlot
+      needsYou={!quietState && noticeNeedsPerson({
+        displayState,
+        budgetExhausted,
+        focusKind: missionAnswer?.situation.focus?.kind ?? null,
+      })}
+    >
       {!quietState && missionAnswer && (
         <MissionSituationBlock
           missionId={id}
@@ -1151,10 +1084,10 @@ export default async function MissionDetailPage({
         />
       )}
       {!quietState && decisionBlock}
-      {!quietState && budgetUsd != null && mission.status === 'budget_exhausted' && budgetDetail}
-      {missionPrCard && <div className="mt-3">{missionPrCard}</div>}
-      {reviewSummary && <div className="mt-3">{reviewSummary}</div>}
-    </>
+      {!quietState && budgetExhausted && budgetDetail}
+      {missionPrCard}
+      {reviewSummary}
+    </MissionNoticeSlot>
   );
   const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
   // The Landed strip's drawer: the tasks' actions run in this workspace, and
@@ -1183,9 +1116,10 @@ export default async function MissionDetailPage({
   );
   // Chat is how you ask about work: opens a conversation with this mission docked.
   const askAbout = <AskAboutLink kind="mission" id={id} teamId={mission.teamId} workspaceId={mission.workspaceId} />;
-  // The mission's visual review as a mission command (never the task composer):
-  // on any open mission with a workspace to run it in.
-  const visualReviewAction = !isTerminal && mission.workspaceId ? <MissionVisualReviewAction missionId={id} initialOpen={visualReviewParam === '1'} /> : null;
+  // The mission's visual review as a mission command (never the task composer),
+  // started from ⋯ on any open mission with a workspace to run it in; once an
+  // audit exists the footer's Screens row is where it is reviewed.
+  const visualReviewEntry = !isTerminal && mission.workspaceId ? { initialOpen: visualReviewParam === '1' } : null;
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1199,6 +1133,8 @@ export default async function MissionDetailPage({
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
+      visualReview={visualReviewEntry}
+      settings={settings}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);
@@ -1222,64 +1158,15 @@ export default async function MissionDetailPage({
         allArtifacts={artifactItems}
         initialArtifactId={initialOpenArtifactId ?? null}
       />
-      <MissionNotesSheet missionId={id} />
-      {settings}
     </>
   );
-  // Orchestrator runs share one task title ("Mission: <title>"); name each
-  // row by what it did instead. Only planning runs get relabeled (by mode,
-  // never by title prefix: task-class-invariants); other bookkeeping rows
-  // such as a friction report keep their own title. Position is by time.
-  const planningRunIds = new Set(footerTasks.filter(t => t.mode === 'planning').map(t => t.id));
-  const orchestratorRunIds = bookkeepingTasks
-    .filter(t => planningRunIds.has(t.id))
-    .slice()
-    .sort((a, b) => a.taskUpdatedAt.localeCompare(b.taskUpdatedAt))
-    .map(t => t.id);
-  const firstRunId = orchestratorRunIds[0];
-  const lastRunId = orchestratorRunIds[orchestratorRunIds.length - 1];
-
-  const orchestratorRow = (orchestratorPlans > 0 || bookkeepingTasks.length > 0) ? (
-    <MissionSheetRow label={orchestratorLabel} title="Orchestrator" testId="mission-orchestrator-row" sheetTestId="mission-orchestrator-sheet">
-      {bookkeepingTasks.length === 0 ? (
-        <p className="font-mono text-[12px] text-text-muted">No orchestrator runs to show.</p>
-      ) : (
-        <ul>
-          {bookkeepingTasks.map(t => {
-            const isRun = t.title.startsWith('Mission:');
-            const rowLabel = isRun
-              ? describeOrchestratorRun(
-                  { status: t.status ?? '', resultSummary: t.resultSummary },
-                  { isFirst: t.id === firstRunId, isLast: t.id === lastRunId },
-                  isTerminal,
-                )
-              : t.title;
-            return (
-              <li key={t.id}>
-                {/* data-task-id: the task sheet opens on top, with Back to this list. */}
-                <a
-                  href={missionTaskHref({ missionId: id, taskId: t.id, from: boardLink.from, initiativeId: boardLink.initiativeId, mode: 'sheet' })}
-                  data-task-id={t.id}
-                  className="flex min-h-11 items-center gap-2 border-b border-border-default font-mono text-[12px] text-text-secondary hover:text-text-primary"
-                >
-                  <span className="min-w-0 flex-1 truncate">{rowLabel}</span>
-                  <ZonedTime value={t.taskUpdatedAt} format="date" className="shrink-0 text-[11px] text-text-muted" />
-                  <span aria-hidden="true">›</span>
-                </a>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </MissionSheetRow>
-  ) : undefined;
   const boardHeader = (content: React.ReactNode) => (
     <MissionBoardHeader
       back={back}
       title={mission.title}
       chip={stateChip}
       verified={verifiedPill}
-      actions={<>{askAbout}{visualReviewAction}{overflowMenu}</>}
+      actions={<>{askAbout}{overflowMenu}</>}
       goal={goalLine}
       description={mission.description || !isTerminal ? <MissionDescription missionId={id} initialDescription={mission.description} readonly={isTerminal} defaultExpanded /> : undefined}
       serverNow={renderedAt}
@@ -1290,7 +1177,6 @@ export default async function MissionDetailPage({
       {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {content}
       <div data-testid="mission-board-footer" className="mt-10">
-        {orchestratorRow}
         {footerRows}
       </div>
     </MissionBoardHeader>
@@ -1333,6 +1219,7 @@ export default async function MissionDetailPage({
             completionText={completionText}
             notice={boardNotice}
             visual={boardVisual}
+            notesEntry={<MissionNotesSheet missionId={id} />}
             {...boardLink}
           />,
         )}

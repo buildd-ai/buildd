@@ -23,6 +23,7 @@ import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/
 import { prShipState } from '@buildd/core/pr-shipped';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import type { StateKey } from '@/components/ui/states';
+import { displayTaskTitle } from './task-title';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -400,8 +401,8 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   } else kind = focus?.delivery.kind ?? 'landed';
 
   if (!exception && focus) {
-    if (focus.delivery.kind === 'notlanded') exception = { tone: 'error', text: `${focus.title} finished but did not land` };
-    else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${focus.title} could not run; it retries on its own` };
+    if (focus.delivery.kind === 'notlanded') exception = { tone: 'error', text: `${displayTaskTitle(focus.title)} finished but did not land` };
+    else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${displayTaskTitle(focus.title)} could not run; it retries on its own` };
     else if (kind === 'waiting') exception = { tone: 'muted', text: focus.delivery.waitingOn === 'dependency' ? 'Waiting on earlier work, not on you' : 'Waiting on capacity, not on you' };
   }
 
@@ -432,7 +433,8 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
 const REPAIR_WHY = { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' } as const;
 
 function describe(kind: DeliveryKind, focus: MissionDelivery['tasks'][number] | null, m: MissionDeliveryInput, rounds: number): { evidence: string; next: string } {
-  const t = focus?.title ?? 'the next task';
+  // The display title (no `type(scope):` prefix): this sentence is read on every list.
+  const t = focus?.title ? displayTaskTitle(focus.title) : 'the next task';
   const d = focus?.delivery;
   switch (kind) {
     case 'landing':

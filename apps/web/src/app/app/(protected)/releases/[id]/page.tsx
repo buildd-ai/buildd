@@ -7,32 +7,18 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { deriveReleaseAttributionState } from '@/lib/release-attribution-state';
+import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
+import Eyebrow from '@/components/ui/Eyebrow';
+import type { StateTone } from '@/components/ui/states';
+import { isSupersededRelease, releasePill, supersededById } from '../release-display';
 import ReleaseAutoRefresh from './ReleaseAutoRefresh';
 
 export const dynamic = 'force-dynamic';
 
-const STATE_BADGE: Record<string, { label: string; cls: string }> = {
-  healthy: { label: 'Healthy', cls: 'text-status-success border-status-success/30' },
-  deploying: { label: 'Deploying', cls: 'text-status-info border-status-info/30' },
-  dispatched: { label: 'Dispatched', cls: 'text-status-info border-status-info/30' },
-  failed: { label: 'Failed', cls: 'text-status-error border-status-error/30' },
-  degraded: { label: 'Degraded', cls: 'text-status-warning border-status-warning/30' },
-  pending_external: { label: 'Pending', cls: 'text-text-muted border-border-default' },
-};
-
-const CI_BADGE: Record<string, { label: string; cls: string }> = {
-  passing: { label: 'CI Passing', cls: 'text-status-success border-status-success/30' },
-  failing: { label: 'CI Failing', cls: 'text-status-error border-status-error/30' },
-  pending: { label: 'CI Pending', cls: 'text-status-warning border-status-warning/30' },
-};
-
-const TASK_STATUS_CLS: Record<string, string> = {
-  completed: 'text-status-success',
-  failed: 'text-status-error',
-  in_progress: 'text-status-info',
-  pending: 'text-text-muted',
-  assigned: 'text-status-info',
-  cancelled: 'text-text-muted',
+const CI_PILL: Record<string, { tone: StateTone; label: string }> = {
+  passing: { tone: 'ok', label: 'CI passing' },
+  failing: { tone: 'bad', label: 'CI failing' },
+  pending: { tone: 'q', label: 'CI pending' },
 };
 
 function relativeTime(iso: string): string {
@@ -122,8 +108,17 @@ export default async function ReleaseDetailPage({
     ? Math.max(0, Math.floor((WATCH_WINDOW_MS - (Date.now() - new Date(String(release.healthyAt)).getTime())) / 60000))
     : 0;
 
-  const stateBadge = STATE_BADGE[release.state] ?? { label: release.state, cls: 'text-text-muted border-border-default' };
-  const ciBadge = release.ciStateAtDispatch ? CI_BADGE[release.ciStateAtDispatch] : null;
+  const pill = releasePill(release);
+  const ciPill = release.ciStateAtDispatch ? CI_PILL[release.ciStateAtDispatch] ?? null : null;
+  const superseded = isSupersededRelease(release);
+  const successorId = superseded ? supersededById(release.failureReason) : null;
+  const [successor] = successorId
+    ? await db
+        .select({ id: releases.id, version: releases.version })
+        .from(releases)
+        .where(and(eq(releases.id, successorId), eq(releases.workspaceId, ws.id)))
+        .limit(1)
+    : [];
 
   const attributionState = deriveReleaseAttributionState({
     commitsAheadAtDispatch: release.commitsAheadAtDispatch,
@@ -132,270 +127,171 @@ export default async function ReleaseDetailPage({
     attributedCount: edges.length,
   });
 
-  return (
-    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 max-w-3xl">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-[11px] font-mono text-text-muted mb-4">
-        <Link href="/app/missions" className="hover:text-text-secondary transition-colors">Missions</Link>
-        <span>/</span>
-        <Link href={`/app/settings/workspace/${ws.id}`} className="hover:text-text-secondary transition-colors">
-          {ws.name}
-        </Link>
-        <span>/</span>
-        <span className="text-text-primary">Release</span>
-      </div>
+  const verifying = release.verificationStrategy === 'http' && release.state === 'deploying';
+  const watching = release.verificationStrategy === 'http' && release.state === 'healthy' && watchRemainingMin > 0;
+  const hasRun = commitRangeUrl || release.commitsAheadAtDispatch != null || ciPill || release.runUrl || release.deployUrl;
 
-      {/* Header card */}
-      <div className="card p-5 mb-4">
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div>
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border uppercase tracking-wide ${stateBadge.cls}`}>
-                {stateBadge.label}
-              </span>
-              {release.archetype && (
-                <span className="text-[11px] md:text-[10px] font-mono px-1.5 py-0.5 border border-border-default text-text-muted uppercase tracking-wide">
-                  {release.archetype}
-                </span>
-              )}
-              {release.version && (
-                <span className="text-[11px] font-mono text-text-secondary">{release.version}</span>
-              )}
-            </div>
-            <h1 className="text-lg font-semibold text-text-primary">{ws.name}</h1>
-          </div>
+  return (
+    <div className="px-4 sm:px-7 md:px-10 pt-4 md:pt-8 pb-10 max-w-3xl">
+      <Link href="/app/releases" className="font-mono text-[13px] text-text-muted hover:text-text-primary">‹ Releases</Link>
+
+      {/* Header: unboxed (L1). Version as the title, state as a StatePill, workspace in the meta. */}
+      <header data-testid="release-header" className="mt-3 mb-6 flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <h1 className="font-mono text-[20px] font-semibold tracking-[-0.2px] text-text-primary md:text-[22px]">
+            {release.version ?? 'Unversioned release'}
+          </h1>
+          <StatePill state={pill.state} label={pill.label} title={pill.title} />
         </div>
 
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[12px]">
+        <dl className="flex flex-wrap gap-x-5 gap-y-1 text-meta">
+          <div className="flex gap-1.5">
+            <dt className="text-text-muted">Workspace</dt>
+            <dd className="text-text-secondary">{ws.name}</dd>
+          </div>
           {release.dispatchedAt && (
-            <div>
-              <span className="text-text-muted font-mono">Dispatched</span>
-              <span className="ml-2 text-text-secondary" title={String(release.dispatchedAt)}>
-                {relativeTime(String(release.dispatchedAt))}
-              </span>
+            <div className="flex gap-1.5">
+              <dt className="text-text-muted">Dispatched</dt>
+              <dd className="font-mono text-text-secondary" title={String(release.dispatchedAt)}>{relativeTime(String(release.dispatchedAt))}</dd>
             </div>
           )}
           {release.deployedAt && (
-            <div>
-              <span className="text-text-muted font-mono">Deployed</span>
-              <span className="ml-2 text-text-secondary" title={String(release.deployedAt)}>
-                {relativeTime(String(release.deployedAt))}
-              </span>
+            <div className="flex gap-1.5">
+              <dt className="text-text-muted">Deployed</dt>
+              <dd className="font-mono text-text-secondary" title={String(release.deployedAt)}>{relativeTime(String(release.deployedAt))}</dd>
             </div>
           )}
           {release.healthyAt && (
-            <div>
-              <span className="text-text-muted font-mono">Healthy</span>
-              <span className="ml-2 text-text-secondary" title={String(release.healthyAt)}>
-                {relativeTime(String(release.healthyAt))}
-              </span>
+            <div className="flex gap-1.5">
+              <dt className="text-text-muted">Healthy</dt>
+              <dd className="font-mono text-text-secondary" title={String(release.healthyAt)}>{relativeTime(String(release.healthyAt))}</dd>
             </div>
           )}
           {release.triggeredBy && (
-            <div>
-              <span className="text-text-muted font-mono">Triggered by</span>
-              <span className="ml-2 text-text-secondary capitalize">{release.triggeredBy}</span>
+            <div className="flex gap-1.5">
+              <dt className="text-text-muted">Triggered by</dt>
+              <dd className="text-text-secondary">{release.triggeredBy}</dd>
             </div>
           )}
-        </div>
+        </dl>
 
-        {release.failureReason && (
-          <div className="mt-3 px-3 py-2 bg-status-error/5 border border-status-error/20 text-[11px] text-status-error font-mono">
+        {/* Verification folds into the header: the state pill already says healthy/degraded/failed. */}
+        {verifying && <p className="font-mono text-meta text-text-muted">Verifying the deploy…</p>}
+        {watching && <p className="font-mono text-meta text-text-muted">Watching for {watchRemainingMin} more min</p>}
+
+        {superseded ? (
+          <p className="font-mono text-meta text-text-muted">
+            Superseded by{' '}
+            {successor ? (
+              <Link href={`/app/releases/${successor.id}`} className="text-text-secondary hover:text-text-primary hover:underline">
+                {successor.version || 'a newer release'}
+              </Link>
+            ) : (
+              'a newer release'
+            )}
+          </p>
+        ) : release.failureReason ? (
+          <p className={`font-mono text-meta ${release.state === 'degraded' ? 'text-status-warning' : 'text-status-error'}`}>
             {release.failureReason}
-          </div>
+          </p>
+        ) : null}
+        {release.state === 'degraded' && degradationTaskId && (
+          <Link href={`/app/tasks/${degradationTaskId}`} className="w-fit font-mono text-meta text-text-secondary hover:text-text-primary hover:underline">
+            View auto-filed task →
+          </Link>
         )}
-      </div>
+      </header>
 
-      {/* Commit range */}
-      {(commitRangeUrl || release.commitsAheadAtDispatch != null) && (
-        <div className="card p-4 mb-4">
-          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">Commit Range</div>
-          <div className="flex items-center gap-3 flex-wrap">
+      {/* Run: commit range, CI and deploy, as one L1 section. */}
+      {hasRun && (
+        <section className="border-t border-border-default py-4">
+          <Eyebrow as="h2" tone="muted" className="mb-2 block">Run</Eyebrow>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-meta">
             {release.commitsAheadAtDispatch != null && (
-              <span className="text-[12px] text-text-secondary font-mono">
+              <span className="text-text-secondary">
                 {release.commitsAheadAtDispatch} commit{release.commitsAheadAtDispatch !== 1 ? 's' : ''} ahead at dispatch
               </span>
             )}
             {commitRangeUrl ? (
-              <a
-                href={commitRangeUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono text-primary hover:underline"
-              >
+              <a href={commitRangeUrl} target="_blank" rel="noopener noreferrer" className="text-text-secondary hover:text-text-primary hover:underline">
                 {release.previousSha?.slice(0, 7)}...{release.headSha?.slice(0, 7)} →
               </a>
-            ) : attributionState === 'clean' ? (
-              <span className="text-[11px] font-mono text-text-muted">Nothing shipped in this range</span>
-            ) : (
-              <span className="text-[11px] font-mono text-text-muted">
-                Commit range unavailable{release.headSha ? ` (${release.headSha.slice(0, 7)})` : ''}
+            ) : release.commitsAheadAtDispatch != null ? (
+              <span className="text-text-muted">
+                {attributionState === 'clean'
+                  ? 'Nothing shipped in this range'
+                  : `Commit range unavailable${release.headSha ? ` (${release.headSha.slice(0, 7)})` : ''}`}
               </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* CI + workflow run */}
-      {(ciBadge || release.runUrl || release.deployUrl) && (
-        <div className="card p-4 mb-4">
-          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">CI & Deploy</div>
-          <div className="flex flex-wrap gap-3 items-center">
-            {ciBadge && (
-              <span className={`text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border ${ciBadge.cls}`}>
-                {ciBadge.label}
-              </span>
-            )}
+            ) : null}
+            {ciPill && <TonePill tone={ciPill.tone}>{ciPill.label}</TonePill>}
             {release.runUrl && (
-              <a
-                href={release.runUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono text-primary hover:underline"
-              >
+              <a href={release.runUrl} target="_blank" rel="noopener noreferrer" className="text-text-secondary hover:text-text-primary hover:underline">
                 Workflow run →
               </a>
             )}
             {release.deployUrl && (
-              <a
-                href={release.deployUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono text-primary hover:underline"
-              >
+              <a href={release.deployUrl} target="_blank" rel="noopener noreferrer" className="text-text-secondary hover:text-text-primary hover:underline">
                 Deploy URL →
               </a>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Verification Status */}
-      {release.verificationStrategy === 'http' && (
-        release.state === 'deploying' ||
-        release.state === 'healthy' ||
-        release.state === 'degraded' ||
-        release.state === 'failed'
-      ) && (
-        <div className="card p-4 mb-4">
-          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-2">Verification</div>
-          {release.state === 'deploying' && (
-            <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-info border-status-info/30 animate-pulse">
-              Verifying…
-            </span>
-          )}
-          {release.state === 'healthy' && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-success border-status-success/30">
-                Healthy
-              </span>
-              {watchRemainingMin > 0 && (
-                <span className="text-[11px] text-text-muted font-mono">
-                  Watching for {watchRemainingMin} more min
-                </span>
-              )}
-            </div>
-          )}
-          {release.state === 'degraded' && (
-            <div className="flex flex-col gap-2">
-              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-warning border-status-warning/30 w-fit">
-                Degraded
-              </span>
-              {release.failureReason && (
-                <span className="text-[11px] text-status-warning font-mono">{release.failureReason}</span>
-              )}
-              {degradationTaskId && (
-                <Link href={`/app/tasks/${degradationTaskId}`} className="text-[11px] font-mono text-primary hover:underline">
-                  View auto-filed task →
-                </Link>
-              )}
-            </div>
-          )}
-          {release.state === 'failed' && (
-            <div className="flex flex-col gap-2">
-              <span className="text-[11px] md:text-[10px] font-mono font-medium px-1.5 py-0.5 border text-status-error border-status-error/30 w-fit">
-                Failed
-              </span>
-              {release.failureReason && (
-                <span className="text-[11px] text-status-error font-mono">{release.failureReason}</span>
-              )}
-            </div>
-          )}
-        </div>
+        </section>
       )}
 
       {/* Attributed tasks */}
       {edges.length > 0 && (
-        <div className="card p-4 mb-4">
-          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-3">
-            Attributed Tasks ({edges.length})
-          </div>
-          <div className="space-y-2">
+        <section className="border-t border-border-default py-4">
+          <Eyebrow as="h2" tone="muted" className="mb-3 block">
+            Tasks <span className="ml-1 font-mono font-normal">{edges.length}</span>
+          </Eyebrow>
+          <ul className="flex flex-col gap-2">
             {edges.map((edge) => (
-              <div key={edge.taskId} className="flex items-center justify-between gap-3 text-[12px]">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className={`shrink-0 font-mono text-[11px] md:text-[10px] ${TASK_STATUS_CLS[edge.taskStatus ?? ''] ?? 'text-text-muted'}`}>
-                    {edge.taskStatus ?? 'unknown'}
-                  </span>
-                  <Link
-                    href={`/app/tasks/${edge.taskId}`}
-                    className="text-text-primary hover:text-accent-text transition-colors truncate"
-                  >
-                    {edge.taskTitle ?? edge.taskId.slice(0, 8)}
+              <li key={edge.taskId} className="flex items-center justify-between gap-3 text-body">
+                <div className="flex min-w-0 items-center gap-2">
+                  <StatusPill status={edge.taskStatus ?? 'unknown'} variant="plain" />
+                  <Link href={`/app/tasks/${edge.taskId}`} className="truncate text-text-primary hover:underline">
+                    {edge.taskTitle ?? 'Untitled task'}
                   </Link>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {edge.prNumber && (
-                    <span className="font-mono text-[11px] md:text-[10px] text-text-muted">PR #{edge.prNumber}</span>
-                  )}
-                  {edge.commitSha && (
-                    <span className="font-mono text-[11px] md:text-[10px] text-text-muted">{edge.commitSha.slice(0, 7)}</span>
-                  )}
+                <div className="flex shrink-0 items-center gap-2 font-mono text-meta text-text-muted">
+                  {edge.prNumber && <span>PR #{edge.prNumber}</span>}
+                  {edge.commitSha && <span>{edge.commitSha.slice(0, 7)}</span>}
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </section>
       )}
 
       {/* Attributed missions */}
       {missionRows.length > 0 && (
-        <div className="card p-4 mb-4">
-          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wide mb-3">
-            Attributed Missions ({missionRows.length})
-          </div>
-          <div className="space-y-2">
+        <section className="border-t border-border-default py-4">
+          <Eyebrow as="h2" tone="muted" className="mb-3 block">
+            Missions <span className="ml-1 font-mono font-normal">{missionRows.length}</span>
+          </Eyebrow>
+          <ul className="flex flex-col gap-2">
             {missionRows.map((m) => (
-              <Link
-                key={m.id}
-                href={`/app/missions/${m.id}`}
-                className="block text-[12px] text-text-primary hover:text-accent-text transition-colors"
-              >
-                {m.title}
-              </Link>
+              <li key={m.id}>
+                <Link href={`/app/missions/${m.id}`} className="text-body text-text-primary hover:underline">
+                  {m.title}
+                </Link>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </section>
       )}
 
       {attributionState === 'unseeded' && (
-        <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary">Attribution hasn&apos;t run for this release yet.</p>
-          <p className="text-[11px] text-text-muted mt-1">
-            The commit range is missing or incomplete, so buildd can&apos;t match tasks yet. Expected right after
-            dispatch. Check back once the range resolves.
-          </p>
-        </div>
+        <p className="border-t border-border-default py-4 text-body text-text-secondary">
+          Attribution hasn&apos;t run for this release yet: the commit range is missing or incomplete, so buildd
+          can&apos;t match tasks. Expected right after dispatch; check back once the range resolves.
+        </p>
       )}
 
       {attributionState === 'unmatched' && (
-        <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary">Attribution ran but matched no tasks.</p>
-          <p className="text-[11px] text-text-muted mt-1">
-            The commit range is valid, so the matcher likely missed these commits.
-            Check the matcher.
-          </p>
-        </div>
+        <p className="border-t border-border-default py-4 text-body text-text-secondary">
+          Attribution ran but matched no tasks. The commit range is valid, so the matcher likely missed these commits.
+        </p>
       )}
 
       <ReleaseAutoRefresh releaseId={id} workspaceId={ws.id} />
