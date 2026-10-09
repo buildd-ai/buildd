@@ -152,8 +152,14 @@ them and points to `/api/inference-keys`.
 
 `purpose = 'agent_endpoint'`, team-wide or one workspace (never account or
 personal). Encrypted JSON: `{ "kind": "gateway" }` (a reference to the team's
-LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
-"anthropic-compatible", "baseUrl", "apiKey", "authHeader", "models"? }`.
+LiteLLM row above; its root minus `/v1`), `{ "kind": "openrouter", "baseUrl",
+"authHeader" }` with no key (a reference to the stored OpenRouter key,
+`inference_key`/`openrouter` or legacy `decision_key`, same scope or broader),
+or `{ "kind": "openrouter" | "anthropic-compatible", "baseUrl", "apiKey",
+"authHeader", "models"? }`. An inline OpenRouter `apiKey` is legacy and still
+routes; `packages/core/scripts/consolidate-openrouter-endpoint-keys.ts` (dry
+run by default, `--apply` to write) turns it into a reference, or flags the row
+`capabilities.legacyInlineKey` when the stored key differs.
 `resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
 `anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
 team, a tie to the endpoint, only the winner delivered. The key policy does not

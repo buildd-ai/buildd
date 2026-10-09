@@ -240,13 +240,13 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     costHint: '~$0.00003 per waiting task',
   },
   // Merge readiness (apps/web/src/lib/merge-readiness-decision.ts). Asked only
-  // when a person taps "Ask Jev" on a review card, once per PR head and facts.
+  // when a person taps "Assess" on a review card, once per PR head and facts.
   // Advisory: it is shown, never acted on, and feeds no merge gate.
   merge_readiness: {
     id: 'merge_readiness',
     kind: 'opt_in',
     label: 'Merge readiness',
-    description: 'On a review card, a decision model says whether the pull request can merge now, from its CI, review and policy. Only advice; you merge.',
+    description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
     costHint: '~$0.00003 per tap',
   },
   chat: {

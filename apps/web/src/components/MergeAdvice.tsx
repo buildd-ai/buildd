@@ -1,13 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { adviceAge, type MergeAdviceSlot, type MergeAdviceView } from '@/lib/merge-advice';
+import { adviceAge, canAssess, type MergeAdviceSlot, type MergeAdviceView } from '@/lib/merge-advice';
 
 /**
- * Jev's "can this merge now?" on a review card, in one line. A stored answer
- * for the PR's current head and facts shows with no button; an older one shows
- * dimmed with "Re-assess"; none offers "Ask Jev". Advice only: the card's own
- * action is still the person's.
+ * "Can this merge as-is?" on a review card, in one line. The rule's answer
+ * shows first, from the PR's own state. "Assess" asks the decision model
+ * (recorded either way); its yes shows only when confident, and an answer with
+ * nothing worth saying shows nothing. An older answer shows dimmed with
+ * "Re-assess". Advice only: the card's own action is still the person's.
  */
 export function MergeAdvice({ slot }: { slot: MergeAdviceSlot }) {
   const [advice, setAdvice] = useState<MergeAdviceView | null>(slot.advice);
@@ -36,35 +37,38 @@ export function MergeAdvice({ slot }: { slot: MergeAdviceSlot }) {
       } else if (data && 'code' in data && data.code === 'head_moved') {
         setError('The PR has new commits. Reload to assess them.');
       } else {
-        setError((data && 'error' in data && data.error) || 'Could not ask Jev.');
+        setError((data && 'error' in data && data.error) || 'Could not assess this PR.');
       }
     } catch {
-      setError('Could not ask Jev.');
+      setError('Could not assess this PR.');
     } finally {
       setBusy(false);
     }
   }
 
-  const fresh = advice && !advice.stale;
-  const label = advice ? 'Re-assess' : 'Ask Jev';
+  const offer = canAssess(advice);
+  if (!offer && !advice?.line) return null;
+  const label = advice?.recorded ? 'Re-assess' : 'Assess';
   return (
     <div data-testid="merge-advice" className="mt-2">
-      {advice && (
+      {advice?.line && (
         <p
           data-testid="merge-advice-line"
           data-stale={advice.stale ?? undefined}
-          className={`text-body [overflow-wrap:anywhere] ${fresh ? 'text-text-primary' : 'text-text-muted'}`}
+          className={`text-body [overflow-wrap:anywhere] ${advice.stale ? 'text-text-muted' : 'text-text-primary'}`}
         >
           {advice.line}
           <span className="ml-1.5 text-meta text-text-muted">
-            {advice.source === 'rule' ? 'From the PR state' : 'Jev'}
-            {' · '}{adviceAge(advice.at)}
+            {advice.source === 'rule' || advice.source === 'fallback'
+              ? 'From the PR state'
+              : <span title={advice.model ?? undefined}>Model</span>}
+            {advice.recorded && <>{' · '}{adviceAge(advice.at)}</>}
             {advice.stale === 'new_commits' && ' · new commits since'}
             {advice.stale === 'facts_changed' && ' · PR changed since'}
           </span>
         </p>
       )}
-      {!fresh && (
+      {offer && (
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -72,9 +76,9 @@ export function MergeAdvice({ slot }: { slot: MergeAdviceSlot }) {
             className="btn btn-sm min-h-11 md:min-h-0"
             onClick={ask}
             disabled={busy || !slot.token || !!unavailable}
-            title={unavailable ?? 'Ask Jev whether this PR can merge now'}
+            title={unavailable ?? 'Ask the decision model whether this PR can merge as-is'}
           >
-            {busy ? 'Asking…' : label}
+            {busy ? 'Assessing…' : advice?.stale ? 'Re-assess' : label}
           </button>
           {unavailable && <span data-testid="merge-advice-unavailable" className="text-meta text-text-muted">{unavailable}</span>}
           {error && <span role="alert" className="text-meta text-status-error">{error}</span>}

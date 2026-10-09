@@ -43,6 +43,12 @@ export interface MaskedAgentEndpointView {
   toolSearchExplicit?: boolean;
   last4: string;
   gatewayMissing: boolean;
+  /** OpenRouter: the stored OpenRouter key (`stored`) or its own saved copy (`inline`). Absent from an older server. */
+  keySource?: 'stored' | 'inline' | null;
+  /** `stored`, but no OpenRouter key resolves for it now. */
+  storedKeyMissing?: boolean;
+  /** Its own key differs from the stored OpenRouter key: someone should pick one. */
+  legacyInlineKey?: boolean;
   health: 'healthy' | 'revoked' | 'unknown';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
@@ -95,6 +101,7 @@ export function aliasLines(models: Record<string, string>): string {
 
 function health(e: MaskedAgentEndpointView): { tone: ChipTone; label: string; detail: string | null } {
   if (e.gatewayMissing) return { tone: 'error', label: 'Gateway missing', detail: 'The team gateway it uses is not connected.' };
+  if (e.storedKeyMissing) return { tone: 'error', label: 'Key missing', detail: 'No OpenRouter key is stored in Team keys.' };
   if (e.health === 'healthy') return { tone: 'success', label: 'Working', detail: null };
   if (e.health === 'revoked') return { tone: 'error', label: 'Key rejected', detail: e.lastVerificationError };
   return { tone: 'warning', label: 'Not confirmed', detail: e.lastVerificationError };
@@ -109,19 +116,23 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
 }) {
   const [endpoints, setEndpoints] = useState<MaskedAgentEndpointView[] | undefined>(undefined);
   const [hasGateway, setHasGateway] = useState(false);
+  // Last four of the team's stored OpenRouter key, or null when there is none.
+  const [teamOpenRouterLast4, setTeamOpenRouterLast4] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The scope being edited ('' = team-wide), or null when no editor is open.
   const [editing, setEditing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [e, g] = await Promise.all([
+      const [e, g, k] = await Promise.all([
         fetch(`/api/teams/${teamId}/agent-endpoint`, { cache: 'no-store' }),
         fetch(`/api/teams/${teamId}/litellm-gateway`, { cache: 'no-store' }),
+        fetch(`/api/inference-keys?teamId=${encodeURIComponent(teamId)}`, { cache: 'no-store' }).catch(() => null),
       ]);
       if (!e.ok) throw new Error(await errorText(e));
       setEndpoints(((await e.json()) as { endpoints: MaskedAgentEndpointView[] }).endpoints ?? []);
       if (g.ok) setHasGateway(!!((await g.json()) as { gateway: unknown }).gateway);
+      if (k?.ok) setTeamOpenRouterLast4(teamOpenRouterKeyLast4(await k.json().catch(() => null)));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load');
@@ -180,7 +191,7 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
         </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
         {canManage && endpoints !== undefined && editing !== null && (
-          <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} initialScope={editing}
+          <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} teamOpenRouterLast4={teamOpenRouterLast4} initialScope={editing}
             copies={copies} onClose={() => setEditing(null)} onChanged={load} />
         )}
         {idle && endpoints !== undefined && (!team || (routes.length > 0 && free.length > 0)) && (
@@ -240,10 +251,31 @@ function HealthMeta({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   );
 }
 
+/** The team-wide OpenRouter key's last four from `GET /api/inference-keys`, or null when there is none. */
+export function teamOpenRouterKeyLast4(body: unknown): string | null {
+  const providers = (body as { providers?: Array<{ provider?: string; team?: { last4?: string } | null }> } | null)?.providers;
+  const team = Array.isArray(providers) ? providers.find((p) => p?.provider === 'openrouter')?.team : null;
+  return team ? team.last4 ?? '' : null;
+}
+
 /** Where the row sends traffic. The gateway is named, not repeated: its URL and key live in Team keys. */
 function RouteDetail({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   if (e.kind === 'gateway') {
     return <p className="text-body text-text-secondary" data-testid="agent-endpoint-detail">Through the LiteLLM gateway in Team keys</p>;
+  }
+  if (e.kind === 'openrouter' && e.keySource === 'stored') {
+    const last4 = e.last4 ? ` (…${e.last4})` : '';
+    return <p className="text-body text-text-secondary" data-testid="agent-endpoint-detail">With the OpenRouter key in Team keys{last4}</p>;
+  }
+  if (e.kind === 'openrouter' && e.legacyInlineKey) {
+    return (
+      <div className="space-y-1">
+        <p className="font-mono text-text-secondary break-all" data-testid="agent-endpoint-detail">{[e.baseUrl, e.last4 ? `key …${e.last4}` : ''].filter(Boolean).join(' · ')}</p>
+        <p className="text-meta text-status-warning" data-testid="agent-endpoint-two-keys">
+          Two different OpenRouter keys: this endpoint saved its own, and Team keys has another. Edit and save with the key left blank to use the Team keys one.
+        </p>
+      </div>
+    );
   }
   const detail = [e.baseUrl, e.last4 ? `key …${e.last4}` : ''].filter(Boolean).join(' · ');
   return detail ? <p className="font-mono text-text-secondary break-all" data-testid="agent-endpoint-detail">{detail}</p> : null;
@@ -376,11 +408,13 @@ function OverrideRoute({ endpoint: e, teamId, canManage, onEdit, onChanged }: {
   );
 }
 
-function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copies, onClose, onChanged }: {
+function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4 = null, initialScope, copies, onClose, onChanged }: {
   teamId: string;
   workspaces: EndpointWorkspace[];
   endpoints: MaskedAgentEndpointView[];
   hasGateway: boolean;
+  /** Last four of the team's stored OpenRouter key; null when Team keys has none. */
+  teamOpenRouterLast4?: string | null;
   /** '' = the team endpoint, else a workspace override. Fixed while open. */
   initialScope: string;
   copies: WorkspaceCopy[];
@@ -446,7 +480,13 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
     return key ? { kind: choice, baseUrl: url, apiKey: key, authHeader, ...seeded } : { kind: choice, baseUrl: url, authHeader, ...seeded };
   }, [choice, hasGateway, baseUrl, apiKey, authHeader, current?.kind, seed]);
 
-  const needsKey = choice === 'openrouter' || choice === 'anthropic-compatible';
+  // OpenRouter uses the stored OpenRouter key when there is one at this scope
+  // or broader (the team's, or a reference already resolving here): the key
+  // lives once, under Team keys, so the form does not ask for another copy.
+  const storedOpenRouter = choice === 'openrouter' && (teamOpenRouterLast4 !== null ||
+    (current?.kind === 'openrouter' && current.keySource === 'stored' && !current.storedKeyMissing));
+  const storedOpenRouterLast4 = teamOpenRouterLast4 ?? (current?.keySource === 'stored' ? current.last4 : '');
+  const needsKey = (choice === 'openrouter' && !storedOpenRouter) || choice === 'anthropic-compatible';
   // A blank key keeps the saved one (the server reuses it for the same kind and
   // URL at this scope only; it is never read back). A new endpoint, another
   // kind or another URL needs the key typed.
@@ -457,7 +497,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
     ? !!current
     : appliesOk && (choice === 'gateway'
       ? hasGateway
-      : (!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim())));
+      : storedOpenRouter || ((!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim()))));
 
   async function save() {
     setBusy(true);
@@ -557,6 +597,11 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, copie
             ))}
           </div>
         </div>
+      )}
+      {storedOpenRouter && (
+        <p className="text-text-muted" data-testid="agent-endpoint-stored-key">
+          Uses the OpenRouter key in Team keys{storedOpenRouterLast4 ? ` (…${storedOpenRouterLast4})` : ''}. Change it there.
+        </p>
       )}
       {needsKey && (
         <div className="space-y-1">
