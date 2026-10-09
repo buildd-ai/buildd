@@ -85,7 +85,7 @@ import {
 } from '@builddai/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, isInferenceAllowed, type InferenceCapability } from './inference-policy';
 import { effectiveKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
-import { normalizeDecisionModel, readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
+import { isClefModel, normalizeDecisionModel, readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
 import { entitlements, isBillingEnforced, type EntitlementTeam } from './entitlements';
 import { loadTeamEntitlements } from './billing-limits';
 
@@ -348,6 +348,7 @@ export async function resolveDecisionRoute(
   config: DecisionModelConfig | null,
   scope: DecisionKeyScope,
 ): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
+  if (config?.via === 'cloudflare') return resolveCloudflareDecisionRoute(config, scope);
   if (config?.via === 'litellm') {
     const { resolveLiteLLMGateway } = await import('./litellm-gateway');
     const gateway = await resolveLiteLLMGateway({ teamId: scope.teamId, workspaceId: scope.workspaceId });
@@ -365,6 +366,36 @@ export async function resolveDecisionRoute(
     endpoint: config.endpoint === 'chat' ? { kind: 'chat', baseURL: OPENROUTER_CHAT_BASE_URL, provider: 'openrouter' } : undefined,
     model: config.model,
   };
+}
+
+/**
+ * `via: 'cloudflare'`: the team's Cloudflare credential (`cloudflare-ai-gateway.ts`).
+ * Clef spends the Cloudflare token on Workers AI (through the gateway when
+ * there is one). Jev goes through the gateway's OpenRouter path on the team's
+ * own OpenRouter key; buildd's platform key never goes through a team's
+ * gateway, so it runs the platform route as before. No credential (or, for
+ * Jev, no gateway) ⇒ no key: a team that chose Cloudflare is not silently
+ * moved elsewhere.
+ */
+async function resolveCloudflareDecisionRoute(
+  config: DecisionModelConfig,
+  scope: DecisionKeyScope,
+): Promise<{ apiKey: string | null; endpoint?: DecisionEndpoint; model: string }> {
+  const { resolveCloudflareAiGateway, clefBaseURL, jevGatewayBaseURL, gatewayAuthHeaders } = await import('./cloudflare-ai-gateway');
+  const cf = await resolveCloudflareAiGateway({ teamId: scope.teamId });
+  if (isClefModel(config.model)) {
+    if (!cf) return { apiKey: null, model: config.model };
+    return {
+      apiKey: cf.apiToken,
+      endpoint: { kind: 'workers-ai', baseURL: clefBaseURL(cf), ...(cf.gatewayId ? { headers: gatewayAuthHeaders(cf) } : {}) },
+      model: config.model,
+    };
+  }
+  const credential = await resolveDecisionCredential(scope);
+  if (credential?.source === 'platform') return platformDecisionRoute(credential.key);
+  const baseURL = cf ? jevGatewayBaseURL(cf) : null;
+  if (!cf || !baseURL || !credential) return { apiKey: null, model: config.model };
+  return { apiKey: credential.key, endpoint: { kind: 'systemone', baseURL, headers: gatewayAuthHeaders(cf) }, model: config.model };
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
