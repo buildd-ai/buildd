@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { missionLayoutHref, parseMissionLayout } from './mission-layout';
+import { MISSION_LAYOUT_LABEL, missionLayoutHref, parseMissionLayout } from './mission-layout';
 
 describe('parseMissionLayout', () => {
   it('defaults to the Board', () => {
@@ -8,25 +8,33 @@ describe('parseMissionLayout', () => {
   });
 
   it('reads a named layout', () => {
-    expect(parseMissionLayout('lanes')).toBe('lanes');
+    expect(parseMissionLayout('flow')).toBe('flow');
     expect(parseMissionLayout('feed')).toBe('feed');
   });
 
-  it('a Timeline/Structure link still opens the Feed it pointed into', () => {
+  it('Flow replaced Lanes and the Structure graph: their old links open Flow', () => {
+    expect(parseMissionLayout('lanes')).toBe('flow');
+    expect(parseMissionLayout(undefined, 'structure')).toBe('flow');
+  });
+
+  it('a Timeline link still opens the Feed it pointed into', () => {
     expect(parseMissionLayout(undefined, 'timeline')).toBe('feed');
-    expect(parseMissionLayout(undefined, 'structure')).toBe('feed');
-    expect(parseMissionLayout('lanes', 'timeline')).toBe('lanes');
+    expect(parseMissionLayout('flow', 'timeline')).toBe('flow');
+  });
+
+  it('there is no Lanes or Structure tab, and no Graph/Timeline toggle', () => {
+    expect(Object.values(MISSION_LAYOUT_LABEL)).toEqual(['Board', 'Flow', 'Feed']);
   });
 });
 
 describe('missionLayoutHref', () => {
   it('keeps other params and drops layout for the Board', () => {
-    expect(missionLayoutHref('/app/missions/m?from=home&layout=lanes', 'board')).toBe('/app/missions/m?from=home');
-    expect(missionLayoutHref('/app/missions/m?from=home', 'lanes')).toBe('/app/missions/m?from=home&layout=lanes');
+    expect(missionLayoutHref('/app/missions/m?from=home&layout=flow', 'board')).toBe('/app/missions/m?from=home');
+    expect(missionLayoutHref('/app/missions/m?from=home', 'flow')).toBe('/app/missions/m?from=home&layout=flow');
   });
 
   it('drops the Feed-only view param when leaving the Feed', () => {
-    expect(missionLayoutHref('/app/missions/m?layout=feed&view=timeline', 'lanes')).toBe('/app/missions/m?layout=lanes');
+    expect(missionLayoutHref('/app/missions/m?layout=feed&view=timeline', 'flow')).toBe('/app/missions/m?layout=flow');
     expect(missionLayoutHref('/app/missions/m?view=timeline', 'feed')).toBe('/app/missions/m?view=timeline&layout=feed');
   });
 });

@@ -11,7 +11,7 @@
  *   layouts in one, so the footer row and the board open the same deck. A new
  *   `visual` prop (a server refresh after `mission:visual_review` or an audit
  *   shot's `worker:artifact`) replaces the model.
- * - `WithMissionVisualReview` is what MissionBoard, MissionLanes and
+ * - `WithMissionVisualReview` is what MissionBoard and
  *   MissionFeedLayout render through: inside a provider for the same mission
  *   it reads that one; alone (the chat's mission pane) it makes its own from
  *   the `visual` prop, so a host only passes `visual` (and, to force the

@@ -1,20 +1,22 @@
 /**
- * The mission page's three layouts: Board (default), Lanes and Feed. `?layout=`
- * names one; `?view=timeline|structure` (the Feed's Timeline · Structure
- * disclosure) implies Feed, so its old links still land where they pointed.
+ * The mission page's three layouts: Board (default), Flow and Feed. `?layout=`
+ * names one. Old links still land where they pointed: `?layout=lanes` and
+ * `?view=structure` open Flow (it replaced Lanes and the Structure graph), and
+ * `?view=timeline` (the Feed's old disclosure) opens the Feed.
  */
-export const MISSION_LAYOUTS = ['board', 'lanes', 'feed'] as const;
+export const MISSION_LAYOUTS = ['board', 'flow', 'feed'] as const;
 export type MissionLayout = (typeof MISSION_LAYOUTS)[number];
 
 export const MISSION_LAYOUT_LABEL: Record<MissionLayout, string> = {
   board: 'Board',
-  lanes: 'Lanes',
+  flow: 'Flow',
   feed: 'Feed',
 };
 
 export function parseMissionLayout(layout: string | null | undefined, view?: string | null): MissionLayout {
   if ((MISSION_LAYOUTS as readonly string[]).includes(layout ?? '')) return layout as MissionLayout;
-  if (view === 'timeline' || view === 'structure') return 'feed';
+  if (layout === 'lanes' || view === 'structure') return 'flow';
+  if (view === 'timeline') return 'feed';
   return 'board';
 }
 

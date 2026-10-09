@@ -112,12 +112,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
 - [Mission Feed](./mission-feed.md) · @builder — verified 2026-09-23
   The mission detail page MUST answer "is this done" before listing tasks, and below md MUST render every deliverable exactly once in one grouped list under a sticky masthead.
+- [Mission Flow Timeline](./mission-flow-timeline.md) · @builder — verified 2026-10-09
+  The mission Flow tab MUST draw one row per task in dependency order on one time axis, every gate as an edge lit by the strip's relation rule, and one sentence naming what sets the finish.
 - [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-23
   A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Progress Strip — Topological Order and Dependency-on-Selection](./mission-progress-strip-ordering.md) · @builder — verified 2026-10-03
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
-- [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
-  The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 - [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-05
   Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-26
@@ -169,8 +169,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-07
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
-## Superseded (2)
+## Superseded (3)
 
+- [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-10-09
+  The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only. → replaced by `mission-flow-timeline`
 - [Missions Tab — Initiative Triage Surface](./missions-tab-triage.md) · @builder — verified 2026-08-13
   The initiative triage surface MUST rank initiatives by pending-action counts with 14-day effort sparklines and a task-weighted progress percentage computed over all of an initiative's tasks, uncapped. → replaced by `surface-ia-home-missions-initiatives`
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-23

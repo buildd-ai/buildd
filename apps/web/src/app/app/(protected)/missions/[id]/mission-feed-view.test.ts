@@ -69,9 +69,9 @@ describe('mission page wiring (source shape)', () => {
     expect(src).toMatch(/<TaskPanelWrapper[\s\S]*?feedTasks=\{feedTasks\}/);
   });
 
-  it('every layout reads the one board model: Board, Lanes and the Feed', () => {
+  it('every layout reads the one board model: Board, Flow and the Feed', () => {
     expect(src).toMatch(/<MissionBoard model=\{boardModel\}/);
-    expect(src).toMatch(/<MissionLanes model=\{boardModel\}/);
+    expect(src).toMatch(/<FlowTimeline model=\{boardModel\}/);
     expect(src).toMatch(/<MissionFeedLayout\s+model=\{boardModel\}/);
     expect(src).toMatch(/criteriaReachable=\{criteriaReachable\}/);
   });
@@ -80,8 +80,9 @@ describe('mission page wiring (source shape)', () => {
     expect(src).toMatch(/mergedAt: missionTrunkMergedAt\(/);
   });
 
-  it('keeps the newest reviewer retry via buildReviewerRetryMap (AC-21), not a first-wins loop', () => {
-    expect(src).toMatch(/buildReviewerRetryMap\(/);
+  it('builds no chain grouping for a graph it no longer draws (Flow replaced Structure)', () => {
+    expect(src).not.toMatch(/groupChainUnits\(/);
     expect(src).not.toMatch(/reviewerRetryMap\.has\(/);
+    expect(src).not.toMatch(/StructureView|MissionLanes/);
   });
 });
