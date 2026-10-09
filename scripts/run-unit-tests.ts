@@ -473,7 +473,19 @@ export async function runTestFile(
   // when they read it, and needs no change to 800+ test files. Without it the
   // suite wrote fixture records into the operator's real ~/.buildd/workers,
   // where they were counted as fleet data.
-  const testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
+  let testHome: string;
+  try {
+    testHome = mkdtempSync(join(tmpdir(), 'buildd-test-home-'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOSPC') {
+      throw new Error(
+        `No space left on ${tmpdir()} while creating a per-file test home. ` +
+          'Point TMPDIR at a directory with free space (e.g. an ignored directory inside your worktree) and re-run.',
+        { cause: err },
+      );
+    }
+    throw err;
+  }
   const startedAt = performance.now();
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {

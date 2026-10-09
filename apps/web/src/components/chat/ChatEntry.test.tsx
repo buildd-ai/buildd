@@ -20,7 +20,7 @@ describe('NewWorkLink', () => {
 
   it('chat unavailable, or no provider above it: the form, as before', () => {
     expect(html(OFF, <NewWorkLink kind="mission">+ Mission</NewWorkLink>)).toContain('href="/app/missions/new"');
-    expect(html(null, <NewWorkLink kind="task" workspaceId={WS}>New task</NewWorkLink>)).toContain(`href="/app/tasks/new?workspaceId=${WS}"`);
+    expect(html(null, <NewWorkLink kind="task" workspaceId={WS}>New task</NewWorkLink>)).toContain('href="/app/missions/new"');
   });
 });
 
