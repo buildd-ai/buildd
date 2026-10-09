@@ -234,6 +234,38 @@ describe('projectMissionDelivery', () => {
     expect(m.open).toBe(true);
   });
 
+  it('a surface audit that did not finish is not a deliverable: not counted, not Needs you', () => {
+    const audit = task({ title: '[surface audit] round 2: Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), merged('Two'), audit] }));
+    expect(m.total).toBe(2);
+    expect(m.landed).toBe(2);
+    expect(m.kind).toBe('landed');
+    expect(m.tasks.map(t => t.title)).not.toContain(audit.title);
+    expect(m.exception?.text).not.toContain('did not land');
+    expect(m.visual?.text).toBe('Visual audit could not run');
+  });
+
+  it('a failed visual audit with findings reads as the mission\'s Visual state', () => {
+    const audit = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ visualFindings: 2, tasks: [merged('One'), audit] }));
+    expect(m.visual?.text).toBe('Visual audit: 2 findings');
+    expect(m.exception?.text).toBe('Visual audit: 2 findings');
+  });
+
+  it('a later passing audit round clears the Visual state', () => {
+    const r1 = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const r2 = task({ title: '[surface audit] round 2: Sentinel', status: 'completed', workers: [] });
+    expect(projectMissionDelivery(mission({ tasks: [merged('One'), r1, r2] })).visual).toBeNull();
+  });
+
+  it('an unmerged deliverable with no carrier still needs a person alongside an audit', () => {
+    const abandoned = task({ title: 'Real work', status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', abandonedAt: '2026-10-01T00:00:00Z' }] });
+    const audit = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ tasks: [abandoned, audit] }));
+    expect(m.kind).toBe('notlanded');
+    expect(m.exception?.text).toContain('Real work did not land');
+  });
+
   it('landed is not mission complete, and complete is not released', () => {
     const m = projectMissionDelivery(mission({ tasks: [merged('One')], status: 'active' }));
     expect(m.milestones.allLanded).toBe(true);
