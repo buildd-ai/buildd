@@ -41,6 +41,16 @@ describe('replayTasks', () => {
     expect(r.source).toBe('bucket');
   });
 
+  it('only scores the sampled tasks but keeps every task as history and neighbour', async () => {
+    const target = mk('t', 100);
+    const rows = await replayTasks([...past, target], [...pastSessions, sess('t', 100, 30)], {
+      findNeighbours: async () => past.map(p => p.id), only: new Set(['t']),
+    });
+    expect(rows.map(r => r.taskId)).toEqual(['t']);
+    expect(rows[0].source).toBe('neighbours');
+    expect(rows[0].priorCompleted).toBe(5);
+  });
+
   it('held-out mode ignores history and uses the bucket', async () => {
     const rows = await replayTasks([...past, mk('t', 100)], [...pastSessions, sess('t', 100, 30)], {
       heldOut: true, findNeighbours: async () => { throw new Error('should not be called'); },

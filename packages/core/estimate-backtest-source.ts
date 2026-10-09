@@ -58,6 +58,8 @@ export interface ReplayDeps {
   k?: number;
   /** Cold start: pretend the workspace is new — no neighbours, no history. */
   heldOut?: boolean;
+  /** Score only these task ids. Every task still counts as history and as a neighbour. */
+  only?: ReadonlySet<string>;
 }
 
 const ms = (d: Date | string | null | undefined) => (d ? new Date(d).getTime() : NaN);
@@ -91,6 +93,7 @@ export async function replayTasks(
 
   const rows: ReplayRow[] = [];
   for (const task of all) {
+    if (deps.only && !deps.only.has(task.id)) continue;
     const actual = actualOf(byTask.get(task.id) ?? []);
     if (actual.minutes <= 0) continue;
     const cutoff = task.createdAt;
