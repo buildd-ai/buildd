@@ -53,3 +53,20 @@ describe('GettingStartedChecklist', () => {
     expect(html).toContain('Your first task is queued or running');
   });
 });
+
+describe('GettingStartedChecklist — nearly done', () => {
+  it('collapses to one line naming the last step once 2 of 3 are done', () => {
+    const html = render({ runnerConnected: true, hasAgentCredential: false, firstTask: 'done' });
+    expect(html).toContain('data-collapsed="true"');
+    expect(html).toMatch(/<details[^>]*data-testid="getting-started"/);
+    expect(html).toMatch(/<summary[^>]*>.*Get started · 2 of 3.*Next: Add an agent key.*<\/summary>/);
+    // The how-to stays one click away, not gone.
+    expect(html).toContain('Add an Anthropic key');
+  });
+
+  it('stays open as a full list while fewer than 2 steps are done', () => {
+    const html = render({ runnerConnected: true, hasAgentCredential: false, firstTask: 'none' });
+    expect(html).not.toContain('data-collapsed="true"');
+    expect(html).not.toContain('<details');
+  });
+});
