@@ -43,6 +43,14 @@ export interface MissionBaseGuardTask {
   context?: unknown;
   /** `tasks.dependsOn` — verifies a stacked-phase `context.baseBranch` declaration. */
   dependsOn?: string[] | null;
+  /**
+   * `tasks.conflictRetryPrNumber` — the PR a conflict-retry task is repairing in
+   * place. Adopting that exact PR is not acquiring a base: its base was fixed
+   * (and judged) when it was opened, and may legitimately be trunk when the PR
+   * is the mission's own integration PR. Retargeting it would make that PR
+   * target its own head.
+   */
+  conflictRetryPrNumber?: number | null;
 }
 
 export interface MissionBaseRefusal {
@@ -62,7 +70,7 @@ export interface MissionBaseGuard {
    */
   enforced: boolean;
   /** Is `baseRef` a legal base for this task's PR? */
-  allows(baseRef: string | null | undefined): boolean;
+  allows(baseRef: string | null | undefined, prNumber?: number | null): boolean;
   /** The 400 body to refuse with, or null when `baseRef` is legal. */
   refusal(
     baseRef: string | null | undefined,
@@ -95,8 +103,11 @@ export function buildMissionBaseGuard(args: {
   });
   const enforced = !!integrationBase && !isMissionPrOwner && !isStackedPhase;
 
-  function allows(baseRef: string | null | undefined): boolean {
+  const boundRetryPr = task?.conflictRetryPrNumber ?? null;
+
+  function allows(baseRef: string | null | undefined, prNumber?: number | null): boolean {
     if (!enforced) return true;
+    if (boundRetryPr != null && prNumber === boundRetryPr) return true;
     return isPrLegalForMissionTask({
       baseRef: baseRef ?? null,
       mission,
@@ -112,7 +123,7 @@ export function buildMissionBaseGuard(args: {
     enforced,
     allows,
     refusal(baseRef, opts) {
-      if (allows(baseRef)) return null;
+      if (allows(baseRef, opts?.prNumber)) return null;
       const subject = opts?.prNumber ? `PR #${opts.prNumber}` : 'this pull request';
       const action = opts?.action ?? 'register';
       const observed = baseRef?.trim() ? `'${baseRef.trim()}'` : "unknown";
