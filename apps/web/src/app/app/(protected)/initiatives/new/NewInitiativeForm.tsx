@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
+import PrimaryAction from '@/components/ui/PrimaryAction';
 
 interface Props {
   teamId: string;
@@ -52,13 +53,9 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
 
   return (
     <div className="max-w-lg">
-      <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        <Link href="/app/initiatives" className="hover:text-text-secondary transition-colors">Initiatives</Link>
-        <span>/</span>
-        <span className="text-text-secondary">New initiative</span>
-      </div>
+      <Link href="/app/initiatives" className="font-mono text-[13px] text-text-muted hover:text-text-primary">‹ Initiatives</Link>
 
-      <h1 className="text-xl font-semibold text-text-primary font-sans mb-1">New Initiative</h1>
+      <h1 className="mt-3 text-xl font-semibold text-text-primary font-sans mb-1">New initiative</h1>
       <p className="text-sm text-text-secondary mb-6">
         An initiative groups the missions behind one goal. You own it and set its
         status; its missions carry the schedules, budgets and work.
@@ -126,14 +123,15 @@ export default function NewInitiativeForm({ teamId, workspaces }: Props) {
         {error && <p className="text-sm text-status-error">{error}</p>}
 
         <div className="flex items-center gap-2 mt-2">
-          <button
+          <PrimaryAction
             onClick={handleSubmit}
-            disabled={submitting || !title.trim()}
-            className="px-4 py-2 text-sm font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors disabled:opacity-50"
+            pending={submitting}
+            disabled={!title.trim()}
+            data-testid="create-initiative"
           >
-            {submitting ? 'Creating…' : 'Create Initiative'}
-          </button>
-          <Link href="/app/initiatives" className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors">
+            {submitting ? 'Creating…' : 'Create initiative'}
+          </PrimaryAction>
+          <Link href="/app/initiatives" className="btn btn-quiet h-11 md:h-10">
             Cancel
           </Link>
         </div>
