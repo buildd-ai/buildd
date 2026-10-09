@@ -41,7 +41,7 @@ export default async function AccountSettingsPage() {
       {/* The rules chat loads into every one of your turns; yours only. */}
       <StandingRulesSection />
 
-      {/* What chat uses for you (links to Model providers); your own key only when the team's policy allows it. */}
+      {/* What chat uses for you (links to Providers); your own keys, for chat and your agent tasks, only when the team's policy allows them. */}
       <PersonalProviderKeys teamId={currentTeamId} isAdmin={perms.manage_inference_providers} />
 
       <section aria-labelledby="teams-h">
