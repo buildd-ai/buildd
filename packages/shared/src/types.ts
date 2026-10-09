@@ -469,10 +469,33 @@ export interface MergePolicy {
 
   // How long a PR can sit at this tier before notifying
   stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
+
+  /**
+   * Who decides a migration that moves data (INSERT/UPDATE/DELETE/MERGE).
+   * 'person' (default): a person merges it, as before. 'agent-review': it goes
+   * through the reviewer agent like any other PR and lands on approval. Only
+   * takes effect under tier 'agent-review' (there is no reviewer otherwise).
+   * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
+   */
+  dataMigrations?: DataMigrationsPolicy;
+}
+
+export type DataMigrationsPolicy = 'person' | 'agent-review';
+const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
+
+/**
+ * True when the reviewer agent, not a person, decides data migrations: tier
+ * 'agent-review' and `dataMigrations: 'agent-review'`. Tolerates any stored
+ * shape (a malformed or missing policy is the default: a person decides).
+ */
+export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -557,6 +580,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.tier must be one of: ${VALID_TIERS.join(', ')}`,
       field: 'tier',
+    };
+  }
+
+  if (obj.dataMigrations !== undefined && !VALID_DATA_MIGRATIONS.includes(obj.dataMigrations as DataMigrationsPolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
+      field: 'dataMigrations',
     };
   }
 

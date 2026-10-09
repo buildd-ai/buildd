@@ -100,6 +100,9 @@ export default function MergePolicyEditor({
     policy.agentReview?.gateCondition ?? 'approve-and-merge',
   );
 
+  // Who decides a migration that moves data (agent-review tier only)
+  const [dataMigrations, setDataMigrations] = useState<'person' | 'agent-review'>(policy.dataMigrations ?? 'person');
+
   // Stall notify
   const [stallMinutes, setStallMinutes] = useState(String(policy.stallNotifyMinutes ?? ''));
 
@@ -123,6 +126,7 @@ export default function MergePolicyEditor({
         maxConfidenceThreshold: parseFloat(maxConfidence) || 0.6,
         gateCondition,
       };
+      if (dataMigrations === 'agent-review') p.dataMigrations = 'agent-review';
     }
 
     const stall = parseInt(stallMinutes);
@@ -264,6 +268,20 @@ export default function MergePolicyEditor({
                   { value: 'approve-only', label: 'Approve only', description: 'A human merges' },
                 ]}
               />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm text-text-primary">Data migrations</label>
+              <Select
+                aria-label="Data migrations"
+                value={dataMigrations}
+                onChange={v => setDataMigrations(v as 'person' | 'agent-review')}
+                options={[
+                  { value: 'person', label: 'A person decides' },
+                  { value: 'agent-review', label: 'Reviewer agent decides', description: 'Lands on approval like any other PR' },
+                ]}
+              />
+              <p className="text-xs text-text-muted">Migrations that update, insert or delete rows. Dropping or renaming tables and columns always needs a person.</p>
             </div>
           </div>
         </div>
