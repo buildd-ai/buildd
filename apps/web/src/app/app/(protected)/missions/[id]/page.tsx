@@ -109,6 +109,7 @@ import { loadDependencyRows } from '@/lib/dependency-rows';
 import { resolveEffectiveRoles } from '@/lib/effective-roles';
 import MissionSituationBlock, { affordanceFor, MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import type { WaitingFor } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -696,7 +697,7 @@ export default async function MissionDetailPage({
       startedAt: w.startedAt ? String(w.startedAt) : null,
       currentAction: w.currentAction ?? null,
       branch: w.branch ?? null,
-      waitingFor: (w.waitingFor as { type: string; prompt: string; options?: string[] } | null) ?? null,
+      waitingFor: (w.waitingFor as WaitingFor | null) ?? null,
     };
   }
 

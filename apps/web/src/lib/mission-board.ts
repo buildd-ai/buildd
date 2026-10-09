@@ -35,6 +35,7 @@ import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
 import { deliveryReading, type DeliveryDisplay, type DeliveryReading, type DeliveryReadingInput, type DeliveryTone } from './workflow/delivery-display';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -432,9 +433,7 @@ export function selectMilestones(raw: unknown, max = 24): BoardMilestone[] {
 /** Normalise one DB worker row (dates, jsonb) into the board's input. */
 export function toBoardWorkerInput(w: Record<string, unknown>): BoardWorkerInput {
   const wf = w.waitingFor as { prompt?: unknown; options?: unknown } | null | undefined;
-  const options = Array.isArray(wf?.options)
-    ? (wf!.options as unknown[]).map(o => (typeof o === 'string' ? o : str((o as { label?: unknown })?.label))).filter((o): o is string => !!o)
-    : [];
+  const options = waitingForOptionLabels(wf?.options);
   return {
     id: String(w.id),
     status: str(w.status) ?? 'unknown',
