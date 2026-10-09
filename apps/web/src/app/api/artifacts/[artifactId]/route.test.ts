@@ -40,6 +40,12 @@ mock.module('@/lib/member-repo-access', () => ({
   memberRepoAccessSubject: (a: { sessionUserId?: string } | null, u: { id: string } | null) => (a ? a.sessionUserId ?? null : u?.id ?? null),
 }));
 
+let storageConfigured = true;
+mock.module('@/lib/storage', () => ({
+  isStorageConfigured: () => storageConfigured,
+  generateDownloadUrl: async (key: string) => `https://signed.example/${key}`,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -677,5 +683,39 @@ describe('/api/artifacts/[artifactId] — per-task token', () => {
     const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
     expect(res.status).toBe(200);
     expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/artifacts/[artifactId] — file artifact download URL', () => {
+  const fileRow = {
+    id: 'artifact-1', workerId: 'worker-1', workspaceId: 'ws-1', type: 'file', title: 'proto',
+    content: null, shareToken: null, visibility: 'private', metadata: {}, storageKey: 'ws-1/proto.html',
+    worker: { accountId: 'account-1', workspaceId: 'ws-1' },
+  };
+
+  beforeEach(() => {
+    storageConfigured = true;
+    mockAuthenticateApiKey.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  });
+
+  it('includes a presigned downloadUrl for a file artifact the caller may read', async () => {
+    mockArtifactsFindFirst.mockResolvedValue(fileRow);
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBe('https://signed.example/ws-1/proto.html');
+  });
+
+  it('omits downloadUrl when storage is not configured', async () => {
+    storageConfigured = false;
+    mockArtifactsFindFirst.mockResolvedValue(fileRow);
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBeNull();
+  });
+
+  it('omits downloadUrl for an artifact without a stored file', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...fileRow, storageKey: null });
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBeNull();
   });
 });
