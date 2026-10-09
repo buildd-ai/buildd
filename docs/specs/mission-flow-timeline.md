@@ -10,6 +10,41 @@ related: [mission-progress-strip-ordering, mission-structure-view, mission-task-
 keywords: [flow, flow tab, timeline, gantt, critical path, finish is set by, dependency edges, elbow, same files, soft overlap, merged fold, lanes, structure view, layout=lanes]
 verified_by: [apps/web/src/lib/flow-timeline.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.test.tsx", apps/web/src/lib/mission-layout.test.ts]
 supersedes: [mission-structure-view]
+assertions:
+  - id: "flow-build-timeline"
+    type: "symbol"
+    name: "buildFlowTimeline"
+    path: "apps/web/src/lib/flow-timeline.ts"
+  - id: "flow-same-files-gates"
+    type: "symbol"
+    name: "flowGates"
+    path: "apps/web/src/lib/flow-timeline.ts"
+  - id: "flow-critical-path"
+    type: "symbol"
+    name: "criticalPath"
+    path: "apps/web/src/lib/flow-timeline.ts"
+  - id: "flow-merged-fold"
+    type: "symbol"
+    name: "shouldFoldMerged"
+    path: "apps/web/src/lib/flow-timeline.ts"
+  - id: "flow-edge-lighting"
+    type: "symbol"
+    name: "flowLit"
+    path: "apps/web/src/lib/flow-timeline.ts"
+  - id: "flow-timeline-reachable-from-component"
+    type: "symbol_reachable"
+    symbol: "buildFlowTimeline"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.tsx"
+  - id: "flow-critical-path-line-reachable"
+    type: "symbol_reachable"
+    symbol: "criticalPathLine"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.tsx"
+  - id: "flow-model-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/flow-timeline.test.ts"
+  - id: "flow-component-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/FlowTimeline.test.tsx"
 ---
 
 # Mission Flow Timeline
