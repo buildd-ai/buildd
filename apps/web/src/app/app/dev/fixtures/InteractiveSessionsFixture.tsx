@@ -3,9 +3,7 @@
 /**
  * `?state=interactive-sessions`: where people's own coding sessions show.
  *
- * 1. Home's runner board with one runner and the "Your sessions" lane: the
- *    two tasks a working session holds right now, one row each.
- * 2. Activity's Interactive sessions section, collapsed: the working session
+ * Activity's Interactive sessions section, collapsed: the working session
  *    (five tasks: three shown, "+2 more"), four sessions online with no task
  *    folded into one line, and earlier (offline and ended) ones folded under
  *    "N earlier sessions".
@@ -14,10 +12,7 @@
  */
 import { useEffect, useState } from 'react';
 import InteractiveSessions from '@/app/app/(protected)/tasks/InteractiveSessions';
-import { FleetStrip } from '@/app/app/(protected)/home/FleetStrip';
-import { buildFleetSnapshot } from '@/lib/fleet-view';
 import type { LocalSessionView } from '@/lib/local-session-view';
-import type { FleetSnapshot } from '@buildd/shared';
 
 export function interactiveSessionsFixture(now: number): LocalSessionView[] {
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString();
@@ -50,32 +45,12 @@ export function interactiveSessionsFixture(now: number): LocalSessionView[] {
 }
 
 /** The runner board as Home draws it: one runner, plus the working session's two live tasks as their own lane. */
-export function interactiveSessionsFleetFixture(now: number): FleetSnapshot {
-  const ago = (m: number) => new Date(now - m * 60_000);
-  const url = 'http://atlas.local:8766';
-  return buildFleetSnapshot(
-    [{ id: 'hb-atlas', accountId: 'acct', localUiUrl: url, maxConcurrentWorkers: 4, lastHeartbeatAt: ago(0) }],
-    [
-      { id: 'w-runner-1', accountId: 'acct', runner: url, localUiUrl: url, status: 'running', startedAt: ago(18), phase: 'Changes',
-        task: { id: 'fixture-task-20', title: 'feat(search): index product tags', roleSlug: 'builder', missionId: null } },
-      { id: 'w-1', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(24), updatedAt: ago(1),
-        task: { id: 'fixture-task-1', title: 'fix(checkout): total rounding', roleSlug: null, missionId: null } },
-      { id: 'w-3', accountId: 'acct', runner: 'mcp', status: 'running', startedAt: ago(9), updatedAt: ago(0), phase: 'Changes',
-        task: { id: 'fixture-task-3', title: 'feat(shipping): cache the quote', roleSlug: null, missionId: null } },
-    ],
-    { now, sessionsOnline: 5 },
-  );
-}
-
 export default function InteractiveSessionsFixture() {
   // Built after mount so server and client render the same relative times.
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => setNow(Date.now()), []);
   return (
     <div className="min-h-screen bg-surface-1 py-6">
-      <div className="mx-auto max-w-5xl px-4">
-        {now != null && <FleetStrip fleet={interactiveSessionsFleetFixture(now)} roles={[]} now={now} />}
-      </div>
       <div className="mx-auto max-w-3xl">
         {now != null && <InteractiveSessions sessions={interactiveSessionsFixture(now)} now={now} />}
       </div>

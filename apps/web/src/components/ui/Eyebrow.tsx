@@ -16,10 +16,10 @@ export interface EyebrowProps {
   className?: string;
 }
 
-/** The small uppercase label above a title, card or section (type role `eyebrow`, = `.section-label`). */
+/** The quiet label above a title, card or section (type role `eyebrow`, = `.section-label`): sans, semibold, sentence case. */
 export default function Eyebrow({ children, as: Tag = 'span', tone = 'default', id, className = '' }: EyebrowProps) {
   return (
-    <Tag id={id} className={`font-mono text-eyebrow font-bold uppercase tracking-[2px] ${TONE[tone]} ${className}`}>
+    <Tag id={id} className={`font-sans text-eyebrow font-semibold ${TONE[tone]} ${className}`}>
       {children}
     </Tag>
   );
