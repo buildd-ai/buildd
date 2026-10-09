@@ -163,6 +163,13 @@ export interface ActionContext {
   // 'chat': a person in agent chat, not a worker. Worker-directed hints
   // ("call claim_task") are left out: chat cannot claim.
   surface?: 'chat';
+  // Who is behind the call: a signed-in person (an OAuth MCP session, or
+  // chat), an account key, or a per-task token. Personal roles belong to a
+  // person, so register_skill/update_skill/delete_skill { personal: true }
+  // refuse 'key' and 'task_token' with a reason. Undefined (the in-process
+  // runner server) leaves the decision to the REST route, which refuses a
+  // caller with no person the same way.
+  principal?: 'person' | 'key' | 'task_token';
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
   /** null/undefined retains legacy level permissions; [] grants no capabilities. */
@@ -449,6 +456,7 @@ export const ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS: Readonly<Record<string, rea
  */
 export function orchestrationTaskTokenRefusal(action: string, params: Record<string, unknown> = {}): string | null {
   if (!(adminActions as readonly string[]).includes(action)) return null;
+  if (isPersonalRoleCall(action, params)) return PERSONAL_ROLE_TASK_TOKEN_REFUSAL;
   if (!Object.hasOwn(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS, action)) {
     return `action '${action}' is team-wide; a per-task token cannot use it, even at admin level`;
   }
@@ -460,6 +468,27 @@ export function orchestrationTaskTokenRefusal(action: string, params: Record<str
 }
 
 export const allActions = [...workerActions, ...adminActions] as const;
+
+/**
+ * Admin actions with a personal-role path: `{ personal: true }` writes a role
+ * owned by the caller through /api/roles (permission create_personal_roles,
+ * members by default), never a workspace or team skill. That path is open at
+ * worker level, so an OAuth member session (worker level) can use it; the
+ * team-role path stays admin. The route decides who may edit which personal
+ * role (owner, or a team admin once shared); MCP does not pre-refuse.
+ */
+export const PERSONAL_ROLE_ACTIONS = ['register_skill', 'update_skill', 'delete_skill'] as const;
+
+/** A register/update/delete_skill call on the caller's personal-role path. */
+export function isPersonalRoleCall(action: string, params: Record<string, unknown> | undefined): boolean {
+  return (PERSONAL_ROLE_ACTIONS as readonly string[]).includes(action)
+    && (params?.personal === true || params?.personal === 'true');
+}
+
+export const PERSONAL_ROLE_TASK_TOKEN_REFUSAL =
+  'A per-task token has no person behind it, so it cannot create or edit a personal role for anyone, its requester included. Ask the person to create it from the dashboard, buildd chat, or their own MCP session.';
+export const PERSONAL_ROLE_KEY_REFUSAL =
+  'An API key has no person behind it, so it cannot create or edit a personal role. Use the dashboard, buildd chat, or an MCP session signed in as yourself (OAuth).';
 
 // delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)
 export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'query_knowledge'] as const;
@@ -661,11 +690,11 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
-    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides), whenToUse? (20–300 chars: the work this role should pick up; a role without it is never inferred for a role-less task), notFor? (≤200 chars: nearby work that belongs to another role, named), claudeAiArtifacts? ("off"|"read"|"publish" — lets this role\'s sessions use Claude Code\'s claude.ai Artifact tool on the team seat: read/list only, or also publish for artifact producers; delete is always refused; a task overrides with context.claudeAiArtifacts) } — create/upsert skill by slug [admin]',
+    register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides), whenToUse? (20–300 chars: the work this role should pick up; a role without it is never inferred for a role-less task), notFor? (≤200 chars: nearby work that belongs to another role, named), claudeAiArtifacts? ("off"|"read"|"publish" — lets this role\'s sessions use Claude Code\'s claude.ai Artifact tool on the team seat: read/list only, or also publish for artifact producers; delete is always refused; a task overrides with context.claudeAiArtifacts), personal? (true: a role owned by YOU instead of a team skill — any member, worker level; starts private, only you can use it; goes to /api/roles, ignores workspaceId; no mcpServers or operator grant, requiredEnvVars only map your own secrets), visibility? (with personal: "team" shares it on create), teamId? (with personal: defaults to the session team) } — create/upsert skill by slug [admin; personal: true at worker level]. A per-task token or API key cannot create a personal role (no person behind it).',
     list_skills: '{ workspaceId?, enabled? (boolean), isRole? (boolean) } — list skills/roles in workspace [admin]',
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
-    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null), whenToUse? (20–300 chars, null clears), notFor? (≤200 chars, null clears), claudeAiArtifacts? ("off"|"read"|"publish", null clears) } — update skill by slug [admin]',
-    delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
+    update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null), whenToUse? (20–300 chars, null clears), notFor? (≤200 chars, null clears), claudeAiArtifacts? ("off"|"read"|"publish", null clears), personal? (true: edit a personal role by slug — your own first, else a shared one; worker level, the owner or a team admin once shared may edit), visibility? (with personal: "team" shares it with the team, "private" takes it back) } — update skill by slug [admin; personal: true at worker level]',
+    delete_skill: '{ slug (required), workspaceId?, personal? (true: delete your own personal role, or a shared one as a team admin; worker level) } — delete skill by slug [admin; personal: true at worker level]',
     manage_evidence_backends: '{ action: "list" | "get" | "create" | "update" | "delete" | "verify", backendId? (required except list/create), workspaceId? (create: scope the backend to one workspace; omit for the team default), provider? (create: "s3" | "r2" | "s3_compatible" | "buildd_default"), endpoint? (https URL; required for r2 and s3_compatible; must resolve to a public address), region?, bucket? (required except buildd_default), prefix? (one path segment, default "evidence"), forcePathStyle?: boolean, sse? ("none" | "AES256" | "aws:kms"), kmsKeyId? (only with aws:kms), retentionDays? (1-3650, default 30), maxBytesPerTask? (bytes, default 8 MiB), credentials? ({ accessKeyId, secretAccessKey, sessionToken? }; required for create, replaces the stored credential on update; never returned) } — where a team\'s run evidence is written: a workspace backend beats the team backend, which beats the buildd-managed bucket. create and update verify the bucket on save (PUT, GET, DELETE of one probe object under {prefix}/.buildd-probe/, never a list) and report it; a failing probe does not reject the save or affect any task. verify re-runs the probe and warns when the probe object is readable without credentials. provider and workspaceId cannot change after create. [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
@@ -1208,6 +1237,80 @@ async function resolveSkillId(api: ApiFn, wsId: string, slug: string): Promise<s
 /**
  * Build a skill update body from params, picking only defined fields.
  */
+/**
+ * The personal-role path of register_skill / update_skill / delete_skill
+ * ({ personal: true }): a role owned by the caller, through /api/roles with
+ * the caller's own credentials. It never touches workspace skills. A slug
+ * resolves to the caller's own personal role first, else a shared one they
+ * can see (an admin may edit a shared role); the route decides who may write.
+ */
+async function handlePersonalRole(
+  api: ApiFn,
+  action: 'register_skill' | 'update_skill' | 'delete_skill',
+  params: Record<string, unknown>,
+  ctx: ActionContext,
+): Promise<ToolResult> {
+  if (ctx.principal === 'task_token') return errorResult(PERSONAL_ROLE_TASK_TOKEN_REFUSAL);
+  if (ctx.principal === 'key') return errorResult(PERSONAL_ROLE_KEY_REFUSAL);
+  const visibility = params.visibility;
+  if (visibility !== undefined && visibility !== 'team' && visibility !== 'private') {
+    throw new Error("visibility must be 'team' (everyone in the team can use it) or 'private' (only you)");
+  }
+
+  const fields = buildSkillBody(params);
+  // A personal row is always a role and always team-level.
+  delete fields.isRole;
+  delete fields.source;
+
+  if (action === 'register_skill') {
+    if (!params.name || !params.content) throw new Error('name and content are required');
+    const body: Record<string, unknown> = { ...fields, personal: true };
+    if (typeof params.slug === 'string' && params.slug) body.slug = params.slug;
+    if (typeof params.teamId === 'string' && params.teamId) body.teamId = params.teamId;
+    const data = await api('/api/roles', { method: 'POST', body: JSON.stringify(body) });
+    let skill = data.skill;
+    if (visibility === 'team') {
+      const shared = await api(`/api/roles/${skill.id}/share`, { method: 'POST', body: JSON.stringify({ visibility: 'team' }) });
+      skill = shared.skill ?? skill;
+    }
+    const who = skill.visibility === 'team'
+      ? 'shared: everyone in the team can use it'
+      : `private: only you can use it. Share it with update_skill { slug: "${skill.slug}", personal: true, visibility: "team" }`;
+    return text(`Personal role created: "${skill.name}" (slug: ${skill.slug}, id: ${skill.id})\nVisibility: ${skill.visibility} (${who})`);
+  }
+
+  if (!params.slug) throw new Error('slug is required to identify the personal role');
+  const listed = await api('/api/roles');
+  const candidates = ((listed?.roles ?? []) as Array<Record<string, any>>)
+    .filter(r => r.personal === true && r.slug === params.slug);
+  const role = candidates.find(r => r.mine === true) ?? candidates[0];
+  if (!role) {
+    throw new Error(`No personal role with slug "${params.slug}" that you can see (yours, or one shared with the team). Another member's private role is never visible.`);
+  }
+
+  if (action === 'delete_skill') {
+    await api(`/api/roles/${role.id}`, { method: 'DELETE' });
+    return text(`Personal role "${params.slug}" deleted.`);
+  }
+
+  if (Object.keys(fields).length === 0 && visibility === undefined) {
+    throw new Error('No fields to update. Provide visibility ("team" | "private") or at least one field (name, content, description, model, ...)');
+  }
+  const lines: string[] = [];
+  let skill: Record<string, any> = role;
+  if (Object.keys(fields).length > 0) {
+    const data = await api(`/api/roles/${role.id}`, { method: 'PATCH', body: JSON.stringify(fields) });
+    skill = data.skill ?? skill;
+    lines.push(`Personal role updated: "${skill.name}" (slug: ${skill.slug})`);
+  }
+  if (visibility !== undefined) {
+    const data = await api(`/api/roles/${role.id}/share`, { method: 'POST', body: JSON.stringify({ visibility }) });
+    skill = data.skill ?? skill;
+    lines.push(`Visibility: ${skill.visibility} (${skill.visibility === 'team' ? 'everyone in the team can use it' : 'only its owner can use it'})`);
+  }
+  return text(lines.join('\n'));
+}
+
 function buildSkillBody(params: Record<string, unknown>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (params.name) body.name = params.name;
@@ -1521,10 +1624,14 @@ const adminActionsSet = new Set<string>([...adminActions]);
  * Using `return` instead of `throw` keeps the error in-band as a ToolResult
  * and prevents the route-level catch from re-wrapping it as a generic "Error: …".
  */
-async function requireAdminLevel(ctx: ActionContext, action: string): Promise<ToolResult | null> {
+async function requireAdminLevel(ctx: ActionContext, action: string, params?: Record<string, unknown>): Promise<ToolResult | null> {
   if (!adminActionsSet.has(action)) return null;
   const level = await ctx.getLevel();
   if (level === 'admin') return null;
+  // A personal role is any member's own (PERSONAL_ROLE_ACTIONS): worker level.
+  if (isPersonalRoleCall(action, params)) {
+    return level === 'worker' ? null : forbiddenResult(`action '${action}' with personal: true requires a worker or admin token`, level, 'worker');
+  }
   return forbiddenResult(`action '${action}' requires admin token level`, level, 'admin');
 }
 
@@ -1758,7 +1865,7 @@ export async function handleBuilddAction(
     // Existing tokens keep their level-based permissions.
     const levelErr = await requireWorkerLevel(ctx, action);
     if (levelErr) return levelErr;
-    const adminErr = await requireAdminLevel(ctx, action);
+    const adminErr = await requireAdminLevel(ctx, action, params);
     if (adminErr) return adminErr;
   }
 
@@ -3777,6 +3884,7 @@ export async function handleBuilddAction(
     }
 
     case 'register_skill': {
+      if (isPersonalRoleCall(action, params)) return handlePersonalRole(api, 'register_skill', params, ctx);
       if (!params.name || !params.content) throw new Error('name and content are required');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -3946,6 +4054,7 @@ export async function handleBuilddAction(
     }
 
     case 'update_skill': {
+      if (isPersonalRoleCall(action, params)) return handlePersonalRole(api, 'update_skill', params, ctx);
       if (!params.slug) throw new Error('slug is required to identify the skill to update');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
@@ -3971,6 +4080,7 @@ export async function handleBuilddAction(
     }
 
     case 'delete_skill': {
+      if (isPersonalRoleCall(action, params)) return handlePersonalRole(api, 'delete_skill', params, ctx);
       if (!params.slug) throw new Error('slug is required to identify the skill to delete');
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
