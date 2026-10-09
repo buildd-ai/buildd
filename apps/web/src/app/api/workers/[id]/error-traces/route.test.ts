@@ -90,3 +90,65 @@ describe('GET /api/workers/[id]/error-traces', () => {
     });
   });
 });
+
+// Invariant: an OAuth session acts as an account its whole team shares, so a
+// bearer caller reads a worker's traces only when its session user is the one
+// that claimed it (lib/worker-owner.ts). A teammate's session, an admin-level
+// session that did not claim, and a session with no team id are refused. The
+// dashboard cookie path stays workspace-access based and is unaffected.
+describe('GET /api/workers/[id]/error-traces — OAuth session owner check', () => {
+  const session = (over: Record<string, unknown> = {}) => ({ id: 'acct-1', teamId: 'team-1', sessionUserId: 'user-a', level: 'worker', ...over });
+  const claimed = (claimedByUserId: string) => ({ id: WORKER, accountId: 'acct-1', workspaceId: 'ws-1', claimedByUserId });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockWorkerFindFirst.mockReset();
+    mockTracesFindMany.mockReset();
+    mockTracesFindMany.mockResolvedValue([{ pattern: 'git_fatal', excerpt: 'fatal' }]);
+  });
+
+  it('lets the session that claimed the worker read its traces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session());
+    mockWorkerFindFirst.mockResolvedValue(claimed('user-a'));
+    const res = await GET(req(), params());
+    expect(res.status).toBe(200);
+    expect(mockTracesFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('403s a same-team member on the shared account, without reading traces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b' }));
+    mockWorkerFindFirst.mockResolvedValue(claimed('user-a'));
+    const res = await GET(req(), params());
+    expect(res.status).toBe(403);
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('403s an admin-level bearer session that did not claim the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session({ sessionUserId: 'user-b', level: 'admin' }));
+    mockWorkerFindFirst.mockResolvedValue(claimed('user-a'));
+    const res = await GET(req(), params());
+    expect(res.status).toBe(403);
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+
+  it('still lets a dashboard cookie session with workspace access read a teammate’s worker', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockWorkerFindFirst.mockResolvedValue(claimed('user-a'));
+    const res = await GET(req(), params());
+    expect(res.status).toBe(200);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-b', 'ws-1');
+  });
+
+  it('403s a session with no team id, even as the claimer', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(session({ teamId: null }));
+    mockWorkerFindFirst.mockResolvedValue(claimed('user-a'));
+    const res = await GET(req(), params());
+    expect(res.status).toBe(403);
+    expect(mockTracesFindMany).not.toHaveBeenCalled();
+  });
+});

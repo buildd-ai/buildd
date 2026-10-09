@@ -17,7 +17,7 @@ const CF_ACCOUNT = 'fedcba9876543210fedcba9876543210';
 const SCOPE = { providers: ['cloudflare'], projects: ['model-policy'], environments: ['production'], credentialRefs: ['cloudflare-prod'] };
 const BODY = { provider: 'cloudflare', project: 'model-policy', environment: 'production', credentialRef: 'cloudflare-prod', operation: 'status' };
 
-let authed: { id: string; teamId: string; level: string } | null;
+let authed: { id: string; teamId: string | null; level: string; sessionUserId?: string } | null;
 let worker: Record<string, unknown> | null;
 let task: Record<string, unknown> | null;
 let workspace: Record<string, unknown> | null;
@@ -153,5 +153,46 @@ describe('POST /api/workers/[id]/deployments', () => {
     workspace = { id: 'ws-2', teamId: 'team-1' };
     const res = await POST(req({ ...BODY, workspaceId: 'ws-1' }), params());
     expect(res.status).toBe(403);
+  });
+});
+
+// Invariant: an OAuth session resolves to an account its whole team shares, so
+// the account id alone does not say who claimed the worker. Only the session
+// user recorded as claimedByUserId may deploy from it. There is no admin path:
+// an admin-level member who did not claim the worker is refused too.
+describe('POST /api/workers/[id]/deployments — OAuth session owner check', () => {
+  beforeEach(() => {
+    worker = { ...worker!, claimedByUserId: 'user-a' };
+  });
+
+  const expectNothingWritten = () => {
+    expect(audits).toHaveLength(0);
+    expect(credentialReads).toBe(0);
+    expect(providerCalls).toHaveLength(0);
+  };
+
+  it('allows the OAuth session that claimed the worker', async () => {
+    authed = { id: ACCOUNT, teamId: 'team-1', level: 'worker', sessionUserId: 'user-a' };
+    const res = await POST(req(BODY, 'oauth_a'), params());
+    expect(res.status).toBe(200);
+    expect(audits).toHaveLength(1);
+  });
+
+  it('refuses another same-team OAuth member on the shared account and writes nothing', async () => {
+    authed = { id: ACCOUNT, teamId: 'team-1', level: 'worker', sessionUserId: 'user-b' };
+    expect((await POST(req(BODY, 'oauth_b'), params())).status).toBe(404);
+    expectNothingWritten();
+  });
+
+  it('refuses an admin-level member who did not claim the worker (no admin path)', async () => {
+    authed = { id: ACCOUNT, teamId: 'team-1', level: 'admin', sessionUserId: 'user-b' };
+    expect((await POST(req(BODY, 'oauth_b_admin'), params())).status).toBe(404);
+    expectNothingWritten();
+  });
+
+  it('refuses a session with no team id, even as the claiming user', async () => {
+    authed = { id: ACCOUNT, teamId: null, level: 'worker', sessionUserId: 'user-a' };
+    expect((await POST(req(BODY, 'oauth_noteam'), params())).status).toBe(404);
+    expectNothingWritten();
   });
 });

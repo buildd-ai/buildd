@@ -20,7 +20,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { loadOperatorGrant } from '@/lib/operator-capability-source';
 import { runDeploymentAction } from '@/lib/deployments/action';
@@ -42,9 +43,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, workspaceId: true, taskId: true, status: true },
+    columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
   });
-  if (!worker || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) return notFound();
+  if (!worker || !callerOwnsWorker(account, worker)) return notFound();
   if (!worker.taskId) return NextResponse.json({ error: 'This worker has no task' }, { status: 409, headers: NO_STORE });
   if (!(LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status)) {
     return NextResponse.json({ error: `Worker is ${worker.status}; deployments run only from a live worker` }, { status: 409, headers: NO_STORE });
