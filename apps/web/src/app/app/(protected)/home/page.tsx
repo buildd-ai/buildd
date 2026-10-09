@@ -4,7 +4,8 @@ import { after } from 'next/server';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
-import { resolveHumanPrReview, isCurrentReviewApproved, type HumanPrReview } from '@/lib/reviewer-gate';
+import { resolveHumanPrReview, isCurrentReviewApproved, reviewFactsForAdvice, type HumanPrReview } from '@/lib/reviewer-gate';
+import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
@@ -277,6 +278,8 @@ export default async function HomePage({
   // head (resolveReviewInFlight). Keeps a human-gated PR out of "Needs you"
   // while the reviewer owns the next step.
   const reviewInFlightByTaskId = new Map<string, 'queued' | 'reviewing'>();
+  // Per human-review PR worker: the review facts the "Ask Jev" advice reads.
+  const mergeAdviceBaseByWorkerId = new Map<string, import('@/lib/merge-advice-server').MergeAdviceBase>();
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
   // Open discrepancy rows beyond each workspace's visible top-10 (§12) — never
@@ -1058,6 +1061,21 @@ export default async function HomePage({
                 queuedThresholdMinutes: policy.stallNotifyMinutes,
               });
               if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
+              if (humanReview) {
+                const reviewFacts = reviewFactsForAdvice({
+                  reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                  inFlight: !!reviewInFlight,
+                });
+                mergeAdviceBaseByWorkerId.set(w.id, {
+                  prLifecycleStatus: w.prLifecycleStatus ?? null,
+                  review: reviewFacts.review,
+                  reviewConfidence: reviewFacts.confidence,
+                  reviewHeadSha: reviewFacts.reviewHeadSha,
+                  githubApprovalRequired: humanReview.label === 'Approve on GitHub',
+                  draft: !!w.prIsDraft,
+                  policyTier: policy.tier,
+                });
+              }
               // Who owns the landing: one derivation, consumed by the gate. An
               // actual human review request is a different ask and is left alone.
               const landing = !humanReview && w.prNumber != null
@@ -1970,6 +1988,8 @@ export default async function HomePage({
           ...waitingOnYou.flatMap((w) => (w.kind === 'failed' && w.taskId ? [w.taskId] : [])),
         ]);
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys, deliveryViews });
+        // After the fold: a ship card's refresh-first dependency is one of the facts.
+        actionQueue = await attachMergeAdvice(actionQueue, mergeAdviceBaseByWorkerId);
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
