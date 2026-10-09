@@ -679,11 +679,6 @@
       "apps/web/src/lib/chat/conversations.ts": "chat",
       "apps/web/src/lib/mission-task-href.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/tasks/new/page.tsx": {
-      "apps/web/src/components/skills/SkillPills.tsx": "roles-skills",
-      "apps/web/src/components/skills/SkillSlashTypeahead.tsx": "roles-skills",
-      "apps/web/src/components/skills/WorkflowSelector.tsx": "roles-skills"
-    },
     "apps/web/src/app/app/(protected)/tasks/page.tsx": {
       "packages/core/mission-helpers.ts": "missions"
     },
