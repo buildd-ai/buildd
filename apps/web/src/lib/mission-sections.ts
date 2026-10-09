@@ -24,14 +24,16 @@ export const SECTION_META: Record<MissionSectionKey, { label: string; order: str
 export const SECTION_KEYS: readonly MissionSectionKey[] = ['needs', 'motion', 'waiting'];
 
 const SECTION_OF: Record<DeliveryKind, MissionSectionKey> = {
-  needs: 'needs', notlanded: 'needs',
-  unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
+  // `notlanded` is split in `sectionOf`: only a closed PR still being reconciled
+  // is moving; an abandoned PR or a failed task is a person's call.
+  needs: 'needs', notlanded: 'needs', unavailable: 'motion', repair: 'motion', audit: 'motion', landing: 'motion', build: 'motion',
   waiting: 'waiting', held: 'waiting', planning: 'waiting',
   // A landed mission still open is about to complete: it is moving, not waiting.
   landed: 'motion',
 };
 
-export const sectionOf = (r: PortfolioRow): MissionSectionKey => SECTION_OF[r.delivery.kind];
+export const sectionOf = (r: PortfolioRow): MissionSectionKey =>
+  r.delivery.kind === 'notlanded' && r.delivery.reconciling ? 'motion' : SECTION_OF[r.delivery.kind];
 
 /** A mission's delivery kind as the shared state vocabulary (glyph + word). */
 export const STATE_OF_KIND: Record<DeliveryKind, StateKey | null> = {
@@ -40,6 +42,10 @@ export const STATE_OF_KIND: Record<DeliveryKind, StateKey | null> = {
   // Not started: no state pill; the row says why in words.
   waiting: null, held: null, planning: null,
 };
+
+/** The state pill for a mission: a closed PR being reconciled reads Recovering, not Not landed. */
+export const stateOfDelivery = (d: PortfolioRow['delivery']): StateKey | null =>
+  d.kind === 'notlanded' && d.reconciling ? 'recovering' : STATE_OF_KIND[d.kind];
 
 const byId = (a: PortfolioRow, b: PortfolioRow) => a.delivery.id.localeCompare(b.delivery.id);
 /** Epoch ms, a missing time last. */

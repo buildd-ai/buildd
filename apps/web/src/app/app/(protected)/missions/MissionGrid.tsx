@@ -16,7 +16,7 @@ import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { Select } from '@/components/ui/Select';
 import MissionRow from '@/components/ui/MissionRow';
 import { DELIVERY_KIND } from '@/lib/delivery-projection';
-import { STATE_OF_KIND, buildMissionSections } from '@/lib/mission-sections';
+import { stateOfDelivery, buildMissionSections } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
   PORTFOLIO_STATUS_FILTERS,
@@ -250,7 +250,7 @@ function nextLine(r: PortfolioRow): string {
 function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
   const d = row.delivery;
   const k = DELIVERY_KIND[d.kind];
-  const state = STATE_OF_KIND[d.kind] ?? undefined;
+  const state = stateOfDelivery(d) ?? undefined;
   const age = ago(row.lastAdvancedAt, now);
   const aside = [
     row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
