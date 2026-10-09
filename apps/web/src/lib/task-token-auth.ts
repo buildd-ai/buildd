@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
 import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
+import { taskLinksPr } from './agent-capabilities/pr-links';
 import {
   delegationAllows, readScheduleDelegation,
   type ScheduleDelegationCapability, type ScheduleDelegationGrant,
@@ -189,13 +190,14 @@ export function taskScopeAllowsWorkerPr(
 }
 
 /**
- * True when the caller is a task token whose OWN task names `prNumber` (title,
- * description, context, or the PR its retry is bound to; `taskNamesPr`), on a
- * PR in its own workspace. The rule is the caller's task, never the PR owner's:
- * a task does not gain a PR because the task that opened it names it
- * (docs/specs/workflow-state-kernel.md §17.1, the PR #3754 case).
+ * True when the caller is a task token whose OWN task's records link
+ * `prNumber` (the PR its retry is bound to, or a PR link stamped when it was
+ * filed; `taskLinksPr`), on a PR in its own workspace. The rule is the
+ * caller's task, never the PR owner's: a task does not gain a PR because the
+ * task that opened it links it (docs/specs/workflow-state-kernel.md §17.1,
+ * the PR #3754 case). A PR named only in the task's text is not linked.
  */
-export async function taskScopeTaskNamesPr(
+export async function taskScopeTaskLinksPr(
   account: { taskScope?: TaskScope },
   pr: { workspaceId: string | null | undefined; prNumber: number },
 ): Promise<boolean> {
@@ -204,13 +206,12 @@ export async function taskScopeTaskNamesPr(
   const task = await db.query.tasks.findFirst({
     where: (t, { eq: eqOp }) => eqOp(t.id, scope.taskId),
     columns: {
-      id: true, workspaceId: true, title: true, description: true, context: true,
+      id: true, workspaceId: true, context: true,
       reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
     },
   });
   if (!task || task.workspaceId !== scope.workspaceId) return false;
-  const { taskNamesPr } = await import('./agent-capabilities/pr-ownership');
-  return taskNamesPr(task, pr.prNumber);
+  return taskLinksPr(task, pr.prNumber);
 }
 
 /**

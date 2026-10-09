@@ -4,8 +4,8 @@ import { ACTIVITY_FIXTURE_NOW, ACTIVITY_SCALE_ROOTS, activityScaleFixture } from
 import { projectMissionDelivery, type MissionTaskRow } from './delivery-projection';
 import {
   HISTORY_PAGE_SIZE, WAITING_ROWS_PER_GROUP, pageEpisodes,
-  buildActivityHistory, buildActivityNow, filterEpisodes, filterNow, latestTask, repairReasonOf, reviewOf,
-  type ActivityTaskInput, type Episode,
+  buildActivityHistory, buildActivityNow, filterEpisodes, repairReasonOf, reviewOf,
+  filterNow, type ActivityTaskInput, type Episode,
 } from './activity-delivery';
 
 const NOW = Date.parse('2026-10-08T12:00:00.000Z');
@@ -94,6 +94,57 @@ describe('Activity Now: grouped by mission, standalone last', () => {
     expect(row.delivery).toBe(m.tasks[0].delivery);
   });
 
+  it('open tasks of a completed mission with no non-landed tasks are regrouped as standalone', () => {
+    const completed1 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    const completed2 = merged({ missionId: 'm1', missionTitle: 'Completed' });
+    const newOpen = task({ missionId: 'm1', missionTitle: 'Completed', status: 'pending', createdAt: ago(5) });
+    const rows = [completed1, completed2, newOpen];
+    const m1 = projectMissionDelivery({
+      id: 'm1', title: 'Completed', status: 'active', href: '/app/missions/m1',
+      tasks: [completed1, completed2].map((t): MissionTaskRow => ({ ...t, dependsOn: null })),
+    }, rules);
+    const n = now(rows, [m1]);
+    // The mission should be marked as landed, so open tasks are regrouped as standalone
+    expect(n.groups.find(g => g.missionId === 'm1')).toBeUndefined();
+    const standalone = n.groups.find(g => g.missionId === null);
+    expect(standalone).toBeDefined();
+    expect(standalone?.rows.map(r => r.id)).toContain(newOpen.id);
+  });
+
+  it('standalone group expands hidden waiting rows, with no overlap between rows and hiddenWaitingRows', () => {
+    const standaloneWaiting = [...Array.from({ length: 5 }, () => task())];
+    const g = now(standaloneWaiting).groups[0];
+    expect(g.missionId).toBeNull();
+    expect(g.href).toBeNull();
+    expect(g.rows.length).toBe(WAITING_ROWS_PER_GROUP);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+    expect(g.hiddenWaitingRows.length).toBe(g.moreWaiting);
+    const sortedWaiting = [...standaloneWaiting].sort((a, b) => a.id.localeCompare(b.id));
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(sortedWaiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
+    const rowIds = new Set(g.rows.map(r => r.id));
+    for (const hidden of g.hiddenWaitingRows) {
+      expect(rowIds.has(hidden.id)).toBe(false);
+    }
+    const allIds = new Set([...g.rows, ...g.hiddenWaitingRows].map(r => r.id));
+    expect(allIds.size).toBe(5);
+  });
+
+  it('a not-landed mission keeps its group, real counts, and href even with open tasks outside the cap', () => {
+    const live = running({ missionId: 'active', missionTitle: 'Active' });
+    const waiting = [...Array.from({ length: 5 }, () => task({ missionId: 'active', missionTitle: 'Active' }))];
+    const rows = [live, ...waiting];
+    const m = missionOf('active', 'Active', rows);
+    const g = now(rows, [m]).groups[0];
+    expect(g.missionId).toBe('active');
+    expect(g.href).toBe('/app/missions/active');
+    expect(g.kind).toBe(m.kind);
+    expect(g.landed).toBe(m.landed);
+    expect(g.total).toBe(6);
+    expect(g.landed).toBe(0);
+    expect(g.moreWaiting).toBe(5 - WAITING_ROWS_PER_GROUP);
+    expect(g.hiddenWaitingRows.map(r => r.id)).toEqual(waiting.slice(WAITING_ROWS_PER_GROUP).map(r => r.id));
+  });
+
   it('retries and reviews fold into their deliverable; an orphaned attempt still shows', () => {
     const parent = inAudit();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: parent.id, status: 'in_progress', workers: [{ status: 'running' }] });
@@ -138,35 +189,27 @@ describe('Activity History', () => {
     const standalone = merged();
     const retry = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: standalone.id, status: 'completed', workers: [{ status: 'completed' }] });
     const failed = task({ status: 'failed', updatedAt: ago(3) });
-    const eps = buildActivityHistory({ tasks: [inMission, standalone, retry, failed], missions: [], rules });
+    const asking = task({ status: 'in_progress', workers: [{ status: 'waiting_input' }] });
+    const eps = buildActivityHistory({ tasks: [inMission, standalone, retry, failed, asking], missions: [], rules });
     const ids = (f: Parameters<typeof filterEpisodes>[1]) => filterEpisodes(eps, f).map(e => e.id).sort();
     expect(ids({ scope: 'missions', outcome: 'any' })).toEqual([inMission.id]);
     expect(ids({ scope: 'tasks', outcome: 'any' })).toEqual([standalone.id, failed.id].sort());
     expect(ids({ scope: 'all', outcome: 'retries' })).toEqual([standalone.id]);
     expect(ids({ scope: 'all', outcome: 'landed' })).toEqual([inMission.id, standalone.id].sort());
-    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id]);
+    expect(ids({ scope: 'all', outcome: 'exceptions' })).toEqual([failed.id].sort());
+    expect(ids({ scope: 'all', outcome: 'you' })).toEqual([]);
+    // Decisions still in flight belong to Now.
+    expect(now([asking]).groups.flatMap(g => g.rows.map(r => r.id))).toContain(asking.id);
     expect(ids({ scope: 'all', outcome: 'any', missionId: 'm' })).toEqual([inMission.id]);
   });
 });
 
-describe('filterNow', () => {
-  it('scope and retries filters drop empty groups', () => {
-    const parent = inAudit({ missionId: 'm', missionTitle: 'M' });
-    const fix = task({ title: '[builder · after CI #1] x', taskClass: 'attempt', parentTaskId: parent.id, missionId: 'm', status: 'completed', workers: [{ status: 'completed' }] });
-    const rows = [parent, fix, running()];
-    const n = now(rows, [missionOf('m', 'M', rows)]);
-    expect(filterNow(n, { scope: 'tasks', outcome: 'any' }).map(g => g.title)).toEqual(['Standalone']);
-    expect(filterNow(n, { scope: 'all', outcome: 'retries' }).map(g => g.title)).toEqual(['M']);
-  });
-});
-
-describe('latestTask: the two-tap path', () => {
-  it('is the root touched most recently, counting its attempts', () => {
-    const old = inAudit({ updatedAt: ago(100) });
-    const kid = task({ taskClass: 'attempt', parentTaskId: old.id, updatedAt: ago(0), title: '[builder · after CI #1] x' });
-    const other = running({ updatedAt: ago(2) });
-    expect(latestTask([old, kid, other], rules)?.id).toBe(old.id);
-    expect(latestTask([], rules)).toBeNull();
+describe('a cancelled standalone task', () => {
+  it('reads as an episode that did not land, instead of throwing and blanking the whole page', () => {
+    const cancelled = task({ status: 'cancelled', updatedAt: ago(1) });
+    const eps = buildActivityHistory({ tasks: [cancelled], missions: [], rules });
+    expect(eps.map(e => [e.id, e.kind])).toEqual([[cancelled.id, 'notlanded']]);
+    expect(eps[0].steps.some(s => s.text === 'Cancelled')).toBe(true);
   });
 });
 

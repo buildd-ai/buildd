@@ -264,7 +264,8 @@ function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?
   const [rowExpanded, setRowExpanded] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const m = entry.milestone;
-  const label = milestoneLabel(m);
+  // A tool-call preamble shows what it did; its words stay one tap away.
+  const label = entry.actionLabel ?? milestoneLabel(m);
   const open = entry.endMs == null;
   const glyph = entryGlyph(m as Parameters<typeof entryGlyph>[0]);
   const canOpenTools = entry.tools.length > 0;
@@ -307,6 +308,13 @@ function LogEntryRow({ entry, currentAction }: { entry: LogEntry; currentAction?
           </span>
         )}
       </div>
+      {rowExpanded && entry.preambles && entry.preambles.length > 0 && (
+        <div data-testid="worker-log-preamble" className="ml-7 mb-1 space-y-0.5">
+          {entry.preambles.map((p, i) => (
+            <p key={i} className="text-xs text-text-muted break-words">{p}</p>
+          ))}
+        </div>
+      )}
       {open && currentAction && (
         <p className="ml-7 text-xs text-text-secondary truncate">{collapseWorkspacePath(currentAction)}</p>
       )}

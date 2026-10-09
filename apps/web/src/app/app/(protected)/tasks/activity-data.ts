@@ -17,8 +17,8 @@ import { and, desc, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
 import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { projectMissionDelivery, type MissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
 import {
-  buildActivityHistory, buildActivityNow, latestTask, reviewOf,
-  type ActivityNow, type ActivityTaskInput, type Episode, type LatestTask,
+  buildActivityHistory, buildActivityNow, reviewOf,
+  type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
 import type { LocalHold } from '@/lib/local-session-display';
 
@@ -39,7 +39,6 @@ export interface ActivityTaskRow {
 export interface ActivityData {
   now: ActivityNow;
   history: Episode[];
-  latest: LatestTask | null;
 }
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
@@ -184,6 +183,5 @@ export async function loadActivity(input: {
   return {
     now: buildActivityNow({ ...args, now: input.now }),
     history: buildActivityHistory(args),
-    latest: latestTask(tasks, rules),
   };
 }

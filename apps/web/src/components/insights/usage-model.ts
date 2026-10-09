@@ -1,6 +1,6 @@
 import type { FlowSeries } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from './flow-chart-model';
-import { BASIS_KEYS, basisOfRow, type BasisKey } from '@/lib/cost-basis-split';
+import { basisOfRow } from '@/lib/cost-basis-split';
 
 export type UsageRow = NonNullable<FlowSeries['usage']>[number];
 
@@ -18,7 +18,7 @@ function add(into: Totals, row: UsageRow) {
 /**
  * Per role and tier. `costUsd` is the combined figure; `realUsd` and
  * `virtualUsd` are the two shown, so mixed and unknown cost appear in neither
- * (they are reported on their own by `usageByBasis`).
+ * (Usage reports them on their own).
  */
 export function usageByRole(rows: UsageRow[]) {
   const groups = new Map<string, Totals & { tiers: (Totals & { tier: string })[] }>();
@@ -34,27 +34,6 @@ export function usageByRole(rows: UsageRow[]) {
   return [...groups.values()].sort((a, b) => b.tokens - a.tokens || a.role.localeCompare(b.role));
 }
 
-type Cell = { workers: number; tokens: number; costUsd: number };
-type Split = Record<BasisKey, Cell>;
-const emptyCells = (): Split => Object.fromEntries(BASIS_KEYS.map(k => [k, { workers: 0, tokens: 0, costUsd: 0 }])) as Split;
-
-/** Tokens and cost per basis, overall and per executor (docs/specs/real-and-virtual-cost.md). */
-export function usageByBasis(rows: UsageRow[]) {
-  const total = emptyCells();
-  const byExecutor = { interactive: emptyCells(), runner: emptyCells(), other: emptyCells() };
-  let combinedUsd = 0;
-  for (const row of rows) {
-    // A run that started before the window is attributed no tokens or cost here.
-    if (row.tokens <= 0 && row.costUsd <= 0) continue;
-    const basis = basisOf(row);
-    if (!basis) continue;
-    for (const split of [total, byExecutor[row.executor ?? 'runner']]) {
-      split[basis].workers += 1; split[basis].tokens += row.tokens; split[basis].costUsd += row.costUsd;
-    }
-    combinedUsd += row.costUsd;
-  }
-  return { total, byExecutor, combinedUsd };
-}
 function counts(values: string[]) {
   const by = new Map<string, number>();
   for (const value of values) by.set(value, (by.get(value) ?? 0) + 1);

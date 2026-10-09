@@ -82,7 +82,7 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
     for (let pass = 0; pass < 3; pass++) {
       const s = await runEffects({ handlers: kernelEffectHandlers, deliveryId, limit: 10, exec: deps.exec });
       total = total
-        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, dead: [...total.dead, ...s.dead] }
+        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, lost: total.lost + s.lost, dead: [...total.dead, ...s.dead] }
         : s;
       if (s.claimed === 0) break;
     }
@@ -230,32 +230,46 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
   // between a review round and a person.
   if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, { ...deps, drain: async () => null });
 
-  await db.update(tasks)
-    .set({ deliveryId, deliveryRole: 'owner' })
-    .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
-
   // The owner attempt may already have ended (the PR webhook can arrive after
-  // the worker completed). An ended attempt with nobody to hand on would leave
-  // the delivery in WORKING with no owner of the next move.
+  // the worker completed, or the completion PATCH ran while this open did its
+  // reads and saw no delivery yet). An ended attempt with nobody to hand on would
+  // leave the delivery in WORKING with no owner of the next move. The task and
+  // worker are re-read here, not taken from the read at the top (bb6a3a56).
+  const sent = await forwardOwnerEnd({ workspaceId: p.workspaceId, ownerTaskId: p.ownerTaskId, deliveryId, source: `${p.source}:late_open` }, deps);
+  if (!sent) await drainDelivery(deliveryId, deps);
+  return { owned: true, deliveryId };
+}
+
+/**
+ * bb6a3a56: the owner end the kernel is owed, rebuilt from the task and
+ * workers rows. Stamps `tasks.delivery_id` when it is missing (a crash between
+ * the open's transitions and its stamp), then, when the owner task is terminal
+ * and its latest worker ended, sends that worker's AttemptEnded. Safe to repeat:
+ * the reducer keys an end by its worker (`end:<workerId>`), so one the kernel
+ * already has answers `duplicate`. Answers whether an end was sent.
+ */
+async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; deliveryId: string; source: string }, deps: SeamDeps): Promise<boolean> {
+  await db.update(tasks)
+    .set({ deliveryId: p.deliveryId, deliveryRole: 'owner' })
+    .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
+  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, p.ownerTaskId), columns: { status: true, deliveryId: true, deliveryRole: true } });
+  if (!task || task.deliveryId !== p.deliveryId || task.deliveryRole !== 'owner') return false;
+  if (task.status !== 'completed' && task.status !== 'failed') return false;
   const latest = await db.query.workers.findFirst({
     where: eq(workers.taskId, p.ownerTaskId),
     columns: { id: true, status: true, lastCommitSha: true, commitCount: true },
     orderBy: [desc(workers.createdAt)],
   });
-  if (latest && (latest.status === 'completed' || latest.status === 'failed' || latest.status === 'error')
-      && (task.status === 'completed' || task.status === 'failed')) {
-    await attemptEnded({
-      task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId, deliveryRole: 'owner', context: null },
-      workerId: latest.id,
-      status: latest.status === 'completed' ? 'completed' : 'failed',
-      localHeadSha: latest.lastCommitSha ?? null,
-      commitCount: latest.commitCount ?? 0,
-      source: `${p.source}:late_open`,
-    }, deps);
-  } else {
-    await drainDelivery(deliveryId, deps);
-  }
-  return { owned: true, deliveryId };
+  if (!latest || (latest.status !== 'completed' && latest.status !== 'failed' && latest.status !== 'error')) return false;
+  await attemptEnded({
+    task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: null },
+    workerId: latest.id,
+    status: latest.status === 'completed' ? 'completed' : 'failed',
+    localHeadSha: latest.lastCommitSha ?? null,
+    commitCount: latest.commitCount ?? 0,
+    source: p.source,
+  }, deps);
+  return true;
 }
 
 // ── §14: one authority per delivery ─────────────────────────────────────────
@@ -1051,7 +1065,17 @@ export async function reconcileKernelDeliveries(
       }
       if (!closedNow && row.state !== 'CLOSED_UNMERGED' && await catchUpBase({ ...base, deliveryId, live }, once, deps.exec)) s.imported++;
       let enqueued = 0;
-      const view = await loadView({ deliveryId }, deps.exec);
+      let view = await loadView({ deliveryId }, deps.exec);
+      // bb6a3a56: WORKING with the owner already ended means the kernel never got that end
+      // (a completion that raced the PR open, a crash before tasks.delivery_id, a command that
+      // lost the version race twice). Re-send it from the workers row; a held end is a duplicate.
+      if (view.delivery?.state === 'WORKING') {
+        const ended = await forwardOwnerEnd({ workspaceId, ownerTaskId: view.delivery.ownerTaskId, deliveryId, source }, deps);
+        if (ended) {
+          view = await loadView({ deliveryId }, deps.exec);
+          if (view.delivery?.state !== 'WORKING') s.imported++;
+        }
+      }
       if (view.delivery) {
         const held = ((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string; status?: string }>;
         const existing = new Set(held.map((e) => String(e.dedupe_key)));

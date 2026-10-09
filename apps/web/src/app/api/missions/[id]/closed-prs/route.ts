@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { requestingPerson } from '@/lib/request-person';
 import { dismissSupersessionSuggestion, recordPrAbandonment, recordPrSupersession } from '@/lib/pr-supersession';
 
 const ACTIONS = new Set(['confirm', 'dismiss', 'abandon']);
@@ -23,6 +24,10 @@ const ACTIONS = new Set(['confirm', 'dismiss', 'abandon']);
  *             merged and in this workspace or mission.
  *   dismiss — "Not this": drop the suggestion and never offer that PR again.
  *   abandon — the work is deliberately not shipping; `reason` is required.
+ *             A person's call (T21, docs/specs/workflow-state-kernel.md): only
+ *             a dashboard session or the person's own OAuth session may make
+ *             it. An API key or a per-task token is never a person, whatever
+ *             its level, and is refused.
  *
  * Writes, so team members only — an open-workspace viewer cannot settle a
  * mission's PRs.
@@ -43,6 +48,7 @@ export async function POST(
   if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
+  const person = requestingPerson(user, apiAccount);
 
   const body = await req.json().catch(() => null) as { taskId?: unknown; action?: unknown; reason?: unknown } | null;
   const taskId = typeof body?.taskId === 'string' ? body.taskId : null;
@@ -53,6 +59,11 @@ export async function POST(
   const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
   if (action === 'abandon' && !reason) {
     return NextResponse.json({ error: 'A reason is required to mark a PR abandoned' }, { status: 400 });
+  }
+  if (action === 'abandon' && !person) {
+    return NextResponse.json({
+      error: 'Only a person can mark a PR abandoned: ask the owner, or use Abandon on the mission page.',
+    }, { status: 403 });
   }
 
   try {
@@ -99,7 +110,7 @@ export async function POST(
       return NextResponse.json({ ok: true, action });
     }
 
-    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy });
+    const result = await recordPrAbandonment({ workerId: worker.id, reason, recordedBy, actor: `human:${person}` });
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
     return NextResponse.json({ ok: true, action });
   } catch (error) {
