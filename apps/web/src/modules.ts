@@ -37,7 +37,7 @@ import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
 import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
-import { escalationGateDeps } from '@/lib/escalation-decision';
+import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
@@ -144,3 +144,5 @@ export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepa
  * and the repair filer, for a core caller such as Home that gates PRs.
  */
 export const ESCALATION_GATE_DEPS = escalationGateDeps;
+/** What a page passes: stored verdicts and rules, the rest looked at after the response. */
+export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
