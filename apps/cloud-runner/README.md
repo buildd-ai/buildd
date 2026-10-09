@@ -647,6 +647,14 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   `park/<workspaceId>/<workerId>`), calls `POST /api/workers/[id]/park` and
   exits 4. The agent records `outcome: parked`, sends no crash report and
   destroys the container.
+- **Park on a pause.** A person pausing a running agent (POST
+  `/api/workers/[id]/pause`, or Pause on the task page) is served to the runner
+  on its next worker PATCH (`pauseRequested`). Once no tool is executing it
+  stops the session and reports `waiting_input` with `waitingFor.type: 'pause'`,
+  and the park above follows. Resume is answering it, so the resume below is
+  the same. With `RESUMABLE_RUNS` off the runner refuses the pause and says so
+  in the run's activity (it would otherwise hold the container until its max
+  wait and fail).
 - **Resume.** The answer queues on the same worker, and buildd sends
   `task.resume` with `workerId`. The agent accepts it only when its last
   attempt parked that worker. It starts a container and execs
@@ -667,7 +675,7 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   orphan park (still `running`, nothing queued) is reported `failed`.
 - **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
   mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
-- **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.
+- **Local smoke.** `bun run smoke:resume` covers three paths: a question, a person's pause (same Claude Code session id before and after), and a mid-run agent restart. The host runner's pause has its own: `bun run --cwd apps/runner smoke:pause`.
 
 ### Model routes
 

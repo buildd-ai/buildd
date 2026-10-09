@@ -29,9 +29,10 @@ export default function ProviderOnboardingCard({ teamId, hasActionableWork }: { 
   const [busy, setBusy] = useState<null | 'save' | 'own'>(null);
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
+  // A decision on Home keeps it folded; the stored "Not now" only adds to that.
   useEffect(() => {
-    try { setFolded(window.localStorage.getItem(onboardingFoldKey(teamId)) === '1'); } catch { /* private mode */ }
-  }, [teamId]);
+    try { setFolded(!!hasActionableWork || window.localStorage.getItem(onboardingFoldKey(teamId)) === '1'); } catch { /* private mode */ }
+  }, [teamId, hasActionableWork]);
 
   function fold(next: boolean) {
     setFolded(next);
@@ -80,11 +81,10 @@ export default function ProviderOnboardingCard({ teamId, hasActionableWork }: { 
 
   if (folded) {
     return (
-      <div className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 border-2 border-dashed border-border-strong bg-card px-4 py-2.5 text-sm" data-testid="provider-onboarding" data-folded="true">
-        <span className="section-label !text-accent-text">Chat setup · 1 of 2</span>
-        <span className="text-text-secondary">Connect a model provider</span>
-        <button type="button" className="ml-auto underline text-accent-text hover:no-underline" onClick={() => fold(false)}>Resume</button>
-      </div>
+      <button type="button" onClick={() => fold(false)} className="card mb-6 flex min-h-11 w-full items-center gap-3 px-4 py-2 text-left md:px-5" data-testid="provider-onboarding" data-folded="true">
+        <span className="min-w-0 flex-1 truncate text-body text-text-primary">Chat needs a model provider</span>
+        <span aria-hidden="true" className="shrink-0 font-mono text-meta text-text-muted">›</span>
+      </button>
     );
   }
 

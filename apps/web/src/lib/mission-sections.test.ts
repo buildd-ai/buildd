@@ -2,13 +2,14 @@ import { describe, expect, it } from 'bun:test';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { projectMissionDelivery, type MissionTaskRow } from './delivery-projection';
 import type { PortfolioRow } from './mission-portfolio';
-import { buildMissionSections, describeDestinations, sectionOf } from './mission-sections';
+import { buildMissionSections, sectionOf } from './mission-sections';
 
 const PR = 'https://github.com/o/r/pull/1';
 const task = (id: string, over: Partial<MissionTaskRow> = {}): MissionTaskRow => ({ id, title: id, status: 'pending', taskClass: 'work', workers: [], ...over });
 const audit = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_pending' }] });
 const ciFailed = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_failed' }] });
 const closed = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
+const merged = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, mergedAt: '2026-10-01', prLifecycleStatus: 'merged' }] });
 const asking = (id: string) => task(id, { status: 'in_progress', workers: [{ status: 'waiting_input' }] });
 
 function row(id: string, tasks: MissionTaskRow[], over: Partial<PortfolioRow> & { isHeld?: boolean; integrationBranch?: boolean } = {}): PortfolioRow {
@@ -58,8 +59,20 @@ describe('mission sections', () => {
     expect(sectionOf(s[0].rows[0])).toBe('waiting');
   });
 
-  it('names destinations honestly and invents none', () => {
-    expect(describeDestinations([row('a', [audit('t')]), row('b', [audit('t')])])).toBe('2 landing on trunk');
-    expect(describeDestinations([row('a', [audit('t')], { integrationBranch: true }), row('b', [])])).toBe('1 on a mission branch, 1 not planned yet');
+  it('an open mission whose every task landed is On dev, criteria pending, not In motion', () => {
+    const s = buildMissionSections([row('done', [merged('a'), merged('b')]), row('a', [audit('t')])]);
+    expect(s.map(x => x.key)).toEqual(['motion', 'landed']);
+    expect(s[1].label).toBe('On dev, criteria pending');
+    expect(sectionOf(s[1].rows[0])).toBe('landed');
+  });
+
+  it('a mission-branch mission whose tasks all landed is still landing, not on dev', () => {
+    const s = buildMissionSections([row('mb', [merged('a')], { integrationBranch: true })]);
+    expect(s.map(x => x.key)).toEqual(['motion']);
+  });
+
+  it('carries no per-section destinations sentence', () => {
+    const s = buildMissionSections([row('a', [audit('t')])]);
+    expect('destinations' in s[0]).toBe(false);
   });
 });

@@ -2,7 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
-import SettingsSection from './SettingsSection';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
+import Lede from '@/components/ui/Lede';
+import Disclosure from '@/components/ui/Disclosure';
+import { TonePill } from '@/components/ui/StatePill';
 
 interface Installation {
   id: string;
@@ -104,91 +108,88 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
     }
   }
 
+  const manageLink = (
+    <p className="text-xs text-text-secondary">
+      To change which repos buildd can see, use{' '}
+      <a
+        href="https://github.com/settings/installations"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline hover:text-text-primary"
+      >
+        GitHub settings
+      </a>.
+    </p>
+  );
+
   return (
-    <SettingsSection
+    <Section
       title="GitHub"
-      bare
-      action={configured ? <a href="/api/github/install" className="btn btn-quiet">+ Connect org</a> : undefined}
+      action={configured && installations.length > 0 ? <a href="/api/github/install" className="btn btn-sm">Connect org</a> : undefined}
     >
       {message && (
-        <div className={`notice mb-3 ${
-          message.type === 'success' ? 'notice-ok' : message.type === 'info' ? 'notice-info' : 'notice-err'
-        }`}>
+        <Notice tone={message.type === 'success' ? 'ok' : message.type === 'info' ? 'info' : 'err'} className="mb-3">
           {message.text}
-        </div>
+        </Notice>
       )}
 
       {loading ? (
-        <div className="text-text-secondary text-sm">Loading…</div>
+        <p className="text-sm text-text-muted">Loading…</p>
       ) : !configured ? (
-        <div className="card p-6" data-testid="github-unavailable">
-          <p className="text-sm text-text-primary mb-2">GitHub is not set up on this buildd server.</p>
-          <p className="text-sm text-text-secondary">
-            You can still work with a repository: paste its address when you create a workspace, or in the
-            workspace&apos;s settings under Link a repository.
-          </p>
-          <p className="text-xs text-text-muted mt-3">
-            Running this server yourself? Create a GitHub App and set its ID, client ID and private key in the
-            server&apos;s environment, then restart it.
-          </p>
+        <div data-testid="github-unavailable" className="space-y-1">
+          <Lede>
+            GitHub is not set up on this server. You can still paste a repository&apos;s address when you create a
+            workspace, or in its settings under Link a repository.
+          </Lede>
+          <Disclosure summary="Running this server yourself?">
+            <p className="pb-2 text-sm text-text-secondary">
+              Create a GitHub App and set its ID, client ID and private key in the server&apos;s environment, then
+              restart it.
+            </p>
+          </Disclosure>
         </div>
       ) : installations.length === 0 ? (
-        <div className="card p-6 text-center">
-          <p className="text-text-muted mb-3 text-sm">No GitHub organizations connected</p>
-          <a
-            href="/api/github/install"
-            className="btn btn-primary"
-          >
-            Connect an org
-          </a>
-          <p className="text-xs text-text-secondary mt-4 pt-3 border-t border-border-default">
-            To modify repo access, visit{' '}
-            <a
-              href="https://github.com/settings/installations"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary hover:underline"
-            >
-              GitHub Settings
-            </a>
+        <div className="space-y-2">
+          <p className="text-sm text-text-muted">
+            No GitHub organizations connected.{' '}
+            <a href="/api/github/install" className="underline text-text-primary hover:text-text-secondary">Connect an org</a>
           </p>
+          {manageLink}
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
-          {installations.map((inst) => (
-            <div key={inst.id} className="p-4">
-              <div className="flex flex-wrap items-center gap-3">
+        <div className="space-y-3">
+          <ul className="divide-y divide-border-default">
+            {installations.map((inst) => (
+              <li key={inst.id} className="flex flex-wrap items-center gap-3 py-3">
                 {inst.accountAvatarUrl && (
                   <img
                     src={inst.accountAvatarUrl}
-                    alt={inst.accountLogin}
-                    className="w-10 h-10"
+                    alt=""
+                    className="w-8 h-8 rounded-[var(--radius-card)]"
                   />
                 )}
                 <div className="flex-1 min-w-[8rem]">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{inst.accountLogin}</span>
-                    <span className="status-pill status-pill-plain">{inst.accountType}</span>
-                    {inst.suspendedAt && (
-                      <span className="status-pill status-pill-err">Suspended</span>
-                    )}
+                    <span className="text-sm font-medium text-text-primary">{inst.accountLogin}</span>
+                    <TonePill tone="q">{inst.accountType}</TonePill>
+                    {inst.suspendedAt && <TonePill tone="bad">Suspended</TonePill>}
                   </div>
-                  <div className="text-sm text-text-secondary">
-                    {inst.repoCount} repos &bull; {inst.repositorySelection === 'all' ? 'All repos' : 'Selected repos'}
+                  <div className="text-xs text-text-secondary mt-0.5">
+                    <span className="font-mono">{inst.repoCount}</span> repos · {inst.repositorySelection === 'all' ? 'All repos' : 'Selected repos'}
                   </div>
                 </div>
                 <div className="flex gap-2 ml-auto">
                   <button
                     onClick={() => syncRepos(inst.id)}
                     disabled={syncing === inst.id}
-                    className="btn"
+                    className="btn btn-sm"
                   >
                     {syncing === inst.id ? 'Syncing…' : 'Sync'}
                   </button>
                   {!disconnectableIds || disconnectableIds.includes(inst.id) ? (
                     <button
                       onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
-                      className="btn btn-danger"
+                      className="btn btn-sm btn-danger"
                     >
                       Disconnect
                     </button>
@@ -196,20 +197,10 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
                     <span data-testid={`github-read-only-${inst.id}`} className="self-center text-xs text-text-muted">Admins can disconnect this.</span>
                   )}
                 </div>
-              </div>
-            </div>
-          ))}
-          <p className="p-4 text-xs text-text-secondary">
-            To modify repo access, visit{' '}
-            <a
-              href="https://github.com/settings/installations"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary hover:underline"
-            >
-              GitHub Settings
-            </a>
-          </p>
+              </li>
+            ))}
+          </ul>
+          {manageLink}
         </div>
       )}
 
@@ -223,6 +214,6 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
         onConfirm={handleDisconnect}
         onCancel={() => setDisconnecting(null)}
       />
-    </SettingsSection>
+    </Section>
   );
 }

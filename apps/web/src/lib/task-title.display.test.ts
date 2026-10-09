@@ -45,9 +45,19 @@ describe('displayTaskTitle', () => {
     expect(displayTaskTitle('Note: the parser is slow')).toBe('Note: the parser is slow');
   });
 
+  it('strips a research: prefix like a conventional type', () => {
+    expect(displayTaskTitle('research: FX rate providers')).toBe('FX rate providers');
+    expect(displayTaskTitle('RESEARCH: FX rate providers')).toBe('FX rate providers');
+  });
+
   it('passes empty input through', () => {
     expect(displayTaskTitle(undefined)).toBe('');
     expect(displayTaskTitle(null)).toBe('');
     expect(displayTaskTitle('')).toBe('');
   });
+});
+
+it('strips research prefixes, scopes and retry wraps through the shared prefix pattern', () => {
+  expect(displayTaskTitle('research: compare providers')).toBe('Compare providers');
+  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('[retry] Compare providers');
 });

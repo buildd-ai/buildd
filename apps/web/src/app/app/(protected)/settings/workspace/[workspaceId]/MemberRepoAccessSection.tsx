@@ -52,17 +52,17 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
 
   const switchId = 'member-repo-access-label';
   return (
-    <section className="space-y-3 mt-10" data-testid="member-repo-access-section">
+    <div className="py-4 first:pt-0 last:pb-0 space-y-3" data-testid="member-repo-access-section">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1">
-          <h2 id={switchId} className="text-sm font-medium text-text-primary">Require GitHub repository access</h2>
-          <p className="text-sm text-text-secondary">
+          <h3 id={switchId} className="text-sm font-medium text-text-primary">Require GitHub repository access</h3>
+          <p className="text-xs text-text-secondary">
             {on
               ? `Members must have read access to ${repoFullName ?? 'the linked repository'} on GitHub to see code, create tasks or chat about this workspace. API keys and runners are not affected.`
               : 'Off: every team member can see everything Buildd can see in this repository.'}
           </p>
           {!repoFullName && !on && (
-            <p className="text-sm text-text-muted">Link a GitHub repository to this workspace to turn this on.</p>
+            <p className="text-xs text-text-muted">Link a GitHub repository to this workspace to turn this on.</p>
           )}
         </div>
         <Switch
@@ -73,11 +73,11 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
           className={`mt-0.5 ${SWITCH_HIT_AREA}`}
         />
       </div>
-      {!canManage && <p className="text-sm text-text-muted">Only workspace admins can change this.</p>}
+      {!canManage && <p className="text-xs text-text-muted">Only workspace admins can change this.</p>}
       {error && <div className="notice notice-err">{error}</div>}
       {on && viewer && (
         <MemberRepoAccessNotice result={viewer} returnTo={`/app/settings/workspace/${workspaceId}`} />
       )}
-    </section>
+    </div>
   );
 }

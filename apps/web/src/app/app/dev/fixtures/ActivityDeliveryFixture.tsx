@@ -36,7 +36,6 @@ export default function ActivityDeliveryFixture() {
         mode={mode}
         now={data.now}
         history={data.history}
-        latest={data.latest}
         nowMs={ACTIVITY_FIXTURE_NOW}
         hrefs={{ now: href('now'), history: href('history') }}
         openRowIds={['fx-t34']}

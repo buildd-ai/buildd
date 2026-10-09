@@ -808,18 +808,36 @@ describe('per-task token', () => {
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
-  it('requests review of a PR its own task names, even though a different task’s worker owns it', async () => {
+  it('requests review of a PR its own task records link, even though a different task’s worker owns it', async () => {
     // A coordination/cleanup task ("resolve conflicts on #42") repairing a PR
-    // it never opened — same fallback pr/route.ts already applies to close/merge.
+    // it never opened, linked to it when it was filed — same rule pr/route.ts applies to close/merge.
     mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
     mockTasksFindFirst.mockReturnValue({
-      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-1',
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', workspaceId: 'ws-1',
+      context: { prReach: { prNumbers: [42], grantedBy: 'task:task-organizer', grantedAt: 'x' } },
     });
     const res = await POST(post({ prNumber: 42 }));
     expect(res.status).toBe(201);
   });
 
-  it('still refuses when neither its own worker nor its task names the PR', async () => {
+  it('requests review of the PR its retry is bound to', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({ id: 'task-1', title: 'fix review', description: null, context: {}, workspaceId: 'ws-1', reviewerRetryPrNumber: 42 });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses review of a PR its own task only names in its text, without creating a reviewer', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    mockTasksFindFirst.mockReturnValue({
+      id: 'task-1', title: 'Repair PR #42', description: 'resolve conflicts on https://github.com/acme/widget/pull/42', context: { prNumber: 42 }, workspaceId: 'ws-1',
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('still refuses when neither its own worker nor its task records link the PR', async () => {
     mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
     mockTasksFindFirst.mockReturnValue({
       id: 'task-1', title: 'Unrelated work', description: 'nothing about PRs here', context: {}, workspaceId: 'ws-1',
@@ -831,7 +849,7 @@ describe('per-task token', () => {
 
   // S21 (§17.1): the rule is the caller's task. The owner's task naming its own PR gives a
   // sibling's token nothing; the lookup reads the caller's task only.
-  it('S21: a sibling task is refused even though the PR owner\'s task names the PR', async () => {
+  it('S21: a sibling task is refused even though the PR owner\'s task links the PR', async () => {
     mockFindPrOwningWorker.mockReturnValue({ ...owner('task-2'), task: { id: 'task-2', title: 'Fix #42', description: 'land #42', context: {} } });
     mockTasksFindFirst.mockImplementation(((..._a: unknown[]) => ({ id: 'task-1', title: 'Sibling work', description: 'touches the same files', context: {}, workspaceId: 'ws-1' })) as never);
     const res = await POST(post({ prNumber: 42 }));
@@ -839,10 +857,11 @@ describe('per-task token', () => {
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
   });
 
-  it('does not trust another task naming the PR when the task row has drifted out of its own workspace', async () => {
+  it('does not trust another task linking the PR when the task row has drifted out of its own workspace', async () => {
     mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
     mockTasksFindFirst.mockReturnValue({
-      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', context: {}, workspaceId: 'ws-2',
+      id: 'task-1', title: 'Repair stale PRs', description: 'resolve conflicts on #42', workspaceId: 'ws-2',
+      context: { prReach: { prNumbers: [42], grantedBy: 'human:user-1', grantedAt: 'x' } },
     });
     const res = await POST(post({ prNumber: 42 }));
     expect(res.status).toBe(403);

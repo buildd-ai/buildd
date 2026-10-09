@@ -60,7 +60,7 @@ so a team they create later is covered with no write. It is set by:
   `buildModelPolicyCells` (and the matching mock + assertion in
   `route.test.ts`). Nothing in `packages/core` changes.
 
-- `apps/web/src/app/app/(protected)/settings/ai/page.tsx`: the
+- `apps/web/src/app/app/(protected)/settings/models/page.tsx`: the
   `ChatRetroSection` import and its one JSX line.
 - `apps/web/src/components/chat/ChatConversation.tsx`: the `useTurnSignal`
   call and `turnSignal.onStop()` in `onStop`.

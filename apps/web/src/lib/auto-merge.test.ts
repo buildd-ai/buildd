@@ -673,6 +673,50 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
   });
 });
 
+describe('evaluateAutoMergeSafety data migrations (mergePolicy.dataMigrations)', () => {
+  const dataVerdict = { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' } as const;
+  const arm = (verdict: unknown) => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0300_backfill.sql', additions: 1, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue(verdict);
+  };
+  const agentReview = (dataMigrations?: 'person' | 'agent-review'): MergePolicy => ({
+    tier: 'agent-review',
+    agentReview: { reviewerRole: 'reviewer' },
+    ...(dataMigrations ? { dataMigrations } : {}),
+  });
+
+  it('refuses a data migration by default (a person decides)', async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview())).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("refuses it under dataMigrations: 'person'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('person'))).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("lets it through under agent-review with dataMigrations: 'agent-review'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: true });
+  });
+
+  it('still refuses it under auto-threshold even with the setting on (no reviewer there)', async () => {
+    arm(dataVerdict);
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] }, dataMigrations: 'agent-review' };
+    await expect(evaluateAutoMergeSafety(...params, policy)).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it('still refuses destructive DDL with the setting on', async () => {
+    arm({ safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' });
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: false, reason: 'drops column tasks.legacy' });
+  });
+});
+
 describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   // Read-only fallback release: legacy stored paths still block.
   it('blocks on a legacy stored escalateToPaths for agent-review tier (fallback release)', async () => {
@@ -925,7 +969,7 @@ describe('escalateConflictExhaustion', () => {
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add dark mode');
@@ -1017,7 +1061,7 @@ describe('escalateReviewerExhaustion', () => {
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add search');
@@ -1115,7 +1159,7 @@ describe('escalateReviewContractFailure', () => {
     await call();
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const notifyCall = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
     expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });

@@ -17,7 +17,8 @@ export interface WorkspaceRow {
   id: string;
   name: string;
   teamId: string;
-  teamName: string;
+  /** Null when the team can't be resolved; the list then shows no heading for it. */
+  teamName: string | null;
   /** Only the settings that differ from WORKSPACE_DEFAULTS. */
   differs: WorkspaceDiffer[];
   /** Where its tasks run; `size` only for cloud. */
@@ -50,7 +51,7 @@ export function isInactive(row: WorkspaceRow, now: Date): boolean {
 
 export interface WorkspaceGroup {
   teamId: string;
-  teamName: string;
+  teamName: string | null;
   active: WorkspaceRow[];
   inactive: WorkspaceRow[];
 }
@@ -58,6 +59,8 @@ export interface WorkspaceGroup {
 /**
  * Rows grouped by team (headings only when they span more than one team),
  * teams ordered by their newest activity, each split into active and inactive.
+ * A team whose name can't be resolved never gets a made-up heading: its group
+ * goes last, so its rows never read as part of a named team above them.
  */
 export function groupWorkspaceRows(rows: WorkspaceRow[], now: Date): { showTeamHeadings: boolean; groups: WorkspaceGroup[] } {
   const byTeam = new Map<string, WorkspaceGroup>();
@@ -70,6 +73,6 @@ export function groupWorkspaceRows(rows: WorkspaceRow[], now: Date): { showTeamH
     (isInactive(r, now) ? g.inactive : g.active).push(r);
   }
   // Insertion order follows sortByActivity, so teams already come newest first.
-  const groups = [...byTeam.values()];
+  const groups = [...byTeam.values()].sort((a, b) => Number(a.teamName === null) - Number(b.teamName === null));
   return { showTeamHeadings: groups.length > 1, groups };
 }

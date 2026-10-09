@@ -362,6 +362,29 @@ describe('credential_policy set: the provider resolver decides, for this task’
     }
   });
 
+  it('a Cloudflare reference is served with its upstream and gateway header, same row only', async () => {
+    withPolicy('team');
+    ROWS = [row({ id: 'cf-ref', purpose: 'agent_endpoint', label: null, value: JSON.stringify({ kind: 'cloudflare', upstream: 'anthropic' }) })];
+    const resolved = {
+      kind: 'cloudflare', upstream: 'anthropic', baseUrl: 'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/buildd/anthropic',
+      apiKey: 'sk-ant-stored-fixture', authHeader: 'x-api-key', models: {}, toolSearch: true,
+      headers: { 'cf-aig-authorization': 'Bearer gw-run-fixture' }, secretId: 'cf-ref', scope: 'team',
+    };
+    mockGateway.mockResolvedValue(resolved);
+    try {
+      const res = await POST(req());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        kind: 'cloudflare', upstream: 'anthropic', baseUrl: resolved.baseUrl, key: 'sk-ant-stored-fixture', authHeader: 'x-api-key', models: {},
+        headers: { 'cf-aig-authorization': 'Bearer gw-run-fixture' },
+      });
+      mockGateway.mockResolvedValue({ ...resolved, secretId: 'some-other-row' });
+      expect((await POST(req())).status).toBe(404);
+    } finally {
+      ROWS = [TEAM_KEY, MY_KEY, THEIR_KEY];
+    }
+  });
+
   it('an OpenRouter key is served on OpenRouter’s Anthropic-compatible root', async () => {
     withPolicy('team');
     ROWS = [row({ id: 'or', label: 'openrouter', value: 'sk-or-fixture' })];

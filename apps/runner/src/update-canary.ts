@@ -177,6 +177,7 @@ const INFRA_PATTERNS: RegExp[] = [
   /\baborted\b|\bcancell?ed\b/i,
   /^deferred:/i,
   /^needs_input:/i,
+  /^paused:/i,
   /connector_(auth_expired|permission_insufficient)/i,
   /does not support this model[\s\S]*or newer is required/i,
   /stale worker expired/i,

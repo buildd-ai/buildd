@@ -766,7 +766,7 @@ export async function setupWorktree(
     // conflict-retry.ts, workers/[id]/route.ts's request-changes retry,
     // respond/route.ts, stale-workers.ts) — this fallback is no longer needed
     // for them and is actively wrong for mission-branch tasks.
-    const resumeCandidate =
+    const explicitResumeCandidate =
       typeof taskContext?.resumeBranch === 'string' && taskContext.resumeBranch.length > 0
         ? taskContext.resumeBranch as string
         : undefined;
@@ -863,6 +863,25 @@ export async function setupWorktree(
       }
     };
 
+    // A task branch already on origin with commits beyond the default branch is
+    // an earlier attempt's work (a usage-limit checkpoint, a pushed WIP), even
+    // when the brief carries no `resumeBranch`. Cutting fresh from the default
+    // branch would make the first push non-fast-forward, so treat it as the
+    // resume candidate. Mission integration branches are never resumed this way.
+    const resumeCandidate =
+      explicitResumeCandidate ??
+      (branch !== defaultBranch &&
+      !looksLikeMissionIntegrationBranch(branch) &&
+      (await fetchBranch(branch)) === 'ok' &&
+      countCommitsAheadOfDefault(`origin/${branch}`) > 0
+        ? branch
+        : undefined);
+    if (resumeCandidate && !explicitResumeCandidate) {
+      console.log(
+        `[Worker ${workerId}] origin/${branch} already carries work for this task and no resumeBranch was given — resuming from it.`,
+      );
+    }
+
     let fallback: SetupWorktreeResult['fallback'];
     let base: string;
     // A prior attempt on this task branch committed but was killed before
@@ -891,7 +910,7 @@ export async function setupWorktree(
     } else {
       base = await resolveWorktreeBase({
         defaultBranch,
-        context: taskContext,
+        context: explicitResumeCandidate ? taskContext : resumeCandidate ? { ...taskContext, resumeBranch: resumeCandidate } : taskContext,
         fetchBranch,
         log: (msg) => console.log(`[Worker ${workerId}] ${msg}`),
         // The resume branch is gone/diverged and we fell back to the default base —

@@ -1,5 +1,7 @@
 'use client';
 
+import Notice from '@/components/ui/Notice';
+
 /**
  * Settings → Model tiers → Maximum allowed. The enforced tier ceilings
  * (docs/specs/model-tier-ceilings.md): a team maximum, optional Coding and Chat
@@ -92,11 +94,11 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/teams/${teamId}/model-ceilings`, { cache: 'no-store' });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? LIMITS_LOAD_ERROR);
       setData(await res.json());
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Could not load tier maximums');
+      setLoadError(e instanceof Error ? e.message : LIMITS_LOAD_ERROR);
     }
   }, [teamId]);
   useEffect(() => { void load(); }, [load]);
@@ -128,9 +130,13 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
   }
 
   if (loadError && !data) {
-    return <section className="mt-6 max-w-5xl text-meta text-status-error" role="alert" data-testid="tier-limits-error">{loadError}</section>;
+    return (
+      <section className="mt-6" data-testid="tier-limits-error">
+        <Notice tone="err" action={{ label: 'Retry', onClick: () => { void load(); } }}>{LIMITS_LOAD_ERROR}</Notice>
+      </section>
+    );
   }
-  if (!data) return <section className="mt-6 max-w-5xl text-meta text-text-muted" data-testid="tier-limits-loading">Loading maximums…</section>;
+  if (!data) return <section className="mt-6 text-meta text-text-muted" data-testid="tier-limits-loading">Loading maximums…</section>;
 
   const { policy, me, effective } = data;
   const otherAgent = boundFrom(effective.agent, 'member_self');
@@ -140,8 +146,8 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
   const stateOf = (id: string) => (id === 'agent' ? effective.agent : effective.chat);
 
   return (
-    <section className="mt-6 max-w-5xl" data-testid="tier-limits">
-      <h2 className="font-mono text-body font-semibold text-text-primary">Maximum allowed</h2>
+    <section className="mt-6" data-testid="tier-limits">
+      <h2 className="text-sm font-semibold text-text-primary">Maximum allowed</h2>
       <p className="mt-1 text-meta text-text-muted">
         The most expensive tier work may use. Enforced on every task and chat. Not a spending budget.
       </p>
@@ -244,3 +250,5 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
     </section>
   );
 }
+
+const LIMITS_LOAD_ERROR = "Couldn't load the tier maximums.";

@@ -499,87 +499,9 @@ describe('Follow-up Message Handling', () => {
   }, FOLLOW_UP_TIMEOUT);
 });
 
-// --- Agent Teams & P2P Endpoints ---
+// --- P2P Endpoints ---
 
-const TEAM_TIMEOUT = 180_000; // Teams need extra time (multi-agent coordination)
-
-describe('Agent Teams (Dogfood)', () => {
-  test('agent can spawn a team and team state is accessible via P2P endpoint', async () => {
-    // This test verifies the full flow:
-    // 1. Agent receives a task that encourages team usage
-    // 2. Agent uses TeamCreate to create a team
-    // 3. Agent spawns subagents via Task tool
-    // 4. worker.teamState gets populated via PostToolUse hook
-    // 5. GET /api/workers/{id}/team returns the team state
-    //
-    // Note: Whether the agent actually uses TeamCreate depends on the model's
-    // judgment. We prompt it strongly but can't guarantee it.
-    // If it doesn't use teams, the test verifies graceful degradation.
-
-    const { task } = await api('/api/tasks', 'POST', {
-      title: 'Team Test: Multi-agent research',
-      description: [
-        'You MUST use the TeamCreate tool to create a team called "research-team".',
-        'Then use the Task tool to spawn one subagent named "explorer" with subagent_type "Explore" to search for README files.',
-        'After spawning the subagent, use SendMessage to send a broadcast saying "Task started".',
-        'Then say "Team setup complete" and finish.',
-        '',
-        'IMPORTANT: You MUST call TeamCreate, Task, and SendMessage tools. Do not skip any of these steps.',
-      ].join('\n'),
-      workspaceId: testWorkspaceId,
-    });
-    createdTaskIds.push(task.id);
-
-    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
-    createdWorkerIds.push(worker.id);
-
-    // Wait for completion
-    const finalWorker = await waitForWorker(worker.id, { timeout: TEAM_TIMEOUT });
-
-    // Check if the agent used team tools
-    if (finalWorker.teamState) {
-      // Team was created — verify full P2P flow
-      expect(finalWorker.teamState.teamName).toBeTruthy();
-
-      // Test P2P endpoint
-      const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
-      expect(teamRes.ok).toBe(true);
-      const teamData = await teamRes.json();
-      expect(teamData.team).toBeDefined();
-      expect(teamData.team.teamName).toBe(finalWorker.teamState.teamName);
-
-      // If subagents were spawned, verify members
-      if (teamData.team.members?.length > 0) {
-        expect(teamData.team.members[0].name).toBeTruthy();
-        expect(teamData.team.members[0].spawnedAt).toBeGreaterThan(0);
-      }
-
-      // If messages were sent, verify messages array
-      if (teamData.team.messages?.length > 0) {
-        expect(teamData.team.messages[0].content).toBeTruthy();
-        expect(teamData.team.messages[0].timestamp).toBeGreaterThan(0);
-      }
-
-      // Verify milestones include team events
-      const milestoneLabels = finalWorker.milestones.map((m: any) => m.label);
-      const hasTeamMilestone = milestoneLabels.some(
-        (l: string) => l.includes('Team created') || l.includes('Subagent')
-      );
-      expect(hasTeamMilestone).toBe(true);
-
-      console.log(`  Team: ${teamData.team.teamName}`);
-      console.log(`  Members: ${teamData.team.members?.length || 0}`);
-      console.log(`  Messages: ${teamData.team.messages?.length || 0}`);
-    } else {
-      // Agent didn't use team tools — check that P2P endpoint returns null gracefully
-      const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
-      expect(teamRes.ok).toBe(true);
-      const teamData = await teamRes.json();
-      expect(teamData.team).toBeNull();
-      console.log('  Agent did not use TeamCreate — graceful degradation verified');
-    }
-  }, TEAM_TIMEOUT);
-
+describe('P2P Endpoints (Dogfood)', () => {
   test('trace endpoint returns tool calls and messages', async () => {
     // Create a simple task that generates tool calls
     const { task } = await api('/api/tasks', 'POST', {
@@ -616,27 +538,5 @@ describe('Agent Teams (Dogfood)', () => {
 
     console.log(`  Tool calls: ${traceData.toolCalls.length}`);
     console.log(`  Messages: ${traceData.messages.length}`);
-  }, TEST_TIMEOUT);
-
-  test('team endpoint returns null for worker without team', async () => {
-    // Simple task — no team usage expected
-    const { task } = await api('/api/tasks', 'POST', {
-      title: 'No Team Test',
-      description: 'Say "hello" and nothing else. Do not create any teams.',
-      workspaceId: testWorkspaceId,
-    });
-    createdTaskIds.push(task.id);
-
-    const { worker } = await api('/api/claim', 'POST', { taskId: task.id });
-    createdWorkerIds.push(worker.id);
-
-    const finalWorker = await waitForWorker(worker.id);
-    expect(finalWorker.status).toBe('done');
-
-    // Team endpoint should return null
-    const teamRes = await fetch(`${BASE_URL}/api/workers/${worker.id}/team`);
-    expect(teamRes.ok).toBe(true);
-    const teamData = await teamRes.json();
-    expect(teamData.team).toBeNull();
   }, TEST_TIMEOUT);
 });

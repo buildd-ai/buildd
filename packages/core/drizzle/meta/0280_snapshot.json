@@ -1,5 +1,5 @@
 {
-  "id": "f264c852-6fec-4857-96b8-5db298bd3225",
+  "id": "ab4cc5cc-71ab-4304-a332-5a564e33753b",
   "prevId": "239b0996-2b2d-44e2-93f1-73dddbc9f359",
   "version": "7",
   "dialect": "postgresql",
@@ -18730,13 +18730,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "warm_handover": {
-          "name": "warm_handover",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'off'"
-        },
         "permission_overrides": {
           "name": "permission_overrides",
           "type": "jsonb",
@@ -23900,6 +23893,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": 3
+        },
+        "new_starts_paused_until": {
+          "name": "new_starts_paused_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "new_starts_paused_by": {
+          "name": "new_starts_paused_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "git_config": {
           "name": "git_config",

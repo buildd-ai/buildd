@@ -680,7 +680,9 @@ describe('refresh rules', () => {
     // Create a seed with a larger cache
     const largeCacheDir = join(dir, 'large-cache');
     mkdirSync(join(largeCacheDir, 'big-pkg'), { recursive: true });
-    const largeSize = WARM_CACHE_GROWTH_BYTES * 10; // 640 MiB
+    // Below WARM_CACHE_GROWTH_BYTES / WARM_CACHE_GROWTH_PERCENT (256 MiB) the 25% rule is the
+    // binding threshold, so a small cache exercises it without heavy host I/O.
+    const largeSize = 8 * 1024 * 1024;
     writeFileSync(join(largeCacheDir, 'big-pkg', 'blob'), Buffer.alloc(largeSize));
 
     const seed = session({ cacheDir: largeCacheDir });
