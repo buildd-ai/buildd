@@ -5,7 +5,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
 import {
-  findSharedSlugClash, findVisibleTeamLevelRole, isPersonalRole, mayEditPersonalRole, sharedSlugClashBody,
+  findSharedSlugClash, findVisibleTeamLevelRole, isPersonalRole, mayEditPersonalRole, sharedSlugClashBody, isSharedSlugViolation,
 } from '@/lib/personal-roles';
 
 /**
@@ -58,6 +58,9 @@ export async function POST(
 
     return NextResponse.json({ skill: updated });
   } catch (error) {
+    if (isSharedSlugViolation(error)) {
+      return NextResponse.json({ error: 'The team already has a shared or team role with this slug. Rename this role before sharing it.' }, { status: 409 });
+    }
     console.error('POST /api/roles/[id]/share error:', error);
     return NextResponse.json({ error: 'Failed to change role visibility' }, { status: 500 });
   }
