@@ -71,7 +71,7 @@ describe('ReleaseDetailPage', () => {
     expect(html).toMatch(/<h1[^>]*>v1\.2\.3<\/h1>/);
     expect(html).toContain('data-state="landed"');
     expect(html).not.toMatch(/>\s*gated\s*</i);
-    expect(html).not.toContain('uppercase');
+    expect(html).not.toMatch(/upper[c]ase/);
   });
 
   it('shows a superseded release as grey Superseded with a version link and no raw id', async () => {
