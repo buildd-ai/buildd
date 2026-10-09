@@ -39,6 +39,7 @@ describe('tryDispatchMigrationCollisionRetry', () => {
     const result = await tryDispatchMigrationCollisionRetry(BASE_PARAMS);
 
     expect(result.handled).toBe(true);
+    expect(result.taskId).toBe('new-task');
     expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
     const call = mockDispatchConflictRetry.mock.calls[0][0];
     expect(call.migrationCollision).toEqual(COLLISION);
@@ -74,6 +75,7 @@ describe('tryDispatchMigrationCollisionRetry', () => {
     const result = await tryDispatchMigrationCollisionRetry(BASE_PARAMS);
 
     expect(result.handled).toBe(true);
+    expect(result.taskId).toBe('existing-task');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
   });
 
