@@ -54,6 +54,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { getIssuer } from '@/lib/oauth/config';
+import { LEGACY_ENDPOINT_NOTICE, deprecationHeaders } from '@/lib/mcp-grant-session';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
 import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
@@ -148,7 +149,9 @@ Tools:
 - \`recall\` (read knowledge) / \`learn\` (write knowledge) — preferred over buildd_memory.
 - \`buildd_memory\`: DEPRECATED. Kept for compatibility; use recall/learn instead.
 
-Workspace is bound to this connector — pass workspaceId only when overriding (rare).`,
+Workspace is bound to this connector — pass workspaceId only when overriding (rare).
+
+${LEGACY_ENDPOINT_NOTICE}`,
     },
   );
 
@@ -362,9 +365,9 @@ async function handle(req: Request, workspace: string): Promise<Response> {
 
   try {
     const res = await transport.handleRequest(req);
-    if (!sessionIdToReturn) return res;
     const headers = new Headers(res.headers);
-    headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    for (const [k, v] of Object.entries(deprecationHeaders())) headers.set(k, v);
+    if (sessionIdToReturn) headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } finally {
     await transport.close();

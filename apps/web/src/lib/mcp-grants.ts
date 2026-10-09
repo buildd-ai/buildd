@@ -23,15 +23,19 @@
 import { and, asc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
+  githubRepos,
   mcpOauthGrants,
   mcpOauthGrantWorkspaces,
   oauthRefreshTokens,
   teamMembers,
+  teams,
   workspaces,
   type McpGrantActsAs,
   type McpGrantScope,
 } from '@buildd/core/db/schema';
 import { isGrantClaims, type AnyAccessTokenClaims } from './oauth/tokens';
+import { levelForTeamRole } from './oauth/session-level';
+import { normalizedRepoSql } from './repo-scope';
 
 export type { McpGrantActsAs, McpGrantScope };
 
@@ -276,4 +280,101 @@ export async function revokeRefreshTokensForGrant(grantId: string): Promise<void
     .update(oauthRefreshTokens)
     .set({ revokedAt: new Date() })
     .where(and(eq(oauthRefreshTokens.grantId, grantId), isNull(oauthRefreshTokens.revokedAt)));
+}
+
+// ── Per-request workspace resolution (the canonical /api/mcp transport) ─────
+
+/**
+ * The token scopes a grant's read/write scopes map to on the generic auth
+ * path. A read-only grant becomes a scoped session that can only read
+ * (lib/token-route-policy.ts and the MCP scope gate both enforce it); a grant
+ * with write keeps the user's role-level permissions (null = legacy level
+ * gates). A grant can only narrow what the user's role allows, never widen it.
+ */
+export const READ_GRANT_TOKEN_SCOPES: readonly string[] = ['tasks:read', 'analytics:read'];
+export function grantTokenScopes(scopes: readonly McpGrantScope[]): string[] | null {
+  return scopes.includes('write') ? null : [...READ_GRANT_TOKEN_SCOPES];
+}
+
+/** One workspace a grant reaches, with what a client needs to pick it. */
+export interface GrantWorkspaceChoice {
+  workspaceId: string;
+  name: string;
+  /** Bare lowercase owner/name, when the workspace has a repo. */
+  repo: string | null;
+  teamId: string;
+  teamName: string;
+  /** The level the session acts at in this workspace (the user's team role). */
+  level: 'admin' | 'worker';
+  /** What the grant allows here. */
+  access: 'read' | 'read-write';
+}
+
+/**
+ * Names, repos and teams of exactly the workspaces `grant` reaches now. Only
+ * ids already in the grant ∩ membership set are queried, so nothing outside
+ * it can appear.
+ */
+export async function describeGrantWorkspaces(grant: ResolvedGrant): Promise<GrantWorkspaceChoice[]> {
+  const ids = grant.workspaces.map((w) => w.workspaceId);
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({
+      workspaceId: workspaces.id,
+      name: workspaces.name,
+      repo: normalizedRepoSql(workspaces.repo),
+      githubFullName: githubRepos.fullName,
+      teamName: teams.name,
+    })
+    .from(workspaces)
+    .innerJoin(teams, eq(teams.id, workspaces.teamId))
+    .leftJoin(githubRepos, eq(githubRepos.id, workspaces.githubRepoId))
+    .where(inArray(workspaces.id, ids));
+  const byId = new Map(rows.map((r) => [r.workspaceId, r]));
+  const access = grant.scopes.includes('write') ? 'read-write' as const : 'read' as const;
+  const out: GrantWorkspaceChoice[] = [];
+  for (const w of grant.workspaces) {
+    const r = byId.get(w.workspaceId);
+    if (!r) continue;
+    const repo = (r.githubFullName?.toLowerCase() || (r.repo as unknown as string) || '') || null;
+    out.push({ workspaceId: w.workspaceId, name: r.name, repo, teamId: w.teamId, teamName: r.teamName, level: levelForTeamRole(w.role), access });
+  }
+  return out.sort((a, b) => a.teamName.localeCompare(b.teamName) || a.name.localeCompare(b.name) || a.workspaceId.localeCompare(b.workspaceId));
+}
+
+export type GrantWorkspaceResolution =
+  | { kind: 'ok'; workspace: GrantWorkspaceChoice }
+  /** No reference and more than one workspace: the caller must name one. */
+  | { kind: 'required'; choices: GrantWorkspaceChoice[] }
+  /** The reference matches more than one granted workspace. */
+  | { kind: 'ambiguous'; ref: string; choices: GrantWorkspaceChoice[] }
+  /** The reference matches no granted workspace (whether or not it exists). */
+  | { kind: 'not_granted'; ref: string; choices: GrantWorkspaceChoice[] };
+
+/**
+ * Resolve a caller's workspace reference (UUID, owner/repo, repo name or
+ * workspace name) among the granted workspaces only. Never a lookup outside
+ * that set, so a similarly named workspace the grant does not cover can
+ * neither match nor be named; a reference to one reads exactly like a
+ * reference to nothing. With no reference, exactly one granted workspace is
+ * the answer and more than one is `required`: nothing picks a default.
+ */
+export function resolveGrantWorkspaceRef(choices: GrantWorkspaceChoice[], ref: string | null | undefined): GrantWorkspaceResolution {
+  const raw = typeof ref === 'string' ? ref.trim() : '';
+  if (!raw) {
+    return choices.length === 1 ? { kind: 'ok', workspace: choices[0] } : { kind: 'required', choices };
+  }
+  if (UUID_RE.test(raw)) {
+    const hit = choices.find((c) => c.workspaceId.toLowerCase() === raw.toLowerCase());
+    return hit ? { kind: 'ok', workspace: hit } : { kind: 'not_granted', ref: raw, choices };
+  }
+  const want = raw.toLowerCase()
+    .replace(/^(https?:\/\/(www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, '')
+    .replace(/(\.git)?\/*$/, '');
+  const matches = want.includes('/')
+    ? choices.filter((c) => c.repo === want)
+    : choices.filter((c) => c.name.toLowerCase() === want || (c.repo != null && c.repo.split('/')[1] === want));
+  if (matches.length === 1) return { kind: 'ok', workspace: matches[0] };
+  if (matches.length > 1) return { kind: 'ambiguous', ref: raw, choices: matches };
+  return { kind: 'not_granted', ref: raw, choices };
 }

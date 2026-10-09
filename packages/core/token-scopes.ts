@@ -66,6 +66,7 @@ export function tokenWorkspaceAllowed(workspaceIds: readonly string[] | null | u
 /** Exhaustive action registry; adding an MCP action requires choosing its capability. */
 export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   spec_compare: 'tasks:read', list_discrepancies: 'tasks:read', get_discrepancy: 'tasks:read',
+  list_workspaces: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
   claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',

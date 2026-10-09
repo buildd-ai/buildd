@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-09
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
-surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
+surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
+verified_by: [apps/web/tests/db/mcp-canonical-transport.test.ts, apps/web/src/lib/mcp-grant-session.test.ts, apps/web/src/app/api/mcp/transport-parity.test.ts, apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -306,7 +306,8 @@ workspaces; what it reaches is decided server-side on every request.
   (`account.workspaceIds`), so a self-call naming another workspace, even one
   in the same team, is refused. A grant that reaches workspaces in more than
   one team does not pick a team on the generic auth path; it authenticates
-  only where the request names its workspace.
+  only where the request names its workspace (`x-buildd-workspace`, see
+  "Canonical MCP transport").
 - Refusals at the token endpoint and in auth never name a grant, workspace or
   team id.
 - A refresh mints a token for the same grant. The grant's workspaces and
@@ -357,8 +358,8 @@ workspaces; what it reaches is decided server-side on every request.
 - Token endpoint: `apps/web/src/app/api/oauth/token/route.ts`
 - Tests: `apps/web/tests/db/mcp-oauth-grants.test.ts` (real Postgres)
 
-**Out of scope here**: the account-level MCP transport and grant management
-UI are separate tasks of the same mission. Refresh-token storage is covered in
+**Out of scope here**: the account-level MCP transport is specified under
+"Canonical MCP transport" below; the grant management UI is a separate task. Refresh-token storage is covered in
 "Refresh tokens: hashed, one family per sign-in" above; the consent page that
 creates grants is below.
 
@@ -455,6 +456,110 @@ registration (`/api/oauth/register`).
 - Tests: `apps/web/tests/db/mcp-oauth-consent.test.ts` (real Postgres),
   `apps/web/src/lib/oauth/account-consent.test.ts`
 
+
+---
+
+## Canonical MCP transport
+
+**Capability statement**: `<issuer>/api/mcp` MUST serve a grant token (an
+account-level OAuth connection) by resolving every request to exactly one
+workspace the grant reaches, never a default; the per-workspace endpoint
+`/api/mcp-oauth/[workspace]` keeps serving legacy tokens and says it is
+deprecated.
+
+**Invariants**:
+- An unauthenticated call, or one with a credential that does not
+  authenticate, gets 401 with
+  `WWW-Authenticate: Bearer realm="buildd", resource_metadata="<issuer>/.well-known/oauth-protected-resource/api/mcp"`.
+  That metadata's `resource` is exactly `<issuer>/api/mcp`. API keys and task
+  tokens that do authenticate are unaffected.
+- A grant token is resolved on every request (granted ∩ current membership).
+  The workspace a request acts in is, in order: the workspace a tool call
+  names (`params.workspaceId`, or `workspaceId` on `recall` / `learn`), the
+  connection's `?workspace=` / `?repo=`, the workspace of its `?worker=`, the
+  only granted workspace. A reference (UUID, `owner/repo`, repo name or
+  workspace name) is matched among the granted workspaces only.
+- No reference with more than one granted workspace is refused
+  (`workspace_required`); a name matching several granted workspaces is
+  refused (`workspace_ambiguous`); anything else is `workspace_not_granted`.
+  Each refusal lists granted workspaces only and never echoes the reference,
+  so an ungranted or unknown workspace reads the same. A connection URL naming
+  an ungranted workspace is one generic 403. One request acts in one
+  workspace.
+- The resolved id replaces the reference before any handler runs, so no
+  second, wider name lookup can happen behind it.
+- The session is that workspace's team account, at the user's role in that
+  team, confined to that one workspace. Every internal self-call sends the
+  binding as `x-buildd-workspace`; `authenticateApiKey` honours it for a grant
+  token only, and only when the workspace is in the grant (anything else is no
+  session). It never widens a grant, and legacy tokens, `bld_` keys and
+  `bldt_` task tokens ignore it.
+- A grant without `write` is a read-scoped session (`tasks:read`,
+  `analytics:read`): write actions are refused on MCP and write routes refuse
+  it on REST. A grant with `write` keeps the user's role-level permissions.
+- `acts_as` is unchanged by the transport: an `'agent'` grant still has no
+  `sessionUserId` in every bound workspace, so person-only actions refuse it.
+  A `'person'` grant (requested with `buildd:act-as-person`, which stays out
+  of `scopes_supported`) acts as the user.
+- `list_workspaces` (a `buildd` action on every transport, `tasks:read`)
+  lists the workspaces a connection can act in, grouped by team, with the
+  level and access in each, paginated. On a grant session it is the grant ∩
+  membership set and nothing else; elsewhere it is what `GET /api/workspaces`
+  returns for the caller. It needs no workspace.
+- `/api/mcp-oauth/[workspace]` keeps working for legacy tokens and still
+  refuses grant tokens. Its responses carry `Deprecation: true` and
+  `Link: <<issuer>/api/mcp>; rel="successor-version"`, and its instructions
+  tell the client to reconnect to `/api/mcp`.
+- Every `buildd` action is served by every transport (`/api/mcp` group and
+  legacy surfaces, `/api/mcp-oauth/[workspace]`) through the one shared
+  handler, and has a token scope.
+
+**Acceptance criteria**:
+- AC-33: GIVEN no credential, or one that does not authenticate, WHEN
+  `/api/mcp` is called THEN it answers 401 with `resource_metadata` naming
+  `/.well-known/oauth-protected-resource/api/mcp`, whose `resource` is
+  `<issuer>/api/mcp`.
+- AC-34: GIVEN a grant over workspaces in two teams WHEN `list_workspaces`
+  runs THEN it returns exactly those, with the level per team, and after the
+  user leaves one team, only the other.
+- AC-35: GIVEN that grant WHEN a call names no workspace THEN it is refused
+  with `workspace_required` and the two granted choices, and nothing is
+  written.
+- AC-36: GIVEN a name shared by two granted workspaces and two ungranted ones
+  WHEN a call names it THEN the refusal lists only the two granted; GIVEN a
+  name unique among granted workspaces THEN it resolves even though an
+  ungranted workspace shares it.
+- AC-37: GIVEN an ungranted or unknown workspace id WHEN a call names it THEN
+  the refusal is `workspace_not_granted` and does not contain that id.
+- AC-38: GIVEN a call naming workspace B WHEN it reads B's task THEN it
+  succeeds and every self-call carries B; WHEN it reads A's task naming B THEN
+  it reaches nothing.
+- AC-39: GIVEN a read-only grant WHEN it calls `create_task` THEN it is
+  refused (`requiredScope: tasks:write`) and a write route refuses it, while
+  reads succeed.
+- AC-40: GIVEN an `'agent'` grant spanning two teams WHEN a request bound to
+  one asks to Abandon THEN it is refused; GIVEN a `'person'` grant THEN it is
+  allowed.
+- AC-41: GIVEN a legacy token WHEN it calls its per-workspace endpoint THEN it
+  works and the response carries the deprecation headers and notice; GIVEN a
+  `bldt_` token sending another workspace's binding THEN it stays bound to its
+  own task's workspace.
+
+**Code surface**:
+- Transport: `apps/web/src/app/api/mcp/route.ts` — `handleGrantMcpRequest()`
+- Resolution: `apps/web/src/lib/mcp-grants.ts` — `describeGrantWorkspaces()`,
+  `resolveGrantWorkspaceRef()`, `grantTokenScopes()`
+- Refusals and deprecation: `apps/web/src/lib/mcp-grant-session.ts`
+- Binding: `apps/web/src/lib/api-auth.ts` — `authenticateGrantSession()`,
+  `GRANT_WORKSPACE_HEADER`
+- Action: `packages/core/mcp-tools.ts` — `list_workspaces`
+- Tests: `apps/web/tests/db/mcp-canonical-transport.test.ts` (real Postgres),
+  `apps/web/src/lib/mcp-grant-session.test.ts`,
+  `apps/web/src/app/api/mcp/transport-parity.test.ts`
+
+**Not covered here**: REST routes that act team-wide from `account.teamId`
+without consulting `account.workspaceIds` are grant-limited by a separate
+task.
 ---
 
 ## CLI Device-Code Auth

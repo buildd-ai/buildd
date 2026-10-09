@@ -37,6 +37,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   adjudicate_discrepancy: 'missions',
   promote_discrepancy: 'missions',
   // tasks
+  list_workspaces: 'tasks',
   list_tasks: 'tasks',
   get_task: 'tasks',
   get_task_messages: 'tasks',
@@ -215,6 +216,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   dispatch_health: 'listed',
   update_task: 'listed',
   // the tail, but a workflow tells agents to call it
+  list_workspaces: 'listed', // the account-level MCP server instructions
   spec_compare: 'listed', // spec-sync skill; spec-validator role
   manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
   list_runners: 'listed', // default role prompts
@@ -301,6 +303,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   tasks: {
     parts: [
+      { text: 'the workspaces you can act in', actions: ['list_workspaces'] },
       { text: 'find and read tasks', actions: ['list_tasks', 'get_task', 'get_task_messages'] },
       { text: 'file tasks', actions: ['create_task'] },
       { text: 'edit, steer or cancel them', actions: ['update_task', 'correct_task_result'] },
@@ -392,6 +395,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   adjudicate_discrepancy: 'accept a discrepancy or flip its direction',
   promote_discrepancy: 'turn a spec_ahead discrepancy into a mission',
   spec_compare: 'code vs docs evidence for one feature',
+  list_workspaces: 'workspaces and teams you can act in',
   list_tasks: 'list tasks; terminal status = history',
   get_task: 'task details',
   get_task_messages: "a task's instruction history",
