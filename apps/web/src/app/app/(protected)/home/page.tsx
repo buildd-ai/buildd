@@ -9,9 +9,6 @@ import { attachMergeAdvice } from '@/lib/merge-advice-server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
-import { detectArchetype } from '@buildd/core/release-archetype';
-import type { ReleaseReadinessItem } from '@/lib/release-readiness';
-import { ReleaseWidget, releaseWidgetShows } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -22,38 +19,30 @@ import { teamHostedRunnerBanner } from '@/lib/hosted-runner-usage-store';
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
 import ModelUpgradeNotice from '@/components/models/ModelUpgradeNotice';
 import { roleHas as roleHasPermission } from '@/lib/permission-registry';
-import { splitWaitingOnYou, rightNowState, recordBestEffort, groupInFlight, homeAudience, type HomeAudience } from './home-view';
-import { InFlightGroupCard } from './InFlightGroupCard';
+import { rightNowState, recordBestEffort, homeAudience, type HomeAudience } from './home-view';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import { noRowOfPrMerged, oneRowPerPr } from '@/lib/pr-merge-stamp';
 import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
-import ExternalLink from '@/components/ExternalLink';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { isActionableChip, kernelInboxMembership, missionPrRoleOf, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
-import { actionCardTaskLink } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
-import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
+import type { WaitingOnYouRawItem } from '@/lib/action-queue';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
-import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
-import { resolveGatedReleaseState } from '@/lib/release-baseline';
-import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
-import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
-import { InterruptReviewButton } from './InterruptReviewButton';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
@@ -74,13 +63,10 @@ import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveLandingOwnership, landingModeOf, resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
-import { ActionQueueCard } from './ActionQueueCard';
-import { MobileHome } from './MobileHome';
-import { DeliveryMilestones } from './DeliveryMilestones';
+import { HomeBody } from './HomeBody';
 import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
-import { ActivityTicker } from './ActivityTicker';
-import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
+import type { HomeShippedMission } from './NeedsYouStack';
 import { MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from '../missions/[id]/mission-page-query';
 import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
@@ -88,11 +74,11 @@ import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary'
 import { loadHomeFleet, loadQueueHistory, type HomeFleetData } from '@/lib/home-fleet';
 import { AgentsPanel } from './AgentsPanel';
 import { LandedThisWeek, type LandedMission } from './LandedThisWeek';
-import { buildAgentsModel, homeHeadlineSentence, homeSubline } from '@/lib/home-agents';
+import { buildAgentsModel } from '@/lib/home-agents';
 import { idleWhileQueued, type IdleStretch } from '@/lib/idle-while-queued';
 import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
-import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
+import { startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
@@ -112,30 +98,12 @@ import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 // --- Helpers ---
 
-function timeAgo(date: Date | string): string {
-  const now = Date.now();
-  const then = new Date(date).getTime();
-  const seconds = Math.floor((now - then) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 /**
  * Home's body grid. split: Moving left (~1.5fr), Agents over Landed right (min
  * 300px). side: nothing is moving, so Agents and Landed share the row. single:
  * one column. Below 900px every layout reads Agents, Moving, Landed.
  */
-const HOME_BODY_GRID = {
-  split: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'moving'_'landed'] min-[900px]:grid-cols-[minmax(0,1.5fr)_minmax(300px,1fr)] min-[900px]:grid-rows-[auto_1fr] min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']",
-  side: "grid gap-x-8 gap-y-8 [grid-template-areas:'agents'_'landed'] min-[900px]:grid-cols-2 min-[900px]:[grid-template-areas:'agents_landed']",
-  single: 'flex flex-col gap-8',
-} as const;
-
 export default async function HomePage({
   searchParams,
 }: {
@@ -181,16 +149,6 @@ export default async function HomePage({
   // Team whose admin sees the stale/deprecated tier-model notice (fetched client-side).
   let modelUpgradeTeamId: string | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
-
-  let pendingSuggestions: {
-    scheduleId: string;
-    scheduleName: string;
-    workspaceId: string | null;
-    reason: string;
-    cronExpression?: string;
-    enabled?: boolean;
-    suggestedByTaskId?: string;
-  }[] = [];
 
   let teamRoles: {
     id: string;
@@ -254,7 +212,6 @@ export default async function HomePage({
     prIsDraft: boolean | null;
   }[] = [];
 
-  let resolvedEscalations: ResolvedEscalationItem[] = [];
 
   let agentReviewingPrs: {
     workerId: string;
@@ -303,8 +260,6 @@ export default async function HomePage({
   // Open discrepancy rows beyond each workspace's visible top-10 (§12) — never
   // silently dropped, always surfaced as a count alongside the capped cards.
   let discrepancyOverflowCount = 0;
-
-  let releaseReadinessItems: ReleaseReadinessItem[] = [];
 
   // The fleet redesign: runner snapshot, ticker, stat counts (lib/home-fleet.ts),
   // the compact missions rows and the Needs-you stack's own cards.
@@ -714,123 +669,6 @@ export default async function HomePage({
               const { shots, ok, issues, unsure } = summarizeVisualRun(run);
               shippedMissions[0] = { ...shippedMissions[0], screens: { shots, ok, issues, unsure } };
             }
-          }
-        }
-
-        // Schedules with pending agent suggestions
-        const schedulesWithSuggestions = await db.query.taskSchedules.findMany({
-          where: and(
-            inArray(taskSchedules.workspaceId, wsIds),
-            isNotNull(taskSchedules.pendingSuggestion),
-          ),
-          columns: {
-            id: true,
-            name: true,
-            workspaceId: true,
-            pendingSuggestion: true,
-          },
-          limit: 5,
-        });
-
-        pendingSuggestions = schedulesWithSuggestions
-          .filter(s => s.pendingSuggestion)
-          .map(s => {
-            const ps = s.pendingSuggestion as any;
-            return {
-              scheduleId: s.id,
-              scheduleName: s.name,
-              workspaceId: s.workspaceId,
-              reason: ps.reason,
-              cronExpression: ps.cronExpression,
-              enabled: ps.enabled,
-              suggestedByTaskId: ps.suggestedByTaskId,
-            };
-          });
-
-        // Release queue readiness — gated workspaces only (spec §8 exception rule).
-        // Uses DB-only sources for speed: queue depth from workers, CI state from
-        // the most recent releases row. No GitHub API calls at home-page load.
-        {
-          const wsRows = await db
-            .select({
-              id: workspacesTable.id,
-              name: workspacesTable.name,
-              releaseConfig: workspacesTable.releaseConfig,
-              gitConfig: workspacesTable.gitConfig,
-            })
-            .from(workspacesTable)
-            .where(inArray(workspacesTable.id, wsIds));
-
-          const gatedWsIds = wsRows
-            .filter(
-              (ws) =>
-                detectArchetype({
-                  name: ws.name,
-                  releaseConfig: ws.releaseConfig as any,
-                  gitConfig: ws.gitConfig as any,
-                }) === 'gated',
-            )
-            .map((ws) => ws.id);
-
-          if (gatedWsIds.length > 0) {
-            releaseReadinessItems = await Promise.all(
-              gatedWsIds.map(async (wsId) => {
-                const ws = wsRows.find((w) => w.id === wsId)!;
-
-                // Baseline + CI reading (@buildd/core/release-baseline via
-                // resolveGatedReleaseState): healthy release → deployed release →
-                // any non-failed release → prod-branch HEAD. A failed dispatch
-                // establishes neither a baseline nor a CI reading, and a reading
-                // past its TTL degrades to unknown rather than pinning to a stale
-                // failure. Shared with the readiness route so no two release
-                // surfaces can disagree about where the queue starts.
-                const { baseline, ciState, latestReleaseId, commitsAheadAtDispatch } = await resolveGatedReleaseState(wsId);
-
-                if (!baseline.asOf) {
-                  return {
-                    workspaceId: wsId,
-                    workspaceName: ws.name,
-                    queueDepth: derivedUnavailable<number>('no_baseline'),
-                    oldestMergedAt: derivedUnavailable<string>('no_baseline'),
-                    baselineSource: baseline.source,
-                    ciState,
-                    latestReleaseId,
-                    commitsAheadAtDispatch,
-                  };
-                }
-
-                const [queueRow] = await db
-                  .select({
-                    queueDepth: sql<number>`count(*)::int`,
-                    oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
-                  })
-                  .from(workers)
-                  .innerJoin(tasks, eq(tasks.id, workers.taskId))
-                  .where(
-                    and(
-                      eq(tasks.workspaceId, wsId),
-                      isNotNull(workers.mergedAt),
-                      sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
-                      // A merge into a mission integration branch is not on
-                      // trunk — see core/release-queue-scope.
-                      notMissionIntegrationMerge(),
-                    ),
-                  );
-
-                return {
-                  workspaceId: wsId,
-                  workspaceName: ws.name,
-                  queueDepth: derivedValue(queueRow?.queueDepth ?? 0),
-                  oldestMergedAt: queueRow?.oldestMergedAt
-                    ? derivedValue(queueRow.oldestMergedAt)
-                    : derivedUnavailable<string>('no_scope'),
-                  baselineSource: baseline.source,
-                  ciState,
-                  latestReleaseId,
-                  commitsAheadAtDispatch,
-                };
-              }),
-            );
           }
         }
 
@@ -1526,70 +1364,6 @@ export default async function HomePage({
                 return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
               });
           }
-
-          // Resolved escalations: workers whose PR has since merged or closed.
-          // §1.3 mobile-decision-flow: show as dimmed "Resolved" group, not inline.
-          // Hard constraint: read prLifecycleStatus only — never re-derive from GitHub.
-          {
-            const resolvedPrWorkers = await db.query.workers.findMany({
-              where: and(
-                inArray(workers.workspaceId, wsIds),
-                isNotNull(workers.prUrl),
-                inArray(workers.prLifecycleStatus, ['merged', 'closed']),
-                gte(workers.completedAt, activityWindowStart),
-              ),
-              columns: {
-                id: true, taskId: true, workspaceId: true, prUrl: true,
-                prNumber: true, prLifecycleStatus: true,
-              },
-              with: {
-                task: { columns: { id: true, title: true, missionId: true } },
-                workspace: { columns: { id: true, name: true, gitConfig: true } },
-              },
-              orderBy: [desc(workers.completedAt)],
-              limit: 10,
-            });
-
-            if (resolvedPrWorkers.length > 0) {
-              const resolvedTaskIds = resolvedPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
-
-              const resolvedNotes = resolvedTaskIds.length > 0
-                ? await db.query.missionNotes.findMany({
-                    where: and(
-                      inArray(missionNotes.taskId, resolvedTaskIds),
-                      inArray(missionNotes.type, ['reviewer_escalated', 'reviewer_approved']),
-                    ),
-                    columns: { taskId: true, type: true, title: true, body: true, status: true, createdAt: true },
-                  })
-                : [];
-
-              const { escalationMap: rEscMap, approvalMap: rApprMap, supersededTaskIds: rSuperseded } =
-                selectReviewerEvidence(resolvedNotes);
-
-              resolvedEscalations = resolvedPrWorkers
-                .filter(w => {
-                  const taskTitle = (w.task as any)?.title ?? '';
-                  if (taskTitle.startsWith('[smoke-test')) return false;
-                  if (w.taskId && rSuperseded.has(w.taskId)) return false;
-                  if (w.taskId && (rEscMap.has(w.taskId) || rApprMap.has(w.taskId))) return true;
-                  const ws = (w as any).workspace;
-                  if (!ws) return false;
-                  return resolvePolicy(ws).tier === 'human';
-                })
-                .map(w => {
-                  const ws = (w as any).workspace;
-                  return {
-                    workerId: w.id,
-                    taskId: w.taskId ?? '',
-                    taskTitle: (w.task as any)?.title ?? '',
-                    prNumber: w.prNumber,
-                    prUrl: w.prUrl,
-                    prLifecycleStatus: w.prLifecycleStatus as 'merged' | 'closed',
-                    workspaceName: ws?.name ?? '',
-                  };
-                });
-            }
-          }
         }
 
         // "Waiting on You" action queue
@@ -2158,11 +1932,6 @@ export default async function HomePage({
   const filteredActionQueue = initFilter
     ? actionQueue.filter((i) => i.initiativeId === initFilter)
     : actionQueue;
-  // Human work first, then what an agent is already finishing — rendered as
-  // two groups so the count in the header matches the cards under it.
-  // RESOLVING / FIXING_CI / CI_RUNNING / FIXING_SPEC are informational: they
-  // stay visible but never count as needing the human.
-  const { needsYou: needsYouItems, inFlight: inFlightItems } = splitWaitingOnYou(filteredActionQueue);
   const rightNow = rightNowState({
     inFlightCount: activeItems.length + agentReviewingPrs.length + reviewQueuedPrs.length,
     workspaceCount,
@@ -2186,55 +1955,54 @@ export default async function HomePage({
     askedAt: q.askedAt, question: q.question,
     href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
   }));
-  // A parked worker's question renders once, as the one-tap card.
-  const answeredInline = new Set(questions.map(q => q.taskId).filter(Boolean));
-  const queueNeedsYou = needsYouItems.filter(i => !(i.chip === 'QUESTION' && i.taskId && answeredInline.has(i.taskId)));
-  const needsYouCount = questions.length + heldMissions.length + queueNeedsYou.length;
-  const needsYouDetail = [
-    questions.length > 0 && `${questions.length} question${questions.length === 1 ? '' : 's'}`,
-    heldMissions.length > 0 && `${heldMissions.length} held`,
-    queueNeedsYou.length > 0 && `${queueNeedsYou.length} to act on`,
-  ].filter(Boolean).join(' · ') || null;
   const live = fleetData?.fleet.live ?? activeItems.length;
-  const headline = homeHeadline({ live, needsYou: needsYouCount, shipped: shippedMissions[0]?.title ?? null });
   const clock = new Date(renderNow).toLocaleTimeString('en-US', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
     ...(teamTz ? { timeZone: teamTz } : {}),
   });
-  const stats = fleetData?.stats;
-  const repairingMissions = missionDeliveries.filter(d => d.delivery.kind === 'repair').length;
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
-  // Legend: the roles on today's lanes (every role when the lanes are empty).
-  const lanesRoles = new Set((fleetData?.fleet.runners ?? []).flatMap(r => r.slots.flatMap(sl => sl.lane.bars.map(b => b.roleSlug))).filter(Boolean));
-  const fleetRoles = teamRoles
-    .filter(r => lanesRoles.size === 0 || lanesRoles.has(r.slug))
-    .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
-  const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  // The one list of what needs you, at every width: the headline counts it.
+  const { items: attention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
-  const phoneAsk = chatPlacement.kind === 'chat' && chatTeamId
-    ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
-    : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>;
-
-  // Phone: the same checklist under the ask, so a new team gets a next step
-  // instead of an empty inbox (desktop renders it below the chat card).
-  const phoneSetup = showGettingStarted && gettingStarted
-    ? <GettingStartedChecklist checklist={gettingStarted} headingId="getting-started-phone-h" chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null} />
-    : null;
-
-  // Moving (left) holds delivery, in flight, reviews, suggestions and releases.
-  // With none of those, Agents sits beside Landed instead of beside an empty column.
-  const movingEmpty = milestones.length === 0 && inFlightItems.length === 0
-    && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0
-    && rightNow !== 'create-workspace' && pendingSuggestions.length === 0
-    && !releaseWidgetShows(releaseReadinessItems);
-  const bodyLayout: keyof typeof HOME_BODY_GRID = !movingEmpty
-    ? (agentsModel || landedWeek.length > 0 ? 'split' : 'single')
-    : agentsModel && landedWeek.length > 0 ? 'side' : 'single';
+  // Chat is how work starts: the composer sits under the headline. The phone
+  // gets a one-line ask that opens the chat page.
+  const ask = (
+    <>
+      <div className="md:hidden">
+        {chatPlacement.kind === 'chat' && chatTeamId
+          ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
+          : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>}
+      </div>
+      {chatPlacement.kind === 'chat' && chatTeamId && (
+        <div className="hidden md:block">
+          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
+        </div>
+      )}
+    </>
+  );
+  // Setup steps: one line each once there is a decision to make.
+  const setup = (rightNow === 'create-workspace' || (showGettingStarted && gettingStarted) || (chatPlacement.kind !== 'chat' && chatTeamId)) ? (
+    <>
+      {rightNow === 'create-workspace' && (
+        <div className="mb-6 border border-dashed border-border-default p-5">
+          <div className="mb-2 text-body font-medium text-text-primary">Create a workspace</div>
+          <p className="mb-4 text-body text-text-secondary">This team has no workspace. Connect a GitHub repo to run agents.</p>
+          <Link href="/app/workspaces/new" className="btn btn-ink min-h-11">Connect a repo</Link>
+        </div>
+      )}
+      {/* While Get started shows, chat setup folds into its footer line. */}
+      {showGettingStarted && gettingStarted && (
+        <GettingStartedChecklist checklist={gettingStarted} chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null} />
+      )}
+      {chatPlacement.kind === 'onboarding' && chatTeamId && !showGettingStarted && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={attention.length > 0} />}
+      {chatPlacement.kind === 'connect-own' && chatTeamId && <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />}
+    </>
+  ) : null;
 
   return (
     <SwipeProvider>
@@ -2250,267 +2018,42 @@ export default async function HomePage({
           <ModelUpgradeNotice teamId={modelUpgradeTeamId} />
         </div>
       )}
-      <MobileHome agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} idPrefix="phone" /> : null} landed={<LandedThisWeek missions={landedWeek} timeZone={teamTz} idPrefix="phone" />} items={phoneAttention} ask={phoneAsk} setup={phoneSetup} runnerConnected={fleetData ? fleetData.fleet.runners.length > 0 : undefined} counts={counts} milestones={milestones} quietMissions={quietMissions} shipped={shippedMissions} timeZone={teamTz} />
-      <div className="mx-auto hidden max-w-[1320px] md:block">
-        <header className="mb-5 flex flex-col gap-3 md:mb-6 md:flex-row md:items-end md:justify-between">
-          <div className="min-w-0">
-            <div className="section-label hidden text-text-muted md:block">Home{teamName ? ` · ${teamName}` : ''}</div>
-            <h1 data-testid="home-headline" className="mt-1.5 font-voice text-display font-medium normal-case leading-tight tracking-normal text-text-primary">
-              {homeHeadlineSentence(needsYouCount)}
-            </h1>
-            <p data-testid="home-subline" className="mt-1 font-voice text-lede italic text-text-secondary">{homeSubline(needsYouCount, repairingMissions)}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="hidden min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-[12.5px] text-text-secondary md:flex">
-              <i aria-hidden="true" className="inline-block h-2 w-2 bg-accent" />
-              {clock}
-            </span>
-            <NewWorkLink
-              kind="mission"
-              workspaceId={wsFilter ?? null}
-              testId="home-new-mission"
-              className="hidden min-h-9 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:inline-flex"
-            >
-              + Mission
-            </NewWorkLink>
-          </div>
-        </header>
-
-        {/* Chat is how work starts: the composer is the first thing on Home for
-            everyone, with the fleet directly under it. No key yet: an admin
-            gets the connect-a-provider card here instead. */}
-        {chatPlacement.kind === 'chat' && chatTeamId && (
-          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
-        )}
-        {/* Getting started comes first; while it shows, chat setup folds into
-            its footer line instead of pitching a second key card above it. */}
-        {showGettingStarted && gettingStarted && (
-          <GettingStartedChecklist
-            checklist={gettingStarted}
-            chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null}
-          />
-        )}
-        {chatPlacement.kind === 'onboarding' && chatTeamId && !showGettingStarted && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={needsYouCount > 0} />}
-        {chatPlacement.kind === 'connect-own' && chatTeamId && (
-          <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />
-        )}
-
-
-        {/* The decisions come first at every width: full width, side by side. */}
-        <NeedsYouStack
-          count={needsYouCount}
-          questions={questions}
-          held={heldMissions}
+      <div className="mx-auto max-w-[1320px]">
+        <HomeBody
+          items={attention}
+          ask={ask}
+          setup={setup}
+          runnerConnected={fleetData ? fleetData.fleet.runners.length > 0 : undefined}
+          counts={counts}
+          milestones={milestones}
+          quietMissions={quietMissions}
           shipped={shippedMissions}
           timeZone={teamTz}
-          lead={(queueNeedsYou.length > 0 || initFilter) && (
-            // Initiative scoping chips — SCOPE the queue, never group it.
+          agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
+          landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
+          aside={
+            <div className="hidden flex-wrap items-center gap-2.5 md:flex">
+              {teamName && <span className="section-label text-text-muted">{teamName}</span>}
+              <span className="flex min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-meta text-text-secondary">{clock}</span>
+              <NewWorkLink kind="mission" workspaceId={wsFilter ?? null} testId="home-new-mission" className="btn btn-ink min-h-9">
+                + Mission
+              </NewWorkLink>
+            </div>
+          }
+          lead={(attention.length > 0 || initFilter) && (
+            // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
-              <InitiativeFilterChips
-                initiatives={actionQueueInitiatives}
-                selectedId={initFilter ?? null}
-                workspaceFilter={wsFilter ?? null}
-              />
-              {filteredActionQueue.length === 0 && (
-                <p className="text-[13px] text-text-muted">Nothing waiting for this initiative.</p>
-              )}
+              <InitiativeFilterChips initiatives={actionQueueInitiatives} selectedId={initFilter ?? null} workspaceFilter={wsFilter ?? null} />
+              {filteredActionQueue.length === 0 && <p className="text-body text-text-muted">Nothing waiting for this initiative.</p>}
             </div>
           )}
-          foot={(discrepancyOverflowCount > 0 || resolvedEscalations.length > 0) && (
-            <div className="mt-3 space-y-3">
-              {/* §12: overflow past the top-10-per-workspace cap is never
-                  silently dropped — a clean-looking queue must not be able
-                  to hide a growing backlog the way the Schedules page did. */}
-              {discrepancyOverflowCount > 0 && (
-                <p className="text-[11px] text-text-muted">
-                  +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
-                </p>
-              )}
-              {resolvedEscalations.length > 0 && <ResolvedEscalationsGroup items={resolvedEscalations} />}
-            </div>
+          foot={discrepancyOverflowCount > 0 && (
+            // §12: overflow past the top-10-per-workspace cap is never silently dropped.
+            <p className="mt-3 text-meta text-text-muted">
+              +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
+            </p>
           )}
-        >
-          {queueNeedsYou.map((item) => <ActionQueueCard key={item.subjectKey} item={item} />)}
-        </NeedsYouStack>
-
-        {/* Desktop: Moving left, Agents over Landed right. Phone: Agents, Moving, Landed. */}
-        <div data-testid="home-body" data-layout={bodyLayout} className={HOME_BODY_GRID[bodyLayout]}>
-          {agentsModel && <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} />}
-          <div style={{ gridArea: 'moving' }} className={movingEmpty ? 'hidden' : 'min-w-0'}>
-            <DeliveryMilestones missions={milestones} openMissions={counts.openMissions} />
-            {/* In flight is the platform's next move, not yours: it reads with the missions moving. */}
-            {inFlightItems.length > 0 && (
-              <section data-testid="waiting-in-flight" className="mb-8">
-                <div className="mb-2 flex items-baseline justify-between gap-3">
-                  <h2 className="section-label">In flight</h2>
-                  <span className="font-mono text-meta text-text-muted">{inFlightItems.length}</span>
-                </div>
-                <div className="space-y-2">
-                  {/* Repeated kinds (six doc fixes on the same re-run) fold into one card. */}
-                  {groupInFlight(inFlightItems).map((g) => g.kind === 'single'
-                    ? <ActionQueueCard key={g.item.subjectKey} item={g.item} />
-                    : <InFlightGroupCard key={g.key} kind={g.key} items={g.items} />)}
-                </div>
-              </section>
-            )}
-            <div data-testid="home-right-now">
-              {rightNow === 'get-started' ? null : rightNow === 'create-workspace' ? (
-                <div className="mb-8">
-                  <div className="section-label mb-4">Right Now</div>
-                  {rightNow === 'create-workspace' ? (
-                <div className="border border-dashed border-border-default p-5">
-                  <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
-                  <p className="text-[13px] text-text-secondary mb-4">
-                    This team has no workspace. Connect a GitHub repo to run agents.
-                  </p>
-                  <Link
-                    href="/app/workspaces/new"
-                    className="inline-flex items-center gap-1.5 bg-primary px-3 py-2 text-[13px] font-medium text-white hover:opacity-90 transition-opacity"
-                  >
-                    Connect a repo
-                  </Link>
-                </div>
-              ) : null}
-                </div>
-              ) : (
-                <>
-                  {/* Operators get the fleet near the top; a member gets their
-                      missions first and the fleet as one expandable line below.
-                      Chat, when available, sits above all of this. */}
-                  {(agentReviewingPrs.length > 0 || reviewQueuedPrs.length > 0) && (
-                    <div className="mb-8 space-y-2">
-            {/* Agent-reviewing PR cards — ambient presence, not actionable */}
-            {agentReviewingPrs.map((item) => (
-              <div
-                key={item.reviewerWorkerId}
-                className="border border-border-default px-4 py-3 bg-surface-2"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                      <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                        Agent Reviewing
-                      </span>
-                      {item.reviewerRoleSlug && (
-                        <span className="text-[11px] text-text-muted">· {item.reviewerRoleSlug}</span>
-                      )}
-                      {item.reviewerStartedAt && (
-                        <span className="text-[11px] text-text-muted">
-                          {timeAgo(item.reviewerStartedAt)}
-                        </span>
-                      )}
-                      {!!item.unblockCount && item.unblockCount > 0 && (
-                        <span className="text-[11px] text-text-muted">
-                          · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
-                        </span>
-                      )}
-                    </div>
-                    <Link
-                      href={actionCardTaskLink(item)}
-                      className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
-                    >
-                      {item.taskTitle}
-                    </Link>
-                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                      {item.workspaceName && (
-                        <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
-                      )}
-                      {item.prUrl && (
-                        <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
-                          PR #{item.prNumber} ↗
-                        </ExternalLink>
-                      )}
-                    </div>
-                  </div>
-                  <InterruptReviewButton workerId={item.reviewerWorkerId} />
-                </div>
-              </div>
-            ))}
-            {/* Review-queued PR cards have no live reviewer worker.
-                The agent still owns these during the dispatch grace period. */}
-            {reviewQueuedPrs.map((item) => (
-              <div
-                key={item.taskId}
-                className="border border-border-default px-4 py-3 bg-surface-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                    <span className="text-[11px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                      Review Queued
-                    </span>
-                    {!!item.unblockCount && item.unblockCount > 0 && (
-                      <span className="text-[11px] text-text-muted">
-                        · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
-                      </span>
-                    )}
-                  </div>
-                  <Link
-                    href={actionCardTaskLink(item)}
-                    className="text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline"
-                  >
-                    {item.taskTitle}
-                  </Link>
-                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                    {item.workspaceName && (
-                      <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
-                    )}
-                    {item.prUrl && (
-                      <ExternalLink href={item.prUrl} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] text-text-muted hover:underline">
-                        PR #{item.prNumber} ↗
-                      </ExternalLink>
-                    )}
-                    {item.reason && (
-                      <span className="text-[11px] text-text-muted">{item.reason}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Pending Schedule Suggestions */}
-            {pendingSuggestions.length > 0 && (
-              <div className="mb-8">
-                <div className="section-label mb-4">Needs Attention</div>
-                <div className="space-y-2">
-                  {pendingSuggestions.map((s) => (
-                    <Link
-                      key={s.scheduleId}
-                      href={`/app/workspaces/${s.workspaceId}/schedules`}
-                      className="block border-l-2 border-status-warning bg-status-warning/5 px-4 py-3 hover:bg-status-warning/10 transition-colors"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-[11px] font-mono font-medium text-status-warning tracking-wide uppercase">SUGGEST</span>
-                        <span className="text-[13px] font-medium text-text-primary truncate">
-                          {s.scheduleName}
-                        </span>
-                      </div>
-                      <p className="text-[12px] text-text-secondary line-clamp-2">{s.reason}</p>
-                      <p className="text-[11px] text-text-muted font-mono mt-1">
-                        {[
-                          s.cronExpression && `cron → ${s.cronExpression}`,
-                          s.enabled === false && 'disable',
-                          s.enabled === true && 'enable',
-                        ].filter(Boolean).join(', ')}
-                      </p>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Release Queue — gated workspaces with unshipped commits and CI green (spec §8) */}
-            <ReleaseWidget items={releaseReadinessItems} />
-          </div>
-          <LandedThisWeek missions={landedWeek} timeZone={teamTz} />
-          <div className="min-w-0 [grid-column:1/-1]">
-            <ActivityTicker events={fleetData?.ticker ?? []} timeZone={teamTz} />
-          </div>
-        </div>
+        />
       </div>
     </main>
     </SwipeProvider>

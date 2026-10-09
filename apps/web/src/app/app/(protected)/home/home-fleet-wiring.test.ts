@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 
 const home = await Bun.file(new URL('./page.tsx', import.meta.url)).text();
+const body = await Bun.file(new URL('./HomeBody.tsx', import.meta.url)).text();
 const loader = await Bun.file(new URL('../../../../lib/home-fleet.ts', import.meta.url)).text();
 
 describe('Home live workers', () => {
@@ -21,38 +22,29 @@ describe('Home live workers', () => {
     expect(loader).toContain('.orderBy(desc(workers.startedAt))');
   });
 
-  it('the decisions come first, then Agents / Moving / Landed in grid areas, the ticker last', () => {
-    const stack = home.indexOf('<NeedsYouStack');
-    const body = home.indexOf('data-testid="home-body"');
-    const ticker = home.indexOf('<ActivityTicker');
-    expect(stack).toBeGreaterThan(-1);
-    expect(body).toBeGreaterThan(stack);
-    expect(ticker).toBeGreaterThan(body);
-    expect(home).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']");
-    expect(home).toContain("[grid-template-areas:'agents'_'moving'_'landed']");
+  // Owner acceptance (Oct 9): Home keeps decisions, Agents, Moving toward
+  // delivery and Landed this week. The ticker, the release queue and the In
+  // flight counters live on Activity and Health.
+  it('Home is one HomeBody: decisions first, then Agents / Moving / Landed in grid areas', () => {
+    expect(home.match(/<HomeBody\b/g)).toHaveLength(1);
+    expect(body).toContain('data-testid="home-waiting-on-you"');
+    expect(body.indexOf('data-testid="home-waiting-on-you"')).toBeLessThan(body.indexOf('data-testid="home-body"'));
+    expect(body).toContain("min-[900px]:[grid-template-areas:'moving_agents'_'moving_landed']");
+    expect(body).toContain("[grid-template-areas:'agents'_'moving'_'landed']");
+    expect(body).toContain("min-[900px]:[grid-template-areas:'agents_landed']");
   });
 
-  // Desktop at 1280: In flight sat full-width inside the decisions grid and
-  // pinned every auto-fit track open, so one ask rendered half width.
-  it('the decisions grid holds only cards; In flight lives in the Moving column', () => {
-    const stack = home.slice(home.indexOf('<NeedsYouStack'), home.indexOf('</NeedsYouStack>'));
-    expect(stack).not.toContain('[grid-column:1/-1]');
-    expect(stack).not.toContain('waiting-in-flight');
-    const moving = home.indexOf("gridArea: 'moving'");
-    const inFlight = home.indexOf('data-testid="waiting-in-flight"');
-    expect(moving).toBeGreaterThan(-1);
-    expect(inFlight).toBeGreaterThan(moving);
-    expect(inFlight).toBeLessThan(home.indexOf('<LandedThisWeek missions={landedWeek} timeZone={teamTz} />'));
+  it('diagnostics are off Home', () => {
+    for (const gone of ['<ActivityTicker', '<ReleaseWidget', 'waiting-in-flight', 'Agent Reviewing', 'Review Queued', 'resolveGatedReleaseState']) {
+      expect(home).not.toContain(gone);
+    }
   });
 
-  it('an all-clear Home with nothing moving puts Agents beside Landed, never beside an empty column', () => {
-    expect(home).toContain("min-[900px]:[grid-template-areas:'agents_landed']");
-    expect(home).toMatch(/const movingEmpty =/);
-  });
-
-  it('the header is the headline and one plain sub-line', () => {
-    const header = home.slice(home.indexOf('data-testid="home-headline"'), home.indexOf('</header>'));
+  it('the header is the headline and one plain sub-line, from the list itself', () => {
+    const header = body.slice(body.indexOf('<header'), body.indexOf('</header>'));
+    expect(header).toContain('data-testid="home-headline"');
     expect(header).toContain('data-testid="home-subline"');
+    expect(header).toContain('copy.headline');
     expect(header).not.toContain('arcHeadline');
   });
 
@@ -64,7 +56,8 @@ describe('Home live workers', () => {
   });
 
   it('renders the redesigned sections with stable test ids', () => {
-    for (const id of ['home-headline', 'home-right-now', 'home-body']) expect(home).toContain(`data-testid="${id}"`);
-    for (const c of ['<AgentsPanel', '<NeedsYouStack', '<ActivityTicker', '<LandedThisWeek', '<DeliveryMilestones']) expect(home).toContain(c);
+    for (const id of ['home-headline', 'home-body', 'home-waiting-on-you', 'needs-you-count']) expect(body).toContain(`data-testid="${id}"`);
+    for (const c of ['<AgentsPanel', '<LandedThisWeek']) expect(home).toContain(c);
+    expect(body).toContain('<DeliveryMilestones');
   });
 });
