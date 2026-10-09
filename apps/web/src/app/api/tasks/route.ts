@@ -57,7 +57,8 @@ import {
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
 import { pickRoleRowForTask, countRoleInferenceCandidates } from '@buildd/core/role-model-routing';
-import { pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS, roleRowsInScope, slugHasPersonalRows } from '@buildd/core/role-visibility';
+import { pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
+import { checkStatedRole } from '@/lib/stated-role';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { terminalAuditFields } from './audit-fields';
 
@@ -1307,32 +1308,15 @@ export async function POST(req: NextRequest) {
     // member's private role is refused rather than silently filed role-less
     // (role-visibility.ts). Shared personal roles and team roles pass.
     const statedRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
-    type StatedRoleRow = Pick<typeof workspaceSkills.$inferSelect,
-      'id' | 'slug' | 'workspaceId' | 'teamId' | 'ownerUserId' | 'visibility' | 'enabled' | 'defaultBackend'>;
-    let statedRoleRows: StatedRoleRow[] = [];
-    if (statedRoleSlug && targetWorkspace.teamId) {
-      statedRoleRows = await db.query.workspaceSkills.findMany({
-        where: and(
-          roleRowsInScope({ teamId: targetWorkspace.teamId, workspaceId }),
-          eq(workspaceSkills.slug, statedRoleSlug),
-          eq(workspaceSkills.isRole, true),
-        ),
-        columns: { ...ROLE_VISIBILITY_COLUMNS, enabled: true, defaultBackend: true },
-      });
-      if (statedRoleRows.length > 0) {
-        const visible = pickVisibleRoleRow(statedRoleRows, statedRoleSlug, {
-          teamId: targetWorkspace.teamId,
-          workspaceId,
-          requesterUserId: slugHasPersonalRows(statedRoleRows, statedRoleSlug) ? await requesterUserId() : null,
-        });
-        if (!visible) {
-          return NextResponse.json({
-            error: `Role '${statedRoleSlug}' is a private role of another team member; only its owner's tasks can use it`,
-            gateReason: 'role_not_visible',
-          }, { status: 400 });
-        }
-      }
+    const statedRole = await checkStatedRole(statedRoleSlug, {
+      teamId: targetWorkspace.teamId,
+      workspaceId,
+      requesterUserId,
+    });
+    if (statedRole.refused) {
+      return NextResponse.json(statedRole.refused, { status: 400 });
     }
+    const statedRoleRows = statedRole.rows;
 
     // Validate and resolve requiredConnectors (team-scoped role lookup).
     const requiredConnectorsCheck = await validateRequiredConnectors(rawRequiredConnectors, {
