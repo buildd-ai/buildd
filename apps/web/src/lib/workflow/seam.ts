@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
@@ -421,7 +421,7 @@ export async function attemptEnded(p: {
         if (liveChecks) {
           // §6.10: classified as T10 would; a trunk-caused red is handed on and then T25's.
           const cls = liveChecks.failing.length > 0
-            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
+            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
             : null;
           if (cls?.incident) trunk = cls;
           else {
@@ -458,7 +458,7 @@ export async function attemptEnded(p: {
       { ref: { deliveryId }, exec: deps.exec },
     );
     if (trunk.incident.opened) {
-      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
     }
   }
   await drainDelivery(deliveryId, deps);
@@ -673,6 +673,25 @@ export async function observeHead(p: {
   return true;
 }
 
+// ── T29: the PR's base changed (webhook `edited` with `changes.base`) ────────
+
+/** Webhook `edited` with `changes.base`: T29 from a live read. `false` = not the kernel's PR. */
+export async function observeBase(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; hintedFromBase: string | null; source: string;
+}, deps: SeamDeps = {}): Promise<boolean> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return false;
+  const reader = readerFor(deps, p.installationId);
+  try {
+    const live = await reader.readPr(p.repoFullName, p.prNumber);
+    if (live) await catchUpBase({ ...p, deliveryId, live }, reader, deps.exec);
+  } catch (err) {
+    console.error(`[workflow] BaseChanged ${p.repoFullName}#${p.prNumber} failed:`, err);
+  }
+  await drainDelivery(deliveryId, deps);
+  return true;
+}
+
 /** Webhook `closed` / `reopened`: T17 / T18 / T19 from a live read. Legacy keeps its post-merge work (Slice C). */
 export async function observePrState(p: {
   workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string;
@@ -856,6 +875,8 @@ export async function observeCiFailure(p: {
   if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  // The incident a red head joins is its base's: the base GitHub holds now, recorded first.
+  await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.source}:ci`, deliveryId, live }, reader, deps.exec);
 
   // §6.3 T10: the hint is a pointer; whether CI is red on the head is read now.
   // Nothing failing (re-run green, or re-running) and the reducer refuses it.
@@ -875,7 +896,7 @@ export async function observeCiFailure(p: {
   if (d && ciState && !notRed && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
     const cls = await classifyCiFailure({
-      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
+      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: p.headSha,
       deliveryId, gitConfig: repo?.gitConfig ?? null, reader, exec: deps.exec,
     });
     if (cls.signature !== UNKNOWN_CI_SIGNATURE) signature = cls.signature;
@@ -888,7 +909,7 @@ export async function observeCiFailure(p: {
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
   await drainDelivery(deliveryId, deps);
-  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }
 
@@ -1028,6 +1049,7 @@ export async function reconcileKernelDeliveries(
         const r = await ingestFact(fact, { exec: deps.exec, github: once });
         if (r.result === 'applied') s.imported++;
       }
+      if (!closedNow && row.state !== 'CLOSED_UNMERGED' && await catchUpBase({ ...base, deliveryId, live }, once, deps.exec)) s.imported++;
       let enqueued = 0;
       const view = await loadView({ deliveryId }, deps.exec);
       if (view.delivery) {

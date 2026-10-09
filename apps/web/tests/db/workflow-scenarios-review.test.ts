@@ -141,7 +141,7 @@ describe('stacked PRs', () => {
     expect(await w.land(a, a.head)).toMatchObject({ merged: true });
     await w.deliver();
 
-    // GitHub retargets the top PR when its base merges (here: by hand, as the fake does not).
+    // GitHub retargets the top PR when its base merges (here: by hand; the fake's PATCH sends `edited` with `changes.base`).
     await w.gh.request('PATCH', `/repos/${w.repo}/pulls/${b.prNumber}`, { base: 'dev' });
     expect(await w.taskStatus(b.ownerTaskId)).toBe('in_progress');
     const landed = await w.land(b, b.head);

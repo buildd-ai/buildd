@@ -23,7 +23,7 @@ import { sql, type Column, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { kernelDeliveryForPr, kernelOnSql } from './authority';
 import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
@@ -223,6 +223,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     };
   }
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.door}:landing`, repoFullName: p.repoFullName, prNumber: p.prNumber }, { exec, github: pinned });
+  // 24e1cfad: a retarget the webhook has not delivered is recorded before the merge is asked
+  // for; it drops an approval that reviewed the old diff, and the landing below is refused.
+  if (await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.door}:landing`, deliveryId, live }, pinned, exec)) await settle();
 
   const result = await applyCommand({
     type: 'LandingRequested',
