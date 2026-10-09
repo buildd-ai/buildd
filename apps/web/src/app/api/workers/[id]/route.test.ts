@@ -2699,6 +2699,74 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.waitingFor.contractViolation).toBe(true);
   });
 
+  // Found in the live pause proof (task 4b2b30a9): after Resume, the run
+  // completed but its row kept error "paused: ...", so a finished task showed an
+  // error line. Leaving a park clears the park's marker.
+  it.each([
+    ['paused: paused by a person; Resume continues the same session', 'a pause'],
+    ['needs_input: Which database?', 'a parked question'],
+  ])('a waiting_input worker resuming to running clears its park marker (%s, %s)', async (parkError) => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'waiting_input', error: parkError, workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Processing follow-up...', reactivate: true },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.error).toBeNull();
+  });
+
+  it('a running update keeps an error that is not a park marker', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'waiting_input', error: 'something else', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.error).toBeUndefined();
+  });
+
   it('does not flag a real question as a contract violation', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({
