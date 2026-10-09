@@ -8,19 +8,19 @@
  * Auth: API key / OAuth bearer (same as the sibling PATCH/PUT/GET handlers on
  * `/api/github/pr`), never a session — this is an agent-callable write.
  * A per-task token may supersede the PR its own run opened or a PR its own
- * task names (never because the PR owner's task names it), and only with a PR
+ * task's records link (never because the PR owner's task links it), and only with a PR
  * in its own workspace's repo (not another repo of the mission). An agent run
  * on its runner's key names itself with workerId (as close_pr and update_pr
- * do) and is held to the same rule: its own worker's PR, a PR its task names,
- * or, for an orchestration task, a PR on its own mission. People keep their
- * team-wide reach. For a PR the workflow kernel owns, the write is T20 (docs/specs/workflow-state-kernel.md
+ * do) and is held to the same rule: its own worker's PR, a PR its task's
+ * records link, or, for an orchestration task, a PR on its own mission. People
+ * keep their team-wide reach. For a PR the workflow kernel owns, the write is T20 (docs/specs/workflow-state-kernel.md
  * §17.1, Slice D).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeTaskNamesPr } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeTaskLinksPr } from '@/lib/task-token-auth';
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { recordPrSupersession } from '@/lib/pr-supersession';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -113,15 +113,15 @@ export async function POST(req: NextRequest) {
   }
   const resolvedWorkerId = resolved.id as string;
 
-  // A task token: the PR its own run opened, or a PR its own task names (§17.1 (a), (b)).
+  // A task token: the PR its own run opened, or a PR its own task's records link (§17.1 (a), (b)).
   if (account.taskScope) {
     const pr = resolved.prNumber as number | null;
     const allowed = pr != null && (
       taskScopeAllowsWorkerPr(account, resolved, pr)
-      || await taskScopeTaskNamesPr(account, { workspaceId: resolved.workspaceId ?? resolved.workspace?.id, prNumber: pr })
+      || await taskScopeTaskLinksPr(account, { workspaceId: resolved.workspaceId ?? resolved.workspace?.id, prNumber: pr })
     );
     if (!allowed) {
-      return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR its own task names' }, { status: 403 });
+      return NextResponse.json({ error: 'A task token may supersede only its own PR or a PR its own task\'s records link' }, { status: 403 });
     }
   }
 
@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
     const pr = resolved.prNumber as number | null;
     if (pr != null && !(await agentRunMayActOnPr(account, acting ?? resolved, pr))) {
       return NextResponse.json({
-        error: `An agent run may supersede only its own PR (#${(acting ?? resolved).prNumber ?? 'none'}) or one its task names`,
+        error: `An agent run may supersede only its own PR (#${(acting ?? resolved).prNumber ?? 'none'}) or one its task's records link`,
       }, { status: 403 });
     }
   }
