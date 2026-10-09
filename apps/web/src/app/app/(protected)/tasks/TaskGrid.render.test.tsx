@@ -18,7 +18,7 @@ describe('TaskGrid — empty Activity', () => {
     expect(html).toContain('No activity');
     expect(html).toContain('href="/app/missions/new"');
     expect(html).toMatch(/data-testid="activity-empty-new-task"[^>]*>New task</);
-    expect(html).toContain('href="/app/tasks/new"');
+    expect(html).not.toContain('href="/app/tasks/new"');
   });
 });
 
