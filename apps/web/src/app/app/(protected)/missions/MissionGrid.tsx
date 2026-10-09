@@ -3,53 +3,34 @@
 /**
  * The Missions portfolio: compact rows read from the shared delivery
  * projection (lib/delivery-projection.ts), several per phone screen.
- * Sorting, filtering and counting live in lib/mission-portfolio.ts; this file
- * only renders. Design: docs/prototypes/cross-surface-delivery (`#missions`).
- *
- * Mobile row, three lines: title + age; status chip, agent, landed n/m + bar;
- * next milestone. An exception line appears only when there is one. From lg
- * up the same row becomes columns: Status · Mission · Landed · Next · age.
+ * Filtering and counting live in lib/mission-portfolio.ts, the three sections
+ * (Needs you / In motion / Waiting) and their orderings in
+ * lib/mission-sections.ts; this file only renders. Each row is the shared
+ * MissionRow: title, small task strip, one state line, Next. One column on
+ * phones, two from md.
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { Select } from '@/components/ui/Select';
-import {
-  DELIVERY_KIND, DELIVERY_STAGES, deliveryStageIndex, repairBadge,
-  type DeliveryTone,
-} from '@/lib/delivery-projection';
+import MissionRow from '@/components/ui/MissionRow';
+import { DELIVERY_KIND } from '@/lib/delivery-projection';
+import { STATE_OF_KIND, buildMissionSections } from '@/lib/mission-sections';
 import {
   COUNTER_DEFINITIONS,
-  PORTFOLIO_SORTS,
   PORTFOLIO_STATUS_FILTERS,
   filterPortfolio,
   portfolioCounts,
   portfolioFilterCounts,
-  sortPortfolio,
   splitPortfolio,
   type PortfolioRow,
-  type PortfolioSort,
   type PortfolioStatusFilter,
 } from '@/lib/mission-portfolio';
 import { shortDuration } from '@/lib/mission-list-card';
 import { classifyReleaseState, isReleaseVisible } from '@/lib/release-state';
 
 export type { PortfolioRow } from '@/lib/mission-portfolio';
-
-const TONE_TEXT: Record<DeliveryTone, string> = {
-  success: 'text-status-success', info: 'text-status-info', warning: 'text-status-warning',
-  ink: 'text-text-primary', muted: 'text-text-muted', error: 'text-status-error',
-};
-const TONE_EDGE: Record<DeliveryTone, string> = {
-  success: 'border-l-status-success', info: 'border-l-status-info', warning: 'border-l-status-warning',
-  ink: 'border-l-accent', muted: 'border-l-border-default', error: 'border-l-status-error',
-};
-
-const SORT_OPTIONS = PORTFOLIO_SORTS.map(s => ({ value: s.key, label: s.label, description: s.title }));
-
-/** Shared column template: the header and every row line up from lg. */
-const COLUMNS = 'lg:grid-cols-[164px_minmax(0,1.3fr)_190px_minmax(0,1fr)_48px]';
 
 export function MissionGrid({
   rows,
@@ -68,7 +49,6 @@ export function MissionGrid({
   now?: number;
 }) {
   const [q, setQ] = useState('');
-  const [sort, setSort] = useState<PortfolioSort>('attention');
   const [status, setStatus] = useState<PortfolioStatusFilter>('all');
   const [workspaceId, setWorkspaceId] = useState('');
   const [showOlder, setShowOlder] = useState(false);
@@ -78,7 +58,8 @@ export function MissionGrid({
   // Filter counts follow search and workspace, so each number is what tapping it shows.
   const scoped = useMemo(() => filterPortfolio(open, { q, workspaceId }), [open, q, workspaceId]);
   const filterCounts = useMemo(() => portfolioFilterCounts(scoped), [scoped]);
-  const visible = useMemo(() => sortPortfolio(filterPortfolio(scoped, { status }), sort), [scoped, status, sort]);
+  const visible = useMemo(() => filterPortfolio(scoped, { status }), [scoped, status]);
+  const sections = useMemo(() => buildMissionSections(visible), [visible]);
   const doneRows = filterPortfolio([...recentDone, ...(showOlder || recentDone.length === 0 ? olderDone : [])], { q, workspaceId });
 
   const multiWorkspace = new Set(rows.map(r => r.workspaceId ?? '')).size > 1;
@@ -100,18 +81,6 @@ export function MissionGrid({
             value={q}
             onChange={e => setQ(e.target.value)}
             className="min-h-11 min-w-0 flex-1 border-2 border-border-strong bg-card px-3 font-mono text-[16px] text-text-primary placeholder:text-text-muted md:min-h-9 md:text-[13px]"
-          />
-          {/* Short labels keep the trigger whole at phone width; the full meaning is each option's second line. */}
-          <Select<PortfolioSort>
-            id="portfolio-sort"
-            aria-label="Sort"
-            testId="portfolio-sort"
-            value={sort}
-            onChange={setSort}
-            options={SORT_OPTIONS}
-            menuMinWidth={200}
-            align="end"
-            className="shrink-0"
           />
         </div>
         <div className="relative min-w-0">
@@ -163,11 +132,22 @@ export function MissionGrid({
         </div>
       </div>
 
-      <section data-testid="mission-group" data-group="open" aria-label="Open missions">
-        <div aria-hidden="true" className={`hidden gap-3 pb-1.5 pl-4 pr-3 font-mono text-meta text-text-muted lg:grid ${COLUMNS}`}>
-          <span>Status</span><span>Mission</span><span>Landed</span><span>Next</span><span className="text-right">Moved</span>
-        </div>
-        {visible.map(r => <PortfolioRowView key={r.delivery.id} row={r} now={now} showWorkspace={multiWorkspace} />)}
+      <div data-testid="mission-group" data-group="open" aria-label="Open missions" className="space-y-6">
+        {sections.map(sec => (
+          <section key={sec.key} data-testid="mission-section" data-section={sec.key} aria-labelledby={`mission-section-${sec.key}`}>
+            <h2 id={`mission-section-${sec.key}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="text-title font-semibold text-text-primary">{sec.label}</span>
+              <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{sec.rows.length}</span>
+              <span data-testid="mission-section-order" className="font-mono text-meta text-text-muted">{sec.order}</span>
+            </h2>
+            {sec.destinations && (
+              <p data-testid="mission-section-destinations" className="font-mono text-meta text-text-muted">{sec.destinations}</p>
+            )}
+            <div className="mt-1 grid grid-cols-1 gap-x-8 md:grid-cols-2">
+              {sec.rows.map(r => <PortfolioRowView key={r.delivery.id} row={r} now={now} showWorkspace={multiWorkspace} />)}
+            </div>
+          </section>
+        ))}
         {visible.length === 0 && (
           <div data-testid="portfolio-empty" className="border border-border-default bg-card px-4 py-6 text-center font-mono text-[12.5px] text-text-secondary">
             {open.length === 0 ? 'No open missions.' : 'No missions match.'}
@@ -182,7 +162,7 @@ export function MissionGrid({
             )}
           </div>
         )}
-      </section>
+      </div>
 
       {/* D6: each workspace's release state, once — not on every row. */}
       {releases.length > 0 && (
@@ -262,37 +242,6 @@ function ago(ms: number | null, now: number): string {
   return d < 60_000 ? 'now' : shortDuration(d);
 }
 
-/** One continuous run: landed solid, in-audit hatched. Never per-task squares. */
-function LandedBar({ landed, inAudit, total }: { landed: number; inAudit: number; total: number }) {
-  const l = total > 0 ? (landed / total) * 100 : 0;
-  const a = total > 0 ? Math.min(100 - l, (inAudit / total) * 100) : 0;
-  return (
-    <span role="img" aria-label={`${landed} of ${total} tasks landed`} className="relative block h-1.5 min-w-10 flex-[0_1_72px] overflow-hidden border border-border-default bg-surface-3 lg:flex-1">
-      <span className="absolute inset-y-0 left-0 bg-status-success" style={{ width: `${l}%` }} />
-      {a > 0 && <span className="fleet-hatch-ok absolute inset-y-0" style={{ left: `${l}%`, width: `${a}%` }} />}
-    </span>
-  );
-}
-
-function StatusChip({ row }: { row: PortfolioRow }) {
-  const d = row.delivery;
-  const k = DELIVERY_KIND[d.kind];
-  const at = deliveryStageIndex(d.kind);
-  const stage = at < 0 ? 'not started' : at > 2 ? 'landed' : `stage ${DELIVERY_STAGES[at]}`;
-  const rounds = repairBadge(d.repairRounds);
-  return (
-    <span
-      data-testid="delivery-chip"
-      data-kind={d.kind}
-      title={`${k.label} · ${stage}${rounds ? ` · ${d.repairRounds} repair round${d.repairRounds === 1 ? '' : 's'}` : ''}`}
-      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap border border-current px-1.5 py-px font-mono text-[11px] font-semibold leading-tight lg:text-[10.5px] ${TONE_TEXT[k.tone]}`}
-    >
-      <span aria-hidden="true">{k.glyph}</span>{k.label}
-      {rounds && <span className="font-normal text-text-muted">{rounds}</span>}
-    </span>
-  );
-}
-
 function nextLine(r: PortfolioRow): string {
   if (r.nextScanMins != null && r.delivery.kind !== 'needs') return `Recurring · next run in ${r.nextScanMins < 1 ? 'under a minute' : shortDuration(r.nextScanMins * 60_000)}`;
   return r.delivery.next;
@@ -300,56 +249,28 @@ function nextLine(r: PortfolioRow): string {
 
 function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
   const d = row.delivery;
-  const tone = DELIVERY_KIND[d.kind].tone;
-  const fraction = d.total > 0 ? `${d.landed}/${d.total}` : null;
+  const k = DELIVERY_KIND[d.kind];
+  const state = STATE_OF_KIND[d.kind] ?? undefined;
+  const age = ago(row.lastAdvancedAt, now);
+  const aside = [
+    row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
+    showWorkspace ? row.workspaceName : null,
+    age ? `${age} ago` : null,
+  ].filter(Boolean).join(' · ');
   return (
-    <div
-      data-testid="portfolio-row"
-      data-mission-id={d.id}
-      data-kind={d.kind}
-      className={`relative -mt-px grid grid-cols-[minmax(0,1fr)_auto] gap-x-2.5 gap-y-1 border border-l-4 border-border-default ${TONE_EDGE[tone]} bg-card px-3 py-2.5 first-of-type:mt-0 hover:bg-card-hover lg:items-center lg:gap-x-3 ${COLUMNS}`}
-    >
-      <Link
+    <div data-testid="portfolio-row" data-mission-id={d.id} data-kind={d.kind}>
+      <MissionRow
         href={d.href}
-        className="col-start-1 row-start-1 line-clamp-2 min-w-0 break-words text-title font-semibold leading-snug text-text-primary after:absolute after:inset-0 hover:underline lg:col-start-2 lg:line-clamp-1"
-      >
-        {d.title}
-      </Link>
-      <span className="col-start-2 row-start-1 whitespace-nowrap text-right font-mono text-meta text-text-muted lg:col-start-5">
-        {ago(row.lastAdvancedAt, now)}
-      </span>
-
-      <span className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 lg:col-span-1 lg:col-start-1 lg:row-start-1">
-        <StatusChip row={row} />
-        {row.liveAgents > 0 && (
-          <span data-testid="portfolio-live" className="inline-flex items-center gap-1.5 whitespace-nowrap font-mono text-meta text-text-secondary">
-            <span aria-hidden="true" className="inline-block h-[7px] w-[7px] rounded-full bg-accent" />
-            {row.liveAgents} agent{row.liveAgents === 1 ? '' : 's'}
-          </span>
-        )}
-        <span className="ml-auto flex min-w-0 flex-[0_1_128px] items-center justify-end gap-2 lg:hidden">
-          {fraction && <span className="whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{fraction}</span>}
-          {d.total > 0 && <LandedBar landed={d.landed} inAudit={d.inAudit} total={d.total} />}
-        </span>
-      </span>
-
-      <span className="hidden min-w-0 items-center gap-2 lg:col-start-3 lg:row-start-1 lg:flex">
-        <span data-testid="portfolio-landed" className="whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">
-          {fraction ? `${fraction} landed` : 'not planned'}
-        </span>
-        {d.total > 0 && <LandedBar landed={d.landed} inAudit={d.inAudit} total={d.total} />}
-      </span>
-
-      <span className="col-span-2 row-start-3 flex min-w-0 items-baseline gap-2 font-mono text-meta text-text-muted lg:col-span-1 lg:col-start-4 lg:row-start-1">
-        <span data-testid="portfolio-next" className="min-w-0 truncate">Next: {nextLine(row)}</span>
-        {showWorkspace && row.workspaceName && <span className="ml-auto shrink-0 whitespace-nowrap">{row.workspaceName}</span>}
-      </span>
-
-      {d.exception && (
-        <span data-testid="portfolio-exception" className={`col-span-2 row-start-4 min-w-0 break-words font-mono text-meta lg:col-span-5 lg:row-start-2 ${TONE_TEXT[d.exception.tone]}`}>
-          {d.exception.text}
-        </span>
-      )}
+        title={d.title}
+        strip={row.strip ?? []}
+        state={state}
+        stat={d.total > 0 ? `${d.landed} of ${d.total} landed` : undefined}
+        decide={d.kind === 'needs' ? d.evidence : undefined}
+        meta={state ? undefined : `${k.glyph} ${k.label}${d.total > 0 ? ` · ${d.landed} of ${d.total} landed` : ''}`}
+        aside={aside || undefined}
+        next={nextLine(row)}
+        note={d.exception?.text}
+      />
     </div>
   );
 }

@@ -34,6 +34,7 @@ import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationB
 import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { stripOrder } from '@/lib/mission-task-strip';
+import { missionAgentLine } from '@/lib/mission-agents';
 import type { DeliveryTone } from '@/lib/workflow/delivery-display';
 import { screensToReview } from '@/lib/visual-review-model';
 import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
@@ -245,6 +246,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
   strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus' | 'deliveries'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
+  const agentLine = missionAgentLine(model);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
   // The deck's own count (screensToReview), so the caption and the deck agree.
   const awaiting = visual ? screensToReview(visual) : 0;
@@ -300,22 +302,10 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
       <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} ${L.goal}`} />
       <div data-testid="fleet-band" className={`${cell} ${L.fleet}`}>
         <SectionLabel>Fleet</SectionLabel>
-        <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
-        <div className="flex flex-wrap gap-3">
-          {model.runners.map(r => (
-            // Wraps: a ten-slot runner overran the half-width phone cell onto Needs you.
-            <span key={r.id} data-testid="fleet-runner" className="flex min-w-0 flex-wrap items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
-              <RunnerAvatar runner={r.name} />
-              {r.slots.map((s, i) => (
-                <span
-                  key={i}
-                  className={`block h-3.5 w-3.5 ${s ? (s.waiting ? 'border-2 border-accent' : 'border-[1.5px] border-accent bg-accent') : 'border-[1.5px] border-[var(--fleet-border-mid)]'}`}
-                />
-              ))}
-            </span>
-          ))}
-          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has claimed work.</span>}
-        </div>
+        {/* Runners are shared across missions, so they are not drawn here: only this mission's own agents. */}
+        <span data-testid="fleet-agents" data-count={agentLine.count} className="font-mono text-[15px] font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
+          {agentLine.text}
+        </span>
       </div>
       <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
