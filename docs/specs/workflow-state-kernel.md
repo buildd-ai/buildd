@@ -495,6 +495,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `WORKING`, success, PR bound and live head `H` contains `L` (or `L` is empty and the output requirement is satisfied by the PR) | `AWAITING_REVIEW`, round queued at `H` per T5 unless one is already open at `H` (§15 step 2). The owner attempt has ended, so `WORKING` (worker owns the next move, §4) would leave the delivery with no owner |
 | as above, round already **decided** at `H` | the state that round's verdict maps to, exactly as T6: approve → `APPROVED`; request changes → `CHANGES_REQUESTED` with `dispatch_fix` unless a fix for that round is open (`ESCALATED(review_exhausted)` at the round budget); escalate → `ESCALATED(review_escalated)` |
 | as above, the workspace policy requires no review (auto-threshold) | `APPROVED` with `approval_basis = policy`, `state_reason = policy_no_review`: no round, no verdict, `approved_heads` untouched, so it never reads as a reviewer verdict (§8). Policy covers only the current head; a later push stays `APPROVED` by policy. Landing is still gated by T15's rails |
+| as row 1, the live read of the head's check runs shows a failing check | T10's outcome, under T4's key: `REPAIRING(ci)` with one `ci` ledger row and `dispatch_ci_fix(H)`, or `ESCALATED(ci_exhausted)` at the cap; no round is queued (the repair's resume starts one, so a reviewer is never spent on a red head). A trunk-explained failure (§6.10) hands on as row 1 and then takes T25. A policy finding (T28) or a verdict already decided at `H` is applied first; an unreadable check read hands on as row 1. Why: a `CiFailedObserved` hint that arrived while `WORKING` was `stale(state_not_allowed)` (the owner owned the move, and is never interrupted), so the hand-off is the first point the platform can act on it (§13.1 deviation 18) |
 | `WORKING`, success, PR required and `commitCount>0` but live head does not contain `L`, or no PR | `AWAITING_PUSH` with effect `push_recovery` |
 | `WORKING`, `failed`/`lost`, retry budget left | stay `WORKING` (task retried, attempt count +1) |
 | `WORKING`, `failed`/`lost`, budget spent, PR bound | `ESCALATED(push_undeliverable)` if `L` unproven; else, with the PR open, hand on exactly as row 1 (review round, decided verdict, or policy approval) |
@@ -1145,6 +1146,17 @@ Part 2 deviations:
     `ci:{delivery}:{H'}` would answer every one of those `duplicate` and strand a red
     head with no repair. Redelivery is bounded by the live read, `fix_in_flight` and
     the ledger cap instead.
+18. **The owner's hand-off reads CI on its head (e9f1674b).** T10 does not move
+    `WORKING`, so a `check_suite` failure that arrived while the owner ran was dropped
+    until the red-PR sweep or a push. `attemptEnded` in the seam now reads the check runs
+    on the live head when an owner attempt ends with the PR open, and passes them as
+    `AttemptEnded.ci` (`liveChecks`, the failing checks' `signature`, the workspace's
+    `maxCiRetries`). A red read routes §6.5 row 1 to `REPAIRING(ci)` through the same
+    ledger, dispatch key and cap as T10; the read is the transition's `liveChecks`
+    evidence either way. A red the trunk explains (the T10 classification, §6.10) is
+    handed on as before and then applied as `TrunkRedObserved`. A green, still-running
+    or unreadable read changes nothing, so recorded histories without the field replay
+    unchanged.
 
 Deferred to part 3, which shipped them (§13.2): `DeliveryView` with one owner of the
 next move, `render_activity` regenerating the comment from transitions (§12.1),
