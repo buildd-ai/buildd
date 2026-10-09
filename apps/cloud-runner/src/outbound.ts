@@ -80,7 +80,7 @@ export type ModelProxyAuthHeader = 'authorization' | 'x-api-key';
 
 export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
-  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader; mapModel?: (id: string) => string }
+  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader; mapModel?: (id: string) => string; headers?: Record<string, string> }
   | { kind: 'direct'; apiKey: string }
   | { kind: 'owner_seat'; token: string }
   | { kind: 'unconfigured'; reason: string };
@@ -145,6 +145,10 @@ export interface ServerModelEndpoint {
   kind?: string;
   /** The team's model aliases (native id → endpoint id). */
   models?: Record<string, string>;
+  /** `cloudflare`: the provider the team's AI Gateway forwards to (`openrouter` ⇒ OpenRouter names). */
+  upstream?: string;
+  /** Extra headers each call sends (an authenticated AI Gateway's `cf-aig-authorization`). Secret. */
+  headers?: Record<string, string>;
   /**
    * Set only when the task's own `anthropic_api_key` resolved ahead of any
    * `agent_endpoint` (docs/credentials-architecture.md scoping) — never an
@@ -245,9 +249,12 @@ export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointSt
   const seat = !server ? ownerSeatToken(env) : null;
   if (seat) return { kind: 'owner_seat', token: seat };
   if (server) {
-    const route: ModelRoute = { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
-    if (server.kind === 'openrouter' || (server.models && Object.keys(server.models).length > 0)) {
-      route.mapModel = (id: string) => mapEndpointModel({ kind: server.kind, models: server.models }, id);
+    const route: ModelRoute = {
+      kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader,
+      ...(server.headers && Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
+    };
+    if (namesByOpenRouterRule(server) || (server.models && Object.keys(server.models).length > 0)) {
+      route.mapModel = (id: string) => mapEndpointModel({ kind: server.kind, models: server.models, upstream: server.upstream }, id);
     }
     return route;
   }
@@ -808,6 +815,7 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
     if (route.kind === 'proxy') {
       // Container credentials are already stripped; this is the only one added.
       headers.set(route.authHeader, route.authHeader === 'authorization' ? `Bearer ${route.key}` : route.key);
+      for (const [name, value] of Object.entries(route.headers ?? {})) headers.set(name, value);
       const mapModel = route.mapModel && isModelRewritePath(req.method, req.url) ? route.mapModel : undefined;
       return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'proxy', ...(mapModel ? { mapModel } : {}) };
     }
@@ -1095,10 +1103,39 @@ export function parseServerModelEndpoint(body: unknown): ServerModelEndpoint {
       if (k && typeof v === 'string' && v) models[k] = v;
     }
   }
+  const headers = parseEndpointHeaders((body as { headers?: unknown }).headers);
+  const upstream = (body as { upstream?: unknown }).upstream;
   return {
     baseUrl: parsed.baseUrl, key: b.key, authHeader, models,
     ...(typeof raw.kind === 'string' ? { kind: raw.kind } : {}),
+    ...(typeof upstream === 'string' ? { upstream } : {}),
+    ...(headers ? { headers } : {}),
   };
+}
+
+const MAX_ENDPOINT_HEADERS = 8;
+const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
+/** Headers the egress handler owns; an endpoint may not set them. */
+const RESERVED_HEADERS = new Set(['host', 'content-length', 'authorization', 'x-api-key', 'anthropic-version', 'anthropic-beta', 'transfer-encoding', 'connection']);
+
+/** The endpoint's extra headers, or undefined. Throws on a malformed one rather than sending it. */
+export function parseEndpointHeaders(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('model-endpoint response headers must be an object');
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > MAX_ENDPOINT_HEADERS) throw new Error('model-endpoint response has too many headers');
+  const out: Record<string, string> = {};
+  for (const [name, value] of entries) {
+    if (!HEADER_NAME_RE.test(name) || RESERVED_HEADERS.has(name.toLowerCase())) throw new Error(`model-endpoint response header '${name}' is not allowed`);
+    if (typeof value !== 'string' || !value || value.length > 4096 || /[\r\n\0]/.test(value)) throw new Error(`model-endpoint response header '${name}' has a bad value`);
+    out[name.toLowerCase()] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** OpenRouter names models by its fixed rule, directly or behind the team's Cloudflare gateway. */
+function namesByOpenRouterRule(endpoint: { kind?: string; upstream?: string }): boolean {
+  return endpoint.kind === 'openrouter' || (endpoint.kind === 'cloudflare' && endpoint.upstream === 'openrouter');
 }
 
 const MAX_MODEL_ALIASES = 200;
@@ -1111,8 +1148,10 @@ const MAX_MODEL_ALIASES = 200;
  * OpenRouter names Anthropic models `anthropic/<undated id, minor version
  * dotted>` (packages/ai-kit openRouterModelId); everything else uses aliases.
  */
-export function mapEndpointModel(endpoint: { kind?: string; models?: Record<string, string> }, id: string): string {
-  if (endpoint.kind === 'openrouter') {
+export function mapEndpointModel(endpoint: { kind?: string; models?: Record<string, string>; upstream?: string }, id: string): string {
+  if (namesByOpenRouterRule(endpoint)) {
+    // Behind a Cloudflare gateway an alias still wins, as in core's mapAgentModel.
+    if (endpoint.kind === 'cloudflare' && endpoint.models?.[id]) return endpoint.models[id];
     if (id.includes('/')) return id;
     return `anthropic/${id.replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
   }
