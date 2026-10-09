@@ -194,7 +194,7 @@ describe('HealthClient — pages', () => {
 
   it('Runners & capacity shows runners, credentials and schedules, and no window picker', () => {
     const html = render({ ...everything, page: 'runners' });
-    for (const id of ['health-section-runners', 'health-section-credentials', 'health-section-schedules']) {
+    for (const id of ['health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-schedules']) {
       expect(has(html, id)).toBe(true);
     }
     expect(has(html, 'health-section-problems')).toBe(false);
@@ -213,7 +213,7 @@ describe('HealthClient — pages', () => {
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
-    const ids = ['health-section-problems', 'health-section-runners', 'health-section-credentials', 'health-section-schedules',
+    const ids = ['health-section-problems', 'health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-schedules',
       'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {

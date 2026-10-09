@@ -63,7 +63,13 @@ always wins.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
-(`owner | admin | member`). Invited via `team_invitations`.
+(`owner | admin | member`). Invited via `team_invitations`; only the invited
+email may accept. Every team-role decision is a named permission in one
+registry with per-team overrides (`docs/specs/team-permissions.md`): admins move
+people between member and admin, only owners touch `owner` (assign, remove,
+transfer), any member may leave except the last owner, and a person's keys drop
+to what their new role may mint when their role drops or they leave. Members
+may create personal agent roles, private until shared.
 
 ### Account
 An API/OAuth client that claims and runs tasks. Two **auth types** with different
@@ -88,12 +94,12 @@ force claim need `admin`). Workspace-restricted tokens cannot access team-wide
 credentials or reports lacking real workspace filters, and every surface that
 picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
 by the token's list. An unrestricted token is auto-linked to open workspaces
-only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
+only; linking a token to a restricted workspace takes `manage_team_keys` (owner or admin by default). `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 A per-task token (`bldt_`) is confined to its own task's workspace. The one
 exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/token-delegation.ts`): a team owner or admin may grant the tasks
+`packages/core/token-delegation.ts`): a holder of `delegate_schedule_access` (owner or admin by default) may grant the tasks
 one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
 gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
 path, no mission, dependencies or foreign parent) on named workspaces of the same

@@ -85,6 +85,8 @@ import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/missio
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
 import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
+import { loadOccupancySeries } from '@/lib/fleet-occupancy-query';
+import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
 import { applyStrandChoice } from '@/lib/strand-choice-shadow';
@@ -291,6 +293,7 @@ export default async function HomePage({
   // The fleet redesign: runner snapshot, ticker, stat counts (lib/home-fleet.ts),
   // the compact missions rows and the Needs-you stack's own cards.
   let fleetData: HomeFleetData | null = null;
+  let occupancy: OccupancySeries | null = null;
   let homeMissionRows: HomeMissionRow[] = [];
   let phoneMissionRows: HomeMissionRow[] = [];
   let heldMissions: HomeHeldMission[] = [];
@@ -2070,16 +2073,23 @@ export default async function HomePage({
             : [];
           teamName = teamRow?.name ?? null;
           teamTz = teamRow?.timezone ?? null;
-          fleetData = await loadHomeFleet({
-            teamId: activeTeamId ?? null,
-            wsIds,
-            now: renderNow,
-            dayStart: startOfDayInZone(renderNow, teamTz),
-            roles: new Map([...rolesMap].map(([slug, r]) => [slug, { name: r.name, color: r.color ?? null }])),
-          }).catch(err => {
-            console.error('[home] fleet load failed (non-fatal):', err);
-            return null;
-          });
+          [fleetData, occupancy] = await Promise.all([
+            loadHomeFleet({
+              teamId: activeTeamId ?? null,
+              wsIds,
+              now: renderNow,
+              dayStart: startOfDayInZone(renderNow, teamTz),
+              roles: new Map([...rolesMap].map(([slug, r]) => [slug, { name: r.name, color: r.color ?? null }])),
+            }).catch(err => {
+              console.error('[home] fleet load failed (non-fatal):', err);
+              return null;
+            }),
+            // The Agents live sparkline: the last day's busy slots, same scope as the fleet.
+            loadOccupancySeries(wsIds, '24h', renderNow).catch(err => {
+              console.error('[home] occupancy load failed (non-fatal):', err);
+              return null;
+            }),
+          ]);
           // Running cells in the missions rows fill to their worker's progress.
           const progressByTask = new Map<string, number>();
           for (const r of fleetData?.fleet.runners ?? []) for (const sl of r.slots) {
@@ -2261,6 +2271,7 @@ export default async function HomePage({
             prsInCi={stats?.prsInCi ?? []}
             selfHealed={stats?.selfHealed ?? 0}
             screensReviewed={shippedMissions[0]?.screens ?? null}
+            occupancy={occupancy}
           />
         )}
 
