@@ -10,7 +10,7 @@
  */
 import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
 import { loadHumanSteeringMarksByMission } from './mission-steering-notes';
-import { adaptFlightStripInputs } from './missions-query';
+import { adaptFlightStripInputs, MISSION_TASK_REFRESH_EXTRAS } from './missions-query';
 import {
   buildMissionCardView,
   MISSION_CARD_VIEW_CAP,
@@ -29,6 +29,8 @@ export const MISSION_CARD_TASK_COLUMNS = {
   startAt: true, loopIteration: true, taskClass: true, roleSlug: true,
   missionPhaseIndex: true, missionPhaseLabel: true,
 } as const;
+
+export { MISSION_TASK_REFRESH_EXTRAS };
 
 /** Worker columns a card reads (liveness, PR state, and the strip's spans). */
 export const MISSION_CARD_WORKER_COLUMNS = {

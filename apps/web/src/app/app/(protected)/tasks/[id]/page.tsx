@@ -84,7 +84,7 @@ import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, missionContextDeliveryTaskIds, type MissionContextBarData } from './mission-context-bar';
 import { truncateExcerpt } from './error-excerpt';
 import { attemptsNotInPrHistory, descriptionDuplicatesSummary, isAttemptTask, isMeaningfulPlan, partitionChildTasks, selectExecutionPlan } from './execution-plan';
-import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
+import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH, MISSION_TASK_REFRESH_EXTRAS } from '@/lib/mission-card-views';
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
@@ -267,6 +267,7 @@ export default async function TaskDetailPage({
           with: {
             tasks: {
               columns: MISSION_CARD_TASK_COLUMNS,
+                extras: MISSION_TASK_REFRESH_EXTRAS,
               with: { workers: MISSION_CARD_WORKERS_WITH },
             },
             schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
