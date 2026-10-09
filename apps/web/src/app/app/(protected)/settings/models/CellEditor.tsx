@@ -16,7 +16,7 @@ import { CatalogModelPicker } from '@/components/models/CatalogModelPicker';
 import { ARM_ROUTE_SPECS, TIER_ROUTES, pickerKey, withKeyStatus, type PickerValue } from '@/lib/model-picker';
 import { providerForModel, type CatalogModel, type TierSuggestion } from '@/lib/tier-mapping';
 import type { TierPoolRowView, TierPoolsResponse } from '@/lib/tier-pools-view';
-import { DIAL_LABEL, SURFACE_LABEL, learningParagraph } from '@/lib/model-policy-cells-view';
+import { DIAL_DETAIL, DIAL_LABEL, SURFACE_LABEL, learningParagraph, routingStatus } from '@/lib/model-policy-cells-view';
 
 type Keys = Partial<Record<'anthropic' | 'openai' | 'openrouter', boolean>> | null;
 
@@ -66,6 +66,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
   const [primary, setPrimary] = useState<PickerValue>(initialPrimary);
   const [alts, setAlts] = useState<PickerValue[]>(initialAlts);
   const [dial, setDial] = useState<ModelPolicyDial>(cell.dial);
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -79,7 +80,6 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
   const added = alts.filter((a) => !initialAlts.some((b) => sameValue(a, b)));
   const dialChanged = dial !== cell.dial;
   const dirty = primaryChanged || removed.length > 0 || added.length > 0 || dialChanged;
-  const altsOff = dial === 1;
   const title = `${cell.tier} · ${SURFACE_LABEL[cell.surface]}`;
 
   async function save() {
@@ -158,21 +158,20 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
       </section>
 
       {pools && (
-        <section aria-label="May also use" data-testid="cell-alternates" aria-disabled={altsOff || undefined}
-          className={altsOff ? 'opacity-50' : undefined}>
+        <section aria-label="May also use" data-testid="cell-alternates">
           <h4 className="mb-1.5 text-meta font-semibold text-text-muted">May also use</h4>
           <ul className="divide-y divide-border-default border border-border-default">
             {alts.map((a) => (
               <li key={pickerKey(a)} className="flex items-center gap-2 px-2 py-1.5 text-body" data-testid="cell-alternate">
                 <span className="min-w-0 flex-1 truncate text-text-primary" title={a.model}>{a.model}</span>
                 <button type="button" className="min-h-8 px-1 text-meta text-text-muted hover:text-status-error disabled:opacity-60"
-                  disabled={busy || altsOff} aria-label={`Remove ${a.model}`}
+                  disabled={busy} aria-label={`Remove ${a.model}`}
                   onClick={() => setAlts((cur) => cur.filter((x) => !sameValue(x, a)))} data-testid="cell-alternate-remove">
                   Remove
                 </button>
               </li>
             ))}
-            {alts.length === 0 && <li className="px-2 py-1.5 text-meta text-text-muted">None.</li>}
+            {alts.length === 0 && <li className="px-2 py-1.5 text-meta text-text-muted">None. Every run uses the primary.</li>}
           </ul>
           {locked.length < MAX_POOL_ARMS && (
             <div className="mt-1.5">
@@ -187,7 +186,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
                 max={MAX_POOL_ARMS}
                 currentLabel="in use"
                 onChange={(picked) => setAlts((cur) => [...cur, ...picked.filter((p) => !cur.some((c) => sameValue(c, p)))])}
-                disabled={busy || altsOff}
+                disabled={busy}
                 testId="cell-alternate-add"
                 triggerClassName="text-body font-semibold text-accent-text hover:underline disabled:opacity-60 disabled:no-underline"
                 triggerLabel="+ Add"
@@ -197,23 +196,44 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
         </section>
       )}
 
-      {pools && (
-        <section aria-label="Dial">
-          <div className="mb-1.5 flex items-baseline justify-between text-meta text-text-muted">
-            <span>Quality</span>
-            <span className="text-text-secondary" data-testid="cell-dial-label">{DIAL_LABEL[dial]}</span>
-            <span>Savings</span>
-          </div>
-          <div className="grid grid-cols-5 border-2 border-border-strong" role="group" aria-label="Quality to savings">
-            {MODEL_POLICY_DIALS.map((d) => (
-              <button key={d} type="button" aria-pressed={dial === d} disabled={busy || alts.length === 0}
-                onClick={() => setDial(d)} data-testid={`cell-dial-${d}`}
-                className={`h-11 md:h-8 border-l border-border-default first:border-l-0 text-body font-semibold tabular-nums disabled:opacity-50 ${
-                  dial === d ? 'bg-accent text-accent-contrast' : 'text-text-secondary hover:bg-surface-3'}`}>
-                {d}
-              </button>
-            ))}
-          </div>
+      {pools && alts.length > 0 && (
+        <section aria-label="Routing" data-testid="cell-routing">
+          <p className="text-body font-semibold text-text-primary" data-testid="cell-routing-status">
+            {added.length > 0 || removed.length > 0
+              ? 'Save to start evaluating the new set of alternatives. Until then the primary handles all work.'
+              : routingStatus(cell)}
+          </p>
+          <button type="button" className="mt-1.5 min-h-11 md:min-h-8 text-meta text-accent-text underline hover:no-underline"
+            aria-expanded={advanced} aria-controls="cell-advanced" onClick={() => setAdvanced((v) => !v)} data-testid="cell-advanced-toggle">
+            {advanced ? 'Hide advanced routing' : 'Advanced routing'}
+          </button>
+          {advanced && (
+            <div id="cell-advanced" className="mt-1.5 flex flex-col gap-2 border border-border-default p-2" data-testid="cell-advanced">
+              <p className="text-meta text-text-secondary">
+                Evaluating is a shadow: the primary serves every run.
+                Switching is live: a keeping-up alternative takes a share of work.
+                {cell.surface === 'chat' && cell.qualitySignal !== 'chat-retro' && ' This chat cell has no quality feedback, so nothing switches on quality.'}
+              </p>
+              <div className="flex items-baseline justify-between text-meta text-text-muted">
+                <span>Quality</span>
+                <span className="text-text-secondary" data-testid="cell-dial-label">{DIAL_LABEL[dial]}</span>
+                <span>Savings</span>
+              </div>
+              <div className="grid grid-cols-5 border-2 border-border-strong" role="group" aria-label="Quality to savings">
+                {MODEL_POLICY_DIALS.map((d) => (
+                  <button key={d} type="button" aria-pressed={dial === d} aria-label={`${d}, ${DIAL_LABEL[d]}`} disabled={busy}
+                    onClick={() => setDial(d)} data-testid={`cell-dial-${d}`}
+                    className={`h-11 md:h-8 border-l border-border-default first:border-l-0 text-body font-semibold tabular-nums disabled:opacity-50 ${
+                      dial === d ? 'bg-accent text-accent-contrast' : 'text-text-secondary hover:bg-surface-3'}`}>
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <p className="text-meta text-text-secondary" data-testid="cell-dial-detail">
+                {DIAL_DETAIL[dial]}{dialChanged ? ' Unsaved.' : ''}
+              </p>
+            </div>
+          )}
         </section>
       )}
 
