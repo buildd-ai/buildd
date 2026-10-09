@@ -1632,6 +1632,13 @@ export interface ClaimDiagnostics {
      * (counted hours) is used. Only when an allowance is set.
      */
     hosted_runner_hours?: number;
+    /**
+     * The team's credential policy needs the requester's own key for this task
+     * (`personal_only`) and this claim cannot deliver one: no requester, no key
+     * stored (for a cloud claim: no personal route for egress), or a runner
+     * without the personal-credential feature.
+     */
+    no_personal_credential?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1699,6 +1706,26 @@ export interface WorkerPromptBundlesResponse {
   roleInstructions?: RoleInstructions;
 }
 
+/**
+ * How a claimed worker's model credential was chosen, when the team has set a
+ * credential policy (`teams.credential_policy`). No secret material. Absent
+ * when the team has no policy: the claim is exactly what it was before.
+ */
+export interface ClaimCredentialDecision {
+  surface: 'agent-claude' | 'agent-codex';
+  policy: 'team' | 'personal_first' | 'personal_only';
+  /**
+   * `personal`: the requester's own key is the only model credential attached.
+   * `team`: the team's credentials, chosen as before.
+   * `none`: no model credential (an interactive session under personal_only).
+   */
+  scope: 'personal' | 'team' | 'none';
+  /** Provider of the personal key, when `scope` is `personal`. */
+  provider?: string;
+  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  runnerLocalAllowed: boolean;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1761,6 +1788,8 @@ export interface ClaimTasksResponse {
      * means "leave Claude Code's default".
      */
     toolSearchDisabled?: boolean;
+    /** How the model credential was chosen; set only for a team with a credential policy. */
+    credentialDecision?: ClaimCredentialDecision;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
