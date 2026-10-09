@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
-import { actionCardTitle } from '@/lib/action-card-title';
+import { actionCardTitle } from '@/lib/card-title-display';
 import { IN_FLIGHT_GROUP_COPY, type InFlightKind } from './home-view';
 
 function entry(item: ActionQueueItem): { text: string; href: string | null } {

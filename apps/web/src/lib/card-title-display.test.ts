@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { actionCardTitle } from './action-card-title';
+import { actionCardTitle } from './card-title-display';
 
 describe('actionCardTitle', () => {
   it('shortens a mission refresh title', () => {

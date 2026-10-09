@@ -19,7 +19,7 @@ import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
-import { actionCardTitle } from '@/lib/action-card-title';
+import { actionCardTitle } from '@/lib/card-title-display';
 
 /**
  * Every variant below renders `taskTitle`; shorten generated titles once here
