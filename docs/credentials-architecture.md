@@ -391,6 +391,14 @@ own team only, `no-store`, audited as elevated before it decrypts. Its one
 remaining caller is the container-image `wrangler deploy` step of
 `apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
+The same row also serves **decision calls** when the team's decision model says
+`via: 'cloudflare'` (`packages/core/cloudflare-ai-gateway.ts`). Cloudflare's Clef
+models run on Workers AI with the token as the key, through `aiGatewayId` when it is
+set. Jev goes through the gateway's OpenRouter path, still on the team's OpenRouter
+key, and the token is sent as `cf-aig-authorization`. The key policy `own` turns
+this off, and a `revoked` row is skipped. For Clef the token needs Workers AI Read,
+and AI Gateway Run if the gateway is authenticated.
+
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 
 `purpose = 'openai_api_key'`, a plain raw string, scoped team/account/workspace
