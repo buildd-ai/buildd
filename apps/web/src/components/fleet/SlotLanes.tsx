@@ -534,7 +534,7 @@ export default function SlotLanes({
         </>
       )}
 
-      {hoverCard && hovered && (() => {
+      {hoverCard && hovered && !(selectable && selected) && (() => {
         const c = barCard(hovered, { now, clock: tickLabel });
         return (
           <div
@@ -549,9 +549,9 @@ export default function SlotLanes({
             {c.title && <span className="line-clamp-3 text-text-secondary">{c.title}</span>}
             <span className="tabular-nums text-text-muted">{c.when}</span>
             {c.details.map(d => <span key={d} className="text-text-secondary">{d}</span>)}
-            {hovered.href && (
+            {hovered.href && !selectable && (
               <span className="text-meta text-[var(--fleet-faint)]">
-                {!selectable ? 'Click to open' : selected?.id === hovered.id ? 'Tap again to open' : 'Tap to highlight, again to open'}
+                {'Click to open'}
               </span>
             )}
           </div>
