@@ -743,6 +743,26 @@ mock.module('@/lib/workflow/seam', () => ({
   REVIEW_CONTRACT_RETRIES: 2,
 }));
 
+// Reviewer provenance and the PR's delivery authority read real rows; their
+// SQL is covered against real Postgres (apps/web/tests/db/review-provenance.test.ts).
+// Here: the review task's own context stands in for the server-resolved PR,
+// and a test overrides either to check the verdict path stops.
+const realReviewProvenance = await import('@/lib/review-provenance');
+const mockResolveDispatchedReview = mock(async (task: any, _workspaceId: string): Promise<any> => {
+  const ctx = (task?.context ?? {}) as Record<string, any>;
+  return { ok: true, originalTaskId: ctx.reviewerFor, prNumber: ctx.prNumber, repoFullName: ctx.repoFullName, installationId: ctx.installationId };
+});
+mock.module('@/lib/review-provenance', () => ({
+  ...realReviewProvenance,
+  resolveDispatchedReview: mockResolveDispatchedReview,
+}));
+const realWorkflowAuthority = await import('@/lib/workflow/authority');
+const mockKernelDeliveryForPr = mock(async (_ws: string, _repo: string, _pr: number): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({
+  ...realWorkflowAuthority,
+  kernelDeliveryForPr: mockKernelDeliveryForPr,
+}));
+
 // The terminal-record ledger is fire-and-forget over a real db client
 // (`packages/core/db/client`, same reason path-claim is stubbed above), so it
 // is mocked directly here rather than left to reach the network and be
@@ -8858,6 +8878,48 @@ describe('PATCH /api/workers/[id]', () => {
         repoFullName: 'org/repo',
         event: 'APPROVE',
       });
+    });
+
+    it('approve: acts through the repo and installation resolved from the workspace, not the task context', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockResolveDispatchedReview.mockImplementationOnce(async () => ({ ok: true, originalTaskId: 'original-task-1', prNumber: 42, repoFullName: 'org/linked', installationId: 7 }));
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockResolveDispatchedReview.mock.calls.at(-1)?.[1]).toBe('ws-1');
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ repoFullName: 'org/linked', installationId: 7, prNumber: 42 });
+    });
+
+    it('approve: a review the server cannot trace to its own dispatch posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockResolveDispatchedReview.mockImplementationOnce(async () => ({ ok: false, reason: 'reviewed task is not in this workspace' }));
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockKernelDeliveryForPr.mockImplementationOnce(async () => 'delivery-9');
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockKernelDeliveryForPr.mockImplementationOnce(async () => { throw new Error('connection reset'); });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('request-changes: posts exactly one GitHub REQUEST_CHANGES review for the verdict', async () => {

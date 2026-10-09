@@ -78,6 +78,8 @@ import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
+import { resolveDispatchedReview } from '@/lib/review-provenance';
+import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -5217,14 +5219,21 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true, deliveryId: true },
+    columns: { id: true, workspaceId: true, category: true, context: true, parentTaskId: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
   if (!reviewerTask) return;
   const ctx = (reviewerTask.context ?? {}) as Record<string, unknown>;
 
-  // Only process tasks that are reviewer tasks (category='review' + reviewerFor in context)
+  // Only a review the review system dispatched, for a task of this workspace,
+  // acts — and only through this workspace's own repo and installation, read
+  // from its github_repos link, never from the task's context.
   if (reviewerTask.category !== 'review' || !ctx.reviewerFor) return;
+  const dispatched = await resolveDispatchedReview(reviewerTask, workspaceId);
+  if (!dispatched.ok) {
+    console.warn(`[reviewer] Task ${reviewerTaskId}: verdict not acted on (${dispatched.reason})`);
+    return;
+  }
 
   // Backstop for the contract guard in PATCH, which already failed/requeued a
   // malformed verdict: nothing below may act on one, and nothing below has to
@@ -5236,12 +5245,9 @@ async function handleReviewerOutcomeIfNeeded(
   }
   const output: ReviewerTaskOutput = parsed.output;
 
-  const originalTaskId = ctx.reviewerFor as string;
-  const prNumber = ctx.prNumber as number;
+  const { originalTaskId, prNumber, repoFullName, installationId } = dispatched;
   const prUrl = ctx.prUrl as string;
   const headSha = ctx.headSha as string;
-  const repoFullName = ctx.repoFullName as string;
-  const installationId = ctx.installationId as number;
   const workerBranch = ctx.workerBranch as string;
   const missionId = reviewerTask.missionId;
 
@@ -5407,6 +5413,24 @@ async function handleReviewerOutcomeIfNeeded(
       kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
     } else if (kv.result.result !== 'applied') {
       console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      return;
+    }
+  }
+
+  // One authority per delivery (§14): a PR the kernel owns takes verdicts only
+  // from its own rounds, above. A reviewer outside them posts no review and
+  // lands nothing; an unreadable authority is treated as the kernel's.
+  if (!kernelOwnsVerdict) {
+    const authority = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber).then(
+      (deliveryId) => ({ deliveryId }),
+      (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+    );
+    if ('error' in authority) {
+      console.error(`[reviewer] PR #${prNumber}: could not read the delivery authority, verdict not acted on: ${authority.error}`);
+      return;
+    }
+    if (authority.deliveryId) {
+      console.log(`[reviewer] PR #${prNumber}: the workflow kernel owns this PR (delivery ${authority.deliveryId}); a verdict outside its rounds is not acted on`);
       return;
     }
   }

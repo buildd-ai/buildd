@@ -4086,7 +4086,9 @@ describe('PUT /api/github/pr', () => {
         expect(data.needsPerson).toBe(true);
         expect(data.hint).not.toContain('merges automatically');
         expect(data.hint).not.toContain('No further merge_pr call');
-        expect(data.hint).toMatch(/request_pr_review/);
+        expect(data.hint).toMatch(/a person must act/);
+        // A forced re-review is a person's call, so the hint never sends an agent to one.
+        expect(data.hint).not.toMatch(/force/);
       });
 
       it('a human decision is a 403 naming the cause', async () => {
