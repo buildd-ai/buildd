@@ -161,3 +161,30 @@ export function appendMilestone(list: Milestone[], milestone: Milestone, cap = M
   }
   return { folded: false };
 }
+
+/** Distinct operations kept per phase milestone. */
+export const PHASE_OPS_CAP = 6;
+const OP_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,47}$/;
+
+/**
+ * The operation a tool call performed, for a phase milestone's `ops`: the
+ * `action` of a grouped MCP tool (`mcp__buildd__buildd_work` + `{action:
+ * 'create_pr'}` → `create_pr`), else the tool's own name with any `mcp__server__`
+ * prefix dropped. Only a bare identifier is returned — never input values.
+ */
+export function phaseOpName(toolName: string, input: unknown): string | null {
+  if (!toolName) return null;
+  if (toolName.startsWith('mcp__')) {
+    const action = (input as { action?: unknown } | null)?.action;
+    if (typeof action === 'string' && OP_NAME.test(action)) return action;
+    const tail = toolName.split('__').pop() ?? '';
+    return OP_NAME.test(tail) ? tail : null;
+  }
+  return OP_NAME.test(toolName) ? toolName : null;
+}
+
+/** Records `op` on the phase's distinct-op list (insertion order, capped). */
+export function recordPhaseOp(ops: string[], op: string | null): void {
+  if (!op || ops.includes(op) || ops.length >= PHASE_OPS_CAP) return;
+  ops.push(op);
+}
