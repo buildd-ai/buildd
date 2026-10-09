@@ -31,7 +31,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelInboxMembership, missionPrRoleOf, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -832,7 +832,8 @@ export default async function HomePage({
             },
             with: {
               task: {
-                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true },
+                // context: read only for `refreshTrunk`, the mission-refresh marker (missionPrRoleOf).
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -1446,6 +1447,7 @@ export default async function HomePage({
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
                   prIsDraft: w.prIsDraft ?? null,
                   missionMergeBlockedReason: w.taskId ? missionPrGateMap.get(w.taskId) ?? null : null,
+                  missionPrRole: w.task ? missionPrRoleOf(w.task) : null,
                   reviewInFlight: w.taskId ? reviewInFlightByTaskId.get(w.taskId) ?? null : null,
                   prLifecycleUpdatedAt: w.updatedAt ?? null,
                 };
