@@ -389,7 +389,7 @@ export default function TeamDetailClient({
                   <div className="text-sm text-text-secondary [overflow-wrap:anywhere]">{member.email}</div>
                 </div>
               </div>
-              <div data-testid="member-controls" className="flex flex-wrap items-center gap-x-1 gap-y-1 md:gap-3 md:justify-end md:flex-shrink-0 md:ml-auto">
+              <div data-testid="member-controls" className="flex flex-wrap items-center gap-x-3 gap-y-1 md:justify-end md:flex-shrink-0 md:ml-auto">
                 {(() => {
                   const options = roleOptionsFor(member);
                   return options ? (
@@ -406,22 +406,32 @@ export default function TeamDetailClient({
                     </span>
                   );
                 })()}
-                {canAssignOwner && !isPersonal && member.role !== 'owner' && member.userId !== currentUserId && (
-                  <button
-                    onClick={() => handleTransferOwnership(member.userId, member.name)}
-                    className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-text-secondary hover:text-text-primary whitespace-nowrap"
-                  >
-                    Transfer ownership
-                  </button>
-                )}
-                {canManage && member.userId !== currentUserId && (member.role !== 'owner' || canAssignOwner) && (
-                  <button
-                    onClick={() => handleRemoveMember(member.userId, member.name)}
-                    className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-status-error hover:text-status-error/80"
-                  >
-                    Remove
-                  </button>
-                )}
+                {(() => {
+                  const canTransfer = canAssignOwner && !isPersonal && member.role !== 'owner' && member.userId !== currentUserId;
+                  const canRemove = canManage && member.userId !== currentUserId && (member.role !== 'owner' || canAssignOwner);
+                  if (!canTransfer && !canRemove) return null;
+                  // The text actions wrap as one unit; -ml-3 lines their text up with the select above on phones.
+                  return (
+                    <div className="flex items-center -ml-3 md:ml-0 md:gap-3">
+                      {canTransfer && (
+                        <button
+                          onClick={() => handleTransferOwnership(member.userId, member.name)}
+                          className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-text-secondary hover:text-text-primary whitespace-nowrap"
+                        >
+                          Transfer ownership
+                        </button>
+                      )}
+                      {canRemove && (
+                        <button
+                          onClick={() => handleRemoveMember(member.userId, member.name)}
+                          className="min-h-11 md:min-h-0 px-3 md:px-1 text-xs text-status-error hover:text-status-error/80"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))}
