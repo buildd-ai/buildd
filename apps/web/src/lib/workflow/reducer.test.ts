@@ -989,6 +989,22 @@ describe('T15 LandingRequested / T16 MergeCallResult (S10)', () => {
     expect(dec.toState).toBe('APPROVED');
     expect(effectKinds(dec)).not.toContain('notify');
   });
+  test('a draft PR waits: no merge call from any door, the approval stands (e89035b6)', () => {
+    expectResult(land(ap(), { live: live('H1', { draft: true }) }), 'rejected', 'pr_is_draft');
+    expectResult(land(ap(), { live: live('H1', { mergeableState: 'draft' }) }), 'rejected', 'pr_is_draft');
+    // A person's override cannot merge a draft either: GitHub refuses it.
+    expectResult(land(V(D({ state: 'ESCALATED' })), { door: 'dashboard_override', override: { reason: 'owner call' }, live: live('H1', { draft: true }) }), 'rejected', 'pr_is_draft');
+  });
+  test('a transient answer records when GitHub said to come back, and carries it through the verify read (9bfe0d23)', () => {
+    const l = V(D({ state: 'LANDING', approvedHeads: ['H1'] }));
+    const retryAt = '2026-10-01T00:02:00.000Z';
+    const nm = applied(run(l, { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'not_merged', retryAt }));
+    expect({ to: nm.toState, retryAt: nm.evidence.retryAt }).toEqual({ to: 'APPROVED', retryAt });
+    const ind = applied(run(l, { type: 'MergeCallResult', actor: 'kernel', headSha: 'H1', outcome: 'indeterminate', retryAt }));
+    expect(ind.effects.find((e) => e.kind === 'verify_merge')!.payload).toMatchObject({ retryAt });
+    // Without one, nothing is recorded.
+    expect(applied(res(l, 'not_merged')).evidence.retryAt).toBeUndefined();
+  });
   test('one landing per (head, version): a second door while LANDING is a duplicate; a re-landing after a refusal is a new request (Slice C)', () => {
     expectResult(land(V(D({ state: 'LANDING', approvedHeads: ['H1'] }))), 'duplicate', 'landing_in_flight');
     const at = (version: number) => V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', version }));
