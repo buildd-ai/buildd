@@ -614,6 +614,8 @@ export async function runOnceFromCli(opts: {
 
   // ── Parking (resumable runs; BUILDD_ONCE_PARK=1 from the cloud Worker) ──
   const parking = park.parkingEnabled(opts.env);
+  // A pause parks the run when resumable runs are on; otherwise it is refused (pause.ts).
+  config.pauseMode = parking ? 'park' : 'none';
   const snapshots = curlTransport(opts.env.BUILDD_SNAPSHOT_URL ?? '');
   const parkPaths = {
     builddHome: opts.builddHome,
