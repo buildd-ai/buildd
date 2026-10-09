@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 
 /** Settings → Account → Profile (was /app/you; next.config redirects the old path). */
 export default async function AccountSettingsPage() {
-  const { user, teams, currentTeamId, isTeamAdmin } = await loadSettingsContext();
+  const { user, teams, currentTeamId, perms } = await loadSettingsContext();
   const initials = getInitials(user.name, user.email);
 
   return (
@@ -42,7 +42,7 @@ export default async function AccountSettingsPage() {
       <StandingRulesSection />
 
       {/* What chat uses for you (links to Model providers); your own key only when the team's policy allows it. */}
-      <PersonalProviderKeys teamId={currentTeamId} isAdmin={isTeamAdmin} />
+      <PersonalProviderKeys teamId={currentTeamId} isAdmin={perms.manage_inference_providers} />
 
       <section aria-labelledby="teams-h">
         <div className="flex justify-between items-center mb-3">
