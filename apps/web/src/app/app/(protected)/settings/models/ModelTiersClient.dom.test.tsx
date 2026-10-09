@@ -160,23 +160,12 @@ describe('ModelTiersClient: the cell editor', () => {
     const ed = q('[data-testid="cell-editor"]')!;
     expect(ed.querySelector('[data-testid="cell-primary-picker"]')!.getAttribute('data-value')).toBe("anthropic::claude-opus-5");
     expect([...ed.querySelectorAll('[data-testid="cell-alternate"]')].map((li) => li.textContent)).toEqual(['claude-sonnet-5Remove']);
+    expect(ed.querySelector('[data-testid="cell-dial-3"]')).toBeNull();
+    await click(ed.querySelector('[data-testid="cell-advanced-toggle"]'));
     expect(ed.querySelector('[data-testid="cell-dial-3"]')!.getAttribute('aria-pressed')).toBe('true');
     expect(ed.querySelector('[data-testid="cell-learning"]')!.textContent).toContain('12 of 40 graded runs');
     expect(ed.querySelector('input[type="number"]')).toBeNull();
-    expect(ed.textContent).not.toContain('%');
-  });
-
-  it('dial 1 greys out may-also-use', async () => {
-    await mount();
-    await click(q('[data-testid="cell-agent-premium"]'));
-    const alts = () => q('[data-testid="cell-alternates"]')!;
-    expect(alts().getAttribute('aria-disabled')).toBeNull();
-    expect((alts().querySelector('[data-testid="cell-alternate-remove"]') as HTMLButtonElement).disabled).toBe(false);
-    await click(q('[data-testid="cell-dial-1"]'));
-    expect(alts().getAttribute('aria-disabled')).toBe('true');
-    expect(alts().className).toContain('opacity-50');
-    expect((alts().querySelector('[data-testid="cell-alternate-remove"]') as HTMLButtonElement).disabled).toBe(true);
-    expect((alts().querySelector('[data-testid="cell-alternate-add"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(ed.querySelector('input')).toBeNull();
   });
 
   it('Save sets the dial against the pool\'s latest version; Cancel writes nothing', async () => {
@@ -188,6 +177,7 @@ describe('ModelTiersClient: the cell editor', () => {
     expect(requests.filter((r) => r.method !== 'GET')).toEqual([]);
 
     await click(q('[data-testid="cell-agent-premium"]'));
+    await click(q('[data-testid="cell-advanced-toggle"]'));
     await click(q('[data-testid="cell-dial-5"]'));
     await click(q('[data-testid="cell-save"]'));
     const writes = requests.filter((r) => r.method !== 'GET');
@@ -208,7 +198,7 @@ describe('ModelTiersClient: the cell editor', () => {
     await mount();
     await click(q('[data-testid="cell-agent-premium-plus"]'));
     expect(q('[data-testid="cell-alternates"]')).toBeNull();
-    expect(q('[data-testid="cell-dial-3"]')).toBeNull();
+    expect(q('[data-testid="cell-routing"]')).toBeNull();
     expect(q('[data-testid="cell-learning"]')!.textContent).toBe('Premium-plus always uses its primary.');
   });
 });
