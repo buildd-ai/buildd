@@ -82,3 +82,29 @@ export const DIAL_LABEL: Record<ModelPolicyDial, string> = {
   4: 'lean to savings',
   5: 'cheapest that keeps up',
 };
+
+/** Why the cell cannot move traffic on quality right now, or null when it can. */
+function pausedReason(cell: ModelPolicyCell): string | null {
+  if (cell.surface === 'chat' && cell.state !== 'shifted' && cell.qualitySignal !== 'chat-retro') {
+    return cell.heldReason ?? 'Quality feedback unavailable: automatic switching paused.';
+  }
+  return cell.heldReason && cell.state !== 'shifted' ? cell.heldReason : null;
+}
+
+/** One truthful headline for a cell that has alternates, from its actual state. */
+export function routingStatus(cell: ModelPolicyCell): string {
+  const paused = pausedReason(cell);
+  if (paused) return paused;
+  if (cell.dial === 1 || cell.state === 'always') return 'Alternatives are off: the primary handles all work.';
+  if (cell.state === 'learning') return 'Evaluating alternatives: the primary still handles all work.';
+  if (cell.state === 'shifted') return `Using ${cell.shiftedTo ?? 'another model'} on ${pctText(cell.share ?? 0)} of eligible work.`;
+  return `Back on the primary: ${cell.revertedFrom ?? 'the alternative'} slipped.`;
+}
+
+export const DIAL_DETAIL: Record<ModelPolicyDial, string> = {
+  1: 'Alternatives never get any work.',
+  2: 'An alternative must score within 5 points of the primary. It may take at most 25% of eligible work.',
+  3: 'An alternative must score within 8 points of the primary. It may take at most 50% of eligible work.',
+  4: 'An alternative must score within 12 points of the primary. It may take at most 75% of eligible work.',
+  5: 'An alternative must score within 15 points of the primary. It may take all eligible work.',
+};
