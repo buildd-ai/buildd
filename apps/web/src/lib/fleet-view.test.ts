@@ -473,7 +473,7 @@ describe('fleet online window', () => {
   it('is the window Home and Settings load the fleet with', async () => {
     const src = await Bun.file(new URL('./home-fleet.ts', import.meta.url)).text();
     expect(src).not.toMatch(/onlineThresholdMs:\s*RUNNER_ONLINE_THRESHOLD_MS/);
-    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(3);
+    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(4);
   });
 });
 

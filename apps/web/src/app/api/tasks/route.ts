@@ -912,7 +912,11 @@ export async function POST(req: NextRequest) {
             columns: { id: true },
             limit: 20,
           });
-          if (preFiled.length > 0) {
+          // `decomposition: "none"` at creation sets the flag before any
+          // sibling exists, so a creator who files tasks "right after" has
+          // not yet landed them when the organizer's first pass runs. The
+          // flag alone means coordinate-only: refuse regardless of siblings.
+          if (preFiled.length > 0 || missionRow.decompositionSkipped) {
             const preFiledTaskIds = preFiled.map(t => t.id);
             if (!missionRow.decompositionSkipped) {
               await db.update(missions)
@@ -928,7 +932,9 @@ export async function POST(req: NextRequest) {
               });
             }
             const error =
-              `Decomposition refused: ${preFiled.length} task(s) were already filed against this mission after your planning task started (${preFiledTaskIds.join(', ')}). ` +
+              (preFiled.length > 0
+                ? `Decomposition refused: ${preFiled.length} task(s) were already filed against this mission after your planning task started (${preFiledTaskIds.join(', ')}). `
+                : 'Decomposition refused: this mission is coordinate-only (decomposition "none"). ') +
               'Switch to coordinate-only mode: coordinate/retry the existing tasks instead of creating new build tasks. ' +
               'A retry child is still allowed — pass parentTaskId naming the failing task explicitly.';
             const frictionSignature = fireGateEvent({

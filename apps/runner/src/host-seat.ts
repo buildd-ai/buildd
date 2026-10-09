@@ -130,16 +130,27 @@ export interface HostSeatDecision {
  */
 export function applyHostSeatPolicy(
   env: Record<string, string>,
-  opts: { serverSeatDelivered: boolean; isCodexTask?: boolean; probe?: HostSeatProbe },
+  opts: {
+    serverSeatDelivered: boolean;
+    isCodexTask?: boolean;
+    probe?: HostSeatProbe;
+    /**
+     * The claim's `credentialDecision.runnerLocalAllowed`. `false` (the
+     * requester's own key under personal_only): the machine's seat is never
+     * used, whatever BUILDD_HOST_SEAT says, and its env token is removed.
+     */
+    runnerLocalAllowed?: boolean;
+  },
 ): HostSeatDecision {
   const runnerEnv = opts.probe?.env ?? process.env;
   const mode = hostSeatMode(runnerEnv);
   const detected = mode === 'off' ? null : detectHostSeat(opts.probe ?? {});
-  const use = !opts.isCodexTask && !!detected && (mode === 'prefer' || !opts.serverSeatDelivered);
-  if (!use && (mode === 'off' || opts.serverSeatDelivered)) delete env[HOST_SEAT_TOKEN_VAR];
+  const localAllowed = opts.runnerLocalAllowed !== false;
+  const use = localAllowed && !opts.isCodexTask && !!detected && (mode === 'prefer' || !opts.serverSeatDelivered);
+  if (!use && (mode === 'off' || opts.serverSeatDelivered || !localAllowed)) delete env[HOST_SEAT_TOKEN_VAR];
   return {
     hostSeat: use ? detected : null,
-    deferredTo: !use && detected && opts.serverSeatDelivered && !opts.isCodexTask ? 'server' : null,
+    deferredTo: !use && localAllowed && detected && opts.serverSeatDelivered && !opts.isCodexTask ? 'server' : null,
     detected,
     mode,
   };
@@ -207,9 +218,11 @@ export function decideCodexSeat(opts: {
   serverCredentialType?: 'oauth' | 'api_key' | null;
   localAuthPath: string | null;
   explicitCodexHome: boolean;
+  /** The claim's `credentialDecision.runnerLocalAllowed`; `false` never picks the machine's login. */
+  runnerLocalAllowed?: boolean;
 }): CodexSeatChoice {
   const { mode, serverCredentialType, localAuthPath } = opts;
-  const machineAvailable = !!localAuthPath && (mode !== 'off' || opts.explicitCodexHome);
+  const machineAvailable = opts.runnerLocalAllowed !== false && !!localAuthPath && (mode !== 'off' || opts.explicitCodexHome);
   if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
   if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
   return 'server';

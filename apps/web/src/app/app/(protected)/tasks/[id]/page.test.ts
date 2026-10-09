@@ -178,7 +178,7 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
   it('Worker History: badge and PR link share one wrapper that wraps under the text below md', () => {
     const meta = pageSource.match(/data-testid="worker-history-meta"[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(meta).toContain('pl-11 md:pl-0');
-    expect(meta).toContain('<StatusBadge');
+    expect(meta).toContain('<StatusPill');
     expect(meta).toContain('worker.prUrl &&');
   });
 
@@ -199,12 +199,12 @@ describe('"Also running" — tasks/[id]/page.tsx', () => {
 });
 
 describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
-  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+  it('renders each related task through StatusPill + deriveDisplayStatus, never the raw status enum', () => {
     const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
     expect(related).not.toContain('{sub.status}');
     expect(related).not.toContain('{task.parentTask.status}');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(task.parentTask.status)} />');
   });
 });
 

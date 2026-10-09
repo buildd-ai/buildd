@@ -133,7 +133,7 @@ describe('the team key policy', () => {
     await mount();
     const details = host.querySelector('details')!;
     expect(details.open).toBe(false);
-    expect(details.querySelector('summary')?.textContent).toContain('Use my own key instead');
+    expect(details.querySelector('summary')?.textContent).toContain('Use my own key');
     expect([...details.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid'))).toEqual(['provider-key-anthropic']);
   });
 
@@ -142,6 +142,15 @@ describe('the team key policy', () => {
     await mount();
     expect(host.querySelector('details')!.open).toBe(true);
     expect(line()).toBe('Anthropic · your key');
+  });
+
+  it('where personal keys are allowed, says they run your agent tasks too, not chat only, and links to Mine', async () => {
+    body = { ...body, keyPolicy: 'team_or_own', providers: [card('anthropic', true)], chatUses: { provider: 'anthropic', scope: 'team' } };
+    await mount();
+    const note = host.querySelector('[data-testid="own-key-scope"]')!;
+    expect(note.textContent).toContain('agent tasks you start');
+    expect(note.querySelector('a')?.getAttribute('href')).toBe('/app/settings/providers?scope=mine');
+    expect(host.textContent).not.toMatch(/chat only|for chat\b/i);
   });
 
   it("'own': the cards are in the open, no disclosure", async () => {

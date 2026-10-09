@@ -34,6 +34,7 @@ import { reviewDecisionLine, type ReviewBlocker } from './attention-line';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import type { LandingOwnership } from './pr-landing-ownership';
+import type { MergeEscalationCause, MergeReviewState } from './merge-advice';
 export { resolveLandingOwnership, landingModeOf } from './pr-landing-ownership';
 
 /**
@@ -397,6 +398,50 @@ export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'r
   const threshold = input.queuedThresholdMinutes ?? DEFAULT_QUEUED_THRESHOLD_MINUTES;
   if (minutesSince(rt.createdAt, input.now) > threshold) return null;
   return status.state === 'queued' ? 'queued' : 'reviewing';
+}
+
+/**
+ * The review as the merge-readiness advice reads it (lib/merge-advice.ts):
+ * the verdict's state, its confidence and the head it read. Off the same
+ * reviewer task row as the gate, so the advice and the card agree.
+ */
+export function reviewFactsForAdvice(input: {
+  reviewerTask: StoredVerdictFallbackInput['reviewerTask'];
+  inFlight: boolean;
+  /** The merge-policy tier the gate resolved; `human` means policy asks for a person whatever the review says. */
+  policyTier?: string | null;
+}): { review: MergeReviewState; confidence: number | null; reviewHeadSha: string | null; escalationCause: MergeEscalationCause } {
+  if (input.inFlight) return { review: 'in_flight', confidence: null, reviewHeadSha: null, escalationCause: 'none' };
+  const status = derivePrReviewStatus({
+    reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null,
+    worker: null,
+  });
+  const review: MergeReviewState = status.state === 'approved' ? 'approved'
+    : status.state === 'escalated' ? 'escalated'
+    : status.state === 'changes_requested' ? 'changes_requested'
+    : status.state === 'queued' || status.state === 'reviewing' ? 'in_flight'
+    : status.state === 'review_failed' ? 'failed'
+    : 'none';
+  return { review, confidence: status.confidence, reviewHeadSha: status.reviewHeadSha ?? null, escalationCause: escalationCauseOf(input, status, review) };
+}
+
+/**
+ * Policy, not judgement: the model approved and the server escalated it
+ * anyway (`enforceServerSideEscalation` writes `effectiveVerdict`), a human
+ * tier holds an approved review, or every structured reason is a policy gate.
+ */
+function escalationCauseOf(
+  input: { reviewerTask: StoredVerdictFallbackInput['reviewerTask']; policyTier?: string | null },
+  status: ReturnType<typeof derivePrReviewStatus>,
+  review: MergeReviewState,
+): MergeEscalationCause {
+  if (review === 'approved') return input.policyTier === 'human' ? 'policy' : 'none';
+  if (review !== 'escalated') return review === 'changes_requested' ? 'reviewer' : 'none';
+  const result = (input.reviewerTask?.result ?? {}) as Record<string, unknown>;
+  const output = (result.structuredOutput ?? {}) as Record<string, unknown>;
+  if (output.verdict === 'approve') return 'policy';
+  if (status.blockers.length > 0 && status.blockers.every(b => b.kind === 'policy_gate')) return 'policy';
+  return 'reviewer';
 }
 
 /** A review is an independent human action, never permission to merge. */

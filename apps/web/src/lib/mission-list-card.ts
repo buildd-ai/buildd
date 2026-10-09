@@ -36,13 +36,15 @@ import { missionNeedsYou } from './mission-state-view';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 type DateLike = Date | string | null | undefined;
 
 // ─── Input (the list's extra columns over MissionCardRow) ─────────────────────
 
 export interface ListWorkerRow extends MissionCardWorkerRow {
-  waitingFor?: { type?: string; prompt?: string; options?: string[] } | null;
+  waitingFor?: Partial<WaitingFor> | null;
 }
 export interface ListTaskRow extends MissionCardTaskRow {
   result?: { summary?: string | null } | null;
@@ -282,7 +284,7 @@ export function buildMissionListCard(
       if (parked) {
         question = {
           taskId: r.task.id, label, href: cell.href, workerId: parked.id ?? null,
-          prompt: parked.waitingFor!.prompt!, options: (parked.waitingFor!.options ?? []).slice(0, 3),
+          prompt: parked.waitingFor!.prompt!, options: waitingForOptionLabels(parked.waitingFor!.options).slice(0, 3),
         };
       }
     }

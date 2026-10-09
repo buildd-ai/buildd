@@ -17,6 +17,7 @@ import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { ReviewDecision } from '@/components/ReviewDecision';
+import { MergeAdvice } from '@/components/MergeAdvice';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
@@ -41,7 +42,7 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
     <div className="contents" title={shortened ? item.taskTitle : undefined}>
       {card}
       {refresh && (
-        <p data-testid="refresh-first" className="-mt-px border-l-2 border-status-warning bg-surface-2 px-4 py-2 text-meta text-text-secondary">
+        <p data-testid="refresh-first" className="mt-1.5 px-1 font-mono text-meta text-text-muted">
           Waits on the branch refresh{refresh.prNumber != null && <> · PR #{refresh.prNumber}</>}
           {refreshHref && (
             <Link href={refreshHref} className="ml-2 inline-flex items-center min-h-11 md:min-h-0 font-mono font-medium text-accent-text hover:underline">
@@ -70,9 +71,9 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
       );
     }
     if (item.chip === 'REVIEW' && item.humanReview && item.prUrl) {
-      return <article data-testid="human-pr-review-card" className="card p-4">
+      return <article data-testid="human-pr-review-card" data-level="3" className="card-decision p-4">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-meta text-status-warning">Review required</p>
+          <p className="text-title font-semibold text-status-warning">Review required</p>
           {arc && arc.kind !== 'workspace' && <span className="text-meta text-text-muted">{arc.label}</span>}
         </div>
         <h3 className="mt-2 text-title font-semibold [overflow-wrap:anywhere]">{item.taskTitle}</h3>
@@ -82,7 +83,8 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
           blockers={item.humanReview.blockers ?? []}
           status={item.machineStatus}
         />
-        <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
+        {item.mergeAdvice && <MergeAdvice slot={item.mergeAdvice} />}
+        <Link className="btn btn-ink mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
       </article>;
     }
     if (item.chip === 'REVIEW') {

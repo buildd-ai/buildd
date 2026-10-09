@@ -398,6 +398,76 @@ describe('team model keys need a team admin', () => {
 
 });
 
+// An Anthropic or OpenAI key in canonical storage is read by agent runs as
+// well as chat, so this route holds it to the rule /api/providers applies:
+// both manage_team_model_keys and manage_team_credentials, the legacy alias's
+// prefix, and auth-failed tasks re-queued once it is stored.
+describe('a model key agent runs read needs both permissions', () => {
+  const KEY = { anthropic: 'sk-ant-api03-abcdefghijklmnop', openai: 'sk-proj-abcdefghijklmnop' } as const;
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserTeamIds.mockReset();
+    mockSecretsReplaceScoped.mockReset();
+    mockSecretsList.mockReset();
+    mockSecretsDelete.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+    mockRequeue.mockReset();
+    mockRequeue.mockResolvedValue({ requeued: ['task-1'], skippedOverCap: 0 });
+  });
+
+  for (const label of ['anthropic', 'openai'] as const) {
+    for (const only of ['manage_team_model_keys', 'manage_team_credentials']) {
+      it(`refuses ${label} with only ${only}, at team and workspace scope, and writes nothing`, async () => {
+        grant(['team-1'], [only]);
+        for (const extra of [{}, { workspaceId: 'ws-1' }]) {
+          const res = await POST(createPostRequest({ value: KEY[label], purpose: 'inference_key', label, ...extra }));
+          expect(res.status).toBe(403);
+        }
+        expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+        expect(mockRequeue).not.toHaveBeenCalled();
+      });
+
+      it(`refuses deleting a stored ${label} key with only ${only}`, async () => {
+        grant(['team-1'], [only]);
+        mockSecretsList.mockResolvedValue([{ id: 'sec-team', purpose: 'inference_key', label, teamId: 'team-1' }]);
+        const res = await DELETE(new NextRequest('http://localhost:3000/api/secrets?id=sec-team', { method: 'DELETE' }));
+        expect(res.status).toBe(403);
+        expect(mockSecretsDelete).not.toHaveBeenCalled();
+      });
+    }
+
+    it(`stores ${label} with both permissions and re-queues auth-failed tasks`, async () => {
+      grant(['team-1']);
+      const res = await POST(createPostRequest({ value: KEY[label], purpose: 'inference_key', label }));
+      expect(res.status).toBe(200);
+      expect(mockSecretsReplaceScoped).toHaveBeenCalledTimes(1);
+      expect(mockRequeue).toHaveBeenCalledWith('team-1');
+      expect((await res.json()).requeued).toBe(1);
+    });
+  }
+
+  it('refuses a pasted subscription token as the Anthropic key, and writes nothing', async () => {
+    grant(['team-1']);
+    const res = await POST(createPostRequest({ value: '"sk-ant-oat01-abcdefghijklmnop"', purpose: 'inference_key', label: 'Anthropic' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('sk-ant-api');
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    expect(mockRequeue).not.toHaveBeenCalled();
+  });
+
+  it('a chat-only model key keeps the model-key permission alone and re-queues nothing', async () => {
+    grant(['team-1'], ['manage_team_model_keys']);
+    const res = await POST(createPostRequest({ value: 'sk-or-v1-abcdefghijklmnop', purpose: 'inference_key', label: 'openrouter' }));
+    expect(res.status).toBe(200);
+    expect(mockRequeue).not.toHaveBeenCalled();
+  });
+});
+
 // Writing a team-wide or workspace-wide credential requires
 // manage_team_credentials in the target team. Personal rows are never written
 // here (see below), so a plain member writes nothing through this route.
@@ -576,6 +646,20 @@ describe('POST /api/secrets never creates a personal row', () => {
     expect((await res.json()).error).toContain('/api/inference-keys');
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
+
+  // A member's own agent API key is a personal inference key: the claim reads
+  // it (under a personal credential policy) from there, and these legacy
+  // purposes share a team-singleton unique index a personal row would collide with.
+  for (const [purpose, value] of [['anthropic_api_key', 'sk-ant-api-x'], ['openai_api_key', 'sk-x']] as const) {
+    it(`points a personal ${purpose} at /api/inference-keys, where agent runs read it`, async () => {
+      const res = await POST(createPostRequest({ value, purpose, userId: 'user-1' }));
+      expect(res.status).toBe(400);
+      const { error } = await res.json();
+      expect(error).toContain('/api/inference-keys');
+      expect(error).toContain('agent runs');
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+  }
 
   it('never forwards a userId to the provider for a team row', async () => {
     const res = await POST(createPostRequest({ value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));

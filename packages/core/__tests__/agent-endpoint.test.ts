@@ -11,6 +11,8 @@ import {
   agentEndpointProbeModel,
   effectiveToolSearch,
   endpointAppliesTo,
+  isEndpointReference,
+  isOpenRouterReference,
   mapAgentModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
@@ -49,6 +51,39 @@ describe('agent endpoint blob', () => {
   it('defaults authHeader to authorization and OpenRouter to its API root', () => {
     const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1' });
     expect(v.ok && v.blob).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or-1', authHeader: 'authorization' });
+  });
+
+  it('an OpenRouter endpoint without a key is a reference; with one it is legacy inline', () => {
+    for (const apiKey of [undefined, null, '']) {
+      const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey });
+      expect(v.ok && v.blob).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, authHeader: 'authorization' });
+      if (v.ok) {
+        expect(isOpenRouterReference(v.blob)).toBe(true);
+        expect(isEndpointReference(v.blob)).toBe(true);
+        expect(parseAgentEndpointBlob(serializeAgentEndpoint(v.blob))).toEqual(v.blob);
+      }
+    }
+    const inline = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1' });
+    expect(inline.ok && isOpenRouterReference(inline.blob)).toBe(false);
+    // A custom URL still needs its own key: there is nothing to reference.
+    expect(validateAgentEndpointInput({ kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com' }).ok).toBe(false);
+    // A key that is present but malformed is refused, not read as a reference.
+    expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'has space' }).ok).toBe(false);
+    expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 7 }).ok).toBe(false);
+  });
+
+  it('an OpenRouter reference routes the referenced key; an inline key wins over it', () => {
+    const ref = { kind: 'openrouter' as const, baseUrl: OPENROUTER_AGENT_BASE_URL, authHeader: 'authorization' as const };
+    expect(resolveEndpointFromBlob(ref, null)).toBeNull();
+    expect(resolveEndpointFromBlob(ref, null, 'sk-or-stored')).toMatchObject({ kind: 'openrouter', apiKey: 'sk-or-stored', openAiBaseUrl: `${OPENROUTER_AGENT_BASE_URL}/v1` });
+    expect(resolveEndpointFromBlob({ ...ref, apiKey: 'sk-or-inline' }, null, 'sk-or-stored')?.apiKey).toBe('sk-or-inline');
+  });
+
+  it('capabilities.legacyInlineKey round-trips and is not a routing flag', () => {
+    const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', capabilities: { legacyInlineKey: true } });
+    expect(v.ok && v.blob.capabilities).toEqual({ legacyInlineKey: true });
+    if (v.ok) expect(resolveEndpointFromBlob(v.blob, null)?.toolSearch).toBe(true);
+    expect(validateAgentEndpointInput({ kind: 'openrouter', capabilities: { legacyInlineKey: 'yes' } }).ok).toBe(false);
   });
 
   it('the gateway reference carries no key and no URL unless overridden', () => {

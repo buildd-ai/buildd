@@ -32,7 +32,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   secrets: {
     id: 'id', teamId: 'team_id', accountId: 'account_id', workspaceId: 'workspace_id', userId: 'user_id',
-    purpose: 'purpose', encryptedValue: 'encrypted_value',
+    purpose: 'purpose', label: 'label', encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at', lastRefreshedAt: 'last_refreshed_at',
     refreshLockedAt: 'refresh_locked_at', rotationStartedAt: 'rotation_started_at',
     lastVerifiedAt: 'last_verified_at', lastVerificationError: 'last_verification_error',
@@ -53,6 +53,7 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ __and: c }),
   or: (...c: any[]) => ({ __or: c }),
   isNull: (f: any) => ({ __isNull: f }),
+  inArray: (f: any, v: any[]) => ({ __inArray: { f, v } }),
   lt: (f: any, v: any) => ({ __lt: { f, v } }),
   sql: Object.assign((s: any) => ({ __sql: s }), {
     NOW: {},
@@ -704,6 +705,40 @@ describe('verifyClaudeCredential', () => {
     expect(result.verified).toBe(false);
     expect(result.error).toContain('401');
   });
+
+  // The team's Anthropic key in canonical storage is read by agent runs, so
+  // the liveness ping covers it like the legacy anthropic_api_key.
+  it('pings a team Anthropic key in canonical storage with x-api-key', async () => {
+    mockFindFirst.mockResolvedValue({
+      encryptedValue: 'enc:sk-ant-api03-key',
+      purpose: 'inference_key',
+      label: 'anthropic',
+      userId: null,
+      healthStatus: 'healthy',
+    });
+    const fetchMock = mock(async (_u: string, _init: any) => ({ ok: true, status: 200, json: async () => ({}) }));
+    global.fetch = fetchMock as any;
+
+    const result = await verifyClaudeCredential('secret-1');
+    expect(result.verified).toBe(true);
+    const headers = (fetchMock.mock.calls[0][1] as any).headers;
+    expect(headers['x-api-key']).toBe('sk-ant-api03-key');
+    expect(headers['Authorization']).toBeUndefined();
+  });
+
+  it('does not ping another provider\'s key or a personal key', async () => {
+    const fetchMock = mock(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+    global.fetch = fetchMock as any;
+    for (const row of [
+      { purpose: 'inference_key', label: 'openrouter', userId: null },
+      { purpose: 'inference_key', label: 'anthropic', userId: 'u-1' },
+    ]) {
+      mockFindFirst.mockResolvedValue({ encryptedValue: 'enc:x', healthStatus: 'healthy', ...row });
+      expect((await verifyClaudeCredential('secret-1')).error).toBe('Credential not found');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
 });
 
 // ── resolveAnthropicAuth ──────────────────────────────────────────────────────
@@ -817,6 +852,59 @@ describe('resolveAnthropicAuth', () => {
       row({ purpose: 'claude_credential', encryptedValue: 'enc:not-json' }),
     ]));
     expect(await resolveAnthropicAuth({ teamId: 'team-1' })).toBeNull();
+  });
+
+  // Provider parity: the team's Anthropic key is one stored credential, in its
+  // canonical storage (`inference_key` / `anthropic`, the key chat reads) or the
+  // legacy `anthropic_api_key`. Both authenticate as an API key; canonical wins
+  // within a scope; a personal row is never the team's.
+  describe('canonical and legacy key storage', () => {
+    const canonical = (o: Record<string, unknown> = {}) =>
+      row({ id: 's-canonical', purpose: 'inference_key', label: 'anthropic', encryptedValue: 'enc:sk-ant-canonical', ...o });
+    const legacy = (o: Record<string, unknown> = {}) =>
+      row({ id: 's-legacy', purpose: 'anthropic_api_key', label: null, encryptedValue: 'enc:sk-ant-legacy', ...o });
+
+    it('a team with only a legacy key resolves exactly as before', async () => {
+      mockFindMany.mockReturnValue(Promise.resolve([legacy(), row()]));
+      const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+      expect(auth).toEqual({
+        headers: { 'anthropic-version': '2023-06-01', 'x-api-key': 'sk-ant-legacy' },
+        purpose: 'anthropic_api_key',
+        secretId: 's-legacy',
+      });
+    });
+
+    it('a team with only a canonical key authenticates with it as an API key', async () => {
+      mockFindMany.mockReturnValue(Promise.resolve([canonical(), row()]));
+      const auth = await resolveAnthropicAuth({ teamId: 'team-1' });
+      expect(auth!.purpose).toBe('inference_key');
+      expect(auth!.secretId).toBe('s-canonical');
+      expect(auth!.headers['x-api-key']).toBe('sk-ant-canonical');
+      expect(auth!.headers['Authorization']).toBeUndefined();
+    });
+
+    it('canonical beats legacy in the same scope, even a newer legacy row', async () => {
+      mockFindMany.mockReturnValue(Promise.resolve([
+        legacy({ updatedAt: new Date('2026-08-20') }),
+        canonical({ updatedAt: new Date('2026-08-01') }),
+      ]));
+      expect((await resolveAnthropicAuth({ teamId: 'team-1' }))!.secretId).toBe('s-canonical');
+    });
+
+    it('a workspace legacy key beats a team canonical key', async () => {
+      mockFindMany.mockReturnValue(Promise.resolve([canonical(), legacy({ workspaceId: 'ws-1' })]));
+      expect((await resolveAnthropicAuth({ teamId: 'team-1', workspaceId: 'ws-1' }))!.secretId).toBe('s-legacy');
+    });
+
+    it('ignores another provider’s chat key and any personal row', async () => {
+      mockFindMany.mockReturnValue(Promise.resolve([
+        row({ id: 's-openrouter', purpose: 'inference_key', label: 'openrouter', encryptedValue: 'enc:sk-or' }),
+        canonical({ id: 's-personal', userId: 'user-1' }),
+      ]));
+      expect(await resolveAnthropicAuth({ teamId: 'team-1' })).toBeNull();
+      const where = (mockFindMany.mock.calls[0] as any[])[0].where;
+      expect(where.__and).toContainEqual({ __isNull: 'user_id' });
+    });
   });
 });
 

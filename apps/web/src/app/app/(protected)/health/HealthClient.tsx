@@ -5,7 +5,7 @@ import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGro
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { findDuplicateScheduleIds, isScheduleErrorLive } from '@/lib/schedule-health';
+import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
   ConsumptionStats,
@@ -42,6 +42,10 @@ import {
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
+import { OccupancyChart } from '@/components/fleet/OccupancyChart';
+import { RunnerLanes } from '@/components/fleet/runner-lanes';
+import type { FleetSnapshot } from '@buildd/shared';
+import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
@@ -51,6 +55,7 @@ import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { backendCredentialLabel } from '@/lib/claude-credential-rows';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -199,15 +204,18 @@ function humanizeCron(expr: string): string {
 export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator';
 
 type HealthBlock =
-  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch' | 'schedules'
+  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch'
   | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption'
   | 'subagentDelegation' | 'errorPatterns' | 'failureGroups';
 
 const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> = {
   overview: new Set(['problems']),
   // One failures view (lib/health-failure-groups.ts); the raw breakdown is on Operator.
-  failures: new Set(['failureGroups']),
-  runners: new Set(['capacity', 'budget', 'credentials', 'agentAccess', 'schedules']),
+  // Access problems stop runs and blocked actions are agents reaching outside
+  // their task: both are things to act on, so they sit with the failures.
+  failures: new Set(['agentAccess', 'failureGroups']),
+  // Only what sets capacity. Schedules live on /app/schedules.
+  runners: new Set(['capacity', 'budget', 'credentials']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
@@ -256,6 +264,8 @@ interface Props {
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -305,23 +315,15 @@ export function HealthClient({
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
   agentAccess = null,
+  runnerLanes = null,
   now,
   page = 'all',
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
   const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
-  const showsState = (['capacity', 'budget', 'credentials', 'agentAccess', 'dispatch', 'schedules'] as const).some(show);
-  const router = useRouter();
-  const [, startTransition] = useTransition();
+  const showsState = (['capacity', 'budget', 'credentials', 'dispatch'] as const).some(show);
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
-  const [showSchedules, setShowSchedules] = useState(false);
-  const [showPausedSchedules, setShowPausedSchedules] = useState(false);
-  const [showHeartbeatSchedules, setShowHeartbeatSchedules] = useState(false);
-  const [expandedCronId, setExpandedCronId] = useState<string | null>(null);
-  const [scheduleError, setScheduleError] = useState<string | null>(null);
-  const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
-  const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);
 
   const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
     const current = runnerHealth.get(heartbeatId);
@@ -404,53 +406,6 @@ export function HealthClient({
     }
   }, [runners, runnerHealth]);
 
-  const refresh = () => startTransition(() => router.refresh());
-
-  const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
-
-  const [overdueHeartbeatCount, setOverdueHeartbeatCount] = useState(0);
-  useEffect(() => {
-    const now = Date.now();
-    setOverdueHeartbeatCount(
-      schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length,
-    );
-  }, [schedules]);
-
-  const toggleSchedule = async (s: ScheduleRow) => {
-    setScheduleBusyId(s.id);
-    setScheduleError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${s.workspaceId}/schedules/${s.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !s.enabled }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Update failed');
-      refresh();
-    } catch (err) {
-      setScheduleError(err instanceof Error ? err.message : 'Request failed');
-    } finally {
-      setScheduleBusyId(null);
-    }
-  };
-
-  const confirmDeleteSchedule = async () => {
-    if (!scheduleToDelete) return;
-    setScheduleBusyId(scheduleToDelete.id);
-    setScheduleError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${scheduleToDelete.workspaceId}/schedules/${scheduleToDelete.id}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
-      setScheduleToDelete(null);
-      refresh();
-    } catch (err) {
-      setScheduleError(err instanceof Error ? err.message : 'Request failed');
-    } finally {
-      setScheduleBusyId(null);
-    }
-  };
 
   // `now` comes in as a prop, pinned server-side — see the Props doc comment.
   // Freshness is measured from each stat's OWN last-observed timestamp; `now`
@@ -489,6 +444,9 @@ export function HealthClient({
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
+  // Access problems stop runs before they start, so Overview counts them; the
+  // full list (with blocked actions) is on Failures.
+  const accessProblems = agentAccess?.grantProblems ?? [];
   // On Overview the failures come from the merged failure groups (the same ones
   // TopFailureGroups renders), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
@@ -497,7 +455,8 @@ export function HealthClient({
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
-    failedSchedules.length > 0;
+    failedSchedules.length > 0 ||
+    (page === 'overview' && accessProblems.length > 0);
   const hasProblems =
     nonFailureProblems || (page === 'overview' ? overviewFailureGroups > 0 : recentFailures.length > 0);
 
@@ -512,6 +471,7 @@ export function HealthClient({
           strandedBackends: strandedBackends.length,
           failingSchedules: failedSchedules.length,
           failureGroups: overviewFailureGroups,
+          accessProblems: accessProblems.length,
         }),
         rows: overviewStatusRows({
           runners: {
@@ -530,12 +490,6 @@ export function HealthClient({
         }),
       }
     : null;
-
-  // Partition schedules: heartbeat (mission internals) vs regular
-  const heartbeatSchedules = schedules.filter(s => s.isHeartbeat);
-  const regularSchedules = schedules.filter(s => !s.isHeartbeat);
-  const activeRegular = regularSchedules.filter(s => s.enabled);
-  const pausedRegular = regularSchedules.filter(s => !s.enabled);
 
   return (
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
@@ -579,11 +533,7 @@ export function HealthClient({
           <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
-              const purposeLabel =
-                cred.purpose === 'oauth_token' ? 'Claude OAuth token'
-                : cred.purpose === 'anthropic_api_key' ? 'Anthropic API key'
-                : cred.purpose === 'codex_credential' ? 'Codex credential'
-                : cred.purpose;
+              const purposeLabel = backendCredentialLabel(cred.purpose);
               const isRevoked = cred.healthStatus === 'revoked';
               return (
                 <div key={cred.id} className="px-4 py-3">
@@ -702,6 +652,13 @@ export function HealthClient({
             })}
 
             {/* Schedules with errors */}
+            {page === 'overview' && accessProblems.map((p) => (
+              <a key={`access-${p.workspaceId}-${p.reason}`} href="/app/health/failures" data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
+                <p className="text-sm font-medium text-text-primary">{p.workspaceName}: runs can&apos;t get access</p>
+                <p className="text-xs text-text-muted mt-0.5">{p.reason} ({p.count}×){p.fix ? `. ${p.fix}` : ''}</p>
+              </a>
+            ))}
+
             {failedSchedules.map((s) => (
               <div key={s.id} className="px-4 py-3">
                 <div className="flex items-start gap-3">
@@ -785,6 +742,23 @@ export function HealthClient({
       {showsState && (
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
+
+      {show('capacity') && (
+        <OccupancyChart
+          capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+          busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+          workspaceId={wsFilter}
+        />
+      )}
+
+      {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
+        <div data-testid="health-section-lanes" className="mb-6">
+          <h3 className="text-xs font-medium text-text-secondary mb-3">Slots over the last hours</h3>
+          <div className="card overflow-hidden">
+            <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} />
+          </div>
+        </div>
+      )}
 
       {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
@@ -946,208 +920,8 @@ export function HealthClient({
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
 
-      {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
-
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
 
-      {/* Schedules — collapsed by default. Lives under State because what it
-          carries is a STATE (enabled, next run) plus two LIFETIME counters
-          (total runs, consecutive failures), none of which obey the window. */}
-      {show('schedules') && schedules.length > 0 && (
-        <div data-testid="health-section-schedules" className="mb-6">
-          <button
-            onClick={() => setShowSchedules(p => !p)}
-            className="flex items-center gap-2 section-label mb-3 hover:text-text-primary transition-colors w-full text-left"
-          >
-            <svg
-              className={`w-3 h-3 transition-transform shrink-0 ${showSchedules ? 'rotate-90' : ''}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            Schedules
-            <span className="font-normal text-text-muted ml-1">
-              ({activeRegular.length} on{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${countOf(heartbeatSchedules.length, 'mission check-in')}` : ''})
-            </span>
-          </button>
-
-          {showSchedules && (
-            <>
-              {duplicateScheduleIds.size > 0 && (
-                <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-                  <div className="font-medium text-status-warning">Duplicate crons detected</div>
-                  <p className="text-text-secondary mt-1">
-                    {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
-                    workspace. They fire at the same time. Pause the stale copy below.
-                  </p>
-                </div>
-              )}
-
-              {overdueHeartbeatCount > 0 && (
-                <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-                  <div className="font-medium text-status-warning">
-                    {overdueHeartbeatCount} overdue mission check-in{overdueHeartbeatCount > 1 ? 's' : ''}
-                  </div>
-                  <p className="text-text-secondary mt-1">
-                    {overdueHeartbeatCount === 1
-                      ? 'A mission check-in missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
-                      : `${overdueHeartbeatCount} mission check-ins missed their last run. The cron may have stalled. Check schedules below.`}
-                  </p>
-                </div>
-              )}
-
-              {scheduleError && (
-                <div className="mb-3 text-sm text-status-error">{scheduleError}</div>
-              )}
-
-              {(() => {
-                const renderRow = (s: ScheduleRow) => {
-                  const isDupe = duplicateScheduleIds.has(s.id);
-                  const humanLabel = humanizeCron(s.cronExpression);
-                  const isRawDifferent = humanLabel !== s.cronExpression;
-                  const cronExpanded = expandedCronId === s.id;
-                  return (
-                    <div key={s.id} className={`px-4 py-3 ${isDupe ? 'bg-status-warning/5' : ''}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className="text-sm font-medium text-text-primary truncate">{s.name}</p>
-                            {isDupe && (
-                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
-                                duplicate cron
-                              </span>
-                            )}
-                            {s.missionTitle && (
-                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
-                                {s.missionTitle}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs text-text-muted mt-0.5">
-                            {isRawDifferent ? (
-                              <button
-                                onClick={() => setExpandedCronId(cronExpanded ? null : s.id)}
-                                className="text-left hover:text-text-secondary transition-colors"
-                                title={cronExpanded ? 'Hide raw cron' : 'Show raw cron'}
-                              >
-                                <span>{humanLabel}</span>
-                                {cronExpanded && (
-                                  <span className="font-mono ml-1.5 text-text-tertiary">({s.cronExpression})</span>
-                                )}
-                              </button>
-                            ) : (
-                              <span className="font-mono">{s.cronExpression}</span>
-                            )}
-                            <span className="mx-1">·</span>
-                            <span>{s.timezone}</span>
-                            <span className="mx-1">·</span>
-                            <span>{s.workspaceName}</span>
-                          </div>
-                          {/* `{N} runs since created` / `{N} in a row` — both
-                              LIFETIME. Rendered with their own anchor so neither
-                              reads as a count over the page window. */}
-                          <p className="text-xs text-text-tertiary mt-0.5">
-                            {s.enabled ? `next ${timeUntil(s.nextRunAt, now)}` : 'paused'} · last {timeAgo(s.lastRunAt, now)}
-                            {' · '}
-                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt, now)}. All-time counter; the page window doesn't apply.` : undefined}>
-                              {lifetimeRuns(s.totalRuns)}
-                            </span>
-                            {s.consecutiveFailures > 0 && (
-                              <span className="text-status-error" title="Consecutive failed runs. Resets on the next success.">
-                                {' · '}{failureStreak(s.consecutiveFailures)} failed
-                              </span>
-                            )}
-                          </p>
-                          {isScheduleErrorLive(s) && (
-                            <p className="text-xs text-status-error mt-1 truncate">⚠ {s.lastError}</p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={() => toggleSchedule(s)}
-                            disabled={scheduleBusyId === s.id}
-                            className={`text-xs px-3 h-8 rounded-lg border font-medium disabled:opacity-50 ${
-                              s.enabled ? 'text-text-secondary' : 'text-status-success border-status-success/40'
-                            }`}
-                          >
-                            {scheduleBusyId === s.id ? '…' : s.enabled ? 'Pause' : 'Resume'}
-                          </button>
-                          <button
-                            data-testid="schedule-delete-btn"
-                            onClick={() => setScheduleToDelete(s)}
-                            disabled={scheduleBusyId === s.id}
-                            className="h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 disabled:opacity-50 transition-colors"
-                            title="Delete schedule"
-                            aria-label={`Delete schedule ${s.name}`}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                };
-
-                return (
-                  <>
-                    {activeRegular.length > 0 && (
-                      <div className="card divide-y divide-border-default mb-2">
-                        {activeRegular.map(renderRow)}
-                      </div>
-                    )}
-
-                    {pausedRegular.length > 0 && (
-                      <div className="mb-2">
-                        <button
-                          onClick={() => setShowPausedSchedules(p => !p)}
-                          className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
-                        >
-                          <svg
-                            className={`w-3 h-3 transition-transform ${showPausedSchedules ? 'rotate-90' : ''}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                          {pausedRegular.length} paused {pausedRegular.length === 1 ? 'schedule' : 'schedules'}
-                        </button>
-                        {showPausedSchedules && (
-                          <div className="card divide-y divide-border-default opacity-75">
-                            {pausedRegular.map(renderRow)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {heartbeatSchedules.length > 0 && (
-                      <div>
-                        <button
-                          onClick={() => setShowHeartbeatSchedules(p => !p)}
-                          className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
-                        >
-                          <svg
-                            className={`w-3 h-3 transition-transform ${showHeartbeatSchedules ? 'rotate-90' : ''}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                          {heartbeatSchedules.length} mission check-in{heartbeatSchedules.length !== 1 ? 's' : ''}
-                        </button>
-                        {showHeartbeatSchedules && (
-                          <div className="card divide-y divide-border-default opacity-75">
-                            {heartbeatSchedules.map(renderRow)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </>
-          )}
-        </div>
-      )}
       </section>
       )}
 
@@ -1182,6 +956,9 @@ export function HealthClient({
           />
         )}
 
+        {/* After the failures: access problems and blocked actions are fewer and fixed-window (24h). */}
+        {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
+
         {show('failureAnalytics') && failureAnalytics && (
           <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
@@ -1208,46 +985,6 @@ export function HealthClient({
       </section>
       )}
 
-      {/* Delete schedule confirm modal */}
-      {scheduleToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
-          onClick={() => setScheduleToDelete(null)}
-        >
-          <div
-            data-testid="schedule-delete-confirm"
-            className="w-full sm:max-w-sm sm:rounded-xl rounded-t-2xl bg-surface-elevated p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
-            <p className="text-sm text-text-secondary mb-4">
-              You can&apos;t undo this.
-            </p>
-            <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
-              <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
-              <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
-              <p className="text-xs text-text-muted">
-                {countOf(scheduleToDelete.totalRuns, 'run')} · last {timeAgo(scheduleToDelete.lastRunAt, now)}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setScheduleToDelete(null)}
-                className="flex-1 h-11 rounded-lg border border-border-default text-sm font-medium text-text-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDeleteSchedule}
-                disabled={scheduleBusyId === scheduleToDelete.id}
-                className="flex-1 h-11 rounded-lg bg-status-error text-white text-sm font-medium disabled:opacity-50"
-              >
-                {scheduleBusyId === scheduleToDelete.id ? 'Deleting…' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1926,11 +1663,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
 
 // ── Credential health (STATE) ────────────────────────────────────────────────
 
-const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
-  oauth_token: 'Claude OAuth token',
-  anthropic_api_key: 'Anthropic API key',
-  codex_credential: 'Codex credential',
-};
 
 const CREDENTIAL_STATUS_WORD: Record<CredentialHealthItem['healthStatus'], string> = {
   healthy: 'working',
@@ -1976,7 +1708,7 @@ function CredentialStateSection({
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
             <span className="text-sm text-text-primary truncate">
-              {CREDENTIAL_PURPOSE_LABELS[c.purpose] ?? c.purpose}
+              {backendCredentialLabel(c.purpose)}
             </span>
             <div className="flex items-center gap-2 text-xs shrink-0">
               <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>

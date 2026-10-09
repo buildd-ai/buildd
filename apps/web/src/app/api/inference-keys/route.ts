@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
-import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
+import { listProviderKeys } from '@/lib/provider-keys';
+import { removeChatKey, sharedWritePermissions, writeChatKey, writeTeamChatKey } from '@/lib/providers/write-path';
 import { resolveChatModel } from '@/lib/chat/models';
 import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
 
@@ -15,8 +16,15 @@ import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
  *   DELETE /api/inference-keys?teamId=&provider=&scope=     → DeleteProviderKeyResponse
  *
  * Session only: a personal key belongs to a person, and API keys are not
- * people. `scope: 'team'` writes need team owner/admin. Plaintext never leaves
+ * people. `scope: 'team'` writes need team owner/admin: for a key agent runs
+ * read too (Anthropic, OpenAI), `manage_team_model_keys` and
+ * `manage_team_credentials`, the rule of every agent-credential write; for a
+ * chat-only key, `manage_inference_providers`. Plaintext never leaves
  * the server — responses carry the last four characters and health.
+ *
+ * Writes go through the one provider write path (`@/lib/providers/write-path`),
+ * which `/api/providers` also uses; this route keeps its own request and
+ * response shapes.
  */
 
 type Caller = { userId: string; teamId: string; isAdmin: boolean };
@@ -59,6 +67,21 @@ async function resolveChatUses(teamId: string, userId: string): Promise<ChatUses
   }
 }
 
+/**
+ * May this caller write or remove the team's key for this provider? A key
+ * agent runs read (Anthropic, OpenAI) takes the rule every write of an agent
+ * credential takes (`sharedWritePermissions`: manage_team_model_keys and
+ * manage_team_credentials); a chat-only key keeps manage_inference_providers.
+ */
+async function mayManageTeamKey(caller: Caller, provider: string): Promise<boolean> {
+  const needs = sharedWritePermissions('inference_key', provider);
+  if (!needs || !needs.includes('manage_team_credentials')) return caller.isAdmin;
+  for (const p of needs) {
+    if (!(await can({ kind: 'user', userId: caller.userId }, p, caller.teamId))) return false;
+  }
+  return true;
+}
+
 function parseScope(value: unknown): 'user' | 'team' | null {
   return value === 'user' || value === 'team' ? value : null;
 }
@@ -84,7 +107,7 @@ export async function PUT(req: NextRequest) {
 
   const r = await resolveCaller(req, body.teamId);
   if ('response' in r) return r.response;
-  const { userId, teamId, isAdmin } = r.caller;
+  const { userId, teamId } = r.caller;
 
   if (!isPersonalKeyProvider(body.provider)) {
     return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
@@ -94,10 +117,17 @@ export async function PUT(req: NextRequest) {
   if (typeof body.value !== 'string' || !body.value.trim()) {
     return NextResponse.json({ error: 'value is required' }, { status: 400 });
   }
-  if (scope === 'team' && !isAdmin) return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
+  if (scope === 'team' && !(await mayManageTeamKey(r.caller, body.provider))) {
+    return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
+  }
 
   try {
-    const result = await setProviderKey({ teamId, userId, provider: body.provider, scope, value: body.value });
+    if (scope === 'team') {
+      const result = await writeTeamChatKey({ teamId, userId, provider: body.provider, value: body.value });
+      if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+      return NextResponse.json({ key: result.key, requeued: result.requeued });
+    }
+    const result = await writeChatKey({ teamId, userId, provider: body.provider, scope, value: body.value });
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
     return NextResponse.json({ key: result.key });
   } catch (error) {
@@ -110,7 +140,7 @@ export async function DELETE(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const r = await resolveCaller(req, params.get('teamId'));
   if ('response' in r) return r.response;
-  const { userId, teamId, isAdmin } = r.caller;
+  const { userId, teamId } = r.caller;
 
   const provider = params.get('provider');
   if (!isPersonalKeyProvider(provider)) {
@@ -118,10 +148,12 @@ export async function DELETE(req: NextRequest) {
   }
   const scope = parseScope(params.get('scope'));
   if (!scope) return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
-  if (scope === 'team' && !isAdmin) return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
+  if (scope === 'team' && !(await mayManageTeamKey(r.caller, provider))) {
+    return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
+  }
 
   try {
-    return NextResponse.json({ deleted: await deleteProviderKey({ teamId, userId, provider, scope }) });
+    return NextResponse.json({ deleted: await removeChatKey({ teamId, userId, provider, scope }) });
   } catch (error) {
     console.error('[inference-keys] delete failed:', error);
     return NextResponse.json({ error: 'Failed to delete provider key' }, { status: 500 });

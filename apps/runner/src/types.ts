@@ -410,6 +410,10 @@ export interface LocalWorker {
   serverApiKey?: string;
   // Server-managed OAuth token (delivered inline during claim, injected as CLAUDE_CODE_OAUTH_TOKEN)
   serverOauthToken?: string;
+  // How the claim chose the model credential (no secret). `scope` personal/none =
+  // this worker's alone; `runnerLocalAllowed: false` = the machine's own seat,
+  // login and provider must not be used. Absent on older servers / no team policy.
+  credentialDecision?: import('@buildd/shared').ClaimCredentialDecision;
   // The team's agent model endpoint (docs/design/agent-model-endpoint.md), when it
   // won the claim's ranking. The only model credential this worker's agent gets.
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;

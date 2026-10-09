@@ -19,7 +19,7 @@
  * often than it was right. Real text conflicts stay with the agent.
  */
 
-import { exec, execFileSync, execSync } from 'child_process';
+import { exec, execFileSync, execSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, join } from 'path';
 import { promisify } from 'util';
@@ -30,6 +30,12 @@ export { normalizeDerivedFiles, type NormalizedDerivedFileRule } from '@buildd/s
 const pexec = promisify(exec);
 
 const REGENERATE_TIMEOUT_MS = 5 * 60_000;
+/**
+ * A base merge with structural drivers on a large tree takes well over a
+ * minute (a replayed buildd retry took ~45s on a laptop and was killed by the
+ * old 30s cap). Killed mid-merge, git records no conflicts and the merge is lost.
+ */
+const MERGE_TIMEOUT_MS = 10 * 60_000;
 const VERIFY_TIMEOUT_MS = 15 * 60_000;
 const PUSH_TIMEOUT_MS = 2 * 60_000;
 const PENDING_FILE = 'buildd-derived-pending';
@@ -160,6 +166,13 @@ export function registerMergeDrivers(
   git(worktreePath, ['config', '--local', 'rerere.enabled', 'true']);
   git(worktreePath, ['config', '--local', 'rerere.autoUpdate', 'true']);
 
+  // git's own merge temp files: a merge killed mid-way (timeout) leaves them,
+  // and a driver that outlives git can write one late. Never committable.
+  const excludePath = join(gitPath(worktreePath, '--git-common-dir'), 'info', 'exclude');
+  mkdirSync(dirname(excludePath), { recursive: true });
+  const exclude = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+  writeFileSync(excludePath, replaceManagedBlock(exclude, plan.config.length > 0 ? ['.merge_file_*'] : []));
+
   const attributesPath = join(gitPath(worktreePath, '--git-common-dir'), 'info', 'attributes');
   mkdirSync(dirname(attributesPath), { recursive: true });
   const existing = existsSync(attributesPath) ? readFileSync(attributesPath, 'utf-8') : '';
@@ -178,6 +191,11 @@ export interface DerivedMergeResult {
   regenerated: string[];
   /** Regenerate commands owed once the real conflicts are resolved. */
   pendingRegenerate: string[];
+  /**
+   * Files mergiraf resolved structurally during this merge. Real code nobody
+   * has reviewed: a merge with any is never finished without an agent.
+   */
+  structurallyResolved: string[];
   error?: string;
 }
 
@@ -193,6 +211,35 @@ function runRegenerate(worktreePath: string, command: string): void {
   execSync(command, { cwd: worktreePath, encoding: 'utf-8', timeout: REGENERATE_TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/sh' });
 }
 
+/** Delete git's merge temp files (`.merge_file_*`) a killed merge left in the tree. */
+function removeMergeTempFiles(worktreePath: string): void {
+  const left = tryGit(worktreePath, ['ls-files', '--others', '--ignored', '--exclude=.merge_file_*']);
+  for (const rel of left.ok ? left.out.split('\n').filter(Boolean) : []) {
+    if (/(^|\/)\.merge_file_[^/]+$/.test(rel)) rmSync(join(worktreePath, rel), { force: true });
+  }
+}
+
+/**
+ * The paths mergiraf says it solved. It prints one line per file to stderr
+ * ("INFO Mergiraf: Solved N conflict(s). Review with: mergiraf review
+ * <basename>_<id>"), naming only the basename, so map each back to the files
+ * this merge changed. Every same-named match counts: over-reporting only sends
+ * a merge to an agent.
+ */
+function mergirafResolvedPaths(worktreePath: string, before: string, stderr: string): string[] {
+  const names = [...stderr.matchAll(/mergiraf review (\S+)_[A-Za-z0-9]+\s*$/gm)].map(m => m[1]);
+  if (names.length === 0) return [];
+  const changed = tryGit(worktreePath, ['diff', '--name-only', before]);
+  const paths = changed.ok ? changed.out.split('\n').filter(Boolean) : [];
+  const out = new Set<string>();
+  for (const name of names) {
+    const hits = paths.filter(p => p === name || p.endsWith(`/${name}`));
+    // Not found among the changes: still record it, by name.
+    for (const hit of hits.length ? hits : [name]) out.add(hit);
+  }
+  return [...out].sort();
+}
+
 /**
  * Merge `baseRef` into the checked-out branch with the drivers in place. Never
  * pushes. On any unexpected failure the merge is aborted and the branch is left
@@ -202,20 +249,33 @@ export function mergeBaseWithDerivedFiles(
   worktreePath: string,
   baseRef: string,
   rules: NormalizedDerivedFileRule[],
+  opts: { timeoutMs?: number } = {},
 ): DerivedMergeResult {
-  const result: DerivedMergeResult = { status: 'error', conflicted: [], regenerated: [], pendingRegenerate: [] };
+  const result: DerivedMergeResult = { status: 'error', conflicted: [], regenerated: [], pendingRegenerate: [], structurallyResolved: [] };
   const before = tryGit(worktreePath, ['rev-parse', 'HEAD']);
   if (!before.ok) return { ...result, error: before.out };
   // A leftover pending list from an unrelated earlier merge must not trigger commands now.
   takePendingCommands(worktreePath, rules);
 
-  const merge = tryGit(worktreePath, ['merge', '--no-edit', '--no-ff', baseRef]);
+  const timeoutMs = opts.timeoutMs ?? MERGE_TIMEOUT_MS;
+  const run = spawnSync('git', ['merge', '--no-edit', '--no-ff', baseRef], {
+    cwd: worktreePath, encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+  });
+  const timedOut = run.error?.message.includes('ETIMEDOUT') || run.signal === 'SIGTERM';
+  const merge = {
+    ok: !run.error && run.status === 0,
+    out: timedOut
+      ? `git merge timed out after ${Math.round(timeoutMs / 1000)}s`
+      : `${run.stdout ?? ''}${run.stderr ?? ''}`.trim() || String(run.error?.message ?? `exit ${run.status}`),
+  };
   const unmerged = tryGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']);
-  const conflicted = unmerged.ok ? unmerged.out.split('\n').filter(Boolean) : [];
+  const conflicted = timedOut || !unmerged.ok ? [] : unmerged.out.split('\n').filter(Boolean);
+  const structurallyResolved = timedOut ? [] : mergirafResolvedPaths(worktreePath, before.out, run.stderr ?? '');
 
   const abort = (error: string): DerivedMergeResult => {
     tryGit(worktreePath, ['merge', '--abort']);
     tryGit(worktreePath, ['reset', '--hard', before.out]);
+    removeMergeTempFiles(worktreePath);
     takePendingCommands(worktreePath, rules);
     return { ...result, status: 'error', error };
   };
@@ -223,7 +283,7 @@ export function mergeBaseWithDerivedFiles(
   if (!merge.ok && conflicted.length === 0) return abort(merge.out);
 
   if (conflicted.length > 0) {
-    return { ...result, status: 'conflicts', conflicted, pendingRegenerate: takePendingCommands(worktreePath, rules) };
+    return { ...result, status: 'conflicts', conflicted, structurallyResolved, pendingRegenerate: takePendingCommands(worktreePath, rules) };
   }
 
   const after = tryGit(worktreePath, ['rev-parse', 'HEAD']);
@@ -244,7 +304,7 @@ export function mergeBaseWithDerivedFiles(
       if (!amend.ok) return abort(`amend failed: ${amend.out}`);
     }
   }
-  return { ...result, status: 'merged', regenerated: commands };
+  return { ...result, status: 'merged', regenerated: commands, structurallyResolved };
 }
 
 // ── Finish without an agent ──────────────────────────────────────────────────
@@ -319,13 +379,44 @@ export function isConflictRetryContext(context: Record<string, unknown> | null |
   return errorType === 'merge_conflict' || errorType === 'semantic_conflict';
 }
 
+/**
+ * Whether the runner may verify and push this merge itself, with no agent:
+ * only a clean merge in which nothing but derived files needed resolving. A
+ * file mergiraf resolved is code nobody has reviewed, so an agent reviews it.
+ */
+export function canFinishWithoutAgent(result: DerivedMergeResult): boolean {
+  return result.status === 'merged' && result.structurallyResolved.length === 0;
+}
+
+/**
+ * One line per pre-merge, for the worker's milestones (which reach the
+ * server). Always starts "Pre-merge:" and names any file mergiraf resolved, so
+ * a report can count outcomes and structural resolutions from task records.
+ */
+export function formatPreMergeMilestone(result: DerivedMergeResult): string {
+  const mergiraf = result.structurallyResolved.length
+    ? `; mergiraf resolved ${result.structurallyResolved.length}: ${result.structurallyResolved.join(', ')}`
+    : '';
+  const regen = result.regenerated.length ? `; regenerated ${result.regenerated.length} derived file command(s)` : '';
+  switch (result.status) {
+    case 'merged': return `Pre-merge: base merged by the runner${regen}${mergiraf}`;
+    case 'conflicts': return `Pre-merge: ${result.conflicted.length} file(s) left for the agent${mergiraf}`;
+    case 'up_to_date': return 'Pre-merge: already up to date with the base';
+    default: return `Pre-merge: failed, agent merges instead (${(result.error ?? 'unknown error').split('\n')[0].slice(0, 160)})`;
+  }
+}
+
 /** The prompt section telling the agent what the runner already did. Null when there is nothing to say. */
 export function formatDerivedMergeNote(result: DerivedMergeResult, baseRef: string): string | null {
   if (result.status === 'merged') {
     const regen = result.regenerated.length
       ? ` Derived files were regenerated with: ${result.regenerated.map(c => `\`${c}\``).join(', ')}.`
       : '';
-    return `\n\n## Base already merged\nThe runner merged \`${baseRef}\` into this branch before you started and it merged without conflicts.${regen} ` +
+    const structural = result.structurallyResolved.length
+      ? ` mergiraf resolved conflicts structurally in: ${result.structurallyResolved.map(f => `\`${f}\``).join(', ')}. ` +
+        `Nobody has reviewed those resolutions: read each one (\`git diff HEAD^1 -- <file>\` and \`git diff HEAD^2 -- <file>\`) and fix anything that lost a change from either side.`
+      : '';
+    return `\n\n## Base already merged\nThe runner merged \`${baseRef}\` into this branch before you started and it merged without conflicts.${regen}${structural} ` +
       `Do not merge again. Verify the result (build and the tests that cover the changed files), push the branch, and complete the task.`;
   }
   if (result.status === 'conflicts') {
@@ -333,7 +424,10 @@ export function formatDerivedMergeNote(result: DerivedMergeResult, baseRef: stri
     const regen = result.pendingRegenerate.length
       ? `\n\nDerived files were resolved automatically. After resolving the files above, run these from the repo root and stage the result before committing:\n${result.pendingRegenerate.map(c => `- \`${c}\``).join('\n')}`
       : '';
-    return `\n\n## Merge in progress\nThe runner started merging \`${baseRef}\` into this branch. Do not abort it or merge again. These files still conflict and need resolving on the merits:\n${files}${regen}`;
+    const structural = result.structurallyResolved.length
+      ? `\n\nmergiraf already resolved these structurally; review them too before committing: ${result.structurallyResolved.map(f => `\`${f}\``).join(', ')}.`
+      : '';
+    return `\n\n## Merge in progress\nThe runner started merging \`${baseRef}\` into this branch. Do not abort it or merge again. These files still conflict and need resolving on the merits:\n${files}${regen}${structural}`;
   }
   return null;
 }

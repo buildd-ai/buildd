@@ -6,6 +6,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { callerOwnsWorker } from '@/lib/worker-owner';
 import { isUuid } from '@/lib/uuid';
 import { readCompletedSessionTranscript } from '@/lib/session-transcript';
 
@@ -19,11 +20,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (account.level !== 'admin') return json({ error: 'Forbidden' }, 403);
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, id),
-      columns: { id: true, accountId: true, workspaceId: true, status: true },
+      columns: { id: true, accountId: true, claimedByUserId: true, workspaceId: true, taskId: true, status: true },
       with: { workspace: { columns: { teamId: true, dataClass: true } } },
     });
     if (!worker || worker.id !== id) return json({ error: 'Worker not found' }, 404);
-    if (worker.accountId !== account.id || !worker.workspaceId || !worker.workspace?.teamId ||
+    if (!callerOwnsWorker(account, worker) || !worker.workspaceId || !worker.workspace?.teamId ||
       worker.workspace.teamId !== account.teamId || !tokenWorkspaceAllowed(account.workspaceIds, worker.workspaceId)) {
       return json({ error: 'Forbidden' }, 403);
     }

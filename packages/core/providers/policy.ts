@@ -126,3 +126,11 @@ export function policyScopeReason(input: PolicyScopeInput): string | null {
  * refuses with this code; chat says there is no key.
  */
 export const NO_PERSONAL_CREDENTIAL = 'no_personal_credential' as const;
+
+/**
+ * Runner feature a claim request declares when the runner keeps a personal
+ * credential to the one worker it was delivered for: never cached per team,
+ * never reused for another worker. The host claim delivers a personal key only
+ * to a runner that declares it (claim/personal-credential-injection.ts).
+ */
+export const PERSONAL_CREDENTIAL_RUNNER_FEATURE = 'personal_credentials' as const;

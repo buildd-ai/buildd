@@ -18,6 +18,10 @@ import { hasTokenScope, requiredScopeForAction, type TokenScope } from '@buildd/
  *   CAPABILITY_MCP_GROUP_TOOLS: such a runner matches buildd actions by the
  *   exact `mcp__buildd__buildd` tool name (pr-detection, hooks, nudges).
  *   LEGACY: remove this surface once no runner predating group tools is left.
+ * - A worker-level session also sees list_skills / get_skill /
+ *   register_skill / update_skill / delete_skill, for personal roles
+ *   (`personal: true`); their team path stays admin-only
+ *   (handleBuilddAction refuses it).
  * - `check_path_claim` / `send_worker_message` are worker/admin only. Trigger
  *   tokens never run agent work, so they never need either.
  * - Sensitive workspaces do not expose the knowledge/memory tools at all.
@@ -30,6 +34,9 @@ import {
   learnToolDefinition,
   triggerActions,
   workerActions,
+  PERSONAL_ROLE_ACTIONS,
+  ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS,
+  adminActions,
   allActions as allActionsList,
   memoryActions,
   buildToolDescription,
@@ -48,6 +55,7 @@ import {
   mcpGroupOfToolName,
   mcpGroupToolName,
   mcpGroupParamsSchema,
+  splitListed,
   type McpToolGroup,
 } from "@buildd/core/mcp-tool-groups";
 import type { BuilddAction } from "@buildd/core/mcp-tools";
@@ -57,7 +65,21 @@ export type McpAccountLevel = 'trigger' | 'worker' | 'admin';
 /** `groups`: one tool per action group. `legacy`: the one `buildd` tool. */
 export type McpToolSurface = 'groups' | 'legacy';
 
-export interface ListMcpToolsOptions {
+/**
+ * Who is behind the session, beyond its level: decides which actions it is
+ * shown that its level alone would admit but its handler always refuses.
+ * - `principal` 'key' / 'task_token': no person, so the personal-role path of
+ *   the skill actions (the only reason a worker level sees them) is refused.
+ * - `orchestrationTaskToken`: an admin-level per-task token reaches only the
+ *   admin actions its own mission needs (ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS).
+ * Absent fields hide nothing (an unknown caller keeps the level's list).
+ */
+export interface McpSessionReach {
+  principal?: 'person' | 'key' | 'task_token';
+  orchestrationTaskToken?: boolean;
+}
+
+export interface ListMcpToolsOptions extends McpSessionReach {
   accountLevel: McpAccountLevel;
   scopes?: readonly string[] | null;
   /** Workspace data class is `sensitive` (fail-closed when unknown). */
@@ -79,8 +101,25 @@ export function mcpToolSurfaceFor(opts: { workerParam?: string | null; runnerSup
   return opts.runnerSupportsGroupTools === true ? 'groups' : 'legacy';
 }
 
-/** Actions exposed in the `buildd` tool schema for a given token level. */
-export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+const ADMIN_ONLY = new Set<string>(adminActions);
+const PERSONAL = new Set<string>(PERSONAL_ROLE_ACTIONS);
+
+/** Actions exposed in the `buildd` tool schema for a given token level (and session reach). */
+export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly string[] | null, reach: McpSessionReach = {}): string[] {
+  const actions = levelActions(accountLevel, scopes);
+  const personless = reach.principal === 'key' || reach.principal === 'task_token';
+  return actions.filter(a => {
+    if (!ADMIN_ONLY.has(a)) return true;
+    // An orchestration task token: only its own mission's admin actions.
+    if (reach.orchestrationTaskToken) return Object.hasOwn(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS, a);
+    // Below admin, an admin action is listed only for its personal-role path,
+    // which needs a person behind the session.
+    if (accountLevel !== 'admin' && scopes == null) return PERSONAL.has(a) && !personless;
+    return true;
+  });
+}
+
+function levelActions(accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
   if (scopes != null) return allActionsList.filter(action => {
     const required = requiredScopeForAction(action);
     return (required != null && hasTokenScope(scopes, required)) ||
@@ -91,31 +130,39 @@ export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly
     ? [...allActionsList]
     : accountLevel === 'trigger'
     ? [...triggerActions]
-    : [...workerActions];
+    // Personal roles: list/get/register/update/delete_skill with
+    // personal: true (the team-role path is refused below admin).
+    : [...workerActions, ...PERSONAL_ROLE_ACTIONS];
 }
 
 export const HELP_ACTION = 'help';
 
 /** The actions of `group` the level may call, in allActions order. */
-export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
-  const allowed = new Set(actionsForLevel(accountLevel, scopes));
+export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel, scopes?: readonly string[] | null, reach: McpSessionReach = {}): string[] {
+  const allowed = new Set(actionsForLevel(accountLevel, scopes, reach));
   return actionsOfGroup(group).filter(a => allowed.has(a));
 }
 
 
 /** The group actions whose own sub-action selector (params.action) takes `value`. */
-function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
-  return groupActionsForLevel(group, accountLevel, scopes).filter(a => {
+function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel, scopes?: readonly string[] | null, reach: McpSessionReach = {}): string[] {
+  return groupActionsForLevel(group, accountLevel, scopes, reach).filter(a => {
     const m = (derivedSignature(a) ?? '').match(/\baction: ([a-z_|]+)/);
     return !!m && m[1].split('|').includes(value);
   });
 }
 
-/** A `buildd_<group>` tool for the given actions: short purpose, one line per action, and `help`. */
+/**
+ * A `buildd_<group>` tool for the given actions: short purpose, one line per
+ * listed action, `help`, and one `More:` line naming the rarely used ones
+ * (ACTION_LISTING). Every action stays in the enum and is called the same way.
+ */
 export function groupToolDefinition(group: McpToolGroup, actions: readonly string[]): object {
-  const lines = actions.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
+  const { listed, more } = splitListed(actions);
+  const lines = listed.map(a => `- ${a} ${actionSignature(a)}: ${ACTION_SUMMARY[a as BuilddAction]}`);
   lines.push(`- ${HELP_ACTION} {action}: docs for one action`);
-  const withSub = actions.find(a => /\baction: [a-z_|]*\bupdate\b/.test(derivedSignature(a) ?? ''));
+  if (more.length > 0) lines.push(`More: ${more.join(', ')} — call help {action} for docs.`);
+  const withSub = listed.find(a => /\baction: [a-z_|]*\bupdate\b/.test(derivedSignature(a) ?? ''));
   return {
     name: mcpGroupToolName(group),
     description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
@@ -133,7 +180,7 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
           // Only where some action has a sub-action selector of its own.
           ...(withSub ? { description: `A sub-action goes in params: {"action":"${withSub}","params":{"action":"update",...}}.` } : {}),
         },
-        params: mcpGroupParamsSchema(group, actions),
+        params: mcpGroupParamsSchema(group, listed),
       },
       required: ["action"],
     },
@@ -150,7 +197,7 @@ export type GroupToolCall =
  * tool does. Level gating of the dispatched action stays where it is for
  * `buildd` (handleBuilddAction), so both tools refuse exactly alike.
  */
-export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): GroupToolCall {
+export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel, scopes?: readonly string[] | null, reach: McpSessionReach = {}): GroupToolCall {
   const tool = mcpGroupToolName(group);
   const action = typeof args?.action === 'string' ? args.action : '';
   // A model sometimes flattens a call ({action, title, ...}); with no params
@@ -160,13 +207,13 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   if (action === HELP_ACTION) {
     const target = typeof params.action === 'string' ? params.action : '';
-    const inGroup = groupActionsForLevel(group, accountLevel, scopes);
+    const inGroup = groupActionsForLevel(group, accountLevel, scopes, reach);
     if (!target) {
       return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.` };
     }
     const help = actionHelp(target);
     if (!help) return { kind: 'reply', isError: true, text: `Unknown action "${target}".` };
-    if (!actionsForLevel(accountLevel, scopes).includes(target)) {
+    if (!actionsForLevel(accountLevel, scopes, reach).includes(target)) {
       return { kind: 'reply', isError: true, text: `"${target}" is not available at your token level (${accountLevel}).` };
     }
     const home = mcpGroupOf(target)!;
@@ -175,14 +222,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   const home = mcpGroupOf(action);
   if (!home) {
-    const owners = actionsWithSubAction(group, action, accountLevel, scopes);
+    const owners = actionsWithSubAction(group, action, accountLevel, scopes, reach);
     if (owners.length > 0) {
       return { kind: 'reply', isError: true, text: `"${action}" is a sub-action: call ${tool} with action "${owners[0]}" and params.action "${action}".` };
     }
-    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel, scopes).join(', ')}, ${HELP_ACTION}.` };
+    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel, scopes, reach).join(', ')}, ${HELP_ACTION}.` };
   }
   if (home !== group) {
-    if (!actionsForLevel(accountLevel, scopes).includes(action)) {
+    if (!actionsForLevel(accountLevel, scopes, reach).includes(action)) {
       return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
     }
     return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
@@ -191,9 +238,9 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 }
 
 /** The server `instructions` block sent on initialize. */
-export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'groups', scopes?: readonly string[] | null): string {
+export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'groups', scopes?: readonly string[] | null, reach: McpSessionReach = {}): string {
   const tools = surface === 'groups'
-    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
+    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes, reach).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists its common actions with their params (\`?\` = optional), and a \`More:\` line names the rest, called the same way. Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
     : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
   const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
   return `Buildd is a task coordination system for AI coding agents. ${tools}
@@ -231,11 +278,12 @@ function legacyBuilddTool(filteredActions: string[]): object {
   };
 }
 
-export function listMcpTools({ accountLevel, isSensitive, surface = 'groups', scopes }: ListMcpToolsOptions): object[] {
+export function listMcpTools({ accountLevel, isSensitive, surface = 'groups', scopes, principal, orchestrationTaskToken }: ListMcpToolsOptions): object[] {
+  const reach: McpSessionReach = { principal, orchestrationTaskToken };
   const tools: object[] = surface === 'legacy'
     ? [legacyBuilddTool(actionsForLevel(accountLevel, scopes))]
     : MCP_TOOL_GROUPS
-      .map(g => [g, groupActionsForLevel(g, accountLevel, scopes)] as const)
+      .map(g => [g, groupActionsForLevel(g, accountLevel, scopes, reach)] as const)
       .filter(([, actions]) => actions.length > 0)
       .map(([g, actions]) => groupToolDefinition(g, actions));
 

@@ -386,4 +386,26 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(body.claudeVerify).toBeDefined();
     expect(typeof body.claudeVerify.checked).toBe('number');
   });
+
+  // Agent runs read a team's Anthropic key from canonical storage too, so the
+  // liveness ping checks it there; another provider's key and a personal key
+  // are never pinged.
+  it('verifies a team Anthropic key in canonical storage, and only team Anthropic keys', async () => {
+    mockSecretsFindMany.mockImplementation((args: any) => {
+      const where = JSON.stringify(args?.where ?? null);
+      if (!where.includes('anthropic_api_key') || !where.includes('oauth_token') || where.includes('claude_credential')) return [] as any;
+      expect(where).toContain('inference_key');
+      return [
+        { id: 'seat', purpose: 'oauth_token', label: null, userId: null },
+        { id: 'legacy', purpose: 'anthropic_api_key', label: null, userId: null },
+        { id: 'canon', purpose: 'inference_key', label: 'anthropic', userId: null },
+        { id: 'router', purpose: 'inference_key', label: 'openrouter', userId: null },
+        { id: 'mine', purpose: 'inference_key', label: 'anthropic', userId: 'u-1' },
+      ] as any;
+    });
+    const res = await GET(authedRequest());
+    const body = await res.json();
+    expect(mockVerifyClaude.mock.calls.map((c) => c[0]).sort()).toEqual(['canon', 'legacy', 'seat']);
+    expect(body.claudeVerify.checked).toBe(3);
+  });
 });

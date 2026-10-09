@@ -14,7 +14,8 @@ import { RunnerAvatar, ScopeChip, useNow } from '@/app/app/(protected)/missions/
 import type { BuilddObjectRef } from '../chat-contract';
 import { useChatActions } from '../ChatActions';
 import type { TaskObjectView } from './object-views';
-import { Eyebrow, OpenButton, StateChip, type Tone } from './parts';
+import FocusCard from '@/components/ui/FocusCard';
+import { OpenButton, StateChip, toneState, type Tone } from './parts';
 
 /**
  * A kernel-owned delivery's words for the tile (§17.5). Null for `working`:
@@ -74,7 +75,7 @@ export function TaskCard({ objRef, view }: { objRef: BuilddObjectRef; view: Task
       data-testid="object-card"
       data-kind="task"
       data-in-pane={inPane ? 'true' : undefined}
-      className={`relative border-2 bg-card pl-5 pr-4 py-3 before:absolute before:inset-y-0 before:left-0 before:w-[5px] ${EDGE[st.tone]} ${inPane ? 'border-accent shadow-[var(--accent-shadow)]' : 'border-border-strong'}`}
+      className={`relative overflow-hidden rounded-[var(--radius-card)] border bg-card pl-5 pr-4 py-3 before:absolute before:inset-y-0 before:left-0 before:w-[3px] ${EDGE[st.tone]} ${inPane ? 'border-text-primary' : 'border-border-default'}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         <ScopeChip scope={view.scope} />
@@ -103,27 +104,28 @@ export function TaskPane({ view, variant = 'pane' }: { view: TaskObjectView; var
   const href = taskPageHref({ taskId: view.id, missionId: view.missionId });
   return (
     <div data-testid="object-pane" data-kind="task" className={variant === 'pane' ? 'px-6 pb-10 pt-5' : 'pb-6'}>
-      <Eyebrow className="text-text-muted">{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'}</Eyebrow>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <ScopeChip scope={view.scope} />
-        <h2 className="min-w-0 font-mono text-[20px] font-semibold text-text-primary [overflow-wrap:anywhere]">{view.label}</h2>
-        <StateChip label={st.label} tone={st.tone} pulse={st.live} />
-      </div>
-      <p className="mt-1 font-mono text-[12.5px] text-text-muted [overflow-wrap:anywhere]">{view.title}</p>
-      <div className="mt-5">
+      <FocusCard
+        focused={false}
+        meta={<>{view.missionTitle ? `Task · ${view.missionTitle}` : 'Task'} · <ScopeChip scope={view.scope} /></>}
+        title={<>{view.label} <StateChip label={st.label} tone={st.tone} pulse={st.live} /></>}
+        state={toneState(st.tone)}
+        next={view.title}
+        footer={
+          <Link href={href} className="inline-flex min-h-10 items-center self-start rounded-[var(--radius-card)] border border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
+            Open task →
+          </Link>
+        }
+      >
         {view.now && st.live ? (
           <NowStrip now={view.now} nowMs={nowMs} />
         ) : (
-          <div className="border-2 border-border-default bg-surface-2 px-4 py-3 font-mono text-[12.5px] text-text-secondary">
+          <div className="rounded-[var(--radius-card)] border border-border-default bg-surface-2 px-4 py-3 font-mono text-[12.5px] text-text-secondary">
             {view.worker?.prUrl
               ? <a href={view.worker.prUrl} target="_blank" rel="noreferrer" className="text-accent-text hover:underline">{`PR #${view.worker.prNumber} ↗`}</a>
               : 'No agent is on this task right now.'}
           </div>
         )}
-      </div>
-      <Link href={href} className="mt-5 inline-flex min-h-10 items-center border-2 border-border-strong bg-surface-3 px-4 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-4">
-        Open task →
-      </Link>
+      </FocusCard>
     </div>
   );
 }

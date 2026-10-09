@@ -90,6 +90,7 @@ import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
 import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { emit } from '@/lib/core-emit';
 
 export const maxDuration = 60;
 
@@ -208,6 +209,10 @@ export async function GET(req: NextRequest) {
       restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
+      // Module backstops for lossy webhooks (e.g. merge readiness outcome
+      // labels). Core only emits; modules.ts lists who reacts. Each
+      // subscriber is isolated by emit().
+      emit({ type: 'sweep.pr_hourly', at: new Date() }),
     ]);
     if ('error' in kernelFloor) {
       console.error('[KernelFloor] error:', kernelFloor.error);

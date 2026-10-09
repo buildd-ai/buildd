@@ -349,7 +349,7 @@ export async function PATCH(
     // Continue on a runner: the stranded card computes this same refusal at
     // render time and shows the button disabled with it (lib/local-strand.ts).
     if (executor === 'runner' && existing.executor === 'local') {
-      const blocked = continueOnRunnerBlockedReason({ status: existing.status, workspaceId: existing.workspaceId ?? null });
+      const blocked = continueOnRunnerBlockedReason({ status: existing.status, workspaceId: workspaceId !== undefined ? (workspaceId || null) : (existing.workspaceId ?? null) });
       if (blocked) return NextResponse.json({ error: blocked }, { status: 409 });
     }
 

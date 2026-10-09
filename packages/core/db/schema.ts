@@ -3059,7 +3059,10 @@ export const workspaceSkills = pgTable('workspace_skills', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND ${t.ownerUserId} IS NULL`),
+  // Team-level namespace: one (team, slug) across team roles AND shared
+  // personal roles, so two concurrent shares of one slug cannot both land.
+  // Private personal rows are outside it (ownerSlugIdx covers them).
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND (${t.ownerUserId} IS NULL OR ${t.visibility} = 'team')`),
   // Personal roles: one (team, owner, slug)
   ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL
