@@ -33,6 +33,8 @@ mock.module('@buildd/core/task-requester', () => ({
 
 const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
 mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
+const mockReadTaskEstimate = mock(async (_taskId: string) => null as any);
+mock.module('@buildd/core/task-estimate-source', () => ({ readTaskEstimate: mockReadTaskEstimate }));
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
@@ -535,6 +537,41 @@ describe('GET /api/tasks/[id]', () => {
     const plain = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
     expect(plain.dispatch).toBeUndefined();
     expect(mockDispatchHistory).not.toHaveBeenCalled();
+  });
+
+  it('include=estimate returns the frozen estimate (task-estimates experiment); absent row or no include = no field', async () => {
+    const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockReadTaskEstimate.mockClear();
+    mockReadTaskEstimate.mockResolvedValueOnce({
+      id: 'e-1', teamId: 'team-1', workspaceId: 'ws-1', taskId: TASK_ID, estimatorVersion: 'blend-v1',
+      p50Minutes: 40, p80Minutes: 70, p50Tokens: 120000, p80Tokens: 220000, expectedRepairs: 0.3,
+      explanation: { sources: [], clusterLabel: null, priorWeight: 1, summary: '40m (25-70m), 120k tokens.' },
+      createdAt: '2026-10-04T12:00:00.000Z',
+    });
+    const req = (search?: string) => createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, ...(search ? { search } : {}) });
+
+    const data = await (await callHandler(GET, req('?include=estimate'), TASK_ID)).json();
+    expect(mockReadTaskEstimate).toHaveBeenCalledWith(TASK_ID);
+    expect(data.estimate).toEqual({
+      estimatorVersion: 'blend-v1', p50Minutes: 40, p80Minutes: 70, p50Tokens: 120000, p80Tokens: 220000,
+      expectedRepairs: 0.3, summary: '40m (25-70m), 120k tokens.', createdAt: '2026-10-04T12:00:00.000Z',
+    });
+
+    mockReadTaskEstimate.mockResolvedValueOnce(null);
+    expect((await (await callHandler(GET, req('?include=estimate'), TASK_ID)).json()).estimate).toBeUndefined();
+
+    // A read failure is "no estimate", never a failed get_task.
+    mockReadTaskEstimate.mockRejectedValueOnce(new Error('db down'));
+    const failed = await callHandler(GET, req('?include=estimate'), TASK_ID);
+    expect(failed.status).toBe(200);
+    expect((await failed.json()).estimate).toBeUndefined();
+
+    mockReadTaskEstimate.mockClear();
+    expect((await (await callHandler(GET, req(), TASK_ID)).json()).estimate).toBeUndefined();
+    expect(mockReadTaskEstimate).not.toHaveBeenCalled();
   });
 
   it('omits workers/artifacts when include is not requested', async () => {

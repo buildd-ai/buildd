@@ -435,3 +435,50 @@ describe('DELETE /api/teams/[id]', () => {
     expect(deletedTeams).toBe(0);
   });
 });
+
+describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
+  it('an admin turns it on; it is stamped with who and when', async () => {
+    const res = await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates).toHaveLength(1);
+    const v = capturedUpdates[0].taskEstimates;
+    expect(v).toMatchObject({ enabled: true, setBy: 'user-1' });
+    expect(Number.isFinite(Date.parse(v.setAt))).toBe(true);
+  });
+
+  it('an owner turns it off', async () => {
+    membership = { ...membership, role: 'owner' };
+    const res = await PATCH(patchReq({ taskEstimates: { enabled: false } }), ctx);
+    expect(res.status).toBe(200);
+    expect(capturedUpdates[0].taskEstimates).toMatchObject({ enabled: false, setBy: 'user-1' });
+  });
+
+  it('a member or viewer cannot change it', async () => {
+    for (const role of ['member', 'viewer']) {
+      membership = { teamId: 'team-1', userId: 'user-1', role };
+      expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(403);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('an API key (no session) cannot change it', async () => {
+    mockRequireSessionUser.mockResolvedValue({ response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) });
+    expect((await PATCH(patchReq({ taskEstimates: { enabled: true } }), ctx)).status).toBe(401);
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('rejects anything but { enabled: boolean }; a client cannot set setBy/setAt', async () => {
+    for (const bad of [true, null, [], { enabled: 'yes' }, {}, { enabled: true, setBy: 'someone-else' }]) {
+      expect((await PATCH(patchReq({ taskEstimates: bad }), ctx)).status).toBe(400);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET returns the stored switch', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ taskEstimates: true });
+    principal = null;
+  });
+});

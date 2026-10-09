@@ -145,6 +145,8 @@
     "./task-size-bucket-decision": "./task-size-bucket-decision.ts",
     "./task-size-bucket-source": "./task-size-bucket-source.ts",
     "./task-size-estimate": "./task-size-estimate.ts",
+    "./task-estimate": "./task-estimate.ts",
+    "./task-estimate-source": "./task-estimate-source.ts",
     "./decision-ledger": "./decision-ledger.ts",
     "./orchestration-decision-ledger": "./orchestration-decision-ledger.ts",
     "./token-delegation": "./token-delegation.ts",

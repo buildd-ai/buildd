@@ -260,6 +260,8 @@ DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Task estimates experiment: the explanation names a directory in the repo.
+DELETE FROM task_estimates;
 -- Post-session quality ledgers: findings carry analyser prose, runs carry
 -- collection error text.
 DELETE FROM post_session_findings;
