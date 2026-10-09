@@ -461,6 +461,9 @@
     "packages/core/dispatch-model-guard.ts": {
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
+    "packages/core/estimate-backtest-source.ts": {
+      "packages/core/task-size-bucket-decision.ts": "jev-decisions"
+    },
     "packages/core/flight-strip-store.ts": {
       "packages/core/mission-helpers.ts": "missions"
     },
@@ -523,6 +526,9 @@
     },
     "packages/core/scripts/backfill-flight-strip-cache.ts": {
       "packages/core/mission-helpers.ts": "missions"
+    },
+    "packages/core/scripts/estimate-backtest.ts": {
+      "packages/core/knowledge-store/index.ts": "knowledge"
     },
     "packages/core/scripts/probe-graph-expansion.ts": {
       "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
