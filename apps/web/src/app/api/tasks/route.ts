@@ -8,6 +8,7 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -611,6 +612,11 @@ export async function POST(req: NextRequest) {
         );
       }
     }
+    // Opt-in GitHub repo check for people (lib/member-repo-access.ts); keys and runners skip it.
+    const repoAccessRefusal = resolveMemberRepoAccessMode(targetWorkspace.gitConfig) === 'off'
+      ? null
+      : await assertMemberRepoAccess(memberRepoAccessSubject(apiAccount, user), workspaceId);
+    if (repoAccessRefusal) return repoAccessRefusal;
 
     // Validate and normalize pathManifest
     let pathManifest: string[] | null =

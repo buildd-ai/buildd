@@ -385,6 +385,13 @@ export interface WorkspaceGitConfig {
   // anyway — same team, not sensitive, token restriction respected.
   linkedKnowledgeWorkspaces?: string[];
 
+  // Opt-in: a person (dashboard or OAuth session, never an API key or runner)
+  // must also hold read or higher on the linked GitHub repo before Buildd
+  // shows them code, files tasks for them, or lets chat work over this
+  // workspace. Absent ⇒ 'off': team membership is the whole check. Read only
+  // through resolveMemberRepoAccessMode (apps/web/src/lib/member-repo-access-shared.ts).
+  memberRepoAccess?: 'off' | 'require_read';
+
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
   commitPrefix?: string;              // '[JIRA-123]', null

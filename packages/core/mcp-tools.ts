@@ -6790,6 +6790,13 @@ type MemoryActionCtx = {
    * docs corpus over exactly these ids, and never code/task/memory.
    */
   linkedDocsWorkspaceIds?: string[];
+  /**
+   * The web layer's opt-in GitHub repo check for the person behind an OAuth
+   * session (apps/web/src/lib/member-repo-access.ts). Returns a refusal
+   * message when this caller may not read the `code` corpus, else null.
+   * Omitted (API keys, runners): code reads as before. Core never decides.
+   */
+  codeAccessRefusal?: () => Promise<string | null>;
   /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
   memoryLedger?: MemoryLedgerWriter;
   /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
@@ -7143,6 +7150,16 @@ async function queryCorpus(
  * suppression is deliberate and must stay silent (memory 0ff1a5c7's
  * bidirectional isolation decision).
  */
+/** The code corpus refusal, if any. A throwing check refuses (fails closed). */
+async function codeRefusal(ctx: MemoryActionCtx): Promise<string | null> {
+  if (!ctx.codeAccessRefusal) return null;
+  try {
+    return await ctx.codeAccessRefusal();
+  } catch {
+    return 'could not confirm GitHub access to this workspace repository';
+  }
+}
+
 async function fanOutCorpora(
   ks: KnowledgeStore,
   mc: MemoryStore | null,
@@ -7159,6 +7176,13 @@ async function fanOutCorpora(
       if (c === 'memory' && !normalizeProject(ctx.project)) {
         failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
         return [];
+      }
+      if (c === 'code') {
+        const refusal = await codeRefusal(ctx);
+        if (refusal) {
+          failures.push({ corpus: c, reason: refusal });
+          return [];
+        }
       }
       const ns = knowledgeNamespace(ctx, c);
       if (!ns) {
@@ -7326,6 +7350,10 @@ export async function handleRecallAction(
   }
   if (scope === 'memory' && !normalizeProject(ctx.project)) {
     return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
+  }
+  if (scope === 'code') {
+    const refusal = await codeRefusal(ctx);
+    if (refusal) return errorResult(`recall scope=code is unavailable: ${refusal}`);
   }
 
   // Resolve namespace — namespace resolution is internal to the server.
@@ -7973,6 +8001,10 @@ export async function handleMemoryAction(
       }
       if (corpus === 'memory' && !normalizeProject(ctx.project)) {
         throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);
+      }
+      if (corpus === 'code') {
+        const refusal = await codeRefusal(ctx);
+        if (refusal) throw new Error(`query_knowledge corpus=code is unavailable: ${refusal}`);
       }
 
       const ns = knowledgeNamespace(ctx, corpus);
