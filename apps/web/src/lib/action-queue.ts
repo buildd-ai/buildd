@@ -136,7 +136,7 @@ function describeReviewMachineState(item: EscalationRawItem, now: Date): string 
  * "also in progress" line instead of asking for it now. A repair that gave up,
  * a plain conflict or red CI with no fix running is the person's again.
  */
-function reviewMachineActing(item: EscalationRawItem, now: Date): boolean {
+export function reviewMachineActing(item: Pick<EscalationRawItem, 'deadZoneExhausted' | 'conflictRetryTaskId' | 'ciGate' | 'reviewInFlight' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt'>, now: Date): boolean {
   if (item.deadZoneExhausted) return false;
   if (item.conflictRetryTaskId) return true;
   if (item.ciGate?.kind === 'fixing' || item.ciGate?.kind === 'running') return true;

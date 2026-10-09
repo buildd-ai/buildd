@@ -36,6 +36,16 @@ export interface HomeAttentionItem {
 }
 
 /**
+ * THE "Buildd is acting, so this is not a decision yet" rule for Home, the
+ * badge and the headline: a human review on a PR Buildd is still repairing or
+ * checking (`machineActing`, from `reviewMachineActing` in action-queue.ts).
+ * One predicate so a shared needs-you classifier can replace it in one place.
+ */
+export function waitsOnBuildd(i: Pick<ActionQueueItem, 'humanReview' | 'machineActing' | 'prLifecycleStatus'>): boolean {
+  return !!i.humanReview && !!i.machineActing && i.prLifecycleStatus !== 'merged' && i.prLifecycleStatus !== 'closed';
+}
+
+/**
  * Work the platform is already recovering on its own: an agent-handled chip, a
  * fix or CI run in flight, or a conflict retry with attempts left. It is never
  * a Needs you card. A human review waits too while Buildd is still repairing or
@@ -45,7 +55,7 @@ export interface HomeAttentionItem {
 export function isAutoRecovering(i: ActionQueueItem, isActionable: (chip: ActionQueueItem['chip']) => boolean): boolean {
   if (!isActionable(i.chip)) return true;
   // A review on a PR Buildd is still repairing or checking waits for that to settle.
-  if (i.humanReview && i.machineActing) return true;
+  if (waitsOnBuildd(i)) return true;
   if (i.humanReview || i.chip !== 'BLOCKED') return false;
   if (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running') return true;
   return !!i.conflictRetryTaskId && !i.deadZoneExhausted;

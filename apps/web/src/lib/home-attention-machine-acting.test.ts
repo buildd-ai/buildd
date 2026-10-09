@@ -50,3 +50,13 @@ describe('a review waits while Buildd is still acting on its PR', () => {
     expect(out.inProgress).toBe(2);
   });
 });
+
+describe('waitsOnBuildd is the one predicate', () => {
+  it('true only for a review whose PR Buildd is still acting on', async () => {
+    const { waitsOnBuildd } = await import('./home-attention');
+    expect(waitsOnBuildd(review(6, { conflictRetryTaskId: 'r' }))).toBe(true);
+    expect(waitsOnBuildd(review(7))).toBe(false);
+    expect(waitsOnBuildd({ humanReview: null, machineActing: true })).toBe(false);
+    expect(waitsOnBuildd({ ...review(8, { conflictRetryTaskId: 'r' }), prLifecycleStatus: 'merged' })).toBe(false);
+  });
+});
