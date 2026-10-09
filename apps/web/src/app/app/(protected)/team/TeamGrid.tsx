@@ -287,7 +287,7 @@ export function TeamGrid({
   return (
     <div>
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mt-0 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-4 md:mt-0 mb-6">
         <div className="flex items-center gap-3">
           <h1 className="hidden md:block text-xl md:text-3xl font-bold text-text-primary">The Team</h1>
           {totalActiveWorkerCount > 0 && (
