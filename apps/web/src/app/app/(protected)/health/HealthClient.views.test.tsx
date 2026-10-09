@@ -170,6 +170,11 @@ const everything = {
     workerId: 'w1', workspaceName: 'ws', taskId: 't1', taskTitle: 'Task', prUrl: null, prNumber: 7,
     reason: 'gone', failureCount: 3, lastCheckedAt: ago(HOUR), prOpenedAt: ago(DAY),
   }],
+  agentAccess: {
+    windowHours: 24, granted: 4, adminGranted: 0, healthy: false,
+    grantProblems: [{ workspaceId: 'ws-1', workspaceName: 'ws', reason: 'the workspace has no linked GitHub repo', fix: 'Link a repo in workspace settings.', count: 2, lastAt: ago(HOUR) }],
+    refusals: [{ label: 'Merge PR', reason: "not this task's PR", count: 1 }],
+  },
 };
 
 describe('HealthClient — pages', () => {
@@ -192,14 +197,30 @@ describe('HealthClient — pages', () => {
     expect(html).toContain('aria-label="Window"');
   });
 
-  it('Runners & capacity shows runners, credentials and schedules, and no window picker', () => {
+  it('Runners & capacity shows only what sets capacity, and no window picker', () => {
     const html = render({ ...everything, page: 'runners' });
-    for (const id of ['health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-schedules']) {
+    for (const id of ['health-section-occupancy', 'health-section-runners', 'health-section-credentials']) {
       expect(has(html, id)).toBe(true);
     }
+    expect(has(html, 'health-section-agent-access')).toBe(false);
+    expect(has(html, 'health-section-schedules')).toBe(false);
     expect(has(html, 'health-section-problems')).toBe(false);
     expect(has(html, 'health-section-failure-analytics')).toBe(false);
     expect(html).not.toContain('aria-label="Window"');
+  });
+
+  it('Overview lists an access problem under Problems, linking to Failures', () => {
+    const html = render({ ...everything, page: 'overview' });
+    expect(html).toContain('data-testid="problem-access"');
+    expect(html).toContain('ws: runs can&#x27;t get access');
+    expect(html).toContain('href="/app/health/failures"');
+  });
+
+  it('Failures carries the access problems with their fix, and the blocked actions', () => {
+    const html = render({ ...everything, page: 'failures' });
+    expect(has(html, 'health-section-agent-access')).toBe(true);
+    expect(html).toContain('ws: the workspace has no linked GitHub repo');
+    expect(html).toContain('Blocked actions');
   });
 
   it('Operator holds the internal tooling and none of the team-facing sections', () => {
@@ -213,7 +234,7 @@ describe('HealthClient — pages', () => {
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
-    const ids = ['health-section-problems', 'health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-schedules',
+    const ids = ['health-section-problems', 'health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
       'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {

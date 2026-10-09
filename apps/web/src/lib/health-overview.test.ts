@@ -13,6 +13,10 @@ const STATE: OverviewState = {
 };
 
 describe('overviewHeadline', () => {
+  it('counts access problems: a run that cannot get access needs someone', () => {
+    expect(overviewHeadline({ ...CALM, accessProblems: 2 })).toMatchObject({ tone: 'attention', count: 2 });
+  });
+
   it('says all good when nothing needs attention', () => {
     expect(overviewHeadline(CALM)).toEqual({ tone: 'ok', count: 0, text: 'All good.' });
   });
