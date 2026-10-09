@@ -174,17 +174,18 @@ export function mcpGroupOfToolName(name: string): McpToolGroup | null {
  * only names on its closing `More:` line. Both kinds stay in the tool's action
  * enum and are called exactly the same way; `help {action}` documents either.
  *
- * USAGE-DERIVED, dated 2026-10-08: buildd action calls over the 30 days before
- * that date (a floor — recorded since action capture began; get_usage_stats
- * reports the live numbers). An action is `listed` when it was called at least
- * 20 times in that window (the top 27, over 95% of all calls), or when a
- * skill (.claude/skills, the onboarding consumer skill), a default role prompt
- * or a runner prompt tells agents to call it — the reason is noted inline.
- * Everything else is `more`. Re-derive from get_usage_stats when usage moves;
- * a Record, so a new action does not compile until it is placed.
+ * USAGE-DERIVED, dated 2026-10-08: ranked by buildd action calls over the 30
+ * days before that date (get_usage_stats, buildd actions; the figures stay out
+ * of this public repo). An action is `listed` when it is in the frequently
+ * called head of that ranking, which carries the large majority of all calls,
+ * or when a skill (.claude/skills, the onboarding consumer skill), a default
+ * role prompt or a runner prompt tells agents to call it — that reason is
+ * noted inline (a test holds it). Everything else, the long tail, is `more`.
+ * Re-derive from get_usage_stats when usage moves; a Record, so a new action
+ * does not compile until it is placed.
  */
 export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
-  // ≥20 calls in the window
+  // the frequently called head
   get_task: 'listed',
   update_progress: 'listed',
   create_pr: 'listed',
@@ -212,7 +213,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   update_pr: 'listed',
   dispatch_health: 'listed',
   update_task: 'listed',
-  // under 20, but a workflow tells agents to call it
+  // the tail, but a workflow tells agents to call it
   spec_compare: 'listed', // spec-sync skill; spec-validator role
   manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
   list_runners: 'listed', // default role prompts
