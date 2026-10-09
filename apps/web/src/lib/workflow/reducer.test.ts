@@ -584,6 +584,21 @@ describe('T5 ReviewRequested (AC-2)', () => {
     expectResult(rq(V(D({ prNumber: null }))), 'rejected', 'pr_not_bound');
     expectResult(rq(V(D({ state: 'AWAITING_PUSH' }))), 'rejected', 'state_not_allowed');
   });
+  test('only a human actor may force a round', () => {
+    const v = V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC]);
+    for (const actor of ['force', 'agent:t1', 'runner', 'kernel', 'reviewer', 'webhook'])
+      expectResult(rq(v, { forced: true, actor }), 'rejected', 'force_requires_human');
+    applied(rq(v, { forced: true, actor: 'human:u' }));
+  });
+  test('from ESCALATED a non-human request is accepted only after a review escalation', () => {
+    const at = (stateReason: string) => V(D({ state: 'ESCALATED', stateReason, currentRound: 1 }), []);
+    for (const reason of ['review_escalated', 'review_exhausted', 'review_unavailable'])
+      expect(applied(rq(at(reason), { actor: 'agent:t1' })).toState).toBe('AWAITING_REVIEW');
+    for (const reason of ['push_undeliverable', 'policy_human', 'effect_dead', 'landing_needs_human', 'ci_exhausted', 'conflict_exhausted', 'unsafe_to_merge']) {
+      expectResult(rq(at(reason), { actor: 'agent:t1' }), 'rejected', 'escalation_needs_human');
+      expect(applied(rq(at(reason), { actor: 'human:u' })).toState).toBe('AWAITING_REVIEW');
+    }
+  });
   test('from CHANGES_REQUESTED cancels the open fix', () => {
     const dec = applied(rq(V(D({ state: 'CHANGES_REQUESTED', currentRound: 1 }), [decidedRC]), { forced: true, actor: 'human:u' }));
     expect(dec.attempts).toEqual([{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }]);
