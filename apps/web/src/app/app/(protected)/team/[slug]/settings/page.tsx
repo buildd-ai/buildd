@@ -4,7 +4,8 @@ import { eq, and, or, isNull, inArray } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserWorkspaceIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserWorkspaceIds, getUserTeamIds, getUserTeamRole } from '@/lib/team-access';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
 import { buildDelegateOptions } from '@/lib/delegate-options';
 import { DEFAULT_ROLES, seedDefaultRolesForTeam } from '@/lib/default-roles';
 import { TeamRoleEditor } from './TeamRoleEditor';
@@ -69,6 +70,15 @@ export default async function TeamRoleSettingsPage({
     notFound();
   }
 
+  // The roles routes take manage_agent_roles in the role's team, with that
+  // team's overrides (a personal team counts as owned). Without it the editor
+  // is read-only. A failed overrides read holds nothing.
+  const [viewerRole, permissionOverrides] = await Promise.all([
+    getUserTeamRole(user.id, teamRole.teamId).catch(() => null),
+    getTeamPermissionOverrides(teamRole.teamId).catch(() => null),
+  ]);
+  const canEdit = !!permissionOverrides && roleHas(viewerRole, 'manage_agent_roles', permissionOverrides);
+
   // Get all workspace overrides for this role
   const overrides = wsIds.length > 0
     ? await db.query.workspaceSkills.findMany({
@@ -114,6 +124,7 @@ export default async function TeamRoleSettingsPage({
       overrides={JSON.parse(JSON.stringify(overrides))}
       workspaces={workspaceList}
       delegateOptions={delegateOptions}
+      canEdit={canEdit}
     />
   );
 }
