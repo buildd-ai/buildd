@@ -66,3 +66,9 @@ describe('TaskShippedDetails', () => {
     expect(html).not.toContain('Technical summary');
   });
 });
+
+it('draws the change surface as quiet metadata rather than a chip', () => {
+  const html = renderToStaticMarkup(<TaskShippedBody view={view({ record: { version: 1, lede: LEDE, changeType: 'both', offPlan: [], prNumber: 416, computedAt: '' } })} />);
+  expect(html).toContain('On screen and behind the scenes');
+  expect(html).toMatch(/<p class="text-meta text-text-muted" data-testid="task-shipped-change-type"/);
+});
