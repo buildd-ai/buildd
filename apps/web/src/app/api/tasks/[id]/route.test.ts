@@ -1973,6 +1973,80 @@ describe('PATCH /api/tasks/[id]', () => {
     });
   });
 
+  // Reschedule: move a queued task's start later (or back to ASAP) without
+  // cancelling it. Only before a worker has it; a started task is refused.
+  describe('reschedule (startAt / startIn)', () => {
+    const queued = (over: Record<string, unknown> = {}) => ({
+      id: TASK_ID, title: 'checkout', status: 'pending', claimedBy: null, workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, context: { model: 'x' }, ...over,
+    });
+    function capture() {
+      const sets: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((v: any) => { sets.push(v); return { where: mock(() => ({ returning: mock(() => [{ id: TASK_ID, workspaceId: 'ws-1', ...v }]) })) }; }),
+      });
+      return sets;
+    }
+    const patch = (body: Record<string, unknown>) =>
+      callHandler(PATCH, createMockRequest({ method: 'PATCH', body }), TASK_ID);
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+    });
+
+    it('startAt (ISO) defers a pending task and records who and how', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const at = new Date(Date.now() + 3_600_000).toISOString();
+      const res = await patch({ startAt: at });
+      expect(res.status).toBe(200);
+      expect(sets[0].startAt).toEqual(new Date(at));
+      expect(sets[0].context).toMatchObject({ model: 'x', startResolution: 'explicit' });
+      expect(sets[0].context.rescheduledBy).toMatchObject({ userId: 'user-123' });
+    });
+
+    it('startIn resolves relative to now', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      const sets = capture();
+      const before = Date.now();
+      expect((await patch({ startIn: '4h' })).status).toBe(200);
+      const t = (sets[0].startAt as Date).getTime();
+      expect(t).toBeGreaterThanOrEqual(before + 4 * 3_600_000);
+      expect(t).toBeLessThan(before + 4 * 3_600_000 + 60_000);
+      expect(sets[0].context.startResolution).toBe('relative');
+    });
+
+    it('startAt: null means start as soon as possible', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued({ startAt: new Date(Date.now() + 3_600_000) }));
+      const sets = capture();
+      expect((await patch({ startAt: null })).status).toBe(200);
+      expect(sets[0].startAt).toBeNull();
+      expect(sets[0].context.startResolution).toBeUndefined();
+    });
+
+    it('refuses a past time, a bad duration, and both at once', async () => {
+      mockTasksFindFirst.mockResolvedValue(queued());
+      capture();
+      expect((await patch({ startAt: new Date(Date.now() - 60_000).toISOString() })).status).toBe(400);
+      expect((await patch({ startIn: 'soon' })).status).toBe(400);
+      expect((await patch({ startAt: new Date(Date.now() + 60_000).toISOString(), startIn: '1h' })).status).toBe(400);
+    });
+
+    it.each([
+      ['claimed', { status: 'pending', claimedBy: 'worker-1' }],
+      ['assigned', { status: 'assigned' }],
+      ['in_progress', { status: 'in_progress' }],
+      ['completed', { status: 'completed' }],
+    ])('refuses a task that is %s, saying why', async (_label, over) => {
+      mockTasksFindFirst.mockResolvedValue(queued(over));
+      const sets = capture();
+      const res = await patch({ startIn: '1h' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/start time/i);
+      expect(sets).toHaveLength(0);
+    });
+  });
+
   describe('resultSummary correction', () => {
     it('corrects the stored summary on a completed task and stamps an audit trail', async () => {
       const mockTask = {
@@ -2338,6 +2412,7 @@ describe('PATCH /api/tasks/[id] — per-task token', () => {
     ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
     ['held', { held: false }],
     ['tier', { tier: 'premium' }],
+    ['startIn', { startIn: '1h' }],
   ])('refuses %s, naming it, and writes nothing', async (field, body) => {
     const res = await patch(body);
     expect(res.status).toBe(403);
