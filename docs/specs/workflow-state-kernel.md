@@ -1972,8 +1972,34 @@ code path only for workspaces still flagged off.
 
 **Per-workspace kill switch.** `gitConfig.workflowKernel` is a boolean, absent = on:
 the kernel ships live, not dark (owner decision for Slice A, superseding the earlier
-default-off plan). `false` (or `'off'`) is the emergency rollback. There is no `shadow`
-value on purpose.
+default-off plan). `false` is the emergency rollback. There is no `shadow` value on
+purpose.
+
+*One reading.* The key is read in exactly one place per language:
+`kernelEnabled(gitConfig)` in TypeScript and `kernelOnSql(gitConfigColumn)` in SQL
+(`apps/web/src/lib/workflow/authority.ts`); no other code parses it, and a test runs
+both over the same value forms and requires them to agree
+(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The kernel is **on** only
+when the key is absent, JSON `null`, `true`, or the string `'true'` or `'on'` (a
+`git_config` that is null or not an object reads as absent). **Every other value is
+off**: `false`, `'false'`, `'off'`, and anything unrecognised (`'no'`, `'TRUE'`,
+`0`, an empty string, an object). An emergency switch fails toward legacy, the path
+that needs no kernel at all, and an operator never needs the exact spelling to stop
+it. A write is stricter than a read: the workspace `PATCH` accepts only `true`,
+`false` or `null` for the key and answers 400 otherwise, so no new string form is
+stored; the read tolerates the forms already stored.
+
+*A read that fails.* Ownership is a database read, so it can fail. Kernel-side
+decisions **fail closed**: an effect whose claim (which reads the switch in the same
+statement) fails is not run and is retried with backoff; a sweep row whose authority
+cannot be resolved is skipped and counted as an error; a seam function throws to its
+caller. No kernel decision is made on an unknown answer. The two legacy doors that ask
+"is this PR the kernel's?" (the PR-opened policy and the `synchronize` re-review)
+fall back to legacy on an unreadable answer, as they did before the kernel: a legacy
+door has no floor to retry it, so failing closed there would lose a review, which is
+the stranding this section forbids; the duplicate it risks is bounded by
+`createReviewerTask`'s per-head single-flight guard. Display reads degrade to the
+legacy projection, which the kernel keeps current (§12).
 
 **Cutover: pre-existing deliveries finish on legacy.** A delivery row is opened only at
 the point the legacy code would dispatch a PR's first review, so a PR that is already
@@ -1986,11 +2012,58 @@ and the population drains on its own as those PRs merge or close.
 **Kill switch semantics.** With the switch off, the first kernel touch of a delivery
 releases it (`authority = 'legacy'`, `released_at`) in the same statement that reads
 it; no new delivery opens. The release is sticky: switching back on does not hand a
-released delivery back, because legacy may have acted on it meanwhile. Effects already
-committed still drain (they are decisions already made, and they create legacy-shaped
-tasks: fix tasks carry `reviewerRetry*`, `iteration`, `resumeBranch`; reviewer tasks
-carry the full legacy context), so legacy can carry a released delivery on. Neither
-direction rewrites kernel state.
+released delivery back, because legacy may have acted on it meanwhile. Neither
+direction rewrites kernel state. "A kernel touch" is every path that would decide for
+a delivery, including the sweeps: the reconciliation floor, the treadmill restart,
+the trunk recovery sweep and its incident join each resolve authority per delivery
+before acting, so a sweep never applies a transition or pushes to a PR branch in a
+switched-off workspace. Read-only surfaces (delivery views, the PR activity
+diversion, the ship state, landing's candidate lists) apply the same reading, so a
+switched-off delivery is shown and landed by legacy before anything has released it.
+
+*The kernel decides nothing for a released delivery.* `applyCommand` refuses any
+command on a delivery whose `authority` is `legacy` (`rejected: legacy_owns`), and the
+transition write itself is guarded on `authority = 'kernel'`, so a release that lands
+between the read and the write wins. Whatever asks (a draining effect reporting back,
+a sweep, a door that raced the release), no new transition is recorded.
+
+*Committed effects drain, narrowed.* The effect runner reads who decides in the
+statement that claims an effect. For a delivery the kernel no longer owns it first
+releases a switched-off one, then:
+
+- the kinds that act on GitHub for the kernel's own landing and repair loop,
+  `merge_call`, `refresh_branch`, `renumber_migration` and `push_recovery`
+  (`KERNEL_ONLY_EFFECTS`), are done as `skipped:legacy_owns` and never run. Their
+  answer is something only the kernel reads (a merge answered `behind` becomes a
+  refresh, a refresh a new head, a new head an approval), and a merge is the one
+  action an emergency rollback must be able to stop, so a merge queued before the
+  switch never lands after it;
+- every other kind still drains: projections and notifications, and the dispatches,
+  which are decisions already made and create legacy-shaped tasks (fix tasks carry
+  `reviewerRetry*`, `iteration`, `resumeBranch`; reviewer tasks carry the full legacy
+  context), so legacy can carry the delivery on. A committed `dispatch_review` must
+  drain: skipping it would leave a PR whose round was queued with no reviewer from
+  either authority. What a draining handler reports back is refused by the rule
+  above, so a drained effect never starts a new kernel decision chain. A dead effect
+  on a released delivery records its gate event and escalates nothing.
+
+*Switch-off hands live deliveries to legacy.* A delivery is opened where legacy would
+file a PR's first review, and the kernel's first round is queued only when the owner
+attempt ends (§6.5 row 1). A delivery the switch releases before then has had no
+review from either authority, and legacy files a first review only when the PR opens,
+which has passed. So when an owner attempt ends on a released delivery that has no
+round, in a workspace whose switch is off, for a PR that is still open, the seam
+(`handOffToLegacy`) runs legacy's first review through the reviews module's
+`LEGACY_FIRST_REVIEW` slot: one reviewer task at the live head with no
+`workflowRound` (legacy's), announced and woken, and the PR's `review_queued` line; a
+delivery opened with a pre-flight finding gets legacy's answer to that instead, a
+`human_review_required` line and a team notice. The policy is not re-run, because the
+delivery exists only where the policy already asked for a review. It runs once per
+owner task (`tasks.context.workflowLegacyHandoff`); a failure clears the claim so the
+next owner end tries again. A delivery released while the switch is on was handed
+over by a legacy decision (a pre-flight escalation, an unbindable PR) that already
+answered it, and is not handed off again. A delivery released after its first round
+was queued is carried by the drained `dispatch_review` above.
 
 **Rollback.** Turning the flag off returns the family to legacy, and the projections
 (`workers.*`, `tasks.*`) already hold correct values because the kernel projects into
@@ -2062,7 +2135,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
 | S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge`, `/api/github/pr` and `/api/prs/[prNumber]/apply-recommendation`; `apps/web/tests/db/workflow-matrix.test.ts` (S20, T23) |
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
-| S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function | `apps/web/tests/db/workflow-seam.test.ts`, `bun run test` |
+| S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function; the string `"false"` reads the same in TypeScript and SQL; a queued `merge_call` never merges or refreshes after the switch; the trunk sweep decides nothing; a PR released before its first round gets legacy's first review | `apps/web/tests/db/workflow-seam.test.ts`, `apps/web/tests/db/workflow-probe-killswitch.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
 | S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
@@ -2472,7 +2545,7 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.
-- AC-11: GIVEN `workflowKernel=false` THEN no new delivery opens, an existing one is released to legacy and stays there, and a PR with no delivery behaves exactly as before the kernel.
+- AC-11: GIVEN `workflowKernel=false` THEN no new delivery opens, an existing one is released to legacy and stays there, and a PR with no delivery behaves exactly as before the kernel. AND no effect queued before the switch merges, refreshes, renumbers or pushes for it, no sweep applies a transition to it, and a PR it released before its first review round gets legacy's first review (§14).
 - AC-12: GIVEN `canCompleteMission` inputs from before the change THEN its results are unchanged.
 - AC-13: GIVEN a worker pushes a CI fix under any git author identity WHEN the head advances during or just after its attempt THEN the push is attributed to that attempt by SHA set and the `ci` ledger row exists with `attempt_no` allocated at dispatch.
 - AC-14: GIVEN a ledger family with `max_attempts` reached WHEN another dispatch is requested THEN no task is created and the delivery is `ESCALATED(ci_exhausted)` (or the family's equivalent); a human retry records `BudgetExtended` and is never numbered 0.
