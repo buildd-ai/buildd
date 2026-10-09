@@ -850,6 +850,8 @@ export default async function HomePage({
               lastCommitSha: true,
               // Whether the PR is in draft status.
               prIsDraft: true,
+              // Diff size for the merge-advice rule (an XL PR never "looks mergeable as-is").
+              linesAdded: true, linesRemoved: true,
             },
             with: {
               task: {
@@ -1083,6 +1085,7 @@ export default async function HomePage({
                 const reviewFacts = reviewFactsForAdvice({
                   reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
                   inFlight: !!reviewInFlight,
+                  policyTier: policy.tier,
                 });
                 mergeAdviceBaseByWorkerId.set(w.id, {
                   prLifecycleStatus: w.prLifecycleStatus ?? null,
@@ -1092,6 +1095,9 @@ export default async function HomePage({
                   githubApprovalRequired: humanReview.label === 'Approve on GitHub',
                   draft: !!w.prIsDraft,
                   policyTier: policy.tier,
+                  escalationCause: reviewFacts.escalationCause,
+                  linesAdded: w.linesAdded ?? null,
+                  linesRemoved: w.linesRemoved ?? null,
                 });
               }
               // Who owns the landing: one derivation, consumed by the gate. An
