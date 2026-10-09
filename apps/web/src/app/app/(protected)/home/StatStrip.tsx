@@ -1,10 +1,9 @@
 /**
- * Home's big numbers: agents live (with a slot meter), needs you, merged
+ * Home's big numbers: agents live (with the last day's runner slots in use), needs you, merged
  * today, and a fourth slot for what happened beyond merging: PRs in CI, else
  * the fixes that healed on their own, else the screens a visual review
  * checked. A zero there is not news, so with none of them the strip has three.
  */
-import { SlotMeter } from '@/components/fleet/SlotMeter';
 import { OccupancySparkline } from '@/components/fleet/OccupancySparkline';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 
@@ -51,11 +50,11 @@ export function StatStrip(p: StatStripProps) {
         testId="stat-agents-live"
         label="Agents live"
         tone={p.live > 0 ? 'accent' : undefined}
-        footer={p.occupancy ? <OccupancySparkline series={p.occupancy} capacityNow={p.capacity} href="/app/health/runners" /> : null}
-        value={<>{p.live}<span className="ml-1 align-baseline text-[18px] font-normal tracking-normal text-text-muted md:text-[22px]">/{p.capacity}</span></>}
+        value={p.live}
+        footer={p.occupancy ? <OccupancySparkline series={p.occupancy} href="/app/health/runners" /> : null}
       >
-        <SlotMeter live={p.live} max={p.capacity} size="lg" />
-        <span className="hidden md:inline">{p.runners} runner{p.runners === 1 ? '' : 's'}</span>
+        <span className="truncate">running now</span>
+        <span data-testid="stat-slots-online" className="truncate">{p.capacity > 0 ? `${p.capacity} slot${p.capacity === 1 ? '' : 's'} online` : 'no runners online'}</span>
       </Stat>
       <Stat testId="stat-needs-you" label="Needs you" value={p.needsYou}>
         <span className="truncate">{p.needsYouDetail ?? 'nothing waiting'}</span>

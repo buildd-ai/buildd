@@ -1,54 +1,41 @@
 /**
- * The last day's water level in one line: runner slots busy (time-weighted, per
- * 15 minutes) under a dotted ceiling at today's slot count, with interactive
- * sessions as a faint line of their own, never added to the slots. The ceiling
- * is labelled "now" because slot counts are not stored over time: it is not a
- * utilization line. Server-safe (no hooks), so Home renders it in the HTML.
+ * The last day's runner slots in use, as one quiet line: time-weighted per 15
+ * minutes, scaled to its own highest point so a quiet day still shows its shape
+ * (capacity never sets the scale; the tile states it in words). A day with no
+ * runner work says so instead of drawing a flat line. Server-safe (no hooks),
+ * so Home renders it in the HTML.
  */
 import Link from 'next/link';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
-import { fmtLevel, levelPaths, levelY, occupancyScaleMax } from './occupancy-geometry';
+import { fmtLevel, levelPaths, niceScaleMax } from './occupancy-geometry';
 
 const W = 240;
-const H = 28;
+const H = 24;
 
-export function OccupancySparkline({ series, capacityNow, href }: { series: OccupancySeries; capacityNow: number; href?: string }) {
-  const runner = series.buckets.map(b => b.runner.avg);
-  const sessions = series.buckets.map(b => b.sessions.avg);
-  const max = occupancyScaleMax(capacityNow, runner, sessions);
-  const r = levelPaths(runner, max, W, H);
-  const s = levelPaths(sessions, max, W, H);
-  const hasSessions = series.summary.sessions.peak > 0;
+/** "Past 24h · Peak 10 · Avg 1.7": what the line says, in words. */
+export function sparklineCaption(series: OccupancySeries): string {
   const { peak, avg } = series.summary.runner;
-  const label = `Runner slots busy, last 24 hours: peak ${peak}, average ${fmtLevel(avg)}, of ${capacityNow} slots now`
-    + (hasSessions ? `. Sessions peaked at ${series.summary.sessions.peak}.` : '.');
+  return `Past 24h · Peak ${peak} · Avg ${fmtLevel(avg)}`;
+}
+
+export function OccupancySparkline({ series, href }: { series: OccupancySeries; href?: string }) {
+  const values = series.buckets.map(b => b.runner.avg);
+  const idle = series.summary.runner.peak === 0;
+  const { line, area } = levelPaths(values, niceScaleMax(values), W, H);
+  const caption = idle ? 'No runner work in the past 24h' : sparklineCaption(series);
+  const label = idle
+    ? 'No runner work in the past 24 hours.'
+    : `Runner slots in use over the past 24 hours: peak ${series.summary.runner.peak}, average ${fmtLevel(series.summary.runner.avg)}.`;
 
   const body = (
     <>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        className="block h-7 w-full overflow-visible"
-        role="img"
-        aria-label={label}
-      >
-        {capacityNow > 0 && (
-          <line
-            data-testid="occupancy-ceiling"
-            x1={0} x2={W} y1={levelY(capacityNow, max, H)} y2={levelY(capacityNow, max, H)}
-            stroke="var(--border-strong)" strokeWidth={1} strokeDasharray="2 3" vectorEffect="non-scaling-stroke"
-          />
-        )}
-        <path d={r.area} fill="var(--accent-soft)" />
-        <path d={r.line} fill="none" stroke="var(--accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-        {hasSessions && (
-          <path data-testid="occupancy-sessions-line" d={s.line} fill="none" stroke="var(--text-muted)" strokeWidth={1} strokeDasharray="3 2" vectorEffect="non-scaling-stroke" opacity={0.7} />
-        )}
-      </svg>
-      <span className="mt-1 flex min-w-0 justify-between gap-2 truncate font-mono text-[11px] text-text-muted">
-        <span className="truncate">24h · peak {peak} · avg {fmtLevel(avg)} <span data-testid="occupancy-ceiling-label">of {capacityNow} now</span></span>
-        {hasSessions && <span className="hidden shrink-0 md:inline">sessions peak {series.summary.sessions.peak}</span>}
-      </span>
+      {!idle && (
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-6 w-full" role="img" aria-label={label}>
+          <path d={area} fill="var(--accent-soft)" opacity={0.6} />
+          <path d={line} fill="none" stroke="var(--accent)" strokeWidth={1.25} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+        </svg>
+      )}
+      <span data-testid="occupancy-caption" className="mt-1 block truncate font-mono text-[11px] text-text-muted">{caption}</span>
     </>
   );
 

@@ -58,8 +58,8 @@ export async function fetchOccupancyRows(workspaceIds: string[], since: Date, no
   }));
 }
 
-export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now()): Promise<OccupancySeries & { truncated: boolean }> {
-  const { from } = occupancyBuckets(window, now);
+export async function loadOccupancySeries(workspaceIds: string[], window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0): Promise<OccupancySeries & { truncated: boolean }> {
+  const { from } = occupancyBuckets(window, now, tzOffsetMs);
   const rows = await fetchOccupancyRows(workspaceIds, new Date(from), new Date(now));
-  return { ...buildOccupancySeries({ window, now, workers: rows }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
+  return { ...buildOccupancySeries({ window, now, workers: rows, tzOffsetMs }), truncated: rows.length >= OCCUPANCY_ROW_LIMIT };
 }

@@ -5,7 +5,7 @@ import { OCCUPANCY_WINDOWS, isOccupancyWindow } from '@/lib/fleet-occupancy';
 import { loadOccupancySeries, teamWorkspaceIds } from '@/lib/fleet-occupancy-query';
 
 /**
- * GET /api/fleet/occupancy?window=24h|7d|30d&team=<teamId>&workspace=<id>
+ * GET /api/fleet/occupancy?window=24h|7d|30d&team=<teamId>&workspace=<id>&tzOffset=<minutes>
  *
  * How many workers were busy over the window, runner slots and interactive
  * sessions apart (lib/fleet-occupancy.ts). Any member of the team: it is the
@@ -14,6 +14,7 @@ import { loadOccupancySeries, teamWorkspaceIds } from '@/lib/fleet-occupancy-que
  *
  * `team` defaults to the active team; a team the caller isn't in is a 404.
  * `workspace` narrows to one of that team's workspaces; any other id is ignored.
+ * `tzOffset` (minutes, local minus UTC) puts the 30d chart's days at the viewer's midnight.
  */
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
   const teamWs = await teamWorkspaceIds(teamId);
   const ws = url.searchParams.get('workspace');
   const scope = ws && teamWs.includes(ws) ? [ws] : teamWs;
-  const series = await loadOccupancySeries(scope, rawWindow);
+  const tz = Number(url.searchParams.get('tzOffset'));
+  const series = await loadOccupancySeries(scope, rawWindow, Date.now(), Number.isFinite(tz) ? tz * 60_000 : 0);
   return NextResponse.json({ ...series, teamId });
 }

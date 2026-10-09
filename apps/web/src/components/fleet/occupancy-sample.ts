@@ -14,7 +14,7 @@ function rng(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 
-export function sampleOccupancySeries(window: OccupancyWindow, now = Date.now()): OccupancySeries {
+export function sampleOccupancySeries(window: OccupancyWindow, now = Date.now(), tzOffsetMs = 0): OccupancySeries {
   const r = rng(7);
   const span = occupancyWindowMs(window);
   const from = now - span;
@@ -36,7 +36,7 @@ export function sampleOccupancySeries(window: OccupancyWindow, now = Date.now())
       updatedAt: null,
     });
   }
-  return buildOccupancySeries({ window, now, workers });
+  return buildOccupancySeries({ window, now, workers, tzOffsetMs });
 }
 
 /** Whether the occupancy chart should draw the sample: `?state=sample` on a dev server. */

@@ -5,7 +5,7 @@ const mockGetCurrentUser = mock(() => Promise.resolve(null as any));
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
 const mockResolveActiveTeamId = mock((_u: string, _c?: string) => Promise.resolve('team-1' as string | null));
 const mockTeamWorkspaceIds = mock((_team: string) => Promise.resolve(['ws-1', 'ws-2']));
-const mockLoadOccupancy = mock((_ws: string[], _w: string) => Promise.resolve({ buckets: [], truncated: false } as any));
+const mockLoadOccupancy = mock((_ws: string[], _w: string, _now?: number, _tz?: number) => Promise.resolve({ buckets: [], truncated: false } as any));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({
@@ -49,7 +49,7 @@ describe('GET /api/fleet/occupancy', () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(mockTeamWorkspaceIds).toHaveBeenCalledWith('team-1');
-    expect(mockLoadOccupancy).toHaveBeenCalledWith(['ws-1', 'ws-2'], '24h');
+    expect(mockLoadOccupancy.mock.calls[0].slice(0, 2)).toEqual([['ws-1', 'ws-2'], '24h']);
     const body = await res.json();
     expect(body.teamId).toBe('team-1');
   });
@@ -57,18 +57,18 @@ describe('GET /api/fleet/occupancy', () => {
   it('every window is served on every plan', async () => {
     for (const w of ['24h', '7d', '30d']) {
       expect((await GET(req(`?window=${w}`))).status).toBe(200);
-      expect(mockLoadOccupancy).toHaveBeenLastCalledWith(['ws-1', 'ws-2'], w);
+      expect(mockLoadOccupancy.mock.calls.at(-1)!.slice(0, 2)).toEqual([['ws-1', 'ws-2'], w]);
     }
   });
 
   it('?workspace= narrows to one of the team\'s workspaces', async () => {
     await GET(req('?workspace=ws-2&window=7d'));
-    expect(mockLoadOccupancy).toHaveBeenCalledWith(['ws-2'], '7d');
+    expect(mockLoadOccupancy.mock.calls[0].slice(0, 2)).toEqual([['ws-2'], '7d']);
   });
 
   it('?workspace= outside the team is ignored, never read', async () => {
     await GET(req('?workspace=ws-other'));
-    expect(mockLoadOccupancy).toHaveBeenCalledWith(['ws-1', 'ws-2'], '24h');
+    expect(mockLoadOccupancy.mock.calls[0].slice(0, 2)).toEqual([['ws-1', 'ws-2'], '24h']);
   });
 
   it('honours ?team= for a team the caller is in', async () => {
@@ -85,5 +85,12 @@ describe('GET /api/fleet/occupancy', () => {
   it('404 when the user has no team', async () => {
     mockResolveActiveTeamId.mockResolvedValue(null);
     expect((await GET(req())).status).toBe(404);
+  });
+
+  it('passes ?tzOffset= through as milliseconds, and 0 when absent or junk', async () => {
+    await GET(req('?window=30d&tzOffset=-240'));
+    expect(mockLoadOccupancy.mock.calls.at(-1)![3]).toBe(-240 * 60_000);
+    await GET(req('?window=30d&tzOffset=abc'));
+    expect(mockLoadOccupancy.mock.calls.at(-1)![3]).toBe(0);
   });
 });

@@ -1,19 +1,33 @@
 /**
  * Pure geometry for the occupancy charts (sparkline and the Runners & capacity
  * chart). Values are busy counts per bucket, oldest first; the y scale runs
- * from 0 at the bottom to `max` at the top. Client-safe.
+ * from 0 at the bottom to `max` at the top, and `max` comes from the data
+ * (`niceScaleMax`), never from capacity. Client-safe.
  */
 
-/** The y-scale top: the current slot count, raised if the history ever exceeded it. Never 0. */
-export function occupancyScaleMax(capacityNow: number, ...series: number[][]): number {
-  let m = Math.max(1, capacityNow);
+/**
+ * The y-scale top, from the data alone: the highest value rounded up to a whole
+ * number that labels cleanly (1-5 as is, even up to 20, then tens). Capacity never
+ * sets it: a peak of 1 on a 10-slot fleet should still be visible.
+ */
+export function niceScaleMax(...series: number[][]): number {
+  let m = 0;
   for (const s of series) for (const v of s) if (v > m) m = v;
-  return m;
+  const c = Math.max(1, Math.ceil(m - 1e-9));
+  if (c <= 5) return c;
+  if (c <= 20) return c + (c % 2);
+  return Math.ceil(c / 10) * 10;
 }
 
-/** "1.6", "2", "0.2": one decimal under 10, whole above; 0 is "0". */
+/** Gridline values for a scale: 0, the middle when it is a whole number, the top. */
+export function scaleTicks(max: number): number[] {
+  return max >= 2 && max % 2 === 0 ? [0, max / 2, max] : [0, max];
+}
+
+/** "1.6", "2", "<1": an average under one agent reads as less than one, not as 0.1. */
 export function fmtLevel(v: number): string {
-  if (v === 0) return '0';
+  if (v <= 0) return '0';
+  if (v < 1) return '<1';
   if (v >= 10) return Math.round(v).toString();
   const r = Math.round(v * 10) / 10;
   return Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1);

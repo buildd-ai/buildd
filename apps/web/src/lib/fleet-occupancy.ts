@@ -32,8 +32,8 @@ export const OCCUPANCY_WINDOWS: readonly OccupancyWindow[] = ['24h', '7d', '30d'
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const WINDOW_MS: Record<OccupancyWindow, number> = { '24h': 24 * HOUR, '7d': 7 * 24 * HOUR, '30d': 30 * 24 * HOUR };
-/** 96, 168 and 120 points: enough to see a day's shape, few enough for a sparkline. */
-const BUCKET_MS: Record<OccupancyWindow, number> = { '24h': 15 * MIN, '7d': HOUR, '30d': 6 * HOUR };
+/** 96, 168 and 30 points: a day in 15 minutes, a week by the hour, a month by the day. */
+const BUCKET_MS: Record<OccupancyWindow, number> = { '24h': 15 * MIN, '7d': HOUR, '30d': 24 * HOUR };
 
 export function occupancyWindowMs(window: OccupancyWindow): number {
   return WINDOW_MS[window];
@@ -90,11 +90,19 @@ export function occupancyEnd(w: OccupancyWorkerRow, now: number): number {
   return Math.min(w.updatedAt ?? start, start + MAX_UNENDED_RUN_MS, now);
 }
 
-/** The window's buckets: the last one is the bucket `now` falls inside (partial). */
-export function occupancyBuckets(window: OccupancyWindow, now: number): { from: number; bucketMs: number; count: number } {
+/** Most a UTC offset can be, either way (UTC-12 to UTC+14). */
+export const MAX_TZ_OFFSET_MS = 14 * HOUR;
+
+/**
+ * The window's buckets: the last one is the bucket `now` falls inside (partial).
+ * `tzOffsetMs` (local time minus UTC) puts daily boundaries at the viewer's
+ * midnight; it changes nothing for 15-minute and hourly buckets in whole-hour zones.
+ */
+export function occupancyBuckets(window: OccupancyWindow, now: number, tzOffsetMs = 0): { from: number; bucketMs: number; count: number } {
   const bucketMs = BUCKET_MS[window];
   const count = WINDOW_MS[window] / bucketMs;
-  const lastStart = Math.ceil(now / bucketMs) * bucketMs - bucketMs;
+  const off = Math.max(-MAX_TZ_OFFSET_MS, Math.min(MAX_TZ_OFFSET_MS, tzOffsetMs));
+  const lastStart = Math.ceil((now + off) / bucketMs) * bucketMs - bucketMs - off;
   return { from: lastStart - (count - 1) * bucketMs, bucketMs, count };
 }
 
@@ -130,9 +138,9 @@ function level(edges: Edge[], from: number, now: number, bucketMs: number, count
   return { buckets, summary: { avg: now > from ? total / (now - from) : 0, peak: Math.max(0, ...peak) } };
 }
 
-export function buildOccupancySeries(input: { window: OccupancyWindow; now: number; workers: OccupancyWorkerRow[] }): OccupancySeries {
+export function buildOccupancySeries(input: { window: OccupancyWindow; now: number; workers: OccupancyWorkerRow[]; tzOffsetMs?: number }): OccupancySeries {
   const { window, now, workers } = input;
-  const { from, bucketMs, count } = occupancyBuckets(window, now);
+  const { from, bucketMs, count } = occupancyBuckets(window, now, input.tzOffsetMs ?? 0);
   const runnerEdges: Edge[] = [];
   const sessionEdges: Edge[] = [];
   for (const w of workers) {

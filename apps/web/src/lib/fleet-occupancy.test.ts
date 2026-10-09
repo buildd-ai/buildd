@@ -30,10 +30,10 @@ function at(s: ReturnType<typeof series>, t: number) {
 }
 
 describe('windows', () => {
-  it('24h = 15-minute buckets, 7d = hourly, 30d = six-hourly', () => {
+  it('24h = 15-minute buckets, 7d = hourly, 30d = daily', () => {
     expect(occupancyBucketMs('24h')).toBe(15 * MIN);
     expect(occupancyBucketMs('7d')).toBe(H);
-    expect(occupancyBucketMs('30d')).toBe(6 * H);
+    expect(occupancyBucketMs('30d')).toBe(24 * H);
     expect(occupancyWindowMs('24h')).toBe(24 * H);
     expect(occupancyWindowMs('7d')).toBe(7 * 24 * H);
     expect(occupancyWindowMs('30d')).toBe(30 * 24 * H);
@@ -48,12 +48,13 @@ describe('windows', () => {
   });
 
   it('buckets tile the window exactly, oldest first, aligned to the bucket size', () => {
+    const midnight = Date.UTC(2026, 9, 8);
     for (const w of ['24h', '7d', '30d'] as const) {
-      const s = series([], w);
+      const s = series([], w, midnight);
       const size = occupancyBucketMs(w);
       expect(s.bucketMs).toBe(size);
       expect(s.buckets.length).toBe(occupancyWindowMs(w) / size);
-      expect(s.buckets[0].t).toBe(NOW - occupancyWindowMs(w));
+      expect(s.buckets[0].t).toBe(midnight - occupancyWindowMs(w));
       for (let i = 1; i < s.buckets.length; i++) expect(s.buckets[i].t - s.buckets[i - 1].t).toBe(size);
     }
   });
@@ -64,6 +65,20 @@ describe('windows', () => {
     const last = s.buckets[s.buckets.length - 1];
     expect(last.t).toBe(NOW);
     expect(s.window.to).toBe(now);
+  });
+});
+
+describe('daily buckets follow the viewer\'s midnight', () => {
+  it('a UTC-4 viewer\'s days start at 04:00 UTC', () => {
+    const s = buildOccupancySeries({ window: '30d', now: NOW, workers: [], tzOffsetMs: -4 * H });
+    for (const b of s.buckets) expect(new Date(b.t).getUTCHours()).toBe(4);
+    expect(s.buckets[s.buckets.length - 1].t).toBeLessThanOrEqual(NOW);
+    expect(s.buckets[s.buckets.length - 1].t + 24 * H).toBeGreaterThan(NOW);
+  });
+
+  it('an offset beyond any real zone is clamped, not trusted', () => {
+    const s = buildOccupancySeries({ window: '30d', now: NOW, workers: [], tzOffsetMs: 99 * H });
+    expect(new Date(s.buckets[0].t).getUTCHours()).toBe(10); // UTC+14
   });
 });
 

@@ -29,11 +29,23 @@ describe('StatStrip', () => {
     expect(html).not.toContain('nothing merged');
   });
 
-  it('draws the 24h sparkline in Agents live, ceiling labelled as today\'s slots, when occupancy is given', () => {
+  it('shows the live count alone, never as live/capacity, and slots online in words', () => {
+    const html = renderToStaticMarkup(<StatStrip {...base} live={1} />);
+    expect(html).not.toContain('/4');
+    expect(html).toContain('running now');
+    expect(html).toContain('4 slots online');
+  });
+
+  it('with no runners online says so instead of 0/0', () => {
+    const html = renderToStaticMarkup(<StatStrip {...base} capacity={0} />);
+    expect(html).not.toContain('/0');
+    expect(html).toContain('no runners online');
+  });
+
+  it('draws the 24h sparkline in Agents live when occupancy is given, linking to Runners & capacity', () => {
     const occupancy = buildOccupancySeries({ window: '24h', now: Date.UTC(2026, 9, 8, 12), workers: [] });
     const html = renderToStaticMarkup(<StatStrip {...base} occupancy={occupancy} />);
     expect(html).toContain('data-testid="occupancy-sparkline"');
-    expect(html).toContain('of 4 now');
     expect(html).toContain('href="/app/health/runners"');
   });
 

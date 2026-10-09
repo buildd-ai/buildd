@@ -17,34 +17,31 @@ const busy = buildOccupancySeries({
 });
 
 describe('OccupancySparkline', () => {
-  const html = renderToStaticMarkup(<OccupancySparkline series={busy} capacityNow={10} href="/app/health/runners" />);
+  const html = renderToStaticMarkup(<OccupancySparkline series={busy} href="/app/health/runners" />);
 
-  it('labels the ceiling as today\'s slot count, never as utilization', () => {
-    expect(html).toContain('of 10 now');
-    expect(html).toContain('data-testid="occupancy-ceiling"');
+  it('says peak and average in words, an average under one as <1', () => {
+    expect(html).toContain('Past 24h · Peak 2 · Avg &lt;1');
+  });
+
+  it('counts runner slots only: a session does not raise the peak', () => {
+    expect(html).not.toContain('Peak 3');
+    expect(html.toLowerCase()).not.toContain('session');
+  });
+
+  it('never states capacity or utilization; the tile does that in words', () => {
     expect(html.toLowerCase()).not.toContain('utiliz');
+    expect(html).not.toContain('now');
     expect(html).not.toContain('%');
-  });
-
-  it('gives peak and average for runner slots', () => {
-    expect(html).toContain('peak 2');
-    expect(html).toContain('avg 0.1');
-  });
-
-  it('draws sessions as their own line, not added to the slots', () => {
-    expect(html).toContain('data-testid="occupancy-sessions-line"');
-    expect(html).toContain('sessions peak 1');
   });
 
   it('links to Runners & capacity', () => {
     expect(html).toContain('href="/app/health/runners"');
   });
 
-  it('an idle day with no sessions draws no sessions line and no ceiling without slots', () => {
+  it('a day with no runner work says so and draws no line', () => {
     const idle = buildOccupancySeries({ window: '24h', now: NOW, workers: [] });
-    const out = renderToStaticMarkup(<OccupancySparkline series={idle} capacityNow={0} />);
-    expect(out).not.toContain('occupancy-sessions-line');
-    expect(out).not.toContain('data-testid="occupancy-ceiling"');
-    expect(out).toContain('peak 0');
+    const out = renderToStaticMarkup(<OccupancySparkline series={idle} />);
+    expect(out).not.toContain('<svg');
+    expect(out).toContain('No runner work in the past 24h');
   });
 });

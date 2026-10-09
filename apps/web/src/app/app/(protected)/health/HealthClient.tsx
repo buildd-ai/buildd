@@ -790,6 +790,7 @@ export function HealthClient({
       {show('capacity') && (
         <OccupancyChart
           capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+          busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
           workspaceId={wsFilter}
         />
       )}

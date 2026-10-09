@@ -1,24 +1,39 @@
 import { describe, it, expect } from 'bun:test';
-import { fmtLevel, levelPaths, levelY, occupancyScaleMax } from './occupancy-geometry';
+import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 
-describe('occupancyScaleMax', () => {
-  it('is the current slot count when history stayed under it', () => {
-    expect(occupancyScaleMax(10, [1, 2, 3], [0, 4])).toBe(10);
+describe('niceScaleMax', () => {
+  it('follows the data, so a peak of 1 fills the chart whatever the slot count', () => {
+    expect(niceScaleMax([0, 0.3, 1])).toBe(1);
+    expect(niceScaleMax([0.2])).toBe(1);
   });
-  it('rises to the history when it went above today\'s count (a runner since removed)', () => {
-    expect(occupancyScaleMax(4, [1, 6.5], [2])).toBe(6.5);
+  it('rounds up to a number that labels cleanly', () => {
+    expect(niceScaleMax([3.2])).toBe(4);
+    expect(niceScaleMax([7])).toBe(8);
+    expect(niceScaleMax([10])).toBe(10);
+    expect(niceScaleMax([11])).toBe(12);
+    expect(niceScaleMax([23])).toBe(30);
   });
-  it('is never 0, so an idle fleet with no runners still draws', () => {
-    expect(occupancyScaleMax(0, [0, 0])).toBe(1);
+  it('takes the highest across every series, and is never 0', () => {
+    expect(niceScaleMax([1], [4.5])).toBe(5);
+    expect(niceScaleMax([0, 0])).toBe(1);
+  });
+});
+
+describe('scaleTicks', () => {
+  it('adds a middle line only when it is a whole number', () => {
+    expect(scaleTicks(4)).toEqual([0, 2, 4]);
+    expect(scaleTicks(5)).toEqual([0, 5]);
+    expect(scaleTicks(1)).toEqual([0, 1]);
   });
 });
 
 describe('fmtLevel', () => {
-  it('keeps one decimal under 10 and drops a trailing .0', () => {
+  it('reads an average under one as <1, keeps one decimal under 10, drops a trailing .0', () => {
     expect(fmtLevel(0)).toBe('0');
+    expect(fmtLevel(0.04)).toBe('<1');
+    expect(fmtLevel(0.96)).toBe('<1');
     expect(fmtLevel(1.64)).toBe('1.6');
     expect(fmtLevel(2)).toBe('2');
-    expect(fmtLevel(0.04)).toBe('0');
     expect(fmtLevel(12.4)).toBe('12');
   });
 });
