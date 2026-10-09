@@ -54,7 +54,9 @@ export interface GettingStartedChecklist {
 /**
  * `secrets.purpose` values an agent run can use (docs/credentials-architecture.md):
  * the Claude key or connect, the Codex sign-in or OpenAI key, and a team agent
- * model endpoint (OpenRouter or a LiteLLM gateway). `inference_key` is chat only.
+ * model endpoint (OpenRouter or a LiteLLM gateway). An `inference_key` counts
+ * only with an agent provider's label (`AGENT_INFERENCE_KEY_LABELS`): the
+ * Anthropic and OpenAI keys' canonical storage, which agent runs read too.
  */
 export const AGENT_CREDENTIAL_PURPOSES = [
   'anthropic_api_key',
@@ -64,6 +66,9 @@ export const AGENT_CREDENTIAL_PURPOSES = [
   'openai_api_key',
   'agent_endpoint',
 ] as const;
+
+/** `inference_key` labels agent runs read (provider parity); any other label is a chat-only key. */
+export const AGENT_INFERENCE_KEY_LABELS = ['anthropic', 'openai'] as const;
 
 const ORDER: GettingStartedStepId[] = ['runner', 'credential', 'task'];
 

@@ -125,8 +125,11 @@ describe('derived lists equal what they were before', () => {
     }
   });
 
-  it('BACKEND_REGISTRY.claude.credentialPurposes is unchanged', () => {
-    expect(BACKEND_REGISTRY.claude.credentialPurposes).toEqual(['claude_credential', 'oauth_token', 'anthropic_api_key']);
+  // Changed deliberately (provider parity): Claude runs read the Anthropic
+  // key's canonical storage, so `inference_key` makes the backend configured.
+  // It is listed before its legacy alias, canonical first.
+  it('BACKEND_REGISTRY.claude.credentialPurposes gains the canonical key storage', () => {
+    expect(BACKEND_REGISTRY.claude.credentialPurposes).toEqual(['claude_credential', 'oauth_token', 'inference_key', 'anthropic_api_key']);
   });
 
   it('TIER_PROVIDER_OPTIONS ids, order and labels are unchanged', () => {
@@ -150,8 +153,17 @@ describe('derived lists equal what they were before', () => {
 });
 
 describe('documented fixes', () => {
-  it('fix: Codex counts an OpenAI API key as configured (it runs on one)', () => {
-    expect(BACKEND_REGISTRY.codex.credentialPurposes).toEqual(['codex_credential', 'openai_api_key']);
+  it('fix: Codex counts an OpenAI API key as configured (it runs on one), in either storage', () => {
+    expect(BACKEND_REGISTRY.codex.credentialPurposes).toEqual(['codex_credential', 'inference_key', 'openai_api_key']);
+  });
+
+  it('fix: one stored Anthropic or OpenAI key serves chat and agent runs alike (canonical storage is read by agents)', () => {
+    const anthropic = PROVIDER_REGISTRY.find(p => p.id === 'anthropic')!.shapes[0];
+    expect(anthropic.storage).toEqual({ purpose: 'inference_key', label: 'anthropic', readBy: ['chat', 'agent-claude', 'cloud-egress'] });
+    expect(anthropic.legacy).toEqual([{ purpose: 'anthropic_api_key', readBy: ['chat', 'agent-claude', 'cloud-egress'] }]);
+    const openai = PROVIDER_REGISTRY.find(p => p.id === 'openai')!.shapes[0];
+    expect(openai.storage).toEqual({ purpose: 'inference_key', label: 'openai', readBy: ['chat', 'agent-codex'] });
+    expect(openai.legacy).toEqual([{ purpose: 'openai_api_key', readBy: ['agent-codex'] }]);
   });
 
   it('fix: OpenRouter no longer names the non-existent openrouter_credential purpose', () => {
