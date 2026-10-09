@@ -184,6 +184,13 @@
       "when": 1791503260329,
       "tag": "0275_sparkling_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 276,
+      "version": "7",
+      "when": 1791504478268,
+      "tag": "0276_flashy_kang",
+      "breakpoints": true
     }
   ]
 }

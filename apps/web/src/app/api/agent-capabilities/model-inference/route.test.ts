@@ -16,6 +16,8 @@ mock.module('@/lib/task-token-auth', () => ({
 }));
 mock.module('@/lib/agent-capabilities/worker-principal', () => ({ resolveWorkerPrincipal: mockResolvePrincipal }));
 mock.module('@/lib/agent-capabilities/audit', () => ({ recordCapabilityDecision: mockAudit }));
+const mockFindLiveGrant = mock((_q: any) => Promise.resolve(null as any));
+mock.module('@/lib/capability-grants-store', () => ({ capabilityGrantSource: { findLiveGrant: mockFindLiveGrant } }));
 
 // The adapter is real except for the call itself, which is spied so the route's
 // wiring (default deps: no grant service, no ledger) is observable.
@@ -52,6 +54,7 @@ beforeEach(() => {
   mockAuth.mockReset();
   mockResolvePrincipal.mockReset();
   mockAudit.mockClear();
+  mockFindLiveGrant.mockClear();
   mockInvoke.mockReset();
   mockAuth.mockImplementation((key: string | null) => Promise.resolve(key ? TASK_TOKEN_ACCOUNT : null));
   mockResolvePrincipal.mockResolvedValue({ ok: true, principal: PRINCIPAL, workspace: { id: WS } });
@@ -108,14 +111,15 @@ describe('POST /api/agent-capabilities/model-inference', () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it('fails closed today: no grant service is wired, so a valid request is 403 no_grant', async () => {
+  it('with no live grant from the capability grant service, a valid request is 403 no_grant', async () => {
     const res = await POST(req());
     expect(res.status).toBe(403);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(await res.json()).toEqual({ error: 'No live model.inference grant for this task', code: 'no_grant' });
-    // Wired with the fail-closed defaults.
+    // Grants from the capability grant service; the ledger still fails closed.
     const deps = mockInvoke.mock.calls[0][2];
-    expect(deps.grants).toBe(real.NO_GRANT_SERVICE);
+    expect(deps.grants).not.toBe(real.NO_GRANT_SERVICE);
+    expect(mockFindLiveGrant).toHaveBeenCalled();
     expect(deps.ledger).toBe(real.NO_LEDGER);
     expect(mockInvoke.mock.calls[0][0].via).toBe('task_token');
     expect(mockAudit.mock.calls.at(-1)![0]).toMatchObject({

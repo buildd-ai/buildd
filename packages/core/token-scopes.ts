@@ -79,6 +79,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', list_runners: 'analytics:read', list_connectors: 'analytics:read',
   resolve_capability: 'analytics:read',
+  request_capability: 'tasks:write',
   list_releases: 'releases', get_release: 'releases', release_status: 'releases', trigger_release: 'releases',
   manage_missions: 'missions:admin', manage_initiatives: 'missions:admin', link_tracker: 'missions:admin', get_visual_review: 'missions:admin', adjudicate_discrepancy: 'missions:admin', promote_discrepancy: 'missions:admin',
   list_skills: 'tasks:read', get_skill: 'tasks:read', register_skill: 'skills:admin', update_skill: 'skills:admin', delete_skill: 'skills:admin',

@@ -5424,6 +5424,86 @@ export const agentCapabilityDecisions = pgTable('agent_capability_decisions', {
 
 export type AgentCapabilityDecision = typeof agentCapabilityDecisions.$inferSelect;
 
+/**
+ * A team admin's rule for what an agent run may get when it asks for a
+ * capability (apps/web/src/lib/capability-grants.ts). Matched by provider
+ * (catalog slug) and risk, optionally narrowed to a workspace, role,
+ * environment or resource; the most specific matching rule wins. No rule =
+ * the built-in default (read/query auto-grant, write/admin ask a human).
+ * `effect: 'auto_grant'` is refused for write/admin: writes always need a
+ * person. `scopeKey` is the canonical join of the match columns, so one
+ * scope holds one rule and a PUT is an upsert.
+ */
+export const capabilityPolicies = pgTable('capability_policies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  provider: text('provider').notNull(),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  roleSlug: text('role_slug'),
+  environment: text('environment'),
+  resource: text('resource'),
+  effect: text('effect').notNull().$type<'auto_grant' | 'ask_human' | 'forbidden'>(),
+  maxTtlSeconds: integer('max_ttl_seconds'),
+  scopeKey: text('scope_key').notNull(),
+  updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamScopeIdx: uniqueIndex('capability_policies_team_scope_idx').on(t.teamId, t.scopeKey),
+}));
+
+export type CapabilityPolicy = typeof capabilityPolicies.$inferSelect;
+
+/**
+ * One agent run's request for a capability and, once decided, its grant:
+ * pending → granted | denied; granted → revoked | expired. Bound to exactly
+ * one team, workspace, task, worker and role, one provider (and connector
+ * when the provider is a connector), one risk, and optionally one exact tool,
+ * resource and environment. A grant is checked on every use against the
+ * live task, worker, role, team policy, catalog policy and credential health
+ * (authorizeCapabilityUse), so revoking it stops the next call.
+ *
+ * `dedupeKey` is unique among open rows (pending/granted): the same worker
+ * asking twice gets the same row back. Never holds credential material;
+ * `scope` carries provider-specific bounds (model ids, budget) only.
+ */
+export const capabilityGrants = pgTable('capability_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  requestedByAccountId: uuid('requested_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  roleSlug: text('role_slug'),
+  // Semantic need, `domain:verb` (observability:query) or a named capability (model.inference).
+  capability: text('capability').notNull(),
+  provider: text('provider').notNull(),
+  connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'cascade' }),
+  risk: text('risk').notNull().$type<'read' | 'query' | 'write' | 'admin'>(),
+  tool: text('tool'),
+  resource: text('resource'),
+  environment: text('environment'),
+  scope: jsonb('scope').$type<Record<string, unknown>>(),
+  reason: text('reason'),
+  status: text('status').notNull().$type<'pending' | 'granted' | 'denied' | 'revoked' | 'expired'>(),
+  decidedBy: text('decided_by').$type<'policy' | 'human' | 'system'>(),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decisionReason: text('decision_reason'),
+  ttlSeconds: integer('ttl_seconds').notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => ({
+  openDedupeIdx: uniqueIndex('capability_grants_open_dedupe_idx').on(t.dedupeKey).where(sql`${t.status} IN ('pending', 'granted')`),
+  workerIdx: index('capability_grants_worker_idx').on(t.workerId, t.status),
+  teamStatusIdx: index('capability_grants_team_status_idx').on(t.teamId, t.status, t.requestedAt),
+}));
+
+export type CapabilityGrant = typeof capabilityGrants.$inferSelect;
+
 export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
   workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
   mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),

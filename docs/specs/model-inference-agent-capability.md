@@ -57,13 +57,15 @@ evaluation platform: the agent runs its own script and dataset on its own
 runner and stores what it learns as task artifacts, exactly as it stores any
 other output.
 
-**Status today: fails closed.** The generic grant service (mission task
-0bfbe2dc, planned at apps/web/src/lib/capability-grants.ts) and a durable
-per-grant budget ledger do not exist yet. The route is wired with
-`NO_GRANT_SERVICE` and `NO_LEDGER`, so every well-formed request is refused
-with `403 no_grant`, before any key is resolved or any provider is called.
-The capability is not live until both seams are implemented and an approved
-grant has made a verified call.
+**Status today: fails closed at the ledger.** Grants come from the capability
+request service ([capability-requests](capability-requests.md)): an agent asks
+with `request_capability` (`capability: model.inference`, provider, exact
+models, budget), a team admin approves, and the route reads it through
+`capabilityGrantSource`. A durable per-grant budget ledger does not exist yet,
+so the route is still wired with `NO_LEDGER` and a granted request is refused
+with `503 ledger_unavailable` before any key is resolved or any provider is
+called. The capability is not live until the ledger is implemented and an
+approved grant has made a verified call.
 
 **Invariants**:
 
@@ -104,7 +106,7 @@ grant has made a verified call.
 
 **Acceptance criteria**:
 
-- AC-1: WHEN a well-formed request arrives and no grant source is wired THEN the route returns 403 with code `no_grant` and no provider call is made.
+- AC-1: WHEN a well-formed request arrives and the grant source has no live grant for the worker THEN the route returns 403 with code `no_grant` and no provider call is made.
 - AC-2: GIVEN a grant whose workspace, task, worker or team differs from the principal THEN the request is refused with `grant_mismatch` and no key is resolved.
 - AC-3: GIVEN a grant that is revoked, or whose `expiresAt` is now or earlier THEN the request is refused with `grant_revoked` / `grant_expired` and no provider call is made.
 - AC-4: GIVEN a requested model not listed in the grant, or not the team's configured decision model THEN the request is refused with `model_not_allowed`.
@@ -135,17 +137,17 @@ provider was reached). The script aggregates its own results and saves them
 as a task artifact through the usual artifact tools; nothing here stores
 datasets or runs evaluations.
 
-**Integration contract for the grant service (task 0bfbe2dc)**
+**Grant service**
 
-Implement `ModelInferenceGrantSource` and pass it in place of
-`NO_GRANT_SERVICE` in `defaultModelInferenceDeps`. For capability
-`model.inference`, the stored grant is scoped to team, workspace, task and
-worker, names one provider (`openrouter` | `litellm`), exact model ids,
-operations (`decide`), `expiresAt`, `revokedAt`, and a
-`ModelInferenceBudget`. Return null for anything not live; this module
-re-checks every field regardless. A grant on a terminal task MUST read as not
-live. The ledger (`ModelInferenceLedger`) needs per-grant running totals;
-until a table exists, `NO_LEDGER` keeps refusing.
+`capabilityGrantSource` (apps/web/src/lib/capability-grants-store.ts)
+implements `ModelInferenceGrantSource` over `capability_grants`: a row with
+capability `model.inference`, bound to team, workspace, task and worker,
+naming one provider (`openrouter` | `litellm`), exact model ids, operations
+and a `ModelInferenceBudget` in `scope`. It returns null unless the grant is
+granted, unexpired, unrevoked, its task open, its worker live and its role
+unchanged; this module re-checks every field regardless. The ledger
+(`ModelInferenceLedger`) needs per-grant running totals; until a table
+exists, `NO_LEDGER` keeps refusing.
 
 **Code surface**:
 
