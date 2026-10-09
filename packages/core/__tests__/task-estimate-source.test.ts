@@ -240,9 +240,17 @@ describe('priorAggregateQuery (rendered)', () => {
     expect(text).toContain("t.task_class = 'work'");
     expect(text).toContain("t.status = 'completed'");
     expect(text).toContain('t.created_at < $1::timestamptz');
-    expect(text).toContain('w.completed_at < $2::timestamptz');
+    expect(text).toContain('w.completed_at < $3::timestamptz');
     expect(text).toContain("a.task_class = 'attempt'");
-    expect(q.params).toEqual([cutoff.toISOString(), cutoff.toISOString(), cutoff.toISOString()]);
+    expect(q.params).toEqual(Array(4).fill(cutoff.toISOString()));
+  });
+
+  it('sizes tasks as the backtest does: completed sessions summed, whole tasks only, unrecorded tokens excluded', () => {
+    expect(text).toContain("w.status = 'completed'");
+    expect(text).toContain('sum(extract(epoch from (w.completed_at - w.started_at)) / 60.0) as minutes');
+    expect(text).toContain('sum(coalesce(w.input_tokens, 0) + coalesce(w.output_tokens, 0)) as tokens');
+    expect(text).toContain('not exists ( select 1 from workers wf where wf.task_id = t.id and wf.completed_at >= $2::timestamptz )');
+    expect(text).toContain('order by s.tokens) filter (where s.tokens > 0)');
   });
 
   it('groups by kind and bucket only, and selects only those two keys plus numbers', () => {
