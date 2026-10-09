@@ -1,3 +1,4 @@
+import WarmHandoverSection from '@/components/WarmHandoverSection';
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
@@ -173,6 +174,8 @@ export default async function WorkspaceConfigPage({
                         monthLine={runnerMonth && runnerMonth.wallSeconds > 0 ? workspaceRunnerMonthLine(runnerMonth) : null}
                     />
                 )}
+
+                <WarmHandoverSection workspaceId={workspace.id} teamId={workspace.teamId} initial={(workspace.gitConfig as WorkspaceGitConfig | null)?.warmHandover ?? null} canEdit={roleHas(access.role, 'manage_workspace_settings', overrides)} />
 
                 <CiRetrySection
                     workspaceId={workspace.id}
