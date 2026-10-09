@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
-import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import CapsForm from './CapsForm';
@@ -31,14 +31,14 @@ export default async function BudgetsSettingsPage() {
   const [teamRow, members] = await Promise.all([
     db.query.teams.findFirst({
       where: eq(teams.id, currentTeam.id),
-      columns: { timezone: true, inferenceKeyPolicy: true },
+      columns: { timezone: true, inferenceKeyPolicy: true, credentialPolicy: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
       where: eq(teamMembers.teamId, currentTeam.id),
       with: { user: { columns: { id: true, name: true, email: true } } },
     }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
   ]);
-  const keyPolicy = isInferenceKeyPolicy(teamRow?.inferenceKeyPolicy) ? teamRow.inferenceKeyPolicy : 'team';
+  const keyPolicy = effectiveKeyPolicy(teamRow) ?? 'team';
   const timeZone = teamRow?.timezone || 'UTC';
   const spend: SpendSummary | null = await loadSpendSummary({
     teamId: currentTeam.id,
