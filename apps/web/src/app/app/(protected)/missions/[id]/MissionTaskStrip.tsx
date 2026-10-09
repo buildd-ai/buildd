@@ -36,6 +36,7 @@
  *   revisions, gates and repair rounds: attempts and review runs are evidence
  *   inside their task's drawer, never cells or cards of their own.
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -288,7 +289,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}>{displayTaskTitle(t.title)}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>

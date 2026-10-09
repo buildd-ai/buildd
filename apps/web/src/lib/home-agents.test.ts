@@ -45,3 +45,12 @@ describe('copy', () => {
     expect(elapsedLabel(65 * 60_000)).toBe('1h 05m');
   });
 });
+
+describe('buildAgentsModel names', () => {
+  test('draws one name per line when the worker carries one, never name plus rest', () => {
+    const w = worker('n', { label: 'polish', rest: 'polish(mission-detail', name: 'Compact phone header' });
+    const line = buildAgentsModel(fleet([slot(0, w)], 1), 0).lines[0];
+    expect(line.name).toBe('Compact phone header');
+    expect(line.rest).toBe('');
+  });
+});

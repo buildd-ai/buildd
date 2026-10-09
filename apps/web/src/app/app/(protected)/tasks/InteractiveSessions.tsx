@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { displayTaskTitle } from '@/lib/task-title';
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import Section from '@/components/ui/Section';
@@ -47,8 +48,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 function TaskLink({ t }: { t: LocalSessionTaskView }) {
   return (
-    <Link href={`/app/tasks/${t.id}`} className="block min-h-6 truncate text-body text-text-primary hover:underline">
-      {t.title}
+    <Link href={`/app/tasks/${t.id}`} className="block min-h-6 truncate text-body text-text-primary hover:underline" title={t.title}>
+      {displayTaskTitle(t.title)}
     </Link>
   );
 }
