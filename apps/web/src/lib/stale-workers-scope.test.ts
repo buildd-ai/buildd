@@ -61,7 +61,7 @@ import {
   failWorkersOfOfflineRunners,
   HEARTBEAT_STALE_MS,
 } from './stale-workers';
-import { INTERACTIVE_WORKER_IDLE_TTL_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_IDLE_TTL_MS, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 import { interactiveAbandonedScope, interactiveTouchScope, INTERACTIVE_TOUCH_THROTTLE_MS } from './interactive-worker-liveness';
 
 const dialect = new PgDialect();
@@ -232,6 +232,25 @@ describe('staleWorkerScope: interactive MCP workers', () => {
     // And the scope actually includes it.
     expect(dialect.sqlToQuery(staleWorkerScope('account-1', NOW)).params)
       .toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString());
+  });
+
+  // Owner evidence: a session's long silent command (no hook fires until it
+  // returns) read as abandoned. The plugin presence holding the worker says
+  // whether its client is alive; a hard backstop still frees a dead one.
+  it('the interactive arm spares a worker whose open presence is busy or recently seen', () => {
+    const q = dialect.sqlToQuery(interactiveAbandonedScope('account-1', NOW));
+    const text = q.sql.toLowerCase().replace(/\s+/g, ' ');
+    expect(text).toContain('not exists ( select 1 from "local_sessions" ls_hold');
+    expect(text).toContain('ls_hold."ended_at" is null');
+    // Held through the multi-claim table, or the legacy single binding.
+    expect(text).toContain('from "local_session_workers" lsw_hold');
+    expect(text).toContain('lsw_hold."worker_id" = "workers"."id"');
+    expect(text).toContain('ls_hold."bound_worker_id" = "workers"."id"');
+    // Recently heard from (any hook), or inside a turn within the backstop.
+    expect(text).toMatch(/ls_hold\."last_seen_at" > \$\d+::timestamptz or \(ls_hold\."busy_since" is not null and ls_hold\."last_seen_at" > \$\d+::timestamptz\)/);
+    expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_IDLE_TTL_MS).toISOString());
+    expect(q.params).toContain(new Date(NOW.getTime() - INTERACTIVE_WORKER_BUSY_MAX_MS).toISOString());
+    expect(INTERACTIVE_WORKER_BUSY_MAX_MS).toBeGreaterThan(INTERACTIVE_WORKER_IDLE_TTL_MS);
   });
 
   it('the team-scoped never-started arm skips interactive workers', () => {

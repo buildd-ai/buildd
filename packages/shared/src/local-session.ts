@@ -45,6 +45,20 @@ export interface LocalSessionEvent {
   workerId?: string;
   /** end: why. */
   reason?: LocalSessionEndReason;
+  /**
+   * touch: whether the client is inside a turn (true from the prompt or a tool
+   * call starting, false at the turn's end). A long silent command fires no
+   * hook until it returns, so this is how the server knows a quiet session is
+   * still working. Absent: unchanged (and always absent from an older hook).
+   */
+  busy?: boolean;
+  /**
+   * start: the client session id this one continues in the same process (a
+   * `/clear`). The claims that session held move to this one, so the cleared
+   * conversation keeps them alive. Only a session of the same owner and client
+   * that is still open or ended by `clear` is ever taken from.
+   */
+  continuesSessionId?: string;
   /** touch / end: cumulative usage per worker this session claimed. */
   usage?: LocalSessionUsage;
 }
@@ -126,7 +140,7 @@ export const LOCAL_SESSION_TOUCH_THROTTLE_MS = 60_000;
 const MAX_ID = 200;
 const MAX_VERSION = 64;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage']);
+const ALLOWED_KEYS = new Set(['event', 'client', 'clientSessionId', 'clientVersion', 'repo', 'interactive', 'workerId', 'reason', 'usage', 'busy', 'continuesSessionId']);
 const USAGE_KEYS = new Set(['workers', 'costBasis']);
 const WORKER_USAGE_KEYS = new Set(['workerId', 'models', 'toolCalls', 'toolCounts', 'subagents', 'firstAt', 'lastAt']);
 /** Same rule as the hook's TOOL_NAME_RE. */
@@ -252,6 +266,16 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
       return { ok: false, error: `reason must be one of ${LOCAL_SESSION_END_REASONS.join('|')}` };
     }
   }
+  if (b.busy !== undefined) {
+    if (b.event !== 'touch') return { ok: false, error: 'busy is only accepted on touch' };
+    if (typeof b.busy !== 'boolean') return { ok: false, error: 'busy must be a boolean' };
+  }
+  if (b.continuesSessionId !== undefined) {
+    if (b.event !== 'start') return { ok: false, error: 'continuesSessionId is only accepted on start' };
+    if (typeof b.continuesSessionId !== 'string' || !b.continuesSessionId.trim() || b.continuesSessionId.length > MAX_ID) {
+      return { ok: false, error: `continuesSessionId must be a non-empty string of at most ${MAX_ID} characters` };
+    }
+  }
   let usage: LocalSessionUsage | undefined;
   if (b.usage !== undefined) {
     if (b.event !== 'touch' && b.event !== 'end') return { ok: false, error: 'usage is only accepted on touch and end' };
@@ -272,6 +296,10 @@ export function parseLocalSessionEvent(body: unknown): ParsedLocalSessionEvent {
       ...(b.event === 'bind' ? { workerId: (b.workerId as string).toLowerCase() } : {}),
       ...(b.event === 'end' ? { reason: (b.reason as LocalSessionEndReason | undefined) ?? 'other' } : {}),
       ...(usage ? { usage } : {}),
+      ...(b.busy !== undefined ? { busy: b.busy as boolean } : {}),
+      ...(b.continuesSessionId !== undefined && (b.continuesSessionId as string).trim() !== (b.clientSessionId as string).trim()
+        ? { continuesSessionId: (b.continuesSessionId as string).trim() }
+        : {}),
     },
   };
 }

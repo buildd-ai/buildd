@@ -47,6 +47,9 @@ type Json = Record<string, any>;
  * because an async hook can be cut off as the process exits. PostToolUse
  * matches every tool: any tool call is a boundary. It costs one node start per
  * call, and at most one request a minute (touches are throttled client-side).
+ * PreToolUse marks the session as inside a turn before a tool runs, so a long
+ * silent command does not read as an abandoned session; nothing is returned to
+ * the agent, so it is async (it sends only when the mark flips, or once a minute).
  * Codex does not take `async`, so it gets none.
  */
 export function claudeLikeHookEntries(command: string, opts: { async: boolean }): Record<string, Json[]> {
@@ -60,6 +63,7 @@ export function claudeLikeHookEntries(command: string, opts: { async: boolean })
     SessionStart: [{ hooks: [handler(true)] }],
     UserPromptSubmit: [{ hooks: [handler(false)] }],
     Stop: [{ hooks: [handler(false)] }],
+    PreToolUse: [{ hooks: [handler(true)] }],
     PostToolUse: [{ hooks: [handler(false)] }],
     SessionEnd: [{ hooks: [handler(false)] }],
   };

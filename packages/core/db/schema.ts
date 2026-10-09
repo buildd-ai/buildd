@@ -2240,6 +2240,13 @@ export const localSessions = pgTable('local_sessions', {
   endedAt: timestamp('ended_at', { withTimezone: true }),
   endReason: text('end_reason'),
   /**
+   * Set when the plugin says a turn is in progress (prompt or tool call
+   * started), cleared at the turn's end. A long silent command sends nothing
+   * until it returns; while this is set the interactive reaper keeps the
+   * presence's claims, up to INTERACTIVE_WORKER_BUSY_MAX_MS after last_seen_at.
+   */
+  busySince: timestamp('busy_since', { withTimezone: true }),
+  /**
    * Legacy: the single worker a session could hold before multi-claim. Read
    * (never written) so a session bound before localSessionWorkers existed still
    * releases its worker; the bindings live in localSessionWorkers now.
