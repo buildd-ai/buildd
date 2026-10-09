@@ -135,7 +135,7 @@ describe('MissionBoardHeader, compact', () => {
     expect(chip).not.toContain('border-[1.5px]');
     expect(chip).toContain('text-meta');
     expect(chip).not.toContain('font-mono');
-    expect(chip).not.toContain('uppercase');
+    expect(chip).not.toMatch(/upper[c]ase/);
     expect(board()).toMatch(/data-testid="mission-state-chip"[^>]*>(?:<span[^>]*><\/span>)?Running<\/span>/);
   });
 

@@ -24,7 +24,10 @@ function task(id: string, over: Partial<MissionTaskRow> = {}): MissionTaskRow {
 const landedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, mergedAt: '2026-10-01', prLifecycleStatus: 'merged' }] });
 const buildingTask = (id: string) => task(id, { status: 'in_progress', workers: [{ status: 'running' }] });
 const auditTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_pending' }] });
-const notLandedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
+// Closed unmerged after the supersession scan ran: a person decides.
+const notLandedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan: { scannedAt: '2026-10-08T10:00:00Z', suggestion: null } }] });
+// Closed unmerged with the scan still owed: Buildd is reconciling it.
+const reconcilingTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
 
 function row(id: string, tasks: MissionTaskRow[], over: Partial<PortfolioRow> & { status?: string; isHeld?: boolean } = {}): PortfolioRow {
   const { status = 'active', isHeld = false, ...rest } = over;
@@ -110,6 +113,12 @@ describe('filterPortfolio', () => {
     expect(ids(filterPortfolio(open, { status: 'motion' }))).toEqual(['audit', 'build']);
     expect(ids(filterPortfolio(open, { status: 'waiting' }))).toEqual(['held', 'waiting']);
     expect(ids(filterPortfolio([...open, onDev], { status: 'landed' }))).toEqual(['on-dev']);
+  });
+
+  it('a closed PR still being reconciled filters as In motion, not Needs you', () => {
+    const rec = row('reconciling', [landedTask('a'), reconcilingTask('b')]);
+    expect(ids(filterPortfolio([rec], { status: 'needs' }))).toEqual([]);
+    expect(ids(filterPortfolio([rec], { status: 'motion' }))).toEqual(['reconciling']);
   });
 
   it('search matches title and workspace, case-insensitively', () => {

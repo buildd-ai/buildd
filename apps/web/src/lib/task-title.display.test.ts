@@ -83,5 +83,5 @@ describe('taskShortName', () => {
 
 it('strips research prefixes, scopes and retry wraps through the shared prefix pattern', () => {
   expect(displayTaskTitle('research: compare providers')).toBe('Compare providers');
-  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('[retry] Compare providers');
+  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('Compare providers');
 });

@@ -50,7 +50,8 @@ describe('Home inbox', () => {
       expect(r).toContain('data-testid="mission-row"');
       expect(r).toContain('data-testid="task-strip"');
       expect(r).not.toMatch(/border-l-4|border-l-status|bg-\[var\(--chat-surface\)\]/);
-      expect(r).not.toContain('line-clamp');
+      // The shared row clamps a long title at three lines, never two.
+      expect(r).not.toContain('line-clamp-2');
       expect(r).not.toContain('Stage:');
       expect(r).toContain('>Next<');
     }
