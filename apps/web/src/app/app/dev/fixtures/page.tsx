@@ -39,6 +39,7 @@ import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
+import HomeCardsFixture from './HomeCardsFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -69,6 +70,7 @@ import {
     TEAM_MEMBERS_FIXTURE_STATE,
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
+    HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -206,6 +208,10 @@ export default function DevFixturesPage() {
 
     if (state === REFINED_COMPONENTS_FIXTURE_STATE) {
         return <RefinedComponentsFixture />;
+    }
+
+    if (state === HOME_CARDS_FIXTURE_STATE) {
+        return <HomeCardsFixture />;
     }
 
     if (state === MISSION_FLOW_FIXTURE_STATE) {
