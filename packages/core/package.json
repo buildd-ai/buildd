@@ -81,6 +81,8 @@
     "./human-attention": "./human-attention.ts",
     "./needs-you": "./needs-you.ts",
     "./question-gate": "./question-gate.ts",
+    "./escalation-gate": "./escalation-gate.ts",
+    "./escalation-gate-decision": "./escalation-gate-decision.ts",
     "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",
     "./secrets": "./secrets/index.ts",
