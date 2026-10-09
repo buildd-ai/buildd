@@ -121,4 +121,13 @@ describe('agent model endpoint on the claim (docs/design/agent-model-endpoint.md
     expect(sentBodies[0].runnerFeatures).toContain(AGENT_ENDPOINT_RUNNER_FEATURE);
     expect(sentBodies[0].runnerFeatures).not.toContain('cbm_withhold');
   });
+
+  test('the claim declares personal_credentials, so the server may send a requester\'s own key', async () => {
+    delete process.env.BUILDD_EXECUTOR;
+    respond([]);
+    await makeClient().claimTask(1);
+    const { PERSONAL_CREDENTIAL_RUNNER_FEATURE } = await import('@buildd/core/providers');
+    expect(PERSONAL_CREDENTIAL_RUNNER_FEATURE).toBe('personal_credentials');
+    expect(sentBodies[0].runnerFeatures).toContain(PERSONAL_CREDENTIAL_RUNNER_FEATURE);
+  });
 });
