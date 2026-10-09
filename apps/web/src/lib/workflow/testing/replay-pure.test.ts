@@ -6,9 +6,9 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { compactIds, expandIds, parseCorpus, readCorpus, type CorpusDelivery, type CorpusTransition } from './corpus';
-import { canonical, firstDivergence, remapIds, type StepDecision } from './diff';
+import { canonical, firstDivergence, normalizeForCompare, remapIds, type StepDecision } from './diff';
 import { recordedReader, UnansweredRead } from './recorded-github';
-import { buildSteps, reconstructCommand } from './reconstruct';
+import { buildSteps, isDecisionEffect, outOfBandEffects, outOfBandFacts, reconstructCommand } from './reconstruct';
 import { isProse, Pseudonymizer, REDACTED, redactProse } from './sanitize';
 import type { KernelView } from '../types';
 
@@ -41,6 +41,26 @@ describe('sanitize', () => {
     expect(p.value({ link: 'https://tracker.example/issue/1' }, 0)).toEqual({ link: REDACTED });
     expect(isProse('state_moved')).toBe(false);
     expect(redactProse({ detail: 'base moved 3 times', note: 'no_open_pr_head' })).toEqual({ detail: REDACTED, note: 'no_open_pr_head' });
+  });
+
+  test('GitHub Actions run and job ids are pseudonymized; a PR number is not', () => {
+    const p = new Pseudonymizer(SALT);
+    const raw = { repoFullName: 'acme/widgets', url: 'https://github.com/acme/widgets/actions/runs/1234567890/job/9876543210', pr: 'https://github.com/acme/widgets/pull/42' };
+    p.collect(raw);
+    const out = p.value(raw, 0);
+    expect(out.url).not.toContain('1234567890');
+    expect(out.url).not.toContain('9876543210');
+    expect(out.url).toMatch(/^https:\/\/github\.com\/org-[0-9a-f]{8}\/repo-[0-9a-f]{8}\/actions\/runs\/[1-9]\d{9}\/job\/[1-9]\d{9}$/);
+    expect(out.pr).toBe(`https://github.com/${out.repoFullName}/pull/42`);
+    // Stable within an export: the same run is the same pseudonym wherever it appears.
+    expect(p.value({ u: 'https://github.com/acme/widgets/actions/runs/1234567890' }, 0).u).toBe(out.url.split('/job/')[0]);
+  });
+
+  test('redactProse keeps the exporter\'s exemptions, so a sanitized recording compares equal to the replayed text', () => {
+    expect(redactProse({ surface: 'POST /api/tasks', detail: 'base moved 3 times under the approved PR' })).toEqual({ surface: 'POST /api/tasks', detail: REDACTED });
+    const p = new Pseudonymizer(SALT);
+    const replayed = { event: 'landing_needs_human', detail: 'base moved 3 times under the approved PR (refresh cycle 1 of 3)' };
+    expect(redactProse(replayed)).toEqual(p.value(replayed, 0));
   });
 
   test('timestamps move to a 2000-01-01 epoch, keeping their format and relative timing', () => {
@@ -108,6 +128,24 @@ describe('steps', () => {
     expect(buildSteps(c).map((s) => (s.kind === 'fact' ? `${s.fact.id}${s.expected ? `>${s.expected.id}` : ''}` : s.expected.id)))
       .toEqual(['f1>t1', 'f2>t2', 'f3', 't3', 'f4']);
   });
+
+  test('an activity note is not a step, and an effect a later statement hung on a transition is not its decision', () => {
+    const t1 = t({ command: 'DeliveryOpened', toVersion: 1 });
+    const t2 = t({ command: 'AttemptEnded', toVersion: 2, toState: 'AWAITING_PUSH' });
+    const fx = (id: string, transitionId: string, tUs: number) => ({ id, transitionId, kind: 'push_recovery', dedupeKey: id, payload: {}, status: 'done', outcome: null, tUs });
+    const c = delivery({
+      transitions: [t1, t2],
+      facts: [
+        { id: 'f1', kind: 'delivery_opened', factKey: 'open:o', source: 'runner', repoFullName: null, prNumber: null, payload: {}, appliedTransitionId: 't1', tUs: 5 },
+        { id: 'n1', kind: 'activity_note', factKey: 'activity:d:x:0', source: 'legacy:appendPrActivity', repoFullName: 'r/r', prNumber: 1, payload: {}, appliedTransitionId: null, tUs: 12 },
+      ],
+      effects: [fx('own', 't2', t2.tUs), fx('drain-try-2', 't2', t2.tUs + 1), fx('note-render', 't1', 12)],
+    });
+    expect(buildSteps(c).map((s) => (s.kind === 'fact' ? s.fact.id : s.expected.id))).toEqual(['f1', 't2']);
+    expect(outOfBandFacts(c).map((f) => f.id)).toEqual(['n1']);
+    expect(c.effects.filter((e) => isDecisionEffect(e, t2)).map((e) => e.id)).toEqual(['own']);
+    expect(outOfBandEffects(c).map((e) => e.id)).toEqual(['note-render', 'drain-try-2']);
+  });
 });
 
 describe('reconstructCommand', () => {
@@ -115,7 +153,7 @@ describe('reconstructCommand', () => {
 
   test('a landing request is rebuilt from its key, evidence, bypass and merge_call effect', () => {
     const tr = t({ command: 'LandingRequested', toVersion: 5, idempotencyKey: 'merge:r/r#1:H1:v4', actor: 'human:u', evidence: { door: 'dashboard', rails: { passed: true } }, bypass: { reason: REDACTED, kinds: ['freshness'] } });
-    const c = delivery({ transitions: [tr], effects: [{ id: 'e', transitionId: tr.id, kind: 'merge_call', dedupeKey: 'm', payload: { mergeMethod: 'rebase' }, status: 'done', outcome: null, tUs: 0 }] });
+    const c = delivery({ transitions: [tr], effects: [{ id: 'e', transitionId: tr.id, kind: 'merge_call', dedupeKey: 'm', payload: { mergeMethod: 'rebase' }, status: 'done', outcome: null, tUs: tr.tUs }] });
     const r = reconstructCommand(tr, ctx(c));
     expect(r).toMatchObject({ ok: true, cmd: { type: 'LandingRequested', headSha: 'H1', door: 'dashboard', mergeMethod: 'rebase', override: { reason: REDACTED, kinds: ['freshness'] }, live: { headSha: 'H1', state: 'open' } } });
   });
@@ -163,6 +201,29 @@ describe('firstDivergence', () => {
     expect(firstDivergence(dec(), dec({ toState: 'C' }))).toEqual({ field: 'transition.toState', recorded: 'B', replayed: 'C' });
     expect(firstDivergence(dec({}, [{ kind: 'notify', dedupeKey: 'n', payload: {} }]), dec())).toEqual({ field: 'effects[n]', recorded: 'notify', replayed: null });
     expect(firstDivergence(dec(), { transition: null, effects: [] })?.field).toBe('transition');
+  });
+
+  test('#4072 treadmill evidence is tolerated only in its exact shape, and prose compares redacted', () => {
+    const esc = (evidence: Record<string, unknown>, effects: StepDecision['effects'] = []) =>
+      dec({ command: 'ConflictObserved', toState: 'ESCALATED', idempotencyKey: 'conflict:d:H:treadmill', evidence }, effects);
+    const old = { actor: 'door:conflict', headSha: 'H', refreshes: 3, repairKind: 'behind' };
+    const notify = (detail: string) => [{ kind: 'notify', dedupeKey: 'notify:d:treadmill:H', payload: { event: 'landing_needs_human', detail } }];
+    const now = esc({ ...old, treadmill: true, cycle: 1 }, notify('base moved 3 times under the approved PR (refresh cycle 1 of 3)'));
+    const r = normalizeForCompare(esc(old, notify(REDACTED)), now, redactProse);
+    expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('#4072')]);
+    // Anything beyond the added keys, a later cycle, a final cycle or another command stays a divergence.
+    for (const replayed of [
+      esc({ ...old, treadmill: true, cycle: 2 }),
+      esc({ ...old, treadmill: true, cycle: 1, finalCycle: true }),
+      esc({ ...old, treadmill: true, cycle: 1, refreshes: 4 }),
+      dec({ command: 'CiFailedObserved', toState: 'ESCALATED', idempotencyKey: 'conflict:d:H:treadmill', evidence: { ...old, treadmill: true, cycle: 1 } }),
+    ]) {
+      const n = normalizeForCompare(esc(old), replayed, redactProse);
+      expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
+    }
+    // An identical step needs no tolerance.
+    expect(normalizeForCompare(now, now, redactProse).tolerated).toEqual([]);
   });
 
   test('remapIds swaps replay ids back to recorded ones at any depth', () => {

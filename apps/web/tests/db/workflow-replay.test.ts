@@ -104,3 +104,73 @@ describe('the replay detects a decision the kernel no longer makes', () => {
     expect(r.replayedIdentical).toBeGreaterThan(0);
   }, 60_000);
 });
+
+/**
+ * What is not a decision is left out by provenance, and only that: a row written
+ * by the transition's own statement (same `tUs`) is always compared.
+ */
+describe('out-of-band rows are not the step’s decision', () => {
+  const synthetic = () => readCorpus(FIXTURE);
+
+  /**
+   * A fix that ends with no local head reported, its push already observed mid-fix:
+   * FIXING → AWAITING_PUSH(local_head_unknown) owes `push_recovery:<d>:none:1`. The
+   * drain later hangs try 2 on the same transition, and the floor a chain for the
+   * attempt's reported head: neither is reducer output.
+   */
+  function awaitingPush() {
+    const c = synthetic().find((x) => x.transitions.some((t) => t.command === 'AttemptEnded' && t.fromState === 'FIXING'))!;
+    const t = c.transitions.find((x) => x.command === 'AttemptEnded' && x.fromState === 'FIXING')!;
+    const live = t.evidence.live as Record<string, unknown>;
+    t.toState = 'AWAITING_PUSH';
+    t.evidence = { actor: t.actor, live, outcome: 'success', commitCount: 0, localHeadSha: null, proof: { holds: false, reason: 'local_head_unknown' } };
+    c.transitions = c.transitions.filter((x) => x.toVersion <= t.toVersion);
+    const kept = new Set(c.transitions.map((x) => x.id));
+    c.facts = c.facts.filter((f) => f.tUs < t.tUs && (!f.appliedTransitionId || kept.has(f.appliedTransitionId)));
+    c.rounds = c.rounds.filter((r) => r.tUs < t.tUs);
+    c.attempts = c.attempts.filter((a) => a.tUs < t.tUs);
+    const did = c.delivery.id;
+    const fx = (dedupeKey: string, payload: Record<string, unknown>, tUs: number, outcome: string) =>
+      ({ id: crypto.randomUUID(), transitionId: t.id, kind: 'push_recovery', dedupeKey, payload, status: 'done', outcome, tUs });
+    c.effects = [
+      ...c.effects.filter((e) => kept.has(e.transitionId) && (e.transitionId !== t.id || e.kind === 'render_activity')),
+      fx(`push_recovery:${did}:none:1`, { localHeadSha: null, try: 1, maxTries: 3 }, t.tUs, 'ok:retry_2'),
+    ];
+    return { c, t, did, live, fx };
+  }
+
+  test('the decision alone replays identically', async () => {
+    const { c } = awaitingPush();
+    expect(await replayDelivery(c, { exec })).toMatchObject({ result: 'identical', outOfBand: { facts: 0, effects: 0 } });
+  }, 60_000);
+
+  test('drain and floor follow-ups, a diverted note and its render are left out and re-applied', async () => {
+    const { c, t, did, live, fx } = awaitingPush();
+    c.effects.push(
+      fx(`push_recovery:${did}:none:2`, { localHeadSha: null, try: 2, maxTries: 3 }, t.tUs + 5_000_000, 'ok:retry_3'),
+      fx(`push_recovery:${did}:${String(live.headSha)}:1`, { localHeadSha: live.headSha, try: 1, maxTries: 3 }, t.tUs + 6_000_000, 'ok:retry_2'),
+    );
+    const prev = c.transitions.find((x) => x.toVersion === t.toVersion - 1)!;
+    const note = `activity:${did}:fix_ended:0123456789abcdef`;
+    c.facts.push({ id: crypto.randomUUID(), kind: 'activity_note', factKey: note, source: 'legacy:appendPrActivity', repoFullName: c.delivery.repoFullName, prNumber: c.delivery.prNumber, payload: { kind: 'fix_ended' }, appliedTransitionId: null, tUs: t.tUs - 10 });
+    c.effects.push({ id: crypto.randomUUID(), transitionId: prev.id, kind: 'render_activity', dedupeKey: `render:${did}:note:${note}`, payload: { note }, status: 'done', outcome: 'ok:unchanged', tUs: t.tUs - 10 });
+    const r = await replayDelivery(c, { exec });
+    expect(r).toMatchObject({ result: 'identical', outOfBand: { facts: 1, effects: 3 } });
+    expect(r.inferred).toContain('effect (out-of-band row, re-applied at its recorded position)');
+  }, 60_000);
+
+  test('a row claiming the transition’s own statement is still compared', async () => {
+    const { c, t, did, fx } = awaitingPush();
+    c.effects.push(fx(`push_recovery:${did}:none:2`, { localHeadSha: null, try: 2, maxTries: 3 }, t.tUs, 'ok:retry_3'));
+    expect(await replayDelivery(c, { exec })).toMatchObject({
+      result: 'diverged', divergence: { field: `effects[push_recovery:${did}:none:2]`, recorded: 'push_recovery', replayed: null },
+    });
+  }, 60_000);
+
+  test('the try-1 key is the reducer’s: a different local head in it is a divergence', async () => {
+    const { c, did, live } = awaitingPush();
+    const e = c.effects.find((x) => x.kind === 'push_recovery')!;
+    e.dedupeKey = `push_recovery:${did}:${String(live.headSha)}:1`;
+    expect(await replayDelivery(c, { exec })).toMatchObject({ result: 'diverged' });
+  }, 60_000);
+});
