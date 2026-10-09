@@ -497,6 +497,7 @@
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
     "packages/core/prompt-catalog.ts": {
+      "packages/core/decision-kind-failure-incident-triage.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/escalation-gate-decision.ts": "jev-decisions",

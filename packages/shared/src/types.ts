@@ -1484,7 +1484,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1508,6 +1508,15 @@ export interface ClaimModelEndpoint {
    * default. Absent/false: not set. Never applied to a Codex run.
    */
   toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -4334,4 +4343,68 @@ export interface DerivedFileRule {
   regenerate: string;
   /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
   strategy?: 'ours' | 'theirs';
+}
+
+// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
+// One row per stable systemic-failure pattern (`failure_incidents`), written by
+// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
+// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
+// events stay where they already live (workers / worker_terminal_records /
+// gate_events); an incident only carries bounded refs back to them.
+
+/** Ordered: low < medium < high < critical. */
+export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** The deterministic rule that raised an incident. Renaming one forks its history. */
+export type FailureIncidentRule =
+  | 'retry_fork'
+  | 'lineage_multi_pr'
+  | 'repeated_failure'
+  | 'stranded_gate'
+  | 'path_overlap_stall'
+  | 'provider_attribution_mismatch'
+  | 'failure_rate_spike'
+  | 'output_unmet_boundary';
+
+/** A pointer at an existing row — never a copy of it. */
+export interface FailureIncidentEvidenceRef {
+  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
+  /** Row id, or the PR number as a string for `kind: 'pr'`. */
+  id: string;
+  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
+  at: string;
+  note?: string;
+}
+
+/** Bounded (newest kept) sets of what the incident touched. */
+export interface FailureIncidentAffectedRefs {
+  taskIds: string[];
+  workerIds: string[];
+  prNumbers: number[];
+}
+
+export interface FailureIncident {
+  id: string;
+  workspaceId: string | null;
+  signature: string;
+  detectorVersion: string;
+  rule: FailureIncidentRule;
+  reasonCode: string;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  recurrenceCount: number;
+  affectedRefs: FailureIncidentAffectedRefs;
+  evidenceRefs: FailureIncidentEvidenceRef[];
+  impact: Record<string, number>;
+  lastAlertedAt: string | null;
+  lastAlertSeverity: FailureIncidentSeverity | null;
+  linkedFixTaskId: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
 }

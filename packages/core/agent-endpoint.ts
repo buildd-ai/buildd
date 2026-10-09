@@ -26,6 +26,18 @@
  *       reference. A row whose inline key differs from the stored one is left
  *       inline and flagged `capabilities.legacyInlineKey`.
  *
+ *   { "kind": "cloudflare", "upstream": "anthropic" | "openrouter",
+ *     "gatewayToken"?: "…", "models"?: {…} }
+ *       Reference to the team's Cloudflare credential (`cloudflare_token`):
+ *       only its account and AI Gateway ids, never its token, which can deploy
+ *       Workers and must not reach a runner. Agents call the gateway's
+ *       `anthropic` path with the team's Anthropic key (same scope or broader),
+ *       or its `openrouter` path with the stored OpenRouter key.
+ *       `gatewayToken` is for an authenticated gateway: a separate token
+ *       limited to AI Gateway Run, sent as `cf-aig-authorization`
+ *       (ANTHROPIC_CUSTOM_HEADERS), so only a runner that declares
+ *       AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE is given such an endpoint.
+ *
  * Either shape may carry `"appliesTo": ["<workspace id>", …]` on the team-wide
  * row: the endpoint then applies to those workspaces only (absent = all).
  *
@@ -83,9 +95,20 @@ export const AGENT_ENDPOINT_PURPOSE = 'agent_endpoint' as const;
 export const AGENT_ENDPOINT_RUNNER_FEATURE = 'agent_endpoint' as const;
 export const OPENROUTER_AGENT_BASE_URL = 'https://openrouter.ai/api';
 
-export const AGENT_ENDPOINT_KINDS = ['gateway', 'openrouter', 'anthropic-compatible'] as const;
+/**
+ * The claim-request `runnerFeatures` entry a runner sends when it applies
+ * `modelEndpoint.headers` (as ANTHROPIC_CUSTOM_HEADERS). An endpoint that
+ * needs headers is never delivered to a runner without it: the run would
+ * reach the gateway without them and fail on every call.
+ */
+export const AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE = 'agent_endpoint_headers' as const;
+
+export const AGENT_ENDPOINT_KINDS = ['gateway', 'openrouter', 'anthropic-compatible', 'cloudflare'] as const;
 export type AgentEndpointKind = typeof AGENT_ENDPOINT_KINDS[number];
 export type AgentEndpointAuthHeader = 'authorization' | 'x-api-key';
+/** Where a `cloudflare` endpoint's gateway forwards: the provider path, and whose key the run spends. */
+export type CloudflareUpstream = 'anthropic' | 'openrouter';
+export const CLOUDFLARE_UPSTREAMS: readonly CloudflareUpstream[] = ['anthropic', 'openrouter'];
 
 /** Alias map: native model id → the name the proxy serves it under. */
 export type AgentModelMap = Record<string, string>;
@@ -114,7 +137,9 @@ export interface AgentEndpointCapabilities {
 export function effectiveToolSearch(kind: AgentEndpointKind, capabilities?: AgentEndpointCapabilities | null): boolean {
   const explicit = capabilities?.toolSearch;
   if (typeof explicit === 'boolean') return explicit;
-  return kind === 'openrouter';
+  // AI Gateway forwards the request body unchanged to Anthropic or OpenRouter,
+  // both of which support it.
+  return kind === 'openrouter' || kind === 'cloudflare';
 }
 
 /**
@@ -143,7 +168,38 @@ export type AgentEndpointBlob =
       models?: AgentModelMap;
       appliesTo?: string[];
       capabilities?: AgentEndpointCapabilities;
+    }
+  | {
+      kind: 'cloudflare';
+      upstream: CloudflareUpstream;
+      /** An AI Gateway Run token for an authenticated gateway. Never the team's `cloudflare_token`. */
+      gatewayToken?: string;
+      models?: AgentModelMap;
+      appliesTo?: string[];
+      capabilities?: AgentEndpointCapabilities;
     };
+
+/**
+ * AI Gateway's root. Restated, not imported from the kit: the runner loads
+ * this module and does not install `@builddai/ai-kit` (`cloudflare-ai-gateway.ts`
+ * builds the same URLs; a test holds them equal).
+ */
+export const CLOUDFLARE_AI_GATEWAY_ROOT = 'https://gateway.ai.cloudflare.com/v1';
+
+/** A gateway's provider root for agent runs, or null without a gateway. Claude Code appends `/v1/messages`. */
+export function cloudflareAgentBaseUrl(ref: { accountId: string; gatewayId: string | null }, upstream: CloudflareUpstream): string | null {
+  if (!ref.gatewayId || !/^[0-9a-f]{32}$/.test(ref.accountId) || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(ref.gatewayId)) return null;
+  return `${CLOUDFLARE_AI_GATEWAY_ROOT}/${ref.accountId}/${ref.gatewayId}/${upstream}`;
+}
+
+/** What a `cloudflare` reference points at: the gateway's ids and the upstream's stored key. */
+export interface CloudflareEndpointRef {
+  accountId: string;
+  gatewayId: string | null;
+  upstreamKey: string | null;
+  /** The team's minted AI Gateway Run token (cloudflare-gateway-tokens.ts), used when the blob has none of its own. */
+  gatewayToken?: string | null;
+}
 
 /** What a run authenticates with once a blob is resolved. */
 export interface AgentEndpointRoute {
@@ -163,6 +219,10 @@ export interface AgentEndpointRoute {
   openAiBaseUrl?: string;
   /** Effective deferred tool loading for Claude runs (`effectiveToolSearch`). */
   toolSearch: boolean;
+  /** `cloudflare` only: which provider the gateway forwards to (it decides model naming). */
+  upstream?: CloudflareUpstream;
+  /** Extra request headers every call sends (an authenticated gateway's `cf-aig-authorization`). */
+  headers?: Record<string, string>;
 }
 
 export type AgentEndpointScope = 'workspace' | 'team';
@@ -266,6 +326,26 @@ export function validateAgentEndpointInput(input: unknown): Validated {
   const caps = parseCapabilities(input.capabilities);
   if (caps.ok === false) return { ok: false, error: caps.error };
 
+  if (kind === 'cloudflare') {
+    if (input.apiKey !== undefined || input.baseUrl !== undefined) {
+      return { ok: false, error: 'The Cloudflare option uses the team\'s AI Gateway and its stored provider key.' };
+    }
+    const upstream = input.upstream ?? 'anthropic';
+    if (typeof upstream !== 'string' || !(CLOUDFLARE_UPSTREAMS as readonly string[]).includes(upstream)) {
+      return { ok: false, error: 'upstream must be anthropic or openrouter.' };
+    }
+    const blob: AgentEndpointBlob = { kind: 'cloudflare', upstream: upstream as CloudflareUpstream };
+    if (input.gatewayToken !== undefined && input.gatewayToken !== null && input.gatewayToken !== '') {
+      const token = typeof input.gatewayToken === 'string' ? input.gatewayToken.trim() : '';
+      if (!/^[A-Za-z0-9_\-.]{20,200}$/.test(token)) return { ok: false, error: 'That doesn\'t look like a Cloudflare API token.' };
+      blob.gatewayToken = token;
+    }
+    if (models.models) blob.models = models.models;
+    if (scope.appliesTo) blob.appliesTo = scope.appliesTo;
+    if (caps.capabilities) blob.capabilities = caps.capabilities;
+    return { ok: true, blob };
+  }
+
   if (kind === 'gateway') {
     if (input.apiKey !== undefined || input.baseUrl !== undefined) {
       return { ok: false, error: 'The gateway option uses the team gateway\'s own URL and key.' };
@@ -352,7 +432,12 @@ export function isOpenRouterReference(blob: AgentEndpointBlob): boolean {
 
 /** A blob that needs a stored credential looked up before it routes anything. */
 export function isEndpointReference(blob: AgentEndpointBlob): boolean {
-  return blob.kind === 'gateway' || isOpenRouterReference(blob);
+  return blob.kind === 'gateway' || blob.kind === 'cloudflare' || isOpenRouterReference(blob);
+}
+
+/** Whether a route only works when its `headers` are sent (so only a runner that applies them gets it). */
+export function routeNeedsHeaders(route: Pick<AgentEndpointRoute, 'headers'>): boolean {
+  return !!route.headers && Object.keys(route.headers).length > 0;
 }
 
 /**
@@ -365,7 +450,28 @@ export function resolveEndpointFromBlob(
   blob: AgentEndpointBlob,
   gateway: LiteLLMGateway | null,
   openRouterKey: string | null = null,
+  cloudflare: CloudflareEndpointRef | null = null,
 ): AgentEndpointRoute | null {
+  if (blob.kind === 'cloudflare') {
+    if (!cloudflare?.gatewayId || !cloudflare.upstreamKey) return null;
+    const baseUrl = cloudflareAgentBaseUrl(cloudflare, blob.upstream);
+    if (!baseUrl) return null;
+    const gatewayToken = blob.gatewayToken || cloudflare.gatewayToken || null;
+    const headers = gatewayToken ? { 'cf-aig-authorization': `Bearer ${gatewayToken}` } : undefined;
+    return {
+      kind: 'cloudflare',
+      upstream: blob.upstream,
+      baseUrl,
+      apiKey: cloudflare.upstreamKey,
+      authHeader: blob.upstream === 'anthropic' ? 'x-api-key' : 'authorization',
+      models: blob.models ?? {},
+      // Codex cannot send the gateway header, so an authenticated gateway has
+      // no OpenAI route; an open one does through its OpenRouter path.
+      ...(blob.upstream === 'openrouter' && !headers ? { openAiBaseUrl: `${baseUrl}/v1` } : {}),
+      toolSearch: effectiveToolSearch('cloudflare', blob.capabilities),
+      ...(headers ? { headers } : {}),
+    };
+  }
   if (blob.kind === 'gateway') {
     if (!gateway) return null;
     const baseUrl = blob.agentBaseUrl ?? agentBaseUrlFromGateway(gateway.baseURL);
@@ -400,8 +506,11 @@ export function resolveEndpointFromBlob(
  * URL gets its alias map, else the id unchanged (no `provider/` prefix: Claude
  * Code sends the string verbatim and the alias is what the proxy names).
  */
-export function mapAgentModel(endpoint: { kind: AgentEndpointKind; models?: AgentModelMap }, modelId: string): string {
+export function mapAgentModel(endpoint: { kind: AgentEndpointKind; models?: AgentModelMap; upstream?: CloudflareUpstream }, modelId: string): string {
   if (endpoint.kind === 'openrouter') return openRouterModelId('anthropic', modelId);
+  if (endpoint.kind === 'cloudflare' && endpoint.upstream === 'openrouter') {
+    return endpoint.models?.[modelId] ?? openRouterModelId('anthropic', modelId);
+  }
   return endpoint.models?.[modelId] ?? modelId;
 }
 
@@ -540,6 +649,75 @@ export async function resolveStoredOpenRouterKey(opts: { teamId: string; workspa
 }
 
 /**
+ * The team's stored Anthropic API key at this scope (canonical `inference_key`
+ * / `anthropic` over legacy `anthropic_api_key`), for a `cloudflare` endpoint
+ * whose gateway forwards to Anthropic. Same scope rule as
+ * `resolveStoredOpenRouterKey`. Null when none; throws on a lookup failure.
+ */
+export async function resolveStoredAnthropicKey(opts: { teamId: string; workspaceId: string | null }): Promise<string | null> {
+  const { decrypt } = await import('./secrets');
+  const { resolveProviderCredential } = await import('./providers/resolve');
+  const result = await resolveProviderCredential({
+    teamId: opts.teamId,
+    workspaceId: opts.workspaceId,
+    accountId: null,
+    requesterUserId: null,
+    surface: 'agent-claude',
+    provider: 'anthropic',
+    purposes: agentKeyPurposes('anthropic'),
+    scopes: REFERENCE_SCOPES,
+    team: { credentialPolicy: 'team' },
+    accept: v => v.trim().length > 0,
+    decrypt,
+  });
+  if (result.none || result.credential.shape !== 'api_key') return null;
+  return result.credential.value.trim();
+}
+
+/** What a blob references, looked up at `refScope` (its own scope or broader). */
+export interface EndpointRefs {
+  gateway: LiteLLMGateway | null;
+  openRouterKey: string | null;
+  cloudflare: CloudflareEndpointRef | null;
+}
+
+/**
+ * Look up whatever this blob references: a gateway, the stored OpenRouter
+ * key, or the team's Cloudflare gateway ids and the upstream's stored key.
+ * The one place every reader (the claim, the cloud egress route, Settings)
+ * resolves references, so they cannot drift. Throws on a lookup failure.
+ */
+export async function resolveEndpointRefs(
+  blob: AgentEndpointBlob,
+  refScope: { teamId: string; workspaceId: string | null },
+): Promise<EndpointRefs> {
+  const refs: EndpointRefs = { gateway: null, openRouterKey: null, cloudflare: null };
+  if (blob.kind === 'gateway') {
+    refs.gateway = await resolveLiteLLMGateway(refScope, { ignoreKeyPolicy: true });
+  } else if (isOpenRouterReference(blob)) {
+    refs.openRouterKey = (await resolveStoredOpenRouterKey(refScope))?.key ?? null;
+  } else if (blob.kind === 'cloudflare') {
+    const { resolveCloudflareAiGateway } = await import('./cloudflare-ai-gateway');
+    const cf = await resolveCloudflareAiGateway({ teamId: refScope.teamId }, { ignoreKeyPolicy: true });
+    if (cf) {
+      const upstreamKey = blob.upstream === 'openrouter'
+        ? (await resolveStoredOpenRouterKey(refScope))?.key ?? null
+        : await resolveStoredAnthropicKey(refScope);
+      // Only the ids: the team's Cloudflare token never leaves the server. A
+      // minted run-only token may (the team's, never a person's: agent runs
+      // are team work here).
+      let gatewayToken: string | null = null;
+      if (!blob.gatewayToken) {
+        const { resolveGatewayRunToken } = await import('./cloudflare-gateway-tokens');
+        gatewayToken = (await resolveGatewayRunToken({ teamId: refScope.teamId, userId: null, accountId: cf.accountId }))?.token.token ?? null;
+      }
+      refs.cloudflare = { accountId: cf.accountId, gatewayId: cf.gatewayId, upstreamKey, ...(gatewayToken ? { gatewayToken } : {}) };
+    }
+  }
+  return refs;
+}
+
+/**
  * The endpoint for this team (and workspace): a workspace row first, then the
  * team's (only when its `appliesTo` is absent or lists this workspace);
  * revoked rows skipped, newest first. A `kind: gateway` reference
@@ -570,17 +748,11 @@ export async function resolveAgentEndpoint(opts: { teamId: string; workspaceId?:
         // A team row narrowed to some workspaces: not this one.
         if (!endpointAppliesTo(blob, r.workspaceId, opts.workspaceId)) continue;
         const scope: AgentEndpointScope = r.workspaceId ? 'workspace' : 'team';
-        let gateway: LiteLLMGateway | null = null;
-        let openRouterKey: string | null = null;
         // Same scope or broader: a team-wide reference never picks up one
         // workspace's gateway or key.
         const refScope = { teamId: opts.teamId, workspaceId: scope === 'workspace' ? opts.workspaceId ?? null : null };
-        if (blob.kind === 'gateway') {
-          gateway = await resolveLiteLLMGateway(refScope, { ignoreKeyPolicy: true });
-        } else if (isOpenRouterReference(blob)) {
-          openRouterKey = (await resolveStoredOpenRouterKey(refScope))?.key ?? null;
-        }
-        const route = resolveEndpointFromBlob(blob, gateway, openRouterKey);
+        const refs = await resolveEndpointRefs(blob, refScope);
+        const route = resolveEndpointFromBlob(blob, refs.gateway, refs.openRouterKey, refs.cloudflare);
         if (route) return { ...route, secretId: r.id, scope };
       } catch (e) {
         console.error(`[agent-endpoint] failed to read secret ${r.id}:`, e);
@@ -668,7 +840,7 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
  * the unaliased fallback). OpenRouter ignores aliases (mapAgentModel), so it
  * always probes the fallback.
  */
-export function agentEndpointProbeModel(route: { kind: AgentEndpointKind; models?: AgentModelMap }, fallback: string): string {
+export function agentEndpointProbeModel(route: { kind: AgentEndpointKind; models?: AgentModelMap; upstream?: CloudflareUpstream }, fallback: string): string {
   if (route.kind === 'openrouter') return fallback;
   const aliased = Object.keys(route.models ?? {});
   if (aliased.length === 0 || aliased.includes(fallback)) return fallback;
@@ -700,6 +872,7 @@ export async function verifyAgentEndpoint(
   const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (route.authHeader === 'x-api-key') headers['x-api-key'] = route.apiKey;
   else headers.authorization = `Bearer ${route.apiKey}`;
+  for (const [k, v] of Object.entries(route.headers ?? {})) headers[k.toLowerCase()] = v;
   const wireModel = opts.wire ? model : mapAgentModel(route, model);
   const shown = wireModel.length > 100 ? `${wireModel.slice(0, 100)}…` : wireModel;
   return verifyByFetch('endpoint', `${route.baseUrl}/v1/messages`, {
