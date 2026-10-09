@@ -110,3 +110,21 @@ it('a History filter that hides finished deliveries offers to clear it', () => {
     expect(container.querySelectorAll('[data-testid="activity-episode"]')).toHaveLength(1);
   } finally { act(() => root.unmount()); }
 });
+
+
+it('History-only outcomes do not hide live rows when switching to Now', () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const nowMs = Date.parse('2026-10-08T12:00:00Z');
+  const now = buildActivityNow({ tasks: [{ id: 'live', title: 'Live work', status: 'in_progress', missionId: null, createdAt: new Date(nowMs).toISOString(), updatedAt: new Date(nowMs).toISOString(), workers: [{ status: 'running' }] }], missions: [], rules, now: nowMs });
+  const props = { now, history: [], nowMs, hrefs: { now: '/app/tasks', history: '/app/tasks?view=history' } };
+  try {
+    act(() => root.render(<ActivityView mode="history" {...props} />));
+    const landed = [...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')!;
+    act(() => landed.click());
+    act(() => root.render(<ActivityView mode="now" {...props} />));
+    expect(container.querySelectorAll('[data-testid="activity-now-row"]')).toHaveLength(1);
+    act(() => root.render(<ActivityView mode="history" {...props} />));
+    expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Landed')?.getAttribute('aria-pressed')).toBe('true');
+  } finally { act(() => root.unmount()); }
+});
