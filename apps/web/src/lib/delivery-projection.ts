@@ -21,7 +21,7 @@
  */
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { SURFACE_AUDIT_TITLE_PREFIX } from '@buildd/core/member-scoped-deps';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ function visualAuditState(audits: readonly MissionTaskRow[], findings: number | 
 
 export function projectMissionDelivery(input: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
   const { computeMissionProgress, isAttempt } = rules;
-  const auditIds = new Set(input.tasks.filter(t => isSurfaceAuditTask(t.title)).map(t => t.id));
+  const auditIds = new Set(input.tasks.filter(t => t.title.startsWith(SURFACE_AUDIT_TITLE_PREFIX)).map(t => t.id));
   const audits = input.tasks.filter(t => auditIds.has(t.id));
   const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !auditIds.has(t.id) && !(t.parentTaskId && auditIds.has(t.parentTaskId))) };
   const visual = visualAuditState(audits, input.visualFindings);
