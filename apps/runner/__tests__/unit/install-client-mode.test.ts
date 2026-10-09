@@ -89,7 +89,7 @@ describe('install.sh --client file set', () => {
     expect(guardEnd).toBeGreaterThan(installSh.indexOf('browser:install --with-deps'));
     const exit = installSh.indexOf('if [ "$CLIENT_MODE" = "1" ]; then\n  finish_client_install\n  exit 0');
     expect(exit).toBeGreaterThan(installSh.indexOf('# --- next steps: end ---'));
-    expect(exit).toBeLessThan(installSh.indexOf('zstd_provision()'));
+    expect(exit).toBeLessThan(installSh.indexOf('if ! zstd_provision; then'));
     expect(exit).toBeLessThan(installSh.indexOf('INSTALL_SERVICE=0'));
   });
 });
