@@ -241,3 +241,21 @@ describe('Activity collapse', () => {
     expect(p.hidden).toEqual([]);
   });
 });
+
+describe('a task claimed twice by one session', () => {
+  it('lists the task once, under its live worker, not the released one', () => {
+    const v = classifyLocalSession(row({ held: [
+      held({ workerId: 'w-released', taskId: 't1', workerStatus: 'completed', workerUpdatedAt: minsAgo(120) }),
+      held({ workerId: 'w-live', taskId: 't1', workerStatus: 'running' }),
+    ] }), NOW);
+    expect(v.tasks.map(t => [t.id, t.workerId, t.live])).toEqual([['t1', 'w-live', true]]);
+  });
+
+  it('with no live worker, lists the newest claim once', () => {
+    const v = classifyLocalSession(row({ held: [
+      held({ workerId: 'w1', taskId: 't1', workerStatus: 'completed' }),
+      held({ workerId: 'w2', taskId: 't1', workerStatus: 'failed' }),
+    ] }), NOW);
+    expect(v.tasks.map(t => t.workerId)).toEqual(['w2']);
+  });
+});

@@ -15,7 +15,7 @@ import StatePill from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
-  filterEpisodes, filterNow,
+  filterEpisodes, filterNow, pageEpisodes, HISTORY_PAGE_SIZE,
   type ActivityNow, type ActivityOutcome, type ActivityScope, type EvidenceEntry, type Episode, type LatestTask, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
@@ -67,13 +67,15 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
   const [scope, setScope] = useState<ActivityScope>(initialFilters?.scope ?? 'all');
   const [outcome, setOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   const [mission, setMission] = useState<string>('');
+  const [pages, setPages] = useState(1);
   const outcomeKey = OUTCOMES[mode].some(o => o.key === outcome) ? outcome : 'any';
   const filtered = scope !== 'all' || outcomeKey !== 'any' || (mode === 'history' && mission !== '');
-  const clearFilters = () => { setScope('all'); setOutcome('any'); setMission(''); };
+  const clearFilters = () => { setScope('all'); setOutcome('any'); setMission(''); setPages(1); };
   const nowRows = now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0);
 
   const groups = useMemo(() => filterNow(now, { scope, outcome: outcomeKey }), [now, scope, outcomeKey]);
   const episodes = useMemo(() => filterEpisodes(history, { scope, outcome: outcomeKey, missionId: mission || null }), [history, scope, outcomeKey, mission]);
+  const { shown: shownEpisodes, remaining } = useMemo(() => pageEpisodes(episodes, pages), [episodes, pages]);
   const missionOptions = useMemo(() => {
     const seen = new Map<string, string>();
     for (const e of history) if (e.missionId && !seen.has(e.missionId)) seen.set(e.missionId, e.missionTitle ?? 'Untitled mission');
@@ -128,12 +130,12 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
         {mode === 'now' && !missionFilter && <div className="-mx-4 mt-2"><InteractiveSessions sessions={localSessions} now={nowMs} /></div>}
 
         {!loadError && <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="activity-filters">
-          <FilterGroup label="Show" options={SCOPES} value={scope} onChange={setScope} />
-          <FilterGroup label="Filter" options={OUTCOMES[mode]} value={outcomeKey} onChange={setOutcome} />
+          <FilterGroup label="Show" options={SCOPES} value={scope} onChange={k => { setScope(k); setPages(1); }} />
+          <FilterGroup label="Filter" options={OUTCOMES[mode]} value={outcomeKey} onChange={k => { setOutcome(k); setPages(1); }} />
           {mode === 'history' && missionOptions.length > 1 && !missionFilter && (
             <Select
               value={mission}
-              onChange={setMission}
+              onChange={v => { setMission(v); setPages(1); }}
               options={[{ value: '', label: 'Any mission' }, ...missionOptions.map(([id, title]) => ({ value: id, label: title }))]}
               aria-label="Mission"
               size="sm"
@@ -161,7 +163,21 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
               ? (history.length === 0 || !filtered
                 ? <Empty text="No deliveries in the last 30 days." />
                 : <FilteredEmpty text="No episodes match these filters." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={clearFilters} />)
-              : episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
+              : (
+                <>
+                  {shownEpisodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
+                  {remaining > 0 && (
+                    <button
+                      type="button"
+                      data-testid="history-show-more"
+                      onClick={() => setPages(p => p + 1)}
+                      className="mt-4 inline-flex min-h-11 w-full items-center justify-center border border-border-default px-3 font-mono text-meta text-text-secondary"
+                    >
+                      Show {Math.min(remaining, HISTORY_PAGE_SIZE)} more · {remaining} earlier
+                    </button>
+                  )}
+                </>
+              )}
           </>
         )}
       </div>
