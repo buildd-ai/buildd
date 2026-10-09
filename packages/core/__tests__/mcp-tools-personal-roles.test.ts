@@ -41,7 +41,7 @@ const ROLES = {
 };
 
 describe('the personal-role path is worker level; the team path stays admin', () => {
-  it('lists the three actions as admin actions with a personal path, not as worker actions', () => {
+  it('lists the personal-path actions as admin actions with a personal path, not as worker actions', () => {
     for (const a of PERSONAL_ROLE_ACTIONS) {
       expect(adminActions as readonly string[]).toContain(a);
       expect(workerActions as readonly string[]).not.toContain(a);
@@ -49,6 +49,9 @@ describe('the personal-role path is worker level; the team path stays admin', ()
     expect(isPersonalRoleCall('register_skill', { personal: true })).toBe(true);
     expect(isPersonalRoleCall('register_skill', {})).toBe(false);
     expect(isPersonalRoleCall('manage_secrets', { personal: true })).toBe(false);
+    expect(isPersonalRoleCall('list_skills', { personal: true })).toBe(true);
+    expect(isPersonalRoleCall('get_skill', { personal: true })).toBe(true);
+    expect(isPersonalRoleCall('list_skills', {})).toBe(false);
   });
 
   it('a worker-level person creates a personal role through POST /api/roles, never workspace skills', async () => {
@@ -161,5 +164,72 @@ describe('update_skill / delete_skill { personal: true }', () => {
   it('refuses a bad visibility value', async () => {
     const { api } = fakeApi({});
     await expect(handleBuilddAction(api, 'update_skill', { personal: true, slug: 'helper', visibility: 'public' }, ctx('worker', 'person'))).rejects.toThrow('visibility');
+  });
+});
+
+describe('list_skills / get_skill { personal: true }', () => {
+  const VISIBLE = {
+    roles: [
+      { id: 'team-role', slug: 'builder', name: 'Builder' },
+      { id: 'someone-elses', slug: 'helper', name: 'Their Helper', personal: true, mine: false, visibility: 'team', ownerName: 'Sam' },
+      { id: ROLE_ID, slug: 'helper', name: 'My Helper', personal: true, mine: true, visibility: 'private', model: 'standard', description: 'helps me' },
+    ],
+  };
+
+  it('a worker-level person lists their own and shared personal roles, never team roles, from GET /api/roles', async () => {
+    const { api, calls } = fakeApi({ 'GET /api/roles': () => VISIBLE });
+    const result = await handleBuilddAction(api, 'list_skills', { personal: true }, ctx('worker', 'person'));
+    expect(result.isError).toBeUndefined();
+    expect(calls.map(c => `${c.method} ${c.path}`)).toEqual(['GET /api/roles']);
+    const out = result.content[0].text;
+    expect(out).toContain('2 personal role(s)');
+    expect(out).toMatch(/My Helper.*\[private, yours, standard\]/);
+    expect(out).toMatch(/Their Helper.*\[shared, by Sam\]/);
+    expect(out).not.toContain('Builder');
+  });
+
+  it('says so when there is nothing to list', async () => {
+    const { api } = fakeApi({ 'GET /api/roles': () => ({ roles: [{ id: 'team-role', slug: 'builder' }] }) });
+    const result = await handleBuilddAction(api, 'list_skills', { personal: true }, ctx('worker', 'person'));
+    expect(result.content[0].text).toContain('No personal roles');
+  });
+
+  it("get_skill reads the caller's own role first, in the shape update_skill takes", async () => {
+    const { api, calls } = fakeApi({
+      'GET /api/roles': () => VISIBLE,
+      [`GET /api/roles/${ROLE_ID}`]: () => ({ skill: { id: ROLE_ID, slug: 'helper', name: 'My Helper', content: 'You help me', model: 'standard', visibility: 'private', ownerUserId: 'u1' } }),
+    });
+    const result = await handleBuilddAction(api, 'get_skill', { personal: true, slug: 'helper' }, ctx('worker', 'person'));
+    expect(result.isError).toBeUndefined();
+    expect(calls.map(c => `${c.method} ${c.path}`)).toEqual(['GET /api/roles', `GET /api/roles/${ROLE_ID}`]);
+    const out = result.content[0].text;
+    const json = JSON.parse(out.slice(out.indexOf('\n{') + 1));
+    expect(json).toMatchObject({ slug: 'helper', content: 'You help me', personal: true, visibility: 'private', mine: true });
+    expect(json).not.toHaveProperty('ownerUserId');
+  });
+
+  it('get_skill falls back to a shared role the caller does not own', async () => {
+    const { api, calls } = fakeApi({
+      'GET /api/roles': () => ({ roles: [VISIBLE.roles[1]] }),
+      'GET /api/roles/someone-elses': () => ({ skill: { id: 'someone-elses', slug: 'helper', name: 'Their Helper', content: 'x', visibility: 'team' } }),
+    });
+    const result = await handleBuilddAction(api, 'get_skill', { personal: true, slug: 'helper' }, ctx('worker', 'person'));
+    expect(calls[1].path).toBe('/api/roles/someone-elses');
+    expect(result.content[0].text).toContain('by Sam');
+  });
+
+  it('get_skill names a slug it cannot see, without falling back to workspace skills', async () => {
+    const { api, calls } = fakeApi({ 'GET /api/roles': () => VISIBLE });
+    await expect(handleBuilddAction(api, 'get_skill', { personal: true, slug: 'nope' }, ctx('worker', 'person'))).rejects.toThrow('No personal role with slug "nope"');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a worker-level team list_skills / get_skill stays admin-only', async () => {
+    const { api, calls } = fakeApi({});
+    for (const [action, params] of [['list_skills', {}], ['get_skill', { slug: 'helper' }]] as const) {
+      const result = await handleBuilddAction(api, action, params, ctx('worker', 'person'));
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ error: 'forbidden', requiredLevel: 'admin' });
+    }
+    expect(calls).toHaveLength(0);
   });
 });
