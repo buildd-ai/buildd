@@ -358,8 +358,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
   resolve_capability: '{capability?, …}',
-  register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, …}',
-  update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, …}',
+  register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
+  update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
