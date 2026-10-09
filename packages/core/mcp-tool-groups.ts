@@ -169,6 +169,114 @@ export function mcpGroupOfToolName(name: string): McpToolGroup | null {
   return (MCP_TOOL_GROUPS as readonly string[]).includes(g) ? (g as McpToolGroup) : null;
 }
 
+/**
+ * Which actions a group tool's description lists, one line each, and which it
+ * only names on its closing `More:` line. Both kinds stay in the tool's action
+ * enum and are called exactly the same way; `help {action}` documents either.
+ *
+ * USAGE-DERIVED, dated 2026-10-08: ranked by buildd action calls over the 30
+ * days before that date (get_usage_stats, buildd actions; the figures stay out
+ * of this public repo). An action is `listed` when it is in the frequently
+ * called head of that ranking, which carries the large majority of all calls,
+ * or when a skill (.claude/skills, the onboarding consumer skill), a default
+ * role prompt or a runner prompt tells agents to call it — that reason is
+ * noted inline (a test holds it). Everything else, the long tail, is `more`.
+ * Re-derive from get_usage_stats when usage moves; a Record, so a new action
+ * does not compile until it is placed.
+ */
+export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
+  // the frequently called head
+  get_task: 'listed',
+  update_progress: 'listed',
+  create_pr: 'listed',
+  get_failure_analytics: 'listed',
+  list_tasks: 'listed',
+  upload_artifact: 'listed',
+  create_artifact: 'listed',
+  get_pr: 'listed',
+  create_task: 'listed',
+  manage_missions: 'listed',
+  explain: 'listed',
+  complete_task: 'listed',
+  get_artifact: 'listed',
+  get_pr_review: 'listed',
+  list_artifacts: 'listed',
+  post_note: 'listed',
+  update_artifact: 'listed',
+  claim_task: 'listed',
+  get_error_traces: 'listed',
+  merge_pr: 'listed',
+  get_path_claim_stats: 'listed',
+  list_prs: 'listed',
+  request_pr_review: 'listed',
+  get_page_source: 'listed',
+  update_pr: 'listed',
+  dispatch_health: 'listed',
+  update_task: 'listed',
+  // the tail, but a workflow tells agents to call it
+  spec_compare: 'listed', // spec-sync skill; spec-validator role
+  manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
+  list_runners: 'listed', // default role prompts
+  get_usage_stats: 'listed', // default role prompts
+  get_budget_forecast: 'listed', // default role prompts
+  get_manifest_coverage: 'listed', // default role prompts
+  deploy: 'listed', // Platform Operator role
+  close_pr: 'listed', // runner PR-mutation prompt
+  manage_secrets: 'listed', // visual-review skill (preview bypass secret)
+  get_visual_review: 'listed', // the mission visual-QA phase is read only here
+  // rare: named on the More: line
+  get_task_messages: 'more',
+  get_decision_stats: 'more',
+  list_schedules: 'more',
+  read_evidence: 'more',
+  record_pr_supersession: 'more',
+  get_release: 'more',
+  list_releases: 'more',
+  release_status: 'more',
+  manage_experiments: 'more',
+  manage_initiatives: 'more',
+  link_tracker: 'more',
+  list_discrepancies: 'more',
+  get_discrepancy: 'more',
+  adjudicate_discrepancy: 'more',
+  promote_discrepancy: 'more',
+  correct_task_result: 'more',
+  approve_plan: 'more',
+  reject_plan: 'more',
+  send_agent_message: 'more',
+  query_events: 'more',
+  emit_event: 'more',
+  suggest_schedule_update: 'more',
+  list_connectors: 'more',
+  resolve_capability: 'more',
+  trace_schedule: 'more',
+  create_schedule: 'more',
+  update_schedule: 'more',
+  pause_schedules: 'more',
+  delete_schedule: 'more',
+  list_artifact_templates: 'more',
+  trigger_release: 'more',
+  manage_watched_projects: 'more',
+  list_skills: 'more',
+  get_skill: 'more',
+  register_skill: 'more',
+  update_skill: 'more',
+  delete_skill: 'more',
+  manage_model_tiers: 'more',
+  manage_evidence_backends: 'more',
+  manage_providers: 'more',
+  consolidate_knowledge: 'more',
+  memory_delete: 'more',
+};
+
+/** `actions` split into the ones a group description lists and the ones its More: line names. */
+export function splitListed(actions: readonly string[]): { listed: string[]; more: string[] } {
+  const listed: string[] = [];
+  const more: string[] = [];
+  for (const a of actions) (ACTION_LISTING[a as BuilddAction] === 'more' ? more : listed).push(a);
+  return { listed, more };
+}
+
 /** Every action of a group, in `allActions` order. */
 export function actionsOfGroup(group: McpToolGroup): BuilddAction[] {
   return allActions.filter(a => mcpGroupOf(a) === group);
