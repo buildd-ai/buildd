@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { isContentEquivalentHead } from '@/lib/pr-content-equivalence';
+import { isBaseDiffEquivalent, isContentEquivalentHead } from '@/lib/pr-content-equivalence';
 import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
@@ -132,6 +132,10 @@ export function githubReader(installationId: number, api: typeof githubApi = git
     async contentEquivalent(repoFullName, baseRef, fromSha, toSha) {
       // isContentEquivalentHead fails closed: an unreadable compare is "not equivalent".
       const r = await isContentEquivalentHead({ installationId, repoFullName, baseRef, fromSha, toSha, api });
+      return r.equivalent;
+    },
+    async baseDiffEquivalent(repoFullName, fromBase, toBase, headSha) {
+      const r = await isBaseDiffEquivalent({ installationId, repoFullName, fromBase, toBase, sha: headSha, api });
       return r.equivalent;
     },
   };

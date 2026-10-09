@@ -206,7 +206,7 @@ describe('base retarget', () => {
   // GitHub: deleting a merged PR's head branch retargets open PRs based on it to the merged
   // PR's base (pull_request.edited with changes.base). It does NOT close them.
   // https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-base-branch-of-a-pull-request
-  test.failing('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
+  test('B is stacked on A; A merges and its branch is deleted, GitHub retargets B to dev; dev then goes red on lint and B fails lint with it → B is BLOCKED_ON_TRUNK with dev\'s incident, no per-PR CI fix', async () => {
     w = await world();
     const a = await w.openPr({ branch: 'feat/stack-a', files: { 'src/a.ts': 'export const a = 2;\n' } });
     const b = await w.openPr({ branch: 'feat/stack-b', base: 'feat/stack-a', files: { 'src/c.ts': 'export const c = 2;\n' } });
@@ -233,7 +233,7 @@ describe('base retarget changes the diff under an approval', () => {
   // GitHub: PATCH /pulls/{n} {base} (or the UI's "Edit" base) keeps the head SHA and recomputes
   // the PR's diff against the new base; it sends pull_request.edited with changes.base.ref.from.
   // https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request
-  test.failing('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
+  test('PR into dev approved at H; a person retargets it to release, where H also carries an unreviewed dev commit → the approval must not land H into release unreviewed', async () => {
     w = await world();
     w.gh.createBranch(w.repo, 'release');
     // dev moves on with someone else's change; the PR branches from dev after it.

@@ -244,6 +244,17 @@ export type Command =
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
   | (Base & {
+      /**
+       * The PR's base branch changed (`pull_request.edited` with `changes.base`, or a live read
+       * that disagrees with `delivery.baseRef`, e.g. GitHub's retarget of a stacked PR). The head
+       * did not move, but the diff did (24e1cfad).
+       */
+      type: 'BaseChanged';
+      live: LivePr;
+      /** The PR's diff against the new base equals its diff against the old one (§8.3 evidence). */
+      diffEquivalent?: boolean;
+    })
+  | (Base & {
       type: 'SupersessionRecorded';
       target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };
       reason: string;
