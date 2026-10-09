@@ -77,14 +77,14 @@ describe('ActivityView: Now', () => {
   });
 
   it('a landed delivery leaves Now', () => {
-    expect(render(ACTIVITY_SEQUENCE.length - 1, 'now')).not.toContain('feat: scheduled export email');
+    expect(render(ACTIVITY_SEQUENCE.length - 1, 'now')).not.toContain('scheduled export email');
   });
 });
 
 describe('ActivityView: History', () => {
   it('one episode per delivery: retries and reviews are steps, never rows', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
-    expect(count(html, '>feat: scheduled export email<')).toBe(1);
+    expect(count(html, '>Scheduled export email<')).toBe(1);
     expect(html).not.toContain('[reviewer #');
     expect(html).not.toContain('[builder · after');
     expect(html).toContain('Automatic repair 1: review notes');

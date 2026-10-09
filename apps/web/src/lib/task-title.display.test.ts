@@ -26,9 +26,23 @@ describe('displayTaskTitle', () => {
       .toBe('[builder · after review #2] Ship Widget Polish');
   });
 
-  it('leaves conventional-commit titles alone: the type is information', () => {
-    expect(displayTaskTitle('fix(deps): pin the widget parser')).toBe('fix(deps): pin the widget parser');
-    expect(displayTaskTitle('chore(mission): merge dev')).toBe('chore(mission): merge dev');
+  it('strips a conventional-commit type and scope, and capitalises the subject', () => {
+    expect(displayTaskTitle('fix(deps): pin the widget parser')).toBe('Pin the widget parser');
+    expect(displayTaskTitle('chore(mission): merge dev')).toBe('Merge dev');
+    expect(displayTaskTitle('feat: add invoices')).toBe('Add invoices');
+    expect(displayTaskTitle('refactor(ui)!: drop the old board')).toBe('Drop the old board');
+    expect(displayTaskTitle('polish(home): tighten the rail')).toBe('Tighten the rail');
+  });
+
+  it('strips the type behind a retry wrap, keeping the wrap', () => {
+    expect(displayTaskTitle('[builder · after CI #1] feat(invoices): render invoices'))
+      .toBe('[builder · after CI #1] Render invoices');
+  });
+
+  it('leaves a plain title and a bare prefix alone', () => {
+    expect(displayTaskTitle('Investigate the flaky login test')).toBe('Investigate the flaky login test');
+    expect(displayTaskTitle('fix:')).toBe('fix:');
+    expect(displayTaskTitle('Note: the parser is slow')).toBe('Note: the parser is slow');
   });
 
   it('passes empty input through', () => {
