@@ -21,6 +21,7 @@
  */
 import type { computeMissionProgress, deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import { prShipState } from '@buildd/core/pr-shipped';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
@@ -274,6 +275,8 @@ export interface MissionDeliveryInput {
   /** Whether a release carried the mission; null/absent when unknown. */
   released?: boolean | null;
   tasks: readonly MissionTaskRow[];
+  /** Findings the latest visual audit reported, when the caller knows them. */
+  visualFindings?: number | null;
   /** Per-task review evidence, when the caller has it. */
   reviews?: ReadonlyMap<string, { review: ReviewEvidence; headSha: string | null }>;
 }
@@ -309,6 +312,11 @@ export interface MissionDelivery {
   evidence: string;
   next: string;
   exception: { tone: DeliveryTone; text: string } | null;
+  /**
+   * The mission's visual (surface) audit, when its latest round failed. An
+   * observation, never an undelivered change: it is not in `landed`/`total`.
+   */
+  visual: { text: string; next: string } | null;
   /** The chip is a closed PR the platform is still reconciling (see `TaskDelivery.reconciling`). */
   reconciling?: boolean;
   tasks: Array<{ id: string; title: string; delivery: TaskDelivery }>;
@@ -337,8 +345,27 @@ const isRepairAttempt = (rules: MissionTaskRules) => (t: MissionTaskRow) => {
 /** Platform signals filed by agents; never the face of a mission outcome. */
 const isFriction = (t: { title: string }) => /^\[friction\]/i.test(t.title.trim());
 
-export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
+const auditRound = (t: { title: string }) => Number(/^\[surface audit\] round (\d+): /.exec(t.title)?.[1] ?? 1);
+
+/**
+ * A surface audit observes; it opens no PR, so it can neither land nor fail to
+ * land. Its failure is its own signal (`visual`), not a delivery.
+ */
+function visualAuditState(audits: readonly MissionTaskRow[], findings: number | null | undefined): MissionDelivery['visual'] {
+  const live = audits.filter(a => a.status !== 'cancelled');
+  const latest = [...live].sort((a, b) => auditRound(b) - auditRound(a))[0];
+  if (!latest || latest.status !== 'failed') return null;
+  return findings && findings > 0
+    ? { text: `Visual audit: ${findings} ${findings === 1 ? 'finding' : 'findings'}`, next: 'Open the audit to review the findings' }
+    : { text: 'Visual audit could not run', next: 'Open the audit to retry it' };
+}
+
+export function projectMissionDelivery(input: MissionDeliveryInput, rules: MissionTaskRules): MissionDelivery {
   const { computeMissionProgress, isAttempt } = rules;
+  const auditIds = new Set(input.tasks.filter(t => isSurfaceAuditTask(t.title)).map(t => t.id));
+  const audits = input.tasks.filter(t => auditIds.has(t.id));
+  const m: MissionDeliveryInput = { ...input, tasks: input.tasks.filter(t => !auditIds.has(t.id) && !(t.parentTaskId && auditIds.has(t.parentTaskId))) };
+  const visual = visualAuditState(audits, input.visualFindings);
   const progress = computeMissionProgress(m.tasks.map(t => ({ ...t, dependsOn: undefined, workers: (t.workers ?? []).map(w => ({ ...w })) })));
   const attempts = new Map<string, MissionTaskRow[]>();
   for (const t of m.tasks) {
@@ -411,9 +438,13 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
     else if (kind === 'waiting') exception = { tone: 'muted', text: focus.delivery.waitingOn === 'dependency' ? 'Waiting on earlier work, not on you' : 'Waiting on capacity, not on you' };
   }
 
+  if (visual && !exception) exception = { tone: 'warning', text: visual.text };
+
   const repairRounds = deliveries.reduce((n, d) => n + d.repairRounds, 0);
   const inAudit = tasks.filter(t => ['audit', 'repair', 'landing', 'unavailable'].includes(t.delivery.kind)).length;
-  const { evidence, next } = describe(kind, focus, m, repairRounds);
+  const described = describe(kind, focus, m, repairRounds);
+  const evidence = described.evidence;
+  const next = visual && (kind === 'landed' || kind === 'landing') ? visual.next : described.next;
 
   return {
     id: m.id,
@@ -431,6 +462,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
     evidence,
     next,
     exception,
+    visual,
     reconciling: kind === 'notlanded' && !!focus?.delivery.reconciling,
     tasks,
   };
