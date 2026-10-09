@@ -331,13 +331,13 @@ describe('golden: claim_task Relevant Memory', () => {
       "Claimed 1 task(s):
 
       **Worker ID:** worker-1
-      **Task:** Fix the login bug
+      **Task:** Fix the login bug (task-1)
       **Branch:** buildd/x (push here — create_pr's head must be this branch, or another name nobody else is using)
       **Description:** d
 
       ## Relevant Memory
       READ these memories before starting work:
-      - **[pattern] Second**: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...
+      - **[pattern] Second**: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx… (+130 chars: recall {id: "mem-2"})
       - **[gotcha] First**: short
 
       Call recall with scope=["memory","task"] for prior lessons + recent outcomes in one fused call.
