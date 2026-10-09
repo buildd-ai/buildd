@@ -1104,6 +1104,13 @@ export const workspaces = pgTable('workspaces', {
   // workspaces (those are never serialized by the per-repo guard).
   maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
 
+  // "Pause new starts until <time>": until then runner claims skip this
+  // workspace's tasks (the claim route's workspacePaused gate). Running work
+  // carries on and a person's interactive claim is never paused. NULL or a
+  // past time = not paused, so it resumes on its own. By = the user who set it.
+  newStartsPausedUntil: timestamp('new_starts_paused_until', { withTimezone: true }),
+  newStartsPausedBy: text('new_starts_paused_by'),
+
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
   // Workspace override of teams.modelUpgradePolicy. NULL = inherit the team's.
