@@ -42,10 +42,10 @@ export default function MissionDetailCompactFixture() {
     const { variant, select } = parseMissionDetailCompact(new URLSearchParams(window.location.search));
     setFixture(missionDetailCompactFixture(variant, select, Date.now()));
   }, []);
-  // `&select=`: open on that cell, the way a tap would (the strip owns its selection).
+  // `&select=`: open on that strip position, the way a tap would (the strip owns its selection).
   useEffect(() => {
-    if (!fixture?.selectId) return;
-    document.querySelector<HTMLButtonElement>(`[data-testid="task-strip"] button[data-id="${fixture.selectId}"]`)?.click();
+    if (fixture?.selectIndex == null) return;
+    document.querySelectorAll<HTMLButtonElement>('[data-testid="task-strip"] button[data-id]')[fixture.selectIndex]?.click();
   }, [fixture]);
   if (!fixture) return <div className="min-h-screen bg-surface-1" />;
 

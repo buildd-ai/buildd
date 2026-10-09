@@ -7,14 +7,14 @@
  *   &variant=long-title   the same mission under a title far past one line
  *   &variant=no-tasks     planned, nothing created yet
  *   &variant=all-landed   every task landed, the mission complete
- *   &select=04|09         open on that strip cell, the way a tap would
+ *   &select=04|09         open on that strip position (tick), the way a tap would
  *
  * Illustrative rows only (made-up ids and titles) through the real
  * `buildMissionBoard`, so the strip and focus card read what the page reads.
  */
-import { buildMissionBoard, type MissionBoardModel } from '@/lib/mission-board';
+import { buildMissionBoard, type BoardTaskInput, type MissionBoardModel } from '@/lib/mission-board';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
-import { dagId, dagTasks, stripFixtureId, type DagSpec } from './mission-task-strip-fixtures';
+import { dagTasks, stripFixtureId, type DagSpec } from './mission-task-strip-fixtures';
 import { MISSION_DETAIL_COMPACT_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_DETAIL_COMPACT_STATE = MISSION_DETAIL_COMPACT_FIXTURE_STATE;
@@ -28,6 +28,13 @@ export const COMPACT_GOAL =
   'Make every billing export explain when it runs, what it keeps and which limit stops it, on a phone as well as a desk.';
 
 const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
+
+/** The board's criteria; the header's Verified pill gets the same three. */
+export const CRITERIA = [
+  { type: 'all_prs_merged', label: 'All PRs merged' },
+  { type: 'no_open_tasks', label: 'No open tasks' },
+  { type: 'command', label: 'Unit tests pass' },
+];
 
 /** 01-03 landed; 04 ready; 05-08 wait on 04 and each other; 09-11 building off 03. */
 export const ELEVEN: DagSpec = {
@@ -55,15 +62,15 @@ export interface MissionDetailCompactFixture {
   title: string;
   model: MissionBoardModel;
   deliveries: Record<string, TaskDeliveryDetail>;
-  /** The strip cell to open on (`&select=`), or null for the default. */
-  selectId: string | null;
+  /** The strip position to open on, 0-based (`&select=04` → 3), or null for the default. */
+  selectIndex: number | null;
 }
 
 export function parseMissionDetailCompact(q: URLSearchParams): { variant: MissionDetailCompactVariant; select: string | null } {
   const v = q.get('variant');
   const variant = (MISSION_DETAIL_COMPACT_VARIANTS as readonly string[]).includes(v ?? '') ? (v as MissionDetailCompactVariant) : 'eleven';
   const s = q.get('select');
-  return { variant, select: s && ELEVEN.tasks.includes(s) ? s : null };
+  return { variant, select: s && /^\d\d$/.test(s) && +s >= 1 && +s <= ELEVEN.tasks.length ? s : null };
 }
 
 export function missionDetailCompactLinks(): { label: string; href: string }[] {
@@ -91,20 +98,41 @@ function merged(prNumber: number): TaskDeliveryDetail {
   };
 }
 
+/**
+ * The strip fixtures date their rows from a fixed epoch; the header clock
+ * ticks from the real now. Move every row so the mission opened an hour
+ * before `now` and the clock reads T+ 1:00, not months.
+ */
+function shifted(t: BoardTaskInput, delta: number): BoardTaskInput {
+  const at = (v: number | null | undefined) => (v == null ? v ?? null : v + delta);
+  const workers = (t.workers ?? []).map(w => ({ ...w, startedAt: at(w.startedAt), completedAt: at(w.completedAt), updatedAt: at(w.updatedAt), mergedAt: at(w.mergedAt) }));
+  const w = t.worker;
+  const date = (d: Date | string | null | undefined) => (d ? new Date(new Date(d).getTime() + delta) : null);
+  return {
+    ...t,
+    createdAt: date(t.createdAt)!,
+    workers,
+    worker: w ? { ...w, startedAt: date(w.startedAt), updatedAt: date(w.updatedAt), mergedAt: date(w.mergedAt) } : null,
+  };
+}
+
 export function missionDetailCompactFixture(variant: MissionDetailCompactVariant, select: string | null, now = T0 + 60 * 60_000): MissionDetailCompactFixture {
   const title = variant === 'long-title' ? COMPACT_LONG_TITLE : COMPACT_TITLE;
-  const base = { now, missionCreatedAt: T0 };
+  const opened = now - 60 * 60_000;
+  const base = { now, missionCreatedAt: opened };
   if (variant === 'no-tasks') {
-    return { variant, title, model: buildMissionBoard({ ...base, missionStatus: 'active', tasks: [] }), deliveries: {}, selectId: null };
+    return { variant, title, model: buildMissionBoard({ ...base, missionStatus: 'active', tasks: [], criteria: CRITERIA }), deliveries: {}, selectIndex: null };
   }
   const allLanded = variant === 'all-landed';
   const spec: DagSpec = allLanded
     ? { ...ELEVEN, states: Object.fromEntries(ELEVEN.tasks.map(n => [n, 'landed' as const])) }
     : ELEVEN;
-  const tasks = dagTasks(spec).map((t, i) => ({ ...t, title: TITLES[ELEVEN.tasks[i]] }));
+  const tasks = dagTasks(spec).map((t, i) => shifted({ ...t, title: TITLES[ELEVEN.tasks[i]] }, opened - T0));
   const model = buildMissionBoard({
     ...base,
     tasks,
+    criteria: CRITERIA,
+    ...(allLanded ? { criteriaState: CRITERIA.map((_, index) => ({ index, verdict: 'pass' })) } : {}),
     missionStatus: allLanded ? 'completed' : 'active',
     ...(allLanded ? { missionCompletedAt: now - 5 * 60_000 } : {}),
   });
@@ -114,5 +142,5 @@ export function missionDetailCompactFixture(variant: MissionDetailCompactVariant
     if (state === 'landed') deliveries[stripFixtureId(i + 1)] = merged(401 + i);
     if (state === 'running') deliveries[stripFixtureId(i + 1)] = building(null);
   });
-  return { variant, title, model, deliveries, selectId: select ? dagId(ELEVEN, select) : null };
+  return { variant, title, model, deliveries, selectIndex: select ? +select - 1 : null };
 }
