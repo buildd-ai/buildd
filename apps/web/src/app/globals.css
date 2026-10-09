@@ -557,14 +557,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     background: color-mix(in srgb, var(--status-success) 12%, transparent);
   }
 
+  /* The one primary action on a view: ink, like .btn-ink. Orange is kept for
+   * needs-you and live state, so it is never a button fill. */
   .btn-primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--on-ink);
   }
   .btn-primary:hover:not(:disabled) {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
+    background: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
   }
 
   /* The L3 primary: charcoal, the one filled button on a decision card. */

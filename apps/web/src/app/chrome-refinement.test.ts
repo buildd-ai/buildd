@@ -11,7 +11,7 @@ import { join } from 'node:path';
 const CSS = readFileSync(join(import.meta.dir, 'globals.css'), 'utf8');
 
 function block(selector: string): string {
-  const re = new RegExp(`^\\s*${selector.replace(/[.\\-]/g, m => `\\${m}`)}\\s*\\{([^}]*)\\}`, 'm');
+  const re = new RegExp(`^\\s*${selector.replace(/[.*+?^${}()|[\]\\-]/g, m => `\\${m}`)}\\s*\\{([^}]*)\\}`, 'm');
   const m = CSS.match(re);
   if (!m) throw new Error(`no ${selector} block in globals.css`);
   return m[1];
@@ -41,5 +41,13 @@ describe('shared chrome', () => {
 
   it('segments have no hairline dividers between them', () => {
     expect(CSS).not.toMatch(/\.seg-item \+ \.seg-item\s*\{/);
+  });
+
+  it('the primary button is ink, not orange: orange means needs-you and live', () => {
+    const b = block('.btn-primary');
+    expect(b).toContain('var(--text-primary)');
+    expect(b).toContain('var(--on-ink)');
+    expect(b).not.toContain('var(--accent)');
+    expect(block('.btn-primary:hover:not(:disabled)')).not.toContain('var(--primary-hover)');
   });
 });

@@ -113,8 +113,10 @@ composition rule, including Home, detail pages and chat.
   default `font-sans`); their counts, IDs, SHAs, durations and lifecycle words
   are JetBrains Mono (`font-mono`). An object is an L2 card or an L1 row, and
   an L3 decision when, and only when, it asks the user to decide.
-- **Orange:** reserve it for action, decisions and live work, such as a primary
-  action, the send control, a decision frame or a live indicator. State labels
+- **Orange:** reserve it for decisions and live work: a decision frame, a
+  needs-you count, a live indicator, the chat send control. Never a button
+  fill and never a selected state. The primary action is ink (`.btn-primary`,
+  `PrimaryAction`), on cards and decision cards alike. State labels
   use their state hue or ink, never orange: a mission label is ink, a stalled
   one uses `--status-error` or `--status-warning`.
 - **Labels:** no all-caps tracked labels in product UI. Section headers are a
@@ -190,7 +192,7 @@ the three below ink all resolve to `--sub` and are the floor for text.
 
 | Token | Night | Day | Tailwind | Use | Prototype |
 |---|---|---|---|---|---|
-| `--accent` / `--primary` | `#f4811f` | `#e07a2e` | `bg-accent`, `bg-primary` | The one accent fill: send, live, progress | `act-fill` |
+| `--accent` / `--primary` | `#f4811f` | `#e07a2e` | `bg-accent`, `bg-primary` | The one accent fill: send, live, progress, needs-you. Never a button fill | `act-fill` |
 | `--primary-hover` | `#d96e12` | `#c2611f` | `bg-primary-hover` | Accent fill hover | |
 | `--accent-soft` | `rgba(244,129,31,0.12)` | `#faeadb` | `bg-accent-soft` | Accent tint behind accent text | `act-tint` |
 | `--primary-subtle` | `rgba(244,129,31,0.10)` | `rgba(224,122,46,0.10)` | `bg-primary-subtle` | Faint accent fill | |
