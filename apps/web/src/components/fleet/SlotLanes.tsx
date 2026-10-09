@@ -391,6 +391,8 @@ export default function SlotLanes({
               // Selected: an ink outline (the L2 focus frame). Not selected while
               // something is: a quarter strength. Hover alone keeps full strength.
               const ring = focused ? 'z-[3] outline outline-[1.5px] outline-offset-0 outline-text-primary' : isActive ? 'z-[3] outline outline-1 outline-offset-0 outline-border-strong' : '';
+              // On the bar's wrapper, so its outside label, live pulse and
+              // question marker dim with it.
               const dim = focused === false ? 'opacity-25' : '';
               const content = short || claimed ? null : (
                 <>
@@ -400,11 +402,11 @@ export default function SlotLanes({
               );
               const tickTone = TICK_TONE[b.tone] ?? (b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted');
               const cls = claimed
-                ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${ring} ${dim}`
+                ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${ring}`
                 : tick
                   // The short-run marker: a solid tick at the run's start, never an empty box.
-                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${ring} ${dim}`
-                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${b.cell ? 'state-cell border-border-strong' : TONE_CLASS[b.tone]} ${ring} ${dim}`;
+                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${ring}`
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${b.cell ? 'state-cell border-border-strong' : TONE_CLASS[b.tone]} ${ring}`;
               const nowRight = (1 - axisFraction(end, from, to)) * 100;
               // An open bar is anchored by its right edge at NOW: a box has a
               // minimum drawn width, and anchored at its start a fresh bar
@@ -444,7 +446,7 @@ export default function SlotLanes({
                 ...(hoverCard ? { onMouseLeave: () => hover(null), onBlur: () => hover(null) } : {}),
               } as const;
               return (
-                <span key={b.id}>
+                <span key={b.id} className={dim || undefined} data-dimmed={dim ? 'true' : undefined}>
                   {b.href ? (
                     <Link href={b.href} {...(b.linkData ?? {})} {...common}>{content}</Link>
                   ) : (

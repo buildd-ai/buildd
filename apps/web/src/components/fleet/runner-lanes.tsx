@@ -176,7 +176,7 @@ export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
   const hidden = idleSlotCount(fleet);
   return (
     <div data-testid="runner-lanes">
-      <h3 data-testid="runner-lanes-caption" aria-live="polite" className="mb-3 truncate text-body font-semibold text-text-primary">
+      <h3 data-testid="runner-lanes-caption" aria-live="polite" className="mb-3 line-clamp-2 text-body font-semibold text-text-primary">
         {caption.href ? <Link href={caption.href} className="text-inherit hover:underline">{caption.text} →</Link> : caption.text}
       </h3>
       <div className="card overflow-hidden">
