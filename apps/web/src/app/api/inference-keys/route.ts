@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
-import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
+import { listProviderKeys } from '@/lib/provider-keys';
+import { removeChatKey, writeChatKey } from '@/lib/providers/write-path';
 import { resolveChatModel } from '@/lib/chat/models';
 import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
 
@@ -17,6 +18,10 @@ import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
  * Session only: a personal key belongs to a person, and API keys are not
  * people. `scope: 'team'` writes need team owner/admin. Plaintext never leaves
  * the server — responses carry the last four characters and health.
+ *
+ * Writes go through the one provider write path (`@/lib/providers/write-path`),
+ * which `/api/providers` also uses; this route keeps its own request and
+ * response shapes.
  */
 
 type Caller = { userId: string; teamId: string; isAdmin: boolean };
@@ -97,7 +102,7 @@ export async function PUT(req: NextRequest) {
   if (scope === 'team' && !isAdmin) return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
 
   try {
-    const result = await setProviderKey({ teamId, userId, provider: body.provider, scope, value: body.value });
+    const result = await writeChatKey({ teamId, userId, provider: body.provider, scope, value: body.value });
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
     return NextResponse.json({ key: result.key });
   } catch (error) {
@@ -121,7 +126,7 @@ export async function DELETE(req: NextRequest) {
   if (scope === 'team' && !isAdmin) return NextResponse.json({ error: TEAM_ADMIN_ONLY }, { status: 403 });
 
   try {
-    return NextResponse.json({ deleted: await deleteProviderKey({ teamId, userId, provider, scope }) });
+    return NextResponse.json({ deleted: await removeChatKey({ teamId, userId, provider, scope }) });
   } catch (error) {
     console.error('[inference-keys] delete failed:', error);
     return NextResponse.json({ error: 'Failed to delete provider key' }, { status: 500 });
