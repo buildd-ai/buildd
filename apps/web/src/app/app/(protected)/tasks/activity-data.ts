@@ -12,8 +12,9 @@
  * (scripts/module-boundaries.test.ts), as they do for the projection.
  */
 import { db } from '@buildd/core/db';
-import { missions, workers } from '@buildd/core/db/schema';
-import { and, desc, inArray, ne } from 'drizzle-orm';
+import { missions, tasks as tasksTable, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
+import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { projectMissionDelivery, type MissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
 import {
   buildActivityHistory, buildActivityNow, latestTask, reviewOf,
@@ -41,6 +42,45 @@ export interface ActivityData {
 }
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
+
+/** Recent roots: the History window. Live work outside it is added by `loadLiveRootIds`. */
+export const ACTIVITY_WINDOW_DAYS = 30;
+export const ACTIVITY_ROOT_LIMIT = 200;
+/** Open or agent-held roots, however old. Bounded so a backlog cannot stall the page. */
+export const ACTIVITY_LIVE_ROOT_LIMIT = 500;
+/** Attempts for the loaded roots, newest first: a cap drops the oldest retries, never the live one. */
+export const ACTIVITY_CHILD_LIMIT = 2000;
+
+/**
+ * The root each live task belongs to: an open root, or the parent of an
+ * attempt an agent is running. Deduplicated, first seen first.
+ */
+export function liveRootIdsOf(openRootIds: readonly string[], liveTasks: ReadonlyArray<{ id: string; parentTaskId: string | null }>): string[] {
+  return [...new Set([...openRootIds, ...liveTasks.map(t => t.parentTaskId ?? t.id)])];
+}
+
+/**
+ * Roots that belong in Now however long ago they were last touched: not
+ * terminal, or with an agent live on them or on one of their attempts.
+ * The recent window (newest `ACTIVITY_ROOT_LIMIT` in `ACTIVITY_WINDOW_DAYS`)
+ * alone starves these on a busy workspace: a root's `updatedAt` does not move
+ * while a repair attempt runs, so fresh completed work pushes it out.
+ */
+export async function loadLiveRootIds(workspaceIds: readonly string[]): Promise<string[]> {
+  if (workspaceIds.length === 0) return [];
+  const ws = [...workspaceIds];
+  const [open, live] = await Promise.all([
+    db.select({ id: tasksTable.id }).from(tasksTable)
+      .where(and(inArray(tasksTable.workspaceId, ws), isNull(tasksTable.parentTaskId), notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES])))
+      .orderBy(desc(tasksTable.updatedAt))
+      .limit(ACTIVITY_LIVE_ROOT_LIMIT),
+    db.select({ id: tasksTable.id, parentTaskId: tasksTable.parentTaskId }).from(workers)
+      .innerJoin(tasksTable, eq(workers.taskId, tasksTable.id))
+      .where(and(inArray(workers.workspaceId, ws), inArray(tasksTable.workspaceId, ws), inArray(workers.status, [...LIVE_WORKER_STATUSES])))
+      .limit(ACTIVITY_LIVE_ROOT_LIMIT),
+  ]);
+  return liveRootIdsOf(open.map(r => r.id), live);
+}
 
 /**
  * The mission projection exactly as the Missions page builds it

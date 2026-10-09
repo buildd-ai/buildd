@@ -15,7 +15,9 @@ import { displayWorkspaceName } from '@buildd/shared';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import TaskGrid from './TaskGrid';
 import ActivityView from './ActivityView';
-import { loadActivity, type ActivityData } from './activity-data';
+import {
+  loadActivity, loadLiveRootIds, ACTIVITY_CHILD_LIMIT, ACTIVITY_ROOT_LIMIT, ACTIVITY_WINDOW_DAYS, type ActivityData,
+} from './activity-data';
 import { listLocalSessions, type LocalSessionView } from '@/lib/local-session-view';
 import { parseTaskListSelection } from '@/lib/task-list-filters';
 import { backendLabel } from '@buildd/core/backend-policy';
@@ -84,6 +86,8 @@ export default async function TasksPage({
   // is a historical list another surface links to and keeps TaskGrid.
   let activity: ActivityData | null = null;
   let teamName: string | null = null;
+  // A failed load says so; it never renders as an empty Now and History.
+  let loadFailed = false;
 
   if (!isDev && user) {
     try {
@@ -138,82 +142,73 @@ export default async function TasksPage({
             localSessions.flatMap(s => s.tasks.filter(t => t.live).map(t => [t.id, `${s.clientLabel} · local`] as const)),
           );
           const bandIds = taskListFilter?.ids ?? null;
+          const taskColumns = {
+            id: true,
+            title: true,
+            status: true,
+            mode: true,
+            category: true,
+            createdAt: true,
+            updatedAt: true,
+            workspaceId: true,
+            result: true,
+            missionId: true,
+            context: true,
+            backend: true,
+            dependsOn: true,
+            startAt: true,
+            loopConfig: true,
+            loopIteration: true,
+            loopState: true,
+            parentTaskId: true,
+            taskClass: true,
+            // Subject-liveness gate inputs. subjectAnchor carries `source`,
+            // which decides whether the anchor gates claims at all — an
+            // unselected column reads as undefined and the row would render
+            // as a healthy QUEUED task again.
+            subjectKind: true,
+            subjectPrNumber: true,
+            subjectResolution: true,
+            subjectAnchor: true,
+          } as const;
           // Band membership is historical, so it must not use current task status.
-          // Fetch recent tasks (last 30 days, limit 200)
-          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-          const recentTasks = await db.query.tasks.findMany({
-            where: and(
-              inArray(tasks.workspaceId, wsIds),
-              bandIds ? inArray(tasks.id, bandIds) : gte(tasks.updatedAt, thirtyDaysAgo),
-              bandIds ? undefined : isNull(tasks.parentTaskId),
-            ),
-            columns: {
-              id: true,
-              title: true,
-              status: true,
-              mode: true,
-              category: true,
-              createdAt: true,
-              updatedAt: true,
-              workspaceId: true,
-              result: true,
-              missionId: true,
-              context: true,
-              backend: true,
-              dependsOn: true,
-              startAt: true,
-              loopConfig: true,
-              loopIteration: true,
-              loopState: true,
-              parentTaskId: true,
-              taskClass: true,
-              // Subject-liveness gate inputs. subjectAnchor carries `source`,
-              // which decides whether the anchor gates claims at all — an
-              // unselected column reads as undefined and the row would render
-              // as a healthy QUEUED task again.
-              subjectKind: true,
-              subjectPrNumber: true,
-              subjectResolution: true,
-              subjectAnchor: true,
-            },
-            orderBy: [desc(tasks.updatedAt)],
-            limit: bandIds ? 5000 : 200,
-          });
-
-          // Fetch child tasks (retry/reviewer) for the root tasks we loaded
-          const rootIds = recentTasks.map(t => t.id);
-          const childTasks = rootIds.length > 0
+          // Otherwise: recent roots (the History window) plus every live root, however old.
+          const windowStart = new Date(Date.now() - ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+          const [recentTasks, liveRootIds] = await Promise.all([
+            db.query.tasks.findMany({
+              where: and(
+                inArray(tasks.workspaceId, wsIds),
+                bandIds ? inArray(tasks.id, bandIds) : gte(tasks.updatedAt, windowStart),
+                bandIds ? undefined : isNull(tasks.parentTaskId),
+              ),
+              columns: taskColumns,
+              orderBy: [desc(tasks.updatedAt)],
+              limit: bandIds ? 5000 : ACTIVITY_ROOT_LIMIT,
+            }),
+            bandIds ? Promise.resolve([] as string[]) : loadLiveRootIds(wsIds),
+          ]);
+          const loadedRootIds = new Set(recentTasks.map(t => t.id));
+          const missingLiveIds = liveRootIds.filter(id => !loadedRootIds.has(id));
+          const liveRoots = missingLiveIds.length > 0
             ? await db.query.tasks.findMany({
-                where: inArray(tasks.parentTaskId, rootIds),
-                columns: {
-                  id: true,
-                  title: true,
-                  status: true,
-                  mode: true,
-                  category: true,
-                  createdAt: true,
-                  updatedAt: true,
-                  workspaceId: true,
-                  result: true,
-                  missionId: true,
-                  context: true,
-                  backend: true,
-                  dependsOn: true,
-                  startAt: true,
-                  loopConfig: true,
-                  loopIteration: true,
-                  loopState: true,
-                  parentTaskId: true,
-                  taskClass: true,
-                  subjectKind: true,
-                  subjectPrNumber: true,
-                  subjectResolution: true,
-                  subjectAnchor: true,
-                },
-                limit: 500,
+                where: and(inArray(tasks.workspaceId, wsIds), inArray(tasks.id, missingLiveIds)),
+                columns: taskColumns,
               })
             : [];
-          const allTasks = [...new Map([...recentTasks, ...childTasks].map(t => [t.id, t])).values()];
+          const rootTasks = [...recentTasks, ...liveRoots];
+
+          // Fetch child tasks (retry/reviewer) for the root tasks we loaded,
+          // newest first so a cap drops the oldest attempts, never a live one.
+          const rootIds = rootTasks.map(t => t.id);
+          const childTasks = rootIds.length > 0
+            ? await db.query.tasks.findMany({
+                where: and(inArray(tasks.workspaceId, wsIds), inArray(tasks.parentTaskId, rootIds)),
+                columns: taskColumns,
+                orderBy: [desc(tasks.createdAt)],
+                limit: ACTIVITY_CHILD_LIMIT,
+              })
+            : [];
+          const allTasks = [...new Map([...rootTasks, ...childTasks].map(t => [t.id, t])).values()];
 
           // Fetch mission titles for tasks that have missionId
           const missionIds = [...new Set(allTasks.map(t => t.missionId).filter(Boolean))] as string[];
@@ -435,6 +430,7 @@ export default async function TasksPage({
     } catch (error) {
       unstable_rethrow(error);
       console.error('Tasks grid query error:', error);
+      loadFailed = true;
     }
   }
 
@@ -472,6 +468,7 @@ export default async function TasksPage({
         missionFilter={missionId ? { id: missionId, title: missionTitle } : null}
         initiativeTitle={initiativeTitle}
         localSessions={localSessions}
+        loadError={loadFailed}
       />
     );
   }
