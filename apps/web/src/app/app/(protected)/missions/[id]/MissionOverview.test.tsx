@@ -17,6 +17,8 @@ const { dagBoard, dagId, DAG_SPECS } = await import('@/app/app/dev/fixtures/miss
 const spec = DAG_SPECS.linear;
 const html = renderToStaticMarkup(<MissionOverview model={dagBoard(spec)} missionId="mission-1" workspaceId="ws-1" />);
 
+const compact = await import('@/app/app/dev/fixtures/mission-detail-compact-fixtures');
+
 describe('MissionOverview', () => {
   it('opens on the task in flight, not the first task', () => {
     const selected = html.match(/data-id="([^"]+)"[^>]*aria-pressed="true"/)?.[1];
@@ -34,5 +36,26 @@ describe('MissionOverview', () => {
     expect(html).toContain('data-testid="overview-rail"');
     expect(html).toContain('data-testid="rail-needs"');
     expect(html).toContain('min-[900px]:grid-cols-[minmax(0,720px)');
+  });
+
+  it('names the selection once: "02 of 05" in the card, the stepper keeps only the state', () => {
+    expect(html).toContain('02 of 05');
+    const stepper = html.slice(html.indexOf('data-testid="overview-stepper"'));
+    expect(stepper).not.toMatch(/\d\d of \d\d/);
+  });
+});
+
+describe('MissionOverview, 11 tasks with delivery', () => {
+  const f = compact.missionDetailCompactFixture('eleven', null);
+  const out = renderToStaticMarkup(<MissionOverview model={f.model} deliveries={f.deliveries} missionId="mission-1" workspaceId="ws-1" />);
+
+  it('draws Build › Audit › Land once (the Lifecycle line), not a second stage grid', () => {
+    expect(out.match(/data-testid="lifecycle"/g)).toHaveLength(1);
+    expect(out).not.toContain('data-testid="delivery-stages"');
+  });
+
+  it('the counts line is merged only; criteria live in the Verified pill and the rail', () => {
+    const counts = out.match(/data-testid="overview-counts"[^>]*>([^<]*)</)?.[1];
+    expect(counts).toBe('3 of 11 merged');
   });
 });

@@ -160,7 +160,9 @@ describe('replay: audit fails → repair → re-audit → land, on every surface
       const eps = surfaces(w).history;
       // Reviewer and repair attempts fold into the deliverable: no rows of their own.
       expect(eps.map(e => e.id)).not.toContainAnyValues(['rv1', 'rv2', 'rv3', 'fx1']);
-      const ep = eps.find(e => e.id === 't34')!;
+      const ep = eps.find(e => e.id === 't34');
+      // In flight it is Now's alone; History takes it once it finishes.
+      if (!ep) { expect(prev).toEqual([]); continue; }
       const steps = ep.steps.map(s => s.text);
       expect(`${label}: ${steps.slice(0, prev.length).join(' | ')}`).toBe(`${label}: ${prev.join(' | ')}`);
       prev = steps;

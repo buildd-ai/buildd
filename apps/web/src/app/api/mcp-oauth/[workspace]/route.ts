@@ -51,7 +51,7 @@ import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/lib/interactive-session';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
+import { scheduleInteractiveTouch, isInitializeOnlyRequest } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
@@ -313,6 +313,7 @@ async function handle(req: Request, workspace: string): Promise<Response> {
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
     sessionKey,
     level,
+    initializeOnly: !sessionKey && (await isInitializeOnlyRequest(req)),
   });
 
   // Verify workspace exists and grab its team for memory routing.

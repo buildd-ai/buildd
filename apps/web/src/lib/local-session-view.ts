@@ -91,9 +91,17 @@ export function classifyLocalSession(row: LocalSessionRow, now: Date): LocalSess
   const workerLive = live.length > 0;
   const seen = row.lastSeenAt.getTime();
   const primary = live[live.length - 1] ?? row.held[row.held.length - 1] ?? null;
-  const tasks: LocalSessionTaskView[] = row.held
-    .filter(h => h.taskId)
-    .map(h => ({ id: h.taskId!, title: h.taskTitle ?? 'Untitled task', status: h.taskStatus ?? 'unknown', workerId: h.workerId, live: isLive(h.workerStatus) }));
+  // One entry per task. A task claimed twice (buildd released the first worker
+  // after MCP silence, the session re-claimed) lists its live worker; with none
+  // live, its newest claim. Order stays by first claim.
+  const byTask = new Map<string, LocalSessionTaskView>();
+  for (const h of row.held) {
+    if (!h.taskId) continue;
+    const view: LocalSessionTaskView = { id: h.taskId, title: h.taskTitle ?? 'Untitled task', status: h.taskStatus ?? 'unknown', workerId: h.workerId, live: isLive(h.workerStatus) };
+    const prev = byTask.get(h.taskId);
+    if (!prev || view.live || !prev.live) byTask.set(h.taskId, view);
+  }
+  const tasks = [...byTask.values()];
   const online = now.getTime() - seen < LOCAL_SESSION_ONLINE_MS;
   const state: LocalSessionState = row.endedAt
     ? 'ended'
