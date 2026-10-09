@@ -8,6 +8,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { listOpenWorkspaces, isOpenWithinTeams } from '@/lib/open-workspaces';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { workerHoldsRunnerSlot } from '@buildd/shared';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
@@ -147,10 +148,13 @@ export async function GET(req: NextRequest) {
           inArray(workers.accountId, accountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         ),
-        columns: { accountId: true, localUiUrl: true },
+        columns: { accountId: true, localUiUrl: true, status: true, waitingFor: true, parkedUntil: true },
       });
-      for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null }>) {
+      for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null; status?: string; waitingFor?: { type?: string } | null; parkedUntil?: Date | null }>) {
         if (!w.accountId) continue;
+        // A paused or parked worker holds no slot (the runner's heartbeat
+        // already leaves it out); counting it here read "2 busy" for one.
+        if (w.status && !workerHoldsRunnerSlot({ status: w.status, waitingFor: w.waitingFor, parkedUntil: w.parkedUntil })) continue;
         if (isOnceRunnerUrl(w.localUiUrl)) {
           const k = onceKey(w.accountId, w.localUiUrl!);
           onceLive.set(k, (onceLive.get(k) || 0) + 1);

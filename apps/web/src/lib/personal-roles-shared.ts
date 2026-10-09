@@ -40,7 +40,7 @@ export function splitTeamLevelRows<T extends TeamLevelRowLike>(
 
 /** Where a personal role is edited. A slug is not unique for personal rows, so the id rides along. */
 export function personalRoleEditorPath(role: { id: string; slug: string }): string {
-  return `/app/team/${encodeURIComponent(role.slug)}/settings?id=${encodeURIComponent(role.id)}`;
+  return `/app/settings/roles/${encodeURIComponent(role.slug)}/edit?id=${encodeURIComponent(role.id)}`;
 }
 
 export interface PersonalRoleAccess {

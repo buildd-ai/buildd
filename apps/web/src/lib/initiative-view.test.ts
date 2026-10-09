@@ -11,7 +11,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildInitiativeCard,
   groupInitiativeCards,
-  initiativesHeadline,
+  initiativesCountLine,
   targetDateLabel,
   INITIATIVE_STATUS_LABEL,
   type InitiativeMissionInput,
@@ -268,10 +268,11 @@ describe('grouping and headline', () => {
     expect(groups.map((g) => g.section)).toEqual(['active']);
   });
 
-  it('headline leads with what needs you', () => {
-    expect(initiativesHeadline({ needsYou: 2, active: 3 })).toBe('2 need you');
-    expect(initiativesHeadline({ needsYou: 1, active: 3 })).toBe('1 needs you');
-    expect(initiativesHeadline({ needsYou: 0, active: 3 })).toBe('3 active');
-    expect(initiativesHeadline({ needsYou: 0, active: 0 })).toBe('Nothing active');
+  it('count line leads with what needs you, then each group', () => {
+    const g = (section: string, n: number, label: string) => ({ section, label, cards: Array(n).fill({}) }) as any;
+    expect(initiativesCountLine([g('needs_you', 2, 'Needs you'), g('active', 3, 'Active'), g('completed', 6, 'Completed')]))
+      .toEqual([{ text: '2 need you', needsYou: true }, { text: '3 active', needsYou: false }, { text: '6 completed', needsYou: false }]);
+    expect(initiativesCountLine([g('needs_you', 1, 'Needs you')])).toEqual([{ text: '1 needs you', needsYou: true }]);
+    expect(initiativesCountLine([])).toEqual([]);
   });
 });

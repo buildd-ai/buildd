@@ -79,6 +79,7 @@ import { roleSlugGate } from './role-gate';
 // applying it.
 import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
+import { appliesWorkspacePausedGate, workspaceNotPausedGate } from './workspace-paused-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
@@ -103,7 +104,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
 import {
   attachPersonalCredentials,
   decidePersonalCredential,
@@ -718,6 +719,14 @@ export async function POST(req: NextRequest) {
     claimableConditions.push(explicitTaskGates.workspaceExecutor);
   }
 
+  // Workspace "Pause new starts until <time>" (workspaces.new_starts_paused_until).
+  // Runner claims wait; a person's interactive session is never paused, and an
+  // admin force claim lifts it like the other workspace gates.
+  if (appliesWorkspacePausedGate({ interactive: !!interactiveSession, force: forceClaim })) {
+    explicitTaskGates.workspacePaused = workspaceNotPausedGate(now);
+    claimableConditions.push(explicitTaskGates.workspacePaused);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -815,6 +824,7 @@ export async function POST(req: NextRequest) {
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
         workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
+        workspacePaused: workspaceNotPausedGate(now),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
@@ -1924,6 +1934,11 @@ export async function POST(req: NextRequest) {
       // bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
+            // Only same-PR conflict/collision attempts get this exemption. Other
+            // soft evidence, active claims and genuine migration mutexes remain.
+            repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
+              ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
+              : [],
             isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
@@ -3393,6 +3408,7 @@ export async function POST(req: NextRequest) {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+        runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
   const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0

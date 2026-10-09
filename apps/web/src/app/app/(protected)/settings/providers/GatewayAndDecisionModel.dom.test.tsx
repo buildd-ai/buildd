@@ -79,6 +79,25 @@ describe('GatewayAndDecisionModel', () => {
     expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: null } });
   });
 
+  it('saves Clef via Cloudflare as a System One model, defaulting to Clef', async () => {
+    await mount();
+    await click(host.querySelectorAll('input[name="decision-model"]')[1]);
+    const cf = [...host.querySelectorAll('input[name="decision-via"]')].find((r) => r.parentElement?.textContent === 'Cloudflare');
+    await click(cf);
+    const trigger = host.querySelector('[data-testid="decision-model-cf"]');
+    expect(trigger?.textContent).toContain('Clef');
+    await click(trigger);
+    await click([...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes('Clef Flash')));
+    await click([...host.querySelectorAll('[data-testid="decision-model"] button')].find((b) => b.textContent === 'Save'));
+    expect(writes.at(-1)).toEqual({ url: '/api/teams/t', method: 'PATCH', body: { decisionModel: { endpoint: 'systemone', model: 'clef-flash', via: 'cloudflare' } } });
+  });
+
+  it('names Cloudflare in the current model', async () => {
+    decisionModel = { endpoint: 'systemone', model: 'clef', via: 'cloudflare' };
+    await mount(false);
+    expect(text('decision-model-current')).toBe('clef via Cloudflare');
+  });
+
   it('is read-only for a member', async () => {
     decisionModel = { endpoint: 'chat', model: 'qwen3-8b', via: 'openrouter' };
     await mount(false);

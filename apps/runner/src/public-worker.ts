@@ -62,6 +62,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   startedAt: true,
   lastActivity: true,
   toolInFlight: true,
+  pauseRequestedAt: true, // a timestamp, no content
   killedByRestart: true,
   completedAt: true,
   milestones: true,
@@ -120,6 +121,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   phaseStart: true,
   phaseToolCount: true,
   phaseTools: true,
+  phaseOps: true,
   sessionModel: true,
   reportedModel: true,
   resultMeta: true,

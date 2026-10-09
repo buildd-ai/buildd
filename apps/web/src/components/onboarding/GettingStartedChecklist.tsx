@@ -7,7 +7,7 @@ import type { FirstTaskState, GettingStartedChecklist as Checklist, GettingStart
 import { AGENT_CREDENTIAL_HREF } from '@/lib/provider-auth-failure';
 
 /** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
-export const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
+export const AGENT_ENDPOINT_HREF = '/app/settings/models#agent-endpoint-h';
 
 const TITLES: Record<GettingStartedStepId, string> = {
   runner: 'Connect a runner',

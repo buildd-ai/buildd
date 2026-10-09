@@ -195,7 +195,7 @@ describe('GET /api/github/callback', () => {
 
     expect(response.status).toBe(307);
     const location = response.headers.get('location')!;
-    expect(location).toContain('/app/workspaces');
+    expect(location).toContain('/app/settings/workspaces?');
     expect(location).toContain('error=no_installation_id');
   });
 
@@ -233,7 +233,7 @@ describe('GET /api/github/callback', () => {
     mockAuth.mockResolvedValue({ user: { email: 'test@test.com', id: 'user-1' } });
     mockInstallationsFindFirst.mockImplementation(() => null);
 
-    await GET(createRequest({ installation_id: '77777', state: makeState({ returnUrl: '/app/workspaces' }) }));
+    await GET(createRequest({ installation_id: '77777', state: makeState({ returnUrl: '/app/settings/workspaces' }) }));
     expect(mockInsertValues.mock.calls[0][0].installedByUserId).toBeNull();
 
     mockInsertValues.mockClear();
@@ -290,7 +290,7 @@ describe('GET /api/github/callback', () => {
 
     const location = new URL(response.headers.get('location')!);
     expect(location.host).toBe('localhost:3000');
-    expect(location.pathname).toBe('/app/workspaces');
+    expect(location.pathname).toBe('/app/settings/workspaces');
   });
 
   it('does not reassign an installation already attributed to another user', async () => {

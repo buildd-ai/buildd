@@ -328,8 +328,15 @@ export function groupInitiativeCards(cards: readonly InitiativeCardModel[]): Ini
     .filter((g) => g.cards.length > 0);
 }
 
-export function initiativesHeadline(input: { needsYou: number; active: number }): string {
-  if (input.needsYou > 0) return `${input.needsYou} ${input.needsYou === 1 ? 'needs' : 'need'} you`;
-  if (input.active > 0) return `${input.active} active`;
-  return 'Nothing active';
+/**
+ * The list's one count line, `2 need you · 3 active · 6 completed`: what needs
+ * you first, then each group. `needsYou` marks the part drawn in the accent.
+ */
+export function initiativesCountLine(groups: readonly InitiativeGroup[]): Array<{ text: string; needsYou: boolean }> {
+  return groups.map((g) => {
+    const n = g.cards.length;
+    return g.section === 'needs_you'
+      ? { text: `${n} ${n === 1 ? 'needs' : 'need'} you`, needsYou: true }
+      : { text: `${n} ${g.label.toLowerCase()}`, needsYou: false };
+  });
 }

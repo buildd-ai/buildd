@@ -12,10 +12,11 @@ import {
   type ServerFeature,
 } from '@buildd/core/inference-policy';
 import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
+import Segmented from '@/components/ui/Segmented';
 import { defaultLine, featureState, OVERRIDE_OPTIONS, type OverrideValue } from './feature-copy';
 
 /**
- * Settings → AI features.
+ * Settings → Models → Features.
  *
  * Chat is always on (it runs whenever a key resolves), so it has no control
  * here. Built-in decision calls have no control and are not listed. Each
@@ -93,16 +94,16 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
     <div className="space-y-8">
       <section aria-labelledby="ai-features-h">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 mb-3">
-          <h2 id="ai-features-h" className="section-label">Where it runs</h2>
+          <h3 id="ai-features-h" className="text-sm font-semibold text-text-primary">Where it runs</h3>
           <span className="text-xs text-text-muted" data-testid="feature-default">{defaultLine(hasTeamKey)}</span>
         </div>
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           {LIVE_SERVER_FEATURES.map((f) => {
             const d = INFERENCE_CAPABILITIES[f];
             const r = resolveFeatureMode(f, modes, hasTeamKey);
             const current: OverrideValue = modes?.[f] ?? 'default';
             return (
-              <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 px-4 py-3" data-testid={`feature-${f}`}>
+              <div key={f} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 py-3" data-testid={`feature-${f}`}>
                 <span className="min-w-0">
                   <span id={`feature-${f}-label`} className="block text-sm text-text-primary">{d.label}</span>
                   <span className="block text-xs text-text-secondary">{d.description}</span>
@@ -111,27 +112,15 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
                   )}
                 </span>
                 {canManage ? (
-                  <div role="radiogroup" aria-labelledby={`feature-${f}-label`} className="flex sm:inline-flex border border-border-strong shrink-0">
-                    {OVERRIDE_OPTIONS.map((o, i) => {
-                      const on = current === o.value;
-                      return (
-                        <button
-                          key={o.value}
-                          type="button"
-                          role="radio"
-                          aria-checked={on}
-                          data-value={o.value}
-                          disabled={busy || !loaded}
-                          onClick={() => { if (!on) setOverride(f, o.value); }}
-                          className={`flex-1 sm:flex-none h-11 md:h-8 px-3 text-xs transition-colors disabled:opacity-50 ${i > 0 ? 'border-l border-border-strong' : ''} ${
-                            on ? 'bg-text-primary text-surface-1 font-medium' : 'bg-surface-1 text-text-secondary hover:text-text-primary'
-                          }`}
-                        >
-                          {o.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  // A disabled fieldset disables every segment while saving or loading.
+                  <fieldset disabled={busy || !loaded} className="shrink-0 disabled:opacity-50" data-testid={`feature-${f}-mode`}>
+                    <Segmented
+                      label={`${d.label}: where it runs`}
+                      items={OVERRIDE_OPTIONS}
+                      value={current}
+                      onChange={(v) => { if (v !== current) setOverride(f, v); }}
+                    />
+                  </fieldset>
                 ) : (
                   <span className={`shrink-0 text-xs ${r.needsKey ? 'text-status-warning' : 'text-text-primary'}`}>
                     {featureState(r)}
@@ -144,13 +133,13 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
       </section>
 
       <section aria-labelledby="ai-decisions-h">
-        <h2 id="ai-decisions-h" className="section-label mb-3">Decision features</h2>
-        <div className="card divide-y divide-border-default">
+        <h3 id="ai-decisions-h" className="text-sm font-semibold text-text-primary mb-3">Decision features</h3>
+        <div className="border-y border-border-default divide-y divide-border-default">
           {OPT_IN_CAPABILITIES.map(capability => {
             const descriptor = INFERENCE_CAPABILITIES[capability];
             const enabled = shadows?.includes(capability) ?? false;
             return (
-              <div key={capability} data-testid={`decision-${capability}`} className="flex items-center justify-between gap-4 px-4 py-4">
+              <div key={capability} data-testid={`decision-${capability}`} className="flex items-center justify-between gap-4 py-4">
                 <span className="min-w-0">
                   <span id={`decision-${capability}-label`} className="block text-body text-text-primary">{descriptor.label}</span>
                   <span className="block text-meta text-text-secondary">{descriptor.description}</span>

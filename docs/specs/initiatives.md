@@ -111,7 +111,7 @@ as an empty progress bar beside `100%`. See
 **Code surface**
 
 - `apps/web/src/lib/initiative-view.ts`: `buildInitiativeCard`,
-  `groupInitiativeCards`, `initiativesHeadline`, `targetDateLabel`,
+  `groupInitiativeCards`, `initiativesCountLine`, `targetDateLabel`,
   `INITIATIVE_STATUS_LABEL`. Pure, client-safe.
 - `apps/web/src/lib/initiative-cards.ts`: `loadInitiativeCards`, the one loader
   for the list and the page.

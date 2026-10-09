@@ -24,6 +24,7 @@ export const mergePolicySchema = z.object({
   threshold: thresholdSchema.optional(),
   agentReview: agentReviewSchema.optional(),
   stallNotifyMinutes: z.number().optional(),
+  dataMigrations: z.enum(['person', 'agent-review']).optional(),
 }).strict();
 
 export const DEFAULT_MERGE_POLICY: MergePolicy = {

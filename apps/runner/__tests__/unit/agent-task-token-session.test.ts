@@ -323,6 +323,22 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expectTokenNowhere(TOKEN_A);
   });
 
+  // A runner agent never acts as a person (docs/specs/workflow-state-kernel.md, T5 `human:`):
+  // the server reads a person only from an OAuth session, and the agent's buildd
+  // connection is the worker endpoint with a buildd credential, never the OAuth one.
+  test('Claude: the agent\'s buildd server is the worker endpoint on a buildd credential, never an OAuth session', async () => {
+    await runTask(manager, 'w-tt-principal');
+    expect(allQueryOpts.length).toBeGreaterThan(0);
+    for (const q of allQueryOpts) {
+      const servers = (q?.options?.mcpServers ?? {}) as Record<string, { url?: string; headers?: Record<string, string> }>;
+      const url = new URL(servers.buildd!.url!);
+      expect(url.pathname).toBe('/api/mcp');
+      expect(url.searchParams.get('worker')).toBe('w-tt-principal');
+      expect(servers.buildd!.headers!.Authorization).toMatch(/^Bearer bldt?_/);
+      for (const s of Object.values(servers)) expect(s.url ?? '').not.toContain('/api/mcp-oauth');
+    }
+  });
+
   test('Codex: BUILDD_MCP_BEARER_TOKEN is the token', async () => {
     await runTask(manager, 'w-tt-codex', 'codex');
     const run = backendRuns.find(r => r.backend === 'codex');
