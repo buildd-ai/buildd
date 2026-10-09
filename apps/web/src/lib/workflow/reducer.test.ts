@@ -448,7 +448,40 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     const last = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', attemptNo: 3 })]);
     expect(applied(end(last, { attemptId: 'a1', outcome: 'lost', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
   });
-  const repairing = (o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
+  test('abe42d1b: a fix that pushed itself and ends with no local head is delivered by its own attributed push', () => {
+    // FIXING bound to (H1, r1, a1). The agent pushed H2 itself, so the head handler recorded it as
+    // the attempt's (reportedShas [H2], current head H2) and the runner has nothing local to report.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    const dec = applied(end(pushed, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H2') }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.evidence.proof).toEqual({ holds: true, reason: 'live_head_contains_local' });
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2', kind: 'delta' }));
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', boundAttemptId: null });
+    expect(dec.attempts[0]).toMatchObject({ attemptId: 'a1', set: { status: 'ended', outcome: 'delivered', pushedHeadSha: 'H2' } });
+    expect(effectKinds(dec)).not.toContain('push_recovery');
+    // REPAIRING: the same rule for a CI fix that pushed itself.
+    const rep = V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', currentHeadSha: 'H2' }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', reportedShas: ['H2'] })]);
+    expect(applied(end(rep, { attemptId: 'c1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H2') })).toState).toBe('AWAITING_REVIEW');
+  });
+  test('abe42d1b: an unreported local head is not proof without the attempt’s own push', () => {
+    // No attributed push at all: the head never moved off the bound one.
+    const quiet = applied(end(fixing(), { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H1') }));
+    expect(quiet.toState).toBe('AWAITING_PUSH');
+    // A foreign push (recorded, never in reportedShas) moved the head: still not the attempt's work.
+    const foreign = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H9' }), [decidedRC], [A({ status: 'running' })]);
+    const f = applied(end(foreign, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H9') }));
+    expect(f.toState).toBe('AWAITING_PUSH');
+    expect(f.evidence.proof).toEqual({ holds: false, reason: 'local_head_unknown' });
+    // The attempt pushed H2, then someone force-pushed H9 over it: H9 does not carry the attempt's push.
+    const over = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H9' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    expect(applied(end(over, { attemptId: 'a1', outcome: 'success', localHeadSha: null, commitCount: 0, live: live('H9') })).toState).toBe('AWAITING_PUSH');
+    // Commits reported but no SHA, on an unproven end: something local may be missing from the push.
+    const pushed = V(D({ state: 'FIXING', currentRound: 1, boundAttemptId: 'a1', currentHeadSha: 'H2' }), [decidedRC], [A({ status: 'running', reportedShas: ['H2'] })]);
+    const unsafe = applied(end(pushed, { attemptId: 'a1', outcome: 'unproven', localHeadSha: null, commitCount: 2, live: live('H2') }));
+    expect(unsafe.toState).toBe('AWAITING_PUSH');
+    expect(unsafe.effects.find((e) => e.kind === 'push_recovery')?.dedupeKey).toBe('push_recovery:d1:none:1');
+  });
+  const repairing =(o: Partial<AttemptSnapshot> = {}, d: Partial<DeliverySnapshot> = {}) =>
     V(D({ state: 'REPAIRING', stateReason: 'ci', boundAttemptId: 'c1', ...d }), [], [A({ id: 'c1', family: 'ci', triggerReason: 'sig', status: 'running', ...o })]);
   test('REPAIRING: CI fix delivered → round; carry-forward → APPROVED; failed → next ledger row; exhausted', () => {
     expect(applied(end(repairing(), { attemptId: 'c1', localHeadSha: 'H2', live: live('H2') })).toState).toBe('AWAITING_REVIEW');
@@ -717,6 +750,24 @@ describe('T10 CiFailedObserved (S23, S28)', () => {
     expect(applied(ci(V(D({ state: 'CHANGES_REQUESTED' })), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
     const three = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
     expect(applied(ci(V(D({ state: 'AWAITING_REVIEW' }), [], three), { preflightMiss: 'x' })).evidence).toMatchObject({ preflightMiss: 'x' });
+  });
+  test('438517a9: a hint the live read contradicts (nothing failing on the head now) moves nothing, from any T10 state', () => {
+    for (const state of ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED'] as const) {
+      const v = V(D({ state, approvedHeads: ['H1'] }));
+      expectResult(ci(v, { liveChecks: { complete: true, failing: [] } }), 'rejected', 'ci_not_red');
+      // A re-run still going is not red either: its own completion is the next hint.
+      expectResult(ci(v, { liveChecks: { complete: false, failing: [] } }), 'rejected', 'ci_not_red');
+    }
+    // Red now: applied, and the read is the transition's evidence.
+    const red = applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })), { liveChecks: { complete: false, failing: ['build'] } }));
+    expect(red.toState).toBe('REPAIRING');
+    expect(red.evidence).toMatchObject({ liveChecks: { complete: false, failing: ['build'] } });
+    // No read (unreadable, or a person's Fix CI) fails toward doing the work.
+    expect(applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] })))).evidence).not.toHaveProperty('liveChecks');
+    // A genuinely new red after a skipped attempt at the same head is the next ledger row, still bounded by the cap.
+    const skipped = [A({ id: 'c1', family: 'ci', attemptNo: 1, status: 'skipped' })];
+    const again = applied(ci(V(D({ state: 'APPROVED', approvedHeads: ['H1'] }), [], skipped), { liveChecks: { complete: true, failing: ['build'] } }));
+    expect(again.idempotencyKey).toMatch(/^ci:.+:H1:2$/);
   });
   test('an old-SHA failure is recorded only; CHANGES_REQUESTED keeps state', () => {
     expectResult(ci(V(D({ state: 'AWAITING_REVIEW' })), { headSha: 'H0' }), 'stale', 'head_not_current');
