@@ -19,6 +19,7 @@ import { useSearchParams } from 'next/navigation';
 import { OCCUPANCY_WINDOWS, type OccupancySeries, type OccupancyWindow } from '@/lib/fleet-occupancy';
 import { fmtLevel, levelPaths, levelY, niceScaleMax, scaleTicks } from './occupancy-geometry';
 import { isOccupancySampleState, sampleOccupancySeries } from './occupancy-sample';
+import Segmented from '@/components/ui/Segmented';
 
 const DEFAULT_W = 640;
 const PLOT_H = 140;
@@ -96,18 +97,8 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
     <div data-testid="health-section-occupancy" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-xs font-medium text-text-secondary">Runner slots</h3>
-        <div role="group" aria-label="Slots busy window" data-testid="occupancy-window-picker" className={`flex shrink-0 border border-border-default ${loading ? 'opacity-60' : ''}`}>
-          {OCCUPANCY_WINDOWS.map(value => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={window === value}
-              onClick={() => setWindow(value)}
-              className={`px-3 min-h-[44px] md:min-h-[28px] text-chip uppercase tracking-widest ${window === value ? 'bg-surface-3 text-text-primary' : 'text-text-muted hover:text-text-secondary'}`}
-            >
-              {value}
-            </button>
-          ))}
+        <div data-testid="occupancy-window-picker" className={`shrink-0 ${loading ? 'opacity-60' : ''}`}>
+          <Segmented label="Slots busy window" items={OCCUPANCY_WINDOWS.map(value => ({ value, label: value }))} value={window} onChange={setWindow} />
         </div>
       </div>
       {error ? (
@@ -124,8 +115,9 @@ export function OccupancyChart({ capacityNow, busyNow, workspaceId }: { capacity
 function Metric({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div data-testid={testId} className="flex min-w-0 flex-col">
-      <span className="font-mono text-[11px] font-semibold uppercase tracking-[1.5px] text-text-muted">{label}</span>
+      {/* The number first, a sentence-case label under it (the prototype's stat). */}
       <span className="font-mono text-[18px] font-semibold leading-tight text-text-primary">{value}</span>
+      <span className="text-meta text-text-muted">{label}</span>
     </div>
   );
 }

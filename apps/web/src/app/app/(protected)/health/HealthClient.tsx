@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
+import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -43,7 +43,9 @@ import {
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
-import { RunnerLanes } from '@/components/fleet/runner-lanes';
+import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
+import Disclosure from '@/components/ui/Disclosure';
+import Segmented from '@/components/ui/Segmented';
 import type { FleetSnapshot } from '@buildd/shared';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
@@ -214,13 +216,19 @@ const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> 
   // Access problems stop runs and blocked actions are agents reaching outside
   // their task: both are things to act on, so they sit with the failures.
   failures: new Set(['agentAccess', 'failureGroups']),
-  // Only what sets capacity. Schedules live on /app/schedules.
+  // Only what sets capacity. A schedule lives where it is configured: its
+  // mission, or the workspace's schedules (`scheduleHref`).
   runners: new Set(['capacity', 'budget', 'credentials']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
 };
+
+/** Where a schedule is configured: its mission, else the workspace's schedules. */
+export function scheduleHref(s: Pick<ScheduleRow, 'workspaceId' | 'missionId'>): string {
+  return s.missionId ? `/app/missions/${s.missionId}` : `/app/workspaces/${s.workspaceId}/schedules`;
+}
 
 /** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
 const SANDBOX_PLAIN_LABEL: Record<string, string> = {
@@ -233,7 +241,7 @@ const VIEW_TITLE: Record<HealthView, string> = {
   all: 'Health',
   overview: 'Health',
   failures: 'Failures',
-  runners: 'Runners & capacity',
+  runners: 'Runners',
   operator: 'Operator',
 };
 
@@ -265,7 +273,7 @@ interface Props {
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
-  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -448,7 +456,7 @@ export function HealthClient({
   // full list (with blocked actions) is on Failures.
   const accessProblems = agentAccess?.grantProblems ?? [];
   // On Overview the failures come from the merged failure groups (the same ones
-  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  // the Problems row counts), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
   const nonFailureProblems =
     brokenCredentials.length > 0 ||
@@ -529,7 +537,7 @@ export function HealthClient({
           </div>
         ) : (
           <>
-          {(page !== 'overview' || nonFailureProblems) && (
+          {(page !== 'overview' || nonFailureProblems || overviewFailureGroups > 0) && (
           <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
@@ -660,7 +668,7 @@ export function HealthClient({
             ))}
 
             {failedSchedules.map((s) => (
-              <div key={s.id} className="px-4 py-3">
+              <a key={s.id} href={scheduleHref(s)} data-testid="problem-schedule" className="block px-4 py-3 hover:bg-surface-2">
                 <div className="flex items-start gap-3">
                   <span className="text-status-error mt-0.5 shrink-0 text-sm">⚠</span>
                   <div className="min-w-0 flex-1">
@@ -669,7 +677,7 @@ export function HealthClient({
                     <p className="text-xs text-text-muted mt-0.5">{s.workspaceName}</p>
                   </div>
                 </div>
-              </div>
+              </a>
             ))}
 
             {/* Recent failures, grouped by error signature.
@@ -713,6 +721,14 @@ export function HealthClient({
               );
             })}
 
+            {/* Overview names what is failing in one row; the list is on Failures. */}
+            {page === 'overview' && failureGroupsView && failureGroupsView.groups.length > 0 && (
+              <a href="/app/health/failures" data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
+                <span className="text-sm text-text-primary">{failureProblemLine(failureGroupsView, activeWindow)}</span>
+                <span aria-hidden="true" className="text-text-muted">›</span>
+              </a>
+            )}
+
             {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
@@ -726,7 +742,6 @@ export function HealthClient({
             )}
           </div>
           )}
-          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
           </>
         )}
       </section>
@@ -743,20 +758,24 @@ export function HealthClient({
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
-      {show('capacity') && (
-        <OccupancyChart
-          capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-          busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
-          workspaceId={wsFilter}
-        />
-      )}
-
+      {/* The lanes are this page's diagnostic, so they come first. The
+          occupancy history repeats the same busy-slot count at a coarser
+          grain; it stays one tap away for the 7- and 30-day view. */}
       {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
         <div data-testid="health-section-lanes" className="mb-6">
-          <h3 className="text-xs font-medium text-text-secondary mb-3">Slots over the last hours</h3>
-          <div className="card overflow-hidden">
-            <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} />
-          </div>
+          <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
+        </div>
+      )}
+
+      {show('capacity') && (
+        <div data-testid="health-section-slot-history" className="mb-6">
+          <Disclosure summary="Slot history over 24 hours, 7 or 30 days">
+            <OccupancyChart
+              capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+              busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+              workspaceId={wsFilter}
+            />
+          </Disclosure>
         </div>
       )}
 
@@ -1855,27 +1874,8 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
   };
 
   return (
-    <div
-      role="group"
-      aria-label="Window"
-      data-testid="health-window-picker"
-      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
-    >
-      {WINDOW_OPTIONS.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => select(o.value)}
-          aria-pressed={current === o.value}
-          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
-            current === o.value
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div data-testid="health-window-picker" className={pending ? 'opacity-60' : ''}>
+      <Segmented label="Window" items={WINDOW_OPTIONS} value={current} onChange={select} />
     </div>
   );
 }

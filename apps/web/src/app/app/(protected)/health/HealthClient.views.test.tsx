@@ -199,7 +199,7 @@ describe('HealthClient — pages', () => {
 
   it('Runners & capacity shows only what sets capacity, and no window picker', () => {
     const html = render({ ...everything, page: 'runners' });
-    for (const id of ['health-section-occupancy', 'health-section-runners', 'health-section-credentials']) {
+    for (const id of ['health-section-slot-history', 'health-section-runners', 'health-section-credentials']) {
       expect(has(html, id)).toBe(true);
     }
     expect(has(html, 'health-section-agent-access')).toBe(false);
@@ -207,6 +207,31 @@ describe('HealthClient — pages', () => {
     expect(has(html, 'health-section-problems')).toBe(false);
     expect(has(html, 'health-section-failure-analytics')).toBe(false);
     expect(html).not.toContain('aria-label="Window"');
+  });
+
+  it('Runners puts the lanes chart first and keeps the slot history behind a disclosure', () => {
+    const fleet = {
+      runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
+      live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
+    };
+    const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
+    const at = (id: string) => html.indexOf(`data-testid="${id}"`);
+    expect(at('health-section-lanes')).toBeGreaterThan(-1);
+    expect(at('health-section-lanes')).toBeLessThan(at('health-section-slot-history'));
+    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-runners'));
+    // Collapsed by default: the history chart mounts only when opened.
+    expect(has(html, 'health-section-occupancy')).toBe(false);
+  });
+
+  it('a failing schedule on Overview links to where it is configured', () => {
+    const broken = { lastError: 'boom', consecutiveFailures: 3, lastRunAt: ago(HOUR) };
+    const html = render({ ...everything, page: 'overview', schedules: [
+      schedule({ id: 's-ws', name: 'Workspace sweep', ...broken }),
+      schedule({ id: 's-m', name: 'Mission check-in', missionId: 'm-1', missionTitle: 'M', ...broken }),
+    ] });
+    expect(html).toContain('href="/app/workspaces/ws-1/schedules"');
+    expect(html).toContain('href="/app/missions/m-1"');
+    expect(html).not.toContain('/app/schedules');
   });
 
   it('Overview lists an access problem under Problems, linking to Failures', () => {
@@ -234,7 +259,7 @@ describe('HealthClient — pages', () => {
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
-    const ids = ['health-section-problems', 'health-section-occupancy', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
+    const ids = ['health-section-problems', 'health-section-slot-history', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
       'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {
@@ -255,7 +280,11 @@ describe('HealthClient — pages', () => {
       recentFailures: [],
       failureGroups: { ...buildFailureGroups({ failures, traces: [] }), truncated: false },
     });
-    expect(html).toContain('data-testid="top-failure-groups"');
+    // One Problems row says what is failing and links to Failures; the list
+    // itself lives only there.
+    expect(html).not.toContain('data-testid="top-failure-groups"');
+    expect(html).toContain('data-testid="problem-failures"');
+    expect(html).toContain('Failures: 8 causes this week');
     expect(html).toContain('href="/app/health/failures"');
     // The old 24h signature rows and their overflow line are gone from Overview.
     expect(html).not.toContain('data-testid="problem-failure-group"');
