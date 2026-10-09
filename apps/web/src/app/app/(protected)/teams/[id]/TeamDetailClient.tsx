@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
-import { QA_FIXTURE_MEMBER_ID } from '../../settings/team/qa-state';
+import { isQaFixtureMemberId } from '../../settings/team/qa-state';
 
 interface TeamMember {
   userId: string;
@@ -158,8 +158,8 @@ export default function TeamDetailClient({
   }
 
   async function handleRoleChange(userId: string, newRole: string) {
-    // The ?state=multi-member row isn't a real member: never write for it.
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    // Fixture rows (?state=multi-member, dev fixtures) aren't real members: never write for them.
+    if (isQaFixtureMemberId(userId)) return;
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
         method: 'PATCH',
@@ -183,7 +183,7 @@ export default function TeamDetailClient({
     if (!(await confirm({ title: 'Remove member?', message: `Remove ${memberName || 'this member'} from the team?`, confirmLabel: 'Remove', variant: 'danger' }))) {
       return;
     }
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    if (isQaFixtureMemberId(userId)) return;
 
     try {
       const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
@@ -212,7 +212,7 @@ export default function TeamDetailClient({
     }))) {
       return;
     }
-    if (userId === QA_FIXTURE_MEMBER_ID) return;
+    if (isQaFixtureMemberId(userId)) return;
 
     try {
       const res = await fetch(`/api/teams/${team.id}/ownership`, {
@@ -237,6 +237,7 @@ export default function TeamDetailClient({
     if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Someone with member access has to add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
       return;
     }
+    if (isQaFixtureMemberId(currentUserId)) return;
 
     setLeaving(true);
     try {
