@@ -103,11 +103,11 @@ describe('filterPortfolio', () => {
   const open = [building, audit, broken, waiting, held];
   const ids = (rows: PortfolioRow[]) => rows.map(r => r.delivery.id).sort();
 
-  it('status filters are the projection facts, not a stored type', () => {
+  it('status filters are the list’s own sections, so a chip shows exactly one section', () => {
     expect(ids(filterPortfolio(open, { status: 'all' }))).toEqual(ids(open));
-    expect(ids(filterPortfolio(open, { status: 'executing' }))).toEqual(['build']);
-    expect(ids(filterPortfolio(open, { status: 'exceptions' }))).toEqual(['broken']);
-    expect(ids(filterPortfolio(open, { status: 'moving' }))).toEqual(['audit', 'build']);
+    expect(ids(filterPortfolio(open, { status: 'needs' }))).toEqual([]);
+    // A closed PR still being reconciled is in motion, not an exception for a person (#4161).
+    expect(ids(filterPortfolio(open, { status: 'motion' }))).toEqual(['audit', 'broken', 'build']);
     expect(ids(filterPortfolio(open, { status: 'waiting' }))).toEqual(['held', 'waiting']);
   });
 
@@ -127,7 +127,7 @@ describe('filterPortfolio', () => {
   });
 
   it('counts each status filter on the same rows', () => {
-    expect(portfolioFilterCounts(open)).toEqual({ all: 5, executing: 1, exceptions: 1, moving: 2, waiting: 2 });
+    expect(portfolioFilterCounts(open)).toEqual({ all: 5, needs: 0, motion: 3, waiting: 2 });
   });
 });
 

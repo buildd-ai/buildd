@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missions, accounts, workers, workspaces, teams } from '@buildd/core/db/schema';
-import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
+import { missions, workspaces, teams } from '@buildd/core/db/schema';
+import { and, eq, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
@@ -40,7 +40,7 @@ export default async function MissionsPage({
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <div className="flex items-baseline justify-between mb-6">
           <h1 className="hidden md:block text-xl font-semibold text-text-primary">Missions</h1>
-          <span className="text-xs text-text-secondary font-light">0 active</span>
+          <span className="text-meta text-text-secondary">0 open</span>
         </div>
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No team found.</p>
@@ -55,7 +55,6 @@ export default async function MissionsPage({
   const cookieStore = await cookies();
   const activeTeamId =
     (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
-  const scopedTeamIds = [activeTeamId];
 
   // Missions filter: when workspace is selected, show missions anchored to that
   // workspace OR team-level missions (workspaceId IS NULL). Team-level missions
@@ -74,34 +73,14 @@ export default async function MissionsPage({
   const completedCursor = decodeCompletedCursor(completedCursorParam);
 
   // Everything below needs only `activeTeamId` and the URL filter, all of
-  // which are already resolved — so none of these depend on each other. The
-  // one dependent chain (accounts -> live-seat count) stays inside its entry.
+  // which are already resolved — so none of these depend on each other.
+  // Agent slots are not read here: they belong to Home's Agents panel.
   const [
-    seats,
     teamWorkspaces,
     activeRows,
     completedRowsPage,
     teamRows,
   ] = await Promise.all([
-    // Seat utilization across the active team's accounts. The live-seat count
-    // needs the account ids, so it genuinely follows the accounts read.
-    (async () => {
-      const teamAccounts = await db.query.accounts.findMany({
-        where: inArray(accounts.teamId, scopedTeamIds),
-        columns: { id: true, maxConcurrentWorkers: true },
-      });
-      const max = teamAccounts.reduce((sum, a) => sum + a.maxConcurrentWorkers, 0);
-      if (teamAccounts.length === 0) return { maxSeats: max, activeSeats: 0 };
-      const accountIds = teamAccounts.map(a => a.id);
-      const [row] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(workers)
-        .where(and(
-          inArray(workers.accountId, accountIds),
-          inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        ));
-      return { maxSeats: max, activeSeats: row?.count ?? 0 };
-    })(),
     // Active team's workspaces for the filter dropdown
     db
       .select({ id: workspaces.id, name: workspaces.name })
@@ -114,7 +93,6 @@ export default async function MissionsPage({
   ]);
   const team = teamRows[0] ?? null;
 
-  const { maxSeats, activeSeats } = seats;
   const { items: completedRows, nextCursor: nextCompletedCursor } = paginateCompletedMissions(
     completedRowsPage as unknown as Array<{ completedAt: Date | string | null; id: string }>,
     COMPLETED_MISSIONS_PAGE_SIZE,
@@ -182,42 +160,34 @@ export default async function MissionsPage({
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
-      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div className="min-w-0">
-          <div className="section-label hidden text-text-muted md:block">
-            {team?.name ?? 'Team'}
-          </div>
-          {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
-          <h1 data-testid="missions-headline" className="sr-only md:not-sr-only md:mt-1.5 font-mono text-[22px] font-semibold tracking-[-0.5px] text-text-primary md:text-[26px]">
-            Missions
-          </h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2.5">
-          <SetUpChatNudge />
-          <NewWorkLink
-            kind="mission"
-            workspaceId={wsFilter ?? null}
-            testId="new-mission-link"
-            className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover md:min-h-9"
-          >
-            + New mission
-          </NewWorkLink>
-        </div>
+      {/* The mobile header already reads "Missions · Team"; the team line and h1 show from md up only. */}
+      <div className="md:mb-3">
+        <div className="hidden text-meta text-text-muted md:block">{team?.name ?? 'Team'}</div>
+        <h1 data-testid="missions-headline" className="sr-only md:not-sr-only md:mt-0.5 text-heading font-semibold tracking-[-0.3px] text-text-primary">
+          Missions
+        </h1>
       </div>
 
-      {rows.length === 0 ? (
-        <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary">No missions.</p>
-        </div>
-      ) : (
-        <MissionGrid
-          rows={rows}
-          releaseFooters={releaseFooters}
-          slots={{ live: activeSeats, max: maxSeats }}
-          workspaces={teamWorkspaces}
-          now={now}
-        />
-      )}
+      <MissionGrid
+        rows={rows}
+        releaseFooters={releaseFooters}
+        workspaces={teamWorkspaces}
+        now={now}
+        actions={
+          <>
+            <SetUpChatNudge />
+            {/* Secondary, small: orange is for action on a decision and live state, not page chrome. */}
+            <NewWorkLink
+              kind="mission"
+              workspaceId={wsFilter ?? null}
+              testId="new-mission-link"
+              className="btn h-11 md:h-8"
+            >
+              <span aria-hidden="true">+</span> New<span className="sr-only"> mission</span>
+            </NewWorkLink>
+          </>
+        }
+      />
 
       {/* Rule P-4: the completed portion is one bounded page; this is the
           escape hatch when a workspace has more than that. Replaces the
@@ -225,12 +195,12 @@ export default async function MissionsPage({
           layer a plain keyset page instead of client-side accumulation
           state, which nothing else on this list needs yet. */}
       {nextCompletedCursor && (
-        <div className="mt-4 text-center">
+        <div className="mt-4">
           <Link
             href={`/app/missions?${new URLSearchParams({ ...(wsFilter ? { workspace: wsFilter } : {}), completedCursor: nextCompletedCursor }).toString()}`}
-            className="text-[11px] text-text-muted hover:text-text-secondary font-mono"
+            className="inline-flex min-h-11 items-center text-meta text-text-muted hover:text-text-primary md:min-h-0"
           >
-            Load older completed missions ↓
+            Load older completed missions
           </Link>
         </div>
       )}

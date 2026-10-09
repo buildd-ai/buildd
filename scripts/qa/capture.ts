@@ -52,6 +52,7 @@
  *   QA_SIGN_IN_PATHS                — comma-separated app sign-in paths (default: /login,/signin,…)
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
+ *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
  */
 
@@ -238,6 +239,13 @@ const QA_THEME = process.env.QA_THEME?.trim();
 if (QA_THEME) {
   await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
   console.log(`[capture] theme ${QA_THEME}`);
+}
+// QA_TEAM_ID renders as that team: the same `buildd-team` cookie the team switcher
+// sets (lib/active-team-client.ts). Unset keeps the user's default team.
+const QA_TEAM_ID = process.env.QA_TEAM_ID?.trim();
+if (QA_TEAM_ID) {
+  await context.addCookies([{ name: 'buildd-team', value: encodeURIComponent(QA_TEAM_ID), url: BASE_URL }]);
+  console.log('[capture] team set from QA_TEAM_ID');
 }
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot

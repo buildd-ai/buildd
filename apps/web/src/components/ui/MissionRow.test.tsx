@@ -19,6 +19,16 @@ describe('MissionRow', () => {
     expect(html).toContain('! Decide: add the staging credential');
     expect(html).not.toContain('later than');
   });
+
+  it('wraps a long title to at most three lines, between words, never mid-word', () => {
+    const title = 'Workflow kernel: authoritative task to PR to review to merge state across every surface';
+    const html = renderToStaticMarkup(<MissionRow href="#" title={title} strip={[]} />);
+    const span = html.match(/<span[^>]*title="Workflow kernel[^"]*"[^>]*>/)?.[0] ?? '';
+    expect(span).toContain('line-clamp-3');
+    expect(span).toContain('[overflow-wrap:break-word]');
+    expect(span).not.toContain('anywhere');
+    expect(span).not.toContain('truncate');
+  });
 });
 
 describe('Criteria', () => {

@@ -8,6 +8,7 @@
  */
 import type { StateKey } from '@/components/ui/states';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
+import { SECTION_META, sectionOf, type MissionSectionKey } from './mission-sections';
 
 /** One portfolio row: the projection plus the list's own sort and filter facts. */
 export interface PortfolioRow {
@@ -80,25 +81,21 @@ export function sortPortfolio(rows: readonly PortfolioRow[], sort: PortfolioSort
 
 // ── Filter ──────────────────────────────────────────────────────────────────
 
-export type PortfolioStatusFilter = 'all' | 'executing' | 'exceptions' | 'moving' | 'waiting';
+/** `all`, or one of the list's sections (lib/mission-sections.ts): a chip shows exactly what its section shows. */
+export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
-  { key: 'all', label: 'Open', title: 'Every open mission' },
-  { key: 'executing', label: 'Executing', title: 'An agent is working on it right now' },
-  { key: 'exceptions', label: 'Exceptions', title: 'Needs input, did not land, or its audit cannot run' },
-  { key: 'moving', label: 'Moving', title: 'Building, in audit, repairing or landing — with or without an agent' },
-  { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or not planned yet' },
+  { key: 'all', label: 'All', title: 'Every open mission' },
+  { key: 'needs', label: SECTION_META.needs.label, title: 'A decision only a person can make' },
+  { key: 'motion', label: SECTION_META.motion.label, title: 'Buildd is building, auditing, repairing or landing it' },
+  { key: 'waiting', label: SECTION_META.waiting.label, title: 'Waiting on capacity or earlier work, held, or not planned yet' },
 ];
-
-const EXCEPTION_KINDS: ReadonlySet<DeliveryKind> = new Set(['needs', 'notlanded', 'unavailable']);
-const WAITING_KINDS: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {
   all: () => true,
-  executing: r => r.liveAgents > 0,
-  exceptions: r => EXCEPTION_KINDS.has(r.delivery.kind),
-  moving: r => STAGE[r.delivery.kind] != null,
-  waiting: r => WAITING_KINDS.has(r.delivery.kind),
+  needs: r => sectionOf(r) === 'needs',
+  motion: r => sectionOf(r) === 'motion',
+  waiting: r => sectionOf(r) === 'waiting',
 };
 
 export interface PortfolioFilter {
@@ -118,7 +115,7 @@ export function filterPortfolio(rows: readonly PortfolioRow[], f: PortfolioFilte
 }
 
 export function portfolioFilterCounts(rows: readonly PortfolioRow[]): Record<PortfolioStatusFilter, number> {
-  const out = { all: 0, executing: 0, exceptions: 0, moving: 0, waiting: 0 } as Record<PortfolioStatusFilter, number>;
+  const out = { all: 0, needs: 0, motion: 0, waiting: 0 } as Record<PortfolioStatusFilter, number>;
   for (const r of rows) for (const { key } of PORTFOLIO_STATUS_FILTERS) if (MATCH[key](r)) out[key]++;
   return out;
 }
@@ -134,9 +131,10 @@ export function portfolioCounts(rows: readonly PortfolioRow[], slots: { live: nu
   });
 }
 
-/** What each counter counts, shown as tooltips and in the "What these count" disclosure. */
+/** What each word in the count line means, shown as tooltips and in the list's footnote. */
 export const COUNTER_DEFINITIONS = {
   open: 'Missions not yet completed or archived, whatever they are doing right now.',
-  executing: 'Open missions with at least one agent working right now. Audits, CI and merges run without an agent and do not count.',
-  slots: 'Agents working now, out of the agent seats your team’s accounts allow.',
+  needs: 'A decision only a person can make. Automatic repair and reconciliation never land here.',
+  motion: 'Buildd is building, auditing, repairing or landing it, with or without an agent on it.',
+  waiting: 'Waiting on capacity or earlier work, held by its owner, or not planned yet.',
 } as const;
