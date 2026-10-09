@@ -171,7 +171,7 @@ function migrationEdgeOnOtherBase(depId: SQL): SQL {
       WHERE t4.id = ${depId}
       AND EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(COALESCE(t4.path_manifest, '[]'::jsonb)) AS mp
-        WHERE mp ~* ${sql.raw(`'${MIGRATION_PATH_RE.source.replace(/'/g, "''")}'`)}
+        WHERE mp ~* ${MIGRATION_PATH_RE.source}
       )
     )
     AND EXISTS (
@@ -180,7 +180,7 @@ function migrationEdgeOnOtherBase(depId: SQL): SQL {
       AND w4.pr_url IS NOT NULL
       AND w4.pr_base_ref IS NOT NULL
       AND w4.pr_base_ref IS DISTINCT FROM ${dependentBranch}
-      AND (w4.pr_base_ref LIKE ${sql.raw(`'${MISSION_BRANCH_PREFIX}%'`)} OR ${dependentBranch} IS NOT NULL)
+      AND (w4.pr_base_ref LIKE ${`${MISSION_BRANCH_PREFIX}%`} OR ${dependentBranch} IS NOT NULL)
     )
   )`;
 }
