@@ -20,6 +20,9 @@ const DEFAULT_W = 640;
 const PLOT_H = 160;
 const AXIS_H = 20;
 const LEFT = 28;
+/** Room above the top gridline for its label and the "slots now" label. */
+const TOP = 16;
+const RIGHT = 4;
 
 type Loaded = OccupancySeries & { truncated?: boolean };
 
@@ -45,6 +48,13 @@ export function xTicks(series: OccupancySeries): Array<{ i: number; label: strin
     out.unshift({ i, label });
   }
   return out;
+}
+
+/** Edge ticks hug the plot so their label is never cut off by the box. */
+export function tickAnchor(x: number, plotW: number): 'start' | 'middle' | 'end' {
+  if (x > plotW - 24) return 'end';
+  if (x < 24) return 'start';
+  return 'middle';
 }
 
 export function OccupancyChart({ capacityNow, workspaceId }: { capacityNow: number; workspaceId?: string | null }) {
@@ -119,7 +129,7 @@ function Plot({ series, capacityNow }: { series: Loaded; capacityNow: number }) 
     return () => ro.disconnect();
   }, []);
   const [hover, setHover] = useState<number | null>(null);
-  const plotW = Math.max(1, W - LEFT);
+  const plotW = Math.max(1, W - LEFT - RIGHT);
   const runner = useMemo(() => series.buckets.map(b => b.runner.avg), [series]);
   const sessions = useMemo(() => series.buckets.map(b => b.sessions.avg), [series]);
   const max = occupancyScaleMax(capacityNow, runner, sessions);
@@ -153,7 +163,7 @@ function Plot({ series, capacityNow }: { series: Loaded; capacityNow: number }) 
       <p data-testid="occupancy-readout" className="mb-2 min-h-4 truncate font-mono text-[11px] text-text-muted md:text-[12px]" aria-live="polite">{readout}</p>
       {empty && <p className="py-2 text-center text-body text-text-muted" data-testid="occupancy-empty">No agent work in this window.</p>}
       <svg
-        viewBox={`0 0 ${W} ${PLOT_H + AXIS_H}`}
+        viewBox={`0 0 ${W} ${TOP + PLOT_H + AXIS_H}`}
         className="block h-auto w-full touch-pan-y select-none"
         role="img"
         aria-label={`Runner slots busy over ${series.windowKey}: peak ${series.summary.runner.peak}, average ${fmtLevel(series.summary.runner.avg)}, of ${capacityNow} slots now. Use left and right arrows to read each point.`}
@@ -166,11 +176,11 @@ function Plot({ series, capacityNow }: { series: Loaded; capacityNow: number }) 
       >
         {[0, max / 2, max].map(v => (
           <g key={v}>
-            <line x1={LEFT} x2={W} y1={levelY(v, max, PLOT_H)} y2={levelY(v, max, PLOT_H)} stroke="var(--border-default)" strokeWidth={1} />
-            <text x={LEFT - 6} y={levelY(v, max, PLOT_H) + 4} textAnchor="end" fontSize={11} fill="var(--text-muted)">{fmtLevel(v)}</text>
+            <line x1={LEFT} x2={W - RIGHT} y1={TOP + levelY(v, max, PLOT_H)} y2={TOP + levelY(v, max, PLOT_H)} stroke="var(--border-default)" strokeWidth={1} />
+            <text x={LEFT - 6} y={TOP + levelY(v, max, PLOT_H) + 4} textAnchor="end" fontSize={11} fill="var(--text-muted)">{fmtLevel(v)}</text>
           </g>
         ))}
-        <g transform={`translate(${LEFT},0)`}>
+        <g transform={`translate(${LEFT},${TOP})`}>
           <path d={r.area} fill="var(--accent-soft)" />
           <path d={r.line} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeLinejoin="round" />
           {hasSessions && <path d={s.line} fill="none" stroke="var(--text-muted)" strokeWidth={1.25} strokeDasharray="4 3" />}
@@ -182,7 +192,7 @@ function Plot({ series, capacityNow }: { series: Loaded; capacityNow: number }) 
           )}
           {hover != null && <line x1={hover * step + step / 2} x2={hover * step + step / 2} y1={0} y2={PLOT_H} stroke="var(--text-primary)" strokeWidth={1} opacity={0.4} />}
           {ticks.map(t => (
-            <text key={t.i} x={t.i * step + step / 2} y={PLOT_H + 15} textAnchor="middle" fontSize={11} fill="var(--text-muted)">{t.label}</text>
+            <text key={t.i} x={t.i * step + step / 2} y={PLOT_H + 15} textAnchor={tickAnchor(t.i * step + step / 2, plotW)} fontSize={11} fill="var(--text-muted)">{t.label}</text>
           ))}
         </g>
       </svg>
