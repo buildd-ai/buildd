@@ -6,8 +6,9 @@ import Disclosure from '@/components/ui/Disclosure';
 import { blockerLabel, type ReviewBlocker } from '@/lib/attention-line';
 
 /**
- * The body of a review card, in reading order: the one decision asked of you,
- * short fact tags (why it is here, what CI is doing), then the reviewer's full
+ * The body of a review card, in reading order: the one decision asked of you
+ * (body size, never louder than the card's title), short sans fact tags (why
+ * it is here, what CI is doing), then the reviewer's full
  * reasoning folded behind Details. A reviewer's escalation can run a paragraph;
  * the card never shows it inline.
  */
@@ -28,15 +29,15 @@ export function ReviewDecision({
   const hasDetail = (detail && detail.trim() !== decision.trim()) || blockers.length > 0;
   return (
     <>
-      <p data-testid="review-decision" className="mt-1 text-lede font-medium text-text-primary [overflow-wrap:anywhere]">{decision}</p>
+      <p data-testid="review-decision" className="mt-1 text-body font-medium text-text-primary [overflow-wrap:anywhere]">{decision}</p>
       {(kinds.length > 0 || status) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {kinds.map((k) => (
-            <TonePill key={k} tone="dec" title={blockers.filter((b) => b.kind === k).map((b) => b.text).join('; ')}>
+            <TonePill key={k} tone="dec" className="!font-sans" title={blockers.filter((b) => b.kind === k).map((b) => b.text).join('; ')}>
               {blockerLabel(k)}
             </TonePill>
           ))}
-          {status && <TonePill tone={statusTone(status)}>{status}</TonePill>}
+          {status && <TonePill tone={statusTone(status)} className="!font-sans">{status}</TonePill>}
         </div>
       )}
       {hasDetail && (

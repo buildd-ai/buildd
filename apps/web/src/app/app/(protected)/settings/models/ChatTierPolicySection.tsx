@@ -90,10 +90,13 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
   const startBlocked = !!chatMax && !!tier && isCeilingTier(tier) && tierRank(tier) > tierRank(chatMax);
 
   return (
-    <div className="mt-6 max-w-5xl" data-testid="chat-tier-policy">
-      <div className="card flex flex-col gap-2 px-3 py-2">
+    <div className="mt-6" data-testid="chat-tier-policy">
+      <div className="flex flex-col gap-2 border-t border-border-default py-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-          <span id="chat-default-tier-label" className="font-mono text-body text-text-primary">Starting tier for new chats</span>
+          <span className="min-w-0 flex-1">
+            <span id="chat-default-tier-label" className="block text-sm font-semibold text-text-primary">Starting tier for new chats</span>
+            <span className="block text-meta text-text-muted">A default only. People can change the tier in a chat; the limit is Maximum allowed above.</span>
+          </span>
           <Select
             aria-labelledby="chat-default-tier-label"
             testId="chat-default-tier"
@@ -109,7 +112,6 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
             }}
           />
         </div>
-        <p className="text-meta text-text-muted">A default only. People can change the tier in a chat; the limit is Maximum allowed above.</p>
         {startBlocked && (
           <p role="alert" className="text-meta text-status-warning" data-testid="starting-tier-blocked">
             {tier} is above the Chat maximum ({chatMax}), so new chats start at {chatMax}. Choose a lower starting tier{isAdmin ? ' or raise the maximum above' : ''}.

@@ -31,8 +31,10 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
-  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `draft`, `unknown`, ...). */
   mergeableState?: string | null;
+  /** A draft PR (GitHub refuses to merge it); present only when true. */
+  draft?: boolean;
 }
 
 interface Base {
@@ -208,6 +210,21 @@ export type Command =
     })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
   | (Base & {
+      /**
+       * The escalation gate's `policy_merge` rule (@buildd/core/escalation-gate
+       * `isPolicyMerge`): a review escalation that was the policy's alone, with
+       * CI green on the reviewed head, not a draft, not XL, and only the risk
+       * classes that landed cleanly in the backtest. It approves exactly
+       * `headSha` (a later push is not covered) on the basis `policy_rule`, and
+       * the normal landing doors then land it under the workspace merge policy
+       * with every rail (deny paths, size cap, migration inspector) evaluated
+       * again. Rule-only: the actor is `rule:<name>`, never a model.
+       */
+      type: 'PolicyMergeApproved';
+      headSha: string;
+      reason: string;
+    })
+  | (Base & {
       type: 'LandingRequested';
       door: string;
       headSha: string;
@@ -239,10 +256,23 @@ export type Command =
       detail?: string;
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
+      /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
+      retryAt?: string;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
+  | (Base & {
+      /**
+       * The PR's base branch changed (`pull_request.edited` with `changes.base`, or a live read
+       * that disagrees with `delivery.baseRef`, e.g. GitHub's retarget of a stacked PR). The head
+       * did not move, but the diff did (24e1cfad).
+       */
+      type: 'BaseChanged';
+      live: LivePr;
+      /** The PR's diff against the new base equals its diff against the old one (§8.3 evidence). */
+      diffEquivalent?: boolean;
+    })
   | (Base & {
       type: 'SupersessionRecorded';
       target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };

@@ -23,8 +23,8 @@ import { sql, type Column, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
-import { kernelDeliveryForPr } from './authority';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { kernelDeliveryForPr, kernelOnSql } from './authority';
 import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
 import type { DrainSummary } from './effects';
@@ -130,7 +130,7 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
   return sql`NOT EXISTS (
     SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
     WHERE kd.workspace_id = ${workspaceIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel'
-      AND COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+      AND ${kernelOnSql(sql`kw.git_config`)}
   )`;
 }
 
@@ -139,13 +139,22 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
  * unattended source state) in workspaces whose landing mode is `enforce` and whose
  * kill switch is on. The landing sweep's floor for kernel PRs, which may have no
  * legacy reviewer row at all (composition or human approval).
+ *
+ * A delivery that came back to APPROVED on a transient merge answer (a rate
+ * limit or a 5xx, 9bfe0d23) waits out the `retryAt` GitHub gave it: calling
+ * again before its reset is another strike against the same limit.
  */
 export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec): Promise<Array<{ workspaceId: string; prNumber: number }>> {
   const rows = ((await exec(sql`-- workflow:approved_for_landing
 SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
 WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
   AND w.git_config->'landing'->>'mode' = 'enforce'
-  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  AND ${kernelOnSql(sql`w.git_config`)}
+  AND NOT EXISTS (
+    SELECT 1 FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_version = d.version AND t.command = 'MergeCallResult'
+      AND (t.evidence->>'retryAt')::timestamptz > now()
+  )
 ORDER BY d.updated_at
 LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
   return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
@@ -223,6 +232,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     };
   }
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.door}:landing`, repoFullName: p.repoFullName, prNumber: p.prNumber }, { exec, github: pinned });
+  // 24e1cfad: a retarget the webhook has not delivered is recorded before the merge is asked
+  // for; it drops an approval that reviewed the old diff, and the landing below is refused.
+  if (await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.door}:landing`, deliveryId, live }, pinned, exec)) await settle();
 
   const result = await applyCommand({
     type: 'LandingRequested',
@@ -241,7 +253,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
   if (result.result === 'stale' || result.result === 'rejected') {
     const message = result.result === 'stale'
       ? `This PR changed since you looked at it (${result.reason}); nothing was merged. Reload and try again.`
-      : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
+      : result.reason === 'pr_is_draft'
+        ? 'The PR is a draft; nothing was merged. It lands once it is marked ready for review.'
+        : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
     return { merged: false, outcome: result.result, reason: result.reason, message, mergeCommitSha: null, current: result.current, result };
   }
 

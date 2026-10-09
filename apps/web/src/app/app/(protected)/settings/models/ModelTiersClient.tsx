@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Settings → AI → Model tiers. One table: a cell per tier x surface (Coding,
+ * Settings → Models → Tiers. One table: a cell per tier x surface (Coding,
  * Chat), each its primary and price on line 1 and its state in words on line
  * 2, straight from the cells read model (`GET /api/model-tiers/cells`).
  * Clicking a cell opens its editor; a tier name opens what ran; History holds
  * the change log. On a phone each tier is a stacked card.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
+import ErrorState from '@/components/ErrorState';
 import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 import type { ListProviderKeysResponse, ModelPolicyCell, ModelPolicyCellSurface, ModelPolicyCellsResponse } from '@buildd/shared';
 import Chip from '@/components/ui/Chip';
@@ -18,6 +18,9 @@ import { SOURCE_NOTE, SURFACE_LABEL, cellRoutes, cellStateText, priceText } from
 import { SURFACE_TITLE, overMaximum } from '@/lib/tier-limits-view';
 import CellEditor from './CellEditor';
 import { HistorySheet, WhatRanSheet } from './TierSheets';
+import { MODEL_TIERS_CHANGED_EVENT } from './CellEditor';
+import { upgradeNote, type PolicyResponse } from './ModelUpgradePolicySection';
+import type { TierAdoption } from '@buildd/core/model-upgrade-policy';
 
 interface Props {
   teamId: string;
@@ -62,22 +65,43 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
   const [showOverrides, setShowOverrides] = useState(false);
   // Effective maximums as the server resolved them; the table only labels what they block.
   const [maxes, setMaxes] = useState<Partial<Record<ModelPolicyCellSurface, string | null>>>({});
+  // Per tier: a newer certified model, or a deprecation (the upgrade policy's read model).
+  const [adoption, setAdoption] = useState<TierAdoption[]>([]);
   const isMobile = useIsMobile();
   const anchorRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/model-tiers/cells?teamId=${teamId}`, { cache: 'no-store', credentials: 'include' });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? LOAD_ERROR);
       const body = (await res.json()) as ModelPolicyCellsResponse;
-      if (!Array.isArray(body?.cells)) throw new Error('Could not load tiers');
+      if (!Array.isArray(body?.cells)) throw new Error(LOAD_ERROR);
       setData(body);
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Could not load tiers');
+      setLoadError(e instanceof Error ? e.message : LOAD_ERROR);
     }
   }, [teamId]);
   useEffect(() => { void load(); }, [load]);
+
+  // Optional: a failed read only drops the upgrade sub-lines.
+  const loadAdoption = useCallback(async () => {
+    const r = await fetch(`/api/model-tiers/policy?teamId=${teamId}`, { cache: 'no-store' }).catch(() => null);
+    if (!r?.ok) return;
+    const d = (await r.json().catch(() => null)) as PolicyResponse | null;
+    if (Array.isArray(d?.tiers)) setAdoption(d.tiers);
+  }, [teamId]);
+  useEffect(() => {
+    void loadAdoption();
+    // A cell edit or an adopt below changes what is pinned and what is newer.
+    const onChanged = () => { void loadAdoption(); };
+    window.addEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+  }, [loadAdoption]);
+  const noteFor = (tier: Tier) => {
+    const t = adoption.find((a) => a.tier === tier);
+    return t ? upgradeNote(t) : null;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -113,30 +137,36 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
 
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-3">
-        <h1 className="hidden md:block text-heading font-semibold text-text-primary mb-1.5">Model tiers</h1>
-        <button type="button" className="ml-auto font-mono text-body text-accent-text hover:underline min-h-11 md:min-h-0"
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-body text-text-secondary">
+          Which model each tier runs. Each needs a key in{' '}
+          <a href="#keys" className="underline hover:text-text-primary">Keys</a>.
+        </p>
+        <button type="button" className="btn btn-sm btn-quiet min-h-11 md:min-h-0"
           onClick={() => setOpen({ kind: 'history' })} disabled={!data} data-testid="tiers-history">
           History
         </button>
       </div>
-      <p className="text-body text-text-secondary">
-        Keys are in{' '}
-        <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link>.
-      </p>
 
-      {loadError && <div className="notice notice-err mt-3">{loadError}</div>}
+      {loadError && (
+        <div className="notice notice-err mt-3" data-testid="load-error">
+          <ErrorState message={LOAD_ERROR} onRetry={() => { void load(); }} />
+        </div>
+      )}
 
       {/* Desktop: one table, tier rows, Coding and Chat columns. */}
       {!isMobile && <div className="card mt-5 max-w-5xl" data-testid="tier-table">
-        <div className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b-2 border-border-strong font-mono text-chip font-semibold uppercase tracking-[1.5px] text-text-muted">
+        <div className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b border-border-strong text-meta font-medium text-text-muted">
           <span>Tier</span><span className="pl-2">Coding</span><span className="pl-2">Chat</span>
         </div>
         {!data && !loadError && <div className="px-3 py-4 text-meta text-text-muted">Loading…</div>}
         {data && TIERS.map((tier) => (
           <div key={tier} className="grid grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-3 py-2 border-b border-border-default last:border-b-0" data-testid={`tier-row-${tier}`}>
-            <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
-              blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
+            <div className="min-w-0">
+              <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
+                blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
+              <UpgradeNote note={noteFor(tier)} tier={tier} />
+            </div>
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
               return cell
@@ -156,6 +186,7 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
               <TierName tier={tier} routes={SURFACES.some((s) => { const c = cellFor(tier, s); return !!c && cellRoutes(c); })}
                 blocked={blockedOn(tier)} onOpen={() => setOpen({ kind: 'what-ran', tier })} />
             </div>
+            <UpgradeNote note={noteFor(tier)} tier={tier} />
             {SURFACES.map((surface) => {
               const cell = cellFor(tier, surface);
               return cell && <PhoneLine key={surface} cell={cell} models={models} isAdmin={isAdmin} onOpen={(el) => openCell(tier, surface, el)} />;
@@ -208,6 +239,14 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
       )}
     </div>
   );
+}
+
+const LOAD_ERROR = "Couldn't load the model tiers.";
+
+/** The upgrade state of one tier, folded under its name: a newer model, a deprecation. */
+function UpgradeNote({ note, tier }: { note: string | null; tier: Tier }) {
+  if (!note) return null;
+  return <p className="text-meta text-text-muted" data-testid={`tier-upgrade-${tier}`}>{note}</p>;
 }
 
 function TierName({ tier, routes, blocked, onOpen }: { tier: Tier; routes: boolean; blocked?: readonly ModelPolicyCellSurface[]; onOpen: () => void }) {

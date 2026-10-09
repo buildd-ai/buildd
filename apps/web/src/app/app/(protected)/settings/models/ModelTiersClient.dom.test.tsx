@@ -251,3 +251,24 @@ describe('ModelTiersClient: what ran and history', () => {
     expect(q('[data-testid="what-ran-sheet"]')).not.toBeNull();
   });
 });
+
+describe('ModelTiersClient: load failure', () => {
+  it('says what happened and offers Retry instead of a bare status code', async () => {
+    const ok = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/model-tiers/cells')) return new Response('oops', { status: 500 });
+      return ok(url, init);
+    }) as unknown as typeof fetch;
+    await mount();
+    const err = q('[data-testid="load-error"]')!;
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain("Couldn't load the model tiers.");
+    expect(err.textContent).toContain('Retry');
+    // Never a raw status code, not even folded.
+    expect(err.textContent).not.toContain('HTTP');
+    expect(err.textContent).not.toContain('500');
+    globalThis.fetch = ok;
+    await click([...err.querySelectorAll('button')].find((b) => b.textContent === 'Retry'));
+    expect(q('[data-testid="load-error"]')).toBeNull();
+  });
+});

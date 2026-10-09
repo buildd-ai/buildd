@@ -1,6 +1,6 @@
 /**
  * `?state=team-members&viewer=owner|admin|member`: TeamDetailClient (the
- * /app/teams/[id] page) with an owner, an admin and a member, seen as each.
+ * Settings › Team member list) with an owner, an admin and a member, seen as each.
  * The visual QA account is the sole owner of a team of one, so the role
  * select, Remove, Transfer ownership and the admin-vs-member gating never
  * render for it. Every id here passes isQaFixtureMemberId, so the member
@@ -37,7 +37,7 @@ export function teamMembersFixtureLinks(): Array<{ label: string; href: string }
   }));
 }
 
-/** TeamDetailClient's props for `viewer`, gated the way teams/[id]/page.tsx gates them (no overrides). */
+/** TeamDetailClient's props for `viewer`, gated the way settings/team/page.tsx gates them (no overrides). */
 export function teamMembersFixtureProps(viewer: TeamMembersFixtureViewer) {
   const me = MEMBERS.find((m) => m.role === viewer)!;
   return {

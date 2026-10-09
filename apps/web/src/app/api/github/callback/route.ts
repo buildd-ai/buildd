@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const state = searchParams.get('state');
 
   if (!installationId) {
-    return NextResponse.redirect(new URL('/app/workspaces?error=no_installation_id', req.url));
+    return NextResponse.redirect(new URL('/app/settings/workspaces?error=no_installation_id', req.url));
   }
 
   // returnUrl is always a relative in-app path. `boundToUser` is true only when
@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   if (!installationResponse.ok) {
     const error = await installationResponse.text();
     console.error('Failed to fetch installation:', error);
-    return NextResponse.redirect(new URL(`/app/workspaces?error=fetch_failed`, req.url));
+    return NextResponse.redirect(new URL('/app/settings/workspaces?error=fetch_failed', req.url));
   }
 
   const installation = await installationResponse.json();

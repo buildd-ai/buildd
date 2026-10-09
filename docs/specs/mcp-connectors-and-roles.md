@@ -108,8 +108,9 @@ assertions:
 >   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
 >   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
 >   into the bundle is deleted; there is no role-tarball MCP path left to read.
-> - `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
->   — role "Connectors" + `McpRegistryBrowser` (243–406, 733–768)
+> - `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+>   — role "Connectors" + the registry browser, mounted by the one role editor
+>   (`TeamRoleEditor.tsx`, which owns `connectorRefs` via `setConnectorRefs`)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
 >   connector CRUD, OAuth discovery + DCR (run inline from create and update —
 >   there is no standalone probe route), OAuth callback, refresh
@@ -401,11 +402,11 @@ create (or reuse) a team `connectors` row and add its id to the role's
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
-  (`McpRegistryBrowser.onInstall` is wired to `installConnector` (424–450),
-  which POSTs `/api/connectors` and appends the returned connector id to the
-  role's `connectorRefs` via `setConnectorRefs`; the editor holds no local
-  mcpServers state — see the note at RoleEditor.tsx:84).
+- UI: `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+  (the registry browser's Add is wired to `installConnector`, which POSTs
+  `/api/connectors` and appends the returned connector id to the role's
+  `connectorRefs`; `TeamRoleEditor.tsx` holds that list via `setConnectorRefs`
+  and saves it with the role). Test: `RoleConnectors.dom.test.tsx` beside it.
 - Route: `apps/web/src/app/api/connectors/route.ts` (create-or-reuse),
   `apps/web/src/app/api/mcp/registry/route.ts` (unchanged search).
 

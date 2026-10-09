@@ -252,6 +252,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   suggest_schedule_update: 'more',
   list_connectors: 'more',
   resolve_capability: 'more',
+  request_capability: 'more',
   trace_schedule: 'more',
   create_schedule: 'more',
   update_schedule: 'more',

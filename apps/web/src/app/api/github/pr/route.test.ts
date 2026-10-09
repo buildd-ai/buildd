@@ -1124,13 +1124,22 @@ describe('POST /api/github/pr', () => {
         });
       });
 
-      it('adopts an open PR on a foreign head when the task names it', async () => {
+      it('adopts an open PR on a foreign head when the task records link it', async () => {
         mockWorkersFindFirst.mockResolvedValue(agentWorker({
-          task: { id: TASK_ID, title: 'fix: address review on #77', description: '', context: {}, dependsOn: [] },
+          task: { id: TASK_ID, title: 'fix: address review on #77', description: '', context: { prReach: { prNumbers: [77], grantedBy: 'human:user-1', grantedAt: 'x' } }, dependsOn: [] },
         }));
         const res = await post({ head: FOREIGN });
         expect(res.status).toBe(200);
         expect((await res.json()).pr.number).toBe(77);
+      });
+
+      it('refuses to adopt an open PR on a foreign head the task only names in text', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({
+          task: { id: TASK_ID, title: 'fix: address review on #77', description: '', context: { prNumber: 77 }, dependsOn: [] },
+        }));
+        const res = await post({ head: FOREIGN });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
       });
 
       it('refuses to adopt an open PR on a foreign head the task does not name', async () => {
@@ -4087,7 +4096,9 @@ describe('PUT /api/github/pr', () => {
         expect(data.needsPerson).toBe(true);
         expect(data.hint).not.toContain('merges automatically');
         expect(data.hint).not.toContain('No further merge_pr call');
-        expect(data.hint).toMatch(/request_pr_review/);
+        expect(data.hint).toMatch(/a person must act/);
+        // A forced re-review is a person's call, so the hint never sends an agent to one.
+        expect(data.hint).not.toMatch(/force/);
       });
 
       it('a human decision is a 403 naming the cause', async () => {
@@ -4124,6 +4135,15 @@ describe('PUT /api/github/pr', () => {
           mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-7' } as any);
           expect((await putO({ overrides: { freshness: true } })).status).toBe(400);
           expect((await putO({ overrides: { verdict: true }, reason: 'x' })).status).toBe(400);
+          expect(mockLandPr).not.toHaveBeenCalled();
+        });
+
+        it('a per-task token is never a person, even if its account names a session user', async () => {
+          enforceWorker(auto);
+          mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-7', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: 0 } } as any);
+          mockTasksFindFirst.mockResolvedValue({ id: 'task-1', context: {} });
+          const res = await putO({ overrides: { freshness: true }, reason: 'stuck' });
+          expect(res.status).toBe(403);
           expect(mockLandPr).not.toHaveBeenCalled();
         });
 
@@ -7076,6 +7096,34 @@ describe('per-task token on close / merge / get', () => {
     expect((await res.json()).error).toBe('A task token may update only its own PR');
     expect(githubWrites()).toEqual([]);
   });
+
+  // A child task whose title, description and context all name another task's PR #7.
+  const namingTask = { id: 'task-own', title: 'Land PR #7', description: 'merge https://github.com/owner/repo/pull/7', context: { prNumber: 7 }, roleSlug: 'builder', mode: 'execution', missionId: null };
+  const linkedTask = { ...namingTask, context: { prReach: { prNumbers: [7], grantedBy: 'human:user-1', grantedAt: 'x' } } };
+
+  it.each([
+    ['close', () => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }))],
+    ['update', () => PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7, body: 'b' } }))],
+    ['merge', () => PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }))],
+  ])('refuses to %s a PR its task only names in its text, before any write', async (_l, call) => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ task: namingTask }));
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(githubWrites()).toEqual([]);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('closes a PR a person linked to its task when filing it', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ task: linkedTask }));
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('lets a retry bound to the PR merge it through to the merge policy', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ task: { ...namingTask, context: {}, conflictRetryPrNumber: 7 } }));
+    const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }));
+    expect((await res.json()).error ?? '').not.toBe('A task token may merge only its own PR');
+  });
 });
 
 // An agent run on its runner's key (an orchestration-free session whose token
@@ -7111,9 +7159,16 @@ describe('agent run on the runner key — close / merge', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
-  it('closes a PR its task names', async () => {
-    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7' }));
+  it('closes a PR its task records link', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
     expect((await close(7)).status).toBe(200);
+  });
+
+  it('refuses to close a PR its task only names in text, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Close superseded PR #7', description: 'see #7', context: { prNumber: 7 } }));
+    const res = await close(7);
+    expect(res.status).toBe(403);
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('lets an organizer task close a PR of another task on its own mission', async () => {
@@ -7140,9 +7195,16 @@ describe('agent run on the runner key — close / merge', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
-  it('lets a merge of a PR its task names through to the merge policy', async () => {
-    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Review and merge the green PRs (#7 first)' }));
+  it('lets a merge of a PR its task records link through to the merge policy', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Review and merge the green PRs (#7 first)', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
     expect((await (await merge(7)).json()).error ?? '').not.toContain('may merge only its own PR');
+  });
+
+  it('refuses to merge a PR its task only names in text, before the merge policy runs', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'Review and merge the green PRs (#7 first)' }));
+    const res = await merge(7);
+    expect(res.status).toBe(403);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
   it('leaves a teammate’s close alone', async () => {
@@ -7161,8 +7223,15 @@ describe('agent run on the runner key — close / merge', () => {
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
-  it('updates the body of a PR its task names', async () => {
-    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction' }));
+  it('updates the body of a PR its task records link', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction', context: { prReach: { prNumbers: [7], grantedBy: 'task:task-organizer', grantedAt: 'x' } } }));
     expect((await updateBody(7)).status).toBe(200);
+  });
+
+  it('refuses to update the body of a PR its task only names in text, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(runWorker({ title: 'fix: PR #7 body correction' }));
+    const res = await updateBody(7);
+    expect(res.status).toBe(403);
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 });

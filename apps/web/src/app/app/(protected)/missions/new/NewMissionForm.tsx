@@ -738,7 +738,7 @@ export default function NewMissionForm({
 
         <p className="mt-8 text-xs text-text-muted text-center border-t border-border-default pt-4">
           To create an individual task, use the{' '}
-          <Link href="/app/tasks/new" className="underline hover:text-text-secondary">New Task</Link>
+          <Link href="/app/chat?new=task" className="underline hover:text-text-secondary">New Task</Link>
           {' '}form.
         </p>
       </div>

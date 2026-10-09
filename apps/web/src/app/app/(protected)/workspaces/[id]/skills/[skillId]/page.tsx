@@ -1,14 +1,18 @@
 import { db } from '@buildd/core/db';
-import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { workspaceSkills } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { verifyWorkspaceAccess, getUserWorkspaceIds } from '@/lib/team-access';
-import { RoleEditor } from './RoleEditor';
+import { verifyWorkspaceAccess } from '@/lib/team-access';
 
 export const dynamic = 'force-dynamic';
 
-export default async function SkillDetailPage({
+/**
+ * The old workspace role editor's address. Roles are edited in one place now,
+ * Settings › Roles, which opens workspace-scoped roles too. The redirect needs
+ * the row's slug, so it is a page, not a next.config redirect.
+ */
+export default async function WorkspaceSkillRedirect({
   params,
 }: {
   params: Promise<{ id: string; skillId: string }>;
@@ -21,49 +25,10 @@ export default async function SkillDetailPage({
   const access = await verifyWorkspaceAccess(user.id, id);
   if (!access) notFound();
 
-  const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, id),
-    columns: { id: true, name: true },
-  });
-  if (!workspace) notFound();
-
   const skill = await db.query.workspaceSkills.findFirst({
-    where: and(
-      eq(workspaceSkills.id, skillId),
-      eq(workspaceSkills.workspaceId, id),
-    ),
+    where: and(eq(workspaceSkills.id, skillId), eq(workspaceSkills.workspaceId, id)),
+    columns: { slug: true },
   });
-  if (!skill) notFound();
-
-  // Get all other skills in workspace for delegation picker
-  const otherSkills = await db.query.workspaceSkills.findMany({
-    where: and(
-      eq(workspaceSkills.workspaceId, id),
-      eq(workspaceSkills.enabled, true),
-    ),
-    columns: { slug: true, name: true },
-  });
-
-  const delegateOptions = otherSkills
-    .filter(s => s.slug !== skill.slug)
-    .map(s => ({ slug: s.slug, name: s.name }));
-
-  // Fetch all user workspaces for the workspace picker
-  const allWorkspaceIds = await getUserWorkspaceIds(user.id);
-  const allWorkspaces = allWorkspaceIds.length > 0
-    ? await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, allWorkspaceIds),
-        columns: { id: true, name: true },
-      })
-    : [];
-
-  return (
-    <RoleEditor
-      workspaceId={id}
-      workspaceName={workspace.name}
-      skill={JSON.parse(JSON.stringify(skill))}
-      delegateOptions={delegateOptions}
-      workspaces={allWorkspaces}
-    />
-  );
+  if (skill) redirect(`/app/settings/roles/${encodeURIComponent(skill.slug)}`);
+  redirect('/app/settings/roles');
 }

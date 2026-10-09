@@ -17,7 +17,7 @@ DB utilities, MCP tools, secrets, worker-runner logic.
 - Loop detection, error handling, tool tracking
 - Worker manager (lifecycle, messaging, state) — 3 files
 - Skills (buildd skills, skill routes, skills engine)
-- Agent teams (unit, integration, team tracking hook)
+- Skills as subagents (unit, integration), tool activity hook
 - Utils, workspace, permissions, updater
 - Phase detection, history store, outbox
 - Eviction race, resume logging, terminate/hydrate

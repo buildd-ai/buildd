@@ -25,9 +25,13 @@ interface RecoverySession {
  * the runner-global default instead of the model the original session used.
  * Carry the session model through as the only context field.
  */
-function sessionModelContext(worker: LocalWorker): { context?: { model: string } } {
+function sessionModelContext(worker: LocalWorker): { context?: { model: string }; backend?: 'claude' | 'codex' } {
   const model = typeof worker.sessionModel === 'string' ? worker.sessionModel.trim() : '';
-  return model ? { context: { model } } : {};
+  // The backend the session actually ran on. startSession defaults a missing
+  // backend to Claude, so without it a Codex session (e.g. one budget failover
+  // moved to Codex) resumed down the Claude path with its Codex thread id.
+  const backend = worker.taskBackend ? { backend: worker.taskBackend } : {};
+  return model ? { context: { model }, ...backend } : backend;
 }
 
 /**

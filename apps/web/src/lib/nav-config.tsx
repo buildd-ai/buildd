@@ -1,20 +1,18 @@
 import type { ReactNode } from 'react';
 import { settingsBackHref, settingsItemFor } from './settings-nav';
 
-/**
- * Single source of truth for primary navigation (unified-app-ia §D.2).
- * Consumed by MissionsSidebar (desktop rail) and MissionsBottomNav (mobile
- * tabs) so the two shells cannot drift.
- */
 export interface NavItem {
   label: string;
   href: string;
   icon: ReactNode;
-  /** Shown in the desktop sidebar only; filtered out of the mobile bottom tab bar
-   * (which is kept to a small tab count — Initiatives is reached via the Home rail). */
-  desktopOnly?: boolean;
 }
 
+/**
+ * The five primary destinations, the same on a phone (MissionsBottomNav) and
+ * on desktop (MissionsSidebar). Owner decision, Oct 9: Releases and
+ * Initiatives live under Missions, Team under Settings; their routes still
+ * resolve and nav-active.ts lights the owning item.
+ */
 export const NAV_ITEMS: NavItem[] = [
   {
     label: 'Home',
@@ -25,17 +23,7 @@ export const NAV_ITEMS: NavItem[] = [
         <circle cx="12" cy="12" r="9" strokeDasharray="2 4" />
       </svg>
     ),
-  },
-  {
-    label: 'Chat',
-    href: '/app/chat',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M4 5h16v11H9l-5 4z" />
-      </svg>
-    ),
-  },
-  {
+  },  {
     label: 'Missions',
     href: '/app/missions',
     icon: (
@@ -45,31 +33,7 @@ export const NAV_ITEMS: NavItem[] = [
         <line x1="4" y1="18" x2="12" y2="18" />
       </svg>
     ),
-  },
-  {
-    label: 'Releases',
-    href: '/app/releases',
-    desktopOnly: true,
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M12 2v8m0 4v8" />
-        <circle cx="12" cy="12" r="10" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Initiatives',
-    href: '/app/initiatives',
-    desktopOnly: true,
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="9" />
-        <circle cx="12" cy="12" r="5" />
-        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
-      </svg>
-    ),
-  },
-  {
+  },  {
     label: 'Activity',
     href: '/app/tasks',
     icon: (
@@ -79,20 +43,7 @@ export const NAV_ITEMS: NavItem[] = [
         <path d="M9 14l2 2 4-4" />
       </svg>
     ),
-  },
-  {
-    label: 'Team',
-    href: '/app/team',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="9" cy="7" r="3" />
-        <circle cx="17" cy="9" r="2.5" />
-        <path d="M15 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
-        <path d="M23 21v-1.5a3 3 0 00-3-3h-1" />
-      </svg>
-    ),
-  },
-  {
+  },  {
     label: 'Health',
     href: '/app/health',
     icon: (
@@ -100,8 +51,18 @@ export const NAV_ITEMS: NavItem[] = [
         <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
       </svg>
     ),
-  },
-];
+  },  {
+    label: 'Chat',
+    href: '/app/chat',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 5h16v11H9l-5 4z" />
+      </svg>
+    ),
+  },];
+
+/** The mobile tab bar holds at most this many tabs; the nav is exactly this long. */
+export const MOBILE_TAB_LIMIT = 5;
 
 /**
  * Health's sections, in sidebar order: the one list behind the Health sub-nav,
@@ -139,33 +100,6 @@ export function healthItemFor(pathname: string): HealthNavItem | null {
     if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return item;
   }
   return null;
-}
-
-export interface NavContext {
-  /** Members get Chat first; operators keep Home (the fleet) first. */
-  audience: 'member' | 'operator';
-}
-
-/** The mobile tab bar holds at most this many tabs. */
-export const MOBILE_TAB_LIMIT = 5;
-
-/**
- * The nav for one person. Chat is always there: it is part of buildd, not an
- * option, and with no key resolved the chat page itself says who can fix it.
- * A member's first item is Chat; on the phone, Team steps off the tab bar to
- * keep it at five (it stays in the desktop rail).
- */
-export function navItemsFor(ctx: NavContext, surface: 'desktop' | 'mobile'): NavItem[] {
-  let items = NAV_ITEMS;
-  if (ctx.audience === 'member') {
-    const chat = items.find(i => i.href === '/app/chat');
-    items = chat ? [chat, ...items.filter(i => i !== chat)] : items;
-  }
-  if (surface === 'mobile') {
-    items = items.filter(i => !i.desktopOnly);
-    if (items.length > MOBILE_TAB_LIMIT) items = items.filter(i => i.href !== '/app/team');
-  }
-  return items;
 }
 
 /**

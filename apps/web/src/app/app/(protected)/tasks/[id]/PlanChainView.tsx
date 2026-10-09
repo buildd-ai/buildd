@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { displayTaskTitle } from '@/lib/task-title';
 import { deriveTaskEyebrow, taskEyebrowText, type TaskEyebrow } from '@/lib/task-eyebrow';
 
 interface ChainTask {
@@ -122,8 +123,8 @@ function ChainNode({
       </div>
 
       {/* Title */}
-      <div className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2">
-        {task.title}
+      <div className="text-[12px] font-medium text-text-primary leading-tight line-clamp-2" title={task.title}>
+        {displayTaskTitle(task.title)}
       </div>
 
       {/* Status + artifacts row */}
