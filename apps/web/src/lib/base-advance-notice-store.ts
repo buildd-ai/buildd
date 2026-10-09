@@ -144,6 +144,24 @@ export function createBaseAdvanceStore(resolver: BaseResolver): BaseAdvanceDeps 
   };
 }
 
+/**
+ * True when a merged PR is the workspace's release rollup (releaseBranch →
+ * prodBranch): it advances the prod branch, not the branch workers build on,
+ * so it must not produce base-advance notices. Mirrors the head/base match of
+ * `isReleaseBranchPr`, inlined so core does not import the releases module.
+ */
+export async function isReleaseRollupPr(repoFullName: string, headRef: string, baseRef: string): Promise<boolean> {
+  const rows = await db
+    .select({ releaseConfig: workspaces.releaseConfig })
+    .from(workspaces)
+    .where(workspaceRepoMatches(repoFullName));
+  return rows.some(({ releaseConfig: c }) =>
+    !!c?.enabled
+    && !!c.releaseBranch?.trim() && !!c.prodBranch?.trim()
+    && headRef.trim() === c.releaseBranch.trim()
+    && baseRef.trim() === c.prodBranch.trim());
+}
+
 /** Webhook entry point. Never throws: a notice is a nicety, the webhook is the contract. */
 export async function runBaseAdvanceNotice(input: BaseAdvanceInput, resolver: BaseResolver): Promise<BaseAdvanceResult> {
   try {
