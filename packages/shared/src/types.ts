@@ -3583,6 +3583,8 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The single display name for a narrow row: the task label or its cleaned title, never both. */
+  name?: string;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;

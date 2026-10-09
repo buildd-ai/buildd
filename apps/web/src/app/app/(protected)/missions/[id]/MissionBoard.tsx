@@ -21,6 +21,7 @@
  * "after <scope>" chips. Hover (or focus) shows the task's detail; a click
  * opens the task sheet.
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import { useMemo, useState, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
@@ -502,7 +503,7 @@ function Tile({ task: t, retry, model, now, span, link, popSide, compact = false
       <ScopeChip scope={t.scope} />
       <span
         data-testid="board-tile-label"
-        title={compact ? t.title : undefined}
+        title={t.title}
         className={`min-w-0 font-mono text-[14px] ${compact ? 'line-clamp-2 leading-snug [overflow-wrap:anywhere]' : 'truncate'} ${queued ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'}`}
       >
         {t.label}
@@ -667,7 +668,7 @@ function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; mod
         <ScopeChip scope={t.scope} />
         {t.roleName && <SectionLabel className="ml-auto">{t.roleName}</SectionLabel>}
       </div>
-      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary">{t.title}</p>
+      <p className="font-mono text-[13px] font-semibold leading-[1.45] text-text-primary" title={t.title}>{displayTaskTitle(t.title)}</p>
       <div className="grid grid-cols-[70px_1fr] gap-x-2.5 gap-y-1 font-mono text-[12px] md:text-[11.5px]">
         {t.runner && <><span className="text-text-muted">runner</span><span className="text-text-secondary">{`${t.runner}${t.slot != null ? ` · slot ${t.slot + 1}` : ''}`}</span></>}
         {running && <><span className="text-text-muted">{t.endedAt ? 'ran' : 'running'}</span><span className="tabular-nums text-text-secondary">{`${running} · ${t.milestones.length} milestone${t.milestones.length === 1 ? '' : 's'}`}</span></>}

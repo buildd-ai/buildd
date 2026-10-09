@@ -39,7 +39,7 @@ describe('MergeBlockerCard (via ActionQueueCard)', () => {
   it('resolving, no task yet: state, one reason, "Fixing…", and nothing else collapsed', () => {
     const { collapsed, details } = render(item());
     expect(text(collapsed)).toBe(
-      'Resolving merge conflict Fixing… feat(missions): keep mission integration branches merged up with dev automatically Migration 0235 collides with another change',
+      'Resolving merge conflict Fixing… Keep mission integration branches merged up with dev automatically Migration 0235 collides with another change',
     );
     expect(collapsed).toContain('data-needs-you="false"');
     // Reviewer prose and the raw merge state live behind Details only.

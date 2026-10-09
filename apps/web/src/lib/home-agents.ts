@@ -43,8 +43,8 @@ export function buildAgentsModel(fleet: FleetSnapshot, now: number, missionTitle
       lines.push({
         key: w.workerId,
         taskId: w.taskId,
-        name: w.label,
-        rest: w.rest,
+        name: w.name ?? w.label,
+        rest: w.name ? '' : w.rest,
         missionId: w.missionId,
         mission: w.missionId ? missionTitles.get(w.missionId) ?? null : null,
         href: w.taskId ? taskHref({ missionId: w.missionId ?? null, taskId: w.taskId }) : null,
