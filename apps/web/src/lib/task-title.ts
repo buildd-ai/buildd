@@ -64,3 +64,26 @@ export function reviewerTitle(prNumber: number, baseTitle: string | null | undef
 export function applyRecommendationTitle(baseTitle: string | null | undefined): string {
   return `[apply recommendation] ${stripTaskTitlePrefixes(baseTitle)}`;
 }
+
+const REFRESH_TITLE = /^chore\(mission\): merge (\S+) into the (.+) integration branch$/;
+const SHIP_TITLE = /^((?:\[[^\]]*\]\s*)*)Ship mission:\s+(.+)$/;
+
+/**
+ * Display-only short form of a generated title, for cards whose chip already
+ * says what kind of item it is:
+ *   - `chore(mission): merge <trunk> into the <X> integration branch`
+ *     (mission-branch-refresh.ts) → `Refresh <X> from <trunk>`
+ *   - `Ship mission: <X>` (MISSION_PR_TASK_PREFIX) → `Ship <X>`, keeping any retry wrap
+ *
+ * Everything else is returned unchanged — a conventional-commit type on a
+ * human or agent title (`fix:` vs `feat:`) is information, not noise. Never
+ * store the result: the full title stays the tooltip and the detail heading.
+ */
+export function displayTaskTitle(title: string | null | undefined): string {
+  const t = (title ?? '').trim();
+  const refresh = REFRESH_TITLE.exec(t);
+  if (refresh) return `Refresh ${refresh[2]} from ${refresh[1]}`;
+  const ship = SHIP_TITLE.exec(t);
+  if (ship) return `${ship[1]}Ship ${ship[2]}`;
+  return t;
+}
