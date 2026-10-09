@@ -363,6 +363,7 @@
       "apps/web/src/lib/early-release-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-quality-decision.ts": "jev-decisions",
       "apps/web/src/lib/goal-criteria-rubric.ts": "missions",
+      "apps/web/src/lib/merge-readiness-decision.ts": "jev-decisions",
       "apps/web/src/lib/mission-criteria-eval.ts": "missions",
       "apps/web/src/lib/mission-criteria-worker-eval.ts": "missions",
       "apps/web/src/lib/mission-prompts.ts": "missions",

@@ -17,6 +17,7 @@ import { MergeBlockerCard } from '@/components/MergeBlockerCard';
 import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import { ReviewDecision } from '@/components/ReviewDecision';
+import { MergeAdvice } from '@/components/MergeAdvice';
 import { actionCardTaskLink, resolveActionCardContext } from '@/lib/action-card-context';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { describeMergeBlocker } from '@/lib/merge-blocker';
@@ -82,6 +83,7 @@ function ActionQueueCardBody({ item }: { item: ActionQueueItem }) {
           blockers={item.humanReview.blockers ?? []}
           status={item.machineStatus}
         />
+        {item.mergeAdvice && <MergeAdvice slot={item.mergeAdvice} />}
         <Link className="btn mt-3 min-h-11" href={`${item.prUrl}/files`}>{item.humanReview.label}</Link>
       </article>;
     }
