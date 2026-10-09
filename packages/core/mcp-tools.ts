@@ -12,7 +12,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendP
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { ARTIFACT_TYPES, isArtifactType, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, isTerminalTaskStatus, isWorkspaceExecutor, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import { formatDispatchHealth, type DispatchHealthReport } from './dispatch-health-report';
 import type { DispatchHistoryEntry } from './dispatch-outbox';
@@ -5578,9 +5578,8 @@ export async function handleBuilddAction(
           // Unfinished tasks first (route order kept within each half), capped
           // unless all:true; the cut says how many of each status it left out.
           const showAll = params.all === true;
-          const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
           const allTasks: any[] = data.tasks || [];
-          const orderedTasks = [...allTasks.filter(t => !TERMINAL.has(t.status)), ...allTasks.filter(t => TERMINAL.has(t.status))];
+          const orderedTasks = [...allTasks.filter(t => !isTerminalTaskStatus(t.status)), ...allTasks.filter(t => isTerminalTaskStatus(t.status))];
           const { shown: shownTasks, omitted: omittedTaskCount } = capList(orderedTasks, MISSION_TASKS_SHOWN, showAll);
           const omittedByStatus = new Map<string, number>();
           for (const t of orderedTasks.slice(shownTasks.length)) omittedByStatus.set(t.status, (omittedByStatus.get(t.status) ?? 0) + 1);
