@@ -7,6 +7,7 @@
  *   DATABASE_URL=... bun run packages/core/scripts/estimate-backtest.ts
  *   ... --workspace <uuid>        restrict to one workspace
  *   ... --held-out <uuid>         cold start: that workspace estimated with no local history
+ *   ... --clusters                also score area clusters alone vs neighbours alone
  *   ... --json                    machine-readable output
  *
  * Needs the vector store (embedding key) for neighbour lookup; without it
@@ -14,6 +15,8 @@
  */
 import { buildBacktestReport, formatBacktestReport, median } from '../estimate-backtest';
 import { loadReplayInput, replayTasks, type ReplayTask } from '../estimate-backtest-source';
+import { compareClustersToNeighbours, formatClusterComparison, replayClusters } from '../estimate-backtest-clusters';
+import { loadClusterInput } from '../task-area-clusters-source';
 import { TASK_AREA_FALLBACK } from '../task-area-prediction';
 import { findNeighbourTasks, type TaskAreaQuerier } from '../task-area-prediction-source';
 import { TASK_SIZE_NEIGHBOURS_K } from '../task-size-estimate';
@@ -23,7 +26,9 @@ const flag = (n: string) => { const i = process.argv.indexOf(`--${n}`); return i
 async function main() {
   const json = process.argv.includes('--json');
   const heldOut = flag('held-out');
-  const input = await loadReplayInput({ workspaceId: heldOut ?? flag('workspace') });
+  const wantClusters = process.argv.includes('--clusters');
+  const scope = { workspaceId: heldOut ?? flag('workspace') };
+  const input = wantClusters ? await loadClusterInput(scope) : { ...(await loadReplayInput(scope)), clusterTasks: [] };
 
   let store: TaskAreaQuerier | null = null;
   let storeError: string | null = null;
@@ -49,10 +54,17 @@ async function main() {
   const rows = await replayTasks(input.tasks, input.sessions, { findNeighbours, heldOut: !!heldOut });
   const report = buildBacktestReport(rows);
   const tokens = median(rows.map(r => r.actualTokens).filter(x => x > 0));
-  if (json) { process.stdout.write(JSON.stringify({ report, medianActualTokens: tokens, lookupFailures, storeError }) + '\n'); return; }
+  let comparison = null;
+  if (wantClusters) {
+    const actuals = new Map(rows.map(r => [r.taskId, r.actual]));
+    const clusterRows = await replayClusters(input.tasks, input.clusterTasks, actuals, { findNeighbours, heldOut: !!heldOut });
+    comparison = compareClustersToNeighbours(rows, clusterRows);
+  }
+  if (json) { process.stdout.write(JSON.stringify({ report, comparison, medianActualTokens: tokens, lookupFailures, storeError }) + '\n'); return; }
   console.log(formatBacktestReport(report, heldOut ? 'Estimate backtest (held-out workspace, cold start)' : 'Estimate backtest'));
   console.log(`Actual tokens (input+output) per task, median: ${tokens === null ? '–' : Math.round(tokens)}. The estimator does not predict tokens yet.`);
   console.log('Bucket rows use the rule verdict (M), not the Jev bucket model. p80 is not produced by the estimator, so coverage is blank.');
+  if (comparison) console.log(formatClusterComparison(comparison));
   if (storeError) console.log(`Neighbour store unavailable: ${storeError}`);
   if (lookupFailures) console.log(`Neighbour lookups failed: ${lookupFailures}`);
 }

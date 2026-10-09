@@ -34,6 +34,9 @@ export interface ReplayTask {
   description: string | null;
   createdAt: Date;
   completedAt: Date | null;
+  kind?: string | null;
+  complexity?: string | null;
+  pathManifest?: string[] | null;
 }
 
 export interface ReplaySession extends NeighbourSession {
@@ -125,6 +128,7 @@ export async function loadReplayInput(opts: { workspaceId?: string } = {}): Prom
     .select({
       id: tasks.id, workspaceId: tasks.workspaceId, title: tasks.title, description: tasks.description,
       createdAt: tasks.createdAt, completedAt: tasks.completedAt,
+      kind: tasks.kind, complexity: tasks.complexity, pathManifest: tasks.pathManifest,
     })
     .from(tasks)
     .where(where);

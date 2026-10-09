@@ -65,7 +65,7 @@ export function median(xs: readonly number[]): number | null {
 
 const usable = (x: number | null): x is number => typeof x === 'number' && Number.isFinite(x) && x > 0;
 
-export function scoreRows(rows: readonly BacktestRow[]): BacktestScore {
+export function scoreRows(rows: readonly Pick<BacktestRow, 'p50' | 'p80' | 'actual'>[]): BacktestScore {
   const ratios: number[] = [];
   let p80Rows = 0;
   let p80Hits = 0;
