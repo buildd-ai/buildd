@@ -24,7 +24,7 @@ const MIN_FOR_PCT = 5;
 
 /** "80% (8 of 10)", or "3 of 4" when too few to be a rate, or null when none are graded. */
 export function outcomeText(rate: number | null | undefined, n: number | undefined): string {
-  if (rate == null || !n) return 'not known yet';
+  if (rate == null || !n) return 'not measured';
   const k = Math.round(rate * n);
   return n >= MIN_FOR_PCT ? `${pctText(rate)} (${k} of ${n})` : `${k} of ${n}`;
 }
@@ -80,16 +80,16 @@ function RunTable({ cell, windowDays }: { cell: ModelPolicyCell; windowDays: num
               <Stat label="Ran">{m.runs} {m.runs === 1 ? 'time' : 'times'}</Stat>
               {chat ? (
                 <>
-                  <Stat label="Satisfied">{m.satisfiedRate == null ? 'not known yet' : pctText(m.satisfiedRate)}</Stat>
+                  <Stat label="Satisfied">{m.satisfiedRate == null ? 'not measured' : pctText(m.satisfiedRate)}</Stat>
                   <Stat label="Thumbs">{m.thumbsUp == null && m.thumbsDown == null ? 'none' : `${m.thumbsUp ?? 0} up · ${m.thumbsDown ?? 0} down`}</Stat>
-                  <Stat label="Re-asked">{m.reaskedRate == null ? 'not known yet' : pctText(m.reaskedRate)}</Stat>
-                  <Stat label="Average cost">{m.costPerRunUsd == null ? 'not known yet' : `${usd(m.costPerRunUsd)} per conversation`}</Stat>
+                  <Stat label="Re-asked">{m.reaskedRate == null ? 'not measured' : pctText(m.reaskedRate)}</Stat>
+                  <Stat label="Average cost">{m.costPerRunUsd == null ? 'not measured' : `${usd(m.costPerRunUsd)} per conversation`}</Stat>
                 </>
               ) : (
                 <>
                   <Stat label="Changes merged">{outcomeText(m.mergedRate, m.mergedGraded)}</Stat>
                   <Stat label="Passed review">{outcomeText(m.reviewOkRate, m.reviewOkGraded)}</Stat>
-                  <Stat label="Average cost">{m.costPerRunUsd == null ? 'not known yet' : `${usd(m.costPerRunUsd)} per run`}</Stat>
+                  <Stat label="Average cost">{m.costPerRunUsd == null ? 'not measured' : `${usd(m.costPerRunUsd)} per run`}</Stat>
                 </>
               )}
             </dl>

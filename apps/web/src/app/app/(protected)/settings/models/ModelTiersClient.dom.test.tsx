@@ -229,7 +229,7 @@ describe('ModelTiersClient: what ran and history', () => {
     expect(rows[0].textContent).toContain('$0.42 per run');
     // too few graded runs for a percentage: counts, not 75%
     expect(rows[1].textContent).toContain('Changes merged3 of 4');
-    expect(rows[1].textContent).toContain('Passed reviewnot known yet');
+    expect(rows[1].textContent).toContain('Passed reviewnot measured');
     expect(sheet.querySelector('[data-testid="what-ran-denominator"]')!.textContent).toContain('Share of 50 runs');
     const recent = sheet.querySelector('[data-testid="what-ran-recent"]')!;
     expect(recent.textContent).toContain('Add retry to webhook sender');
