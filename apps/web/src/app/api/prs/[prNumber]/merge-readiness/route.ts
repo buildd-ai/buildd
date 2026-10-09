@@ -1,10 +1,11 @@
 /**
  * POST /api/prs/[prNumber]/merge-readiness
  *
- * A review card's "Ask Jev": can this PR merge now? Runs the
+ * A review card's "Assess": can this PR merge as-is? Runs the
  * `buildd.merge_readiness` decision (lib/merge-readiness-decision.ts) over the
- * facts Home signed when it built the card, and returns the one line the card
- * shows. Advisory only: nothing here merges, reviews or gates.
+ * facts Home signed when it built the card, on the team's decision model, and
+ * returns the one line the card shows (or none). Advisory only: nothing here
+ * merges, reviews or gates.
  *
  * Body: `{ workspaceId, token }`. The token binds the facts to one
  * (workspace, PR, head) and expires; the session must still have access to

@@ -1,6 +1,6 @@
 /**
  * Server half of a review card's merge advice (merge-advice.ts): the signed
- * facts the "Ask Jev" route accepts, and the ledger read that shows an answer
+ * facts the "Assess" route accepts, and the ledger read that shows an answer
  * already given.
  *
  * The facts are derived on the server when Home builds the card, then signed,
@@ -23,13 +23,16 @@ import {
   MERGE_READINESS_KIND,
   MERGE_READINESS_SUBJECT_TYPE,
   confidenceBucket,
+  diffSizeBucket,
   mergeAdviceLine,
   mergeCiState,
   mergePolicyTier,
   parseLedgerReason,
   parseMergeAdviceFacts,
   parseMergeAdviceSubjectId,
+  ruleAdviceView,
   type MergeAdviceFacts,
+  type MergeEscalationCause,
   type MergeAdviceSlot,
   type MergeAdviceView,
   type MergeReadinessDecision,
@@ -111,8 +114,24 @@ export interface MergeAdviceRow {
   appliedAnswer: string | null;
   reason: string | null;
   failureClass: string | null;
+  /** The model's answer and probability, recorded even when not applied (the kind runs in shadow). */
+  verdict: string | null;
+  confidence: number | null;
+  model: string | null;
   createdAt: Date;
 }
+
+const ROW_COLUMNS = {
+  subjectId: decisionRecords.subjectId,
+  fingerprint: decisionRecords.fingerprint,
+  appliedAnswer: decisionRecords.appliedAnswer,
+  reason: decisionRecords.reason,
+  failureClass: decisionRecords.failureClass,
+  verdict: decisionRecords.verdict,
+  confidence: decisionRecords.confidence,
+  model: decisionRecords.model,
+  createdAt: decisionRecords.createdAt,
+};
 
 /**
  * Was this row an answer at all? A capability that is off or a missing key
@@ -134,10 +153,14 @@ export function adviceViewFromRow(
   const parsed = parseLedgerReason(row.reason);
   if (!subject || !parsed) return null;
   const decision = row.appliedAnswer as MergeReadinessDecision;
+  const probability = row.verdict === 'merge_now' ? row.confidence : null;
   return {
     decision,
     source: parsed.source,
-    line: mergeAdviceLine(decision, parsed.source, parsed.reasonCode, current.facts),
+    reasonCode: parsed.reasonCode,
+    line: mergeAdviceLine({ reasonCode: parsed.reasonCode, probability, facts: current.facts }),
+    recorded: true,
+    model: row.model,
     at: row.createdAt.toISOString(),
     stale: subject.headSha !== current.headSha ? 'new_commits'
       : row.fingerprint !== mergeAdviceDigest(current.facts) ? 'facts_changed'
@@ -160,14 +183,7 @@ export function latestAnswerPerPr(rows: readonly MergeAdviceRow[]): Map<string, 
 
 export async function readMergeAdviceRows(workspaceIds: readonly string[], now = Date.now()): Promise<MergeAdviceRow[]> {
   if (workspaceIds.length === 0) return [];
-  return db.select({
-    subjectId: decisionRecords.subjectId,
-    fingerprint: decisionRecords.fingerprint,
-    appliedAnswer: decisionRecords.appliedAnswer,
-    reason: decisionRecords.reason,
-    failureClass: decisionRecords.failureClass,
-    createdAt: decisionRecords.createdAt,
-  }).from(decisionRecords).where(and(
+  return db.select(ROW_COLUMNS).from(decisionRecords).where(and(
     inArray(decisionRecords.workspaceId, [...workspaceIds]),
     eq(decisionRecords.capability, MERGE_READINESS_KIND),
     eq(decisionRecords.subjectType, MERGE_READINESS_SUBJECT_TYPE),
@@ -181,14 +197,7 @@ export async function findStoredAnswer(
   subjectId: string,
   digest: string,
 ): Promise<MergeAdviceRow | null> {
-  const rows = await db.select({
-    subjectId: decisionRecords.subjectId,
-    fingerprint: decisionRecords.fingerprint,
-    appliedAnswer: decisionRecords.appliedAnswer,
-    reason: decisionRecords.reason,
-    failureClass: decisionRecords.failureClass,
-    createdAt: decisionRecords.createdAt,
-  }).from(decisionRecords).where(and(
+  const rows = await db.select(ROW_COLUMNS).from(decisionRecords).where(and(
     eq(decisionRecords.workspaceId, workspaceId),
     eq(decisionRecords.capability, MERGE_READINESS_KIND),
     eq(decisionRecords.subjectType, MERGE_READINESS_SUBJECT_TYPE),
@@ -210,6 +219,11 @@ export interface MergeAdviceBase {
   draft: boolean;
   /** The mission-aware merge-policy tier the gate resolved. */
   policyTier: string;
+  /** Why a person was asked (`reviewFactsForAdvice`). */
+  escalationCause: MergeEscalationCause;
+  /** The worker's reported diff size; null when unreported. */
+  linesAdded: number | null;
+  linesRemoved: number | null;
 }
 
 /** The facts for one review card: the base Home computed plus what the queue resolved (blockers, CI gate, refresh fold). */
@@ -226,6 +240,8 @@ export function mergeAdviceFactsFor(item: ActionQueueItem, base: MergeAdviceBase
     draft: base.draft,
     refreshFirst: !!item.refreshFirst,
     missionBlocked: !!item.missionMergeBlockedReason,
+    escalationCause: base.escalationCause,
+    diffSize: diffSizeBucket(base.linesAdded, base.linesRemoved),
   });
   if (!facts.ok) throw new Error(`merge advice facts: ${facts.message}`);
   return facts.features;
@@ -262,7 +278,9 @@ export async function attachMergeAdvice(
       slots.set(item.subjectKey, {
         prNumber: item.prNumber!,
         workspaceId: item.workspaceId!,
-        advice: row ? adviceViewFromRow(row, { headSha: item.headSha!, facts }) : null,
+        // A stored answer first; otherwise the rule's, which costs nothing.
+        advice: (row ? adviceViewFromRow(row, { headSha: item.headSha!, facts }) : null)
+          ?? ruleAdviceView(facts, new Date(now).toISOString()),
         token,
         unavailable: token ? null : 'This server cannot sign the request.',
       });
