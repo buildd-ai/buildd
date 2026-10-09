@@ -308,6 +308,31 @@ describe('T4 AttemptEnded by outcome (§6.5)', () => {
     expect(dec.rounds).toEqual([expect.objectContaining({ op: 'insert', round: 1, headSha: 'H1', kind: 'full' })]);
     expect(dec.idempotencyKey).toBe('end:w9');
   });
+  test('e9f1674b: the hand-off reads the head red → REPAIRING(ci) through T10’s ledger, no round; green or unread → the review round', () => {
+    const red = { liveChecks: { complete: true, failing: ['build'] }, signature: 'ci:build', maxAttempts: 3 };
+    const dec = applied(end(V(D()), { ci: red }));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.idempotencyKey).toBe('end:w9');
+    expect(dec.patch).toMatchObject({ stateReason: 'ci', currentHeadSha: 'H1', ci: 'red', ciHeadSha: 'H1' });
+    expect(dec.rounds).toEqual([]);
+    expect(dec.attempts).toEqual([expect.objectContaining({ op: 'insert', family: 'ci', attemptNo: 1, boundHeadSha: 'H1', triggerReason: 'ci:build', maxAttempts: 3 })]);
+    expect(effectKinds(dec)).toContain('dispatch_ci_fix');
+    expect(effectKinds(dec)).not.toContain('dispatch_review');
+    expect(dec.evidence).toMatchObject({ liveChecks: red.liveChecks, signature: 'ci:build', attemptNo: 1 });
+    // The policy basis is kept, so the repair resumes to APPROVED by policy.
+    expect(applied(end(V(D()), { ci: red, reviewRequired: false })).patch).toMatchObject({ approvalBasis: 'policy', stateReason: 'ci' });
+    // The ledger is spent: the cap escalates, as T10 would.
+    const spent = [1, 2, 3].map((n) => A({ id: `c${n}`, family: 'ci', attemptNo: n, status: 'ended' }));
+    expect(applied(end(V(D(), [], spent), { ci: red })).patch).toMatchObject({ stateReason: 'ci_exhausted' });
+    // Green (or a re-run still going) is the normal hand-off, with the read as evidence.
+    const green = applied(end(V(D()), { ci: { ...red, liveChecks: { complete: false, failing: [] } } }));
+    expect(green.toState).toBe('AWAITING_REVIEW');
+    expect(green.evidence).toMatchObject({ liveChecks: { complete: false, failing: [] } });
+    // No read: exactly the previous decision.
+    expect(applied(end(V(D()), { ci: null })).evidence).not.toHaveProperty('liveChecks');
+    // A verdict already decided at the head is honoured first.
+    expect(applied(end(V(D(), [R({ status: 'decided', verdict: 'approve' })]), { ci: red })).toState).not.toBe('REPAIRING');
+  });
   test('WORKING success: an open round already at the head is reused', () => {
     const dec = applied(end(V(D(), [R()]), {}));
     expect(dec.toState).toBe('AWAITING_REVIEW');
