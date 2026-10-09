@@ -83,6 +83,7 @@ const APPLIED: Array<[string, KernelView, Command, string]> = [
   ['T23 HumanResolve', V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), { type: 'HumanResolve', actor: 'human:u', choice: 'approve', expectedVersion: 5, commitId: 'H1', hasMergePermission: true }, 'APPROVED'],
   ['T24 DeliveryFailed', V(D({ prNumber: null, repoFullName: null })), { type: 'DeliveryFailed', actor: 'runner', reason: 'cancelled' }, 'FAILED'],
   ['T25 TrunkRedObserved', V(D({ state: 'AWAITING_REVIEW' })), { type: 'TrunkRedObserved', actor: 'kernel', incidentId: 'i1', signature: 'sig', headSha: 'H1', thresholdMet: true }, 'BLOCKED_ON_TRUNK'],
+  ['T28 BaseChanged', V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]), { type: 'BaseChanged', actor: 'webhook', live: live('H1', { baseRef: 'release' }) }, 'AWAITING_REVIEW'],
   ['T26 TrunkRecovered', V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1', resumeState: 'APPROVED', approvedHeads: ['H1'] })), { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: true }, 'APPROVED'],
   ['T27 ReviewRoundFailed', V(D({ state: 'AWAITING_REVIEW', currentRound: 1 }), [R()]), { type: 'ReviewRoundFailed', actor: 'reviewer', roundId: 'r1', reason: 'prose_verdict', maxContractRetries: 2 }, 'AWAITING_REVIEW'],
   ['CompositionAttested', V(D({ state: 'AWAITING_REVIEW' })), { type: 'CompositionAttested', actor: 'kernel', attestation: att, constituents: attEv }, 'APPROVED'],
@@ -1567,5 +1568,86 @@ describe('EffectDead (§10.3, 67d34094): a critical dead effect hands the delive
     expectResult(dead(V(D({ state: 'MERGED' })), 'post_review'), 'stale', 'terminal');
     expectResult(dead(V(D({ state: 'ESCALATED', stateReason: 'review_escalated' })), 'post_review'), 'duplicate', 'already_escalated');
     expectResult(dead(V(D({ state: 'LANDING' })), 'render_activity'), 'rejected', 'not_critical');
+  });
+});
+
+// ── Adversarial probe findings (task e769323f) ──────────────────────────────
+describe('a verdict for the current head while a hold is on (b666505e)', () => {
+  const verdict = (v: KernelView, effectiveVerdict: 'approve' | 'request_changes') =>
+    run(v, { type: 'ReviewVerdictRecorded', actor: 'reviewer', roundId: 'r1', verdict: effectiveVerdict, effectiveVerdict, headBound: 'H1' });
+  for (const state of ['REPAIRING', 'BLOCKED_ON_TRUNK'] as const) {
+    test(`${state}: the round is decided, the state does not move`, () => {
+      const dec = applied(verdict(V(D({ state, stateReason: 'ci', currentRound: 1 }), [R({ status: 'reviewing' })]), 'request_changes'));
+      expect(dec.toState).toBe(state);
+      expect(dec.rounds).toEqual([expect.objectContaining({ op: 'update', roundId: 'r1', set: expect.objectContaining({ status: 'decided', effectiveVerdict: 'request_changes' }) })]);
+      expect(effectKinds(dec)).toContain('post_review');
+      expect(effectKinds(dec)).not.toContain('dispatch_fix');
+    });
+  }
+  test('a verdict for an older head while repairing is still superseded', () => {
+    const dec = verdict(V(D({ state: 'REPAIRING', stateReason: 'ci', currentHeadSha: 'H2', currentRound: 1 }), [R({ status: 'reviewing' })]), 'approve');
+    expectResult(dec, 'stale', 'round_superseded');
+  });
+  test('the repair resolving as not needed re-enters the held verdict, no second round at the head', () => {
+    const v = V(D({ state: 'REPAIRING', stateReason: 'ci', currentRound: 1, boundAttemptId: 'a1' }), [decidedRC], [A({ family: 'ci', triggerReason: 'sig' })]);
+    const dec = applied(run(v, { type: 'RepairNotNeeded', actor: 'kernel', attemptId: 'a1', reason: 'ci_green' }));
+    expect(dec.toState).toBe('CHANGES_REQUESTED');
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+  });
+  test('trunk recovery re-enters a verdict decided while blocked', () => {
+    const v = V(D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1', resumeState: 'AWAITING_REVIEW', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]);
+    const dec = applied(run(v, { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: false }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch.approvedHeads).toEqual(['H1']);
+    expect(dec.rounds.filter((r) => r.op === 'insert')).toEqual([]);
+  });
+});
+
+describe('BLOCKED_ON_TRUNK and a new head (47be5f6c)', () => {
+  const blocked = (o: Partial<DeliverySnapshot> = {}) => D({ state: 'BLOCKED_ON_TRUNK', trunkIncidentId: 'i1', resumeState: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1, ...o });
+  test('a head with no carry-forward evidence turns the resume into AWAITING_REVIEW, still blocked', () => {
+    const dec = applied(run(V(blocked()), { type: 'HeadObserved', actor: 'webhook', live: live('H2') }));
+    expect(dec.toState).toBe('BLOCKED_ON_TRUNK');
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', resumeState: 'AWAITING_REVIEW' });
+  });
+  test('a content-equivalent head carries the approval and stays blocked', () => {
+    const dec = applied(run(V(blocked({ stateReason: 'sig' })), { type: 'HeadObserved', actor: 'webhook', live: live('H2'), carryForward: 'content_equivalent' }));
+    expect(dec.toState).toBe('BLOCKED_ON_TRUNK');
+    expect(dec.patch).toMatchObject({ currentHeadSha: 'H2', approvedHeads: ['H1', 'H2'], stateReason: 'sig' });
+  });
+  test('T26 never resumes APPROVED at a head no verdict covers: it starts round r+1 there', () => {
+    const v = V(blocked({ currentHeadSha: 'H2' }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]);
+    const dec = applied(run(v, { type: 'TrunkRecovered', actor: 'kernel', incidentId: 'i1', baseStillRed: false, headPredatesFix: false }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H2' }));
+    expect(effectKinds(dec)).toContain('dispatch_review');
+  });
+});
+
+describe('T28 BaseChanged (24e1cfad)', () => {
+  const approved = () => V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict', currentRound: 1 }), [R({ status: 'decided', verdict: 'approve', effectiveVerdict: 'approve' })]);
+  test('a retarget drops the approval, retires the round at the head and reviews it again', () => {
+    const dec = applied(run(approved(), { type: 'BaseChanged', actor: 'webhook', live: live('H1', { baseRef: 'release' }) }));
+    expect(dec.toState).toBe('AWAITING_REVIEW');
+    expect(dec.patch).toMatchObject({ baseRef: 'release', approvedHeads: [], approvalBasis: null, currentRound: 2 });
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'update', roundId: 'r1', whenStatus: ['decided'], set: { status: 'superseded' } }));
+    expect(dec.rounds).toContainEqual(expect.objectContaining({ op: 'insert', round: 2, headSha: 'H1' }));
+  });
+  test('a retarget with a content-equivalent diff only follows the base', () => {
+    const dec = applied(run(approved(), { type: 'BaseChanged', actor: 'webhook', live: live('H1', { baseRef: 'release' }), diffEquivalent: true }));
+    expect(dec.toState).toBe('APPROVED');
+    expect(dec.patch).toEqual({ baseRef: 'release' });
+  });
+  test('the same base is a duplicate', () => {
+    expectResult(run(approved(), { type: 'BaseChanged', actor: 'webhook', live: live('H1') }), 'duplicate', 'base_unchanged');
+  });
+  test('a repair in flight keeps its state, and records the base its incident is joined on', () => {
+    const dec = applied(run(V(D({ state: 'REPAIRING', stateReason: 'ci', baseRef: 'feat/stack-a' })), { type: 'BaseChanged', actor: 'sweep', live: live('H1', { baseRef: 'dev' }) }));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(dec.patch.baseRef).toBe('dev');
+  });
+  test('landing refuses a live read on another base than the delivery holds', () => {
+    const v = V(D({ state: 'APPROVED', approvedHeads: ['H1'], approvalBasis: 'verdict' }));
+    expectResult(run(v, { type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: 'H1', live: live('H1', { baseRef: 'release' }), rails: { passed: true } }), 'stale', 'base_moved');
   });
 });
