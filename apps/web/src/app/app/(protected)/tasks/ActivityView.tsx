@@ -39,6 +39,10 @@ export interface ActivityViewProps {
   localSessions?: LocalSessionView[];
   /** Rows whose evidence starts expanded (fixtures and deep links). */
   openRowIds?: readonly string[];
+  /** The rows could not be read. Shown as a failure, never as an empty Now or History. */
+  loadError?: boolean;
+  /** Filters to start with (fixtures). The filters are kept across Now and History. */
+  initialFilters?: { scope?: ActivityScope; outcome?: ActivityOutcome };
 }
 
 const SCOPES: ReadonlyArray<{ key: ActivityScope; label: string }> = [
@@ -59,11 +63,14 @@ export function age(ms: number, nowMs: number): string {
   return `${Math.round(min / 1440)}d`;
 }
 
-export default function ActivityView({ mode, now, history, latest, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [] }: ActivityViewProps) {
-  const [scope, setScope] = useState<ActivityScope>('all');
-  const [outcome, setOutcome] = useState<ActivityOutcome>('any');
+export default function ActivityView({ mode, now, history, latest, nowMs, hrefs, missionFilter, initiativeTitle, localSessions = [], openRowIds = [], loadError = false, initialFilters }: ActivityViewProps) {
+  const [scope, setScope] = useState<ActivityScope>(initialFilters?.scope ?? 'all');
+  const [outcome, setOutcome] = useState<ActivityOutcome>(initialFilters?.outcome ?? 'any');
   const [mission, setMission] = useState<string>('');
   const outcomeKey = OUTCOMES[mode].some(o => o.key === outcome) ? outcome : 'any';
+  const filtered = scope !== 'all' || outcomeKey !== 'any' || (mode === 'history' && mission !== '');
+  const clearFilters = () => { setScope('all'); setOutcome('any'); setMission(''); };
+  const nowRows = now.groups.reduce((n, g) => n + g.rows.length + g.moreWaiting, 0);
 
   const groups = useMemo(() => filterNow(now, { scope, outcome: outcomeKey }), [now, scope, outcomeKey]);
   const episodes = useMemo(() => filterEpisodes(history, { scope, outcome: outcomeKey, missionId: mission || null }), [history, scope, outcomeKey, mission]);
@@ -103,9 +110,11 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
               </Link>
             ))}
           </div>
-          <span data-testid="activity-counts" className="font-mono text-meta text-text-muted">
-            {now.inMotion} {now.inMotion === 1 ? 'delivery' : 'deliveries'} in motion · {now.liveAgents} {now.liveAgents === 1 ? 'agent' : 'agents'} working
-          </span>
+          {!loadError && (
+            <span data-testid="activity-counts" className="font-mono text-meta text-text-muted">
+              {now.inMotion} {now.inMotion === 1 ? 'delivery' : 'deliveries'} in motion · {now.liveAgents} {now.liveAgents === 1 ? 'agent' : 'agents'} working
+            </span>
+          )}
         </div>
 
         {latest && (
@@ -133,15 +142,25 @@ export default function ActivityView({ mode, now, history, latest, nowMs, hrefs,
           )}
         </div>
 
-        {mode === 'now' ? (
+        {loadError ? (
+          <div role="alert" data-testid="activity-load-error" className="mt-8 border-2 border-status-error px-4 py-3 text-body text-text-primary">
+            <p className="font-semibold">Activity could not load.</p>
+            <p className="mt-1 text-text-secondary">This is a failure to read your tasks, not an empty list.</p>
+            <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center font-mono text-meta text-accent-text md:min-h-0">Try again ›</a>
+          </div>
+        ) : mode === 'now' ? (
           groups.length === 0
-            ? <Empty text={now.groups.length === 0 ? 'Nothing in motion. Finished work is in History.' : 'Nothing in motion matches these filters.'} />
+            ? (nowRows === 0 || !filtered
+              ? <Empty text="Nothing in motion. Finished work is in History." />
+              : <FilteredEmpty text="Nothing in motion matches these filters." available={`${nowRows} ${nowRows === 1 ? 'delivery' : 'deliveries'} in Now`} onClear={clearFilters} />)
             : groups.map(g => <NowGroupView key={g.missionId ?? '__standalone__'} group={g} nowMs={nowMs} openRowIds={openRowIds} />)
         ) : (
           <>
             <p className="mt-4 text-meta text-text-muted">Newest first. One episode per delivery; retries and reviews are steps inside it, in the order they happened.</p>
             {episodes.length === 0
-              ? <Empty text="No episodes match these filters." />
+              ? (history.length === 0 || !filtered
+                ? <Empty text="No deliveries in the last 30 days." />
+                : <FilteredEmpty text="No episodes match these filters." available={`${history.length} ${history.length === 1 ? 'episode' : 'episodes'} in History`} onClear={clearFilters} />)
               : episodes.map(e => <EpisodeView key={e.id} episode={e} nowMs={nowMs} />)}
           </>
         )}
@@ -169,7 +188,19 @@ function FilterGroup<K extends string>({ label, options, value, onChange }: { la
 }
 
 function Empty({ text }: { text: string }) {
-  return <p className="mt-8 text-center text-body text-text-muted">{text}</p>;
+  return <p data-testid="activity-empty" className="mt-8 text-center text-body text-text-muted">{text}</p>;
+}
+
+/** Empty because of the filters, not because there is nothing: says what is there and clears them. */
+function FilteredEmpty({ text, available, onClear }: { text: string; available: string; onClear: () => void }) {
+  return (
+    <div data-testid="activity-filtered-empty" className="mt-8 flex flex-col items-center gap-2 text-center">
+      <p className="text-body text-text-muted">{text} {available}.</p>
+      <button type="button" data-testid="activity-clear-filters" onClick={onClear} className="inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary md:min-h-9">
+        Clear filters
+      </button>
+    </div>
+  );
 }
 
 // ── Now ─────────────────────────────────────────────────────────────────────
