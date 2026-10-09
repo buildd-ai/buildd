@@ -55,6 +55,8 @@ export interface PusherManagerCallbacks {
   emit: (event: any) => void;
   emitCommand: (workerId: string, command: WorkerCommand) => void;
   abort: (workerId: string, cancelQueued?: boolean) => Promise<void>;
+  /** A person paused this run; optional for older embedders. */
+  pause?: (workerId: string) => Promise<unknown>;
   sendMessage: (workerId: string, text: string) => Promise<void>;
   /** Sync one worker now (collects its queued messages). Optional for older embedders. */
   syncWorker?: (workerId: string) => Promise<void>;
@@ -321,11 +323,12 @@ export class PusherManager {
 
     switch (command.action) {
       case 'pause':
-        // TODO: Implement pause (would need SDK support)
-        console.log(`Pause requested for worker ${workerId}`);
+        // Stops at the next point no tool is executing (pause.ts). Resume is
+        // the answer to the paused waitingFor, through /respond, not a command.
+        await this.callbacks.pause?.(workerId);
         break;
       case 'resume':
-        console.log(`Resume requested for worker ${workerId}`);
+        console.log(`Resume requested for worker ${workerId}: answer its pause to resume`);
         break;
       case 'abort': {
         // Guard: ignore push abort if the worker already reached a terminal state

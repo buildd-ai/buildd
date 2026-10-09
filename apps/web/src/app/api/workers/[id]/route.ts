@@ -117,6 +117,7 @@ import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
+import { pauseServed } from '@/lib/worker-pause-policy';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -1296,6 +1297,10 @@ export async function PATCH(
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
+  // A pause request is spent once the worker parks or ends (lib/worker-pause.ts).
+  if (status === 'waiting_input' || status === 'completed' || status === 'failed' || status === 'error') {
+    updates.pauseRequestedAt = null;
+  }
   // A permission prompt dies with its session: the runner resolves the blocked
   // PermissionRequest hook as deny when it aborts, but reports only the terminal
   // status. Left in place, the ended worker renders a live "Allow once / Deny"
@@ -5154,6 +5159,9 @@ export async function PATCH(
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    // A person paused this run: the runner stops at its next safe point. Served
+    // on every PATCH until the worker parks, so a missed push still lands.
+    ...(pauseServed(updated) ? { pauseRequested: true } : {}),
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),

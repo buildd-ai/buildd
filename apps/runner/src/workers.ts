@@ -579,6 +579,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
@@ -824,6 +825,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
       abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
+      pause: (workerId) => this.pauseWorker(workerId),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
       syncWorker: (workerId) => this.workerSync.requestSync(workerId),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
@@ -869,6 +871,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       abort: (workerId, reason) => this.abort(workerId, reason),
       sendMessage: (workerId, message, ids) => this.sendMessage(workerId, message, ids),
+      onPauseRequested: (worker) => { void this.pauseWorker(worker.id); },
       getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
       setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
       recentCycleTimes: this.recentCycleTimes,
@@ -1136,9 +1139,8 @@ export class WorkerManager {
   // Send heartbeat to server announcing this runner instance is alive and ready
   private async sendHeartbeat() {
     try {
-      const activeCount = Array.from(this.workers.values()).filter(
-        w => w.status === 'working' || w.status === 'waiting'
-      ).length;
+      // A paused worker holds no slot (pause.ts); a question still does.
+      const activeCount = Array.from(this.workers.values()).filter(holdsRunnerSlot).length;
       // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
       // liveness while a worker sits inside one long silent tool call — the case
       // where `updatedAt` freezes and the server could not tell a busy worker
@@ -1404,6 +1406,83 @@ export class WorkerManager {
   /** True while an SDK session for this worker is still live (not yet torn down). */
   hasLiveSession(id: string): boolean {
     return this.sessions.has(id);
+  }
+
+  /** How this runner can pause a run (pause.ts): set by --once from its parking config. */
+  private pauseMode(): PauseMode {
+    return this.config.pauseMode ?? (this.config.singleTask ? 'none' : 'session');
+  }
+
+  /**
+   * A person paused this run (POST /api/workers/[id]/pause). Stops the session
+   * once no tool is executing, keeps the worktree and session id, and reports
+   * waiting_input with waitingFor.type 'pause' so answering it resumes the same
+   * session. Refused, with a milestone saying why, where it could not resume.
+   */
+  async pauseWorker(workerId: string): Promise<'apply' | 'defer' | 'refuse'> {
+    const worker = this.workers.get(workerId);
+    if (!worker) return 'refuse';
+    // Already stopping: the session is being torn down (the server repeats the
+    // request on every sync until it sees the park).
+    if (worker.status === 'working' && worker.error?.startsWith(PAUSED_ERROR_PREFIX)) return 'apply';
+    const decide = () => decidePause({
+      mode: this.pauseMode(),
+      status: worker.status,
+      hasLiveSession: this.sessions.has(workerId),
+      toolInFlight: !!worker.toolInFlight,
+      waitingFor: worker.waitingFor,
+    });
+    const decision = decide();
+    if (decision.action === 'refuse') {
+      console.log(`[Worker ${workerId}] Pause refused: ${decision.reason}`);
+      const lastLabel = (worker.milestones[worker.milestones.length - 1] as { label?: string } | undefined)?.label;
+      if (decision.reason === 'unavailable' && lastLabel !== PAUSE_UNAVAILABLE_MESSAGE) {
+        this.addMilestone(worker, { type: 'status', label: PAUSE_UNAVAILABLE_MESSAGE, ts: Date.now() });
+        this.buildd.updateWorker(worker.id, { currentAction: PAUSE_UNAVAILABLE_MESSAGE, milestones: worker.milestones }).catch(() => {});
+        this.emit({ type: 'worker_update', worker });
+      }
+      return 'refuse';
+    }
+    if (decision.action === 'defer') {
+      if (worker.pauseRequestedAt) return 'defer';
+      worker.pauseRequestedAt = Date.now();
+      worker.currentAction = 'Pausing after the current step';
+      this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      this.emit({ type: 'worker_update', worker });
+      const timer = setInterval(() => {
+        if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
+        const next = decide();
+        if (next.action === 'defer') return;
+        clearInterval(timer);
+        worker.pauseRequestedAt = undefined;
+        if (next.action === 'apply') void this.applyPause(worker);
+      }, 1000);
+      (timer as { unref?: () => void }).unref?.();
+      return 'defer';
+    }
+    await this.applyPause(worker);
+    return 'apply';
+  }
+
+  /** Same shape as parkQuestion's inputAsRetry branch: report the park, then abort; the catch path parks it. */
+  private async applyPause(worker: LocalWorker): Promise<void> {
+    worker.pauseRequestedAt = undefined;
+    worker.error = PAUSED_ERROR;
+    worker.waitingFor = pausedWaitingFor();
+    worker.currentAction = 'Paused';
+    this.addMilestone(worker, { type: 'status', label: 'Paused', ts: Date.now() });
+    sessionLog(worker.id, 'info', 'paused', 'session stopped between tool calls; resumable by session id', worker.taskId);
+    try {
+      await this.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: worker.waitingFor as any,
+      });
+    } catch (err) {
+      console.warn(`[Worker ${worker.id}] pause sync failed:`, err);
+    }
+    storeSaveWorker(worker);
+    this.sessions.get(worker.id)?.abortController.abort();
   }
 
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
@@ -3019,7 +3098,7 @@ export class WorkerManager {
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
     worker.status = 'waiting';
-    worker.currentAction = 'Needs input';
+    worker.currentAction = worker.waitingFor?.type === 'pause' ? 'Paused' : 'Needs input';
     worker.hasNewActivity = true;
     // Not terminal — no completedAt. The worker is still open.
     // Re-send waitingFor so the dashboard can render the answer UI even
@@ -4972,7 +5051,7 @@ export class WorkerManager {
       // 'waiting_input' phase. See docs/specs/human-in-the-loop-protocol.md.
       // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
       // (answer, or timeout after 4h/24h) — this path only parks.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }
@@ -5487,7 +5566,7 @@ export class WorkerManager {
       // reporting status:'failed' here fed the mission auto-retry gate and
       // classifyReportedFailure's code_failure default. See
       // docs/specs/human-in-the-loop-protocol.md.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }

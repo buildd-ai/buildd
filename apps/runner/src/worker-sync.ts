@@ -207,6 +207,8 @@ export interface WorkerSyncContext {
    * observed touches. WorkerManager checkpoints and defers the task. Optional.
    */
   onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
+  /** The server says a person paused this run (PATCH response `pauseRequested`, pause.ts). */
+  onPauseRequested?: (worker: LocalWorker) => void;
 }
 
 /**
@@ -608,6 +610,12 @@ export class WorkerSync {
         } else if (worker.pathClaimMode !== 'enforce') {
           console.log(`[Worker ${worker.id}] Path-claim advisory: ${collision.path} is held by ${collision.blockingTaskId}`);
         }
+      }
+
+      // A person paused this run. Repeated on every sync until the worker
+      // parks; pauseWorker ignores the repeats (a pending or applied pause).
+      if ((response as { pauseRequested?: boolean } | null)?.pauseRequested === true && worker.status === 'working' && !worker.pauseRequestedAt) {
+        this.ctx.onPauseRequested?.(worker);
       }
 
       // Server says worker was already terminated

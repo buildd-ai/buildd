@@ -7,7 +7,7 @@
  */
 import { useState } from 'react';
 import type { WorkspaceReadinessItem, WorkspaceReadinessReport } from '@buildd/shared';
-import { ReadinessCard } from '../../(protected)/workspaces/[id]/config/ReadinessCard';
+import { ReadinessCard } from '../../(protected)/settings/workspace/[workspaceId]/ReadinessCard';
 
 export const ONBOARDING_FIXTURE_VIEWS = ['checklist', 'no-repo', 'spec'] as const;
 export type OnboardingFixtureView = (typeof ONBOARDING_FIXTURE_VIEWS)[number];

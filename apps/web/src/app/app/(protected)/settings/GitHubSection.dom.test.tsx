@@ -70,6 +70,9 @@ describe('GitHubSection: Disconnect only where the API allows it', () => {
     act(() => root.render(<GitHubSection disconnectableIds={[]} />));
     await flush();
     expect(buttons()).toEqual(['Sync']);
+    // State words are TonePills, not the legacy outlined chip.
+    expect(container.querySelector('.status-pill')).toBeNull();
+    expect(container.querySelector('[data-tone="q"]')!.textContent).toBe('Organization');
     expect(container.querySelector('[data-testid="github-read-only-i1"]')!.textContent).toBe('Admins can disconnect this.');
   });
 
