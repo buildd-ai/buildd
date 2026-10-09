@@ -1671,7 +1671,7 @@ export interface AssertionConnectorEntry {
 export interface DegradedConnector {
   id: string;
   name: string;
-  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  failureMode: 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
   detail?: string;
 }
 
@@ -3590,10 +3590,27 @@ export interface FleetRunner {
     /** Live runs in the group now (== slots.length). */
     running: number;
   };
+  /**
+   * Set on the one `FleetSnapshot.sessions` lane: the tasks people's own coding
+   * sessions (Claude Code, Codex, Cursor) claimed, one slot per live claim.
+   * Not a runner and no runner capacity (docs/specs/local-agent-presence.md).
+   */
+  interactive?: {
+    /** Live session claims (== slots.length). */
+    running: number;
+    /** Sessions online now, with or without a task; null when not loaded. */
+    online: number | null;
+  };
 }
 
 export interface FleetSnapshot {
   runners: FleetRunner[];
+  /**
+   * Live claims from interactive sessions, as their own lane. Never one of
+   * `runners`, never in `live` or `capacity`. Null (or absent) when none is live.
+   */
+  sessions?: FleetRunner | null;
+  /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
   /** Timeline window, epoch ms. */

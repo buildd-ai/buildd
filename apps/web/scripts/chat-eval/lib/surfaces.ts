@@ -104,7 +104,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   get_path_claim_stats: 'read',
   get_decision_stats: 'read',
   dispatch_health: 'read',
-  merge_pr: 'write',
+  resolve_capability: 'read',
   close_pr: 'write',
   update_pr: 'write',
   request_pr_review: 'write',

@@ -77,7 +77,12 @@ const mockDrainDueEffects = mock(async () => ({ claimed: 0, done: 0, skipped: 0,
 const mockTrunk = mock(async () => ({ checked: 1, resolved: 1, recovered: 2, stillRed: 0, errors: 0 }));
 // …and the kernel's reconciliation floor (§11): re-imports heads / PR state, re-enqueues owed effects.
 const mockKernelFloor = mock(async () => ({ checked: 3, imported: 1, enqueued: 1, errors: 0 }));
-mock.module('@/lib/workflow/seam', () => ({ drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor }));
+// …and S15 cycles: a treadmill escalation past the landing cooldown gets a fresh refresh budget.
+const mockTreadmillCycles = mock(async (_o: { cooldownMs: number }) => ({ checked: 2, restarted: 1, refused: 1, errors: 0 }));
+mock.module('@/lib/workflow/seam', () => ({
+  drainDueEffects: mockDrainDueEffects, reconcileTrunkIncidents: mockTrunk, reconcileKernelDeliveries: mockKernelFloor,
+  restartTreadmillCycles: mockTreadmillCycles,
+}));
 
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
@@ -198,6 +203,10 @@ describe('GET /api/cron/pr-reconcile', () => {
     // …and runs the kernel's reconciliation floor, so a lost synchronize/closed webhook is repaired (ddcbe113).
     expect(mockKernelFloor).toHaveBeenCalled();
     expect(body.kernelFloor).toMatchObject({ checked: 3, imported: 1, enqueued: 1 });
+    // …and re-opens spent treadmill cycles on the landing cooldown, not a new cron.
+    expect(mockTreadmillCycles).toHaveBeenCalled();
+    expect(mockTreadmillCycles.mock.calls[0]![0]).toEqual({ cooldownMs: 60 * 60_000 });
+    expect(body.treadmillCycles).toMatchObject({ restarted: 1, refused: 1 });
   });
 
   it('returns 500 when reconcileStalePrWorkers throws', async () => {

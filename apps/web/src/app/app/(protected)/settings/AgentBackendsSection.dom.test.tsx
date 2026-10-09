@@ -152,3 +152,124 @@ describe('Claude: the model key is the primary path, the subscription sign-in is
     expect((document.activeElement as HTMLElement | null)?.id).toBe('agent-key');
   });
 });
+
+// A subscription sign-in's refresh token rotates on every use, so a copy per
+// team dies on the first refresh. "All my teams" stays for keys only, and
+// counts only the teams the user manages.
+describe('"All my teams"', () => {
+  async function mountTeams() {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <AgentBackendsSection
+          workspaces={[
+            { id: 'w1', name: 'One', teamId: 't1' },
+            { id: 'w2', name: 'Two', teamId: 't2' },
+            { id: 'w3', name: 'Three', teamId: 't3' },
+          ]}
+          currentTeamId="t1"
+          manageableTeamIds={['t1', 't2']}
+        />,
+      );
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  const button = (id: string, text: string) =>
+    [...row(id).querySelectorAll('button')].find((b) => b.textContent?.includes(text));
+  async function openWithAllTeams(id: string) {
+    await act(async () => { row(id).querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
+    await act(async () => { button(id, 'All my teams')!.click(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+
+  it('counts only managed teams and keeps the API key fan-out', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('claude-row');
+    expect(row('claude-row').textContent).toContain('every team you manage (2)');
+    expect(button('claude-row', 'Apply to all 2 teams')).toBeDefined();
+  });
+
+  it('offers no Claude subscription sign-in for all teams', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('claude-row');
+    await act(async () => { button('claude-row', 'self-hosted runner only')!.click(); });
+    const text = row('claude-row').textContent ?? '';
+    expect(text).not.toContain('Connect with Claude');
+    expect(text).not.toContain('Paste .credentials.json');
+    expect(text).toContain('can’t be copied to all your teams');
+  });
+
+  it('offers no Codex sign-in for all teams', async () => {
+    installFetch({ claude: false, codex: false });
+    window.location.hash = '';
+    await mountTeams();
+    await openWithAllTeams('codex-row');
+    const text = row('codex-row').textContent ?? '';
+    expect(text).not.toContain('Connect for all');
+    expect(text).not.toContain('auth.json');
+    expect(text).toContain('can’t be copied to all your teams');
+  });
+});
+
+/**
+ * Team credentials are manage_team_credentials (the secrets and credential
+ * routes refuse anyone else); provider routing is manage_team_settings. A
+ * member sees each connection's status and the own-key path, and nothing the
+ * API would refuse.
+ */
+describe('read-only for a member without manage_team_credentials', () => {
+  async function mountWith(props: { canManage?: boolean; canManageRouting?: boolean }, hash = '') {
+    window.location.hash = hash;
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(<AgentBackendsSection workspaces={[{ id: 'w1', name: 'Workspace 1', teamId: 't1' }]} currentTeamId="t1" {...props} />);
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+
+  it('member: status chips stay, no row opens, no button, and the own-key path is named', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: false, canManageRouting: false });
+    expect(chips('claude-row')).toEqual(['Connected']);
+    expect(chips('codex-row')).toEqual(['Not connected']);
+    for (const id of ['claude-row', 'codex-row', 'openai-key-row', 'routing-row']) {
+      expect(row(id).getAttribute('data-readonly')).toBe('true');
+      expect(row(id).querySelectorAll('button, input').length).toBe(0);
+    }
+    const note = host.querySelector('[data-testid="credentials-read-only"]')!;
+    expect(note.textContent).toContain('Admins can change these.');
+    expect(note.querySelector('a')!.getAttribute('href')).toBe('/app/settings/account#provider-keys');
+  });
+
+  it('#agent-key does not open a read-only Claude row', async () => {
+    installFetch({ claude: false, codex: false });
+    await mountWith({ canManage: false }, '#agent-key');
+    expect(row('claude-row').getAttribute('data-open')).toBe('false');
+    expect(host.querySelector('input')).toBeNull();
+  });
+
+  it('admin: every row is interactive and there is no read-only note', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: true, canManageRouting: true });
+    expect(host.querySelector('[data-testid="credentials-read-only"]')).toBeNull();
+    for (const id of ['claude-row', 'codex-row', 'openai-key-row', 'routing-row']) {
+      expect(row(id).getAttribute('data-readonly')).toBeNull();
+      expect(row(id).querySelector('button[aria-expanded]')).not.toBeNull();
+    }
+  });
+
+  it('credentials and routing are separate permissions', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountWith({ canManage: true, canManageRouting: false });
+    expect(row('claude-row').getAttribute('data-readonly')).toBeNull();
+    expect(row('routing-row').getAttribute('data-readonly')).toBe('true');
+  });
+});

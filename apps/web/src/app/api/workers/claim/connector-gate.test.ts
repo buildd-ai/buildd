@@ -10,6 +10,8 @@ const mockConnectorWorkspacesFindMany = mock(() => [] as any[]);
 const mockSecretsFindMany = mock(() => [] as any[]);
 const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockPoliciesFindMany = mock(() => [] as any[]);
+const mockLoadTeamCatalog = mock((_teamId: string) => Promise.resolve([] as any[]));
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -21,9 +23,11 @@ mock.module('@buildd/core/db', () => ({
       secrets: { findMany: mockSecretsFindMany },
       missions: { findFirst: mockMissionsFindFirst },
       workers: { findMany: mockWorkersFindMany },
+      connectorCatalogTeamPolicies: { findMany: mockPoliciesFindMany },
     },
   },
 }));
+mock.module('@/lib/connector-catalog-store', () => ({ loadTeamCatalog: mockLoadTeamCatalog }));
 
 const mockSecretsProviderGet = mock((_id: string) => Promise.resolve(null as string | null));
 mock.module('@buildd/core/secrets', () => ({
@@ -95,6 +99,10 @@ beforeEach(() => {
   mockSecretsFindMany.mockReset();
   mockSecretsProviderGet.mockReset();
   mockFetch.mockReset();
+  mockPoliciesFindMany.mockReset();
+  mockPoliciesFindMany.mockResolvedValue([]);
+  mockLoadTeamCatalog.mockReset();
+  mockLoadTeamCatalog.mockResolvedValue([]);
 
   // Default: no shares, all workspaces enabled
   mockConnectorSharesFindMany.mockResolvedValue([]);
@@ -102,6 +110,36 @@ beforeEach(() => {
   mockSecretsProviderGet.mockResolvedValue('decrypted-secret');
   mockFetch.mockResolvedValue({ ok: true, status: 200 });
   process.env.ENCRYPTION_KEY = 'test-key-32-chars-padding-here!!';
+});
+
+// ── blocked_by_policy ─────────────────────────────────────────────────────────
+
+describe('checkConnectorRouting — blocked_by_policy', () => {
+  function blockEntry(teamId: string, url: string) {
+    mockPoliciesFindMany.mockResolvedValue([{ teamId }]);
+    mockLoadTeamCatalog.mockImplementation(async (t: string) =>
+      t === teamId ? [{ slug: 'axiom', name: 'Axiom', url, policy: 'blocked' }] : []);
+  }
+
+  it('classifies an installed, credentialed connector whose catalog entry the team blocked', async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([makeRole()]);
+    mockConnectorsFindMany.mockResolvedValue([makeConnector({ authMode: 'oauth', url: 'https://mcp.axiom.co/mcp' })]);
+    mockSecretsFindMany.mockResolvedValue([makeSecret()]);
+    blockEntry(TEAM_ID, 'https://mcp.axiom.co/mcp');
+
+    const result = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID);
+    expect(result).toEqual([{ connectorId: CONNECTOR_ID, connectorName: CONNECTOR_NAME, mode: 'blocked_by_policy' }]);
+    // Never probed: a blocked connector is not contacted on the team's behalf.
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("ignores a block set by an unrelated team", async () => {
+    mockWorkspaceSkillsFindMany.mockResolvedValue([makeRole()]);
+    mockConnectorsFindMany.mockResolvedValue([makeConnector({ url: 'https://mcp.axiom.co/mcp' })]);
+    blockEntry('team-unrelated', 'https://mcp.axiom.co/mcp');
+
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID)).toBeNull();
+  });
 });
 
 // ── never_mounted ─────────────────────────────────────────────────────────────
@@ -506,6 +544,24 @@ describe('checkConnectorRouting — role row precedence', () => {
     expect(result).toHaveLength(1);
     expect(result![0].mode).toBe('never_mounted');
   });
+
+  it("reads the requester's own personal row, never another member's private one", async () => {
+    // Bob's private builder needs a dangling connector; the team default needs none.
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      { slug: ROLE_SLUG, workspaceId: null, connectorRefs: [], teamId: TEAM_ID, ownerUserId: null, visibility: 'team' },
+      { slug: ROLE_SLUG, workspaceId: null, connectorRefs: [CONNECTOR_ID], teamId: TEAM_ID, ownerUserId: 'u-bob', visibility: 'private' },
+    ]);
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockSecretsFindMany.mockResolvedValue([]);
+
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' })).toBeNull();
+    expect(await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID)).toBeNull();
+    const bobs = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-bob' });
+    expect(bobs?.[0].mode).toBe('never_mounted');
+    // The requester comes off the task itself when one is passed.
+    const viaTask = await checkConnectorRouting(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { task: { createdByUserId: 'u-bob' } });
+    expect(viaTask?.[0].mode).toBe('never_mounted');
+  });
 });
 
 // ── oauth refresh grace ───────────────────────────────────────────────────────
@@ -730,9 +786,27 @@ describe('findAlternativeRole', () => {
     await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID);
 
     const { text, params } = lastWhere(mockWorkspaceSkillsFindMany);
-    expect(text).toContain('"workspace_skills"."slug" <> $4');
-    expect(text).toContain('"workspace_skills"."team_id" = $3');
-    expect(params).toEqual([true, true, TEAM_ID, ROLE_SLUG, WORKSPACE_ID]);
+    expect(text).toContain('"workspace_skills"."slug" <> $3');
+    expect(text).toContain('"workspace_skills"."team_id" = $4');
+    expect(params).toEqual([true, true, ROLE_SLUG, TEAM_ID, WORKSPACE_ID, 'team']);
+  });
+
+  it("never offers another member's private role, and lets the requester's own through", async () => {
+    // The visibility filter is in SQL here: rendered, a requester adds an
+    // owner = requester branch; no requester admits team and shared rows only.
+    const helper = { slug: 'helper', workspaceId: WORKSPACE_ID, connectorRefs: [], teamId: TEAM_ID };
+    serveRoleQueries([helper], { helper });
+
+    await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' });
+    const mine = lastWhere(mockWorkspaceSkillsFindMany);
+    expect(mine.text).toContain('("workspace_skills"."owner_user_id" is null or "workspace_skills"."visibility" = $6 or "workspace_skills"."owner_user_id" = $7)');
+    expect(mine.params.slice(-2)).toEqual(['team', 'u-alice']);
+
+    // And the JS pick drops a private row even if the query handed one back.
+    const bobs = { slug: 'bobs', workspaceId: null, connectorRefs: [], teamId: TEAM_ID, ownerUserId: 'u-bob', visibility: 'private' };
+    serveRoleQueries([bobs], { bobs });
+    expect(await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-alice' })).toBeNull();
+    expect(await findAlternativeRole(ROLE_SLUG, WORKSPACE_ID, TEAM_ID, { requesterUserId: 'u-bob' })).toBe('bobs');
   });
 
   it('deduplicates a slug in favour of its workspace-scoped row', async () => {

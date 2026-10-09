@@ -124,6 +124,13 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Whose credential every provider spends — chat, inference AND agent runs:
+  // 'team' = team keys only, personal ones ignored; 'personal_first' = the
+  // requesting person's own key, else the team's; 'personal_only' = no team key
+  // at all. NULL = not chosen yet: read inferenceKeyPolicy through
+  // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
+  // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
+  credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -245,6 +252,10 @@ export const accounts = pgTable('accounts', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
+  // The person who minted this key. NULL = minted before this was recorded, or
+  // by no person (system/runner bootstrap). Bounds the key when its creator's
+  // team role drops (key-level-policy.ts).
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
 
   // Authentication type
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
@@ -373,6 +384,13 @@ export interface WorkspaceGitConfig {
   // linked-knowledge.ts) only honours an id the calling account could reach
   // anyway — same team, not sensitive, token restriction respected.
   linkedKnowledgeWorkspaces?: string[];
+
+  // Opt-in: a person (dashboard or OAuth session, never an API key or runner)
+  // must also hold read or higher on the linked GitHub repo before Buildd
+  // shows them code, files tasks for them, or lets chat work over this
+  // workspace. Absent ⇒ 'off': team membership is the whole check. Read only
+  // through resolveMemberRepoAccessMode (apps/web/src/lib/member-repo-access-shared.ts).
+  memberRepoAccess?: 'off' | 'require_read';
 
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
@@ -978,6 +996,12 @@ export interface ResultMeta {
    */
   provisionFailure?: { code: string; phase: string; message: string };
   /**
+   * Where an abnormally terminated worker's work went: `origin/<branch>@<sha>`
+   * (WIP checkpoint pushed to the task branch) or `archive:<path>` on the runner.
+   * The retry's context carries it so the next attempt resumes, not restarts.
+   */
+  recoveryRef?: string;
+  /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
    * not events — unlike `workers.mcpCalls` this is never truncated.
@@ -1418,6 +1442,11 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
+  // The person this task is for: the signed-in creator, or — for a task an agent,
+  // schedule or mission files — the person behind its parent task, schedule or
+  // mission. NULL = no person (pure API-key creation). Personal credentials and
+  // personal roles serve only this person's tasks.
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
@@ -1564,6 +1593,7 @@ export const tasks = pgTable('tasks', {
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   modeIdx: index('tasks_mode_idx').on(t.mode),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
+  createdByUserIdx: index('tasks_created_by_user_idx').on(t.createdByUserId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
   missionIdx: index('tasks_mission_idx').on(t.missionId),
@@ -3007,11 +3037,20 @@ export const workspaceSkills = pgTable('workspace_skills', {
   configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
   configStorageKey: text('config_storage_key'), // R2 object key for role config tarball
   repoUrl: text('repo_url'), // for builder roles (git clone target)
+  // Personal roles: the member who owns this row. NULL = a team role (the
+  // default) or a workspace override. A personal row is always team-level
+  // (workspaceId NULL) and its slug is unique per owner, not per team.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Who may run a personal role: 'private' = its owner's tasks only; 'team' =
+  // shared, anyone in the team. Team roles are always 'team'.
+  visibility: text('visibility').notNull().default('team').$type<'private' | 'team'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL`),
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND ${t.ownerUserId} IS NULL`),
+  // Personal roles: one (team, owner, slug)
+  ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL
   workspaceOverrideSlugIdx: uniqueIndex('ws_skills_workspace_slug_idx').on(t.workspaceId, t.slug).where(sql`${t.workspaceId} IS NOT NULL`),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
@@ -4354,10 +4393,14 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
-  // Display icon, resolved best-effort at create time (catalog entry → MCP
-  // serverInfo.icons → site favicon). NULL renders a letter avatar.
+  // Display icon as a `data:` URL, resolved best-effort at create time, after
+  // OAuth connect, and lazily on list (catalog entry → MCP serverInfo.icons →
+  // websiteUrl / site favicon). NULL renders a letter avatar. Legacy rows may
+  // still hold a remote URL until the next lazy refresh inlines it.
   // See apps/web/src/lib/connector-icon.ts.
   iconUrl: text('icon_url'),
+  // Last icon lookup attempt; gates the lazy refresh to once per TTL.
+  iconCheckedAt: timestamp('icon_checked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4978,6 +5021,10 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   supersededByUrl: text('superseded_by_url'),
   supersededReason: text('superseded_reason'),
   recordedBy: text('recorded_by'),
+  // The newest head-bound policy finding (PolicyEvidenceRecorded, §6.3 T28):
+  // { headSha, outcome, reason, destructive }. Evidence for ONE head; a
+  // delivery on any other head ignores it.
+  policyEvidence: jsonb('policy_evidence').$type<{ headSha: string; outcome: 'human' | 'agent_split'; reason: string; destructive: boolean } | null>(),
   // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
   // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
   // released to legacy finishes there even if the switch is turned on again,

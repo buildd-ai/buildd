@@ -10,6 +10,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { bodyReadRefused, noteBodyReads } from '@/lib/body-read-monitor';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
@@ -40,6 +41,21 @@ async function authenticateRequest(req: NextRequest) {
 
     return null;
 }
+
+/**
+ * manage_agent_roles for a session touching a role (an existing role, or a row
+ * being made one). API keys were already held to admin in authenticateRequest;
+ * a plain skill stays writable by anyone who can reach the workspace.
+ */
+async function sessionMayManageRole(
+    access: { teamId: string; role: string } | null,
+    touchesRole: boolean,
+): Promise<boolean> {
+    if (!access || !touchesRole) return true;
+    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+}
+
+const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };
 
 function computeContentHash(content: string): string {
     return createHash('sha256').update(content).digest('hex');
@@ -118,9 +134,10 @@ export async function PATCH(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    let sessionAccess: { teamId: string; role: string } | null = null;
     if (auth.type === 'session') {
-        const access = await verifyWorkspaceAccess(auth.user.id, id);
-        if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        sessionAccess = await verifyWorkspaceAccess(auth.user.id, id);
+        if (!sessionAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
         const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -141,6 +158,9 @@ export async function PATCH(
 
         if (!existing) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+        }
+        if (!(await sessionMayManageRole(sessionAccess, existing.isRole || isRole === true))) {
+            return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });
         }
 
         // Routing text (role-routing.md §2): validated, never truncated.
@@ -233,9 +253,10 @@ export async function DELETE(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    let sessionAccess: { teamId: string; role: string } | null = null;
     if (auth.type === 'session') {
-        const access = await verifyWorkspaceAccess(auth.user.id, id);
-        if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        sessionAccess = await verifyWorkspaceAccess(auth.user.id, id);
+        if (!sessionAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
         const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -251,6 +272,9 @@ export async function DELETE(
 
         if (!existing) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+        }
+        if (!(await sessionMayManageRole(sessionAccess, existing.isRole))) {
+            return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });
         }
 
         // Clean up R2 config for roles

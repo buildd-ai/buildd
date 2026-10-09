@@ -2,7 +2,12 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { getUserAdminTeamIds, getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds } from '@/lib/team-access';
+import { can, type Permission, type TeamScopeCaller } from '@/lib/permissions';
+import { TEAM_CREDENTIALS_FORBIDDEN } from '@/lib/team-credential-access';
+import { db } from '@buildd/core/db';
+import { workspaces } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { requeueAuthFailedTasks } from '@/lib/credential-recovery';
 import { refuseCredentialCustody, type CustodyCaller } from '@/lib/credential-custody';
@@ -81,11 +86,12 @@ function sanitizeSecretValue(raw: string, purpose: string): string {
 /**
  * Team model keys: read by the inference-key resolver for every member's chat
  * turn and every decision call, so storing or removing one at any shared scope
- * (team, workspace, account) sets who pays for the whole team. Only a team
- * owner/admin, or an admin-level API key, may do it — the bar /api/inference-keys
- * holds for `scope: 'team'`. Personal keys go through /api/inference-keys.
+ * (team, workspace, account) sets who pays for the whole team. Personal keys go
+ * through /api/inference-keys. The Cloudflare API token deploys code to the
+ * team's Cloudflare account (apps/cloud-runner), so it takes the same bar; it
+ * is always team-wide: one Worker serves the team.
  */
-const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key']);
+const TEAM_MODEL_KEY_PURPOSES = new Set(['inference_key', 'decision_key', CLOUDFLARE_PURPOSE]);
 
 type SecretsCaller = {
   teamIds: string[];
@@ -97,20 +103,36 @@ type SecretsCaller = {
   account?: CustodyCaller;
 };
 
-async function mayManageTeamModelKeys(auth: SecretsCaller, teamId: string): Promise<boolean> {
-  if (auth.accountId) return auth.accountLevel === 'admin' && auth.teamIds.includes(teamId);
-  if (!auth.userId) return false;
-  return (await getUserAdminTeamIds(auth.userId)).includes(teamId);
+/**
+ * Every row this route writes or deletes is shared: personal (userId) rows are
+ * refused on POST and never listed, so DELETE cannot reach one. Writing a shared
+ * credential therefore always takes a named permission in the target team —
+ * `manage_team_model_keys` for model keys and the Cloudflare token,
+ * `manage_team_credentials` for everything else — resolved through `can`, so a
+ * team's permission overrides apply. An API key needs the permission's key level.
+ */
+function permissionFor(purpose: string): Permission {
+  return TEAM_MODEL_KEY_PURPOSES.has(purpose) ? 'manage_team_model_keys' : 'manage_team_credentials';
 }
 
-const TEAM_MODEL_KEY_ADMIN_ONLY = 'Only a team owner or admin can manage the team model key.';
+function permissionDenied(purpose: string): string {
+  if (purpose === CLOUDFLARE_PURPOSE) return 'Only a team owner or admin can manage the Cloudflare token.';
+  if (TEAM_MODEL_KEY_PURPOSES.has(purpose)) return 'Only a team owner or admin can manage the team model key.';
+  return TEAM_CREDENTIALS_FORBIDDEN;
+}
 
-/**
- * The Cloudflare API token deploys code to the team's Cloudflare account
- * (apps/cloud-runner), so storing or removing it takes the same bar as a team
- * model key. It is always team-wide: one Worker serves the team.
- */
-const CLOUDFLARE_ADMIN_ONLY = 'Only a team owner or admin can manage the Cloudflare token.';
+async function mayWriteSharedSecret(auth: SecretsCaller, purpose: string, teamId: string): Promise<boolean> {
+  let caller: TeamScopeCaller;
+  if (auth.accountId) {
+    if (!auth.teamIds.includes(teamId)) return false;
+    caller = { kind: 'account', accountId: auth.accountId, teamId, level: auth.accountLevel };
+  } else if (auth.userId) {
+    caller = { kind: 'user', userId: auth.userId };
+  } else {
+    return false;
+  }
+  return can(caller, permissionFor(purpose), teamId);
+}
 
 /**
  * Dual auth: API key (Bearer token) or session cookie.
@@ -217,11 +239,19 @@ export async function POST(req: NextRequest) {
   if (!auth.teamIds.includes(targetTeamId)) {
     return NextResponse.json({ error: 'Team not found' }, { status: 404 });
   }
-  if (TEAM_MODEL_KEY_PURPOSES.has(purpose) && !(await mayManageTeamModelKeys(auth, targetTeamId))) {
-    return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
+  if (workspaceId != null) {
+    const workspace = typeof workspaceId === 'string'
+      ? await db.query.workspaces.findFirst({
+          where: and(eq(workspaces.id, workspaceId), eq(workspaces.teamId, targetTeamId)),
+          columns: { id: true },
+        })
+      : null;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
   }
-  if (purpose === CLOUDFLARE_PURPOSE && !(await mayManageTeamModelKeys(auth, targetTeamId))) {
-    return NextResponse.json({ error: CLOUDFLARE_ADMIN_ONLY }, { status: 403 });
+  if (!(await mayWriteSharedSecret(auth, purpose, targetTeamId))) {
+    return NextResponse.json({ error: permissionDenied(purpose) }, { status: 403 });
   }
 
   try {
@@ -311,11 +341,10 @@ export async function DELETE(req: NextRequest) {
       const teamSecrets = await provider.list(teamId);
       const target = teamSecrets.find(s => s.id === id);
       if (target) {
-        if (TEAM_MODEL_KEY_PURPOSES.has(target.purpose) && !(await mayManageTeamModelKeys(auth, teamId))) {
-          return NextResponse.json({ error: TEAM_MODEL_KEY_ADMIN_ONLY }, { status: 403 });
-        }
-        if (target.purpose === CLOUDFLARE_PURPOSE && !(await mayManageTeamModelKeys(auth, teamId))) {
-          return NextResponse.json({ error: CLOUDFLARE_ADMIN_ONLY }, { status: 403 });
+        // The list holds team-visible rows only, so a member who cannot manage
+        // them sees the row exists (as GET shows) but gets 403, not 404.
+        if (!(await mayWriteSharedSecret(auth, target.purpose, teamId))) {
+          return NextResponse.json({ error: permissionDenied(target.purpose) }, { status: 403 });
         }
         await provider.delete(id);
         return NextResponse.json({ success: true });

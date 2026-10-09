@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `claude_credential`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -62,10 +62,31 @@ Then pick the **most specific** match:
 2. `accountId = A`, `workspaceId IS NULL` (account-wide)
 3. `accountId IS NULL`, `workspaceId IS NULL` (team-wide)
 
-For single-valued credentials (one Codex login per scope) the resolver returns the single
-most-specific row. The claim route already applies the team/account/workspace filter for
-`anthropic_api_key` / `oauth_token` / `mcp_credential`; `codex_credential` uses the same
-filter plus the precedence pick.
+For single-valued credentials (one Codex or Claude login per scope) the resolver returns the
+single most-specific row. Every agent-credential read — `anthropic_api_key` / `oauth_token` /
+`mcp_credential` in the claim route, `claude_credential` and `codex_credential` in their
+resolvers — applies the filter above plus the same pick: a live row before a revoked one, then
+the most specific scope, then the newest `updatedAt` within that scope. Recency never beats
+scope: a newer team-wide row does not shadow an older workspace row. `mcp_credential` is many
+rows (one per env-var `label`), so the pick runs per label. The pick is
+`pickMostSpecificCredential` in `packages/core/secrets/team-scope.ts`; the query goes through
+`teamCredentialWhere`, so a personal (`userId`) row is never returned.
+
+### Who may write a shared credential
+
+Writing or deleting a team-wide, workspace-wide or account-wide credential
+requires a named team permission (`docs/specs/team-permissions.md`), resolved
+through `can()` so a team's permission overrides apply:
+
+- `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
+- `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
+  workspace Claude/Codex connect, OAuth/device-login and delete routes.
+
+Both default to owner and admin, and to an admin-level API key. `/api/secrets`
+never writes a personal (`userId`) row, so a plain member writes nothing there.
+A `workspaceId` in the body must belong to the target team. Listing stays open
+to members (metadata only, never values). Refreshing an existing Claude/Codex
+credential rotates it in place and stays open to any member of the team.
 
 ### API-token model keys (chat, inference, decision calls)
 
@@ -299,7 +320,7 @@ network refresh; concurrent callers get `locked`. This is the same pattern the r
 `userId` all NULL). `encryptedValue` is JSON `{ apiToken, accountId, aiGatewayId? }`,
 validated and normalized by `parseCloudflareCredential`
 (`apps/web/src/lib/cloudflare-credential-shared.ts`) before it is encrypted.
-Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
+Set and delete through `/api/secrets` (`manage_team_model_keys`: team owner/admin by default, or an admin API key);
 `POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
 endpoints and records `lastVerifiedAt` / health (a rejection marks it
 `revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`

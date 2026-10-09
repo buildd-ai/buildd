@@ -45,6 +45,8 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['get_failure_analytics', {}],
   ['dispatch_health', {}],
   ['list_connectors', {}],
+  ['resolve_capability', { capability: 'observability:query' }],
+  ['resolve_capability', {}],
   ['list_releases', {}],
   ['list_prs', {}],
   ['list_discrepancies', {}],
@@ -75,6 +77,7 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
  */
 const EXEMPT: Record<string, string> = {
   merge_pr: 'server-resolved (404s)',
+  close_pr: 'server-resolved (404s)',
   get_pr: 'server-resolved',
   request_pr_review: 'server-resolved (404s)',
   get_pr_review: 'server-resolved (404s)',

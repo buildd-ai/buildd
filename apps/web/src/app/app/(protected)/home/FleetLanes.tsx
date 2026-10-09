@@ -48,7 +48,8 @@ function toBar(b: LaneBar): SlotLaneBar {
 }
 
 export function fleetLanes(fleet: FleetSnapshot): SlotLane[] {
-  return fleet.runners.map(r => {
+  // The sessions lane draws after the runners, as FleetStrip lists it.
+  return [...fleet.runners, ...(fleet.sessions ? [fleet.sessions] : [])].map(r => {
     const rows = fleetDisplayRows(r, { since: fleet.window.from }).map(row => (row.kind === 'slot' ? row.slot.lane.bars.map(toBar) : []));
     return { id: r.id, label: r.name, bars: rows.flat(), rows };
   });

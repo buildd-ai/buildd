@@ -30,6 +30,7 @@ import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
+import { resolveMergeMethod } from '@/lib/integration-refresh';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { latestRunPerName } from '@/lib/auto-merge-bound';
 import { kernelLandingView, landThroughKernel, type KernelLanding } from '@/lib/workflow/seam';
@@ -126,6 +127,8 @@ export async function POST(
   let sizeOverride = false;
   let freshnessOverride = false;
   let overrideEscalationReason: string | null = null;
+  // Why a person overrides size / freshness ("Merge anyway", merge_pr, chat): recorded on the kernel's bypass.
+  let overrideReason: string | null = null;
   // The workflow-kernel delivery version the card was rendered from (§7.2): a
   // stale one is refused with the current view before anything acts.
   let expectedVersion: number | undefined;
@@ -139,6 +142,9 @@ export async function POST(
     if (body?.overrides && typeof body.overrides === 'object') {
       sizeOverride = body.overrides.size === true;
       freshnessOverride = body.overrides.freshness === true;
+    }
+    if (typeof body?.reason === 'string' && body.reason.trim().length > 0) {
+      overrideReason = body.reason.trim().slice(0, 500);
     }
     if (typeof body?.version === 'number' && Number.isInteger(body.version)) {
       expectedVersion = body.version;
@@ -206,7 +212,7 @@ export async function POST(
     },
     with: {
       task: {
-        columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, context: true },
       },
     },
   });
@@ -433,6 +439,7 @@ export async function POST(
                 ...(sizeOverride ? { size: true } : {}),
                 ...(freshnessOverride ? { freshness: true } : {}),
               },
+              ...(overrideReason ?? overrideEscalationReason ? { overrideReason: overrideReason ?? overrideEscalationReason } : {}),
             }
           : {}),
       },
@@ -607,16 +614,32 @@ export async function POST(
   }
 
   // Perform the merge: the kernel's for a kernel-owned PR, GitHub's directly otherwise.
+  // An integration-refresh PR always lands as a merge commit (integration-refresh.ts).
+  const mergeMethod = resolveMergeMethod(worker.task?.context);
+  // The verdict override reaches T15 only when the review gate actually blocked; a size or
+  // freshness override (the spent-treadmill escape hatch) always does, with its kinds.
+  const kernelKinds = [
+    ...(override && reviewGateReason ? ['verdict' as const] : []),
+    ...(freshnessOverride ? ['freshness' as const] : []),
+    ...(sizeOverride ? ['size' as const] : []),
+  ];
+  const kernelOverride = kernelKinds.length
+    ? {
+        reason: (kernelKinds.includes('verdict') ? overrideEscalationReason ?? reviewGateReason : null)
+          ?? overrideReason ?? `a person merged past ${kernelKinds.join(' and ')}`,
+        kinds: kernelKinds,
+      }
+    : null;
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = kernelOwned
       ? await landThroughKernel({
           workspaceId: worker.workspaceId, installationId, repoFullName, prNumber, headSha: liveHeadSha!,
-          door: 'dashboard', actor: `human:${user.id}`, mergeMethod: 'squash',
-          ...(override && reviewGateReason ? { override: { reason: overrideEscalationReason ?? reviewGateReason } } : {}),
+          door: 'dashboard', actor: `human:${user.id}`, mergeMethod,
+          ...(kernelOverride ? { override: kernelOverride } : {}),
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha!) };
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHeadSha!) };
   });
   if ('refused' in slotted) {
     return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });

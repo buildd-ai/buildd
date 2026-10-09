@@ -6,7 +6,7 @@
  *
  * Connectors are the single source of truth for MCP servers. A connector reaches
  * the agent for a task iff:
- *   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors
+ *   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors  −  catalogBlocked
  * where the role is resolved from the task's roleSlug (workspace override > team
  * default). No role or empty connectorRefs → mount nothing (least-privilege).
  *
@@ -22,11 +22,13 @@ import {
   secrets,
   workspaceSkills,
 } from '@buildd/core/db/schema';
+import { lazyRequester, pickVisibleRoleRowLazy, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { ClaimTasksResponse } from '@buildd/shared';
 import type { SecretsProvider } from '@buildd/core/secrets';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -84,12 +86,17 @@ export async function resolveMcpConnectorsForTask(
         eq(workspaceSkills.workspaceId, task.workspaceId),
       ),
     ),
-    columns: { connectorRefs: true, workspaceId: true },
+    // Personal rows (team-level) ride along; the pick below filters them.
+    columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
   });
-  if (roleRows.length === 0) return [];
 
-  // Workspace-scoped override wins over the team-default row.
-  const role = roleRows.find(r => (r as any).workspaceId) ?? roleRows[0];
+  // Shared role precedence (role-visibility.ts): workspace override > the
+  // requester's own personal row > shared personal > team default. Another
+  // member's private role never mounts its connectors on this task.
+  const role = await pickVisibleRoleRowLazy(
+    roleRows, roleSlug, { teamId: workspaceTeamId, workspaceId: task.workspaceId }, lazyRequester(task),
+  );
+  if (!role) return [];
   const connectorRefs = ((role as any).connectorRefs as string[] | null) ?? [];
   if (connectorRefs.length === 0) return [];
 
@@ -124,7 +131,15 @@ export async function resolveMcpConnectorsForTask(
     ),
   });
   const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
-  const activeConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
+  const enabledConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
+  if (enabledConnectors.length === 0) return [];
+
+  // Team catalog policy (§5a): a blocked entry's connector stays installed with
+  // its credential, but is never mounted — and its credential never decrypted
+  // or refreshed for an agent. Throws on DB failure; attachMcpConnectors then
+  // mounts nothing rather than mounting unchecked.
+  const blockedCatalogs = await loadBlockedCatalogs([workspaceTeamId, ...enabledConnectors.map(c => c.teamId)]);
+  const activeConnectors = enabledConnectors.filter(c => !connectorBlock(c, workspaceTeamId, blockedCatalogs));
   if (activeConnectors.length === 0) return [];
 
   const ownerTeamIds = [...new Set(activeConnectors.map(c => c.teamId))];

@@ -1,18 +1,20 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
+import { connectors, connectorShares, secrets } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
-import { discoverAndRegister } from '@/lib/connector-provision';
+import { discoverAndRegister, registrationRefusalBody } from '@/lib/connector-provision';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
 import { deriveConnectorStatus as deriveStatus } from '@/lib/connector-status';
-import { resolveConnectorIcon } from '@/lib/connector-icon';
+import { resolveConnectorIconData } from '@/lib/connector-icon';
+import { scheduleStaleIconRefresh } from '@/lib/connector-icon-refresh';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { canManageTeamConnectors } from '@/lib/connector-team-auth';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -36,22 +38,6 @@ async function authenticateRequest(req: NextRequest) {
   return null;
 }
 
-/**
- * Team-admin gate for connector writes (spec §6). A session user must be an
- * owner/admin of the team to create a connector; a plain `member` is rejected
- * with 403. Personal teams have no `team_members` row — absence => allowed
- * (the user implicitly owns their personal team, and `getUserTeamIds` already
- * scopes `teamId` to teams the user belongs to).
- */
-async function isTeamAdmin(userId: string, teamId: string): Promise<boolean> {
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)),
-    columns: { role: true },
-  });
-  // No row = the caller's personal team, which they own.
-  if (!membership) return true;
-  return roleHas(membership.role, 'manage_connectors', await getTeamPermissionOverrides(teamId));
-}
 
 export async function GET(req: NextRequest) {
   const auth = await authenticateRequest(req);
@@ -111,8 +97,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Team catalog policy: a blocked entry's connector stays listed (nothing is
+    // silently deleted) but is flagged, since agents can no longer use it.
+    const blockedCatalogs = await loadBlockedCatalogs([teamId, ...sharedIn.map(c => c.teamId)]);
+
     // Credential-free projection — never include clientId/encryptedClientSecret.
     const project = (c: typeof rows[number]) => ({
+      blockedByPolicy: !!connectorBlock(c, teamId, blockedCatalogs),
       id: c.id,
       name: c.name,
       url: c.url,
@@ -134,6 +125,10 @@ export async function GET(req: NextRequest) {
         ownerTeamName: (c as { team?: { name?: string } }).team?.name ?? null,
       })),
     ];
+
+    // Rows created before icons were resolved (or whose server was down) get
+    // looked up again after the response; never blocks the list.
+    try { scheduleStaleIconRefresh([...rows, ...sharedIn]); } catch { /* best effort */ }
 
     return NextResponse.json({ connectors: result });
   } catch (error) {
@@ -164,7 +159,7 @@ export async function POST(req: NextRequest) {
     const cookieTeamId = req.cookies.get('buildd-team')?.value;
     teamId = (cookieTeamId && teamIds.includes(cookieTeamId)) ? cookieTeamId : teamIds[0];
     // Spec §6: only a team owner/admin may create a connector.
-    if (!(await isTeamAdmin(auth.user.id, teamId))) {
+    if (!(await canManageTeamConnectors(auth.user.id, teamId))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
   }
@@ -259,9 +254,12 @@ export async function POST(req: NextRequest) {
     let clientId = bodyClientId;
     let encryptedClientSecret: string | undefined;
 
-    // Icon lookup runs alongside discovery; it never fails the create.
+    // Icon lookup runs alongside discovery; it never fails the create. A header
+    // credential lets `initialize` answer with serverInfo.icons; OAuth servers
+    // are re-checked with the bearer once the callback has one.
+    const iconAuth = authMode === 'header' && headerName && headerValue ? { [headerName]: headerValue } : undefined;
     const iconPromise = transport === 'http' && url
-      ? resolveConnectorIcon(url).catch(() => null)
+      ? resolveConnectorIconData(url, { headers: iconAuth }).catch(() => null)
       : Promise.resolve(null);
 
     if (authMode === 'oauth' && url) {
@@ -271,6 +269,8 @@ export async function POST(req: NextRequest) {
         clientId = setup.clientId ?? undefined;
         encryptedClientSecret = setup.encryptedClientSecret ?? undefined;
       } catch (err) {
+        const refusal = registrationRefusalBody(err, url);
+        if (refusal) return NextResponse.json(refusal, { status: 422 });
         return NextResponse.json(
           { error: 'discovery_failed', message: `Could not reach this MCP server: ${(err as Error).message}` },
           { status: 422 },
@@ -300,6 +300,7 @@ export async function POST(req: NextRequest) {
       assertionAudience: authMode === 'assertion' ? (bodyAssertionAudience ?? null) : null,
       assertionTokenEndpoint: authMode === 'assertion' ? (bodyAssertionTokenEndpoint ?? null) : null,
       iconUrl: await iconPromise,
+      iconCheckedAt: transport === 'http' && url ? new Date() : null,
     }).returning();
 
     if (authMode === 'header' && headerValue) {

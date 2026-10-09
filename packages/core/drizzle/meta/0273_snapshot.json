@@ -1,5 +1,5 @@
 {
-  "id": "7eded6f5-7c75-4d40-8d4a-5e8a1c038c49",
+  "id": "9edebba3-f220-469b-9c36-550a050b2e31",
   "prevId": "c7db2f7a-ab4e-480d-be01-e706862825e0",
   "version": "7",
   "dialect": "postgresql",
@@ -9250,12 +9250,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'open'"
-        },
-        "disposition": {
-          "name": "disposition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "superseded_by_pr_number": {
           "name": "superseded_by_pr_number",
@@ -22492,6 +22486,12 @@
         "recorded_by": {
           "name": "recorded_by",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "policy_evidence": {
+          "name": "policy_evidence",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

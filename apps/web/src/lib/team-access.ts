@@ -7,7 +7,7 @@ import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
-import { teamIdsWithAdminTier, getTeamPermissionOverrides, roleHas, type Permission, type TeamScopeCaller } from './permissions';
+import { getTeamPermissionOverrides, roleHas, type Permission, type TeamScopeCaller } from './permissions';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -117,37 +117,6 @@ export const verifyAccountWorkspaceAccess = cache(async (
 });
 
 export type { TeamScopeCaller };
-
-/**
- * Team IDs in which the user holds admin or owner. Includes the user's
- * personal team (slug = personal-{userId}), which they own by definition —
- * mirrors the getUserTeamIds fallback for accounts missing a teamMembers row.
- *
- * Prefer `teamIdsWhere(caller, '<permission>')` from permissions.ts.
- */
-export async function getUserAdminTeamIds(userId: string): Promise<string[]> {
-  return teamIdsWithAdminTier({ kind: 'user', userId });
-}
-
-/**
- * Teams the caller may perform admin-tier actions in: for a session, teams
- * where the user is admin/owner; for an API key, the key's own team when the
- * key is admin level, otherwise none.
- *
- * @deprecated Use `teamIdsWhere(caller, '<permission>')` from permissions.ts.
- */
-export async function getCallerAdminTeamIds(caller: TeamScopeCaller): Promise<string[]> {
-  return teamIdsWithAdminTier(caller);
-}
-
-/**
- * Whether the caller may perform admin-tier actions in `teamId`.
- *
- * @deprecated Use `can(caller, '<permission>', teamId)` from permissions.ts.
- */
-export async function canCallerAdminTeam(caller: TeamScopeCaller, teamId: string): Promise<boolean> {
-  return (await teamIdsWithAdminTier(caller)).includes(teamId);
-}
 
 /**
  * Get all workspace IDs accessible to a user via their team memberships.

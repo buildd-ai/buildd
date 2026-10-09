@@ -8,8 +8,7 @@ import { loadFleetSnapshot } from '@/lib/home-fleet';
 import type { FleetSnapshot } from '@buildd/shared';
 import FleetOverview from './FleetOverview';
 import CloudRunnerRow from './CloudRunnerRow';
-import { roleHas } from '@/lib/permission-registry';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { teamIdsHolding } from '../_lib/settings-permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +20,7 @@ const NO_FLEET: FleetSnapshot = { runners: [], live: 0, capacity: 0, window: { f
  * with), then runner tokens (how it reaches buildd).
  */
 export default async function RunnersSettingsPage() {
-  const { user, teams, currentTeamId, currentTeam, workspaces } = await loadSettingsContext();
+  const { teams, currentTeamId, currentTeam, workspaces, perms, permsByTeam } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet] = await Promise.all([
@@ -32,14 +31,13 @@ export default async function RunnersSettingsPage() {
     }),
   ]);
   const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
-  // Owners/admins of a token's team may change its host-runner flag (the PUT
-  // route enforces the same rule); a personal team counts as owned.
-  const teamOverrides = await Promise.all(teams.map((t) => getTeamPermissionOverrides(t.id)));
-  const adminTeamIds = new Set(
-    teams
-      .filter((t, i) => roleHas(t.role, 'manage_team_keys', teamOverrides[i]) || t.slug === `personal-${user.id}`)
-      .map((t) => t.id),
-  );
+  // Each control follows the permission its route enforces, with each team's
+  // overrides (a personal team counts as owned): the host-runner flag is
+  // manage_team_keys, credentials manage_team_credentials, the Cloudflare
+  // token manage_team_model_keys, provider routing manage_team_settings.
+  const adminTeamIds = new Set(teamIdsHolding(permsByTeam, 'manage_team_keys'));
+  const credentialTeamIds = teamIdsHolding(permsByTeam, 'manage_team_credentials');
+  const cloudflareTeamIds = teamIdsHolding(permsByTeam, 'manage_team_model_keys');
   const tokens = accounts.map((a) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
@@ -58,8 +56,14 @@ export default async function RunnersSettingsPage() {
       />
       <SettingsSection title="Connections" id="agent-backends" bare>
         <div data-testid="runners-connections" className="card divide-y divide-border-default p-0">
-          <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
-          <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} />
+          <AgentBackendsSection
+            workspaces={workspaces}
+            currentTeamId={currentTeamId}
+            manageableTeamIds={credentialTeamIds}
+            canManage={perms.manage_team_credentials}
+            canManageRouting={perms.manage_team_settings}
+          />
+          <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} manageableTeamIds={cloudflareTeamIds} />
         </div>
       </SettingsSection>
       <RunnerTokensSection accounts={tokens} workspaces={workspaces} />

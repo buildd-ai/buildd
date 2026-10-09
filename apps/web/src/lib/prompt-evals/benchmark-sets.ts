@@ -21,12 +21,6 @@ import {
 } from '../task-category-decision';
 import { classifyTask } from '../task-category';
 import {
-  HEARTBEAT_TRIAGE_PROMPT_ID,
-  HEARTBEAT_TRIAGE_PROMPT_VERSION,
-  HEARTBEAT_TRIAGE_QUESTIONS,
-  buildHeartbeatTriageState,
-} from '../heartbeat-triage';
-import {
   TASK_ROLE_PROMPT_ID,
   buildRoleQuestion,
   buildTaskRoleState,
@@ -99,21 +93,6 @@ export const SETS: Record<string, QuestionSet> = {
     answerKey: 'category',
     toState: f => buildTaskCategoryState(str(f.title), str(f.description)),
     baseline: f => classifyTask(str(f.title), str(f.description)),
-  },
-  // {"id":"…","label":"wait"|"act","description":"<the cycle's heartbeat description>"}
-  // Gold is what the organizer did on that cycle (see docs/design/heartbeat-triage.md).
-  heartbeat_triage: {
-    promptId: HEARTBEAT_TRIAGE_PROMPT_ID,
-    promptVersion: () => promptedQuestions(HEARTBEAT_TRIAGE_PROMPT_ID, HEARTBEAT_TRIAGE_QUESTIONS, HEARTBEAT_TRIAGE_PROMPT_VERSION).promptVersion,
-    questionsFor: () => ({
-      questions: promptedQuestions(HEARTBEAT_TRIAGE_PROMPT_ID, HEARTBEAT_TRIAGE_QUESTIONS, HEARTBEAT_TRIAGE_PROMPT_VERSION).questions,
-      toLabel: same,
-    }),
-    answerKey: 'next',
-    toState: f => buildHeartbeatTriageState(str(f.description)),
-    // Today every cycle that reaches this point dispatches the organizer.
-    baseline: () => 'act',
-    gatedLabel: 'wait',
   },
   // {"id":"t1","role":"builder","category":"feature","title":"...","description":"...",
   //  "kind":null,"candidates":["builder","researcher","writer"]}

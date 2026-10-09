@@ -277,6 +277,7 @@ describe('add, verify, remove', () => {
     canManage = false;
     await mount();
     expect(byTestId('storage-add')).toBeNull();
+    expect(byTestId('storage-read-only')!.textContent).toBe('Admins can change this.');
     await click(document.body.querySelector(`[data-testid="storage-row-${ID}"] button[aria-expanded]`));
     expect(byTestId('storage-edit')).toBeNull();
     expect(byTestId('storage-remove')).toBeNull();

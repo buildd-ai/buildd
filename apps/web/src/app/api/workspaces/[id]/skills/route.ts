@@ -14,6 +14,7 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -42,6 +43,21 @@ async function authenticateRequest(req: NextRequest) {
 
     return null;
 }
+
+/**
+ * manage_agent_roles for a session touching a role (an existing role, or a row
+ * being made one). API keys were already held to admin in authenticateRequest;
+ * a plain skill stays writable by anyone who can reach the workspace.
+ */
+async function sessionMayManageRole(
+    access: { teamId: string; role: string } | null,
+    touchesRole: boolean,
+): Promise<boolean> {
+    if (!access || !touchesRole) return true;
+    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+}
+
+const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };
 
 function generateSlug(name: string): string {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -137,9 +153,10 @@ export async function POST(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    let sessionAccess: { teamId: string; role: string } | null = null;
     if (auth.type === 'session') {
-        const access = await verifyWorkspaceAccess(auth.user.id, id);
-        if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        sessionAccess = await verifyWorkspaceAccess(auth.user.id, id);
+        if (!sessionAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
         const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -202,6 +219,9 @@ export async function POST(
         const existing = await db.query.workspaceSkills.findFirst({
             where: and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug)),
         });
+        if (!(await sessionMayManageRole(sessionAccess, isRole === true || Boolean(existing?.isRole)))) {
+            return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });
+        }
 
         if (existing) {
             const [updated] = await db

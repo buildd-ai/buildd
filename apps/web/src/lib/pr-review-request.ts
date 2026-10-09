@@ -22,6 +22,7 @@
 import { db } from '@buildd/core/db';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
+import { personalRoleVisibleSql } from '@buildd/core/role-visibility';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { fetchSplitPrStats } from './supersession-check';
 import { conformanceManifest } from './path-declaration';
@@ -334,6 +335,9 @@ export async function listWorkspaceRoles(
         eq(workspaceSkills.teamId, teamId),
         eq(workspaceSkills.isRole, true),
         sql`(${workspaceSkills.workspaceId} IS NULL OR ${workspaceSkills.workspaceId} = ${workspaceId})`,
+        // A review task is system-filed (no requester): someone's private role
+        // is not a reviewer it could run under.
+        personalRoleVisibleSql(null),
       ),
     );
   return rows;

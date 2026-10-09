@@ -28,11 +28,12 @@ import { githubReader, workspaceRepo } from './github-facts';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, type FloorCandidate } from './reconcile';
+import { floorCandidatesSql, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
-import type { Verdict } from './types';
+import type { MigrationSafety } from '@/lib/migration-safety';
+import type { PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
@@ -115,6 +116,55 @@ export interface OpenInput {
   prNumber: number;
   installationId: number;
   source: string;
+  /** A preflight finding for the PR's head, recorded as policy evidence before the owner hand-off (T28). */
+  policy?: PolicyFinding;
+}
+
+export interface PolicyFinding { outcome: PolicyOutcome; reason: string; destructive: boolean }
+
+/**
+ * Pure: what a pre-flight escalation asks of the platform, as the policy
+ * evidence the workflow kernel records (docs/specs/workflow-state-kernel.md
+ * §6.3 T28).
+ *
+ *  - A PR that mixes safe EXPAND and CONTRACT migrations is agent work: split
+ *    it, ship the additive half first. Nobody needs to decide anything.
+ *  - Everything else the pre-flight escalated (destructive SQL, an
+ *    uninspectable migration, a deny path, a human-tier workspace policy) is a
+ *    person's decision, and `destructive` marks the migration cases that keep
+ *    the explicit human approval rail.
+ */
+export function policyFindingFor(p: {
+  reason: string;
+  migrationSafety?: MigrationSafety;
+}): PolicyFinding {
+  const ms = p.migrationSafety;
+  if (ms && !ms.safe && ms.mixedSplit === true) {
+    return { outcome: 'agent_split', reason: p.reason, destructive: false };
+  }
+  return { outcome: 'human', reason: p.reason, destructive: !!ms && !ms.safe && !ms.collision };
+}
+
+
+/**
+ * T28: import a preflight finding as policy evidence bound to the PR's LIVE head
+ * (read now, never the webhook's). CAS through the kernel, effects through the
+ * outbox; the same finding on the same head replays as a duplicate, and a head
+ * that moved meanwhile makes it stale (no escalation). Null = not the kernel's PR.
+ */
+export async function recordPolicyEvidence(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; finding: PolicyFinding;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const live = await readerFor(deps, p.installationId).readPr(p.repoFullName, p.prNumber);
+  if (!live || live.state !== 'open') return null;
+  const result = await applyCommand(
+    { type: 'PolicyEvidenceRecorded', actor: p.source, evidence: { headSha: live.headSha, ...p.finding } },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  await drainDelivery(deliveryId, deps);
+  return result;
 }
 
 /**
@@ -141,7 +191,10 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
 
   // Already owned (the other door got here first)?
   const byPr = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
-  if (byPr) return { owned: true, deliveryId: byPr };
+  if (byPr) {
+    if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, deps);
+    return { owned: true, deliveryId: byPr };
+  }
   const existing = await resolveOwnerDelivery(p.workspaceId, p.ownerTaskId, deps.exec);
   if (existing && existing.authority === 'legacy') return { owned: false, reason: 'released' };
 
@@ -172,6 +225,9 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
     { kind: 'head_observed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: reader },
   );
+  // Before the late hand-off below: an ended owner attempt reads this evidence when it picks
+  // between a review round and a person.
+  if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, { ...deps, drain: async () => null });
 
   await db.update(tasks)
     .set({ deliveryId, deliveryRole: 'owner' })
@@ -901,6 +957,65 @@ export async function reconcileKernelDeliveries(
     } catch (err) {
       s.errors++;
       console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
+    }
+  }
+  return s;
+}
+
+export interface TreadmillCycleSummary {
+  /** Treadmill escalations past the cooldown that the pass looked at. */
+  checked: number;
+  /** Returned to APPROVED with a fresh refresh budget; the landing sweep picks them up. */
+  restarted: number;
+  /** Refused by the reducer (cycles used up, head not approved, moved since the read): stays with a person. */
+  refused: number;
+  errors: number;
+}
+
+/**
+ * S15 cycles, the kernel's half of the landing cooldown: a delivery the
+ * behind-refresh treadmill escalated gets a fresh refresh budget once
+ * `cooldownMs` has passed since that escalation, up to `MAX_TREADMILL_CYCLES`
+ * cycles (the reducer's bound). Only the treadmill cause qualifies (the SQL
+ * pins the transition that produced the current version); a merge refusal or a
+ * failed refresh stays with a person. The restart is pinned to that version, so
+ * a person's move in between wins.
+ */
+export async function restartTreadmillCycles(
+  o: { cooldownMs: number; limit?: number },
+  deps: SeamDeps & {
+    apply?: typeof applyCommand;
+    owned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<string | null>;
+    drain?: (deliveryId: string) => Promise<unknown>;
+  } = {},
+): Promise<TreadmillCycleSummary> {
+  const exec = deps.exec ?? seamExec;
+  const apply = deps.apply ?? applyCommand;
+  const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, deps.exec));
+  const drain = deps.drain ?? ((id: string) => drainDelivery(id, deps));
+  const s: TreadmillCycleSummary = { checked: 0, restarted: 0, refused: 0, errors: 0 };
+  const rows = ((await exec(treadmillCycleCandidatesSql({ limit: o.limit ?? 20, cooldownMs: o.cooldownMs }))).rows ?? []) as TreadmillCycleCandidate[];
+  for (const row of rows) {
+    const deliveryId = String(row.id);
+    try {
+      // The kill switch: a delivery released to legacy is legacy's.
+      if ((await owned(String(row.workspace_id), String(row.repo_full_name), Number(row.pr_number))) !== deliveryId) continue;
+      s.checked++;
+      const result = await apply(
+        { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle', expectedVersion: Number(row.version) },
+        { ref: { deliveryId }, exec: deps.exec },
+      );
+      if (result.result === 'applied') {
+        s.restarted++;
+        console.log(`[workflow] treadmill cycle restarted for ${row.repo_full_name}#${row.pr_number}`);
+        await drain(deliveryId);
+      } else {
+        s.refused++;
+        console.log(`[workflow] treadmill cycle not restarted for ${row.repo_full_name}#${row.pr_number}: ${result.result} (${'reason' in result ? result.reason : 'no reason'})`);
+      }
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] treadmill cycle restart of ${row.repo_full_name}#${row.pr_number} failed:`, err);
     }
   }
   return s;

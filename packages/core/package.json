@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.298.0",
+  "version": "0.300.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -24,6 +24,8 @@
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./role-model-routing": "./role-model-routing.ts",
+    "./role-visibility": "./role-visibility.ts",
+    "./task-requester": "./task-requester.ts",
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
@@ -40,6 +42,8 @@
     "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./providers": "./providers/index.ts",
+    "./providers/resolve": "./providers/resolve.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",

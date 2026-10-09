@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
  * Was split across /app/settings/models#provider-keys and the You page.
  */
 export default async function ModelProvidersPage() {
-  const { user, currentTeam, isTeamAdmin, workspaces } = await loadSettingsContext();
+  const { user, currentTeam, perms, workspaces } = await loadSettingsContext();
   const availability = currentTeam
     ? await getChatAvailability(user.id, currentTeam.id).catch(() => null)
     : null;
@@ -24,7 +24,7 @@ export default async function ModelProvidersPage() {
       {currentTeam ? (
         <ModelProvidersClient
           teamId={currentTeam.id}
-          isAdmin={isTeamAdmin}
+          isAdmin={perms.manage_inference_providers}
           workspaces={workspaces.filter((w) => w.teamId === currentTeam.id).map((w) => ({ id: w.id, name: w.name }))}
           availability={{
             available: availability?.available === true,

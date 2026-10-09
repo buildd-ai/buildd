@@ -10,6 +10,9 @@
  * Failure taxonomy (evaluated in order — the order IS the contract, because the
  * mode reported to the caller is the first one that matches):
  *   never_mounted      — dangling ref / wrong team / disabled for workspace
+ *   blocked_by_policy  — the consuming or owning team blocked the connector's
+ *                        catalog entry (connector + credential kept; see
+ *                        lib/connector-access-policy.ts)
  *   expired_or_revoked — credential missing, oauth token expired, or undecryptable
  *   transient          — HTTP HEAD probe failed (transport=http only; 5s budget)
  *
@@ -28,6 +31,8 @@ import {
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { loadBlockedCatalogs, connectorBlock } from '@/lib/connector-access-policy';
+import { lazyRequester, pickVisibleRoleRowLazy, ROLE_VISIBILITY_COLUMNS } from '@buildd/core/role-visibility';
 
 /** One connector that failed availability, with the first taxonomy mode that matched. */
 export type ConnectorFailure = { connectorId: string; connectorName: string; mode: string };
@@ -60,12 +65,13 @@ export async function runConnectorPreFilter(
 
   const rolePairs = filteredTasks
     .map(t => ({
+      task: t as object,
       taskId: t.id,
       taskWorkspaceId: t.workspaceId,
       roleSlug: (t as any).roleSlug as string | null,
       teamId: (t as any).workspace?.teamId as string | undefined,
     }))
-    .filter((p): p is { taskId: string; taskWorkspaceId: string; roleSlug: string; teamId: string } =>
+    .filter((p): p is { task: object; taskId: string; taskWorkspaceId: string; roleSlug: string; teamId: string } =>
       !!p.roleSlug && !!p.teamId,
     );
 
@@ -74,7 +80,8 @@ export async function runConnectorPreFilter(
     const teamIdsToFetch = [...new Set(rolePairs.map(p => p.teamId))];
     const wsIdsToFetch = [...new Set(rolePairs.map(p => p.taskWorkspaceId))];
 
-    // Batch-fetch role rows for all relevant (teamId, roleSlug) combos.
+    // Batch-fetch role rows for all relevant (teamId, roleSlug) combos —
+    // personal rows included; each task's winner is picked below by who it is for.
     const preFilterRoleRows = await db.query.workspaceSkills.findMany({
       where: and(
         inArray(workspaceSkills.slug, slugsToFetch),
@@ -86,27 +93,27 @@ export async function runConnectorPreFilter(
           inArray(workspaceSkills.workspaceId, wsIdsToFetch),
         ),
       ),
-      columns: { slug: true, teamId: true, workspaceId: true, connectorRefs: true },
+      columns: { ...ROLE_VISIBILITY_COLUMNS, connectorRefs: true },
     });
 
-    // Effective connectorRefs per (teamId|slug|wsId) — workspace-scoped row wins.
-    const effectiveRoleMap = new Map<string, string[]>();
-    for (const row of preFilterRoleRows) {
-      const refs = ((row as any).connectorRefs as string[] | null) ?? [];
-      if (refs.length === 0) continue;
-      const wsId = (row as any).workspaceId as string | null;
-      const teamId = (row as any).teamId as string;
-      effectiveRoleMap.set(`${teamId}|${row.slug}|${wsId ?? '*'}`, refs);
-    }
-    const getConnectorRefs = (teamId: string, slug: string, wsId: string): string[] =>
-      effectiveRoleMap.get(`${teamId}|${slug}|${wsId}`) ??
-      effectiveRoleMap.get(`${teamId}|${slug}|*`) ??
-      [];
+    // Effective connectorRefs per task, by the shared role precedence
+    // (role-visibility.ts): override > own personal > shared personal > team
+    // default. Another member's private role never decides this task's gate.
+    const refsByTask = new Map<string, string[]>();
+    await Promise.all(rolePairs.map(async (pair) => {
+      const row = await pickVisibleRoleRowLazy(
+        preFilterRoleRows, pair.roleSlug,
+        { teamId: pair.teamId, workspaceId: pair.taskWorkspaceId },
+        lazyRequester(pair.task),
+      );
+      refsByTask.set(pair.taskId, ((row?.connectorRefs as string[] | null) ?? []));
+    }));
+    const getConnectorRefs = (taskId: string): string[] => refsByTask.get(taskId) ?? [];
 
     // Collect all connector IDs referenced by any of the tasks' roles.
     const allRefIds = new Set<string>();
     for (const pair of rolePairs) {
-      for (const ref of getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId)) {
+      for (const ref of getConnectorRefs(pair.taskId)) {
         allRefIds.add(ref);
       }
     }
@@ -121,6 +128,13 @@ export async function runConnectorPreFilter(
         columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
       });
       const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
+
+      // Catalog blocks for every consuming and owning team in play. Throws on
+      // DB failure, failing the claim rather than mounting an unchecked connector.
+      const blockedCatalogs = await loadBlockedCatalogs([
+        ...teamIdsToFetch,
+        ...preFilterConnectors.map(c => c.teamId),
+      ]);
 
       // Batch-fetch cross-team share grants so shared connectors are treated
       // as visible even when teamId differs.
@@ -268,7 +282,7 @@ export async function runConnectorPreFilter(
 
       // ── Pass 1: classify per-task failures ────────────────────────────────
       for (const pair of rolePairs) {
-        const refs = getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId);
+        const refs = getConnectorRefs(pair.taskId);
         if (refs.length === 0) continue;
 
         const failures: Array<{ connectorId: string; connectorName: string; mode: string }> = [];
@@ -288,6 +302,11 @@ export async function runConnectorPreFilter(
           const cwKey = `${pair.taskWorkspaceId}|${refId}`;
           if (cwEnabled.has(cwKey) && !cwEnabled.get(cwKey)) {
             failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
+            continue;
+          }
+          // Team catalog policy: blocked after install still means blocked.
+          if (connectorBlock(connector, pair.teamId, blockedCatalogs)) {
+            failures.push({ connectorId: refId, connectorName: connector.name, mode: 'blocked_by_policy' });
             continue;
           }
           // Credential check

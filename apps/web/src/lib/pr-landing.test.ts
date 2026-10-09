@@ -428,6 +428,16 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
+    // Nothing moves an ESCALATED delivery on its own, so the wait says a person must act;
+    // every other review state clears on a later event.
+    it.each([['ESCALATED', true], ['AWAITING_REVIEW', undefined], ['CHANGES_REQUESTED', undefined]])('a %s delivery flags needsPerson=%s', async (state, needsPerson) => {
+      verdict = 'approved';
+      const { d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ policy: agentReview }, { ...d, kernelLandingView: view(state as string) });
+      expect(out.kind).toBe('waiting_ci');
+      expect((out as { needsPerson?: boolean }).needsPerson).toBe(needsPerson as boolean | undefined);
+    });
+
     it('a head the kernel has not observed yet waits', async () => {
       const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
       const out = await land({}, { ...d, kernelLandingView: view('APPROVED', 'older') });
@@ -441,6 +451,91 @@ describe('landPr — kernel-owned PR (T15/T16)', () => {
       expect(out).toMatchObject({ kind: 'merged' });
       expect(calls[0]).toMatchObject({ override: { reason: expect.any(String) } });
       expect(mockGuardReviewVerdict).not.toHaveBeenCalled();
+    });
+
+    // The spent treadmill (S15): ESCALATED(landing_needs_human). A person's freshness override is the
+    // escape hatch; it reaches T15 with its kinds and reason, and lifts nothing else.
+    const escView = (stateReason: string) => async () => ({ deliveryId: 'd1', stateReason, current: { state: 'ESCALATED', version: 3, head: 'head1', round: 1 } });
+
+    it("a person's freshness override lands a treadmill-escalated delivery behind its base, recorded with its kinds and reason", async () => {
+      gh.behindBy = 4;
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M2' });
+      const out = await land(
+        { door: 'merge_pr', actor: { kind: 'human', userId: 'u-1', override: { freshness: true }, overrideReason: 'base keeps moving; tested on head' } },
+        { ...d, kernelLandingView: escView('landing_needs_human') },
+      );
+      expect(out).toEqual({ kind: 'merged', sha: 'M2' });
+      expect(calls[0]).toMatchObject({ actor: 'human:u-1', override: { reason: 'base keeps moving; tested on head', kinds: ['freshness'] } });
+      expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    });
+
+    it('a spent treadmill pages as refresh_exhausted, so the page offers "Merge anyway" past freshness', async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const view = async () => ({ deliveryId: 'd1', stateReason: 'landing_needs_human', treadmill: { cycle: 1, maxCycles: 3, spent: true, refreshes: 3 }, current: { state: 'ESCALATED', version: 3, head: 'head1', round: 1 } });
+      const out = await land({}, { ...d, kernelLandingView: view });
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+      expect((out as { reason: string }).reason).toContain('fresh refresh cycle');
+      expect(calls).toHaveLength(0);
+      const last = async () => ({ ...(await view()), treadmill: { cycle: 3, maxCycles: 3, spent: true, refreshes: 3 } });
+      const out2 = await land({}, { ...d, kernelLandingView: last });
+      expect(out2).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+      expect((out2 as { reason: string }).reason).toContain('a person');
+    });
+
+    it('"Merge anyway" end to end: the freshness override landPr sends is one the real T15 accepts from the spent treadmill', async () => {
+      const { reduce } = await import('@/lib/workflow/reducer');
+      gh.behindBy = 5;
+      const delivery = {
+        id: 'd1', workspaceId: 'ws-1', ownerTaskId: 't-1', repoFullName: 'buildd-ai/buildd', prNumber: 42, baseRef: 'dev',
+        state: 'ESCALATED' as const, stateReason: 'landing_needs_human', version: 3, currentHeadSha: 'head1', currentRound: 1, maxRounds: 3,
+        boundAttemptId: null, resumeState: null, trunkIncidentId: null, approvedHeads: ['head1'], approvalBasis: 'verdict' as const,
+        compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null, mergeCommitSha: null, supersededByPr: null,
+      };
+      let decision: any = null;
+      const d = {
+        ...deps(),
+        kernelLandingView: async () => ({ deliveryId: 'd1', stateReason: 'landing_needs_human', treadmill: { cycle: 3, maxCycles: 3, spent: true, refreshes: 3 }, current: { state: 'ESCALATED', version: 3, head: 'head1', round: 1 } }),
+        landThroughKernel: async (i: any) => {
+          decision = reduce({ delivery, rounds: [], attempts: [] }, {
+            type: 'LandingRequested', actor: i.actor, door: i.door, headSha: i.headSha,
+            live: { state: 'open', merged: false, headSha: 'head1', headRepoFullName: 'buildd-ai/buildd', baseRef: 'dev' },
+            rails: { passed: true }, ...(i.override ? { override: i.override } : {}),
+          }, { newId: () => 'x' });
+          return { merged: true, outcome: 'merged', reason: 'merged', message: 'm', mergeCommitSha: 'M9', current: { state: 'MERGED', version: 5, head: 'head1', round: 1 }, result: null } as any;
+        },
+      };
+      // What the landing page's "Merge anyway" sends for needs_human:refresh_exhausted (pr-landing-alert MERGE_ANYWAY).
+      const out = await land({ door: 'dashboard', actor: { kind: 'human', userId: 'u-1', override: { freshness: true } } }, d);
+      expect(out).toEqual({ kind: 'merged', sha: 'M9' });
+      expect(decision.result).toBe('apply');
+      expect(decision.toState).toBe('LANDING');
+      expect(decision.bypass).toMatchObject({ actor: 'human:u-1', kinds: ['freshness'], overrodeState: 'ESCALATED' });
+    });
+
+    it('a freshness override does not lift a review escalation: it waits for a person', async () => {
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ door: 'merge_pr', actor: { kind: 'human', userId: 'u-1', override: { freshness: true } } }, { ...d, kernelLandingView: escView('review_escalated') });
+      expect(out).toMatchObject({ kind: 'waiting_ci', needsPerson: true });
+      expect(calls).toHaveLength(0);
+    });
+
+    it('an agent run under a person\'s task grant gets the same freshness override, with grantedBy', async () => {
+      gh.behindBy = 2;
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged', mergeCommitSha: 'M3' });
+      const out = await land(
+        { door: 'merge_pr', actor: { kind: 'agent', workerId: 'w-1', grant: { override: { freshness: true }, grantedBy: 'human:u-9', reason: 'task goal: land #42 past freshness' } } },
+        { ...d, kernelLandingView: escView('landing_needs_human') },
+      );
+      expect(out).toEqual({ kind: 'merged', sha: 'M3' });
+      expect(calls[0]).toMatchObject({ actor: 'agent:w-1', override: { kinds: ['freshness'], grantedBy: 'human:u-9', reason: 'task goal: land #42 past freshness' } });
+    });
+
+    it('an agent run without a grant gets no override at all', async () => {
+      gh.behindBy = 0;
+      const { calls, d } = kernelDeps({ merged: true, outcome: 'merged' });
+      const out = await land({ door: 'merge_pr', actor: { kind: 'agent', workerId: 'w-1' } }, { ...d, kernelLandingView: escView('landing_needs_human') });
+      expect(out).toMatchObject({ kind: 'waiting_ci', needsPerson: true });
+      expect(calls).toHaveLength(0);
     });
 
     it('a PR with no kernel delivery still runs the legacy review gate', async () => {
@@ -477,6 +572,22 @@ describe('landPr — merge', () => {
   it('merges with the caller-chosen method (merge_pr), squash by default', async () => {
     await land({ door: 'merge_pr', mergeMethod: 'rebase' });
     expect(mockMergePullRequest.mock.calls[0]![3]).toBe('rebase');
+  });
+
+  it('lands an integration-refresh PR as a merge commit even when the caller asked for squash', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 'chore(mission): merge dev', taskClass: 'work', missionId: null, context: { requireMergeCommit: true, refreshTrunk: 'dev' } }) as any);
+    await land({ door: 'merge_pr', mergeMethod: 'squash' });
+    expect(mockMergePullRequest.mock.calls[0]![3]).toBe('merge');
+  });
+
+  it('an integration-refresh PR reaches the kernel as a merge commit too', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', title: 't', taskClass: 'work', missionId: null, context: { requireMergeCommit: true } }) as any);
+    const calls: any[] = [];
+    await land({ door: 'merge_pr', mergeMethod: 'squash' }, {
+      ...deps(),
+      landThroughKernel: async (i: any) => { calls.push(i); return { merged: true, outcome: 'merged', mergeCommitSha: 'M', reason: 'x', message: 'm', current: { state: 'APPROVED', version: 3, head: 'head1', round: 1 }, result: null } as any; },
+    });
+    expect(calls[0].mergeMethod).toBe('merge');
   });
 
   it('is a no-op on a PR that already merged', async () => {
@@ -1236,6 +1347,40 @@ describe('landPr — behind base is work with an owner', () => {
       mockDispatchConflictRetry.mockImplementation(async () => result);
       expect(await land()).toMatchObject({ kind: 'needs_human', cause });
       expect(mockEscalate).not.toHaveBeenCalled();
+    });
+    // A kernel refresh that was queued (it ran, the new head is not observed yet)
+    // is not a failure, and must never read as "failed (unknown)".
+    it('refreshQueued → waiting on the refresh, never "failed"', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({ dispatched: false, refreshQueued: true }));
+      const out = await land();
+      expect(out.kind).toBe('waiting_ci');
+      expect((out as { reason?: string }).reason).toMatch(/refresh is queued/);
+      expect((out as { reason?: string }).reason).not.toMatch(/failed|unknown/);
+    });
+    it('a deferred refresh names the raw GitHub error, not just its class', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshDeferred: true, refreshFailure: 'unknown', refreshReason: 'GitHub API error: 404 {"message":"Not Found"}',
+      }));
+      const out = await land();
+      expect((out as { reason?: string }).reason).toContain('GitHub API error: 404');
+    });
+    it('the kernel treadmill bound → needs_human(refresh_exhausted) saying the base kept moving', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR',
+      }));
+      const out = await land();
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_exhausted' });
+      expect((out as { reason: string }).reason).toMatch(/base kept moving after 3 refreshes/);
+      expect((out as { reason: string }).reason).not.toMatch(/unknown/);
+    });
+    it('a kernel escalation with a reason carries it instead of "unknown"', async () => {
+      mockDispatchConflictRetry.mockImplementation(async () => ({
+        dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)',
+      }));
+      const out = await land();
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'refresh_failed' });
+      expect((out as { reason: string }).reason).toContain('the mechanical refresh failed');
+      expect((out as { reason: string }).reason).not.toMatch(/\(unknown\)/);
     });
     it('a throwing dispatch → needs_human, not an exception', async () => {
       mockDispatchConflictRetry.mockImplementation(async () => {

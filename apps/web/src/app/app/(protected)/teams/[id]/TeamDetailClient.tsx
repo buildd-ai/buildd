@@ -1,10 +1,11 @@
 'use client';
 
+import { clampedKeysNotice } from './clamped-keys-notice';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 import { QA_FIXTURE_MEMBER_ID } from '../../settings/team/qa-state';
 
 interface TeamMember {
@@ -27,7 +28,10 @@ interface TeamDetailClientProps {
   currentUserRole: 'owner' | 'admin' | 'member';
   currentUserId: string;
   isPersonal: boolean;
+  /** `manage_team_members`: add, invite and remove members. */
   canManage: boolean;
+  /** The team's permission overrides, so role checks here match the server. */
+  permissionOverrides: PermissionOverrides | null;
 }
 
 const roleColors: Record<string, string> = {
@@ -43,6 +47,7 @@ export default function TeamDetailClient({
   currentUserId,
   isPersonal,
   canManage,
+  permissionOverrides,
 }: TeamDetailClientProps) {
   const { confirm, confirmDialog } = useConfirm();
   const router = useRouter();
@@ -51,12 +56,29 @@ export default function TeamDetailClient({
   const [editSlug, setEditSlug] = useState(team.slug);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Set when a role change, removal or transfer lowered someone's API keys.
+  const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'admin' | 'member'>('member');
   const [inviting, setInviting] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [showInvite, setShowInvite] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+
+  const canEditTeam = roleHas(currentUserRole, 'manage_team_settings', permissionOverrides);
+  const canDeleteTeam = roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal;
+  const canAssignOwner = roleHas(currentUserRole, 'assign_team_owner', null /* locked */);
+  const canAssignRoles = roleHas(currentUserRole, 'assign_team_roles', permissionOverrides);
+  const isLastOwner = currentUserRole === 'owner' && members.filter((m) => m.role === 'owner').length <= 1;
+
+  /** The roles this caller may pick for `member`, or null when its role is fixed for them. */
+  function roleOptionsFor(member: TeamMember): Array<'owner' | 'admin' | 'member'> | null {
+    if (member.userId === currentUserId) return null;
+    if (canAssignOwner) return ['owner', 'admin', 'member'];
+    if (canAssignRoles && member.role !== 'owner') return ['admin', 'member'];
+    return null;
+  }
 
   async function handleInvite() {
     if (!inviteEmail) return;
@@ -150,6 +172,7 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to update role');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -172,9 +195,65 @@ export default function TeamDetailClient({
         throw new Error(err.error || 'Failed to remove member');
       }
 
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'they'));
       router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+    }
+  }
+
+  async function handleTransferOwnership(userId: string, memberName: string | null) {
+    const who = memberName || 'this member';
+    if (!(await confirm({
+      title: 'Transfer ownership?',
+      message: `${who} becomes an owner and you become an admin. Only an owner can make you an owner again.`,
+      confirmLabel: 'Transfer ownership',
+      variant: 'warning',
+    }))) {
+      return;
+    }
+    if (userId === QA_FIXTURE_MEMBER_ID) return;
+
+    try {
+      const res = await fetch(`/api/teams/${team.id}/ownership`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to transfer ownership');
+      }
+
+      setNotice(clampedKeysNotice((await res.json().catch(() => ({}))).clampedKeys, 'you'));
+      router.refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    }
+  }
+
+  async function handleLeave() {
+    if (!(await confirm({ title: 'Leave team?', message: `You lose access to ${team.name} and its workspaces. Someone with member access has to add you back.`, confirmLabel: 'Leave team', variant: 'danger' }))) {
+      return;
+    }
+
+    setLeaving(true);
+    try {
+      const res = await fetch(`/api/teams/${team.id}/members/${currentUserId}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to leave team');
+      }
+
+      router.push('/app/settings/account');
+      router.refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+      setLeaving(false);
     }
   }
 
@@ -184,6 +263,12 @@ export default function TeamDetailClient({
         <div className="mb-4 p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
           {error}
           <button onClick={() => setError('')} className="ml-2 text-sm underline">dismiss</button>
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="mb-4 p-4 bg-status-info/10 border border-status-info/30 rounded-lg text-text-primary text-sm">
+          {notice}
+          <button onClick={() => setNotice('')} className="ml-2 text-sm underline">dismiss</button>
         </div>
       )}
 
@@ -247,15 +332,17 @@ export default function TeamDetailClient({
             </>
           )}
         </div>
-        {canManage && !editing && (
+        {(canEditTeam || canDeleteTeam) && !editing && (
           <div className="flex gap-2 shrink-0">
-            <button
-              onClick={() => setEditing(true)}
-              className="min-h-11 md:min-h-0 px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
-            >
-              Edit
-            </button>
-            {roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal && (
+            {canEditTeam && (
+              <button
+                onClick={() => setEditing(true)}
+                className="min-h-11 md:min-h-0 px-3 py-1.5 border border-border-default rounded-md hover:bg-surface-3 text-sm"
+              >
+                Edit
+              </button>
+            )}
+            {canDeleteTeam && (
               <button
                 onClick={handleDelete}
                 disabled={deleting}
@@ -270,13 +357,16 @@ export default function TeamDetailClient({
 
       {/* Members */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">
+        <h2 className="text-xl font-semibold mb-1">
           Members ({members.length})
         </h2>
+        <p className="text-xs text-text-muted mb-4">
+          A lower role also lowers the API keys that person created. Older keys with no recorded creator stay as they are.
+        </p>
         <div className="border border-border-default rounded-lg divide-y divide-border-default">
           {members.map((member) => (
             <div key={member.userId} className="p-4 flex flex-wrap justify-between items-center gap-x-3 gap-y-2">
-              <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="flex items-center gap-3 min-w-0 flex-1 basis-48">
                 {member.image ? (
                   <img
                     src={member.image}
@@ -298,24 +388,32 @@ export default function TeamDetailClient({
                   <div className="text-sm text-text-secondary [overflow-wrap:anywhere]">{member.email}</div>
                 </div>
               </div>
-              <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
-                {canManage && roleHas(currentUserRole, 'assign_team_owner', null /* locked */) && member.userId !== currentUserId ? (
-                  <Select
-                    value={member.role}
-                    onChange={(v) => handleRoleChange(member.userId, v)}
-                    options={[
-                      { value: 'owner', label: 'owner' },
-                      { value: 'admin', label: 'admin' },
-                      { value: 'member', label: 'member' },
-                    ]}
-                    size="sm"
-                  />
-                ) : (
-                  <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[member.role]}`}>
-                    {member.role}
-                  </span>
+              <div className="flex flex-wrap items-center justify-end gap-3 flex-shrink-0 ml-auto">
+                {(() => {
+                  const options = roleOptionsFor(member);
+                  return options ? (
+                    <Select
+                      value={member.role}
+                      onChange={(v) => handleRoleChange(member.userId, v)}
+                      options={options.map((r) => ({ value: r, label: r }))}
+                      size="sm"
+                      aria-label={`Role for ${member.name || member.email}`}
+                    />
+                  ) : (
+                    <span className={`inline-block px-2 py-0.5 text-xs rounded-full ${roleColors[member.role]}`}>
+                      {member.role}
+                    </span>
+                  );
+                })()}
+                {canAssignOwner && !isPersonal && member.role !== 'owner' && member.userId !== currentUserId && (
+                  <button
+                    onClick={() => handleTransferOwnership(member.userId, member.name)}
+                    className="min-h-11 md:min-h-0 px-1 text-xs text-text-secondary hover:text-text-primary whitespace-nowrap"
+                  >
+                    Transfer ownership
+                  </button>
                 )}
-                {canManage && member.userId !== currentUserId && (
+                {canManage && member.userId !== currentUserId && (member.role !== 'owner' || canAssignOwner) && (
                   <button
                     onClick={() => handleRemoveMember(member.userId, member.name)}
                     className="min-h-11 md:min-h-0 px-1 text-xs text-status-error hover:text-status-error/80"
@@ -353,10 +451,9 @@ export default function TeamDetailClient({
                   <Select
                     value={inviteRole}
                     onChange={(v) => setInviteRole(v as 'admin' | 'member')}
-                    options={[
-                      { value: 'member', label: 'member' },
-                      { value: 'admin', label: 'admin' },
-                    ]}
+                    options={canAssignRoles
+                      ? [{ value: 'member', label: 'member' }, { value: 'admin', label: 'admin' }]
+                      : [{ value: 'member', label: 'member' }]}
                     size="sm"
                   />
                   <button
@@ -380,6 +477,24 @@ export default function TeamDetailClient({
                   Cancel
                 </button>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Leave */}
+        {!isPersonal && (
+          <div className="mt-8 pt-4 border-t border-border-default flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button
+              onClick={handleLeave}
+              disabled={leaving || isLastOwner}
+              className="min-h-11 md:min-h-0 px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50 disabled:hover:bg-transparent"
+            >
+              {leaving ? 'Leaving…' : 'Leave team'}
+            </button>
+            {isLastOwner && (
+              <p className="text-xs text-text-muted">
+                You are the only owner. Make someone else an owner before you leave.
+              </p>
             )}
           </div>
         )}

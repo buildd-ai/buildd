@@ -66,7 +66,8 @@ export default async function TeamDetailPage({
 
   const isPersonal = team.slug.startsWith('personal-');
   const currentUserRole = membership.role as 'owner' | 'admin' | 'member';
-  const canManage = roleHas(currentUserRole, 'manage_team_members', await getTeamPermissionOverrides(team.id));
+  const permissionOverrides = await getTeamPermissionOverrides(team.id);
+  const canManage = roleHas(currentUserRole, 'manage_team_members', permissionOverrides);
 
   return (
     <main className="min-h-screen p-8">
@@ -85,6 +86,7 @@ export default async function TeamDetailPage({
           currentUserId={user!.id}
           isPersonal={isPersonal}
           canManage={canManage}
+          permissionOverrides={permissionOverrides}
         />
       </div>
     </main>

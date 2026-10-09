@@ -17,7 +17,18 @@ interface Connector {
   shared?: boolean;
   ownerTeamName?: string | null;
   iconUrl?: string | null;
+  /** The team's catalog policy blocks it: kept installed, but agents cannot use it. */
+  blockedByPolicy?: boolean;
 }
+
+/** Plain-language text for the codes /api/connectors/callback redirects with. */
+const OAUTH_ERROR_TEXT: Record<string, string> = {
+  blocked_by_policy: "This connector is blocked by your team's connector policy, so it can't be connected. A team admin can unblock it under Catalog.",
+  forbidden: 'Only a team admin can connect a team connector.',
+  session_mismatch: 'Sign-in changed during the connection. Start Connect again from this page.',
+  token_exchange_failed: "The provider didn't accept the sign-in. Try Connect again.",
+  invalid_token_audience: 'The provider issued a token for a different server. Check the connector URL.',
+};
 
 interface Team {
   id: string;
@@ -70,11 +81,20 @@ export default function ConnectionsClient({
   connectedId,
   errorMsg,
   embedded = false,
+  teamId = null,
+  canManage = true,
 }: {
   connectedId?: string;
   errorMsg?: string;
   /** Rendered inside Settings → MCP connectors: no page padding, a section label instead of an h1. */
   embedded?: boolean;
+  /** The team whose connectors are listed (the page's active team). Omitted = the API's choice. */
+  teamId?: string | null;
+  /**
+   * Holds `manage_connectors` in that team (overrides applied). False: the
+   * list with each connector's status, and no add, connect, sharing or delete.
+   */
+  canManage?: boolean;
 }) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,7 +125,7 @@ export default function ConnectionsClient({
 
   const loadConnectors = useCallback(async () => {
     try {
-      const res = await fetch('/api/connectors');
+      const res = await fetch(teamId ? `/api/connectors?teamId=${teamId}` : '/api/connectors');
       if (res.ok) {
         const data = await res.json();
         setConnectors(data.connectors || []);
@@ -115,7 +135,7 @@ export default function ConnectionsClient({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [teamId]);
 
   useEffect(() => {
     loadConnectors();
@@ -146,7 +166,7 @@ export default function ConnectionsClient({
     if (connectedId) {
       setMessage({ type: 'success', text: 'Connected.' });
     } else if (errorMsg) {
-      setMessage({ type: 'error', text: `OAuth error: ${errorMsg.replace(/_/g, ' ')}` });
+      setMessage({ type: 'error', text: OAUTH_ERROR_TEXT[errorMsg] ?? `OAuth error: ${errorMsg.replace(/_/g, ' ')}` });
     }
   }, [connectedId, errorMsg]);
 
@@ -160,7 +180,7 @@ export default function ConnectionsClient({
         window.location.href = data.authorizationUrl;
       } else {
         const err = await res.json();
-        setMessage({ type: 'error', text: err.error || 'Failed to start OAuth flow' });
+        setMessage({ type: 'error', text: err.message || err.error || 'Failed to start OAuth flow' });
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to start OAuth flow' });
@@ -368,12 +388,16 @@ export default function ConnectionsClient({
         {embedded
           ? <h2 className="section-label">Your connectors</h2>
           : <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>}
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="btn btn-primary"
-        >
-          Add connector
-        </button>
+        {canManage ? (
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="btn btn-primary"
+          >
+            Add connector
+          </button>
+        ) : (
+          <span data-testid="connectors-read-only" className="text-xs text-text-muted">Admins can change this.</span>
+        )}
       </div>
 
       {message && (
@@ -390,13 +414,15 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
-          <p className="text-text-muted text-sm mb-4">No connectors.</p>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="btn"
-          >
-            Add connector
-          </button>
+          <p className={`text-text-muted text-sm ${canManage ? 'mb-4' : ''}`}>No connectors.</p>
+          {canManage && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="btn"
+            >
+              Add connector
+            </button>
+          )}
         </div>
       ) : (
         <div className="card divide-y divide-border-default">
@@ -411,6 +437,14 @@ export default function ConnectionsClient({
                     <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
+                    {connector.blockedByPolicy && (
+                      <span
+                        className="text-xs px-2 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30"
+                        data-testid={`connector-blocked-${connector.id}`}
+                      >
+                        Blocked
+                      </span>
+                    )}
                     {connector.shared && (
                       <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
                         Shared by {connector.ownerTeamName || 'another team'}
@@ -423,6 +457,11 @@ export default function ConnectionsClient({
                   {/* Reach — make scope visible at a glance instead of hidden behind "Sharing".
                       Owned connectors are available to all workspaces in the owning team;
                       cross-team access is granted explicitly via the Sharing panel. */}
+                  {connector.blockedByPolicy && (
+                    <div className="text-[11px] text-status-error mt-1">
+                      Blocked by team policy. Agents can&apos;t use it; the saved connection is kept. A team admin can unblock it under Catalog.
+                    </div>
+                  )}
                   {!connector.shared && (
                     <div className="text-[11px] text-text-muted mt-1">
                       Available to all workspaces in this team · share with other teams via Sharing
@@ -430,9 +469,10 @@ export default function ConnectionsClient({
                   )}
                 </div>
                 {/* Grantees only enable per workspace / opt roles in — no config,
-                    credential, or sharing controls on a shared-in connector (spec §1b). */}
-                <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
-                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'expired' && (
+                    credential, or sharing controls on a shared-in connector (spec §1b).
+                    Without manage_connectors there are no controls at all. */}
+                {canManage && <div className="flex gap-2 flex-wrap sm:flex-shrink-0 sm:justify-end">
+                  {!connector.shared && !connector.blockedByPolicy && connector.authMode === 'oauth' && connector.status === 'expired' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
@@ -441,7 +481,7 @@ export default function ConnectionsClient({
                       {connecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
                   )}
-                  {!connector.shared && connector.authMode === 'oauth' && connector.status === 'not_connected' && (
+                  {!connector.shared && !connector.blockedByPolicy && connector.authMode === 'oauth' && connector.status === 'not_connected' && (
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
@@ -484,14 +524,14 @@ export default function ConnectionsClient({
                       Delete
                     </button>
                   )}
-                </div>
+                </div>}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {showAddModal && (
+      {canManage && showAddModal && (
         <AddConnectionModal
           onClose={() => setShowAddModal(false)}
           onAdded={handleAdded}

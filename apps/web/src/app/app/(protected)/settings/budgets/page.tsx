@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
-import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import CapsForm from './CapsForm';
@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
  * on each runner token.
  */
 export default async function BudgetsSettingsPage() {
-  const { user, currentTeam, isTeamAdmin } = await loadSettingsContext();
+  const { user, currentTeam, perms } = await loadSettingsContext();
 
   if (!currentTeam) {
     return (
@@ -31,14 +31,14 @@ export default async function BudgetsSettingsPage() {
   const [teamRow, members] = await Promise.all([
     db.query.teams.findFirst({
       where: eq(teams.id, currentTeam.id),
-      columns: { timezone: true, inferenceKeyPolicy: true },
+      columns: { timezone: true, inferenceKeyPolicy: true, credentialPolicy: true },
     }).catch(() => null),
     db.query.teamMembers.findMany({
       where: eq(teamMembers.teamId, currentTeam.id),
       with: { user: { columns: { id: true, name: true, email: true } } },
     }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
   ]);
-  const keyPolicy = isInferenceKeyPolicy(teamRow?.inferenceKeyPolicy) ? teamRow.inferenceKeyPolicy : 'team';
+  const keyPolicy = effectiveKeyPolicy(teamRow) ?? 'team';
   const timeZone = teamRow?.timezone || 'UTC';
   const spend: SpendSummary | null = await loadSpendSummary({
     teamId: currentTeam.id,
@@ -58,7 +58,7 @@ export default async function BudgetsSettingsPage() {
         {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
       </section>
 
-      {isTeamAdmin && spend && spend.people.length > 1 && (
+      {perms.view_team_usage && spend && spend.people.length > 1 && (
         <section aria-labelledby="people-spend-h">
           <h2 id="people-spend-h" className="section-label mb-3">By person · this month</h2>
           <PeopleSpend people={spend.people} unattributed={spend.unattributedAgent} />
@@ -69,7 +69,7 @@ export default async function BudgetsSettingsPage() {
         <h2 id="caps-h" className="section-label mb-3">Interactive caps</h2>
         <CapsForm
           teamId={currentTeam.id}
-          canManage={isTeamAdmin}
+          canManage={perms.manage_team_settings}
           keyPolicy={keyPolicy}
           defaultTeamUsd={DEFAULT_CHAT_DAILY_BUDGET_USD}
           defaultUserShare={DEFAULT_CHAT_USER_SHARE}

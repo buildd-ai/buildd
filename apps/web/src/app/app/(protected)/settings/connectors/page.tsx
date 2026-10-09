@@ -3,6 +3,7 @@ import ConnectorsSection from '../ConnectorsSection';
 import ConnectionsClient from './ConnectionsClient';
 import CatalogSection from './CatalogSection';
 import { loadSettingsContext } from '../_lib/settings-context';
+import { teamIdsHolding } from '../_lib/settings-permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,7 @@ export default async function ConnectorsSettingsPage({
 }: {
   searchParams: Promise<{ connected?: string; error?: string }>;
 }) {
-  const [{ teams, currentTeamId, workspaces }, { connected, error }] = await Promise.all([
+  const [{ teams, currentTeamId, workspaces, perms, permsByTeam }, { connected, error }] = await Promise.all([
     loadSettingsContext(),
     searchParams,
   ]);
@@ -26,11 +27,20 @@ export default async function ConnectorsSettingsPage({
     <SettingsPage
       title="MCP connectors"
     >
-      <ConnectionsClient connectedId={connected} errorMsg={error} embedded />
+      {/* Each control follows manage_connectors in the team it acts on, with
+          that team's overrides: the API refuses the same writes. */}
+      <ConnectionsClient
+        connectedId={connected}
+        errorMsg={error}
+        embedded
+        teamId={currentTeamId}
+        canManage={perms.manage_connectors}
+      />
       <ConnectorsSection
-        workspaces={workspaces.map((ws) => ({ id: ws.id, name: ws.name }))}
+        workspaces={workspaces.map((ws) => ({ id: ws.id, name: ws.name, teamId: ws.teamId }))}
         teams={teams.map((t) => ({ id: t.id, name: t.name }))}
         currentTeamId={currentTeamId}
+        manageableTeamIds={teamIdsHolding(permsByTeam, 'manage_connectors')}
       />
       <CatalogSection />
     </SettingsPage>

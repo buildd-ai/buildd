@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { accounts, workers, workspaces, teamMembers } from '@buildd/core/db/schema';
+import { accounts, workers, workspaces, teamMembers, tasks } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { getUserTeamIds } from '@/lib/team-access';
 
@@ -9,7 +9,7 @@ const VALID_CREATION_SOURCES: CreationSource[] = ['dashboard', 'api', 'mcp', 'gi
 
 export interface CreateTaskCreatorParams {
   // Auth context - one of these should be provided
-  apiAccount?: { id: string } | null;
+  apiAccount?: { id: string; sessionUserId?: string } | null;
   userId?: string | null;
   // Optional creator tracking from request
   createdByWorkerId?: string;
@@ -22,6 +22,8 @@ export interface ResolvedCreatorContext {
   createdByWorkerId: string | null;
   creationSource: CreationSource;
   parentTaskId: string | null;
+  /** The person the task is for; see tasks.createdByUserId. */
+  createdByUserId: string | null;
 }
 
 /**
@@ -54,12 +56,39 @@ export async function resolveCreatorContext(
     params.userId
   );
 
+  const createdByUserId = await resolveRequesterUserId(params, derivedParentTaskId);
+
   return {
     createdByAccountId,
     createdByWorkerId: validatedWorkerId,
     creationSource,
     parentTaskId: derivedParentTaskId,
+    createdByUserId,
   };
+}
+
+/**
+ * The person a new task is for: the signed-in user, or the person behind an
+ * OAuth session, or — for a task an agent files — whoever its parent task was
+ * for. Tasks filed by other paths (retries, schedules, missions) are resolved
+ * at read time by `resolveTaskRequesterUserId`.
+ */
+async function resolveRequesterUserId(
+  params: CreateTaskCreatorParams,
+  parentTaskId: string | null,
+): Promise<string | null> {
+  if (params.userId) return params.userId;
+  if (params.apiAccount?.sessionUserId) return params.apiAccount.sessionUserId;
+  if (!parentTaskId) return null;
+  try {
+    const parent = await db.query.tasks.findFirst({
+      where: eq(tasks.id, parentTaskId),
+      columns: { createdByUserId: true },
+    });
+    return parent?.createdByUserId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -150,7 +150,7 @@ mock.module('@/lib/base-refresh', () => ({
   checkBaseRefreshHold: (input: any) => mockCheckBaseRefreshHold(input),
 }));
 
-import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal, describeUnfiledRefreshOutcome } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -1694,6 +1694,66 @@ describe('tryAutoMergeWorkerPr — return value', () => {
     expect(result).toEqual({ merged: true });
   });
 
+  describe('integration-refresh PR (dev merged into a mission branch)', () => {
+    const REFRESH_TASK = { id: 'task-r', title: 'chore(mission): merge dev', taskClass: 'work', missionId: null, requiresReview: false, context: { requireMergeCommit: true, refreshTrunk: 'dev' } };
+    // The PR's own list: dev history since the stale fork point — over the size cap.
+    const INHERITED_DEV_FILES = [
+      { filename: 'packages/core/drizzle/0000_old.sql', status: 'removed', additions: 0, deletions: 400 },
+      { filename: 'apps/web/src/lib/big.ts', status: 'modified', additions: 3000, deletions: 10 },
+    ];
+    const MISSION_DELTA = [{ filename: 'apps/web/src/lib/sentinel.ts', status: 'modified', additions: 12, deletions: 2 }];
+    function routeGithub(paths: string[]) {
+      mockGithubApi.mockImplementation((async (_i: number, path: string) => {
+        paths.push(path);
+        if (path.includes('/check-runs')) return { check_runs: CLEAN_GREEN };
+        if (path.includes('/compare/dev...head-sha')) return { files: MISSION_DELTA };
+        if (path.includes('/files')) return INHERITED_DEV_FILES;
+        if (path.endsWith('/pulls/42')) return { mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'buildd/sync' }, base: { ref: 'mission/x' } };
+        return null;
+      }) as any);
+    }
+
+    it('is judged on its mission delta and lands as a merge commit', async () => {
+      mockFindFirst = mock(() => REFRESH_TASK as any);
+      const paths: string[] = [];
+      routeGithub(paths);
+
+      const result = await tryAutoMergeWorkerPr({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'head-sha',
+        worker: { id: 'worker-1', taskId: 'task-r', workspaceId: 'ws-1' },
+        policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+        landThroughKernel: async () => null,
+      });
+
+      expect(result).toEqual({ merged: true });
+      expect(paths.some(p => p.includes('/compare/dev...head-sha'))).toBe(true);
+      expect(mockMergePullRequest.mock.calls[0]![3]).toBe('merge');
+    });
+
+    it('an ordinary task PR still squashes and is judged on its own diff', async () => {
+      mockFindFirst = mock(() => ({ ...REFRESH_TASK, context: { baseBranch: 'mission/x' } }) as any);
+      const paths: string[] = [];
+      routeGithub(paths);
+
+      const result = await tryAutoMergeWorkerPr({
+        installationId: 1,
+        repoFullName: 'buildd-ai/buildd',
+        prNumber: 42,
+        headSha: 'head-sha',
+        worker: { id: 'worker-1', taskId: 'task-r', workspaceId: 'ws-1' },
+        policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+        landThroughKernel: async () => null,
+      });
+
+      expect(result.merged).toBe(false);
+      expect(paths.some(p => p.includes('/compare/'))).toBe(false);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
   it('names conflicts as the reason for a dirty PR — the SAME shape a caller uses to distinguish "not authorised" from "would authorise, but blocked"', async () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
@@ -2715,5 +2775,31 @@ describe('tryAutoMergeWorkerPr — refresh outcomes that file nothing are record
       reasons.add(refreshRows()[0].reason);
     }
     expect(reasons.size).toBe(4);
+  });
+});
+
+// The kernel path returns no failure class: its reason must still reach the
+// ledger, and a queued refresh must not read as a failure at all.
+describe('describeUnfiledRefreshOutcome — the cause, never a bare "unknown"', () => {
+  it('a queued refresh is its own outcome, not a failure', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshQueued: true });
+    expect(d.refreshOutcome).toBe('refresh_queued');
+    expect(d.reason).not.toMatch(/failed|unknown/);
+    expect(d.page).toBeNull();
+  });
+  it('the treadmill bound pages refresh_exhausted, saying the base kept moving', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR' });
+    expect(d.page).toBe('refresh_exhausted');
+    expect(d.reason).toMatch(/base kept moving after 3 refreshes/);
+  });
+  it('an exhausted refresh with only a reason carries the reason', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)' });
+    expect(d.page).toBe('refresh_failed');
+    expect(d.reason).toContain('the mechanical refresh failed');
+    expect(d.reason).not.toMatch(/\(unknown\)/);
+  });
+  it('a deferred refresh carries the raw GitHub error next to its class', () => {
+    const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshDeferred: true, refreshFailure: 'unknown', refreshReason: 'GitHub API error: 404 Not Found' });
+    expect(d.reason).toContain('unknown: GitHub API error: 404 Not Found');
   });
 });

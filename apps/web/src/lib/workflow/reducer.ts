@@ -34,6 +34,7 @@ import {
   type DeliverySnapshot,
   type DeliveryState,
   type KernelView,
+  type PolicyEvidence,
   type RoundKind,
   type RoundSnapshot,
 } from './types';
@@ -51,6 +52,15 @@ const NON_TERMINAL: DeliveryState[] = [
 export const DEFAULT_MAX_MECHANICAL = 2;
 /** Mechanical base refreshes a delivery may take across heads before landing needs a person (§16 S15; `treadmillMaxRefreshes`). */
 export const DEFAULT_MAX_BEHIND_REFRESHES = 3;
+/**
+ * S15 cycles: how many treadmill cycles (each a fresh `DEFAULT_MAX_BEHIND_REFRESHES`
+ * budget) a delivery gets before the escalation stays with a person. The first
+ * is the original budget; each later one is opened by `TreadmillCycleRestarted`
+ * after the landing cooldown.
+ */
+export const MAX_TREADMILL_CYCLES = 3;
+/** The `trigger_reason` of the marker row that opens a new treadmill cycle. */
+export const TREADMILL_CYCLE_MARKER = 'treadmill_cycle';
 /**
  * §10.3 critical effects and the states they are owed in: a dead one escalates
  * the delivery while it is still in one of them (`any`: every non-terminal state).
@@ -197,12 +207,14 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
     case 'MechanicalRepairFailed': return `mechfail:${cmd.attemptId}`;
+    case 'TreadmillCycleRestarted': return d ? `treadmill:${d.id}:v${d.version}` : null;
     case 'EffectDead': return `effectdead:${cmd.effectId}`;
     case 'Abandon': return pr ? `abandon:${pr}` : null;
     case 'DeliveryFailed': return d ? `fail:${d.ownerTaskId}` : null;
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
     case 'TrunkRecovered': return d ? `trunkok:${cmd.incidentId}:${d.id}` : null;
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
+    case 'PolicyEvidenceRecorded': return d ? `policy:${d.id}:${cmd.evidence.headSha}:${cmd.evidence.outcome}` : null;
     default: return null;
   }
 }
@@ -710,6 +722,25 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
     }
 
+    // S15 cycles: a spent treadmill, past its cooldown, gets a fresh refresh budget.
+    case 'TreadmillCycleRestarted': {
+      const dd = d!;
+      if (dd.state !== 'ESCALATED' || dd.stateReason !== 'landing_needs_human') return c.stale('state_not_allowed');
+      const head = dd.currentHeadSha;
+      if (headCoverage(dd, head) === 'none') return c.rejected('head_not_approved');
+      const cyc = treadmillCycle(c.ledger('conflict', 'mechanical'));
+      if (cyc.refreshes < DEFAULT_MAX_BEHIND_REFRESHES) return c.rejected('treadmill_cycle_not_spent');
+      if (cyc.cycle >= MAX_TREADMILL_CYCLES) return c.rejected('treadmill_cycles_exhausted');
+      const id = c.newId();
+      const n = c.nextNo('conflict', 'mechanical');
+      return c.apply(`treadmill:${dd.id}:v${dd.version}`, 'APPROVED', {
+        guardHead: true,
+        patch: { stateReason: null, boundAttemptId: null },
+        attempts: [{ op: 'insert', id, family: 'conflict', attemptNo: n, mode: 'mechanical', boundHeadSha: null, triggerReason: TREADMILL_CYCLE_MARKER, taskId: null, trigger: 'automatic', status: 'skipped', maxAttempts: DEFAULT_MAX_BEHIND_REFRESHES }],
+        evidence: { cycle: cyc.cycle + 1, maxCycles: MAX_TREADMILL_CYCLES, headSha: head },
+      });
+    }
+
     // T14
     case 'HumanApproved': {
       const dd = d!;
@@ -732,10 +763,17 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state === 'LANDING' && dd.currentHeadSha === cmd.headSha) return c.duplicate('landing_in_flight');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.stale('head_moved');
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
-      // The override door: a person merging past a review verdict (the dashboard's "Merge anyway").
-      const overrideDoor = !!cmd.override && (cmd.door === 'dashboard_override' || isHumanActor(cmd.actor));
+      // The override door: a person merging past a rail (the dashboard's "Merge anyway"), or
+      // an agent run under a grant a person put on its task (recorded as grantedBy).
+      const ov = cmd.override ?? null;
+      const overrideDoor = !!ov && (cmd.door === 'dashboard_override' || isHumanActor(cmd.actor) || (!!ov.grantedBy && isHumanActor(ov.grantedBy)));
       const overridable: DeliveryState[] = ['APPROVED', 'AWAITING_REVIEW', 'CHANGES_REQUESTED', 'ESCALATED'];
       if (dd.state !== 'APPROVED' && !(overrideDoor && overridable.includes(dd.state))) return c.rejected('state_not_allowed');
+      // A freshness / size override is not a verdict override: it lifts a landing escalation only.
+      if (overrideDoor && ov?.kinds && !ov.kinds.includes('verdict') && dd.state !== 'APPROVED'
+        && !(dd.state === 'ESCALATED' && dd.stateReason === 'landing_needs_human')) {
+        return c.rejected('override_does_not_cover_state');
+      }
       if (cmd.rails.redCi || cmd.rails.denyPaths) return c.rejected('rail_not_overridable', { missing: cmd.rails.reasons });
       if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
       const coverage = headCoverage(dd, cmd.headSha);
@@ -750,7 +788,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
         }],
         evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state },
-        bypass: overrideDoor ? { door: cmd.door, reason: cmd.override!.reason, actor: cmd.actor, overrodeState: dd.state } : null,
+        bypass: overrideDoor
+          ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}) }
+          : null,
       });
     }
 
@@ -1035,6 +1075,27 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
     }
 
+    // T28: a preflight finding for one head, imported as policy evidence.
+    case 'PolicyEvidenceRecorded': {
+      const dd = d!;
+      const ev = cmd.evidence;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      // Head-bound: a finding about an older head never escalates the head now current.
+      if (ev.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      const prior = dd.policyEvidence;
+      if (prior && prior.headSha === ev.headSha && prior.outcome === ev.outcome) return c.duplicate('evidence_recorded');
+      const key = `policy:${dd.id}:${ev.headSha}:${ev.outcome}`;
+      // Only a delivery waiting on nobody's work can act on it now. Everywhere else the platform
+      // (a running owner, an open repair, a queued fix, a landing) already owns the PR: record the
+      // finding on the head and let that work's own hand-off apply it (WORKING), or let the head
+      // move make it stale. Landing's rails still gate the merge.
+      if (!QUIESCENT_FOR_POLICY.has(dd.state) || c.openAttempt(['review_fix', 'ci', 'conflict', 'migration', 'trunk'])) {
+        const owner = c.openAttempt(['review_fix', 'ci', 'conflict', 'migration', 'trunk']);
+        return c.apply(key, dd.state, { guardHead: true, patch: { policyEvidence: ev }, evidence: { policyEvidence: ev, recordedOnly: true, mergedIntoAttempt: owner?.id ?? null } });
+      }
+      return policyDecision(c, key, ev, {});
+    }
+
     // Composition attestation (release / integration PR built from reviewed changes)
     case 'CompositionAttested': {
       const dd = d!;
@@ -1247,6 +1308,10 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
     // §6.5 row 1 (§15 step 2): the owner attempt ended and its head is on
     // GitHub, so the worker no longer owns the next move — hand it on.
     const handOn = (h: string): Decision => {
+      // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
+      if (d.policyEvidence && d.policyEvidence.headSha === h) {
+        return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+      }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
         // approved_heads untouched (§8 exact-head binding); T15's rails still gate landing.
@@ -1385,6 +1450,46 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   });
 }
 
+const QUIESCENT_FOR_POLICY = new Set<DeliveryState>(['AWAITING_REVIEW', 'APPROVED']);
+const POLICY_MAX_SPLIT_ATTEMPTS = 2;
+
+/**
+ * T28 acting on a finding for the current head, from a state that owes nobody's work.
+ *  - `human`: ESCALATED(policy_human). Open review rounds are superseded: a reviewer would be
+ *    judging a head a person has to decide on first.
+ *  - `agent_split`: a safe EXPAND-then-CONTRACT split is agent work, not a human decision. One
+ *    `migration` repair row (agent mode) bound to the head, through the same ledger and
+ *    dispatch_conflict_fix as every other repair, so it spends the family's budget and can never
+ *    race a second branch writer (the caller already found no open repair).
+ */
+function policyDecision(c: Ctx, key: string, ev: PolicyEvidence, patch: DeliveryPatch, extra: Record<string, unknown> = {}): Decision {
+  const d = c.d!;
+  const rounds: RoundOp[] = c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'superseded' } }));
+  const evidence = { ...extra, policyEvidence: ev, reason: ev.reason };
+  if (ev.outcome === 'agent_split') {
+    const n = c.nextNo('migration', 'agent');
+    if (n <= POLICY_MAX_SPLIT_ATTEMPTS) {
+      const id = c.newId();
+      return c.apply(key, 'REPAIRING', {
+        guardHead: true,
+        patch: { ...patch, policyEvidence: ev, stateReason: 'migration', boundAttemptId: id },
+        rounds,
+        attempts: [{ op: 'insert', id, family: 'migration', attemptNo: n, mode: 'agent', boundHeadSha: ev.headSha, triggerReason: 'migration_split', taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: POLICY_MAX_SPLIT_ATTEMPTS }],
+        effects: [{ kind: 'dispatch_conflict_fix', dedupeKey: `dispatch_conflict_fix:${d.id}:${ev.headSha}:split${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: POLICY_MAX_SPLIT_ATTEMPTS, headSha: ev.headSha, repairKind: 'migration_split', detail: { reason: ev.reason } } }],
+        evidence,
+      });
+    }
+    // The agent could not split it: now it is a person's decision.
+  }
+  return c.apply(key, 'ESCALATED', {
+    guardHead: true,
+    patch: { ...patch, policyEvidence: ev, stateReason: 'policy_human', boundAttemptId: null },
+    rounds,
+    effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:policy_human:${ev.headSha}`, payload: { event: 'policy_human', reason: ev.reason, headSha: ev.headSha, destructive: ev.destructive } }],
+    evidence,
+  });
+}
+
 /** Re-enter the state a decided round's verdict maps to at head `h`, exactly as T6 would. */
 function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, evidence: Record<string, unknown>): Decision {
   const d = c.d!;
@@ -1418,6 +1523,18 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
 
 // ── T12 / T16 shared: mechanical first, agent on refusal (§6.7) ─────────────
 
+/**
+ * S15 cycles over the conflict family's mechanical ledger: `cycle` is 1 plus
+ * the number of `treadmill_cycle` markers, and `refreshes` counts the behind
+ * refreshes dispatched since the newest marker (a skipped row did no work).
+ */
+export function treadmillCycle(mechanical: AttemptSnapshot[]): { cycle: number; refreshes: number } {
+  const markers = mechanical.filter((a) => a.triggerReason === TREADMILL_CYCLE_MARKER);
+  const since = markers.reduce((m, a) => Math.max(m, a.attemptNo), 0);
+  const refreshes = mechanical.filter((a) => a.triggerReason === 'behind' && a.status !== 'skipped' && a.attemptNo > since).length;
+  return { cycle: markers.length + 1, refreshes };
+}
+
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
   refusal?: Record<string, unknown> | null;
@@ -1434,13 +1551,19 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
   }
   const evidence = { repairKind: kind, headSha: head };
   if (kind === 'behind' && !o.mechanicalRefused) {
-    // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across heads.
-    const refreshes = c.ledger(family, 'mechanical').filter((a) => a.triggerReason === 'behind' && a.status !== 'skipped').length;
+    // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across
+    // heads per cycle; a spent cycle escalates, and the landing sweep opens a new one after
+    // the cooldown (TreadmillCycleRestarted) until MAX_TREADMILL_CYCLES are used.
+    const { refreshes, cycle } = treadmillCycle(c.ledger(family, 'mechanical'));
     if (refreshes >= (o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES)) {
+      const finalCycle = cycle >= MAX_TREADMILL_CYCLES;
+      const detail = finalCycle
+        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
+        : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES}); landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
-        effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail: `base moved ${refreshes} times under the approved PR` } }],
-        evidence: { ...evidence, refreshes },
+        effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail } }],
+        evidence: { ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}) },
       });
     }
   }

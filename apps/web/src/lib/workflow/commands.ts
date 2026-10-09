@@ -13,6 +13,7 @@ import type {
   ApprovalBasis,
   CloseCause,
   CompositionAttestation,
+  PolicyEvidence,
   ConstituentEvidence,
   DeliveryState,
   RoundKind,
@@ -180,6 +181,17 @@ export type Command =
       attemptId: string;
       reason: string;
     })
+  | (Base & {
+      /**
+       * S15 cycles: the landing sweep found a delivery the behind-refresh
+       * treadmill escalated, and the cooldown since that escalation has passed.
+       * It returns to `APPROVED` with a fresh refresh budget (a `treadmill_cycle`
+       * marker row opens the new cycle), at most `MAX_TREADMILL_CYCLES` cycles
+       * per delivery. The caller pins `expectedVersion` to the version the
+       * treadmill escalation produced, so any later move refuses it.
+       */
+      type: 'TreadmillCycleRestarted';
+    })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
   | (Base & {
       type: 'LandingRequested';
@@ -188,11 +200,15 @@ export type Command =
       live: LivePr;
       rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
       /**
-       * A person merging past a review verdict (the dashboard's "Merge anyway"):
-       * recorded in `bypass`, allowed from the review states, never past red CI
-       * or a deny path.
+       * A person merging past a rail (the dashboard's "Merge anyway", `merge_pr`
+       * with `overrides`, chat): recorded in `bypass`, never past red CI or a
+       * deny path. `kinds` absent or naming `verdict`: a verdict override, from
+       * the review states. Only `freshness` / `size`: lifts a landing escalation
+       * (`ESCALATED(landing_needs_human)`, e.g. the spent treadmill) and nothing
+       * else. `grantedBy`: an agent run acting under a grant a person put on
+       * its task (`context.landingOverride`); the door is that person's.
        */
-      override?: { reason: string } | null;
+      override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
       /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
       mergeMethod?: 'merge' | 'squash' | 'rebase';
     })
@@ -262,6 +278,14 @@ export type Command =
       maxContractRetries: number;
     })
   | (Base & {
+      /**
+       * T28: a preflight finding for ONE head. Head-bound: a finding for any
+       * other head than the delivery's current one is stale and changes nothing.
+       */
+      type: 'PolicyEvidenceRecorded';
+      evidence: PolicyEvidence;
+    })
+  | (Base & {
       type: 'CompositionAttested';
       attestation: CompositionAttestation;
       /** Resolved per constituent by the caller; keyed by roundId. */
@@ -317,6 +341,7 @@ export interface DeliveryPatch {
   supersededByUrl?: string | null;
   supersededReason?: string | null;
   recordedBy?: string | null;
+  policyEvidence?: PolicyEvidence | null;
 }
 
 export type RoundOp =

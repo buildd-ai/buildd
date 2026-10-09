@@ -14,6 +14,7 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
+import { can } from '@/lib/permissions';
 
 function generateSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -101,6 +102,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No team found for user' }, { status: 400 });
     }
     const teamId = teamIds[0];
+
+    // manage_agent_roles for a role (the default); a plain skill stays member-writable.
+    const createsRole = isRole !== undefined ? Boolean(isRole) : true;
+    if (createsRole && !(await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', teamId))) {
+      return NextResponse.json({ error: 'Managing agent roles requires team admin' }, { status: 403 });
+    }
 
     const slug = body.slug || generateSlug(name);
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {

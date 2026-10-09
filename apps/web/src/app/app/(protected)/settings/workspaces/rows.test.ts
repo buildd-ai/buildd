@@ -113,6 +113,20 @@ describe('buildWorkspaceRows: permissions', () => {
     });
     expect(rows[0]).toMatchObject({ canEdit: true, canMove: false });
   });
+
+  it('a move follows migrate_workspace, not workspace settings, with each team’s overrides', () => {
+    // t2 takes migrate_workspace from admins: the admin there keeps editing,
+    // but the move precheck (admin of both teams) would refuse.
+    const { rows, moveTeams } = buildWorkspaceRows({
+      overrides: new Map([['t2', { migrate_workspace: ['owner'] as const }]]),
+      userId: USER,
+      teams: [team('t1', 'owner'), team('t2', 'admin')],
+      workspaces: [ws('w1'), ws('w2', { teamId: 't2' })] as never,
+      activity: new Map(),
+    });
+    expect(rows.map((r) => [r.id, r.canEdit, r.canMove])).toEqual([['w1', true, false], ['w2', true, false]]);
+    expect(moveTeams.map((t) => t.id)).toEqual(['t1']);
+  });
 });
 
 const row = (id: string, lastActivityAt: string | null, teamId = 't1', teamName = 'Team One'): WorkspaceRow => ({

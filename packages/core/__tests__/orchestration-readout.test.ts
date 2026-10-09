@@ -390,6 +390,23 @@ describe('buildManifestReadout', () => {
 // ── Whole readout ───────────────────────────────────────────────────────────
 
 describe('buildOrchestrationReadout', () => {
+  it('reports rule and Jev soft-overlap starts next to the claim groups, only when supplied', async () => {
+    const base = {
+      manifest: { predictions: [], links: new Map() },
+      window: { since: day(0), until: day(40) },
+      plan: PLAN,
+      minN: 30,
+    };
+    const hold = { decisions: [], labels: [], tasks: [], starts: [], windowEnd: day(40) };
+    const without = await buildOrchestrationReadout({ ...base, claim: { rows: [], hold, links: new Map() } });
+    expect(without.softOverlapStarts).toBeUndefined();
+    const withStarts = await buildOrchestrationReadout({
+      ...base,
+      claim: { rows: [], hold, links: new Map(), softStarts: { starts: [], outcome: { tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] }, probes: [] } },
+    });
+    expect(withStarts.softOverlapStarts?.map(c => c.decidedBy)).toEqual(['rule', 'jev']);
+  });
+
   it('with no deployed evidence: both decisions insufficient, no threshold anywhere, promotion blocked', async () => {
     const r = await buildOrchestrationReadout({
       claim: { rows: [], hold: { decisions: [], labels: [], tasks: [], starts: [], windowEnd: day(40) }, links: new Map() },

@@ -25,7 +25,7 @@ mock.module('@/lib/chat/session', () => ({
   requireChatCaller: async () => ({ caller: { user: { id: 'u-1', name: 'Sam', timezone: null }, teamIds: ['t-1'] } }),
   loadTeamChatSettings: async () => ({ timezone: 'Pacific/Auckland', dailyBudgetUsd: null, userDailyBudgetUsd: null, decisionTeam: TEAM_DECISION_ROW }),
   turnUserFor: async () => ({ id: 'u-1', name: 'Sam', timeZone: 'Pacific/Auckland', teamRole: 'member' }),
-  workspaceForConversation: async (id: string | null, teamId: string) => (teamId === 't-1' && (id === 'ws-ok' || id === 'ws-sensitive') ? { id, name: id } : null),
+  workspaceForConversation: async (id: string | null, teamId: string) => (teamId === 't-1' && (id === 'ws-ok' || id === 'ws-sensitive' || id === 'ws-gated') ? { id, name: id } : null),
   isSensitiveWorkspace: async (id: string) => id === 'ws-sensitive',
   loadRoutableWorkspaces: async () => [{ id: 'ws-ok', name: 'ok' }, { id: 'ws-two', name: 'two' }],
   linkMissionToConversation: async () => {},
@@ -51,8 +51,14 @@ mock.module('@/lib/chat/turn', () => ({
 const limitCalls: any[] = [];
 mock.module('@/lib/chat/limits', () => ({ checkChatLimits: async (a: any) => { limitCalls.push(a); return { ok: true, budgetWarning: false }; } }));
 mock.module('@/lib/chat/in-process-api', () => ({ createInProcessApi: (o: any) => { apiOpts.push(o); return async () => ({}); } }));
+const reachCalls: any[] = [];
 mock.module('@/lib/chat/reach', () => ({
-  loadChatReach: async (teamId: string) => ({ teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }),
+  loadChatReach: async (teamId: string, userId?: string) => { reachCalls.push([teamId, userId]); return { teamId, workspaceIds: new Set(['ws-ok']), ownerOf: async () => null }; },
+}));
+// The opt-in GitHub repo check refuses 'ws-gated' (lib/member-repo-access.ts has its own tests).
+mock.module('@/lib/member-repo-access', () => ({
+  assertMemberRepoAccess: async (_u: string | null, ws: string | null) =>
+    ws === 'ws-gated' ? Response.json({ error: 'member_repo_access', reason: 'not_collaborator' }, { status: 403 }) : null,
 }));
 mock.module('@/lib/chat/auto-title', () => ({ autoTitleConversation: async () => {} }));
 mock.module('@/lib/chat/retitle', () => ({ handleTopicVerdict: async () => {} }));
@@ -229,6 +235,19 @@ describe('/api/chat/[id]: workspace scope', () => {
     expect((await PATCH(req('PATCH', { workspaceId: 'ws-other-team' }), ctx('c-1'))).status).toBe(404);
     expect((await PATCH(req('PATCH', { workspaceId: 'ws-sensitive' }), ctx('c-1'))).status).toBe(403);
     expect(pins).toEqual([]);
+  });
+
+  it('refuses a pin the member fails the GitHub repo check on', async () => {
+    const res = await PATCH(req('PATCH', { workspaceId: 'ws-gated' }), ctx('c-1'));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('member_repo_access');
+    expect(pins).toEqual([]);
+  });
+
+  it('reach is loaded for the calling person, so a gated workspace can drop out', async () => {
+    reachCalls.length = 0;
+    await POST(req('POST', { message: { id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }] } }), ctx('c-1'));
+    expect(reachCalls[0][1]).toBeTruthy();
   });
 
   it('an unpinned turn is offered the in-reach workspaces to route between', async () => {

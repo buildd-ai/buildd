@@ -52,6 +52,8 @@ import { mcpGroupOfToolName } from "@buildd/core/mcp-tool-groups";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
+import { builddServerInfo } from "@/lib/mcp-server-info";
+import { memberHasRepoAccess, memberRepoAccessMessage } from "@/lib/member-repo-access";
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -188,7 +190,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -368,12 +370,20 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
         ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
+        // The opt-in GitHub repo check, for the person behind an OAuth session
+        // only; API keys and runners carry no person (lib/member-repo-access.ts).
+        ...(authType === 'oauth' && sessionUserId && wsId
+          ? { codeAccessRefusal: async () => {
+              const r = await memberHasRepoAccess(sessionUserId, wsId);
+              return r.allowed ? null : memberRepoAccessMessage(r);
+            } }
+          : {}),
       },
     };
   };
 
   const server = new Server(
-    { name: "buildd", version: "0.1.0" },
+    builddServerInfo(appBaseUrl || 'https://buildd.dev'),
     {
       capabilities: {
         tools: {},
@@ -1000,7 +1010,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     workerParam,
     runnerSupportsGroupTools: workerParam ? await workerRunnerSupportsGroupTools(workerParam) : null,
   });
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account));
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account), (account as { sessionUserId?: string }).sessionUserId ?? null);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

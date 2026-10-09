@@ -54,6 +54,18 @@ mock.module('../orchestration-ledger-source', () => ({
   },
 }));
 
+const joinForCalls: any[] = [];
+mock.module('../orchestration-ledger-source', () => ({
+  loadOrchestrationOutcomeInput: async (opts: any) => {
+    loadOutcomeCalls.push(opts);
+    return { decisions: [], tasks: [{ id: TASK, workspaceId: WS, status: 'completed' }], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
+  },
+  loadOutcomeJoinFor: async (decisions: any[], opts: any) => {
+    joinForCalls.push({ decisions, opts });
+    return { decisions, tasks: [{ id: TASK, workspaceId: WS, status: 'completed' }], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
+  },
+}));
+
 const src = await import('../orchestration-claim-source');
 
 const dialect = new PgDialect();
@@ -178,6 +190,46 @@ describe('reads never throw into the claim path', () => {
   it('loadClaimHolderState with no holder task returns null without reading', async () => {
     expect(await src.loadClaimHolderState({ workspaceId: WS, taskId: null, prNumber: null })).toBeNull();
     expect(fake.selects).toHaveLength(0);
+  });
+});
+
+describe('soft-overlap start readout', () => {
+  const until = new Date('2026-10-01T00:00:00Z');
+
+  it('softStartEventsWhere pins workspace, the claim-loop gate, accepted soft_overlap_start and the window', () => {
+    const r = render(src.softStartEventsWhere({ workspaceId: WS, since: SINCE, until }));
+    expect(r.sql).toContain('"gate_events"."workspace_id" = $1');
+    expect(r.sql).toContain('"gate_events"."gate" = $2');
+    expect(r.sql).toContain('"gate_events"."outcome" = $3');
+    expect(r.sql).toContain('"gate_events"."reason" = $4');
+    expect(r.params.slice(0, 4)).toEqual([WS, 'claim_loop_deferral', 'accepted', 'soft_overlap_start']);
+  });
+
+  it('siblingProbeEventsWhere pins workspace and the probe gate', () => {
+    const r = render(src.siblingProbeEventsWhere({ workspaceId: WS, since: SINCE, until }));
+    expect(r.params.slice(0, 2)).toEqual([WS, 'sibling_conflict_probe']);
+  });
+
+  it('shapes start rows for the same labeller as the Jev decisions, rule by default', async () => {
+    fake.rowsByTable.gate_events = [
+      { id: 'g1', taskId: TASK, workspaceId: WS, occurredAt: SINCE, detail: { holderTaskId: HOLDER, decidedBy: 'jev', riskTier: 'uncertain' } },
+      { id: 'g2', taskId: TASK, workspaceId: WS, occurredAt: SINCE, detail: { holderTaskId: HOLDER } },
+      { id: 'g3', taskId: null, workspaceId: WS, occurredAt: SINCE, detail: {} },
+    ];
+    joinForCalls.length = 0;
+    const input = await src.loadSoftStartReadoutInput({ workspaceId: WS, since: SINCE, until });
+    expect(input.starts.map(s => [s.id, s.decidedBy, s.riskTier, s.holderTaskId])).toEqual([['g1', 'jev', 'uncertain', HOLDER], ['g2', 'rule', null, HOLDER]]);
+    expect(joinForCalls[0].decisions[0]).toMatchObject({ id: 'g1', taskId: TASK, prNumber: null, headSha: null, createdAt: SINCE });
+    expect(input.outcome.tasks).toEqual([{ id: TASK, workspaceId: WS, status: 'completed' }]);
+    expect((input.outcome as any).decisions).toBeUndefined();
+  });
+
+  it('with no starts it reads nothing else', async () => {
+    joinForCalls.length = 0;
+    const input = await src.loadSoftStartReadoutInput({ workspaceId: WS, since: SINCE, until });
+    expect(input.starts).toEqual([]);
+    expect(joinForCalls).toHaveLength(0);
+    expect(fake.selects).toHaveLength(1);
   });
 });
 

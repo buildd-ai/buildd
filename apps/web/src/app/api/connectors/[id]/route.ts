@@ -9,8 +9,15 @@ import { getUserTeamIds } from '@/lib/team-access';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { encrypt } from '@buildd/core/secrets';
 import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
+import { registrationRefusalBody } from '@/lib/connector-provision';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { isUuid } from '@/lib/uuid';
+import { canWriteTeamConnectors } from '@/lib/connector-team-auth';
+
+const refuseWrite = () => NextResponse.json(
+  { error: 'forbidden', message: 'Changing or deleting a connector requires the manage_connectors permission in its team.' },
+  { status: 403 },
+);
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -91,6 +98,7 @@ export async function PATCH(
   if (!connector) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
+  if (!(await canWriteTeamConnectors(auth, connector.teamId))) return refuseWrite();
 
   let body: {
     name?: string;
@@ -128,10 +136,19 @@ export async function PATCH(
       if (discovered.authMode === 'oauth') {
         updates.discoveredMetadata = discovered as unknown as Record<string, unknown>;
         if (!body.clientId && !connector.clientId && discovered.authorizationServer.registration_endpoint) {
-          const dcrResult = await registerClient(
-            discovered.authorizationServer.registration_endpoint,
-            getCallbackUrl(req.nextUrl.origin),
-          );
+          let dcrResult;
+          try {
+            dcrResult = await registerClient(
+              discovered.authorizationServer.registration_endpoint,
+              getCallbackUrl(req.nextUrl.origin),
+              { grantTypesSupported: discovered.authorizationServer.grant_types_supported },
+            );
+          } catch (err) {
+            // Same 422 as create: an approval problem for the owner, not a 500.
+            const refusal = registrationRefusalBody(err, targetUrl);
+            if (refusal) return NextResponse.json(refusal, { status: 422 });
+            throw err;
+          }
           updates.clientId = dcrResult.client_id;
           if (dcrResult.client_secret) {
             updates.encryptedClientSecret = encrypt(dcrResult.client_secret);
@@ -187,6 +204,7 @@ export async function DELETE(
   if (!connector) {
     return NextResponse.json({ error: 'Connector not found' }, { status: 404 });
   }
+  if (!(await canWriteTeamConnectors(auth, connector.teamId))) return refuseWrite();
 
   try {
     // Delete associated secrets first (cascade handles connectorWorkspaces)

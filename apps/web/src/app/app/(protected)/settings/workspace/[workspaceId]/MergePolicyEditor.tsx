@@ -30,6 +30,12 @@ interface Props {
   missionOverrides: MissionOverride[];
   /** Right of the page title (the workspace's "Move to team…"). */
   headerAction?: ReactNode;
+  /**
+   * Holds `manage_workspace_settings` in the workspace's team (overrides
+   * applied). False: the policy in effect, read-only, with no Save or re-scan.
+   * Mission overrides are mission settings and stay as they are. Defaults to true.
+   */
+  canEdit?: boolean;
 }
 
 const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = [
@@ -70,6 +76,7 @@ export default function MergePolicyEditor({
   roles,
   missionOverrides: initialOverrides,
   headerAction,
+  canEdit = true,
 }: Props) {
   const router = useRouter();
   const [rescanOpen, setRescanOpen] = useState(false);
@@ -179,6 +186,13 @@ export default function MergePolicyEditor({
         {headerAction && <div className="shrink-0">{headerAction}</div>}
       </div>
 
+      {!canEdit && (
+        <p data-testid="merge-policy-read-only" className="text-xs text-text-muted">Admins can change this.</p>
+      )}
+
+      {/* A disabled fieldset disables every control inside it: the current
+          policy stays readable, nothing in it can be changed. */}
+      <fieldset disabled={!canEdit} className="space-y-8 min-w-0">
       {/* Tier selector */}
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-text-primary">Policy Tier</h2>
@@ -287,7 +301,7 @@ export default function MergePolicyEditor({
 
       <PolicyRescanSheet
         workspaceId={workspaceId}
-        open={rescanOpen}
+        open={canEdit && rescanOpen}
         onClose={() => setRescanOpen(false)}
         onApplied={() => {
           setRescanOpen(false);
@@ -313,9 +327,10 @@ export default function MergePolicyEditor({
           Pushover alert after this long. Default 30 min for review, 5 min for auto.
         </p>
       </section>
+      </fieldset>
 
       {/* Save button */}
-      <div className="flex items-center gap-3">
+      {canEdit && <div className="flex items-center gap-3">
         <button
           onClick={save}
           disabled={saving}
@@ -328,7 +343,7 @@ export default function MergePolicyEditor({
             {msg.text}
           </span>
         )}
-      </div>
+      </div>}
 
       {/* Per-mission overrides */}
       {missionOverrides.length > 0 && (

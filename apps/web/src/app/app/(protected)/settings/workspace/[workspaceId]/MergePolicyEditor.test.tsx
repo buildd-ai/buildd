@@ -50,3 +50,39 @@ describe('MergePolicyEditor — paths are detected, not typed', () => {
     expect(render({ tier: 'auto-threshold' }, null)).toContain('No risk-class policy');
   });
 });
+
+/**
+ * Writing the merge policy is manage_workspace_settings (the workspace PATCH
+ * refuses anyone else). Without it the policy in effect stays readable and
+ * nothing in it can be changed.
+ */
+describe('MergePolicyEditor — editable only with manage_workspace_settings', () => {
+  const renderAs = (canEdit: boolean) =>
+    renderToStaticMarkup(
+      <MergePolicyEditor
+        workspaceId="ws-1"
+        workspaceName="app"
+        initial={{ tier: 'auto-threshold', threshold: { maxLines: 500 } }}
+        policyConfig={policyConfig}
+        roles={[]}
+        missionOverrides={[]}
+        canEdit={canEdit}
+      />,
+    );
+
+  it('member: the current tier and limit, inside a disabled fieldset, with no Save', () => {
+    const html = renderAs(false);
+    expect(html).toContain('data-testid="merge-policy-read-only"');
+    expect(html).toContain('Admins can change this.');
+    expect(html).toMatch(/<fieldset[^>]*disabled=""/);
+    expect(html).toContain('value="500"');
+    expect(html).not.toContain('>Save<');
+  });
+
+  it('admin: Save, and no disabled fieldset', () => {
+    const html = renderAs(true);
+    expect(html).toContain('>Save<');
+    expect(html).not.toMatch(/<fieldset[^>]*disabled/);
+    expect(html).not.toContain('merge-policy-read-only');
+  });
+});
