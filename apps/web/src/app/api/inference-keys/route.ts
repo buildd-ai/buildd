@@ -1,7 +1,8 @@
 import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
 import { resolveChatModel } from '@/lib/chat/models';
 import type { ChatUses, SetProviderKeyRequest } from '@buildd/shared';
@@ -36,7 +37,7 @@ async function resolveCaller(
     || await resolveActiveTeamId(userId, req.cookies.get('buildd-team')?.value ?? null);
   if (!teamId || !teamIds.includes(teamId)) return { response: NextResponse.json({ error: 'Team not found' }, { status: 404 }) };
 
-  const isAdmin = (await getUserAdminTeamIds(userId)).includes(teamId);
+  const isAdmin = await can({ kind: 'user', userId }, 'manage_inference_providers', teamId);
   return { caller: { userId, teamId, isAdmin } };
 }
 
