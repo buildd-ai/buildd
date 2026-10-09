@@ -173,6 +173,8 @@ describe('escalationRule: the backtest\'s findings', () => {
     ['a draft', { draft: true }, null],
     ['an XL diff', { sizeXl: true }, null],
     ['not policy only', { policyOnly: false }, null],
+    // a90fc99b: the merge policy itself says a person merges, so a rule never lands it.
+    ['the workspace merge policy is the human tier', { why: 'human_tier' as const }, null],
   ])('not when %s', (_n, over, action) => {
     const v = escalationRule(policyOnly(over as Partial<EscalationSubject>));
     if (action) expect(v).toMatchObject({ action });

@@ -348,6 +348,30 @@ export async function applyRecommendationThroughKernel(p: {
   };
 }
 
+// ── a90fc99b: the escalation gate's policy-merge rule ───────────────────────
+
+/**
+ * The policy-merge rule's verdict, executed: PolicyMergeApproved for exactly
+ * `headSha`, then the inline drain. The delivery is APPROVED on the basis
+ * `policy_rule`, and the landing doors land it under the workspace merge
+ * policy with every rail evaluated again (a refusal is the landing hand-off
+ * the gate then shows a person). Null = not the kernel's PR.
+ */
+export async function policyMergeThroughKernel(p: {
+  workspaceId: string; prNumber: number; headSha: string; reason: string; rule?: string;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const result = await applyCommand(
+    { type: 'PolicyMergeApproved', actor: `rule:${p.rule ?? 'escalation_gate'}`, headSha: p.headSha, reason: p.reason },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  return result;
+}
+
 // ── T4: an attempt ended ────────────────────────────────────────────────────
 
 export interface AttemptTask {
