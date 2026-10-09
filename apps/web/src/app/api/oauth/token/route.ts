@@ -6,6 +6,7 @@ import {
   createRefreshToken,
   userHasWorkspaceMembership,
   revokeRefreshTokensForUserWorkspace,
+  type RefreshTokenFamily,
   type TokenBinding,
 } from '@/lib/oauth/storage';
 import { signAccessToken, signGrantAccessToken } from '@/lib/oauth/tokens';
@@ -102,6 +103,10 @@ function tokenError(error: string, description?: string, status = 400) {
  * token carries the same grant id, so a refresh can never widen or change
  * either.
  *
+ * `family` is the consumed refresh token's family on a refresh, so the new
+ * token keeps the sign-in's family id and issue time (and with it the
+ * family's absolute lifetime); a code exchange omits it and starts a family.
+ *
  * `onRefuse` runs when the re-check fails (refresh revokes the rest of the
  * family there). Error descriptions never name a workspace or grant.
  */
@@ -110,10 +115,12 @@ async function issuePair(args: {
   userId: string;
   clientId: string;
   scope: string | null;
+  family?: RefreshTokenFamily;
   onRefuse?: () => Promise<void>;
 }) {
   const { binding, userId, clientId } = args;
   const scope = args.scope ?? 'mcp';
+  const family = args.family ? { family: args.family } : {};
 
   if (typeof binding.grantId === 'string') {
     const grant = await resolveGrant(binding.grantId, userId, clientId);
@@ -126,7 +133,7 @@ async function issuePair(args: {
       await ensureUserAccount(userId, ws.workspaceId);
     }
     const { token, expiresIn } = await signGrantAccessToken({ userId, grantId: binding.grantId, clientId, scope });
-    const refreshToken = await createRefreshToken({ clientId, userId, grantId: binding.grantId, scope: args.scope });
+    const refreshToken = await createRefreshToken({ clientId, userId, grantId: binding.grantId, scope: args.scope, ...family });
     return tokenResponse(token, refreshToken, expiresIn, scope);
   }
 
@@ -138,7 +145,7 @@ async function issuePair(args: {
   }
   await ensureUserAccount(userId, workspaceId);
   const { token, expiresIn } = await signAccessToken({ userId, workspaceId, clientId, scope });
-  const refreshToken = await createRefreshToken({ clientId, userId, workspaceId, scope: args.scope });
+  const refreshToken = await createRefreshToken({ clientId, userId, workspaceId, scope: args.scope, ...family });
   return tokenResponse(token, refreshToken, expiresIn, scope);
 }
 
@@ -158,7 +165,9 @@ function tokenResponse(accessToken: string, refreshToken: string, expiresIn: num
 /**
  * OAuth 2.1 token endpoint. Supports two grants:
  *   - authorization_code (with PKCE verifier)
- *   - refresh_token (rotates the refresh token on every use)
+ *   - refresh_token (rotates the refresh token on every use, within the
+ *     sign-in's family; presenting an already-rotated token revokes the
+ *     family, lib/oauth/storage.ts)
  *
  * Issues either a legacy workspace-scoped JWT (the code or refresh token is
  * bound to one workspace) or an account-level JWT naming an MCP grant (it is
@@ -208,12 +217,13 @@ export async function POST(req: NextRequest) {
     // The binding is re-checked on every refresh. When it no longer holds,
     // no new pair is minted and the user's remaining refresh tokens for that
     // workspace or grant are revoked (the presented one already is).
-    const { userId, scope, ...binding } = result;
+    const { userId, scope, family, ...binding } = result;
     return issuePair({
       binding: binding as TokenBinding,
       userId,
       clientId,
       scope,
+      family,
       onRefuse: () => typeof binding.grantId === 'string'
         ? revokeRefreshTokensForGrant(binding.grantId)
         : revokeRefreshTokensForUserWorkspace(userId, binding.workspaceId as string),

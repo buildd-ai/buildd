@@ -8,7 +8,7 @@ domain: auth
 surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/lib/oauth/account-consent.ts, apps/web/src/app/api/oauth/token/route.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
-verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts]
+verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/tests/db/mcp-oauth-consent.test.ts, apps/web/src/lib/oauth/account-consent.test.ts, apps/web/src/app/well-known-oauth-protected-resource-mcp-route.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/tests/db/oauth-refresh-families.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -198,13 +198,15 @@ MUST reject tokens whose `workspaceId` claim does not match the URL path.
   `UPDATE ... WHERE consumed_at IS NULL RETURNING`, so concurrent exchanges of
   one code cannot both succeed.
 - Refresh tokens MUST rotate on each use (`revokedAt` set by the same
-  conditional-UPDATE pattern, new token issued).
+  conditional-UPDATE pattern, new token issued). See "Refresh tokens: hashed,
+  one family per sign-in" below.
 - Both grants MUST re-check that the user is still a member of the
   workspace's team. On refresh, a non-member gets `invalid_grant` and every
   outstanding refresh token for that user and workspace is revoked.
 - Access tokens carry `workspaceId` in the JWT claim; the workspace-scoped MCP
   endpoint rejects tokens for the wrong workspace.
-- `oauthRefreshTokens.expiresAt` defines the absolute refresh lifetime.
+- A refresh token's `expiresAt` is the sooner of its sliding TTL and its
+  family's absolute lifetime (below).
 
 **Acceptance criteria**:
 - AC-11: GIVEN a valid authorization code WHEN it is exchanged at `/api/oauth/token`
@@ -215,8 +217,55 @@ MUST reject tokens whose `workspaceId` claim does not match the URL path.
 - AC-13: GIVEN an access token for `workspaceId = A` WHEN
   `/api/mcp-oauth/B` (workspace B) is called THEN the server returns HTTP 401.
 
+### Refresh tokens: hashed, one family per sign-in
+
+**Invariants**:
+- Only the SHA-256 (lowercase hex) of a refresh token is stored, in the
+  `token` column, and rows are looked up by it (`hashRefreshToken()`). The
+  token itself is never written. Migration `0283` hashed the rows that existed
+  before, in place, so those tokens keep refreshing; its backfill is
+  idempotent (a stored digest is never re-hashed).
+- Every refresh token carries a `familyId` and `familyIssuedAt`, set once at
+  the authorization-code exchange and kept unchanged by every rotation. A row
+  that predates families is its own family, issued at its `createdAt`.
+- The presented token is spent by one conditional
+  `UPDATE ... WHERE token = <hash> AND client_id = <client> AND revoked_at IS NULL RETURNING`.
+  A request naming another client spends nothing, so the holder's token stays
+  usable.
+- When nothing was spent and the hash names a token of the same client that
+  is already revoked (rotated earlier), a second UPDATE revokes every live
+  token of that family and the request gets `invalid_grant`. Other families of
+  the same user are untouched. Both are single atomic statements (neon-http
+  has no interactive transactions).
+- A family older than `REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS` (90 days from
+  sign-in) gets no new pair, however recently its token was rotated. The
+  sliding per-token TTL (`REFRESH_TOKEN_TTL_SECONDS`) still applies, capped at
+  the family's end.
+- The membership re-check (legacy binding) and grant re-check (grant
+  binding) run on every refresh as before.
+
+**Acceptance criteria**:
+- AC-22: GIVEN an issued refresh token WHEN the table is read THEN the token
+  does not appear and its SHA-256 does.
+- AC-23: GIVEN a refresh token stored before migration `0283` WHEN the
+  migration's backfill has run (once or twice) THEN the token refreshes and
+  the new token is in the same family, issued at the original row's time.
+- AC-24: GIVEN a family whose token was rotated WHEN the earlier token is
+  presented again THEN the response is `invalid_grant` and every live token of
+  that family is revoked; a separate sign-in of the same user still refreshes.
+- AC-25: GIVEN a family issued more than 90 days ago WHEN its unexpired token
+  is presented THEN the response is `invalid_grant`.
+- AC-26: GIVEN a refresh token WHEN it is presented with another `client_id`
+  THEN the response is `invalid_grant`, the token is not spent, and the right
+  client can still refresh with it.
+
 **Code surface**:
 - OAuth routes: `apps/web/src/app/api/oauth/` — `authorize`, `token`, `register`
+- Refresh-token storage: `apps/web/src/lib/oauth/storage.ts` —
+  `hashRefreshToken()`, `createRefreshToken()`, `consumeRefreshToken()`;
+  lifetimes in `apps/web/src/lib/oauth/config.ts`
+- Tests: `apps/web/tests/db/oauth-refresh-families.test.ts` (real Postgres),
+  `apps/web/src/lib/oauth/storage.test.ts`
 - Workspace-scoped endpoint: `apps/web/src/app/api/mcp-oauth/[workspace]/route.ts`
 - Schema: `packages/core/db/schema.ts` — `oauthClients`, `oauthCodes`,
   `oauthRefreshTokens`
@@ -308,9 +357,10 @@ workspaces; what it reaches is decided server-side on every request.
 - Token endpoint: `apps/web/src/app/api/oauth/token/route.ts`
 - Tests: `apps/web/tests/db/mcp-oauth-grants.test.ts` (real Postgres)
 
-**Out of scope here**: the account-level MCP transport, grant management UI
-and refresh-token storage hardening (hashing, rotation families) are separate
-tasks of the same mission. The consent page that creates grants is below.
+**Out of scope here**: the account-level MCP transport and grant management
+UI are separate tasks of the same mission. Refresh-token storage is covered in
+"Refresh tokens: hashed, one family per sign-in" above; the consent page that
+creates grants is below.
 
 ---
 
@@ -379,19 +429,19 @@ document's origin; that is not small. Clients keep using dynamic client
 registration (`/api/oauth/register`).
 
 **Acceptance criteria**:
-- AC-22: GIVEN an authorize request for the account resource WHEN the page
+- AC-27: GIVEN an authorize request for the account resource WHEN the page
   renders THEN it lists only the user's teams' workspaces, preselects one,
   selects the agent kind and issues no code.
-- AC-23: GIVEN an approval naming a workspace outside the user's teams WHEN it
+- AC-28: GIVEN an approval naming a workspace outside the user's teams WHEN it
   is posted THEN the response is 403, names no id, and no grant row exists.
-- AC-24: GIVEN a request without `buildd:act-as-person` WHEN an approval posts
+- AC-29: GIVEN a request without `buildd:act-as-person` WHEN an approval posts
   `acts_as=person` THEN the response is 400 and no grant row exists.
-- AC-25: GIVEN a request with `buildd:act-as-person` WHEN the person approves
+- AC-30: GIVEN a request with `buildd:act-as-person` WHEN the person approves
   as agent with write unticked THEN the grant is `agent` with `["read"]`.
-- AC-26: GIVEN a consent post with a missing or forged consent token, another
+- AC-31: GIVEN a consent post with a missing or forged consent token, another
   user's token, a changed `state` or `scope`, or a foreign or missing Origin
   THEN it is refused with 403 and nothing is written.
-- AC-27: GIVEN a team with more than one page of workspaces WHEN the person
+- AC-32: GIVEN a team with more than one page of workspaces WHEN the person
   turns the page and ticks another THEN both the earlier and the new choice
   are in the grant.
 

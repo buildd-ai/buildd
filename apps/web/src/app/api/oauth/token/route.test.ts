@@ -248,13 +248,36 @@ describe('POST /api/oauth/token — team membership is re-checked', () => {
     expect(mockCreateRefreshToken).not.toHaveBeenCalled();
   });
 
-  it('refresh: a current member still gets a new token pair', async () => {
-    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
+  it('refresh: a current member still gets a new token pair, in the same family', async () => {
+    const family = { familyId: 'fam-1', familyIssuedAt: new Date('2026-01-01T00:00:00Z') };
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp', family });
     mockUserHasWorkspaceMembership.mockResolvedValue(true);
 
     const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'old', client_id: 'c_1' }));
     expect(res.status).toBe(200);
     expect(mockRevokeRefreshTokensForUserWorkspace).not.toHaveBeenCalled();
+    expect(mockCreateRefreshToken).toHaveBeenCalledWith({ clientId: 'c_1', userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp', family });
+  });
+
+  it('refresh: a token that is not spent (wrong client, rotated, unknown) mints nothing', async () => {
+    mockConsumeRefreshToken.mockResolvedValue({ error: 'invalid_grant' });
+    const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'old', client_id: 'c_other' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+    expect(mockConsumeRefreshToken).toHaveBeenCalledWith({ token: 'old', clientId: 'c_other' });
+    expect(mockCreateRefreshToken).not.toHaveBeenCalled();
+    expect(mockSignAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('authorization_code: a sign-in starts a new family (no family passed)', async () => {
+    mockConsumeAuthCode.mockResolvedValue({ userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
+    mockUserHasWorkspaceMembership.mockResolvedValue(true);
+    const res = await POST(makeRequest({
+      grant_type: 'authorization_code', code: 'c', client_id: 'c_1',
+      redirect_uri: 'https://example.com/callback', code_verifier: 'v',
+    }));
+    expect(res.status).toBe(200);
+    expect(mockCreateRefreshToken).toHaveBeenCalledWith({ clientId: 'c_1', userId: 'user-1', workspaceId: 'ws-1', scope: 'mcp' });
   });
 
   it('authorization_code: a user who is no longer on the team gets invalid_grant', async () => {
@@ -276,6 +299,7 @@ afterAll(() => mock.restore());
 
 describe('POST /api/oauth/token — grant-bound refresh', () => {
   const GRANT = '11111111-2222-4333-8444-555555555555';
+  const FAMILY = { familyId: 'fam-1', familyIssuedAt: new Date('2026-01-01T00:00:00Z') };
   beforeEach(() => {
     mockConsumeRefreshToken.mockReset();
     mockResolveGrant.mockReset();
@@ -301,12 +325,13 @@ describe('POST /api/oauth/token — grant-bound refresh', () => {
   });
 
   it('a live grant mints a grant token and a refresh token bound to the same grant', async () => {
-    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', grantId: GRANT, scope: 'mcp' });
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', grantId: GRANT, scope: 'mcp', family: FAMILY });
     mockResolveGrant.mockResolvedValue({ grantId: GRANT, userId: 'user-1', clientId: 'c_1', actsAs: 'agent', scopes: ['read'], workspaces: [{ workspaceId: 'ws-1', teamId: 't-1', role: 'member' }] });
     const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'rt', client_id: 'c_1' }));
     expect(res.status).toBe(200);
     expect(mockResolveGrant).toHaveBeenCalledWith(GRANT, 'user-1', 'c_1');
     expect(mockSignGrantAccessToken).toHaveBeenCalledWith({ userId: 'user-1', grantId: GRANT, clientId: 'c_1', scope: 'mcp' });
-    expect(mockCreateRefreshToken).toHaveBeenCalledWith({ clientId: 'c_1', userId: 'user-1', grantId: GRANT, scope: 'mcp' });
+    // Same grant, same family: the rotation keeps the sign-in's family and issue time.
+    expect(mockCreateRefreshToken).toHaveBeenCalledWith({ clientId: 'c_1', userId: 'user-1', grantId: GRANT, scope: 'mcp', family: FAMILY });
   });
 });
