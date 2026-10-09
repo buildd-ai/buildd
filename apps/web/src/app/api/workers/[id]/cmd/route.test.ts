@@ -281,3 +281,69 @@ describe('POST /api/workers/[id]/cmd', () => {
     expect(data.action).toBe('resume');
   });
 });
+
+// Invariant: an OAuth bearer session resolves to an account its whole team
+// shares, so the account id alone does not say who claimed the worker. Only the
+// session user recorded as claimedByUserId may command it as a bearer; other
+// members act on it through the cookie dashboard path (workspace membership).
+describe('POST /api/workers/[id]/cmd — OAuth session owner check', () => {
+  const sessionWorker = {
+    id: WORKER_ID,
+    accountId: 'account-1',
+    taskId: 'task-1',
+    workspaceId: 'ws-1',
+    claimedByUserId: 'user-a',
+    workspace: { dataClass: 'standard' },
+    instructionHistory: [],
+    supportsInstructionAck: true,
+  };
+  const sessionOf = (sessionUserId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: 'account-1', teamId: 'team-1', sessionUserId, level: 'worker', ...extra });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockGetCurrentUser.mockReset();
+    mockVerifyWorkspaceAccess.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockTriggerEvent.mockReset();
+    mockWorkersUpdate.mockClear();
+    workersUpdateSets = [];
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+    mockWorkersFindFirst.mockResolvedValue(sessionWorker);
+  });
+
+  it('allows the OAuth session that claimed the worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a'));
+    const res = await POST(createMockRequest({ action: 'message', text: 'hi' }, 'oauth_a'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(workersUpdateSets).toHaveLength(1);
+    expect(mockTriggerEvent).toHaveBeenCalled();
+  });
+
+  it('refuses another same-team OAuth member on the shared account and writes nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-b'));
+    const res = await POST(createMockRequest({ action: 'message', text: 'hi' }, 'oauth_b'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('still lets another member command the worker via the dashboard session with workspace access', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-b' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    const res = await POST(createMockRequest({ action: 'message', text: 'hi' }), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-b', 'ws-1');
+    expect(workersUpdateSets).toHaveLength(1);
+  });
+
+  it('refuses a session with no team id, even as the claiming user', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(sessionOf('user-a', { teamId: null }));
+    const res = await POST(createMockRequest({ action: 'message', text: 'hi' }, 'oauth_noteam'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+});
