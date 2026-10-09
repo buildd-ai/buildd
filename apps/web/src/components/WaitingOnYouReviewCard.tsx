@@ -249,12 +249,12 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   };
 
   return (
-    <div className="border-l-2 border-status-error bg-status-error/5 px-4 py-3">
+    <div data-level="3" className="card-decision px-4 py-4">
       {/* Header row: chip label + timestamp */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-meta font-mono font-medium text-status-error tracking-wide uppercase">
+            <span className="text-title font-semibold text-status-warning">
               Review
             </span>
             {item.waitingMinutes != null && item.waitingMinutes > 0 && (
@@ -299,7 +299,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               server-side on every render (see EscalationRawItem doc) — once the
               blocking work lands, this block simply stops rendering. */}
           {state === 'idle' && missionMergeBlocked && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <p className="text-meta text-status-error break-words">{item.missionMergeBlockedReason}</p>
               <span
                 title={item.missionMergeBlockedReason ?? undefined}
@@ -311,11 +311,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'idle' && !missionMergeBlocked && canApply && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => handleApply(undefined)}
-                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium btn-ink border transition-colors px-2.5 py-1 rounded"
                 >
                   {hasRecommendation ? 'Apply' : 'Dispatch fix'}
                 </button>
@@ -352,11 +352,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               task exists) also gets Re-review, since nothing re-dispatches on
               its own. */}
           {state === 'idle' && !missionMergeBlocked && !canApply && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => setState('confirming_override')}
-                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                  className="min-h-11 md:min-h-0 inline-flex items-center gap-1 text-meta font-medium btn-ink border transition-colors px-2.5 py-1 rounded"
                 >
                   Merge
                 </button>
@@ -381,7 +381,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'corrections_open' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <textarea
                 autoFocus
                 value={correctionsText}
@@ -403,7 +403,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 <button
                   onClick={() => handleApply(correctionsText.trim() || undefined)}
                   disabled={correctionsText.trim().length === 0}
-                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-white bg-accent hover:bg-accent/90 disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium btn-ink border disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
                 >
                   {hasRecommendation ? 'Apply with corrections' : 'Dispatch fix with corrections'}
                 </button>
@@ -412,14 +412,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'applying' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Applying" />
               <span className="text-meta text-text-muted">Applying…</span>
             </div>
           )}
 
           {state === 'applied' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-1.5 text-meta font-medium text-status-success">
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M20 6L9 17l-5-5" />
@@ -435,7 +435,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'apply_error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
               <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
@@ -455,7 +455,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'confirming_override' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
               <span className="text-meta text-text-secondary min-w-0">
                 {overrideConfirmCopy(item)}
               </span>
@@ -468,7 +468,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 </button>
                 <button
                   onClick={handleMergeAnyway}
-                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
+                  className="inline-flex items-center justify-center min-h-11 md:min-h-0 text-meta font-medium btn-ink border transition-colors px-2.5 py-0.5 rounded"
                 >
                   Confirm Merge
                 </button>
@@ -477,14 +477,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'merging' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Merging" />
               <span className="text-meta text-text-muted">Merging…</span>
             </div>
           )}
 
           {state === 'merged' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1 text-meta font-medium text-status-success">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1 text-meta font-medium text-status-success">
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
@@ -500,7 +500,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
               <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 {mergeRetrySafe ? (
@@ -533,14 +533,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 're_reviewing' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Dispatching review" />
               <span className="text-meta text-text-muted">Dispatching a new review…</span>
             </div>
           )}
 
           {state === 're_review_error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex flex-wrap items-center justify-between gap-2">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex flex-wrap items-center justify-between gap-2">
               <span className="text-meta text-status-error min-w-0 flex-1 basis-56">{errorMsg}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
@@ -560,7 +560,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 're_review_dispatched' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5 text-meta font-medium text-status-success">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)] flex items-center gap-1.5 text-meta font-medium text-status-success">
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
@@ -569,7 +569,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'conflict_dispatched' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
                 <span className="text-meta text-text-secondary">An agent is resolving the merge conflicts.</span>
@@ -598,7 +598,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           )}
 
           {state === 'conflict_exhausted' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+            <div className="mt-2.5 pt-2 border-t border-[var(--line-soft)]">
               <p className="text-meta text-status-error mb-1.5 break-words">
                 {errorMsg || 'Agents ran out of conflict-resolution retries.'}
               </p>

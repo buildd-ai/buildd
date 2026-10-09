@@ -21,7 +21,7 @@ assertions:
 # Design System
 
 **Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
-**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
+**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/ui/StatePill.tsx`, `apps/web/src/components/ui/states.ts`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
 `ui_designer` skill, its `references/` files and `mobile-feed-spec.md` point here
@@ -344,23 +344,45 @@ styles are recorded in §2.7; new composition follows §1.1.
 `pulse?: boolean` (live states), `children`, `trailing?: ReactNode` (a muted suffix such as `3m`),
 `className?`, `data-testid` passthrough.
 
-**Replaces:**
-- `components/StatusBadge.tsx`: becomes a thin wrapper mapping `status → { tone, label }`
-  over `Chip`. Keep the `StatusBadge` default export and the `STATUS_COLORS` /
-  `STATUS_LABELS` exports, since several call sites import them. The two raw
-  `#D97706` entries currently map to a token tone: `waiting_on_you → accent`,
-  `infra_stalled → warning`. The accent status mapping is legacy; new status
-  labels use warning or ink per §1.1. `StatusBadge` and `HeartbeatStatusBadge` use the
-  `soft` variant so the tinted fill they had survives the swap.
-- `missions/[id]/HeartbeatStatusBadge.tsx`: `LastCheckTone` maps 1:1 onto
-  `success | warning | error | muted`; the relative time goes in `trailing`.
-  Keep `data-testid="mission-last-check"`.
-- `workspaces/[id]/config/ReleaseSection.tsx` local `StatusBadge`:
-  `completed → success`, `failed → error`, `skipped`/other `→ muted`.
+**Replaced for state words by `StatePill`** (below). `StatusBadge`,
+`HeartbeatStatusBadge` and `ReleaseSection`'s local badges now render
+`StatePill`; `Chip` stays for tags that are not a state.
 
 Later candidates (not the next task's scope): `StatusChip.tsx` (merge-policy
 tier), `StageChip.tsx`, `LoopStatusChip`, and the `.health-pill` /
 `.status-pill` classes themselves.
+
+### StatePill and the state table
+
+**Purpose:** a state as glyph + word (`◐ Auditing`). One table,
+`components/ui/states.ts` (`STATES`), feeds the pill, `Lifecycle` and every
+strip cell: the strip spec's display states
+(`docs/specs/mission-progress-strip-ordering.md` §3.1) plus `landing`,
+`recovering`, `not_landed` and `needs_you`. Each state has its own glyph and
+its own cell (pattern, frame) pair, so it reads in greyscale
+(`states.test.ts`). Cell textures are the `.state-cell` rules in `globals.css`.
+
+**Props:** `state`, `label?` (replaces the word, keeps the glyph),
+`variant?: 'tinted' (default) | 'plain'`, `trailing?`, `title?`, `data-testid`.
+`StatusPill({ status })` maps a task or worker status (`STATUS_PILL`);
+`TonePill({ tone })` is the same pill without a glyph, for fact tags.
+
+### Refined components
+
+All in `components/ui/`, from the refined-UI prototype:
+
+- `Lifecycle`: `Build → Audit → Land` with the current step, and its repair /
+  recovering / needs-you variants.
+- `TaskStrip`: `size="lg"` is the interactive strip (one button per task,
+  ← → / Home / End, tick-row marks per spec §5, a mark never restyles a cell,
+  cells capped at 56px on desktop); `size="sm"` replaces progress bars and,
+  above 16 tasks, folds runs of merged / ready / blocked / queued into one
+  segment sized by count (`task-strip.ts`).
+- `FocusCard` (L2) with the SEL-2 reason line (`reasonLine`) and `TimeRow`,
+  which renders only when an estimate exists.
+- `MissionRow`, `Segmented` (a radio group), `Criteria`.
+- L3: `.card-decision` (1.5px `--dec-frame` on `--inset`) and `.btn-ink` (the
+  charcoal primary). The Home review cards wear them.
 
 ### Eyebrow
 
@@ -488,7 +510,7 @@ notification text) follows the same rules as a PR lede:
    placeholder; render nothing or a muted value instead
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
-   surface (`StatusBadge`'s labels today; `Chip` callers after §4). A task an
+   surface (`STATUS_PILL`'s labels in `components/ui/states.ts`). A task an
    agent can't continue without you reads **Needs input**, never "Waiting on
    you"; a PR you can merge reads **Ready to merge**. Name what is needed, not
    the person. The Home **Needs you** section heading is the one exception.
@@ -528,7 +550,7 @@ It flags five categories in `apps/web/src/`:
    `text-xs` or an arbitrary font size): chips take the pill radius from `Chip` (§2.6, §4).
    Avatars and dots are not flagged.
 4. **Hand-rolled `fixed inset-0` sheets**: use `Sheet` or `BottomSheet` (§4).
-5. **Local `StatusBadge` definitions**: consolidate on `components/StatusBadge.tsx` or use `Chip`.
+5. **Local `StatusBadge` definitions**: use `StatePill` / `StatusPill` for a state, `Chip` for any other tag.
 
 On failure it prints every violation in the files whose count rose, with file:line and the
 section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3.

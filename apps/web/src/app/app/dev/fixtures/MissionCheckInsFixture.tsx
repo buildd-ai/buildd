@@ -8,8 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import { describeLastCheck, selectOrganizerRuns, type LastCheck, type OrganizerRun } from '@/lib/mission-checkins';
-import MissionCheckIns from '../../(protected)/missions/[id]/MissionCheckIns';
-import HeartbeatStatusBadge from '../../(protected)/missions/[id]/HeartbeatStatusBadge';
+import MissionCheckIns, { LastCheckPill } from '../../(protected)/missions/[id]/MissionCheckIns';
 import HeartbeatTimeline from '../../(protected)/missions/[id]/HeartbeatTimeline';
 import HeartbeatChecklistEditor from '../../(protected)/missions/[id]/HeartbeatChecklistEditor';
 import QuietHoursConfig from '../../(protected)/missions/[id]/QuietHoursConfig';
@@ -71,7 +70,7 @@ export default function MissionCheckInsFixture() {
           {data.checks.map(c => (
             <div key={c.caption} className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-[11px] text-text-muted w-44 shrink-0">{c.caption}</span>
-              <HeartbeatStatusBadge check={c.check} />
+              <LastCheckPill check={c.check} />
             </div>
           ))}
         </section>
