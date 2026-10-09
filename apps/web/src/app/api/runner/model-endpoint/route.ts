@@ -61,11 +61,11 @@ import { db } from '@buildd/core/db';
 import { tasks, teams } from '@buildd/core/db/schema';
 import {
   OPENROUTER_AGENT_BASE_URL,
+  resolveAgentEndpoint,
   resolveAgentModelRoute,
   resolveEndpointFromBlob,
   type AgentEndpointRoute,
 } from '@buildd/core/agent-endpoint';
-import { resolveLiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { surfacePolicy, type TeamPolicyColumns } from '@buildd/core/providers';
 import { resolveProviderCredential, type ProviderCredentialResult } from '@buildd/core/providers/resolve';
 import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
@@ -208,7 +208,7 @@ function endpointBody(route: AgentEndpointRoute) {
 /** The resolver's winner as the dispatcher's egress handler reads it. */
 async function wireAnswer(result: ProviderCredentialResult, ws: { id: string; teamId: string }): Promise<WireAnswer> {
   if (result.none) return { ok: false, reason: result.reason };
-  const { credential, scope } = result;
+  const { credential } = result;
   if (credential.provider === 'anthropic' && credential.shape === 'api_key') {
     // Canonical or legacy storage alike: the team's (or requester's) own
     // metered key, so it keeps its precedence over MODEL_PROXY_URL.
@@ -216,12 +216,17 @@ async function wireAnswer(result: ProviderCredentialResult, ws: { id: string; te
   }
   if (credential.endpoint) {
     const blob = credential.endpoint;
-    // Same scope or broader: a team-wide reference never picks up one
-    // workspace's gateway (resolveAgentEndpoint's rule).
-    const gateway = blob.kind === 'gateway'
-      ? await resolveLiteLLMGateway({ teamId: ws.teamId, workspaceId: scope === 'workspace' ? ws.id : null }, { ignoreKeyPolicy: true })
-      : null;
-    const route = resolveEndpointFromBlob(blob, gateway);
+    if (blob.kind === 'gateway') {
+      // A gateway reference needs its gateway, at the same scope or broader.
+      // resolveAgentEndpoint owns that lookup (the gateway module is not ours
+      // to import, scripts/module-boundaries.test.ts); it ranks endpoint rows
+      // exactly as the resolver does, so it lands on the same row. If it ever
+      // does not, nothing is served rather than a different endpoint.
+      const resolved = await resolveAgentEndpoint({ teamId: ws.teamId, workspaceId: ws.id });
+      if (!resolved || resolved.secretId !== result.source.secretId) return { ok: false, reason: 'no_credential' };
+      return { ok: true, body: endpointBody(resolved), resource: `agent_endpoint:${resolved.kind}` };
+    }
+    const route = resolveEndpointFromBlob(blob, null);
     if (!route) return { ok: false, reason: 'no_credential' };
     return { ok: true, body: endpointBody(route), resource: `agent_endpoint:${route.kind}` };
   }

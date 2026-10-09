@@ -27,11 +27,10 @@ const realProviders = { ...(await import('@buildd/core/providers')) };
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
-mock.module('@buildd/core/agent-endpoint', () => ({ ...realAgentEndpoint, resolveAgentModelRoute: mockResolveRoute }));
+mock.module('@buildd/core/agent-endpoint', () => ({ ...realAgentEndpoint, resolveAgentModelRoute: mockResolveRoute, resolveAgentEndpoint: mockGateway }));
 mock.module('@/lib/claude-credential', () => ({ resolveAnthropicAuth: mockResolveAnthropicAuth }));
 mock.module('@buildd/core/providers/resolve', () => ({ ...realResolve, resolveProviderCredential: mockResolveProvider }));
 mock.module('@buildd/core/task-requester', () => ({ resolveTaskRequesterUserId: mockRequester }));
-mock.module('@buildd/core/litellm-gateway', () => ({ resolveLiteLLMGateway: mockGateway }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -292,19 +291,26 @@ describe('credential_policy set: the provider resolver decides, for this task’
     }
   });
 
-  it('a gateway reference resolves its gateway at the same scope or broader', async () => {
+  it('a gateway reference is served through resolveAgentEndpoint, only when it lands on the same row', async () => {
     withPolicy('team');
     ROWS = [row({ id: 'gw-ref', purpose: 'agent_endpoint', label: null, value: JSON.stringify({ kind: 'gateway' }) })];
-    mockGateway.mockResolvedValue({ baseURL: 'https://gateway.example.com/v1', apiKey: 'sk-gateway-fixture' });
+    const gatewayRoute = {
+      kind: 'gateway', baseUrl: 'https://gateway.example.com', apiKey: 'sk-gateway-fixture', authHeader: 'authorization',
+      models: {}, toolSearch: false, secretId: 'gw-ref', scope: 'team',
+    };
+    mockGateway.mockResolvedValue(gatewayRoute);
     try {
       const res = await POST(req());
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
         kind: 'gateway', baseUrl: 'https://gateway.example.com', key: 'sk-gateway-fixture', authHeader: 'authorization', models: {},
       });
-      // A team-wide reference never picks up one workspace's gateway.
-      expect(mockGateway).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: null }, { ignoreKeyPolicy: true });
+      expect(mockGateway).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
 
+      // A different endpoint row is never substituted for the resolver's winner.
+      mockGateway.mockResolvedValue({ ...gatewayRoute, secretId: 'some-other-row' });
+      expect((await POST(req())).status).toBe(404);
+      // No gateway behind the reference ⇒ nothing to serve.
       mockGateway.mockResolvedValue(null);
       expect((await POST(req())).status).toBe(404);
     } finally {
