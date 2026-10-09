@@ -24,7 +24,7 @@ import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { ingestFact, type GithubFactReader } from './facts';
-import { kernelDeliveryForPr } from './authority';
+import { kernelDeliveryForPr, kernelOnSql } from './authority';
 import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
 import type { DrainSummary } from './effects';
@@ -130,7 +130,7 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
   return sql`NOT EXISTS (
     SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
     WHERE kd.workspace_id = ${workspaceIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel'
-      AND COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+      AND ${kernelOnSql(sql`kw.git_config`)}
   )`;
 }
 
@@ -145,7 +145,7 @@ export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec):
 SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
 WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
   AND w.git_config->'landing'->>'mode' = 'enforce'
-  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  AND ${kernelOnSql(sql`w.git_config`)}
 ORDER BY d.updated_at
 LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
   return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
