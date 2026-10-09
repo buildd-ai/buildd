@@ -95,7 +95,7 @@ describe('CellEditor routing, phone', () => {
     expect(q('[data-testid="cell-dial-detail"]')!.textContent).toBe(DIAL_DETAIL[4]);
     expect((q('[data-testid="cell-save"]') as HTMLButtonElement).disabled).toBe(true);
     await click(q('[data-testid="cell-dial-2"]'));
-    expect(q('[data-testid="cell-dial-detail"]')!.textContent).toContain('Not saved yet.');
+    expect(q('[data-testid="cell-dial-detail"]')!.textContent).toContain('Unsaved.');
     expect(writes).toEqual([]);
   });
 

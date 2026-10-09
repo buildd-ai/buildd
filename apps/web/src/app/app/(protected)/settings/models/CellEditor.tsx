@@ -210,8 +210,8 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
           {advanced && (
             <div id="cell-advanced" className="mt-1.5 flex flex-col gap-2 border border-border-default p-2" data-testid="cell-advanced">
               <p className="text-meta text-text-secondary">
-                Evaluating is a shadow: the primary serves every run while buildd grades what an alternative would have done.
-                Switching is live: once an alternative keeps up, it takes a share of eligible work, and goes back if it slips.
+                Evaluating is a shadow: the primary serves every run.
+                Switching is live: a keeping-up alternative takes a share of work.
                 {cell.surface === 'chat' && cell.qualitySignal !== 'chat-retro' && ' This chat cell has no quality feedback, so nothing switches on quality.'}
               </p>
               <div className="flex items-baseline justify-between text-meta text-text-muted">
@@ -230,7 +230,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
                 ))}
               </div>
               <p className="text-meta text-text-secondary" data-testid="cell-dial-detail">
-                {DIAL_DETAIL[dial]}{dialChanged ? ' Not saved yet.' : ''}
+                {DIAL_DETAIL[dial]}{dialChanged ? ' Unsaved.' : ''}
               </p>
             </div>
           )}
