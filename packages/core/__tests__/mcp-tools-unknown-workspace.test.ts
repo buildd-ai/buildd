@@ -43,6 +43,7 @@ const CASES: Array<[action: string, params: Record<string, unknown>]> = [
   ['get_path_claim_stats', {}],
   ['get_decision_stats', {}],
   ['get_failure_analytics', {}],
+  ['list_incidents', {}],
   ['dispatch_health', {}],
   ['list_connectors', {}],
   ['resolve_capability', { capability: 'observability:query' }],
