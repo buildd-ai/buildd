@@ -4,6 +4,9 @@ import { modelTierRegistry } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { authenticate, resolveTeam } from '@/lib/model-tier-access';
 import { resolveAllTiers, invalidateTierCache, TIERS, type Tier, type TierSurface } from '@buildd/core/model-tier-registry';
+import { POOL_SURFACES, incumbentRoute, tierAllowsPool } from '@buildd/core/tier-pool';
+import { syncIncumbentToRegistry } from '@buildd/core/tier-pool-admin';
+import { invalidateTierPoolCache } from '@buildd/core/tier-pool-source';
 import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
 
 /** `surface` from a body or query: absent/null = the shared row; anything else must name a surface. */
@@ -15,6 +18,33 @@ function parseSurface(raw: unknown): { surface: TierSurface | null } | { error: 
 
 function surfaceMatch(surface: TierSurface | null) {
   return surface ? eq(modelTierRegistry.surface, surface) : isNull(modelTierRegistry.surface);
+}
+
+/**
+ * After a team-level registry write, bring each surface's pool incumbent in
+ * line with the primary that surface now resolves to. The registry stays the
+ * authority; this keeps the pool's mirror of it (and its audit trail) honest.
+ * Never throws: the registry write has landed and serves correctly either way.
+ */
+async function syncPools(teamId: string, tier: Tier, actorUserId: string | null): Promise<'none' | 'synced' | 'stale'> {
+  if (!tierAllowsPool(tier)) return 'none';
+  let out: 'none' | 'synced' | 'stale' = 'none';
+  try {
+    for (const surface of POOL_SURFACES) {
+      const entry = (await resolveAllTiers(teamId, null, surface))[tier];
+      if (!entry) continue;
+      const r = await syncIncumbentToRegistry({
+        teamId, tier, surface, actorUserId,
+        primary: { route: incumbentRoute(surface, entry.provider), model: entry.model },
+      });
+      if (r === 'stale' || (r === 'synced' && out === 'none')) out = r;
+    }
+    invalidateTierPoolCache(teamId);
+  } catch (error) {
+    console.error('model-tiers: pool incumbent sync failed:', error);
+    return 'stale';
+  }
+  return out;
 }
 
 // GET /api/model-tiers?workspaceId=<id> | ?teamId=<id>
@@ -125,7 +155,9 @@ export async function POST(req: NextRequest) {
 
     invalidateTierCache(teamId, workspaceId ?? null);
 
-    return NextResponse.json({ ok: true, tier, provider, model, surface });
+    // Workspace overrides are not the team's primary; the team pool is untouched by them.
+    const poolSync = workspaceId ? 'none' : await syncPools(teamId, tier as Tier, auth.user?.id ?? null);
+    return NextResponse.json({ ok: true, tier, provider, model, surface, poolSync });
   } catch (error) {
     console.error('POST /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -169,8 +201,9 @@ export async function DELETE(req: NextRequest) {
       ));
 
     invalidateTierCache(teamId, workspaceId ?? null);
+    const poolSync = workspaceId ? 'none' : await syncPools(teamId, tier as Tier, auth.user?.id ?? null);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, poolSync });
   } catch (error) {
     console.error('DELETE /api/model-tiers error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
