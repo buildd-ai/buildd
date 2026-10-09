@@ -35,6 +35,11 @@ describe('workspace settings page', () => {
     }
   });
 
+  it('offers Move to team once, under Danger zone, not again in the health card', () => {
+    expect(PAGE.split('<MoveToTeamButton').length - 1).toBe(1);
+    expect(PAGE).not.toContain('userTeamCount');
+  });
+
   it('uses the settings frame, not its own page shell', () => {
     expect(PAGE).toContain('<SettingsPage');
     expect(PAGE).not.toContain('<main');
