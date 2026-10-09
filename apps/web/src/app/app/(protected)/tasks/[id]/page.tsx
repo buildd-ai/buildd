@@ -992,13 +992,12 @@ export default async function TaskDetailPage({
 
             const mainText = [elapsedStr, estimateStr].filter(Boolean).join(' · ') || '–';
 
-            // TODO: Add explanation from by-source data once we have a source for it
             return (
               <div className="space-y-0.5">
                 <div className="text-text-primary">{mainText}</div>
-                {taskEstimate?.explanation && (
+                {taskEstimate?.explanation?.summary && (
                   <div className="text-[12px] text-text-muted">
-                    {/* Explanation will be populated from estimate data */}
+                    {taskEstimate.explanation.summary}
                   </div>
                 )}
               </div>
