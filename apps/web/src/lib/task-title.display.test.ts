@@ -45,6 +45,11 @@ describe('displayTaskTitle', () => {
     expect(displayTaskTitle('Note: the parser is slow')).toBe('Note: the parser is slow');
   });
 
+  it('strips a research: prefix like a conventional type', () => {
+    expect(displayTaskTitle('research: FX rate providers')).toBe('FX rate providers');
+    expect(displayTaskTitle('RESEARCH: FX rate providers')).toBe('FX rate providers');
+  });
+
   it('passes empty input through', () => {
     expect(displayTaskTitle(undefined)).toBe('');
     expect(displayTaskTitle(null)).toBe('');
