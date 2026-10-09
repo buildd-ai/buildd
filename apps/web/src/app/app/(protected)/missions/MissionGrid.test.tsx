@@ -9,7 +9,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { projectMissionDelivery, type MissionTaskRow } from '@/lib/delivery-projection';
-import { PORTFOLIO_SORTS } from '@/lib/mission-portfolio';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
 
 const NOW = Date.UTC(2026, 9, 8, 12);
@@ -36,6 +35,7 @@ function row(id: string, title: string, tasks: MissionTaskRow[], over: Partial<P
     lastAdvancedAt: NOW - 120_000,
     completedAt: null,
     nextScanMins: null,
+    strip: tasks.length > 0 ? tasks.map(() => 'landed' as const) : [],
     ...rest,
   };
 }
@@ -96,11 +96,19 @@ describe('MissionGrid portfolio', () => {
     expect(history).toContain('show 1 older');
   });
 
-  it('defaults to the attention order: exceptions first, waiting and held last', () => {
-    const order = [...html.matchAll(/data-mission-id="(m\d+)"/g)].map(m => m[1]);
-    expect(order[0]).toBe('m03'); // not landed
-    expect(order.indexOf('m01')).toBeLessThan(order.indexOf('m04')); // building before waiting
-    expect(order.indexOf('m04')).toBeLessThan(order.indexOf('m05')); // waiting before held
+  it('groups open missions into Needs you / In motion / Waiting, each with its ordering named', () => {
+    const sec = (k: string) => html.match(new RegExp(`<section[^>]*data-section="${k}"[\\s\\S]*?</section>`))![0];
+    expect(sec('needs')).toContain('Needs you');
+    expect(sec('needs')).toContain('oldest first');
+    expect(sec('motion')).toContain('In motion');
+    expect(sec('motion')).toContain('slipping first');
+    expect(sec('waiting')).toContain('Waiting');
+    expect(sec('waiting')).toContain('next to start first');
+    const ids = (k: string) => [...sec(k).matchAll(/data-mission-id="(m\d+)"/g)].map(m => m[1]);
+    expect(ids('needs')).toEqual(['m03']); // not landed
+    expect(ids('motion')).toContain('m01');
+    expect(ids('waiting').indexOf('m04')).toBeLessThan(ids('waiting').indexOf('m05')); // waiting before held
+    expect(sec('motion')).toMatch(/data-testid="mission-section-destinations"[^>]*>[^<]*landing on trunk/);
   });
 
   it('counters say open / executing / agent slots, each with a definition', () => {
@@ -114,40 +122,36 @@ describe('MissionGrid portfolio', () => {
   });
 
   it('shows the truthful status: live agent only on the executing mission', () => {
-    expect(rowHtml('m01')).toContain('data-testid="portfolio-live"');
     expect(rowHtml('m01')).toContain('1 agent');
-    expect(rowHtml('m02')).not.toContain('data-testid="portfolio-live"');
+    expect(rowHtml('m01')).toContain('data-testid="mission-row"');
+    expect(rowHtml('m02')).not.toMatch(/\d agents?\b/);
     expect(rowHtml('m02')).toContain('data-kind="audit"');
   });
 
-  it('shows the verified landed fraction and the next milestone', () => {
+  it('shows the verified landed fraction, a small task strip and the next milestone', () => {
     const r = rowHtml('m01');
-    expect(r).toContain('2/3 landed');
-    expect(r).toContain('aria-label="2 of 3 tasks landed"');
-    expect(r).toMatch(/data-testid="portfolio-next"[^>]*>Next: /);
+    expect(r).toContain('2 of 3 landed');
+    expect(r).toContain('Next');
+    expect(r).toContain('role="img"'); // TaskStrip size sm
+  });
+
+  it('shows a state as glyph + word, and a decision on a needs-input mission', () => {
+    expect(rowHtml('m02')).toContain('Auditing');
+    expect(rowHtml('m03')).toContain('Not landed');
   });
 
   it('raises an exception line only when there is one', () => {
-    expect(rowHtml('m03')).toContain('data-testid="portfolio-exception"');
     expect(rowHtml('m03')).toContain('did not land');
-    expect(rowHtml('m01')).not.toContain('data-testid="portfolio-exception"');
+    expect(rowHtml('m01')).not.toContain('did not land');
   });
 
   it('a recurring mission names its next run', () => {
     expect(rowHtml('m11')).toContain('next run in 9m');
   });
 
-  it('has search, sort, status filters with counts, and a workspace filter', () => {
+  it('has search, status filters with counts, and a workspace filter', () => {
     expect(html).toContain('data-testid="portfolio-search"');
-    // The brand Select: the trigger shows the short label; the list opens on demand.
-    const sort = html.match(/<button[^>]*data-testid="portfolio-sort"[^>]*>[\s\S]*?<\/button>/)![0];
-    expect(sort).toContain('role="combobox"');
-    expect(sort).toContain('aria-label="Sort"');
-    expect(sort).toContain('data-value="attention"');
-    expect(sort).toContain('>Attention<');
-    expect(PORTFOLIO_SORTS.map(s => s.label)).toEqual(['Attention', 'Recent', 'Closest', 'Priority']);
-    // Full meaning survives as each option's description line.
-    for (const title of ['Needs attention', 'Recently advanced', 'Closest to landing']) expect(PORTFOLIO_SORTS.map(s => s.title)).toContain(title);
+    expect(html).not.toContain('data-testid="portfolio-sort"');
     const filter = (k: string) => html.match(new RegExp(`data-filter="${k}"[^>]*>[^<]*<span[^>]*>(\\d+)</span>`))?.[1];
     expect(filter('all')).toBe('11');
     expect(filter('executing')).toBe('1');
@@ -156,30 +160,17 @@ describe('MissionGrid portfolio', () => {
     expect(html).toContain('All workspaces');
   });
 
-  it('phone-width tools: sort select is not width-capped, chip row has a scroll fade', () => {
+  it('phone-width tools: the chip row has a scroll fade', () => {
     expect(html).not.toMatch(/<(select|datalist)\b/);
-    // The wrapper div right before the sort trigger carries no width cap.
-    const before = html.slice(0, html.indexOf('data-testid="portfolio-sort"'));
-    expect(before.slice(before.lastIndexOf('<div'))).not.toContain('max-w-');
     expect(html).toContain('data-testid="portfolio-filters-fade"');
     const fade = html.match(/<div[^>]*data-testid="portfolio-filters-fade"[^>]*>/)![0];
     expect(fade).toContain('pointer-events-none');
     expect(fade).toContain('aria-hidden="true"');
   });
 
-  it('desktop gets columns; phones get stacked lines', () => {
-    const r = html.match(/<div[^>]*data-testid="portfolio-row"[^>]*>/)![0];
-    expect(r).toContain('grid-cols-[minmax(0,1fr)_auto]');
-    expect(r).toMatch(/lg:grid-cols-\[/);
-    expect(html).toContain('>Status</span><span>Mission</span><span>Landed</span><span>Next</span>');
-  });
-
-  it('chips never wrap into each other, titles clamp, next truncates', () => {
-    const chip = html.match(/<span[^>]*data-testid="delivery-chip"[^>]*>/)![0];
-    expect(chip).toContain('whitespace-nowrap');
-    expect(chip).toContain('shrink-0');
-    expect(html).toContain('line-clamp-2');
-    expect(html.match(/<span[^>]*data-testid="portfolio-next"[^>]*>/)![0]).toContain('truncate');
+  it('is one column on phones and two from md', () => {
+    const grid = html.match(/<div class="[^"]*grid-cols-1[^"]*md:grid-cols-2[^"]*"/);
+    expect(grid).not.toBeNull();
   });
 
   it('shows the workspace release state once, never on a row (D6)', () => {

@@ -13,6 +13,7 @@ import * as missionHelpers from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card-view';
 import { projectMissionDelivery } from '@/lib/delivery-projection';
+import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
@@ -161,6 +162,9 @@ export default async function MissionsPage({
     );
     const schedule = obj.schedule as { cronExpression?: string | null; taskTemplate?: { context?: { heartbeat?: boolean } } } | null;
     const recurring = !!schedule?.cronExpression && schedule.taskTemplate?.context?.heartbeat !== true && obj.status !== 'completed';
+    // The strip's cells: the same dependency-first order and display states the mission page draws.
+    const projection = taskRowsStripProjection((obj.tasks ?? []) as Parameters<typeof taskRowsStripProjection>[0]);
+    const strip = projection.order.flatMap(id => projection.states.get(id) ?? []);
     return {
       // The client needs the mission's facts, not every task's projection.
       delivery: { ...delivery, tasks: [] },
@@ -171,6 +175,7 @@ export default async function MissionsPage({
       liveAgents: tasks.reduce((n, t) => n + (t.workers ?? []).filter(w => live.has(w.status)).length, 0),
       lastAdvancedAt: lastAdvancedAt > 0 ? lastAdvancedAt : null,
       completedAt: obj.completedAt ? new Date(obj.completedAt).getTime() : null,
+      strip,
       nextScanMins: recurring ? summarizeMissionForCard(obj as MissionCardRow, { now }).nextScanMins : null,
     };
   });
