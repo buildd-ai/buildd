@@ -2005,7 +2005,9 @@ export async function PATCH(
               effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
-              // Named by the task, so it is owned unless its head is a
+              // Owned only if the task's own records link it (a retry's
+              // subject, or a PR link stamped when the task was filed; the
+              // text above only proposes candidates) and its head is not a
               // protected branch; it still needs the linked repo and the
               // mission base, like every other door.
               if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {

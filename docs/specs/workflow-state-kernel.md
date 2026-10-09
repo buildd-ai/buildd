@@ -1740,8 +1740,8 @@ direct column writes exactly as they were:
   projection and the gate's own rules are unchanged: the `mission-task-lifecycle`
   acceptance tests pass unmodified (S16).
 - **§17.1 (b) holds at the supersede route.** A task token may supersede the PR its
-  own run opened **or** a PR its own task names (`taskScopeTaskNamesPr`, shared with
-  `POST /api/github/pr/review`), never one the owner's task names; its T20 actor is
+  own run opened **or** a PR its own task's records link (`taskScopeTaskLinksPr`, shared with
+  `POST /api/github/pr/review`), never one the owner's task links; its T20 actor is
   `agent:<its task>` (S21).
 - **Found and fixed: Slice C's handlers were never composed.** `modules.ts`
   imported `withLandingEffects` and did not apply it, so in production `merge_call`,
@@ -2122,7 +2122,7 @@ worker's local commit; rounds and versions are as the kernel would number them.
 | 7 | Today: the PR body now describes the corrected check | `update_pr` | any | **No fact, no transition.** Body text never counts as delivery |
 | 8 | Push recovery: runner is told to push; or recovery attempt pushes `L2` | `HeadObserved(L2)` live head `L2`, contains `L2`, `!= H1` | `AWAITING_PUSH` (v6) | proof holds → `AWAITING_REVIEW`, round 2 bound to `L2`, kind `delta` from `H1` (v7); `dispatch_review` |
 | 9 | If recovery cannot push (runner lost, three tries spent) | `PushRecoveryExhausted` | `AWAITING_PUSH` (v6) | `ESCALATED(push_undeliverable)` (v7): a person sees the branch and `L2`, instead of an open PR that looks "in review" |
-| 10 | Reviewer approves `L2`, CI green | `ReviewVerdictRecorded(round2, approve, head=L2)`, `LandingRequested` | `AWAITING_REVIEW` (v7) | `APPROVED` → `LANDING` → merge pinned at `L2`; `PrMerged` → `MERGED`; the recorded supersession of the sibling PR (`SupersessionRecorded`, T20) is then authorised by "the caller's task names the PR" (§17.1) |
+| 10 | Reviewer approves `L2`, CI green | `ReviewVerdictRecorded(round2, approve, head=L2)`, `LandingRequested` | `AWAITING_REVIEW` (v7) | `APPROVED` → `LANDING` → merge pinned at `L2`; `PrMerged` → `MERGED`; the recorded supersession of the sibling PR (`SupersessionRecorded`, T20) is then authorised by "the caller's task's records link the PR" (§17.1) |
 
 **The exact rejected transitions** are two: `FIXING → AWAITING_REVIEW` at step 5
 (evidence `H' != Hb` absent, result `AWAITING_PUSH`/`delivery_not_advanced`) and
@@ -2160,7 +2160,7 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S9 | Reaper/cleanup sees a dead worker with only local commits | `AttemptEnded(lost)` → `AWAITING_PUSH`; task not `completed` with `result.sha` | `apps/web/src/lib/stale-workers.test.ts`, `apps/web/src/app/api/tasks/cleanup/route.test.ts` |
 | S10 | Merge response `indeterminate`; double merge call | stays `LANDING`; `verify_merge`; one `PrMerged`; merge pinned at head | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/auto-merge.test.ts`, `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts` |
 | S11 | Human merges on GitHub while `AWAITING_REVIEW` | T17 from any state; open attempts cancelled; merged-over-verdict classified | webhook route test; `apps/web/src/lib/review-subscribers.test.ts` (new: none today) |
-| S12 | Closed unmerged, work shipped under another PR; caller task names the PR | T20 allowed only from `CLOSED_UNMERGED`; authorised on caller's task, not the owner's; overwrite refused; mission completion treats it as shipped | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/lib/pr-supersession.test.ts`, `apps/web/src/lib/mission-completion.test.ts` |
+| S12 | Closed unmerged, work shipped under another PR; caller task links the PR | T20 allowed only from `CLOSED_UNMERGED`; authorised on caller's task, not the owner's; overwrite refused; mission completion treats it as shipped | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/lib/pr-supersession.test.ts`, `apps/web/src/lib/mission-completion.test.ts` |
 | S13 | Crash between transition and effect; crash mid-effect | effect row present atomically; lease expiry re-runs; idempotent | `apps/web/src/lib/workflow/effects.test.ts` (new), pattern of `apps/web/src/lib/dispatch-reconcile.test.ts` |
 | S14 | A sweep tries to assign state | sweep modules import only `ingestFact`/`enqueueMissingEffects`; write-site guard fails on any direct write to a guarded column outside the allowlist | `packages/core/__tests__/workflow-write-sites.test.ts` (new; pattern of `packages/core/__tests__/model-policy-authority.test.ts`) |
 | S15 | Base keeps moving under an approved PR | `LANDING`/`REPAIRING(behind)` bounded by the treadmill cap per cycle; a spent cycle escalates, restarts after the cooldown up to `MAX_TREADMILL_CYCLES`, then stays with a person, whose freshness override lands it; hard gates unchanged | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/pr-landing-sweep.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
@@ -2250,16 +2250,22 @@ by the workers route test.
 ### 17.1 Authorization
 
 - The kernel adds **no new capability**: T-commands call the same permission checks
-  the routes use today (`agentRunMayActOnPr` / `taskNamesPr` in
-  `apps/web/src/lib/agent-capabilities/pr-ownership.ts`, `taskScopeAllowsWorkerPr`,
+  the routes use today (`agentRunMayActOnPr` / `taskLinksPr` in
+  `apps/web/src/lib/agent-capabilities/pr-links.ts`, `taskScopeAllowsWorkerPr`,
   team permission registry). The authorisation decision stays in the route; the kernel
   receives `actor` and records it.
 - PR #3754 (supersede route) is the live proof that "own PR only" and "caller's task
-  names the PR" are different rules: the check MUST be on the **caller's** task. T20's
-  actor rules: (a) the owner task's own token; (b) a task token whose own task names
-  the PR (`taskNamesPr(callerTask, pr)`); (c) a human with the team permission; (d)
+  links the PR" are different rules: the check MUST be on the **caller's** task. T20's
+  actor rules: (a) the owner task's own token; (b) a task token whose own task's records
+  link the PR (`taskLinksPr(callerTask, pr)`); (c) a human with the team permission; (d)
   the automatic detector after verification. A task token never gains `SupersessionRecorded`
-  for a PR merely because the *owner's* task names it.
+  for a PR merely because the *owner's* task links it.
+- A task's records link a PR through its retry column (`ciRetryPrNumber`,
+  `conflictRetryPrNumber`, `reviewerRetryPrNumber`), a person's landing grant, or the
+  PR link stamped when it was filed (`context.prReach`, `apps/web/src/lib/pr-reach-grant.ts`):
+  a person's filing links the PRs it names; an agent run's filing links only PRs its own
+  task already reaches. A PR named only in a task's title, description or context links
+  nothing.
 - Version-carrying human actions are authorised before the CAS, never after, so a
   `stale` response cannot be used as an oracle for deliveries the caller cannot read.
 - `workflow_*` rows are workspace-scoped like every table; effect handlers act with
