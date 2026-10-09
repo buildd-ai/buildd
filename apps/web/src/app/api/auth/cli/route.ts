@@ -128,6 +128,7 @@ export async function GET(req: NextRequest) {
         apiKey: hashApiKey(plaintextKey),
         apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
         teamId,
+        createdByUserId: session.user.id,
       })
       .returning();
 
