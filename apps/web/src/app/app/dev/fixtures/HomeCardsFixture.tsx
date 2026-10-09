@@ -2,7 +2,7 @@
 
 /**
  * `?state=home-cards`: Home with a busy fleet, the same tree at every width:
- * eight decisions, Just shipped, Agents, Moving toward delivery and Landed.
+ * eight decisions, Agents, Moving toward delivery and Landed.
  * `&data=one` is one decision; `&data=empty` is a team with a runner, nothing
  * moving, nothing shipped and nothing to decide. The CI clone has no live
  * runner or queue, so this is where both are seen populated. Invented data.
@@ -13,7 +13,6 @@ import { LandedThisWeek, type LandedMission } from '../../(protected)/home/Lande
 import { HomeBody } from '../../(protected)/home/HomeBody';
 import { deriveHomeAttention } from '@/lib/home-attention';
 import type { ActionQueueItem } from '@/lib/action-queue';
-import type { HomeShippedMission } from '../../(protected)/home/NeedsYouStack';
 import type { DeliveryCounts, MissionDelivery } from '@/lib/delivery-projection';
 import type { OccupancySeries } from '@/lib/fleet-occupancy';
 import type { AgentsModel } from '@/lib/home-agents';
@@ -60,9 +59,6 @@ const LANDED: LandedMission[] = [
   { id: 'l1', title: 'Refined UI: quieter tokens, shared components, mission pages and chat on one visual language', href: '#', completedAt: new Date(NOW - 8 * H).toISOString(), prs: 9 },
   { id: 'l2', title: 'Runner on arm64', href: '#', completedAt: new Date(NOW - 50 * H).toISOString(), prs: 2 },
 ];
-const SHIPPED: HomeShippedMission[] = [
-  { id: 's1', title: 'Refined UI: quieter tokens, shared components, mission pages and chat on one visual language', href: '#', completedAt: new Date(NOW - 8 * H).toISOString(), prs: 9, fixes: 1, durationMs: 46 * H, activeMs: 5 * H + 20 * 60_000, criteria: { passed: 4, total: 4 } },
-];
 const PR = (n: number) => `https://github.com/example/project/pull/${n}`;
 const REVIEW = (n: number, title: string, decision: string, reason: string, machineStatus: string | null): ActionQueueItem => ({
   subjectKey: `r${n}`, chip: 'REVIEW', prNumber: n, workspaceId: 'ws', taskTitle: title, prUrl: PR(n), machineStatus,
@@ -97,7 +93,7 @@ export default function HomeCardsFixture() {
   const landed = empty ? null : <LandedThisWeek missions={LANDED} timeZone="UTC" />;
   return (
     <main data-testid="home-cards-fixture" className="mx-auto min-h-screen max-w-[1320px] px-4 pb-20 pt-6 md:px-8 md:pb-8 md:pt-8">
-      <HomeBody items={items} ask={null} agents={agents} landed={landed} counts={counts} milestones={milestones} quietMissions={empty ? 0 : 7} shipped={empty ? [] : SHIPPED} runnerConnected timeZone="UTC" />
+      <HomeBody items={items} ask={null} agents={agents} landed={landed} counts={counts} milestones={milestones} quietMissions={empty ? 0 : 7} runnerConnected />
     </main>
   );
 }

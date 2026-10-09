@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import SettingsSection from './SettingsSection';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
 import { useConfirm } from '@/components/useConfirm';
 import { Select } from '@/components/ui/Select';
 
@@ -118,7 +118,11 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
   const canManage = !manageableTeamIds || manageableTeamIds.includes(selectedTeamId);
 
   return (
-    <SettingsSection title="Vercel">
+    <Section
+      title="Vercel"
+      action={!canManage ? <span data-testid="vercel-read-only" className="text-xs text-text-muted">Admins can change this.</span> : undefined}
+    >
+      <div className="space-y-4">
         <p className="text-sm text-text-secondary">
           Create a token at{' '}
           <a href="https://vercel.com/account/tokens" target="_blank" rel="noreferrer" className="underline">
@@ -128,23 +132,12 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         </p>
 
         {justAdded && (
-          <div className="notice notice-ok space-y-2">
-            <div className="font-medium text-status-success">Token ready</div>
+          <Notice tone="ok" title="Token ready" action={{ label: 'Go to Health', href: '/app/health' }}>
             <p className="text-sm text-text-secondary">
               Attach it to a watched project in Health: set the Vercel project ID and pick this token.
             </p>
-            <div className="flex items-center gap-3">
-              <Link
-                href="/app/health"
-                className="btn btn-primary"
-              >
-                Go to Health →
-              </Link>
-              <button onClick={() => setJustAdded(false)} className="btn btn-quiet">
-                Dismiss
-              </button>
-            </div>
-          </div>
+            <button onClick={() => setJustAdded(false)} className="btn btn-sm btn-quiet mt-1 !px-0">Dismiss</button>
+          </Notice>
         )}
 
         {teams.length > 1 && (
@@ -160,22 +153,22 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         )}
 
         {loading ? (
-          <div className="text-sm text-text-tertiary">Loading…</div>
+          <p className="text-sm text-text-muted">Loading…</p>
         ) : tokens.length === 0 ? (
-          <div className="text-sm text-text-tertiary">No tokens.</div>
+          <p className="text-sm text-text-muted">No tokens.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="divide-y divide-border-default">
             {tokens.map((t) => (
-              <li key={t.id} className="flex items-center justify-between gap-3 inset-panel">
+              <li key={t.id} className="flex items-center justify-between gap-3 py-3">
                 <div className="min-w-0">
-                  <div className="font-medium truncate">{t.label || 'Vercel API token'}</div>
-                  <div className="text-xs text-text-tertiary">Added {new Date(t.createdAt).toLocaleDateString()}</div>
+                  <div className="text-sm font-medium text-text-primary truncate">{t.label || 'Vercel API token'}</div>
+                  <div className="text-xs text-text-secondary">Added {new Date(t.createdAt).toLocaleDateString()}</div>
                 </div>
                 {canManage && (
                   <button
                     onClick={() => deleteToken(t.id)}
                     disabled={busy}
-                    className="btn btn-danger"
+                    className="btn btn-sm btn-danger"
                   >
                     Delete
                   </button>
@@ -185,14 +178,9 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
           </ul>
         )}
 
-        {!canManage ? (
-          <p data-testid="vercel-read-only" className="text-xs text-text-muted">Admins can change this.</p>
-        ) : tokens.length > 0 && !addOpen ? (
-          <button
-            onClick={() => setAddOpen(true)}
-            className="btn btn-quiet"
-          >
-            + Add another token
+        {!canManage ? null : tokens.length > 0 && !addOpen ? (
+          <button onClick={() => setAddOpen(true)} className="btn btn-sm">
+            Add another token
           </button>
         ) : (
           <div className="space-y-2 border-t border-border-default pt-4">
@@ -207,6 +195,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
             <input
               value={label}
               onChange={(e) => setLabel(e.target.value)}
+              aria-label="Token label"
               placeholder="Label (e.g. 'Personal · read deployments')"
               className="w-full h-10 px-3 bg-surface text-sm"
             />
@@ -214,6 +203,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
               value={value}
               onChange={(e) => setValue(e.target.value)}
               type="password"
+              aria-label="Vercel API token"
               placeholder="Paste token (sk_…)"
               className="w-full h-10 px-3 bg-surface text-sm"
             />
@@ -229,11 +219,12 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
         )}
 
         {message && (
-          <div className={`text-sm ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
+          <p role={message.type === 'error' ? 'alert' : 'status'} className={`text-sm ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
             {message.text}
-          </div>
+          </p>
         )}
+      </div>
       {confirmDialog}
-    </SettingsSection>
+    </Section>
   );
 }

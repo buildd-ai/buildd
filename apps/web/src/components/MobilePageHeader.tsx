@@ -4,11 +4,10 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } fro
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { TeamSwitcher } from './TeamSwitcher';
-import { useTheme } from './ThemeProvider';
 import UserAvatarMenu from './UserAvatarMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { mobileBackHref, mobilePageTitle, showsWorkspaceFilter } from '@/lib/nav-config';
-import MobileTopBar, { MOBILE_TOP_BAR_CONTROL_CLASS, MOBILE_TOP_BAR_SLOT_ID } from './MobileTopBar';
+import MobileTopBar, { MOBILE_TOP_BAR_SLOT_ID } from './MobileTopBar';
 import { isAccountRoute } from '@/lib/nav-active';
 
 interface HeaderTeam {
@@ -36,7 +35,6 @@ export default function MobilePageHeader({
   banners?: ReactNode;
 }) {
   const pathname = usePathname();
-  const { resolved, setTheme } = useTheme();
   const phoneHome = pathname === '/app/home';
   const chatRoute = pathname === '/app/chat';
   const title = mobilePageTitle(pathname);
@@ -45,8 +43,8 @@ export default function MobilePageHeader({
   const bannersRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const bannerHeight = useElementHeight(bannersRef, title !== null);
-  // One switcher for the app: in this header on a phone, and in the desktop
-  // bar below on the same pages. Both read and write ?workspace=.
+  // The phone's workspace switcher, on pages that read ?workspace=. Desktop
+  // has the same choice in the rail's scope switcher (ScopeSwitcher).
   const showSwitcher = workspaces.length > 0 && showsWorkspaceFilter(pathname);
   const headerHeight = useElementHeight(headerRef, title !== null);
 
@@ -60,14 +58,7 @@ export default function MobilePageHeader({
 
   // Only render the header on top-level pages (where the title resolves). Detail
   // pages (e.g. /app/missions/[id]) render their own headers; banners stay in flow.
-  // Desktop: the same switcher, right-aligned in a slim bar above the page.
-  const desktopBar = showSwitcher ? (
-    <div data-testid="desktop-app-header" className="hidden md:flex items-center justify-end gap-3 border-b border-border-default bg-surface-1 px-8 py-1.5">
-      <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />
-    </div>
-  ) : null;
-
-  if (!title) return <>{desktopBar}{banners}</>;
+  if (!title) return <>{banners}</>;
 
   const leading = (
     <>
@@ -99,13 +90,12 @@ export default function MobilePageHeader({
   const trailing = (
     <>
       {showSwitcher && !phoneHome && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
-      {phoneHome && <button type="button" onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')} aria-label={resolved === 'dark' ? 'Switch to Day' : 'Switch to Night'} className={MOBILE_TOP_BAR_CONTROL_CLASS}>{resolved === 'dark' ? '☀' : '☾'}</button>}
-      <UserAvatarMenu neutral={phoneHome} userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
+      <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
     </>
   );
   // Chat owns its crumbs (title, History) — they portal into the shell's slot.
   const headerRow = chatRoute ? (
-    <MobileTopBar barRef={headerRef}><div id={MOBILE_TOP_BAR_SLOT_ID} className="flex min-w-0 flex-1 items-center gap-2 empty:before:font-mono empty:before:text-[13px] empty:before:font-bold empty:before:uppercase empty:before:tracking-[.12em] empty:before:text-[var(--chat-text)] empty:before:content-['Chat']" /></MobileTopBar>
+    <MobileTopBar barRef={headerRef}><div id={MOBILE_TOP_BAR_SLOT_ID} className="flex min-w-0 flex-1 items-center gap-2 empty:before:font-semibold empty:before:text-text-primary empty:before:content-['Chat']" /></MobileTopBar>
   ) : (
     <MobileTopBar barRef={headerRef} leading={leading} trailing={trailing} />
   );
@@ -114,10 +104,9 @@ export default function MobilePageHeader({
   return (
     <>
       {/* Fixed on mobile, in flow on desktop (the header row is md:hidden there,
-          so desktop sees the switcher bar and the banners at the top of the column). */}
+          so desktop sees only the banners at the top of the column). */}
       <div data-testid="mobile-top-stack" className="max-md:fixed max-md:top-0 max-md:inset-x-0 max-md:z-10">
         {headerRow}
-        {desktopBar}
         {/* Opaque base: the banners use translucent tints, and fixed over
             scrolling content they would let the page show through. */}
         <div ref={bannersRef} className="max-md:bg-surface-1">{banners}</div>

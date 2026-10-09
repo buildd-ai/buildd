@@ -3,7 +3,7 @@
 /**
  * `?state=mission-detail-compact`: mission detail as a phone meets it. The
  * real header (back, title, state chip, Verified pill, clock, Overview · Flow
- * · History, Visual and the overflow menu, goal line) over the real Overview,
+ * · History, the overflow menu (which starts the visual review), goal line) over the real Overview,
  * inside the app's scroll root with the phone tab bar fixed over it. See
  * mission-detail-compact-fixtures.ts for `&variant=` and `&select=`.
  *
@@ -16,7 +16,6 @@ import { getMissionStateChip } from '@/lib/mission-helpers';
 import MissionLayoutShell, { MissionBoardHeader } from '@/app/app/(protected)/missions/[id]/MissionLayoutShell';
 import MissionOverview from '@/app/app/(protected)/missions/[id]/MissionOverview';
 import MissionVerifiedPill from '@/app/app/(protected)/missions/[id]/MissionVerifiedPill';
-import MissionVisualReviewAction from '@/app/app/(protected)/missions/[id]/MissionVisualReviewAction';
 import MissionOverflowMenu from '@/app/app/(protected)/missions/[id]/MissionOverflowMenu';
 import { stripFixtureId } from './mission-task-strip-fixtures';
 import {
@@ -69,19 +68,17 @@ export default function MissionDetailCompactFixture() {
         />
       }
       actions={
-        <>
-          {!complete && <MissionVisualReviewAction missionId={MISSION_ID} />}
-          <MissionOverflowMenu
-            missionId={MISSION_ID}
-            currentStatus={complete ? 'completed' : 'active'}
-            cronExpression={null}
-            workspaceId={WORKSPACE_ID}
-            roles={[]}
-            hasSchedule={false}
-            isHeld={false}
-            displayState={complete ? 'complete' : 'running'}
-          />
-        </>
+        <MissionOverflowMenu
+          missionId={MISSION_ID}
+          currentStatus={complete ? 'completed' : 'active'}
+          cronExpression={null}
+          workspaceId={WORKSPACE_ID}
+          roles={[]}
+          hasSchedule={false}
+          isHeld={false}
+          displayState={complete ? 'complete' : 'running'}
+          visualReview={complete ? null : { initialOpen: false }}
+        />
       }
       goal={COMPACT_GOAL}
       description={<p className="text-body text-text-secondary">{COMPACT_GOAL}</p>}

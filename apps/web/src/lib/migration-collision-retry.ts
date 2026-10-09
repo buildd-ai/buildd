@@ -43,6 +43,8 @@ export interface MigrationCollisionRetryResult {
    * exist — normal (human-escalating) handling of `migrationSafety`.
    */
   handled: boolean;
+  /** The renumber task now carrying it (the one just filed, or the one already in flight). */
+  taskId?: string;
 }
 
 export async function tryDispatchMigrationCollisionRetry(
@@ -82,5 +84,5 @@ export async function tryDispatchMigrationCollisionRetry(
     });
   }
 
-  return { handled: true };
+  return { handled: true, taskId: result.taskId ?? result.inFlightTaskId };
 }

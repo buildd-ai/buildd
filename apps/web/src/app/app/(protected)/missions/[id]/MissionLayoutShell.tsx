@@ -148,7 +148,7 @@ export function MissionClock({ startedAt, endedAt, activeMs, now }: { startedAt:
 }
 
 /**
- * Quiet header actions (Ask, Visual review): no frame, a 44px target on a
+ * Quiet header actions (Ask; the visual review starts from ⋯): no frame, a 44px target on a
  * phone. The header's one loud thing is the title.
  */
 export const MISSION_HEADER_ACTION =
@@ -198,6 +198,9 @@ export function MissionTitle({ title }: { title: string }) {
   );
 }
 
+/** The shared state labels are caps constants; the header reads them as a sentence: RUNNING → Running. */
+const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLowerCase();
+
 /**
  * The Board/Flow header, top to bottom (refined prototype `MissionHead`):
  * back and the actions on one row; the title; one quiet line of state,
@@ -217,9 +220,9 @@ export function MissionBoardHeader({ back, title, chip, verified, actions, goal,
         </div>
         <MissionTitle title={title} />
         <div data-testid="mission-state-line" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <span data-testid="mission-state-chip" className={`inline-flex shrink-0 items-center gap-1.5 font-mono text-meta font-semibold uppercase tracking-[0.06em] ${chip.cls}`}>
+          <span data-testid="mission-state-chip" className={`inline-flex shrink-0 items-center gap-1.5 text-meta font-semibold ${chip.cls}`}>
             {!done && <span aria-hidden="true" className="h-1.5 w-1.5 animate-status-pulse rounded-full bg-current" />}
-            {chip.label}
+            {sentenceCase(chip.label)}
           </span>
           {verified}
           <MissionClock startedAt={startedAt} endedAt={endedAt} activeMs={activeMs} now={now} />

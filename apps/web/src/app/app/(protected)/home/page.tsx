@@ -27,18 +27,20 @@ import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
-import { isActionableChip, kernelInboxMembership, missionPrRoleOf, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, kernelInboxMembership, missionPrRoleOf, reviewMachineActing, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
-import type { WaitingOnYouRawItem } from '@/lib/action-queue';
+import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
+import { gateEscalations } from '@/lib/escalation-gate-check';
+import { ESCALATION_GATE_READ_DEPS } from '@/modules';
+import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
-import { SwipeProvider } from '@/components/SwipeableRow';
 import { deriveChainPosition, deriveIntensity } from '@/lib/task-presentation';
 import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentation';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -66,9 +68,6 @@ import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { HomeBody } from './HomeBody';
 import { countQuietMissions, deliveryCounts, projectMissionDelivery, selectHomeMilestones, type MissionDelivery } from '@/lib/delivery-projection';
 import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
-import type { HomeShippedMission } from './NeedsYouStack';
-import { MISSION_VISUAL_SHOT_COLUMNS, MISSION_VISUAL_SHOTS_LIMIT, MISSION_VISUAL_SHOTS_ORDER, missionVisualShotsWhere } from '../missions/[id]/mission-page-query';
-import { selectLatestRun, summarizeVisualRun, toVisualShots } from '@/lib/mission-visual-review';
 import type { HomeHeldMission, HomeQuestion } from './NeedsYouCards';
 import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary';
 import { loadHomeFleet, loadQueueHistory, type HomeFleetData } from '@/lib/home-fleet';
@@ -84,14 +83,10 @@ import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
 import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
-import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import HomeChatCard from '@/components/chat/HomeChatCard';
-import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCard';
 import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
 import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/lib/getting-started';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
-import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
-import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
@@ -210,6 +205,8 @@ export default async function HomePage({
     prLifecycleVerifiedAt: Date | null;
     /** Whether the PR is in draft status. */
     prIsDraft: boolean | null;
+    /** The escalation gate's verdict (lib/escalation-gate-check.ts). */
+    gate?: EscalationGateMark | null;
   }[] = [];
 
 
@@ -270,18 +267,15 @@ export default async function HomePage({
   // The shared delivery projection, one per non-archived mission (lib/delivery-projection.ts).
   let missionDeliveries: Array<{ delivery: MissionDelivery; status: string; liveAgents: number }> = [];
   let heldMissions: HomeHeldMission[] = [];
-  let shippedMissions: HomeShippedMission[] = [];
   let missionTotal = 0;
   let shippedToday = 0;
   let landedWeek: LandedMission[] = [];
   let idleStretches: IdleStretch[] = [];
-  let teamName: string | null = null;
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
   let audience: HomeAudience = 'operator';
   // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
-  let chatRecent: ConversationListItem[] = [];
   let chatTeamId: string | null = null;
   const renderNow = Date.now();
 
@@ -304,10 +298,9 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent, overrides, agentKey, hostedBanner] = await Promise.all([
+        const [role, chatAvail, overrides, agentKey, hostedBanner] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
-          listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
           getTeamPermissionOverrides(activeTeamId),
           // A failed lookup reads as "has a key": never nag a working team.
           teamHasAgentCredential(activeTeamId).catch(() => true),
@@ -318,7 +311,6 @@ export default async function HomePage({
         if (roleHasPermission(role, 'manage_model_tiers', overrides)) modelUpgradeTeamId = activeTeamId;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
-        chatRecent = recent;
         chatTeamId = activeTeamId;
       }
       const teamWsIds = scope.workspaces.map((w) => w.id);
@@ -648,29 +640,6 @@ export default async function HomePage({
             .filter(r => r.completedAt && nowMs - new Date(r.completedAt).getTime() < 7 * 86_400_000)
             .slice(0, 6)
             .map(({ view, model }) => ({ id: view.id, title: view.title, href: view.href, completedAt: view.completedAt!, prs: model.done?.prs ?? 0 }));
-          shippedMissions = done
-            .filter(r => r.completedAt && nowMs - new Date(r.completedAt).getTime() < 3 * 3_600_000)
-            .slice(0, 1)
-            .map(({ view, model }) => ({
-              id: view.id, title: view.title, href: view.href, completedAt: view.completedAt!,
-              prs: model.done?.prs ?? 0, fixes: model.done?.fixes ?? 0, durationMs: model.done?.durationMs ?? null, activeMs: model.done?.activeMs ?? null,
-              criteria: model.criteria,
-            }));
-          // The shipped card (and the stat strip) say what the mission's visual
-          // review found, the same latest auditor run its mission page shows.
-          if (shippedMissions[0]) {
-            const shotRows = await db.query.artifacts.findMany({
-              where: missionVisualShotsWhere(shippedMissions[0].id),
-              columns: MISSION_VISUAL_SHOT_COLUMNS,
-              orderBy: MISSION_VISUAL_SHOTS_ORDER,
-              limit: MISSION_VISUAL_SHOTS_LIMIT,
-            });
-            const run = selectLatestRun(toVisualShots(shotRows));
-            if (run.length > 0) {
-              const { shots, ok, issues, unsure } = summarizeVisualRun(run);
-              shippedMissions[0] = { ...shippedMissions[0], screens: { shots, ok, issues, unsure } };
-            }
-          }
         }
 
         // Escalation inbox (BT-15) + agent-review lease detection
@@ -714,7 +683,7 @@ export default async function HomePage({
             with: {
               task: {
                 // context: read only for `refreshTrunk`, the mission-refresh marker (missionPrRoleOf).
-                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true },
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true, context: true, pathManifest: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -823,7 +792,7 @@ export default async function HomePage({
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
-              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true, dataClass: true },
               with: WORKSPACE_INSTALLATION_WITH,
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
@@ -1364,6 +1333,57 @@ export default async function HomePage({
                 if (arcDiff !== 0) return arcDiff;
                 return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
               });
+
+            // Escalation gate: the same verdict the PR inbox, list_prs and the
+            // pushes read (lib/escalation-gate-check.ts). A PR whose next move is
+            // Buildd's (a fix, a renumber, a retry, CI still running, or what Jev
+            // judged Buildd can do itself) is never a Needs You card. A gate
+            // failure leaves every card as it was: it never silences.
+            if (escalationInbox.length > 0) {
+              try {
+                const workerById = new Map(openPrWorkers.map(w => [w.id, w]));
+                const stalls = await loadLandingStalls(escalationInbox.map(e => e.taskId).filter(Boolean));
+                const gateSubjects = escalationInbox.flatMap(e => {
+                  const ws = wsInboxMap.get(e.workspaceId);
+                  const w = workerById.get(e.workerId);
+                  if (!ws?.teamId || !w) return [];
+                  const view = e.taskId ? inboxDeliveryViews.get(e.taskId) : undefined;
+                  const landingRow = e.taskId ? landingStateByTaskId.get(e.taskId) : undefined;
+                  const own = landingRow?.handoff && e.prNumber != null
+                    ? resolveLandingOwnership({ policy: { tier: 'agent-review', agentReview: undefined }, landingMode: 'enforce', landing: landingRow.landing, handoff: landingRow.handoff, prNumber: e.prNumber })
+                    : null;
+                  const cause = (landingRow?.handoff as { cause?: unknown } | null | undefined)?.cause;
+                  return [{
+                    workerId: e.workerId,
+                    subject: prSubjectFor({
+                      teamId: ws.teamId, sensitive: (ws as { dataClass?: string }).dataClass === 'sensitive',
+                      workspaceId: e.workspaceId, prNumber: e.prNumber, taskId: e.taskId || null,
+                      task: (w.task as any) ?? null, missionPrRole: w.task ? missionPrRoleOf(w.task) : null, lifecycle: e.prLifecycleStatus, headSha: e.headSha,
+                      kernel: view ? { stateReason: view.stateReason, prState: view.prState, detail: view.detail, headline: view.headline } : null,
+                      escalated: e.hasEscalationNote ? { reason: e.escalationReason } : null,
+                      approved: !!e.reviewApproved || e.leaseState === 'agent_approved',
+                      handoff: own?.owner === 'human' ? { cause: typeof cause === 'string' ? cause : 'unknown', reason: own.reason } : null,
+                      conflictFixesSpent: !!(e as { deadZoneExhausted?: boolean }).deadZoneExhausted,
+                      machineActing: reviewMachineActing(e as never, new Date()),
+                      landingStall: e.taskId ? stalls.get(e.taskId) ?? null : null,
+                      pathManifest: ((w.task as any)?.pathManifest as string[] | null | undefined) ?? null,
+                      draft: e.prIsDraft,
+                      linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
+                      reviewedHeadSha: e.approvedSha,
+                    }),
+                  }];
+                });
+                const unique = [...new Map(gateSubjects.map(g => [g.subject.key, g.subject])).values()];
+                const verdicts = await gateEscalations(unique, ESCALATION_GATE_READ_DEPS());
+                const byWorker = new Map(gateSubjects.flatMap(g => {
+                  const v = verdicts.get(g.subject.key);
+                  return v ? [[g.workerId, { owner: v.owner, reason: v.reason, rail: v.owner === 'person' ? v.rail ?? null : null, teamId: g.subject.teamId ?? null }] as const] : [];
+                }));
+                escalationInbox = escalationInbox.map(e => ({ ...e, gate: byWorker.get(e.workerId) ?? null }));
+              } catch (err) {
+                console.warn('[home] escalation gate failed (non-fatal, every card kept):', err instanceof Error ? err.message : 'unknown');
+              }
+            }
           }
         }
 
@@ -1884,9 +1904,8 @@ export default async function HomePage({
         // Fleet panel, ticker and stat counts — one loader, all batched.
         {
           const [teamRow] = activeTeamId
-            ? await db.select({ name: teamsTable.name, timezone: teamsTable.timezone }).from(teamsTable).where(eq(teamsTable.id, activeTeamId)).limit(1)
+            ? await db.select({ timezone: teamsTable.timezone }).from(teamsTable).where(eq(teamsTable.id, activeTeamId)).limit(1)
             : [];
-          teamName = teamRow?.name ?? null;
           teamTz = teamRow?.timezone ?? null;
           let queueHistory: Awaited<ReturnType<typeof loadQueueHistory>> | null = null;
           [fleetData, occupancy, queueHistory] = await Promise.all([
@@ -1957,56 +1976,51 @@ export default async function HomePage({
     href: q.taskId ? homeTaskHref({ missionId: q.missionId, taskId: q.taskId, from: 'home', mode: 'sheet' }) : null,
   }));
   const live = fleetData?.fleet.live ?? activeItems.length;
-  const clock = new Date(renderNow).toLocaleTimeString('en-US', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
-    ...(teamTz ? { timeZone: teamTz } : {}),
-  });
   const missionTitleById = new Map(missionDeliveries.map(d => [d.delivery.id, d.delivery.title] as const));
   const agentsModel = fleetData ? buildAgentsModel(fleetData.fleet, renderNow, missionTitleById, ({ missionId, taskId }) => missionTaskHref({ missionId, taskId, from: 'home', mode: 'sheet' })) : null;
 
   // The one list of what needs you, at every width: the headline counts it.
-  const { items: attention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
+  const { items: attention, inProgress: reviewsInProgress } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
   const counts = deliveryCounts({ missions: missionDeliveries, liveAgents: live, capacity: fleetData?.fleet.capacity ?? 0 });
   const deliveries = missionDeliveries.map(d => d.delivery);
   const milestones = selectHomeMilestones(deliveries);
   const quietMissions = countQuietMissions(deliveries);
-  // Chat is how work starts: the composer sits under the headline. The phone
-  // gets a one-line ask that opens the chat page.
-  const ask = (
+  // Chat is where work starts, and it has its own tab. On a phone a team with
+  // chat keeps the composer under the headline; desktop gets one quiet link.
+  // Chat setup (no key yet) lives on the Chat page: Home says so in one line.
+  const ask = chatPlacement.kind === 'chat' && chatTeamId ? (
     <>
       <div className="md:hidden">
-        {chatPlacement.kind === 'chat' && chatTeamId
-          ? <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
-          : <Link href={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : '/app/chat'} className="mb-7 flex min-h-12 items-center justify-between border border-border-strong bg-[var(--chat-surface)] pl-3 font-convo text-lede text-text-muted"><span>Describe the work, or ask…</span><span className="flex min-h-12 w-14 items-center justify-center border-l border-border-strong bg-accent text-[var(--on-accent)]">↑</span></Link>}
+        <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={[]} initialWorkspaceId={wsFilter ?? null} phoneInbox />
       </div>
-      {chatPlacement.kind === 'chat' && chatTeamId && (
-        <div className="hidden md:block">
-          <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
-        </div>
-      )}
+      <p className="mb-6 hidden md:block">
+        <Link href="/app/chat" data-testid="home-ask-link" className="text-body text-text-secondary hover:text-text-primary">Ask buildd →</Link>
+      </p>
     </>
-  );
-  // Setup steps: one line each once there is a decision to make.
-  const setup = (rightNow === 'create-workspace' || (showGettingStarted && gettingStarted) || (chatPlacement.kind !== 'chat' && chatTeamId)) ? (
+  ) : null;
+  // Setup steps, each one line: a new team's next step.
+  const chatSetup = chatTeamId && (chatPlacement.kind === 'onboarding' || chatPlacement.kind === 'connect-own') && !showGettingStarted;
+  const setup = (rightNow === 'create-workspace' || (showGettingStarted && gettingStarted) || chatSetup) ? (
     <>
       {rightNow === 'create-workspace' && (
-        <div className="mb-6 border border-dashed border-border-default p-5">
-          <div className="mb-2 text-body font-medium text-text-primary">Create a workspace</div>
-          <p className="mb-4 text-body text-text-secondary">This team has no workspace. Connect a GitHub repo to run agents.</p>
-          <Link href="/app/workspaces/new" className="btn btn-ink min-h-11">Connect a repo</Link>
-        </div>
+        <p data-testid="home-create-workspace" className="mb-6 border-y border-border-default py-3 text-body text-text-secondary">
+          This team has no workspace. <Link href="/app/workspaces/new" className="font-medium text-text-primary underline">Connect a repo</Link> to run agents.
+        </p>
       )}
       {/* While Get started shows, chat setup folds into its footer line. */}
       {showGettingStarted && gettingStarted && (
-        <GettingStartedChecklist checklist={gettingStarted} chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null} />
+        <GettingStartedChecklist checklist={gettingStarted} chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/chat' : null} />
       )}
-      {chatPlacement.kind === 'onboarding' && chatTeamId && !showGettingStarted && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={attention.length > 0} />}
-      {chatPlacement.kind === 'connect-own' && chatTeamId && <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />}
+      {chatSetup && (
+        <p data-testid="home-chat-setup" className="mb-6 border-y border-border-default py-3 text-body text-text-secondary">
+          {chatPlacement.kind === 'onboarding' ? 'Chat needs a key.' : 'Chat needs your own key.'}{' '}
+          <Link href="/app/chat" className="font-medium text-text-primary underline">Connect</Link>
+        </p>
+      )}
     </>
   ) : null;
 
   return (
-    <SwipeProvider>
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
       {hostedRunnerBanner && (
@@ -2028,19 +2042,9 @@ export default async function HomePage({
           counts={counts}
           milestones={milestones}
           quietMissions={quietMissions}
-          shipped={shippedMissions}
-          timeZone={teamTz}
+          inProgress={reviewsInProgress}
           agents={agentsModel ? <AgentsPanel model={agentsModel} occupancy={occupancy} idle={idleStretches} /> : null}
           landed={landedWeek.length > 0 ? <LandedThisWeek missions={landedWeek} timeZone={teamTz} /> : null}
-          aside={
-            <div className="hidden flex-wrap items-center gap-2.5 md:flex">
-              {teamName && <span className="section-label text-text-muted">{teamName}</span>}
-              <span className="flex min-h-9 items-center gap-2 border border-border-default px-3 font-mono text-meta text-text-secondary">{clock}</span>
-              <NewWorkLink kind="mission" workspaceId={wsFilter ?? null} testId="home-new-mission" className="btn btn-ink min-h-9">
-                + Mission
-              </NewWorkLink>
-            </div>
-          }
           lead={(attention.length > 0 || initFilter) && (
             // Initiative scoping chips: they SCOPE the list, never group it.
             <div className="mb-3">
@@ -2057,6 +2061,5 @@ export default async function HomePage({
         />
       </div>
     </main>
-    </SwipeProvider>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import SettingsSection from './SettingsSection';
+import Section from '@/components/ui/Section';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { Select } from '@/components/ui/Select';
 import { roleHas } from '@/lib/permission-registry';
@@ -14,7 +14,7 @@ interface Team {
 /**
  * The team's canonical working zone.
  *
- * Your own zone is detected from the browser and never asked for — this setting
+ * Your own zone is detected from the browser and never asked for; this setting
  * exists for the other half: artifacts nobody "views" from a session, like the PR
  * activity comment buildd posts on GitHub, the default zone for new schedules, and
  * mission active hours. Those need one agreed wall clock, and it should be the
@@ -111,74 +111,79 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
 
   if (teams.length === 0) return null;
 
+  const status = (
+    <>
+      {stored === null ? 'Not set. buildd uses UTC.' : `Set to ${stored}.`}
+      {preview && <> It is <span className="font-mono">{preview}</span> there now.</>}
+    </>
+  );
+
   return (
-    <SettingsSection title="Timezone">
-      <p className="text-sm text-text-secondary">
-        For pull request comments, new schedules and mission active hours.
-      </p>
-
-      {teams.length > 1 && (
-        <label className="block">
-          <span className="field-label">Team</span>
-          <Select
-            aria-label="Team"
-            value={selectedTeamId}
-            onChange={setSelectedTeamId}
-            options={teams.map((t) => ({ value: t.id, label: t.name }))}
-          />
-        </label>
-      )}
-
-      {loading ? (
-        <div className="text-sm text-text-tertiary">Loading…</div>
-      ) : (
-        <>
-          <label className="block">
-            <span className="field-label">Team timezone</span>
-            <Select
-              aria-label="Team timezone"
-              value={draft}
-              disabled={!canEdit || busy}
-              onChange={setDraft}
-              searchable
-              options={zones.map((z) => ({ value: z, label: z }))}
-            />
-          </label>
-
-          <div className="text-xs text-text-tertiary">
-            {stored === null
-              ? 'Not set. buildd uses UTC.'
-              : `Set to ${stored}.`}
-            {preview && <> It is <span className="font-mono">{preview}</span> there now.</>}
-          </div>
-
-          {canEdit ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => save(draft)}
-                disabled={busy || draft === (stored ?? '')}
-                className="btn btn-primary"
-              >
-                {busy ? 'Saving…' : 'Save'}
-              </button>
-              {/* When the picker already shows this browser's zone, Save does the same thing. */}
-              {detected !== stored && detected !== draft && (
-                <button onClick={() => save(detected)} disabled={busy} className="btn btn-quiet">
-                  Use mine ({detected})
-                </button>
-              )}
+    <Section
+      title="Timezone"
+      action={!loading && !canEdit ? <span data-testid="timezone-read-only" className="text-xs text-text-muted">Admins can change this.</span> : undefined}
+    >
+      {/* One fact, one select: an L1 row on a hairline, never a card. */}
+      <div className="divide-y divide-border-default border-y border-border-default">
+        {teams.length > 1 && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 py-3">
+            <span className="text-sm text-text-primary">Team</span>
+            <div className="sm:w-64">
+              <Select
+                aria-label="Team"
+                value={selectedTeamId}
+                onChange={setSelectedTeamId}
+                options={teams.map((t) => ({ value: t.id, label: t.name }))}
+              />
             </div>
-          ) : (
-            <div className="text-xs text-text-tertiary">Only team owners and admins can change this.</div>
+          </div>
+        )}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 py-3" data-testid="team-timezone-row">
+          <div className="min-w-0">
+            <span className="block text-sm text-text-primary">Team timezone</span>
+            <span className="block text-xs text-text-secondary mt-0.5">
+              For pull request comments, new schedules and mission active hours.
+            </span>
+            {!loading && <span className="block text-xs text-text-muted mt-0.5">{status}</span>}
+          </div>
+          <div className="sm:w-64 shrink-0">
+            {loading ? (
+              <p className="text-sm text-text-muted">Loading…</p>
+            ) : (
+              <Select
+                aria-label="Team timezone"
+                value={draft}
+                disabled={!canEdit || busy}
+                onChange={setDraft}
+                searchable
+                options={zones.map((z) => ({ value: z, label: z }))}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {!loading && canEdit && (draft !== (stored ?? '') || (detected !== stored && detected !== draft)) && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {draft !== (stored ?? '') && (
+            <button onClick={() => save(draft)} disabled={busy} className="btn btn-sm">
+              {busy ? 'Saving…' : 'Save'}
+            </button>
           )}
-        </>
+          {/* When the picker already shows this browser's zone, Save does the same thing. */}
+          {detected !== stored && detected !== draft && (
+            <button onClick={() => save(detected)} disabled={busy} className="btn btn-sm btn-quiet">
+              Use mine ({detected})
+            </button>
+          )}
+        </div>
       )}
 
       {msg && (
-        <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
+        <p role={msg.type === 'error' ? 'alert' : 'status'} className={`mt-2 text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
           {msg.text}
-        </div>
+        </p>
       )}
-    </SettingsSection>
+    </Section>
   );
 }

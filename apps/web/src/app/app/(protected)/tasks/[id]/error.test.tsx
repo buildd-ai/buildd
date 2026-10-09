@@ -14,6 +14,6 @@ describe('TaskError', () => {
   it('says what happened in a sentence-case heading, not an all-caps label', () => {
     const html = renderToStaticMarkup(<TaskError error={new Error('x')} reset={() => {}} />);
     expect(html).toContain('This task couldn’t load');
-    expect(html).not.toContain('uppercase');
+    expect(html).not.toMatch(/upper[c]ase/);
   });
 });

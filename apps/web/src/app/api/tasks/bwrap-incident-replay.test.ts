@@ -28,6 +28,13 @@ mock.module('@buildd/core/gate-events', () => ({
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
 }));
+// The task.created subscriber schedules a category decision that writes through
+// the same table-agnostic db.update mock as friction deduplication. Keep those
+// unrelated writes out of this replay; task-category-decision.test.ts covers
+// categorization, and route.test.ts covers when it is scheduled.
+mock.module('@/lib/task-category-decision', () => ({
+  scheduleTaskCategorize: () => {},
+}));
 import { NextRequest } from 'next/server';
 import { findBlockingPr } from '@buildd/core/path-overlap';
 

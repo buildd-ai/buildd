@@ -10,17 +10,13 @@ import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
-import { EscalationProvider } from '@/components/EscalationProvider';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamRole, getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
+import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
 import { getChatAvailability } from '@/lib/chat-availability';
-import { homeAudience } from './home/home-view';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
 import { CHAT_SETTINGS_HREF } from '@/components/chat/ChatSetupCard';
-import type { NavContext } from '@/lib/nav-config';
 import { KeyHintsProvider } from '@/components/KeyHints';
 import { ChatCanvasProvider } from '@/components/chat/ChatCanvas';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export default async function ProtectedLayout({
   children,
@@ -33,7 +29,6 @@ export default async function ProtectedLayout({
   let workspaceIds: string[] = [];
   let teamWorkspaces: { id: string; name: string }[] = [];
   let teamTimezone: string | null = null;
-  let nav: NavContext = { audience: 'operator' };
   // Create buttons open chat when it's available (components/chat/ChatEntry.tsx).
   let chatEntry: ChatEntryValue = { available: false, teamId: null, setupHref: null };
 
@@ -62,19 +57,15 @@ export default async function ProtectedLayout({
         // (chat vs the form); the Chat nav entry is always there. Both are React
         // cache()d, so Home and /app/chat reuse the answer.
         .then(async (scope) => {
-          if (!scope.teamId) return { scope, nav, chatEntry };
-          const [avail, role, overrides] = await Promise.all([
-            getChatAvailability(user.id, scope.teamId).catch(() => null),
-            getUserTeamRole(user.id, scope.teamId).catch(() => null),
-            getTeamPermissionOverrides(scope.teamId),
-          ]);
+          if (!scope.teamId) return { scope, chatEntry };
+          const avail = await getChatAvailability(user.id, scope.teamId).catch(() => null);
           const entry: ChatEntryValue = {
             available: avail?.available === true,
             teamId: scope.teamId,
             // The missing key is an owner's or admin's to fix.
             setupHref: avail && !avail.available && avail.canManageTeamKeys ? CHAT_SETTINGS_HREF.teamKeys : null,
           };
-          return { scope, nav: { audience: homeAudience(role, overrides) } as NavContext, chatEntry: entry };
+          return { scope, chatEntry: entry };
         }),
     ]);
     userTeams = userTeamsResult;
@@ -82,7 +73,6 @@ export default async function ProtectedLayout({
     currentTeamId = scopeResult.scope.teamId;
     teamWorkspaces = scopeResult.scope.workspaces;
     teamTimezone = scopeResult.scope.timezone;
-    nav = scopeResult.nav;
     chatEntry = scopeResult.chatEntry;
   }
 
@@ -101,12 +91,11 @@ export default async function ProtectedLayout({
       >
       <ChatShortcut />
       <DisplayTimezoneProvider teamTimezone={teamTimezone}>
-      <EscalationProvider workspaceIds={workspaceIds}>
       <NeedsInputProvider workspaceIds={workspaceIds}>
         <ConnectorReconnectProvider workspaceIds={workspaceIds}>
           <div className="flex h-screen overflow-hidden">
-            {/* Desktop: collapsed icon sidebar */}
-            <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} nav={nav} />
+            {/* Desktop: the labelled side rail */}
+            <MissionsSidebar userInitial={userInitial} teams={userTeams} currentTeamId={currentTeamId} workspaces={teamWorkspaces} />
 
             {/* Main content area */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -149,10 +138,9 @@ export default async function ProtectedLayout({
           {user && <TimezoneSync knownTimezone={user.timezone} />}
 
           {/* Mobile: bottom tab nav */}
-          <MissionsBottomNav nav={nav} />
+          <MissionsBottomNav />
         </ConnectorReconnectProvider>
       </NeedsInputProvider>
-      </EscalationProvider>
       </DisplayTimezoneProvider>
       </ChatCanvasProvider>
       </ChatEntryProvider>

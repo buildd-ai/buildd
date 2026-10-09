@@ -301,6 +301,13 @@ describe('HealthClient — pages', () => {
       failureGroups: { ...buildFailureGroups({ failures: one, traces: [] }), truncated: false },
     });
     // One failure group plus "no runners connected".
-    expect(html).toContain('2 things need you.');
+    expect(html).toContain('No runners connected · 1 failure cause.');
   });
+});
+
+it('single facts on Overview and Runners have hairlines without card frames', () => {
+  const overview = render({ ...everything, page: 'overview' });
+  expect(overview).not.toMatch(/class="card[^"]*divide-y/);
+  const runners = render({ ...everything, page: 'runners' });
+  expect(runners).not.toMatch(/class="card[^"]*divide-y/);
 });

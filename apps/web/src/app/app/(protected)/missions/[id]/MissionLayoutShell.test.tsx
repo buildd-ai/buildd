@@ -134,6 +134,9 @@ describe('MissionBoardHeader, compact', () => {
     const chip = board().match(/<span data-testid="mission-state-chip"[^>]*>/)?.[0] ?? '';
     expect(chip).not.toContain('border-[1.5px]');
     expect(chip).toContain('text-meta');
+    expect(chip).not.toContain('font-mono');
+    expect(chip).not.toContain('uppercase');
+    expect(board()).toMatch(/data-testid="mission-state-chip"[^>]*>(?:<span[^>]*><\/span>)?Running<\/span>/);
   });
 
   it('tabs: one tab stop, each controls the panel, and the panel names the selected tab', () => {

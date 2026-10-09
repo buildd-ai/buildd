@@ -16,13 +16,13 @@ export default function CloudRunnerRow({ teamId }: { teamId: string }) {
     <li data-testid="fleet-cloud-row" data-state={loaded ? state.kind : 'loading'} className="flex min-h-14 items-center gap-3 px-4 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="font-mono text-[13px] font-semibold text-text-primary">Cloud runner</span>
+          <span className="text-sm font-semibold text-text-primary">Cloud runner</span>
           {loaded && <StatusChip tone={state.tone}>{state.chip}</StatusChip>}
         </div>
-        <div className="mt-1 truncate font-mono text-[11px] text-text-muted">One container per task</div>
+        <div className="mt-1 truncate text-meta text-text-muted">One container per task</div>
       </div>
       {loaded && (
-        <a href="#cloudflare" className={`btn shrink-0 ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}>
+        <a href="#cloudflare" className="btn shrink-0">
           {state.kind === 'empty' ? 'Set up' : state.next}
         </a>
       )}

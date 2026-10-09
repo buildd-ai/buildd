@@ -404,8 +404,8 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/teams/[id]/ownership/route.ts` | clamp the former owner's keys to admin | follows the new role | — | `manage_team_keys` |
 | `apps/web/src/lib/oauth/session-level.ts:10` | OAuth session acts at admin (fixed, not overridable) | owner, admin | — | — |
 | `apps/web/src/lib/key-level-policy.ts:47` | `canAdministerTeamKeys` | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/accounts/new/page.tsx:34` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
-| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:38` | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/tokens/new/page.tsx:40` | UI: admin scope selectable | owner, admin | — | `manage_team_keys` |
+| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:45` | UI: host-runner toggle | owner, admin, personal team | — | `manage_team_keys` |
 
 ### Model access and spend
 
@@ -420,8 +420,8 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/providers/route.ts:73` | set/delete the LiteLLM gateway or a custom endpoint | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/providers/route.ts:207` | set the team credential policy (as PATCH /api/teams/[id]) | owner, admin, personal team | — | `manage_team_settings` |
 | `apps/web/src/lib/team-credential-access.ts:13` | connect, replace or delete a workspace Claude/Codex credential (refresh and verify stay open to members) | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:39` | UI: runner credentials | owner, admin, personal team | — | `manage_team_credentials` |
-| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:40` | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx:61` | UI: runner sign-ins | owner, admin, personal team | — | `manage_team_credentials` |
+| `apps/web/src/app/app/(protected)/settings/runners/page.tsx:46` | UI: Cloudflare token | owner, admin, personal team | — | `manage_team_model_keys` |
 | `apps/web/src/app/app/(protected)/settings/github/page.tsx:20` | UI: Vercel and other team credentials | owner, admin, personal team | — | `manage_team_credentials` |
 | `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope chat-only inference keys (OpenRouter) | owner, admin, personal team | — | `manage_inference_providers` |
 | `apps/web/src/app/api/inference-keys/route.ts:76` | team-scope Anthropic or OpenAI key (agent runs read it) | owner, admin, personal team | — | `manage_team_model_keys` and `manage_team_credentials` |
@@ -435,7 +435,7 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/lib/chat-availability.ts:50` | UI: may set up chat keys | owner, admin | — | `manage_inference_providers` |
 | `apps/web/src/lib/model-tier-access.ts:88` | write model tiers and the upgrade policy | owner, admin | admin (route policy) | `manage_model_tiers` |
 | `apps/web/src/lib/tier-pool-access.ts:23` | write model traffic pools | owner, admin | — | `manage_model_tiers` |
-| `apps/web/src/app/app/(protected)/settings/models/page.tsx:32` | UI: edit model tiers | owner, admin, personal team | — | `manage_model_tiers` |
+| `apps/web/src/app/app/(protected)/settings/models/page.tsx:74` | UI: edit model tiers | owner, admin, personal team | — | `manage_model_tiers` |
 | `apps/web/src/app/api/accounts/[id]/ai-budget/route.ts:24` | app account daily AI cap | owner, admin, personal team | admin | `manage_ai_budget` |
 | `apps/web/src/lib/chat/turn.ts:391` | chat admin tool group | owner, admin | — | `use_chat_admin_tools` |
 
@@ -449,10 +449,9 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/api/workspaces/[id]/github-access/route.ts:48` | POST re-check the GitHub App's repo access and link the repo (GET open to members) | owner, admin | admin (route policy) | `manage_workspace_settings` |
 | `apps/web/src/app/api/workspaces/route.ts:217` | POST create a workspace in the target team (a member is refused, not moved to their personal team) | owner, admin, personal team | admin | `create_workspace` |
 | `apps/web/src/app/api/workspaces/[id]/route.ts:534` | DELETE workspace | owner | — | `delete_workspace` |
-| `apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx:74` | UI: config admin sections | owner, admin | — | `manage_workspace_settings` |
-| `apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx:202` | UI: delete workspace | owner | — | `delete_workspace` |
+| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:90` | UI: workspace settings (readiness, git config, merge policy, delivery) | owner, admin | — | `manage_workspace_settings` |
+| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:313` | UI: delete workspace | owner | — | `delete_workspace` |
 | `apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx:157` | UI: connect a repo | owner, admin | — | `manage_workspace_settings` |
-| `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/page.tsx:86` | UI: workspace settings, merge policy | owner, admin | — | `manage_workspace_settings` |
 | `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx:23` | UI: New workspace | owner, admin, personal team | — | `create_workspace` |
 | `apps/web/src/app/app/(protected)/settings/workspaces/rows.ts:99` | UI: teams a workspace can move to | owner, admin, personal team | — | `migrate_workspace` |
 | `apps/web/src/lib/migrate-access.ts:47` | migrate a workspace (both teams) | owner, admin, personal team | admin (route policy) | `migrate_workspace` |

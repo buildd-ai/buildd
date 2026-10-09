@@ -442,7 +442,7 @@ const notifyLandingNeedsHuman: EffectHandler = async (e) => {
   const view = await loadView({ deliveryId: e.deliveryId }, dbExec);
   const d = view.delivery;
   if (!d?.repoFullName || d.prNumber == null) return { outcome: 'skipped:no_pr' };
-  void notifyTeamOf({ workspaceId: d.workspaceId }, 'needsAttention', {
+  void notifyTeamOf({ workspaceId: d.workspaceId, prNumber: d.prNumber }, 'needsAttention', {
     title: `PR #${d.prNumber}: landing needs a person`,
     message: String(e.payload.detail ?? 'the platform could not bring the branch up to date'),
     url: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,

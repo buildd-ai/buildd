@@ -21,7 +21,7 @@ assertions:
 # Design System
 
 **Status:** Implemented (tokens describe what ships; the §3 type scale and the §4 primitives are built)
-**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/ui/StatePill.tsx`, `apps/web/src/components/ui/states.ts`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
+**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/ui/StatePill.tsx`, `apps/web/src/components/ui/states.ts`, `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (chat-specific geometry and tokens), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
 `ui_designer` skill, its `references/` files and `mobile-feed-spec.md` point here
@@ -601,8 +601,9 @@ notification text) follows the same rules as a PR lede:
 
 **`bun run design:check`** runs in CI (after `specs:check`) to stop new design debt landing.
 It is a **ratchet**: `scripts/design-check.baseline.json` records per-file counts for each rule,
-and the check fails only when a rule's total goes UP, so existing debt does not block CI.
-It flags five categories in `apps/web/src/`:
+and the check fails when a rule goes UP, so existing debt does not block CI. The first five rules
+compare the rule total (a violation may move between files); the last four are **per-file**: any
+file above its baseline count, or absent from the baseline, fails. It flags nine categories in `apps/web/src/`:
 
 1. **Arbitrary font sizes** (`text-[<n>px]`): use a type-scale role (§3).
 2. **Raw hex colors** in `className` / `style`: use a design token (§2).
@@ -611,15 +612,21 @@ It flags five categories in `apps/web/src/`:
    Avatars and dots are not flagged.
 4. **Hand-rolled `fixed inset-0` sheets**: use `Sheet` or `BottomSheet` (§4).
 5. **Local `StatusBadge` definitions**: use `StatePill` / `StatusPill` for a state, `Chip` for any other tag.
+6. **Hand-rolled framed boxes** (`border` + `rounded*` + `p-*` on one line): use `Card` / `.card` (§4) or a hairline row.
+7. **Uppercase / tracked labels** (`uppercase`, `tracking-[…]`): labels are sentence case (§1.1); use `Eyebrow` or `text-meta`.
+8. **Accent fills and accent selected states** (`bg-accent`, `bg-primary`, with or without alpha, or an accent
+   border/text/ring on a line that carries an active/selected condition): orange belongs to `PrimaryAction` and the
+   needs-you / live components (`NeedsYou*`, `NeedsInput*`, `DecisionCard`, `FlightStrip`); selected is ink (`Segmented`).
+9. **Tinted state boxes** (`bg-status-*/N`): use `Notice` for a block, `StatePill` for a state word.
 
 On failure it prints every violation in the files whose count rose, with file:line and the
-section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3.
+section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3 and 6–9. Rules 6–9 are line heuristics: a class list split across lines is not seen.
 
 The check fails closed: an unreadable file or unparseable baseline is an error, and in CI a
 missing baseline is an error rather than a fresh baseline.
 
 **Updating the baseline.** After paying debt down, run `bun run design:check --update` and commit
-the baseline — it lowers counts to today's and never raises them. To deliberately accept new debt
+the baseline — it writes today's counts for every file that still has violations (renamed or new files keep their entries) and refuses if any rule would fail the gate. To deliberately accept new debt
 (e.g. reverting a large feature), add `--allow-increase`; reviewers will see the baseline grow.
 
 ## Non-goals

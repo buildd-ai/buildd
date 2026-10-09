@@ -225,7 +225,7 @@ describe('TaskActionZone — a provider sign-in failure', () => {
     const zone = container.textContent ?? '';
     expect(zone).toContain('no working model key');
     expect(zone).not.toContain('Please run /login');
-    const link = container.querySelector('a[href="/app/settings/runners#agent-key"]');
+    const link = container.querySelector('a[href="/app/settings/models#agent-key"]');
     expect(link?.textContent).toBe('Add an agent key');
     const raw = button('Show raw output');
     expect(raw).toBeDefined();
