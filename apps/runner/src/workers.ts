@@ -3096,7 +3096,8 @@ export class WorkerManager {
   private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
     console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
-    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
+    // and a "Task failed" milestone right after "Paused" read as one.
     const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
@@ -6457,6 +6458,10 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName.startsWith('mcp__')) {
+            // An agent that starts with MCP calls (recall, update_progress)
+            // otherwise sits on "Setting up worktree..." until its first Bash.
+            worker.currentAction = `Using ${toolName.split('__')[1] || 'a tool'}`;
           } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
             // Asks nothing (e.g. `questions: []` used to "wait" on background
             // work). Not a question: never park, abort, or notify — the
