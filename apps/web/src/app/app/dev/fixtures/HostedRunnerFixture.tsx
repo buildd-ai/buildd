@@ -11,7 +11,7 @@
 import { HostedRunnerBanner } from '@/components/hosted-runner/HostedRunnerBanner';
 import { HostedRunnerUsageSection, type HostedRunnerWorkspaceRow } from '@/components/hosted-runner/HostedRunnerUsageSection';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
-import RunnerSizeSection from '../../(protected)/workspaces/[id]/config/RunnerSizeSection';
+import RunnerSizeSection from '../../(protected)/settings/workspace/[workspaceId]/RunnerSizeSection';
 import {
   forecastMonthEnd,
   hostedRunnerBannerText,

@@ -255,7 +255,7 @@ export default function StorageSection({ workspaces, fixture }: {
   }
 
   const addButton = canManage && !adding && scopeOptions.length > 0 ? (
-    <button type="button" className="btn btn-accent" data-testid="storage-add"
+    <button type="button" className="btn btn-sm" data-testid="storage-add"
       onClick={() => { setAdding(true); setMessage(null); }}>
       Add backend
     </button>
@@ -267,19 +267,22 @@ export default function StorageSection({ workspaces, fixture }: {
   return (
     <>
       <SettingsSection title="Backends" bare action={addButton}>
+        {/* Loading, an error and the no-backend default are one line each,
+            unframed; the card holds only real backends (each one an object). */}
+        {loading ? (
+          <p className="text-sm text-text-muted">Loading…</p>
+        ) : loadError ? (
+          <p className="text-sm text-status-error">{loadError}</p>
+        ) : sorted.length === 0 ? (
+          <div className="py-3 border-y border-border-default" data-testid="storage-empty">
+            <div className="text-sm font-medium text-text-primary">Buildd managed</div>
+            <p className="mt-0.5 text-xs text-text-secondary">
+              Evidence goes to buildd&apos;s own bucket and is kept 30 days.
+            </p>
+          </div>
+        ) : (
         <div data-testid="storage-backends" className="card divide-y divide-border-default p-0">
-          {loading ? (
-            <div className="px-4 py-4 text-sm text-text-muted">Loading…</div>
-          ) : loadError ? (
-            <div className="px-4 py-4 text-sm text-status-error">{loadError}</div>
-          ) : sorted.length === 0 ? (
-            <div className="px-4 py-4 space-y-1" data-testid="storage-empty">
-              <div className="font-mono text-[13px] font-semibold text-text-primary">buildd managed</div>
-              <p className="text-xs text-text-secondary">
-                Kept 30 days.
-              </p>
-            </div>
-          ) : sorted.map((b) => (
+          {sorted.map((b) => (
             <BackendRow
               key={b.id}
               backend={b}
@@ -298,6 +301,7 @@ export default function StorageSection({ workspaces, fixture }: {
             />
           ))}
         </div>
+        )}
         {message && !(message.backendId && message.backendId === openId && backends.some((b) => b.id === openId)) && (
           <div className="mt-3"><MessageLine message={message} /></div>
         )}

@@ -212,11 +212,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // `/app/team/new` is a static route, so a role with this slug could never
+    // `/app/settings/roles/new` is a static route, so a role with this slug could never
     // reach its own detail page. See lib/reserved-slugs.ts.
     if (isReservedRoleSlug(slug)) {
       return NextResponse.json(
-        { error: `"${slug}" is reserved because /app/team/${slug} is a built-in page. Pick a different slug.` },
+        { error: `"${slug}" is reserved because /app/settings/roles/${slug} is a built-in page. Pick a different slug.` },
         { status: 400 }
       );
     }

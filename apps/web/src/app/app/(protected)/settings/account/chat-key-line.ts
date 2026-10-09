@@ -4,9 +4,9 @@ import { CHAT_PROVIDER_INFO, type ChatKeySummary, type ChatProvider, type Provid
 const label = (id: string) => providerKeyCapability(id)?.label ?? id;
 
 /**
- * The single "Interactive AI · Uses" row on Account. Provider setup lives in Connections →
- * Model providers; a member only needs to know what their chat runs on and who
- * to ask, so there is never a grid of "not connected" cards here.
+ * The single "Your keys" line on Profile. Provider setup lives in Settings ›
+ * Models; a member only needs to know what their chat runs on and who to ask,
+ * so there is never a grid of "not connected" cards here.
  *
  * `offered` is what `ownKeyProviders` returns: with exactly one, "add your key"
  * names that provider.
@@ -28,7 +28,7 @@ export function chatKeyLine(
     return { text: only ? `Add your ${label(only)} key` : 'Add your own key', action: null };
   }
   return ctx.isAdmin
-    ? { text: 'Not set up', action: { href: '/app/settings/providers', label: 'Set it up' } }
+    ? { text: 'Not set up', action: { href: '/app/settings/models', label: 'Set it up' } }
     : { text: 'Not set up · ask an admin', action: null };
 }
 

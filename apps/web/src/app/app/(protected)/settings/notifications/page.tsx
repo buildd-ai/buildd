@@ -5,15 +5,20 @@ import { loadSettingsContext } from '../_lib/settings-context';
 
 export const dynamic = 'force-dynamic';
 
-/** Settings → Connections → Notifications. Yours first, then the team's channel. */
+/**
+ * Settings › Integrations › Notifications. One Channels list (the team's
+ * Pushover, yours, the team's webhook), then which events the team's channels get.
+ */
 export default async function NotificationsSettingsPage() {
   const { currentTeamId, workspaces, perms } = await loadSettingsContext();
   return (
     <SettingsPage title="Notifications">
-      <div className="space-y-8">
-        {currentTeamId && <PersonalPushoverKey teamId={currentTeamId} />}
-        <NotificationsSection workspaces={workspaces} currentTeamId={currentTeamId} canManage={perms.manage_team_notifications} />
-      </div>
+      <NotificationsSection
+        workspaces={workspaces}
+        currentTeamId={currentTeamId}
+        canManage={perms.manage_team_notifications}
+        personal={currentTeamId ? <PersonalPushoverKey teamId={currentTeamId} /> : undefined}
+      />
     </SettingsPage>
   );
 }
