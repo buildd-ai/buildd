@@ -391,7 +391,7 @@ export function projectMissionDelivery(m: MissionDeliveryInput, rules: MissionTa
   } else kind = focus?.delivery.kind ?? 'landed';
 
   if (!exception && focus) {
-    if (focus.delivery.kind === 'notlanded') exception = { tone: 'error', text: `${focus.title} finished but did not land` };
+    if (focus.delivery.kind === 'notlanded') exception = { tone: 'warning', text: 'A closed PR is being reconciled automatically; nothing for you to do yet' };
     else if (focus.delivery.kind === 'unavailable') exception = { tone: 'warning', text: `The audit for ${focus.title} could not run; it retries on its own` };
     else if (kind === 'waiting') exception = { tone: 'muted', text: focus.delivery.waitingOn === 'dependency' ? 'Waiting on earlier work, not on you' : 'Waiting on capacity, not on you' };
   }

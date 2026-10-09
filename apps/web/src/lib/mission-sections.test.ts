@@ -30,11 +30,24 @@ describe('mission sections', () => {
   it('Needs you is oldest first', () => {
     const s = buildMissionSections([
       row('new', [asking('t')], { lastAdvancedAt: 5000 }),
-      row('old', [closed('t')], { lastAdvancedAt: 1000 }),
+      row('old', [asking('t')], { lastAdvancedAt: 1000 }),
       row('none', [asking('t')], { lastAdvancedAt: null }),
     ]);
     expect(s[0].rows.map(r => r.delivery.id)).toEqual(['old', 'new', 'none']);
     expect(s[0].order).toBe('oldest first');
+  });
+
+  it('a closed unmerged PR is reconciled in motion, not under Needs you', () => {
+    const s = buildMissionSections([row('c', [closed('t')])]);
+    expect(s.map(x => x.key)).toEqual(['motion']);
+    expect(s[0].rows[0].delivery.exception?.text).not.toContain('t finished');
+  });
+
+  it('zero human-needed and mixed scenarios count only real asks', () => {
+    const none = buildMissionSections([row('a', [closed('t')]), row('b', [audit('t')])]);
+    expect(none.some(x => x.key === 'needs')).toBe(false);
+    const mixed = buildMissionSections([row('a', [closed('t')]), row('b', [asking('t')]), row('c', [asking('t')])]);
+    expect(mixed.find(x => x.key === 'needs')!.rows).toHaveLength(2);
   });
 
   it('In motion puts repairing first, then the quietest', () => {
