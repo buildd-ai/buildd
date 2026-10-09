@@ -14,47 +14,87 @@
  * z-50: Modals, dialogs, dropdowns (highest layer)
  */
 
-/* ── Buildd Design Tokens ── */
+/* ── Buildd Design Tokens ──
+ * Refined palette (docs/design/design-system.md §2). The prototype's names map
+ * onto the slots below: ground → --surface-1, card → --card / --surface-2,
+ * inset → --surface-3, line → --border, line-strong → --border-strong,
+ * ink → --text-primary, sub → --text-secondary/-desc/-muted, ok → --status-success,
+ * run → --status-info, act → --status-running / --accent-text, act-fill → --accent,
+ * bad → --status-error, dec → --status-warning. Tints, hatches, --faint,
+ * --inset, --line-soft, --q and the decision frame have no older slot and keep
+ * the prototype's name. Contrast is pinned by globals-contrast.test.ts. */
 
-/* Night — Warm Charcoal */
+/* Geometry: three radii and no shadows (tailwind.config.ts reads these). */
+:root {
+  /* Schibsted Grotesk for UI and titles, JetBrains Mono for counts, IDs and
+     lifecycle, Newsreader (.font-voice) for Buildd's voice. */
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  --radius-cell: 3px;
+  --radius-pill: 4px;
+  --radius-card: 6px;
+}
+
+/* Night */
 :root, [data-theme="dark"] {
   --surface-1: #1a1816;
-  --surface-2: #211f1c;
-  --surface-3: #2a2724;
-  --surface-4: #302c28;
+  --surface-2: #221f1c;
+  --surface-3: #26221e;
+  --surface-4: #2f2c28;
 
-  --card: #2a2724;
-  --card-hover: #302c28;
-  --card-finding: #252220;
-  --card-rightnow: #1f1d1a;
-  --card-border: rgba(255, 245, 230, 0.06);
-  /* Darker than the page, so the offset reads as depth. A light offset sat
-     beside the pale card outline and looked like a second border. */
-  --card-shadow: 5px 5px 0 0 rgba(0, 0, 0, 0.55);
+  --card: #221f1c;
+  --card-hover: #26221e;
+  --card-finding: #26221e;
+  --card-rightnow: #1a1816;
+  --card-border: rgba(255, 245, 230, 0.10);
+  --card-shadow: none;
+
+  --inset: #26221e;
+  --on-ink: #1a1816;
 
   --text-primary: #ede8e2;
   --text-secondary: #a89f96;
-  --text-muted: #968e86;
-  --text-desc: #9f978e;
+  --text-muted: #a89f96;
+  --text-desc: #a89f96;
+  /* Graphics only (strip outlines, idle marks): never text. */
+  --faint: #7a7269;
 
-  --border: rgba(255, 245, 230, 0.14);
-  --border-strong: rgba(255, 245, 230, 0.55);
+  --border: rgba(255, 245, 230, 0.10);
+  --line-soft: rgba(255, 245, 230, 0.07);
+  --border-strong: rgba(255, 245, 230, 0.22);
 
   --accent: #f4811f;
-  --accent-soft: rgba(244, 129, 31, 0.14);
+  --accent-soft: rgba(244, 129, 31, 0.12);
   --accent-text: #f59b4e;
-  --accent-deep: #f7a261;
+  --accent-deep: #f59b4e;
 
   --primary: #f4811f;
   --primary-hover: #d96e12;
   --primary-subtle: rgba(244, 129, 31, 0.10);
   --primary-ring: rgba(244, 129, 31, 0.30);
 
-  --status-success: #5ec495;
-  --status-running: #f4811f;
-  --status-warning: #e0b35a;
-  --status-error: #d97a71;
-  --status-info: #7aacca;
+  --status-success: #86c99d;
+  --status-running: #f59b4e;
+  --status-warning: #f59b4e;
+  --status-error: #e08a7f;
+  --status-info: #93b8d6;
+
+  /* State tints (a cell or chip fill behind its hue) and hatches (queued or
+     in-audit shares of a strip). */
+  --ok-tint: rgba(94, 196, 149, 0.13);
+  --ok-cell: #3d5a47;
+  --ok-hatch: #5e8f6d;
+  --run-tint: rgba(122, 172, 202, 0.13);
+  --run-hatch: #4f7896;
+  --act-hatch: #a5612c;
+  --bad-tint: rgba(217, 122, 113, 0.14);
+  --q: #a89f96;
+  --q-tint: rgba(255, 245, 230, 0.06);
+
+  /* Decisions (L3): the 1.5px frame and the hover on its action. */
+  --dec-frame: #f4811f;
+  --dec-hover: #f7b57a;
 
   --cat-bug: #d4736a;
   --cat-feature: #7aacca;
@@ -78,52 +118,70 @@
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
 
-  /* Task page: the hard shadow under an accent-bordered hero, ink on an accent
-     fill, and the muted fill for read ticks on the activity tape. */
-  --accent-shadow: 5px 5px 0 0 #f4811f;
+  /* Task page: the hero frame's shadow (none now), ink on an accent fill, and
+     the muted fill for read ticks on the activity tape. */
+  --accent-shadow: none;
   --on-accent: #1a1512;
   --tape-read: rgba(255, 245, 230, 0.28);
 
   color-scheme: dark;
 }
 
-/* Day — Warm Linen */
+/* Day */
 [data-theme="light"] {
-  --surface-1: #e7e3db;
-  --surface-2: #eee9e3;
-  --surface-3: #e5dfd8;
-  --surface-4: #dbd4cc;
+  --surface-1: #f7f5f0;
+  --surface-2: #fdfcf9;
+  --surface-3: #f2efe9;
+  --surface-4: #eeebe4;
 
-  --card: #ffffff;
-  --card-hover: #fdfcfa;
-  --card-finding: #faf8f5;
-  --card-rightnow: #f5f2ee;
-  --card-border: rgba(0, 0, 0, 0.06);
-  --card-shadow: 5px 5px 0 0 rgba(26, 21, 18, 0.95);
+  --card: #fdfcf9;
+  --card-hover: #f2efe9;
+  --card-finding: #f2efe9;
+  --card-rightnow: #f7f5f0;
+  --card-border: #e3ded5;
+  --card-shadow: none;
 
-  --text-primary: #1f1b17;
-  --text-secondary: #423c35;
-  --text-muted: #6a625a;
-  --text-desc: #5f5850;
+  --inset: #f2efe9;
+  --on-ink: #fdfcf9;
 
-  --border: rgba(0, 0, 0, 0.42);
-  --border-strong: #1a1512;
+  --text-primary: #26231f;
+  --text-secondary: #6b655c;
+  --text-muted: #6b655c;
+  --text-desc: #6b655c;
+  --faint: #8f887d;
 
-  --accent: #f4811f;
-  --accent-soft: rgba(244, 129, 31, 0.12);
-  --accent-text: #aa410b;
-  --accent-deep: #b5450c;
+  --border: #e3ded5;
+  --line-soft: #eae5dc;
+  --border-strong: #cfc8bc;
 
-  --primary: #f4811f;
-  --primary-hover: #d96e12;
-  --primary-subtle: rgba(244, 129, 31, 0.10);
-  --primary-ring: rgba(244, 129, 31, 0.28);
+  --accent: #e07a2e;
+  --accent-soft: #faeadb;
+  --accent-text: #9a4a12;
+  --accent-deep: #9a4a12;
 
-  --status-success: #3a9864;
-  --status-running: #d96e12;
-  --status-warning: #9a7a20;
-  --status-error: #9e3b34;
-  --status-info: #5088b0;
+  --primary: #e07a2e;
+  --primary-hover: #c2611f;
+  --primary-subtle: rgba(224, 122, 46, 0.10);
+  --primary-ring: rgba(224, 122, 46, 0.28);
+
+  --status-success: #2f6440;
+  --status-running: #9a4a12;
+  --status-warning: #a9521a;
+  --status-error: #97391f;
+  --status-info: #2d5a7c;
+
+  --ok-tint: #e6efe7;
+  --ok-cell: #b9d2bf;
+  --ok-hatch: #8db89a;
+  --run-tint: #e4ecf2;
+  --run-hatch: #7fa3c0;
+  --act-hatch: #e6a774;
+  --bad-tint: #f6e5df;
+  --q: #5f594f;
+  --q-tint: #eeebe4;
+
+  --dec-frame: #c2611f;
+  --dec-hover: #7f3c11;
 
   --cat-bug: #c0524a;
   --cat-feature: #5088b0;
@@ -142,10 +200,10 @@
   --flow-released: var(--status-success);
   --flow-lost: var(--status-error);
 
-  --chrome-bg: rgba(247, 244, 240, 0.92);
-  --chrome-sidebar: #f7f4f0;
+  --chrome-bg: rgba(247, 245, 240, 0.92);
+  --chrome-sidebar: #f7f5f0;
 
-  --accent-shadow: 5px 5px 0 0 #1a1512;
+  --accent-shadow: none;
   --on-accent: #1a1512;
   --tape-read: rgba(26, 21, 18, 0.30);
 
@@ -153,12 +211,12 @@
 }
 
 body {
-  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-family: var(--font-sans);
   background-color: var(--surface-1);
   color: var(--text-primary);
 }
 
-/* Brutalist focus — square, on-palette (kills the browser-default blue ring) */
+/* Focus ring on-palette (kills the browser-default blue ring) */
 :focus { outline: none; }
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -172,10 +230,10 @@ input[type="radio"] {
   accent-color: var(--accent);
 }
 
-/* Square custom radio and checkbox (opt in with the class plus appearance-none).
+/* Custom radio and checkbox (opt in with the class plus appearance-none).
    Native radios render as circles next to square checkboxes; these match the
-   card language: a 2px ink box, the accent fill when checked. A radio shows an
-   inset square, a checkbox an ink tick. */
+   control language: a 1px control border, the accent fill when checked. A
+   radio shows an inset square, a checkbox an ink tick. */
 .control-radio,
 .control-check {
   appearance: none;
@@ -183,8 +241,8 @@ input[type="radio"] {
   width: 16px;
   height: 16px;
   margin: 0;
-  border: 2px solid var(--border-strong);
-  border-radius: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-cell);
   background: var(--surface-1);
   cursor: pointer;
 }
@@ -204,13 +262,13 @@ input[type="radio"] {
   cursor: default;
 }
 
-/* Brutalist form controls — one 2px ink border everywhere, matching .card.
+/* Form controls: one 1px control border and the pill radius everywhere.
    Ties editor/form pages to the dashboard (single border language). */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select {
-  border: 2px solid var(--border-strong) !important;
-  border-radius: 0 !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-pill) !important;
 }
 
 /* The text field inside a brand Combobox: the wrapper draws the border. */
@@ -245,9 +303,9 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
-/* Block-ticker spinner — brutalist replacement for animate-spin+rounded-full rings
-   (Tailwind's borderRadius scale is zeroed, so ring spinners render as rotating
-   squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather
+/* Block-ticker spinner — the replacement for animate-spin+rounded-full rings
+   (there is no circle in the radius scale, so ring spinners render as rotating
+   rounded squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather
    than glide. Bar N's animation-delay staggers which 20% slice it lights in. */
 @keyframes block-tick {
   0%, 20% { opacity: 1; }
@@ -287,7 +345,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .glow-dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: var(--radius-cell);
     flex-shrink: 0;
   }
   .glow-dot-success {
@@ -318,10 +376,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 
 @layer components {
+  /* L2 surface: a 1px hairline frame, no shadow. A focused card swaps the
+     frame for 1.5px --text-primary, a decision for 1.5px --dec-frame on --inset. */
   .card {
     background: var(--card);
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
     box-shadow: var(--card-shadow);
     transition: background 150ms ease, transform 150ms ease;
   }
@@ -333,7 +393,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 @layer components {
   .section-label {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
@@ -344,7 +404,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 @layer components {
   .type-label {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 500;
     letter-spacing: 0.8px;
@@ -354,13 +414,13 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 @layer components {
   .health-pill {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
     padding: 2px 8px;
-    border-radius: 0;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border-strong);
     background: transparent;
     color: var(--text-secondary);
@@ -418,12 +478,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
   /* Filter pill bar */
   .filter-pill {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.3px;
     padding: 5px 12px;
-    border-radius: 3px;
+    border-radius: var(--radius-pill);
     color: var(--text-muted);
     background: transparent;
     border: none;
@@ -433,16 +493,16 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
   .filter-pill:hover {
     color: var(--text-secondary);
-    background: rgba(255, 245, 230, 0.04);
+    background: var(--q-tint);
   }
   .filter-pill-active {
-    background: rgba(255, 245, 230, 0.08);
+    background: var(--surface-4);
     color: var(--text-primary);
   }
 
   /* Section header label */
   .section-label-missions {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 2px;
@@ -458,7 +518,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 @layer components {
   /* ── Buttons ──
-   * One scale, one border language (square, 2px ink) so an action row reads as
+   * One scale, one border language (1px control border, pill radius) so an action row reads as
    * a set instead of a pile of one-offs. Sizes: .btn = 32px, .btn-lg = 40px.
    * Tones: default (neutral ink), -primary (solid accent), -accent, -danger,
    * -warning, -quiet (borderless text action). */
@@ -469,11 +529,11 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     gap: 6px;
     height: 32px;
     padding: 0 12px;
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--text-primary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
     line-height: 1;
@@ -526,7 +586,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .btn-quiet:hover:not(:disabled) { background: transparent; color: var(--text-primary); }
 
   /* ── Status pills ──
-   * Square, mono, uppercase — same family as .health-pill but tone-based, for
+   * Mono, uppercase — same family as .health-pill but tone-based, for
    * connection/credential state rather than task health. The leading square
    * dot comes from ::before so callers never hand-roll one. */
   .status-pill {
@@ -535,10 +595,10 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     gap: 6px;
     padding: 3px 8px;
     border: 1px solid var(--border-strong);
-    border-radius: 0;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--text-secondary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
@@ -559,23 +619,23 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .status-pill-plain::before { display: none; }
 
   /* ── Inset panel ──
-   * Recessed detail block inside a .card (metadata, toggle rows). Square, and
-   * bordered rather than floating on a translucent fill. */
+   * Recessed detail block inside a .card (metadata, toggle rows), bordered
+   * rather than floating on a translucent fill. */
   .inset-panel {
     background: var(--surface-3);
-    border: 1px solid var(--border);
-    border-radius: 0;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-pill);
     padding: 10px 12px;
   }
 
 
   /* ── Segmented control ──
-   * Square, single shared 2px frame with hairline dividers. Used wherever a
+   * One shared 1px control frame with hairline dividers. Used wherever a
    * small set of mutually exclusive options replaces a select. */
   .seg {
     display: inline-flex;
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-pill);
     overflow: hidden;
   }
   .seg-item {
@@ -583,7 +643,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     height: 32px;
     background: transparent;
     color: var(--text-secondary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
@@ -599,10 +659,10 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .seg-item:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ── Inline notice ──
-   * Square status banner at the top of a section (saved / failed / needs action). */
+   * Status banner at the top of a section (saved / failed / needs action). */
   .notice {
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-card);
     padding: 10px 12px;
     font-size: 13px;
   }
@@ -614,7 +674,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
    * The small caption above an input or select in a settings form. */
   .field-label {
     display: block;
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 1px;
@@ -679,10 +739,10 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --fleet-border-mid: color-mix(in srgb, var(--border-strong) 42%, transparent);
   --fleet-hatch: color-mix(in srgb, var(--border-strong) 8%, transparent);
 }
-:root {
-  --fleet-faint: color-mix(in srgb, var(--text-muted) 70%, var(--surface-1));
-  --fleet-ok-soft: color-mix(in srgb, var(--status-success) 14%, transparent);
-  --fleet-err-soft: color-mix(in srgb, var(--status-error) 16%, transparent);
+:root, [data-theme] {
+  --fleet-faint: var(--faint);
+  --fleet-ok-soft: var(--ok-tint);
+  --fleet-err-soft: var(--bad-tint);
 }
 @layer components {
   .fleet-hatch { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 2px, transparent 2px 6px); }

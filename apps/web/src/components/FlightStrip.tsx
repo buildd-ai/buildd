@@ -105,7 +105,7 @@ function fillFor(bar: FlightStripBar): string | null {
 
 // ─── Label geometry (addendum D4: labels never overlap, lane labels never truncate) ───
 
-/** IBM Plex Mono advance width is 600/1000 em for every glyph. */
+/** JetBrains Mono (the mono face) advances 600/1000 em for every glyph. */
 const MONO_CHAR_EM = 0.6;
 const AXIS_FONT = 8.5;
 const LANE_FONT = 8.5;
