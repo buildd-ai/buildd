@@ -27,7 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
@@ -730,6 +730,45 @@ async function kernelConflictRetry(
   return out;
 }
 
+/** Reconcile inferred inverse waits on the canonical queued repair before waking it. */
+async function reconcilePendingRepairEdges(
+  row: Pick<typeof tasks.$inferSelect, 'id' | 'status' | 'taskClass' | 'conflictRetryPrNumber' | 'dependsOn' | 'pathDeclaration'>,
+  workspaceId: string,
+  subjectTaskId: string,
+) {
+  if (row.status !== 'pending' || row.taskClass !== 'attempt' || row.conflictRetryPrNumber == null) return;
+  const deps = row.dependsOn ?? [];
+  if (!deps.length) return;
+  const decl = row.pathDeclaration;
+  // Tagged rows preserve every caller edge. The legacy conflict dispatcher
+  // copied no caller edges, so untagged pre-v2 attempts have only inferred ones.
+  const inferred = new Set(decl?.inferredDependsOn ?? (decl?.overlapPolicy == null ? deps : []));
+  if (!inferred.size) return;
+  const subject = await db.query.tasks.findFirst({ where: eq(tasks.id, subjectTaskId), columns: { pathManifest: true } });
+  if (!subject) return;
+  const candidates = await db.query.tasks.findMany({
+    where: and(eq(tasks.workspaceId, workspaceId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+    columns: { id: true, status: true, pathManifest: true, dependsOn: true },
+  });
+  const graph = new Map(candidates.map(t => [t.id, t.dependsOn]));
+  const remove = new Set(candidates.filter(t => inferred.has(t.id) && (
+    isDownstreamOf(t.id, subjectTaskId, graph) || (t.status === 'pending' &&
+      findBlockingPr(t.pathManifest ?? [], [{ pathManifest: subject.pathManifest, prNumber: row.conflictRetryPrNumber }]))
+  )).map(t => t.id));
+  if (!remove.size) return;
+  await db.update(tasks).set({
+    dependsOn: deps.filter(id => !remove.has(id)),
+    ...(decl ? { pathDeclaration: { ...decl,
+      ...(decl.inferredDependsOn ? { inferredDependsOn: decl.inferredDependsOn.filter(id => !remove.has(id)) } : {}),
+      ...(decl.softOverlaps ? { softOverlaps: decl.softOverlaps.filter(e => !remove.has(e.taskId)) } : {}),
+    } } : {}),
+  }).where(and(eq(tasks.id, row.id), eq(tasks.status, 'pending'),
+    // A concurrent claim, declaration or dependency edit wins over this read.
+    sql`${tasks.dependsOn} = ${JSON.stringify(deps)}::jsonb`,
+    sql`${tasks.pathDeclaration} IS NOT DISTINCT FROM ${decl ? JSON.stringify(decl) : null}::jsonb`,
+  ));
+}
+
 // ── S37: an existing conflict fix is recovered, not duplicated ──────────────
 
 export {
@@ -823,11 +862,12 @@ export async function dispatchConflictRetry(
       ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
+    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true, taskClass: true, dependsOn: true, pathDeclaration: true },
   });
   if (liveRetry) {
     // S37: an existing remediation is the canonical one. A stalled one is
     // re-dispatched or repaired, never shadowed by a second fix task.
+    await reconcilePendingRepairEdges(liveRetry, workspaceId, taskId);
     const recovery = await recoverStalledConflictFix(liveRetry);
     console.log(
       `[conflict-retry] PR #${prNumber} already has live fix attempt ${liveRetry.id} — not filing another` +
@@ -1143,7 +1183,7 @@ export async function dispatchConflictRetry(
         eq(tasks.workspaceId, workspaceId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
       ),
-      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true, status: true },
     });
     const dependsOnById = new Map<string, readonly string[] | null | undefined>(
       inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
@@ -1163,7 +1203,15 @@ export async function dispatchConflictRetry(
           // exists to unblock — an edge (hard or soft) repair→t would make the
           // repair wait on something that is itself waiting on the repair's own
           // subject, a structural deadlock rather than real serialization.
-          return isDownstreamOf(t.id, taskId, dependsOnById);
+          if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
+          // Pending work with no stored edge can still wait on this PR through
+          // the claim route's open-PR backstop. Reuse that exact predicate before
+          // storing either a hard edge or soft evidence in the reverse direction.
+          // Already-admitted work can finish without this PR landing, so keep its
+          // genuine migration / serialized-surface ordering.
+          return t.status === 'pending' && !!findBlockingPr(t.pathManifest ?? [], [
+            { pathManifest: task.pathManifest as string[] | null, prNumber },
+          ]);
         },
         isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, gitConfig, kind),
       },
