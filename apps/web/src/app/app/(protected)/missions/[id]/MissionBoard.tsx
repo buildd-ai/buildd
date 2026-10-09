@@ -766,7 +766,7 @@ function Ticker({ model, now, link }: { model: MissionBoardModel; now: number; l
  * planning and what they are doing, live (milestones stream in over the same
  * store the tiles read), instead of an empty "Tasks 0/0" column.
  */
-function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable<MissionBoardModel['planning']>; now: number; link: BoardLinkContext }) {
+export function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable<MissionBoardModel['planning']>; now: number; link: BoardLinkContext }) {
   const live = useMissionLiveSnapshot()[p.taskId];
   const milestone = live?.milestones?.length ? live.milestones[live.milestones.length - 1].label : p.lastMilestone;
   const action = live?.currentAction ?? p.currentAction;
@@ -803,7 +803,7 @@ function PlanningPlaceholder({ planning: p, now, link }: { planning: NonNullable
 
 // ── Completion ───────────────────────────────────────────────────────────────
 
-function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; text: string | null; visual: VisualReviewModel | null }) {
+export function CompletionRecord({ model, text, visual }: { model: MissionBoardModel; text: string | null; visual: VisualReviewModel | null }) {
   const r = model.record;
   const review = visual && visual.summary.shots > 0 ? visual.summary : null;
   const d = describeMissionDuration({ activeMs: model.activeMs, openMs: (model.endedAt ?? model.now) - model.startedAt });
