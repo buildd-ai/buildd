@@ -50,10 +50,22 @@ per workspace and per member, optionally per surface (coding agents or chat and
 inference). A member can set a lower personal maximum for themselves. The server
 enforces the result on every request. Hiding a choice in a picker does not count.
 
-This is not the chat setting **New chats start at / Cap at this tier**
-(`teams.chatDefaultTier`, `chatCapNewSessionTier`). That setting only picks the
-tier a new conversation starts on, and the person can change it afterwards. A
-ceiling is a limit the person cannot override.
+This is not the chat setting **Starting tier for new chats**
+(`teams.chatDefaultTier`, and the retired `chatCapNewSessionTier` reset). That
+setting only picks the tier a new conversation starts on, and the person can
+change it afterwards. A ceiling is a limit the person cannot override.
+
+### Settings UI
+
+Settings > Model tiers > **Maximum allowed** (`TierLimitsSection`) reads
+`GET /api/teams/[id]/model-ceilings` and refetches after every write. It shows
+the effective Coding and Chat maximum with each layer behind it, a personal
+"My maximum" (options above what the team or admin allows are disabled with the
+reason), and for admins the team maximum, optional Coding/Chat-only maximums,
+workspace and member maximums. The browser never resolves a maximum itself and
+a refused write shows the server's message. The old "Cap at this tier" switch
+has no control: a team that still has it on sees it explained, with "Turn the
+reset off" or "Make <tier> the Chat maximum" (an explicit, admin-made choice).
 
 ### Tiers and layers
 
