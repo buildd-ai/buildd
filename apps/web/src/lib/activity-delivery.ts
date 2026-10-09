@@ -351,9 +351,9 @@ function buildEvidence(d: Delivery): EvidenceEntry[] {
 /** Attention order, the same one the mission projection uses to pick its chip. */
 const ATTENTION: readonly DeliveryKind[] = ['needs', 'notlanded', 'unavailable', 'repair', 'audit', 'landing', 'build', 'waiting', 'held', 'planning', 'landed'];
 const rank = (k: DeliveryKind | null) => (k ? ATTENTION.indexOf(k) : ATTENTION.length);
-const IN_MOTION: ReadonlySet<DeliveryKind> = new Set(['build', 'audit', 'repair', 'landing', 'unavailable', 'needs', 'notlanded']);
-/** A delivery that ended without landing stays in Now this long, then lives in History. */
-export const NOT_LANDED_NOW_WINDOW_MS = 48 * 60 * 60 * 1000;
+const IN_MOTION: ReadonlySet<DeliveryKind> = new Set(['build', 'audit', 'repair', 'landing', 'unavailable', 'needs']);
+const FINISHED: ReadonlySet<DeliveryKind> = new Set(['landed', 'notlanded']);
+const isInMotionKind = (k: DeliveryKind) => !FINISHED.has(k);
 /** Waiting rows shown per group before they fold into a count. */
 export const WAITING_ROWS_PER_GROUP = 2;
 
@@ -422,8 +422,8 @@ export function buildActivityNow(input: {
     const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
     // A mission task reads the mission's own task projection, never a second one.
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
-    if (!delivery.open || delivery.kind === 'landed') continue;
-    if (delivery.kind === 'notlanded' && input.now - latestAt(d) > NOT_LANDED_NOW_WINDOW_MS) continue;
+    // Now is work in motion. A finished delivery, landed or not, is History's.
+    if (!isInMotionKind(delivery.kind)) continue;
     const key = d.root.missionId;
     const g = groups.get(key) ?? { rows: [], title: d.root.missionTitle ?? null };
     g.rows.push(toRow(d, delivery));
@@ -592,21 +592,24 @@ export function buildActivityHistory(input: {
 }): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));
   return foldDeliveries(input.tasks, input.rules)
-    .map(d => {
+    .flatMap(d => {
       const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
       const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+      const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
+      // History is finished work only; in-flight deliveries are Now's.
+      if (!FINISHED.has(kind)) return [];
       const steps = stepsFor(d, delivery);
-      return {
+      return [{
         id: d.root.id,
         title: d.root.title,
         href: taskHref(d.root.id),
         missionId: d.root.missionId,
         missionTitle: mission?.title ?? d.root.missionTitle ?? null,
-        kind: d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind,
+        kind,
         repairRounds: delivery.repairRounds,
         at: steps[steps.length - 1]?.at ?? 0,
         steps,
-      };
+      }];
     })
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
@@ -650,4 +653,19 @@ export function filterEpisodes(episodes: readonly Episode[], f: { scope: Activit
       || (f.outcome === 'landed' && e.kind === 'landed')
       || (f.outcome === 'retries' && e.repairRounds > 0)
       || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))));
+}
+
+// ── Paging (client) ─────────────────────────────────────────────────────────
+
+/** Episodes per History page. */
+export const HISTORY_PAGE_SIZE = 20;
+
+/**
+ * One page of an already filtered list: the newest `pages * HISTORY_PAGE_SIZE`.
+ * Filters run before the slice, so a page is never empty while a match exists
+ * further down the list.
+ */
+export function pageEpisodes(episodes: readonly Episode[], pages: number): { shown: Episode[]; remaining: number } {
+  const n = Math.max(1, pages) * HISTORY_PAGE_SIZE;
+  return { shown: episodes.slice(0, n), remaining: Math.max(0, episodes.length - n) };
 }
