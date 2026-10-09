@@ -16,6 +16,7 @@ import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/co
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
+import type { QueuedInterval, RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -286,4 +287,55 @@ export async function loadHomeFleet(input: {
       selfHealed: healedRows[0]?.n ?? 0,
     },
   };
+}
+
+/**
+ * What `idleWhileQueued` reads for a window: every run's span (runner slots
+ * and sessions both count as busy) and each claimable task's wait. A task is
+ * waiting from creation to its first run; one with `dependsOn` is held by
+ * something else, not by a slot, so it is left out. Capped like the lanes.
+ */
+export async function loadQueueHistory(input: { wsIds: string[]; from: number; now: number }): Promise<{ runs: RunInterval[]; queued: QueuedInterval[] }> {
+  const { wsIds, from, now } = input;
+  if (wsIds.length === 0) return { runs: [], queued: [] };
+  const fromDate = new Date(from);
+  const [runRows, taskRows] = await Promise.all([
+    db
+      .select({ startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt, status: workers.status })
+      .from(workers)
+      .where(and(
+        inArray(workers.workspaceId, wsIds),
+        isNotNull(workers.startedAt),
+        or(inArray(workers.status, [...LIVE_WORKER_STATUSES]), gte(workers.updatedAt, fromDate)),
+      ))
+      .limit(FLEET_WORKER_ROW_CAP * 2),
+    db
+      .select({
+        createdAt: tasks.createdAt,
+        status: tasks.status,
+        firstStart: sql<Date | null>`(select min(${workers.startedAt}) from ${workers} where ${workers.taskId} = ${tasks.id})`,
+      })
+      .from(tasks)
+      .where(and(
+        inArray(tasks.workspaceId, wsIds),
+        sql`coalesce(jsonb_array_length(${tasks.dependsOn}), 0) = 0`,
+        or(
+          eq(tasks.status, 'pending'),
+          gte(tasks.updatedAt, fromDate),
+        ),
+      ))
+      .limit(FLEET_WORKER_ROW_CAP * 2),
+  ]);
+  const live = new Set<string>(LIVE_WORKER_STATUSES);
+  const runs: RunInterval[] = runRows.map(r => ({
+    start: new Date(r.startedAt!).getTime(),
+    end: live.has(r.status) ? null : new Date(r.completedAt ?? r.updatedAt ?? now).getTime(),
+  }));
+  const queued: QueuedInterval[] = [];
+  for (const t of taskRows) {
+    const created = new Date(t.createdAt).getTime();
+    if (t.firstStart) queued.push({ from: created, to: new Date(t.firstStart).getTime() });
+    else if (t.status === 'pending') queued.push({ from: created, to: null });
+  }
+  return { runs, queued };
 }
