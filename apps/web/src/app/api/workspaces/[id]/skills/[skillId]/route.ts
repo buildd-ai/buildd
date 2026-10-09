@@ -101,6 +101,8 @@ export async function GET(
                         eq(workspaceSkills.id, skillId),
                         isNull(workspaceSkills.workspaceId),
                         eq(workspaceSkills.teamId, ws.teamId),
+                        // Personal roles are read through /api/roles/[id].
+                        isNull(workspaceSkills.ownerUserId),
                     ),
                 }) ?? undefined;
             }

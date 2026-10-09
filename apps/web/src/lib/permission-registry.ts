@@ -34,6 +34,7 @@ export interface PermissionDef {
 
 export const OWNER_ADMIN = ['owner', 'admin'] as const satisfies readonly TeamRole[];
 const OWNER_ONLY = ['owner'] as const satisfies readonly TeamRole[];
+const EVERY_ROLE = ['owner', 'admin', 'member'] as const satisfies readonly TeamRole[];
 
 /**
  * Each entry reproduces the rule its call sites apply today — see the
@@ -213,6 +214,11 @@ export const PERMISSIONS = {
     defaultRoles: OWNER_ADMIN,
     minKeyLevel: 'admin',
   },
+  create_personal_roles: {
+    description: 'Create agent roles for yourself, edit and delete your own, and share them with the team.',
+    defaultRoles: EVERY_ROLE,
+    minKeyLevel: 'worker',
+  },
 } as const satisfies Record<string, PermissionDef>;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -225,7 +231,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: read
   { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_team_credentials', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
   { title: 'Workspaces', permissions: ['create_workspace', 'manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory', 'delegate_schedule_access'] },
   { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases'] },
-  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles'] },
+  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments', 'manage_agent_roles', 'create_personal_roles'] },
 ];
 
 export function isTeamRole(value: unknown): value is TeamRole {

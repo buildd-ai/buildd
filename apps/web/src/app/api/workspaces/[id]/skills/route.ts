@@ -106,10 +106,12 @@ export async function GET(
         // Fetch workspace-scoped AND team-level skills in one query.
         // Workspace-scoped rows (workspaceId = id) take precedence over team-level
         // rows (workspaceId IS NULL, teamId = ws.teamId) for the same slug.
+        // Personal roles (ownerUserId set) are listed by GET /api/roles,
+        // which filters them by owner and visibility; never here.
         const scopeClause = ws
             ? or(
                 eq(workspaceSkills.workspaceId, id),
-                and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId)),
+                and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId), isNull(workspaceSkills.ownerUserId)),
               )
             : eq(workspaceSkills.workspaceId, id);
 
@@ -167,6 +169,15 @@ export async function POST(
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
             mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId, defaultBackend } = body;
+
+        // Personal roles are team-level rows owned by one member; they are
+        // created and edited through /api/roles, never as workspace skills.
+        if (body.personal !== undefined || body.ownerUserId !== undefined) {
+            return NextResponse.json(
+                { error: 'Personal roles are created with POST /api/roles { personal: true } and shared with POST /api/roles/[id]/share' },
+                { status: 400 }
+            );
+        }
 
         if (!name || !content) {
             return NextResponse.json(
