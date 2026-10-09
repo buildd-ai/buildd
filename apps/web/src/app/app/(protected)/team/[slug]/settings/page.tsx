@@ -8,7 +8,7 @@ import { getUserWorkspaceIds, getUserTeamIds, getUserTeamRole } from '@/lib/team
 import { getTeamPermissionOverrides, roleHas, can } from '@/lib/permissions';
 import { findVisibleTeamLevelRole, isPersonalRole } from '@/lib/personal-roles';
 import { isUuid } from '@/lib/uuid';
-import { personalRoleAccess } from '../../_lib/personal-roles-view';
+import { personalRoleAccess } from '@/lib/personal-roles-shared';
 import { buildDelegateOptions } from '@/lib/delegate-options';
 import { DEFAULT_ROLES, seedDefaultRolesForTeam } from '@/lib/default-roles';
 import { TeamRoleEditor } from './TeamRoleEditor';

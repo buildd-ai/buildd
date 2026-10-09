@@ -4,7 +4,7 @@ import Link from 'next/link';
 import type { RoleWithActivity, PersonalRoleEntry } from './page';
 import { countOf } from '@/lib/plural';
 import Chip from '@/components/ui/Chip';
-import { personalRoleEditorPath } from './_lib/personal-roles-view';
+import { personalRoleEditorPath } from '@/lib/personal-roles-shared';
 
 interface Props {
   activeRoles: RoleWithActivity[];

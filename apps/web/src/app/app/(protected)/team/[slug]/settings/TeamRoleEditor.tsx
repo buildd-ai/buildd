@@ -15,7 +15,7 @@ import { NOT_FOR_MAX, WHEN_TO_USE_MAX, WHEN_TO_USE_MIN, readRoleRouting } from '
 import { OPERATOR_ROLE_SLUG } from '@/lib/permission-registry';
 import { OperatorAccessSection } from './OperatorAccessSection';
 import Chip from '@/components/ui/Chip';
-import { responseErrorMessage, type RoleVisibility } from '../../_lib/personal-roles-view';
+import { responseErrorMessage, type RoleVisibility } from '@/lib/personal-roles-shared';
 
 type Scope = 'team' | 'workspace';
 

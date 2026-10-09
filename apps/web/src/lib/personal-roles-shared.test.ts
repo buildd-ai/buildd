@@ -7,7 +7,7 @@ import {
   personalRoleEditorPath,
   responseErrorMessage,
   splitTeamLevelRows,
-} from './personal-roles-view';
+} from './personal-roles-shared';
 
 const VIEWER = 'user-viewer';
 const OTHER = 'user-other';

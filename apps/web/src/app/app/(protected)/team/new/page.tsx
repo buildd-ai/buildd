@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
-import { initialRoleKind, newRoleKinds } from '../_lib/personal-roles-view';
+import { initialRoleKind, newRoleKinds } from '@/lib/personal-roles-shared';
 import { TeamRoleForm } from './TeamRoleForm';
 
 export const dynamic = 'force-dynamic';

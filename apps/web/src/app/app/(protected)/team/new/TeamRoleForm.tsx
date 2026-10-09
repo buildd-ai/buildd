@@ -8,7 +8,7 @@ import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect'
 import { ModelPicker } from '@/components/ModelPicker';
 import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE } from '@/lib/role-tool-scope';
 import { ColorSwatches, ROLE_COLOR_VALUES } from '@/components/ColorSwatches';
-import { newRoleRequestBody, responseErrorMessage, type NewRoleKind } from '../_lib/personal-roles-view';
+import { newRoleRequestBody, responseErrorMessage, type NewRoleKind } from '@/lib/personal-roles-shared';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',

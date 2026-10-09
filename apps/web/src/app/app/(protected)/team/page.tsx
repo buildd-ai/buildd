@@ -9,7 +9,7 @@ import { getUserWorkspaceIds, getTeamWorkspaceIds, resolveActiveTeamId } from '@
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { can } from '@/lib/permissions';
 import { TeamGrid } from './TeamGrid';
-import { splitTeamLevelRows, type RoleVisibility } from './_lib/personal-roles-view';
+import { splitTeamLevelRows, type RoleVisibility } from '@/lib/personal-roles-shared';
 
 export const dynamic = 'force-dynamic';
 
