@@ -13,7 +13,7 @@ import { workers, tasks, workspaces, missionNotes } from '@buildd/core/db/schema
 import { eq, and, inArray, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { OPEN_TASK_STATUSES, agentReviewsDataMigrations } from '@buildd/shared';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { policyValue } from '@/lib/policy-overrides';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
@@ -330,6 +330,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
             pathManifest: ((w.task as any)?.pathManifest as string[] | null | undefined) ?? null,
             draft: w.prIsDraft ?? null,
             linesChanged: w.linesAdded != null || w.linesRemoved != null ? (w.linesAdded ?? 0) + (w.linesRemoved ?? 0) : null,
+            agentReviewsDataMigrations: agentReviewsDataMigrations((ws.gitConfig as { mergePolicy?: unknown } | null | undefined)?.mergePolicy),
           }),
         }];
       });
