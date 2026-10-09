@@ -25,7 +25,7 @@ const PREAMBLE_MAX = 100;
  */
 const SUBSTANCE = new RegExp(
   [
-    String.raw`\b(found|finds|discovered|noticed|turns\s+out|confirm(s|ed)?|verified)\b`,
+    String.raw`\b(found|finds|discovered|noticed|turns\s+out|confirms?|confirmed|verified)\b`,
     String.raw`\b(because|caused|root\s+cause|the\s+(bug|issue|problem|cause|fix)\s+(is|was))\b`,
     String.raw`\b(decid(e|ed|ing)|chose|going\s+with|instead\s+of|conclu(de|ded|sion))\b`,
     String.raw`\b(warn(ing)?|careful|risk|danger|broke(n)?|regress(ion|ed)?)\b`,
