@@ -28,12 +28,16 @@ function hhmm(iso: string, tz?: string | null): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(tz ? { timeZone: tz } : {}) });
 }
 
-/** `40m of work` + `35d open`; just the work when the two are about the same. */
+/**
+ * `40m agent work` + `35d to ship`; just the work when the two are about the
+ * same. The span is filed → shipped, so it is labelled as that: a bare "open"
+ * under a big number read as time spent working.
+ */
 export function shippedDurationFacts(m: Pick<HomeShippedMission, 'activeMs' | 'durationMs'>): Array<[string, string]> {
   if (m.durationMs == null) return [];
   const d = describeMissionDuration({ activeMs: m.activeMs === undefined ? m.durationMs : m.activeMs, openMs: m.durationMs });
-  if (d.work == null) return [[d.open, 'open']];
-  return d.showOpen ? [[d.work, 'of work'], [d.open, 'open']] : [[d.work, 'of work']];
+  if (d.work == null) return [[d.open, 'to ship']];
+  return d.showOpen ? [[d.work, 'agent work'], [d.open, 'to ship']] : [[d.work, 'agent work']];
 }
 
 /** "Learn more" lands on the mission page's What shipped header. */
@@ -88,6 +92,8 @@ export function NeedsYouStack({
   held,
   shipped,
   timeZone,
+  lead,
+  foot,
   children,
 }: {
   count: number;
@@ -95,18 +101,21 @@ export function NeedsYouStack({
   held: readonly HomeHeldMission[];
   shipped: readonly HomeShippedMission[];
   timeZone?: string | null;
+  /** Full-row content above the cards (the initiative chips). */
+  lead?: ReactNode;
+  /** Full-row content below the cards (notes, resolved escalations). */
+  foot?: ReactNode;
+  /** Cards only: anything else in the auto-fit grid keeps every track open. */
   children?: ReactNode;
 }) {
   // page.tsx passes `{cond && <…/>}` children, so "no children" arrives as
   // `[false, false]` — truthy. `Children.toArray` drops false/null/undefined,
   // which is the question that matters: will anything render under the heading?
-  const hasChildren = Children.toArray(children).length > 0;
-  // Children are not all asks: the action queue also carries IN FLIGHT cards
-  // (the platform's next move, not yours). So "nothing needs you" is the count
-  // — the same number as the headline and the stat — not "no children".
-  // Without this the heading sat over nothing but "IN FLIGHT 1".
-  const nothingNeedsYou = count === 0 && questions.length === 0 && held.length === 0;
-  const empty = nothingNeedsYou && shipped.length === 0 && !hasChildren;
+  const hasCards = Children.toArray(children).length > 0 || shipped.length > 0 || questions.length > 0 || held.length > 0;
+  const hasLead = Children.toArray(lead).length > 0;
+  const hasFoot = Children.toArray(foot).length > 0;
+  // The headline already says when nothing needs you: no heading over an empty column.
+  if (!hasCards && !hasLead && !hasFoot) return null;
   return (
     <section data-testid="home-waiting-on-you" className="mb-8">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -117,15 +126,17 @@ export function NeedsYouStack({
           </span>
         )}
       </div>
-      <div data-testid="needs-you-cards" className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))]">
-        {shipped.map(m => <ShippedCard key={m.id} m={m} timeZone={timeZone} />)}
-        {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
-        {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
-        {(empty || (nothingNeedsYou && hasChildren)) && (
-          <p data-testid="needs-you-empty" className="font-mono text-[13px] text-text-muted">Nothing needs input.</p>
-        )}
-        {children}
-      </div>
+      {lead}
+      {/* Side by side from ~320px each; auto-fit collapses unused tracks, so one card spans the row. */}
+      {hasCards && (
+        <div data-testid="needs-you-cards" className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))]">
+          {shipped.map(m => <ShippedCard key={m.id} m={m} timeZone={timeZone} />)}
+          {questions.map(q => <QuestionCard key={q.workerId} q={q} />)}
+          {held.map(m => <HeldMissionCard key={m.id} m={m} />)}
+          {children}
+        </div>
+      )}
+      {foot}
     </section>
   );
 }
