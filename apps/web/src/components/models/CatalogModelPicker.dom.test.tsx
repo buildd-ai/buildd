@@ -69,6 +69,21 @@ async function type(text: string) {
 }
 
 describe('CatalogModelPicker, single', () => {
+  it('for Claude Code, disables OpenAI routes and warns on an OpenAI model via OpenRouter', async () => {
+    const OA = [{ id: 'gpt-5', provider: 'openai', inputPrice: 2, outputPrice: 10, contextLength: 400_000, created: T('2026-08-01') }, ...MODELS];
+    await mount(<CatalogModelPicker aria-label="Model" tier="standard" target="claude-code" routes={TIER_ROUTES} models={OA}
+      value={{ route: 'anthropic', model: 'claude-sonnet-5' }} onChange={(n) => picks.push(n)} />);
+    await click(trigger());
+    const search_ = search();
+    const direct = rowEls().filter((r) => r.getAttribute('data-key')?.startsWith('openai::'));
+    expect(direct.length).toBeGreaterThan(0);
+    for (const r of direct) { expect(r.getAttribute('aria-disabled')).toBe('true'); await click(r); }
+    expect(picks).toEqual([]);
+    expect(search_).toBeTruthy();
+    const warned = rowEls().filter((r) => r.getAttribute('data-key')?.startsWith('openrouter::openai/'));
+    for (const r of warned) expect(r.querySelector('[data-testid="model-picker-warning"]')).toBeTruthy();
+  });
+
   it('shows the current model on a combobox trigger that controls a listbox', async () => {
     await mount(<Single />);
     expect(trigger().getAttribute('aria-haspopup')).toBe('listbox');

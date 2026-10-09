@@ -6,6 +6,8 @@ import {
   formatContext,
   formatPrice,
   groupPickerRows,
+  routeUnsupported,
+  rowWarning,
   sameModel,
   withKeyStatus,
   type PickerModelInput,
@@ -183,5 +185,35 @@ describe('helpers', () => {
     expect(r.map((x) => [x.id, x.key])).toEqual([
       ['anthropic', 'set'], ['openai', undefined], ['openrouter', 'missing'], ['openai-codex', undefined],
     ]);
+  });
+});
+
+describe('routeUnsupported / rowWarning', () => {
+  const oa = { id: 'openai', catalog: 'openai' as const };
+  const seat = { id: 'openai-codex', catalog: 'openai' as const };
+  const an = { id: 'anthropic', catalog: 'anthropic' as const };
+  const or = { id: 'openrouter', catalog: 'openrouter' as const };
+
+  it('an OpenAI key is unsupported for Claude Code and cloud coding, with the alternative named', () => {
+    for (const t of ['claude-code', 'cloud'] as const) {
+      expect(routeUnsupported(oa, t)).toMatch(/Anthropic-compatible.*Anthropic or OpenRouter/);
+    }
+  });
+  it('OpenAI key serves chat and Codex; a Codex seat serves Codex but not chat', () => {
+    expect(routeUnsupported(oa, 'chat')).toBeNull();
+    expect(routeUnsupported(oa, 'codex')).toBeNull();
+    expect(routeUnsupported(seat, 'codex')).toBeNull();
+    expect(routeUnsupported(seat, 'chat')).toMatch(/Codex only/);
+  });
+  it('Anthropic is not offered for Codex; no target checks nothing', () => {
+    expect(routeUnsupported(an, 'codex')).not.toBeNull();
+    expect(routeUnsupported(oa, undefined)).toBeNull();
+  });
+  it('an OpenAI model reached through OpenRouter warns for Claude Code and cloud, not for chat', () => {
+    const row = { route: 'openrouter', vendor: 'openai' };
+    expect(rowWarning(row, or, 'claude-code')).toMatch(/OpenAI models/);
+    expect(rowWarning(row, or, 'cloud')).toMatch(/cloud coding/);
+    expect(rowWarning(row, or, 'chat')).toBeNull();
+    expect(rowWarning({ route: 'openrouter', vendor: 'anthropic' }, or, 'claude-code')).toBeNull();
   });
 });
