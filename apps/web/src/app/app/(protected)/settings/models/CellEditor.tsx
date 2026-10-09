@@ -48,6 +48,16 @@ async function freshPool(teamId: string, cell: ModelPolicyCell): Promise<TierPoo
   return data?.rows?.find((r) => r.tier === cell.tier && r.surface === cell.surface) ?? null;
 }
 
+/** Broadcast so siblings that explain the tiers (upgrade policy) revalidate without a reload. */
+export const MODEL_TIERS_CHANGED_EVENT = 'buildd:model-tiers-changed';
+
+/** What the cell reads as right now, straight from the server. */
+async function freshCell(teamId: string, cell: ModelPolicyCell): Promise<ModelPolicyCell | null> {
+  const res = await fetch(`/api/model-tiers/cells?teamId=${teamId}`, { cache: 'no-store', credentials: 'include' }).catch(() => null);
+  const data = res?.ok ? ((await res.json().catch(() => null)) as { cells?: ModelPolicyCell[] } | null) : null;
+  return data?.cells?.find((c) => c.tier === cell.tier && c.surface === cell.surface) ?? null;
+}
+
 const sameValue = (a: PickerValue, b: PickerValue) => a.route === b.route && a.model === b.model;
 
 export default function CellEditor({ cell, teamId, models, keys, catalogLoading, suggestion, anchorRef, sheet, onClose, onSaved }: Props) {
@@ -75,7 +85,7 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
   async function save() {
     setBusy(true);
     setErr(null);
-    const fail = async (msg: string) => { setErr(msg); setBusy(false); await onSaved(); };
+    const fail = async (msg: string) => { setErr(msg); setBusy(false); await onSaved(); window.dispatchEvent(new CustomEvent(MODEL_TIERS_CHANGED_EVENT)); };
     if (primaryChanged) {
       const r = await send('/api/model-tiers', {
         method: 'POST',
@@ -106,6 +116,14 @@ export default function CellEditor({ cell, teamId, models, keys, catalogLoading,
       });
       if (!r.ok) return fail(r.error ?? 'Could not set the dial');
     }
+    if (primaryChanged) {
+      // Never report success on the write's say-so: the cell must now read the model we saved.
+      const now = await freshCell(teamId, cell);
+      if (now && now.primary.model !== primary.model.trim()) {
+        return fail(`Saved, but this tier still shows ${now.primary.model}. Reload and try again.`);
+      }
+    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(MODEL_TIERS_CHANGED_EVENT));
     await onSaved();
     setBusy(false);
     onClose();
