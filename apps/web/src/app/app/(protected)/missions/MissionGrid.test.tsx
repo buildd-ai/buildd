@@ -1,6 +1,6 @@
 /**
  * Missions portfolio: compact rows from the shared delivery projection,
- * counters with definitions, search/sort/filters and collapsed completed
+ * one plain count line with definitions, search and section filters and collapsed completed
  * history (docs/prototypes/cross-surface-delivery, `#missions`). Fixtures are
  * illustrative.
  */
@@ -73,8 +73,8 @@ const html = renderToStaticMarkup(
   <MissionGrid
     rows={[...open, ...done]}
     releaseFooters={release}
-    slots={{ live: 1, max: 4 }}
     workspaces={[{ id: 'ws1', name: 'web' }, { id: 'ws2', name: 'core' }]}
+    actions={<a data-testid="new-mission-link" href="/app/missions/new">+ New</a>}
     now={NOW}
   />,
 );
@@ -93,7 +93,7 @@ describe('MissionGrid portfolio', () => {
     // Only the recent one; the older one sits behind "show 1 older".
     expect(history).toContain('Workspace settings split into tabs');
     expect(history).not.toContain('CLI login without a browser');
-    expect(history).toContain('show 1 older');
+    expect(history).toContain('Show 1 older');
   });
 
   it('groups open missions into Needs you / In motion / Waiting, each with its ordering named', () => {
@@ -111,14 +111,40 @@ describe('MissionGrid portfolio', () => {
     expect(sec('motion')).toMatch(/data-testid="mission-section-destinations"[^>]*>[^<]*landing on trunk/);
   });
 
-  it('counters say open / executing / agent slots, each with a definition', () => {
-    const counters = html.slice(html.indexOf('data-testid="portfolio-counters"'), html.indexOf('What these count'));
-    expect(counters).toMatch(/data-testid="counter-open"[^>]*>.*?>11</);
-    expect(counters).toMatch(/data-testid="counter-executing"[^>]*>.*?>1</);
-    expect(counters).toContain('1/4');
-    expect(counters).toContain('agent slots');
-    expect(counters.match(/title="[^"]+"/g)?.length).toBeGreaterThanOrEqual(3);
-    expect(html).not.toMatch(/\d+ running · \d+ agents? on it/);
+  it('one plain count line, no tiles and no agent slots', () => {
+    const line = html.match(/<p[^>]*data-testid="portfolio-counts"[\s\S]*?<\/p>/)![0];
+    const text = line.replace(/<[^>]+>/g, '');
+    expect(text).toBe('11 open · 6 in motion · 5 waiting');
+    expect(line).toMatch(/data-testid="counter-open"[^>]*title="[^"]+"/);
+    expect(html).not.toContain('agent slots');
+    expect(html).not.toContain('data-testid="portfolio-counters"');
+    expect(html).not.toContain('missions-slots');
+    // The page action sits on the count line's row.
+    expect(html.indexOf('data-testid="new-mission-link"')).toBeLessThan(html.indexOf('data-testid="portfolio-tools"'));
+  });
+
+  it('section labels are sentence case with their count and order caption, never uppercase mono', () => {
+    const h2s = html.match(/<h2[^>]*>[\s\S]*?<\/h2>/g)!;
+    expect(h2s.map(h => h.replace(/<[^>]+>/g, ''))).toEqual(['In motion · 6', 'Waiting · 5']);
+    for (const h of h2s) expect(h).not.toMatch(/uppercase|font-mono|section-label|tracking-\[/);
+    expect(html).toContain('Completed this week');
+    expect(html).not.toMatch(/class="[^"]*section-label/);
+  });
+
+  it('filter chips are quiet pills with the count inside; the selected one is filled with ink', () => {
+    const chips = html.match(/<button[^>]*data-testid="portfolio-filter"[\s\S]*?<\/button>/g)!;
+    expect(chips.map(c => c.match(/data-filter="(\w+)"/)![1])).toEqual(['all', 'needs', 'motion', 'waiting']);
+    for (const c of chips) {
+      expect(c).toContain('rounded-full');
+      expect(c).not.toContain('border-2');
+    }
+    expect(chips[0]).toContain('aria-pressed="true"');
+    expect(chips[0]).toContain('bg-text-primary');
+    expect(chips[1]).not.toContain('bg-text-primary');
+    const filters = html.match(/<div[^>]*data-testid="portfolio-filters"[^>]*>/)![0];
+    expect(filters).toContain('overflow-x-auto');
+    expect(filters).toContain('flex-nowrap');
+    expect(filters).not.toContain('flex-wrap ');
   });
 
   it('shows the truthful status: live agent only on the executing mission', () => {
@@ -128,9 +154,9 @@ describe('MissionGrid portfolio', () => {
     expect(rowHtml('m02')).toContain('data-kind="audit"');
   });
 
-  it('shows the verified landed fraction, a small task strip and the next milestone', () => {
+  it('shows the merged fraction on the one state line, a small task strip and the next milestone', () => {
     const r = rowHtml('m01');
-    expect(r).toContain('2 of 3 landed');
+    expect(r).toContain('Building · 2/3 merged · 1 agent');
     expect(r).toContain('Next');
     expect(r).toContain('role="img"'); // TaskStrip size sm
   });
@@ -143,6 +169,8 @@ describe('MissionGrid portfolio', () => {
   it('raises an exception line only when there is one', () => {
     expect(rowHtml('m03')).toContain('checking automatically');
     expect(rowHtml('m01')).not.toContain('checking automatically');
+    // A waiting mission's note would only restate its state word and Next line.
+    expect(rowHtml('m04')).not.toContain('not on you');
   });
 
   it('a recurring mission names its next run', () => {
@@ -152,10 +180,11 @@ describe('MissionGrid portfolio', () => {
   it('has search, status filters with counts, and a workspace filter', () => {
     expect(html).toContain('data-testid="portfolio-search"');
     expect(html).not.toContain('data-testid="portfolio-sort"');
-    const filter = (k: string) => html.match(new RegExp(`data-filter="${k}"[^>]*>[^<]*<span[^>]*>(\\d+)</span>`))?.[1];
+    const filter = (k: string) => html.match(new RegExp(`data-filter="${k}"[^>]*><span[^>]*>[^<]*<span[^>]*>(\\d+)</span>`))?.[1];
     expect(filter('all')).toBe('11');
-    expect(filter('executing')).toBe('1');
-    expect(filter('exceptions')).toBe('1');
+    expect(filter('needs')).toBe('0');
+    expect(filter('motion')).toBe('6');
+    expect(filter('waiting')).toBe('5');
     expect(html).toContain('data-testid="portfolio-workspace"');
     expect(html).toContain('All workspaces');
   });
@@ -185,8 +214,18 @@ describe('MissionGrid portfolio', () => {
 
 describe('MissionGrid — empty and single-workspace', () => {
   it('says so when nothing is open, and hides the workspace filter for one workspace', () => {
-    const html = renderToStaticMarkup(<MissionGrid rows={done} slots={{ live: 0, max: 4 }} workspaces={[{ id: 'ws1', name: 'web' }]} now={NOW} />);
+    const html = renderToStaticMarkup(<MissionGrid rows={done} workspaces={[{ id: 'ws1', name: 'web' }]} now={NOW} />);
     expect(html).toContain('No open missions.');
+    expect(html.replace(/<[^>]+>/g, '')).toContain('0 open');
     expect(html).not.toContain('data-testid="portfolio-workspace"');
+  });
+
+  it('with no missions at all: the count line, the action and one plain sentence, no filters', () => {
+    const html = renderToStaticMarkup(<MissionGrid rows={[]} actions={<a data-testid="new-mission-link" href="#">+ New</a>} now={NOW} />);
+    expect(html.replace(/<[^>]+>/g, '')).toContain('0 open');
+    expect(html).toContain('data-testid="new-mission-link"');
+    expect(html).toContain('No missions yet.');
+    expect(html).not.toContain('data-testid="portfolio-tools"');
+    expect(html).not.toContain('Clear filters');
   });
 });
