@@ -32,7 +32,8 @@ import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { taskScopeAllowsWorker, type TaskScope } from '@/lib/task-token-auth';
 import type { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { isOrchestrationTask } from '@buildd/shared';
-import { taskNamesPr, type PrOwnershipTask } from './pr-ownership';
+import type { PrOwnershipTask } from './pr-ownership';
+import { taskLinksPr } from './pr-links';
 import type { AgentPrincipal } from './principal';
 import type { GithubCapability } from './github';
 
@@ -130,7 +131,9 @@ export async function missionOfPr(workspaceId: string, prNumber: number): Promis
  * May this caller close or merge `prNumber` through this worker?
  *
  * An agent run acting for itself may act on a PR its task owns: its own
- * worker's PR, or a PR the task names ("land PR #42", a retry's subject).
+ * worker's PR, or a PR its task's own records link (a retry's subject, a PR
+ * link stamped when the task was filed; `taskLinksPr`). A PR the task only
+ * names in its text is not one of them.
  * Applies to a per-task token and to a run still on its runner's key alike.
  * An orchestration task (organizer, planning, heartbeat) may also act on a
  * PR of another task on its own mission: tidying its mission's PRs is its
@@ -156,7 +159,7 @@ export async function agentRunMayActOnPr(
   if ((caller as { sessionUserId?: string | null }).sessionUserId) return true;
   if (worker.accountId !== caller.id) return !caller.taskScope;
   if (caller.taskScope && worker.taskId !== caller.taskScope.taskId) return false;
-  if (worker.prNumber === prNumber || taskNamesPr(worker.task, prNumber)) return true;
+  if (worker.prNumber === prNumber || taskLinksPr(worker.task, prNumber)) return true;
   if (!isOrchestrationTask(worker.task) || !worker.task?.missionId || !worker.workspaceId) return false;
   const mission = await (deps.missionOfPr ?? missionOfPr)(worker.workspaceId, prNumber);
   return mission === worker.task.missionId;

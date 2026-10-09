@@ -247,14 +247,21 @@ describe('S21: the supersede authorization matrix (§17.1)', () => {
     expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-own', recordedBy: 'agent:t-owner', targetRepoWithinWorkspace: true }));
   });
 
-  it('(b) a task token whose OWN task names the PR: allowed, recorded as the caller', async () => {
-    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-caller', { description: 'The check landed in #2293; record #2287 as superseded.' }) as any));
+  it('(b) a task token whose OWN task records link the PR: allowed, recorded as the caller', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-caller', { description: 'The check landed in #2293; record #2287 as superseded.', context: { prReach: { prNumbers: [2287], grantedBy: 'human:user-1', grantedAt: 'x' } } }) as any));
     const res = await call(scoped('t-caller'));
     expect(res.status).toBe(200);
     expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-own', recordedBy: 'agent:t-caller' }));
   });
 
-  it('(b) a retry bound to the PR names it', async () => {
+  it('a task token whose own task only names the PR in its text: refused before any write', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-caller', { title: 'record #2287 as superseded', description: 'The check landed in #2293; record https://github.com/acme/widget/pull/2287 as superseded.', context: { prNumber: 2287 } }) as any));
+    const res = await call(scoped('t-caller'));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+
+  it('(b) a retry bound to the PR links it', async () => {
     mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-retry', { reviewerRetryPrNumber: 2287 }) as any));
     expect((await call(scoped('t-retry'))).status).toBe(200);
   });
@@ -266,8 +273,8 @@ describe('S21: the supersede authorization matrix (§17.1)', () => {
     expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 
-  it('a task token of another workspace: refused, even when its task names the number', async () => {
-    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-other', { workspaceId: 'ws-2', description: 'see #2287' }) as any));
+  it('a task token of another workspace: refused, even when its task links the number', async () => {
+    mockTasksFindFirst.mockImplementation(() => Promise.resolve(callerTask('t-other', { workspaceId: 'ws-2', description: 'see #2287', context: { prReach: { prNumbers: [2287], grantedBy: 'human:user-1', grantedAt: 'x' } } }) as any));
     const res = await call(scoped('t-other', 'ws-2'));
     expect(res.status).toBe(403);
     expect(mockRecordPrSupersession).not.toHaveBeenCalled();
@@ -290,7 +297,7 @@ describe('S21: the supersede authorization matrix (§17.1)', () => {
 
 // An agent run on its runner's key (no per-task token) names itself with workerId,
 // as close_pr and update_pr do. It may record a supersession only for a PR its own
-// task owns: its own worker's PR, or one its task names. People keep full reach.
+// task owns: its own worker's PR, or one its task's records link. People keep full reach.
 describe('agent run on its runner key: the PR must be its own', () => {
   const RUNNER = { id: 'acc-1', teamId: 'team-1', name: 'Runner', level: 'worker' };
   const callerWorker = (over: Record<string, unknown> = {}) => ({
@@ -330,11 +337,18 @@ describe('agent run on its runner key: the PR must be its own', () => {
     expect(lookup?.with?.task).toBeTruthy();
   });
 
-  it('allows a PR its own task names', async () => {
-    actingWorkerIs(callerWorker({ task: { ...callerWorker().task, description: 'The work landed in #2293; record #2287 as superseded.' } }));
+  it('allows a PR its own task\'s records link', async () => {
+    actingWorkerIs(callerWorker({ task: { ...callerWorker().task, description: 'The work landed in #2293; record #2287 as superseded.', context: { prReach: { prNumbers: [2287], grantedBy: 'human:user-1', grantedAt: 'x' } } } }));
     const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
     expect(res.status).toBe(200);
     expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-other' }));
+  });
+
+  it('refuses a PR its own task only names in its text, before writing', async () => {
+    actingWorkerIs(callerWorker({ task: { ...callerWorker().task, description: 'The work landed in #2293; record #2287 as superseded.', context: { prNumber: 2287 } } }));
+    const res = await POST(makeRequest({ workerId: 'w-caller', prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
   });
 
   it('allows its own worker\'s PR', async () => {

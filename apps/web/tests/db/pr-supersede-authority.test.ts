@@ -3,7 +3,7 @@
  *
  * An agent run on its runner's key names itself with workerId (as close_pr and
  * update_pr do). It may record a supersession only for a PR its own task owns:
- * its own worker's PR, or one its task names. Another task's PR run by the same
+ * its own worker's PR, or one its task's records link. Another task's PR run by the same
  * runner account is refused. A key on another account of the team keeps its
  * team-wide reach.
  *
@@ -53,7 +53,7 @@ beforeAll(() => assertDbConfigured());
 beforeEach(() => { recordCalls.length = 0; });
 
 describe('recording a PR supersession from a runner key', () => {
-  test('another task\'s PR on the same runner account is refused; its own task naming the PR, its own PR, and a teammate are allowed', async () => {
+  test('another task\'s PR on the same runner account is refused; its own task's PR link, its own PR, and a teammate are allowed; text alone is not', async () => {
     const { teamId, workspaceId } = await seedWorkspace();
     const runner = await workerKey(teamId);
 
@@ -66,16 +66,22 @@ describe('recording a PR supersession from a runner key', () => {
     expect(refused.status).toBe(403);
     expect(recordCalls).toEqual([]);
 
+    // Naming the PR in the task's text is not enough...
     await q(sql`UPDATE tasks SET description = 'Slice A landed in #4102; record #4101 as superseded.' WHERE id = ${callerTask}::uuid`);
     const named = await post(runner.key, { workerId: callerWorker, prNumber: 4101 });
-    expect(named.status).toBe(200);
+    expect(named.status).toBe(403);
+    expect(recordCalls).toEqual([]);
+    // ...a PR link stamped when the task was filed is.
+    await q(sql`UPDATE tasks SET context = ${JSON.stringify({ prReach: { prNumbers: [4101], grantedBy: 'human:owner', grantedAt: 'x' } })}::jsonb WHERE id = ${callerTask}::uuid`);
+    const linked = await post(runner.key, { workerId: callerWorker, prNumber: 4101 });
+    expect(linked.status).toBe(200);
     expect(recordCalls.at(-1)).toMatchObject({ workerId: ownerWorker });
 
     const own = await post(runner.key, { workerId: ownerWorker, prNumber: 4101 });
     expect(own.status).toBe(200);
 
     const teammate = await workerKey(teamId);
-    await q(sql`UPDATE tasks SET description = NULL WHERE id = ${callerTask}::uuid`);
+    await q(sql`UPDATE tasks SET description = NULL, context = NULL WHERE id = ${callerTask}::uuid`);
     const other = await post(teammate.key, { workerId: callerWorker, prNumber: 4101 });
     expect(other.status).toBe(200);
   });
