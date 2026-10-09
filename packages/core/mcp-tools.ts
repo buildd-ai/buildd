@@ -5386,6 +5386,12 @@ export async function handleBuilddAction(
             const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
             if (!wsId) throw new Error(`Workspace not found: ${params.workspaceId}`);
             body.workspaceId = wsId;
+          } else {
+            // Like create_task: a connector/session bound to a workspace puts
+            // the mission there, rather than minting a workspace-less mission
+            // whose tasks land in a workspace the mission itself isn't in.
+            const bound = ctx.workspaceId || (await ctx.getWorkspaceId());
+            if (bound) body.workspaceId = bound;
           }
           if (params.cronExpression) body.cronExpression = params.cronExpression;
           if (params.priority !== undefined) body.priority = normalizePriority(params.priority);
