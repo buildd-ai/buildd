@@ -233,6 +233,13 @@
       "when": 1791586193183,
       "tag": "0283_nifty_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 284,
+      "version": "7",
+      "when": 1791586364350,
+      "tag": "0284_known_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

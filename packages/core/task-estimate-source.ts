@@ -347,7 +347,7 @@ export async function loadPriorTable(cutoff: Date): Promise<PriorTable> {
 // ── Workspace-local loaders ──────────────────────────────────────────────────
 
 /** Completed work tasks in one workspace created before the cutoff, with their pre-cutoff sessions, as a cluster model. */
-async function loadClusterModel(workspaceId: string, cutoff: Date): Promise<ClusterModel> {
+export async function loadClusterModel(workspaceId: string, cutoff: Date): Promise<ClusterModel> {
   const hit = clusterCache.get(workspaceId);
   if (fresh(hit, cutoff)) return hit!.model;
   const rows = await db

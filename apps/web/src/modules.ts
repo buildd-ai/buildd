@@ -47,6 +47,7 @@ import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
+import { taskEstimateExperimentSubscribers } from '@/lib/task-estimate-experiment-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -69,6 +70,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...routingAnalyticsSubscribers,
   // task.left_mission: the surface audit lets go of a task that left its mission.
   ...surfaceAuditSubscribers,
+  // task.completed / task.pr_merged: a task's actuals, stored next to its frozen estimate.
+  ...taskEstimateExperimentSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,

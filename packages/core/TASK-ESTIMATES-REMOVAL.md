@@ -20,12 +20,20 @@ everything it adds. Nothing else reads it.
 - `packages/core/task-estimate-source.ts` (prior, inputs, write, read) and
   `packages/core/__tests__/task-estimate-source.test.ts`
 - `apps/web/src/lib/task-estimate-hook.ts` (the post-insert hook) and its test
+- `packages/core/task-estimate-actuals.ts`, `task-estimate-actuals-source.ts`,
+  `task-estimate-accuracy.ts`, `task-estimate-accuracy-source.ts` and their tests
+  (`__tests__/task-estimate-actuals.test.ts`, `__tests__/task-estimate-accuracy.test.ts`)
+- `apps/web/src/lib/task-estimate-experiment-subscribers.ts` and its test, its
+  import and spread in `apps/web/src/modules.ts`, and the two
+  `experiments:task-estimate-actuals-*` entries in `apps/web/src/modules.test.ts`
+- `apps/web/src/app/api/teams/[id]/task-estimates/` (the read-only readout route)
 - This file
 
 ## Touch points (edit them)
 
-- `packages/core/package.json`: the `./task-estimate` and
-  `./task-estimate-source` exports.
+- `packages/core/package.json`: the `./task-estimate`,
+  `./task-estimate-source`, `./task-estimate-actuals(-source)` and
+  `./task-estimate-accuracy(-source)` exports.
 - `packages/core/task-size-estimate.ts`: `defaultStore` is exported only for
   the estimate source; it can go back to module-private.
 - The hook calls, one `scheduleTaskEstimate(...)` block each:
@@ -46,12 +54,12 @@ everything it adds. Nothing else reads it.
 - `apps/web/src/app/api/teams/[id]/route.ts`: the `taskEstimates` PATCH field
   and the `taskEstimates: true` GET column (and the "task estimates experiment
   switch" tests in `route.test.ts`).
-- `scripts/qa/scrub-pii.sql`: `DELETE FROM task_estimates;`, and
+- `scripts/qa/scrub-pii.sql`: `DELETE FROM task_estimates;` and `DELETE FROM task_estimate_actuals;`, and
   `scripts/qa/scrub-pii.test.ts`: `task_estimates` in the `teams` entry of
   `SAFE` (remove in the same release as the schema).
 - Config, if set: the `system_cache` row `task_estimate_config` and the
   `BUILDD_TASK_ESTIMATE_K0` env var.
-- `packages/core/db/schema.ts`: the `taskEstimates` table,
+- `packages/core/db/schema.ts`: the `taskEstimates` and `taskEstimateActuals` tables,
   `TaskEstimateExplanation`, `TaskEstimate`/`NewTaskEstimate`, and the
   `teams.taskEstimates` column.
 
@@ -68,6 +76,7 @@ the deploy:
    generated SQL is only:
 
 ```sql
+DROP TABLE IF EXISTS "task_estimate_actuals" CASCADE;
 DROP TABLE IF EXISTS "task_estimates" CASCADE;
 ALTER TABLE "teams" DROP COLUMN IF EXISTS "task_estimates";
 ```
