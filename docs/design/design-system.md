@@ -117,9 +117,10 @@ composition rule, including Home, detail pages and chat.
   action, the send control, a decision frame or a live indicator. State labels
   use their state hue or ink, never orange: a mission label is ink, a stalled
   one uses `--status-error` or `--status-warning`.
-- **Labels:** all-caps tracked labels are for section headers only. Chips,
-  state words, statistics and object metadata use sentence case or lowercase
-  without section-header tracking.
+- **Labels:** no all-caps tracked labels in product UI. Section headers are a
+  quiet sans label (`Eyebrow`, `.section-label`); chips, state words,
+  statistics and object metadata use sentence case or lowercase. Only
+  `display` type may be uppercase.
 
 The §2 tables describe what ships, including classes the shared-components
 work has not moved yet; a leftover 2px frame or uppercase chip in a component
@@ -235,8 +236,9 @@ dots only.
 |---|---|---|
 | Radius | `--radius-cell` **3px** (Tailwind `sm`), `--radius-pill` **4px** (`DEFAULT`, `md`, `full`), `--radius-card` **6px** (`lg`, `xl`, `2xl`, `3xl`). `none` is 0 | `globals.css`, `tailwind.config.ts`; guarded by `radius-scale.test.ts` |
 | Card frame | **1px** `--border`, 6px radius; focused card **1.5px** `--text-primary`; decision **1.5px** `--dec-frame` on `--inset` | `.card` |
-| Control border | **1px** `--border-strong`, 4px radius | inputs/textareas/selects (forced `!important`), `.btn`, `.seg`, `.status-pill`, `.health-pill`, `.control-radio/.control-check` (3px) |
-| Hairlines | **1px** `--border`, or `--line-soft` inside a card | `.seg-item` dividers, `.inset-panel`, row dividers |
+| Control border | **1px** `--border-strong`, 4px radius | inputs/textareas/selects (forced `!important`), `.btn`, `.status-pill`, `.health-pill`, `.control-radio/.control-check` (3px) |
+| Hairlines | **1px** `--border`, or `--line-soft` inside a card | `.inset-panel`, row dividers, the chosen `.seg-item`'s ring |
+| Segmented | `--q-tint` trough, 6px radius, 3px inset, no frame; chosen option on `--card`, ink, 1px ring. Never orange | `.seg` / `.seg-item-active`, `components/ui/Segmented.tsx`; guarded by `chrome-refinement.test.ts` |
 | Shadows | **None.** `--card-shadow` and `--accent-shadow` are `none`; every Tailwind `boxShadow` step is `none` | `globals.css`, `tailwind.config.ts`; guarded by `card-shadow.test.ts` |
 | Focus | `2px solid var(--accent)`, offset 2px | `:focus-visible` |
 | Touch target | ≥ 44px on mobile | follow `BottomSheet` close button (`w-11 h-11`) |
@@ -264,11 +266,12 @@ scale. Recurring values worth matching: card/inset padding `10px 12px`
 | Outfit | `--font-outfit` | Loaded; long-form markdown |
 | Fraunces | `--font-fraunces` | Loaded; marketing only, never product UI |
 
-Type classes in `globals.css`: `.section-label` (sans, 11px/700, uppercase,
-2px tracking), `.section-label-missions` (sans, 10px/600), `.field-label` (sans,
-10px/600, uppercase, 1px tracking), `.btn` and `.seg-item` (sans, 12px/600);
-`.type-label` (mono, 9px/500), `.health-pill` and `.status-pill` (mono,
-10px/600, uppercase), the lifecycle words. Below `md` every one of the sub-11px
+Type classes in `globals.css`: `.section-label` and `.section-label-missions`
+(sans, `--type-eyebrow` 13px/600, `--text-muted`), `.field-label` (sans, 12px/600),
+`.btn` (sans, 12px/600), `.seg-item` (sans, 13px/500, 600 when chosen);
+`.type-label` (mono, 10px/500), `.health-pill` and `.status-pill` (mono,
+11px/600), the lifecycle words. None of them is uppercase or tracked
+(`chrome-refinement.test.ts`). Below `md` every one of the sub-11px
 classes is lifted to 11px (**the mobile type floor**, guarded by
 `mobile-type-floor.test.ts`). Form fields render at 16px below `md` so iOS
 Safari does not zoom.
@@ -299,8 +302,8 @@ by a wide margin) so most call sites move by 0–1px. Nothing on mobile is under
 
 | Role | Mobile | Desktop | Weight | Case / tracking | Line height | Use |
 |---|---|---|---|---|---|---|
-| `chip` | 11 | 10 | 600 | sentence / lowercase, normal | 1 | Status chips, pills, tags (= `.status-pill`) |
-| `eyebrow` | 11 | 11 | 700 | UPPERCASE, 2px | 1.2 | Section header only (= `.section-label`) |
+| `chip` | 12 | 11 | 600 | sentence / lowercase, normal | 1 | Status chips, pills, tags (= `.status-pill`) |
+| `eyebrow` | 13 | 13 | 600 | sentence, normal; sans, `--text-muted` in a Section | 1.2 | Section header only (= `.section-label`) |
 | `meta` | 12 | 12 | 400 | sentence | 1.4 | Timestamps, `role · model`, counts, captions. `--text-muted` |
 | `body` | 13 | 13 | 400 | sentence | 1.5 | Default UI text, rows, descriptions |
 | `title` | 14 | 14 | 600 | sentence | 1.35 | Card, row and sheet titles |
@@ -336,8 +339,8 @@ touch targets ≥ 44px on mobile.
 
 ### Chip
 
-**Purpose:** the one way to show a state word. Square, 1px border, mono
-sentence case or lowercase, optional leading square dot. Existing uppercase
+**Purpose:** the one way to show a state word. 1px border on the 4px pill
+radius, mono in sentence case or lowercase, optional leading square dot. Existing uppercase
 styles are recorded in §2.7; new composition follows §1.1.
 
 **Built:** `components/ui/Chip.tsx`.
@@ -441,7 +444,7 @@ state-hue frames that only report a state, and the bare `.notice` markup.
 
 ### Eyebrow
 
-**Purpose:** the small uppercase tracked section header (type role `eyebrow`).
+**Purpose:** the quiet sans section header (type role `eyebrow`), sentence case.
 Do not use it for card metadata or status labels (§1.1).
 
 **Props:** `children`, `as?: 'span' | 'p' | 'h2' | 'h3'` (default `span`),
