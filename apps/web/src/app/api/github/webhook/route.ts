@@ -42,6 +42,7 @@ import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
 import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
+import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
@@ -1028,15 +1029,29 @@ async function handlePullRequestEvent(event: {
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
   // The releases module also records a merge into a prod branch here, whether
   // or not a worker owns the PR, on every delivery (idempotent on headSha).
+  // Exclude release PRs from base-advance notices: they merge between distinct
+  // branches (e.g. dev → main) and would incorrectly notify workers on the
+  // source branch about changes to the dest branch.
   if (pr.merged && pr.base?.ref && event.installation) {
-    const installationId = event.installation.id;
-    const baseRef = pr.base.ref;
-    scheduleBaseAdvanceNotice(`PR #${pr.number} ${repository.full_name}`, async () => ({
-      repoFullName: repository.full_name, baseRef, defaultBranch: repository.default_branch ?? null,
-      files: await changedFilesForPr(installationId, repository.full_name, pr.number),
-      source: 'pull_request',
-      change: { prNumber: pr.number, title: pr.title ?? null, sha: pr.merge_commit_sha ?? pr.head.sha, authorBranch: pr.head.ref },
-    }));
+    const workspace = await db.query.workspaces.findFirst({
+      where: workspaceRepoMatches(repository.full_name),
+      columns: { id: true, releaseConfig: true },
+    });
+    const isReleasePr = workspace && isReleaseBranchPr(workspace.releaseConfig, {
+      headRef: pr.head.ref,
+      baseRef: pr.base.ref,
+    });
+
+    if (!isReleasePr) {
+      const installationId = event.installation.id;
+      const baseRef = pr.base.ref;
+      scheduleBaseAdvanceNotice(`PR #${pr.number} ${repository.full_name}`, async () => ({
+        repoFullName: repository.full_name, baseRef, defaultBranch: repository.default_branch ?? null,
+        files: await changedFilesForPr(installationId, repository.full_name, pr.number),
+        source: 'pull_request',
+        change: { prNumber: pr.number, title: pr.title ?? null, sha: pr.merge_commit_sha ?? pr.head.sha, authorBranch: pr.head.ref },
+      }));
+    }
   }
 
   if (pr.merged) {

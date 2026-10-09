@@ -6803,6 +6803,31 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       await settle();
       expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
     });
+
+    it('a release PR merge does not trigger base-advance notice (no cross-branch notifications)', async () => {
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws-release',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          releaseBranch: 'dev',
+          prodBranch: 'main',
+        },
+      });
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 4241, merged: true, title: 'Release v1.0.0', body: null, merge_commit_sha: 'm4241',
+          head: { ref: 'dev', sha: 'h4241' }, base: { ref: 'main' },
+          html_url: 'https://github.com/test-org/test-repo/pull/4241',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
+      expect(mockChangedFilesForPr).not.toHaveBeenCalled();
+    });
   });
 
   describe('push → docs ingest', () => {
