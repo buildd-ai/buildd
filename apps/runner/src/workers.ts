@@ -61,7 +61,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { toolActionMilestone, appendMilestone } from './tool-milestones';
+import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
@@ -4169,6 +4169,12 @@ export class WorkerManager {
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
 
+      // Narration policy: a text block right before a tool call becomes an
+      // Activity milestone, so "Now let me check X…" filler stacked up as rows.
+      // The dashboard names such phases by their calls (milestone-log.ts) — that
+      // is the durable fix; this only cuts the noise at the source.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Narration Policy\nCall tools directly. Do not narrate an imminent tool call with filler such as "Let me…", "Now I\'ll…" or "I\'m going to check…" — the call itself shows what you are doing. Write text when it carries a finding, a decision, a warning or a result.';
+
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
       const taskWorktreeIsolation = (task.context as any)?.useWorktreeIsolation;
@@ -6182,6 +6188,7 @@ export class WorkerManager {
             worker.phaseStart = Date.now();
             worker.phaseToolCount = 0;
             worker.phaseTools = [];
+            worker.phaseOps = [];
           }
           const lines = cleanBlockText.split('\n');
           for (const line of lines) {
@@ -6305,8 +6312,12 @@ export class WorkerManager {
             return;
           }
 
-          // Increment phase tool count
+          // Increment phase tool count, and record what the phase did so the
+          // dashboard can name it by its calls when its text was only a lead-in
+          // ("Now let me check the decision…" + get_decision → "Checked decision").
           worker.phaseToolCount++;
+          if (!worker.phaseOps) worker.phaseOps = [];
+          recordPhaseOp(worker.phaseOps, phaseOpName(toolName, rawInput));
 
           // Track notable tools in phaseTools (cap 5)
           if (['Edit', 'Write', 'Bash'].includes(toolName) && worker.phaseTools.length < 5) {
@@ -6790,12 +6801,14 @@ export class WorkerManager {
       label: extractPhaseLabel(worker.phaseText),
       toolCount: worker.phaseToolCount,
       ts: worker.phaseStart || Date.now(),
+      ...(worker.phaseOps?.length ? { ops: [...worker.phaseOps] } : {}),
     };
     this.addMilestone(worker, milestone);
     worker.phaseText = null;
     worker.phaseStart = null;
     worker.phaseToolCount = 0;
     worker.phaseTools = [];
+    worker.phaseOps = [];
   }
 
   /**
