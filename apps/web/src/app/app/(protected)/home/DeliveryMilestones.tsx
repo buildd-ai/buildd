@@ -9,8 +9,7 @@
  */
 import Link from 'next/link';
 import type { MissionDelivery } from '@/lib/delivery-projection';
-import { DELIVERY_KIND } from '@/lib/delivery-projection';
-import { STATE_OF_KIND } from '@/lib/mission-sections';
+import { DELIVERY_KIND, STATE_OF_KIND } from '@/lib/delivery-projection';
 import { lifecycleState } from '@/components/delivery/lifecycle-state';
 import MissionRow from '@/components/ui/MissionRow';
 
