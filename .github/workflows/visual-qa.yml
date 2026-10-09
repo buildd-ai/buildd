@@ -56,6 +56,11 @@ on:
         type: string
         required: false
         default: ""
+      seed_presence:
+        description: "Verification only: seed adversarial local sessions (scripts/qa/seed-presence-adversarial.sql) and render as the busiest team."
+        type: boolean
+        required: false
+        default: false
       judge:
         description: "Also judge the shots on the team OAuth seat (claude-code-action) and post a check run."
         type: boolean
@@ -305,6 +310,20 @@ jobs:
           NO_PROD_DATA_IDENTIFIERS: ${{ secrets.NO_PROD_DATA_IDENTIFIERS }}
           PGPASSWORD: ""
 
+      - name: Seed adversarial presence (verification only)
+        if: inputs.seed_presence
+        run: |
+          OUT=$(psql "$DATABASE_URL" -qAt -v ON_ERROR_STOP=1 -f scripts/qa/seed-presence-adversarial.sql | tail -1)
+          TEAM=${OUT%% *}; MISSION=${OUT#* }
+          echo "::add-mask::$TEAM"
+          [ -n "$MISSION" ] && echo "::add-mask::$MISSION"
+          echo "QA_TEAM_ID=$TEAM" >> "$GITHUB_ENV"
+          echo "QA_SEED_MISSION_ID=$MISSION" >> "$GITHUB_ENV"
+          echo "::notice::Seeded adversarial presence"
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          PGPASSWORD: ""
+
       # --- Start app in dev mode (CI-seeded auth) ---
       # NODE_ENV=development enables the `dev-auto-login` credentials provider in
       # apps/web/src/auth.ts so Playwright can get a session without OAuth.
@@ -359,7 +378,7 @@ jobs:
           QA_PLAN: ${{ inputs.plan }}
           QA_VIEWPORT: ${{ inputs.viewport }}
           QA_THEME: ${{ inputs.theme }}
-          QA_MISSION_ID: ${{ inputs.mission_id }}
+          QA_MISSION_ID: ${{ inputs.mission_id || env.QA_SEED_MISSION_ID }}
           QA_TASK_ID: ${{ inputs.task_id }}
 
       # --- Judge on the team's OAuth seat (no per-token API billing) ---

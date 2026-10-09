@@ -1,0 +1,39 @@
+[
+  { "route": "/app/tasks",
+    "states": [
+      { "key": "sessions-earlier", "steps": [
+        { "action": "waitFor", "selector": "testid:interactive-sessions" },
+        { "action": "click", "selector": "text:earlier session" },
+        { "action": "waitMs", "ms": 400 } ] },
+      { "key": "now-had-retries", "steps": [
+        { "action": "click", "selector": "role:button[name=Had retries]" },
+        { "action": "waitMs", "ms": 400 } ] },
+      { "key": "layout", "steps": [
+        { "action": "waitFor", "selector": "testid:activity-view" },
+        { "action": "assertLayout", "selector": "testid:activity-view" } ] }
+    ] },
+  { "route": "/app/tasks?view=history",
+    "states": [
+      { "key": "had-retries", "steps": [
+        { "action": "click", "selector": "role:button[name=Had retries]" },
+        { "action": "waitMs", "ms": 400 } ] },
+      { "key": "show-more", "steps": [
+        { "action": "click", "selector": "testid:history-show-more" },
+        { "action": "waitMs", "ms": 400 } ] },
+      { "key": "exceptions", "steps": [
+        { "action": "click", "selector": "role:button[name=Exceptions]" },
+        { "action": "waitMs", "ms": 400 } ] }
+    ] },
+  { "route": "/app/missions" },
+  { "route": "/app/missions/:id" },
+  { "route": "/app/home" },
+  { "route": "/app/dev/fixtures?state=mission-detail-compact&variant=eleven&select=04",
+    "states": [ { "key": "layout", "steps": [ { "action": "assertLayout" } ] } ] },
+  { "route": "/app/dev/fixtures?state=mission-detail-compact&variant=long-title&select=04" },
+  { "route": "/app/dev/fixtures?state=activity-delivery&data=scale&view=history&outcome=retries" },
+  { "route": "/app/dev/fixtures?state=activity-delivery&data=quiet&outcome=retries",
+    "states": [ { "key": "clear-filters", "steps": [
+      { "action": "click", "selector": "testid:activity-clear-filters" },
+      { "action": "waitMs", "ms": 400 } ] } ] },
+  { "route": "/app/dev/fixtures?state=interactive-sessions" }
+]
