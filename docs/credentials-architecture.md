@@ -413,6 +413,25 @@ key, and the token is sent as `cf-aig-authorization`. The key policy `own` turns
 this off, and a `revoked` row is skipped. For Clef the token needs Workers AI Read,
 and AI Gateway Run if the gateway is authenticated.
 
+### Minted AI Gateway Run tokens (`cloudflare_gateway_token`)
+
+Tokens the team's `cloudflare_token` mints (`POST /accounts/<id>/tokens`,
+account-owned, AI Gateway Run + Workers AI Read only, 90-day expiry), so model
+calls stop spending a token that can deploy Workers. Purpose
+`cloudflare_gateway_token`, a `PERSONAL_SECRET_PURPOSES` entry: one row per
+person (`userId` set) and one team row (no `userId`, the agents token), JSON
+`{ token, tokenId, accountId, expiresOn }`. Minting needs the team token to hold
+Account API Tokens Edit; a refusal says so. Creating again replaces the row and
+revokes the old token at Cloudflare; removing revokes first and keeps the row if
+Cloudflare cannot be reached. `/api/cloudflare/gateway-tokens` (session only):
+any member manages their own, owners and admins the team's; reads are masked.
+
+Spent by `packages/core/cloudflare-gateway-tokens.ts` `resolveGatewayRunToken`:
+decision calls via Cloudflare use the acting person's token, else the team's,
+else the team `cloudflare_token` as before. A `cloudflare` agent endpoint with no
+pasted `gatewayToken` sends the team's token (never a person's) as
+`cf-aig-authorization`. Expired, revoked and other-account tokens are skipped.
+
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 
 `purpose = 'openai_api_key'`, a plain raw string, scoped team/account/workspace

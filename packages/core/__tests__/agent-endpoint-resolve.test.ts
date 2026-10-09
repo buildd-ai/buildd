@@ -411,6 +411,20 @@ describe('cloudflare endpoint reference', () => {
     expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
   });
 
+  it("sends the team's minted run token as the gateway header when the endpoint has none, never a person's", async () => {
+    const run = (id: string, token: string, userId: string | null): Row => ({
+      id, purpose: 'cloudflare_gateway_token', workspaceId: null, accountId: null, userId, healthStatus: 'healthy',
+      encryptedValue: JSON.stringify({ token, tokenId: `tok${id}000000`, accountId: ACCOUNT, expiresOn: '2099-01-01T00:00:00Z' }),
+    });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer team-run-token-abcdefghijklmnop' });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('me', 'personal-run-token-abcdefghijk', 'u-1')];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toBeUndefined();
+    // A pasted token on the endpoint wins.
+    rows = [cfEndpoint({ gatewayToken: 'pasted-run-token-abcdefghijkl' }), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer pasted-run-token-abcdefghijkl' });
+  });
+
   it("a team-wide endpoint never picks up one workspace's Anthropic key", async () => {
     rows = [cfEndpoint(), cfRow(), anthropicKey({ workspaceId: WS })];
     expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
