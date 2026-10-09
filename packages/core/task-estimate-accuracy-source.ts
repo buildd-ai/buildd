@@ -1,5 +1,5 @@
 /**
- * The query half of `./task-estimate-readout.ts`: the team's frozen estimates
+ * The query half of `./task-estimate-accuracy.ts`: the team's frozen estimates
  * joined to their stored actuals, plus the area-cluster model per workspace.
  * One estimator version per readout (defaults to the current one).
  */
@@ -8,7 +8,7 @@ import { db } from './db/client';
 import { taskEstimateActuals, taskEstimates, tasks, workspaces } from './db/schema';
 import { ESTIMATOR_VERSION } from './task-estimate';
 import { loadClusterModel } from './task-estimate-source';
-import { computeTaskEstimateReadout, type LiveEstimateRow, type TaskEstimateReadout } from './task-estimate-readout';
+import { computeTaskEstimateReadout, type LiveEstimateRow, type TaskEstimateReadout } from './task-estimate-accuracy';
 import type { AreaCluster } from './task-area-clusters';
 
 export const READOUT_ROW_LIMIT = 5000;

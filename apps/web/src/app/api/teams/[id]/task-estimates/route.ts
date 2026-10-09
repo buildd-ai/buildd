@@ -5,7 +5,7 @@
  * → { enabled, estimatorVersion, readout, workspaces: [{ workspaceId, workspaceName, tasks, clusters }] }
  *
  * `readout` is how close the frozen estimates were to what finished tasks
- * actually took (packages/core/task-estimate-readout.ts: the backtest's scorer
+ * actually took (packages/core/task-estimate-accuracy.ts: the backtest's scorer
  * over live rows, by source, kind, area cluster and workspace history size).
  * `workspaces` is how the model sees each repo: its area clusters with n and
  * quantiles, per workspace and never merged (a label is a path in one repo).

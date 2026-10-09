@@ -21,8 +21,8 @@ everything it adds. Nothing else reads it.
   `packages/core/__tests__/task-estimate-source.test.ts`
 - `apps/web/src/lib/task-estimate-hook.ts` (the post-insert hook) and its test
 - `packages/core/task-estimate-actuals.ts`, `task-estimate-actuals-source.ts`,
-  `task-estimate-readout.ts`, `task-estimate-accuracy-source.ts` and their tests
-  (`__tests__/task-estimate-actuals.test.ts`, `__tests__/task-estimate-readout.test.ts`)
+  `task-estimate-accuracy.ts`, `task-estimate-accuracy-source.ts` and their tests
+  (`__tests__/task-estimate-actuals.test.ts`, `__tests__/task-estimate-accuracy.test.ts`)
 - `apps/web/src/lib/task-estimate-experiment-subscribers.ts` and its test, its
   import and spread in `apps/web/src/modules.ts`, and the two
   `experiments:task-estimate-actuals-*` entries in `apps/web/src/modules.test.ts`
@@ -33,7 +33,7 @@ everything it adds. Nothing else reads it.
 
 - `packages/core/package.json`: the `./task-estimate`,
   `./task-estimate-source`, `./task-estimate-actuals(-source)` and
-  `./task-estimate-readout(-source)` exports.
+  `./task-estimate-accuracy(-source)` exports.
 - `packages/core/task-size-estimate.ts`: `defaultStore` is exported only for
   the estimate source; it can go back to module-private.
 - The hook calls, one `scheduleTaskEstimate(...)` block each:
