@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, linkSync, chmodSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync, utimesSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, linkSync, chmodSync, readFileSync, existsSync, rmSync, symlinkSync, unlinkSync, utimesSync, renameSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -21,11 +21,12 @@ function fixture() {
 describe('dependency handover (synthetic pnpm sha512 content-addressed store)', () => {
   test('unchanged dependencies pass', () => { expect(fixture().verify().fellBack).toBe(false); });
   test('append with restored mtime removes store and links', () => { const f = fixture(); writeFileSync(f.file, 'export default 1;!'); utimesSync(f.file, 1, 1); const r = f.verify(); expect(r.entriesChanged).toBeGreaterThan(0); expect(existsSync(f.file)).toBe(false); expect(existsSync(f.store)).toBe(false); });
-  test('store corruption removes every hardlink', () => { const f = fixture(); const other = join(f.repoRoot, 'node_modules/pkg/other.js'); linkSync(f.store, other); const expected = captureDependencyManifest(f.repoRoot); writeFileSync(f.file, 'corrupt'); verifyDependencyHandover({ ...f, expected, expectedDigest: expected.digest }); expect(existsSync(other)).toBe(false); expect(existsSync(f.store)).toBe(false); });
+  test('store corruption removes every hardlink', () => { const f = fixture(); const other = join(f.repoRoot, 'node_modules/pkg/other.js'); linkSync(f.store, other); const expected = captureDependencyManifest(f.repoRoot); writeFileSync(f.file, 'corrupt'); const report = verifyDependencyHandover({ ...f, expected, expectedDigest: expected.digest }); expect(report.fellBack).toBe(false); expect(report.entriesDeleted).toBeGreaterThanOrEqual(3); expect(existsSync(other)).toBe(false); expect(existsSync(f.store)).toBe(false); });
   test('changed generated non-store file is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/pkg/output.js.cache'); writeFileSync(p, 'initial'); const expected = captureDependencyManifest(f.repoRoot); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2); writeFileSync(p, 'changed'); const r = verifyDependencyHandover({ ...f, expected, expectedDigest: expected.digest }); expect(r.fellBack).toBe(false); expect(existsSync(p)).toBe(false); });
   test('orphaned store corruption is removed before a future install', () => { const f = fixture(); const hash = createHash('sha512').update('original').digest('hex'); const p = join(f.storeDir, 'files', hash.slice(0, 2), hash.slice(2)); mkdirSync(join(f.storeDir, 'files', hash.slice(0, 2)), { recursive: true }); writeFileSync(p, 'corrupt'); const r = f.verify(); expect(r.fullStoreHash).toBe(true); expect(existsSync(p)).toBe(false); });
   test('repository bin outside node_modules survives', () => { const f = fixture(); const p = join(f.repoRoot, '.bin/tool'); mkdirSync(join(f.repoRoot, '.bin')); writeFileSync(p, 'repo tool'); f.verify(); expect(existsSync(p)).toBe(true); });
   test('same-size replacement inode is deleted', () => { const f = fixture(); unlinkSync(f.file); writeFileSync(f.file, 'export default 2;'); f.verify(); expect(existsSync(f.file)).toBe(false); });
+  test('replaced directory explains deleted descendants without falling back', () => { const f = fixture(); const directory = join(f.repoRoot, 'node_modules/pkg'); const replacement = join(f.repoRoot, 'replacement'); mkdirSync(replacement); writeFileSync(join(replacement, 'index.js'), 'planted'); rmSync(directory, { recursive: true }); renameSync(replacement, directory); const report = f.verify(); expect(report.fellBack).toBe(false); expect(existsSync(directory)).toBe(false); });
   test('chmod is explained and original mode restored', () => { const f = fixture(); chmodSync(f.file, 0o777); const r = f.verify(); expect(r.fellBack).toBe(false); expect(r.entriesExplained).toBeGreaterThan(0); expect(readFileSync(f.file, 'utf8')).toBe('export default 1;'); });
   test('new package file is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/pkg/planted.js'); writeFileSync(p, 'bad'); f.verify(); expect(existsSync(p)).toBe(false); });
   test('changed symlink is deleted', () => { const f = fixture(); const p = join(f.repoRoot, 'node_modules/link'); symlinkSync('pkg', p); const expected = captureDependencyManifest(f.repoRoot); unlinkSync(p); symlinkSync('/tmp', p); const r = verifyDependencyHandover({ ...f, expected, expectedDigest: expected.digest }); expect(r.entriesChanged).toBeGreaterThan(0); expect(existsSync(p)).toBe(false); });
@@ -51,6 +52,7 @@ test('real pnpm frozen install regenerates a deleted planted bin shim', () => {
   const initial = install(false);
   expect(initial.status, initial.stdout + initial.stderr).toBe(0);
   const expected = captureDependencyManifest(repoRoot);
+  expect(expected.entries.some(e => e.path === 'node_modules/.bin/warm-fixture-bin')).toBe(true);
   const shim = join(repoRoot, 'node_modules/.bin/warm-fixture-bin');
   expect(existsSync(shim)).toBe(true);
   writeFileSync(shim, '#!/bin/sh\necho planted\n');

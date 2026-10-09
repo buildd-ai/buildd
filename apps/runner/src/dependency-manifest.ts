@@ -44,7 +44,7 @@ function digest(entries: DependencyEntry[]): string {
 export function captureDependencyManifest(repoRoot: string): DependencyManifest {
   const entries: DependencyEntry[] = [];
   walk(repoRoot, (absolute, path) => {
-    if (path === '.git' || noise(path)) return false;
+    if (path === '.git') return false;
     if (!path.split('/').includes('node_modules')) return;
     const st = lstatSync(absolute, { bigint: true });
     const kind = st.isFile() ? 'file' : st.isDirectory() ? 'directory' : st.isSymbolicLink() ? 'symlink' : 'other';
@@ -87,7 +87,7 @@ export function verifyDependencyHandover(options: {
       }
     });
     const current = captureDependencyManifest(repoRoot);
-    const old = new Map(expected.entries.map(e => [e.path, e]));
+    const old = new Map(expected.entries.filter(e => !noise(e.path)).map(e => [e.path, e]));
     const now = new Map(current.entries.map(e => [e.path, e]));
     const storeByInode = new Map<string, string[]>();
     walk(storeDir, (absolute) => {
@@ -96,12 +96,24 @@ export function verifyDependencyHandover(options: {
       if (!st.isFile() && !st.isDirectory()) throw new Error('unsafe_store_entry');
       if (st.isFile()) { const key = `${st.dev}:${st.ino}`; storeByInode.set(key, [...(storeByInode.get(key) ?? []), absolute]); }
     });
+    const removedPaths = new Set<string>();
+    const wasRemoved = (path: string) => {
+      let candidate = path;
+      while (candidate) {
+        if (removedPaths.has(candidate)) return true;
+        const slash = candidate.lastIndexOf('/');
+        candidate = slash < 0 ? '' : candidate.slice(0, slash);
+      }
+      return false;
+    };
     const remove = (path: string) => {
+      if (wasRemoved(path)) return;
       if (protectedPath(path, trackedPaths)) throw new Error('tracked_dependency_changed');
-      rmSync(join(repoRoot, path), { recursive: true, force: true }); report.entriesDeleted++;
+      rmSync(join(repoRoot, path), { recursive: true, force: true }); report.entriesDeleted++; removedPaths.add(path);
     };
     for (const path of new Set([...old.keys(), ...now.keys()])) {
       const a = old.get(path), b = now.get(path);
+      if (wasRemoved(path)) { report.entriesChanged++; report.entriesExplained++; continue; }
       if (JSON.stringify(a) === JSON.stringify(b)) continue;
       report.entriesChanged++;
       if (!b) { report.entriesExplained++; continue; } // frozen install repairs removed files
