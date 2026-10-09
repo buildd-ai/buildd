@@ -524,7 +524,7 @@ the resolved policy.
 
 | Tier | Who ends the PR |
 |------|-----------------|
-| `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (fail-closed if unverifiable), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
+| `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (every check run on every page completed `success`/`neutral`/`skipped` and every commit status `success`; anything else, or an unverifiable read, refuses), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
 | `agent-review` | A **reviewer agent**. A `reviewer`-role task is spawned on PR open and returns `{verdict, confidence, summary, feedback?, escalationReason?, recommendation?, correctedLede?}` as structured output. `approve` may merge; `request-changes` sends the PR back to the authoring agent for up to `maxIterations` (default 3); `escalate` goes to a human. |
 | `human` | A person, from the escalation inbox. No automated merge. |
 
