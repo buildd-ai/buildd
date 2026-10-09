@@ -42,6 +42,7 @@ import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
 import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
+import { RunningNow } from '@/components/fleet/RunningNow';
 import Disclosure from '@/components/ui/Disclosure';
 import Segmented from '@/components/ui/Segmented';
 import type { FleetSnapshot } from '@buildd/shared';
@@ -761,13 +762,20 @@ export function HealthClient({
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
-      {/* The lanes are this page's diagnostic, so they come first. The
-          occupancy history repeats the same busy-slot count at a coarser
-          grain; it stays one tap away for the 7- and 30-day view. */}
+      {/* What is running now, in words, comes first. The per-slot timeline
+          (the diagnostic) is one tap away, and the occupancy history, the
+          same busy-slot count at a coarser grain, one more. */}
       {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
-        <div data-testid="health-section-lanes" className="mb-6">
-          <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
-        </div>
+        <>
+          <div data-testid="health-section-running-now" className="mb-4">
+            <RunningNow fleet={runnerLanes.fleet} now={now} missions={runnerLanes.missions ?? {}} />
+          </div>
+          <div data-testid="health-section-lanes" className="mb-6">
+            <Disclosure summary="Timeline: each slot over the last hours">
+              <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
+            </Disclosure>
+          </div>
+        </>
       )}
 
       {show('capacity') && (

@@ -13,12 +13,32 @@
         "steps": [
           {
             "action": "click",
-            "selector": "css:[data-testid=\"runner-lanes-chart\"] a[data-bar-id]"
+            "selector": "text:Timeline: each slot over the last hours"
           },
           {
             "action": "waitFor",
-            "selector": "testid:lane-bar-card",
-            "state": "hidden"
+            "selector": "testid:runner-lanes-chart"
+          },
+          {
+            "action": "click",
+            "selector": "css:[data-testid=\"runner-lanes-chart\"] [data-bar-id]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:runner-lane-detail"
+          }
+        ]
+      },
+      {
+        "key": "pause-sheet",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "role:button[name=Pause new starts\u2026]"
+          },
+          {
+            "action": "waitFor",
+            "selector": "testid:workspace-pause-sheet"
           }
         ]
       }

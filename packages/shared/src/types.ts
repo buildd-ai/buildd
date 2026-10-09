@@ -3604,6 +3604,10 @@ export interface LaneBar {
   href?: string | null;
   /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
   missionId?: string | null;
+  /** The run's task, for an explicit "Open task" link. */
+  taskId?: string | null;
+  /** How the run stands or ended, in words ("Stopped: session limit · work kept"). lib/fleet-view-end-reason.ts. */
+  endReason?: string | null;
 }
 
 export interface Lane {
@@ -3619,6 +3623,8 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The task's full title, for a readable name when the label is a machine identifier. */
+  title?: string | null;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;
