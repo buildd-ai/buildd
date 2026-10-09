@@ -35,6 +35,12 @@ describe('decidePause', () => {
     expect(decidePause({ ...running, status: 'done' })).toEqual({ action: 'refuse', reason: 'not_running' });
     expect(decidePause({ ...running, hasLiveSession: false })).toEqual({ action: 'refuse', reason: 'no_session' });
   });
+  it('refuses a Codex run on a parking (cloud) runner: its thread is not in the park bundle', () => {
+    expect(decidePause({ ...running, mode: 'park', backend: 'codex' })).toEqual({ action: 'refuse', reason: 'unavailable_backend' });
+    expect(decidePause({ ...running, mode: 'park', backend: 'claude' })).toEqual({ action: 'apply' });
+    // A host runner keeps CODEX_HOME on disk, so a Codex run pauses there.
+    expect(decidePause({ ...running, mode: 'session', backend: 'codex' })).toEqual({ action: 'apply' });
+  });
   it('a second pause is a no-op refusal', () => {
     expect(decidePause({ ...running, status: 'waiting', waitingFor: { type: 'pause' } })).toEqual({ action: 'refuse', reason: 'already_paused' });
   });
