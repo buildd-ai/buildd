@@ -52,6 +52,9 @@ const OPTED_IN = [
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
   'apps/web/src/app/api/missions/[id]/route.ts',
   'apps/web/src/app/api/prs/route.ts',
+  // Read-only for a task token (list, explain), its own workspace via taskScopeAllowsWorkspace; every write refuses it.
+  'apps/web/src/app/api/providers/explain/route.ts',
+  'apps/web/src/app/api/providers/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',
   'apps/web/src/app/api/stats/coordination/route.ts',

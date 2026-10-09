@@ -3,7 +3,8 @@ import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { isUuid } from '@/lib/uuid';
-import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointAppliesTo, setTeamAgentEndpoint } from '@/lib/agent-endpoint-settings';
+import { listTeamAgentEndpoints, setAgentEndpointAppliesTo } from '@/lib/agent-endpoint-settings';
+import { removeAgentEndpoint, writeAgentEndpoint } from '@/lib/providers/write-path';
 
 /**
  * The team's agent model endpoint (@buildd/core/agent-endpoint,
@@ -23,7 +24,8 @@ import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setAgentEndpointApplie
  * keeps the saved value for the same kind. PATCH changes only
  * that list, and with `consolidate` deletes selected workspaces' own copies
  * that route exactly like the team row. Session only. The key never leaves the server. Verify an existing row with
- * POST /api/secrets/[id]/verify.
+ * POST /api/secrets/[id]/verify. Writes go through the one provider write path
+ * (`@/lib/providers/write-path`), as `/api/providers` does.
  */
 
 async function caller(req: NextRequest, teamId: string, admin: boolean): Promise<Response | null> {
@@ -59,7 +61,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   const { workspaceId, ...endpoint } = body;
   try {
-    const r = await setTeamAgentEndpoint({ teamId: id, workspaceId, endpoint });
+    const r = await writeAgentEndpoint({ teamId: id, workspaceId, endpoint });
     return r.ok ? NextResponse.json({ endpoint: r.endpoint }) : NextResponse.json({ error: r.error }, { status: r.status });
   } catch (error) {
     console.error('[agent-endpoint] write failed:', error);
@@ -93,7 +95,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const workspaceId = req.nextUrl.searchParams.get('workspaceId');
   if (workspaceId && !isUuid(workspaceId)) return NextResponse.json({ error: 'workspaceId must be a workspace id' }, { status: 400 });
   try {
-    return NextResponse.json({ deleted: await deleteTeamAgentEndpoint(id, workspaceId || null) });
+    return NextResponse.json({ deleted: await removeAgentEndpoint(id, workspaceId || null) });
   } catch (error) {
     console.error('[agent-endpoint] delete failed:', error);
     return NextResponse.json({ error: 'Failed to remove the agent endpoint' }, { status: 500 });

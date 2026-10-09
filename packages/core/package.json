@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.302.0",
+  "version": "0.303.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -44,6 +44,7 @@
     "./backend-policy": "./backend-policy.ts",
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
+    "./providers/manage": "./providers/manage.ts",
     "./entitlements": "./entitlements.ts",
     "./billing-limits": "./billing-limits.ts",
     "./billing": "./billing.ts",
