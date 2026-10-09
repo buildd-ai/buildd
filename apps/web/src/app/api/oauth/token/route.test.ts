@@ -21,8 +21,18 @@ mock.module('@/lib/oauth/storage', () => ({
   revokeRefreshTokensForUserWorkspace: mockRevokeRefreshTokensForUserWorkspace,
 }));
 
+const mockSignGrantAccessToken = mock(() => Promise.resolve({ token: 'grant-access-token', expiresIn: 3600 }));
+const mockResolveGrant = mock(() => Promise.resolve(null as any));
+const mockRevokeRefreshTokensForGrant = mock(() => Promise.resolve());
+
 mock.module('@/lib/oauth/tokens', () => ({
   signAccessToken: mockSignAccessToken,
+  signGrantAccessToken: mockSignGrantAccessToken,
+}));
+
+mock.module('@/lib/mcp-grants', () => ({
+  resolveGrant: mockResolveGrant,
+  revokeRefreshTokensForGrant: mockRevokeRefreshTokensForGrant,
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -263,3 +273,40 @@ describe('POST /api/oauth/token — team membership is re-checked', () => {
 
 // Restore module mocks so they don't leak into other test files in the same run.
 afterAll(() => mock.restore());
+
+describe('POST /api/oauth/token — grant-bound refresh', () => {
+  const GRANT = '11111111-2222-4333-8444-555555555555';
+  beforeEach(() => {
+    mockConsumeRefreshToken.mockReset();
+    mockResolveGrant.mockReset();
+    mockRevokeRefreshTokensForGrant.mockReset();
+    mockRevokeRefreshTokensForGrant.mockResolvedValue(undefined);
+    mockCreateRefreshToken.mockReset();
+    mockCreateRefreshToken.mockResolvedValue('refresh-token');
+    mockSignGrantAccessToken.mockReset();
+    mockSignGrantAccessToken.mockResolvedValue({ token: 'grant-access-token', expiresIn: 3600 });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+  });
+
+  it('a grant that no longer resolves is refused, its family revoked, and no id is echoed', async () => {
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', grantId: GRANT, scope: 'mcp' });
+    mockResolveGrant.mockResolvedValue(null);
+    const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'rt', client_id: 'c_1' }));
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(JSON.parse(text).error).toBe('invalid_grant');
+    expect(text).not.toContain(GRANT);
+    expect(mockRevokeRefreshTokensForGrant).toHaveBeenCalledWith(GRANT);
+    expect(mockCreateRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('a live grant mints a grant token and a refresh token bound to the same grant', async () => {
+    mockConsumeRefreshToken.mockResolvedValue({ userId: 'user-1', grantId: GRANT, scope: 'mcp' });
+    mockResolveGrant.mockResolvedValue({ grantId: GRANT, userId: 'user-1', clientId: 'c_1', actsAs: 'agent', scopes: ['read'], workspaces: [{ workspaceId: 'ws-1', teamId: 't-1', role: 'member' }] });
+    const res = await POST(makeRequest({ grant_type: 'refresh_token', refresh_token: 'rt', client_id: 'c_1' }));
+    expect(res.status).toBe(200);
+    expect(mockResolveGrant).toHaveBeenCalledWith(GRANT, 'user-1', 'c_1');
+    expect(mockSignGrantAccessToken).toHaveBeenCalledWith({ userId: 'user-1', grantId: GRANT, clientId: 'c_1', scope: 'mcp' });
+    expect(mockCreateRefreshToken).toHaveBeenCalledWith({ clientId: 'c_1', userId: 'user-1', grantId: GRANT, scope: 'mcp' });
+  });
+});

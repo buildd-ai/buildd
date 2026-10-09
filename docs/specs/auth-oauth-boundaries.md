@@ -2,12 +2,13 @@
 title: Auth & OAuth Boundaries
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-10-09
 summary: The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 domain: auth
-surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/mcp/route.ts, packages/core/db/schema.ts]
+surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/lib/mcp-grants.ts, apps/web/src/app/api/oauth/token/route.ts, packages/core/db/schema.ts]
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
+verified_by: [apps/web/tests/db/mcp-oauth-grants.test.ts, apps/web/src/lib/api-auth.test.ts, apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/token/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -23,6 +24,13 @@ assertions:
   - id: "claim-auth-tests"
     type: "test_file"
     path: "apps/web/src/app/api/workers/claim/route.test.ts"
+  - id: "resolve-granted-workspaces"
+    type: "symbol"
+    name: "resolveGrantedWorkspaces"
+    path: "apps/web/src/lib/mcp-grants.ts"
+  - id: "mcp-grant-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/mcp-oauth-grants.test.ts"
 ---
 # Auth & OAuth Boundaries
 
@@ -205,6 +213,97 @@ MUST reject tokens whose `workspaceId` claim does not match the URL path.
 - Workspace-scoped endpoint: `apps/web/src/app/api/mcp-oauth/[workspace]/route.ts`
 - Schema: `packages/core/db/schema.ts` — `oauthClients`, `oauthCodes`,
   `oauthRefreshTokens`
+
+---
+
+## Account-level MCP grants
+
+**Capability statement**: One MCP OAuth connection MUST be able to reach a
+chosen set of workspaces across the user's teams. The token names a grant, not
+workspaces; what it reaches is decided server-side on every request.
+
+**Model** (`packages/core/db/schema.ts`):
+- `mcp_oauth_grants`: `id`, `user_id`, `client_id`, `acts_as`
+  (`'person' | 'agent'`, required), `scopes` (non-empty subset of
+  `["read","write"]`), `expires_at`, `revoked_at`, `created_at`, `updated_at`.
+- `mcp_oauth_grant_workspaces`: one row per granted workspace
+  (`grant_id`, `workspace_id`), cascading on either side.
+- `oauth_codes` and `oauth_refresh_tokens` carry exactly one of
+  `workspace_id` (legacy) or `grant_id` (CHECK `num_nonnulls(...) = 1`).
+
+**Invariants**:
+- A grant access token's claims are `sub` (user), `client_id`, `scope` and
+  `grant_id`, with the account-level audience. It never carries a workspace
+  list. A token with both `workspace_id` and `grant_id`, or neither, is
+  refused, and the workspace-bound verifier refuses any grant token.
+- What a grant reaches is `resolveGrantedWorkspaces(grantId, userId)`: the
+  grant's workspaces ∩ workspaces whose team the user is a member of now, for a
+  grant that is the user's, not revoked and not expired. It is evaluated on
+  every request (grant sessions are never cached) and at every refresh, so a
+  revoked grant, a removed membership, a deleted workspace or a workspace moved
+  to another team takes effect on the next call.
+- A grant is also bound to its client: a code or refresh token presented by
+  another client does not resolve.
+- New workspaces are never added to a grant implicitly. Creating a grant
+  refuses any workspace the user cannot reach, writes nothing, and names none.
+- A grant session is confined to the workspaces it currently reaches
+  (`account.workspaceIds`), so a self-call naming another workspace, even one
+  in the same team, is refused. A grant that reaches workspaces in more than
+  one team does not pick a team on the generic auth path; it authenticates
+  only where the request names its workspace.
+- Refusals at the token endpoint and in auth never name a grant, workspace or
+  team id.
+- A refresh mints a token for the same grant. The grant's workspaces and
+  `acts_as` live only on the grant row, so a refresh cannot widen the set or
+  change the kind. A refresh whose grant no longer resolves is refused and
+  revokes every refresh token issued under that grant.
+- `acts_as = 'person'`: the session carries `sessionUserId`, so
+  `requestingPerson()` (`apps/web/src/lib/request-person.ts`) returns the user
+  and person-only actions are allowed as `human:<userId>`.
+- `acts_as = 'agent'`: the session is attributed to the user (`oauthUserId`,
+  actor `agent:oauth:<userId>`) but carries no `sessionUserId`, and
+  `requestingPerson()` returns null for it, so every person-only action
+  (Abandon, forced review, landing override, merge override) refuses it.
+- A legacy token (a `workspace_id` claim from the per-workspace connection) is
+  an implicit single-workspace `'person'` grant, resolved with the same
+  membership check as before and its historical reach (`workspaceIds = null`).
+  Per-task `bldt_` tokens and `bld_` API keys are unchanged.
+
+**Acceptance criteria**:
+- AC-16: GIVEN a grant on workspaces in two teams WHEN
+  `resolveGrantedWorkspaces` runs THEN it returns exactly those workspaces and
+  no other workspace of either team.
+- AC-17: GIVEN a live grant token WHEN the user leaves the team, or the grant
+  is revoked, THEN the next `authenticateApiKey` call returns `null`.
+- AC-18: GIVEN a grant refresh token WHEN the grant has been revoked, or the
+  user has lost membership, THEN `/api/oauth/token` returns 400
+  `invalid_grant`, the body names no id, and the grant's other refresh tokens
+  are revoked.
+- AC-19: GIVEN an `'agent'` grant WHEN its token is refreshed (even with an
+  `acts_as` form field) THEN the new token names the same grant and the kind is
+  still `'agent'`.
+- AC-20: GIVEN an `'agent'` grant WHEN it asks to Abandon a closed PR, or to
+  force a review, THEN the request is refused (403 / 409) and the delivery is
+  unchanged; GIVEN a `'person'` grant THEN both are allowed, as
+  `human:<userId>`.
+- AC-21: GIVEN a legacy workspace-claim token WHEN it authenticates THEN it
+  acts as the person with `workspaceIds = null`, and its refresh still rotates
+  a workspace-bound pair.
+
+**Code surface**:
+- Resolver: `apps/web/src/lib/mcp-grants.ts` — `createGrant()`,
+  `resolveGrantedWorkspaces()`, `resolveGrant()`, `resolveTokenGrant()`,
+  `grantPrincipal()`, `revokeGrant()`
+- Tokens: `apps/web/src/lib/oauth/tokens.ts` — `signGrantAccessToken()`,
+  `verifyAccessTokenAnyAudience()`; storage bindings in
+  `apps/web/src/lib/oauth/storage.ts`
+- Per-request auth: `apps/web/src/lib/api-auth.ts` — `authenticateOauthJwt()`
+- Token endpoint: `apps/web/src/app/api/oauth/token/route.ts`
+- Tests: `apps/web/tests/db/mcp-oauth-grants.test.ts` (real Postgres)
+
+**Out of scope here**: the consent picker that creates grants, the
+account-level MCP transport, grant management UI and refresh-token storage
+hardening (hashing, rotation families) are separate tasks of the same mission.
 
 ---
 

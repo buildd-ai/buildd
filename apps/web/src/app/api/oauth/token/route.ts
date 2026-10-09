@@ -6,8 +6,10 @@ import {
   createRefreshToken,
   userHasWorkspaceMembership,
   revokeRefreshTokensForUserWorkspace,
+  type TokenBinding,
 } from '@/lib/oauth/storage';
-import { signAccessToken } from '@/lib/oauth/tokens';
+import { signAccessToken, signGrantAccessToken } from '@/lib/oauth/tokens';
+import { resolveGrant, revokeRefreshTokensForGrant } from '@/lib/mcp-grants';
 import { db } from '@buildd/core/db';
 import { accounts, workspaces, users } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
@@ -90,13 +92,77 @@ function tokenError(error: string, description?: string, status = 400) {
 }
 
 /**
+ * Mint an access + refresh pair for a binding, after re-checking it.
+ *
+ * Legacy (workspace) binding: the user must still be a member of the
+ * workspace's team. Grant binding: the grant must still be the user's, issued
+ * to this client, not revoked or expired, and still reach at least one
+ * workspace (its workspaces ∩ current membership, lib/mcp-grants.ts). The
+ * grant's workspaces and acts-as kind stay on the grant row; the new refresh
+ * token carries the same grant id, so a refresh can never widen or change
+ * either.
+ *
+ * `onRefuse` runs when the re-check fails (refresh revokes the rest of the
+ * family there). Error descriptions never name a workspace or grant.
+ */
+async function issuePair(args: {
+  binding: TokenBinding;
+  userId: string;
+  clientId: string;
+  scope: string | null;
+  onRefuse?: () => Promise<void>;
+}) {
+  const { binding, userId, clientId } = args;
+  const scope = args.scope ?? 'mcp';
+
+  if (typeof binding.grantId === 'string') {
+    const grant = await resolveGrant(binding.grantId, userId, clientId);
+    if (!grant || grant.workspaces.length === 0) {
+      await args.onRefuse?.();
+      return tokenError('invalid_grant', 'this connection no longer grants access');
+    }
+    for (const teamId of new Set(grant.workspaces.map((w) => w.teamId))) {
+      const ws = grant.workspaces.find((w) => w.teamId === teamId)!;
+      await ensureUserAccount(userId, ws.workspaceId);
+    }
+    const { token, expiresIn } = await signGrantAccessToken({ userId, grantId: binding.grantId, clientId, scope });
+    const refreshToken = await createRefreshToken({ clientId, userId, grantId: binding.grantId, scope: args.scope });
+    return tokenResponse(token, refreshToken, expiresIn, scope);
+  }
+
+  const workspaceId = binding.workspaceId as string;
+  // Tokens are issued only to a current member of the workspace's team.
+  if (!(await userHasWorkspaceMembership(userId, workspaceId))) {
+    await args.onRefuse?.();
+    return tokenError('invalid_grant', 'no longer a member of this workspace team');
+  }
+  await ensureUserAccount(userId, workspaceId);
+  const { token, expiresIn } = await signAccessToken({ userId, workspaceId, clientId, scope });
+  const refreshToken = await createRefreshToken({ clientId, userId, workspaceId, scope: args.scope });
+  return tokenResponse(token, refreshToken, expiresIn, scope);
+}
+
+function tokenResponse(accessToken: string, refreshToken: string, expiresIn: number, scope: string) {
+  return NextResponse.json(
+    {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_type: 'Bearer',
+      expires_in: expiresIn,
+      scope,
+    },
+    { headers: { 'cache-control': 'no-store', pragma: 'no-cache' } },
+  );
+}
+
+/**
  * OAuth 2.1 token endpoint. Supports two grants:
  *   - authorization_code (with PKCE verifier)
  *   - refresh_token (rotates the refresh token on every use)
  *
- * Issues a workspace-scoped JWT bearer + a refresh token. The workspace
- * binding is carried from the auth code (or prior refresh token) into the
- * new access token's `workspace_id` claim and `aud` URL.
+ * Issues either a legacy workspace-scoped JWT (the code or refresh token is
+ * bound to one workspace) or an account-level JWT naming an MCP grant (it is
+ * bound to a grant), plus a refresh token with the same binding.
  */
 export async function POST(req: NextRequest) {
   const contentType = req.headers.get('content-type') ?? '';
@@ -125,37 +191,8 @@ export async function POST(req: NextRequest) {
     const result = await consumeAuthCode({ code, clientId, redirectUri, codeVerifier });
     if ('error' in result) return tokenError(result.error);
 
-    // Tokens are issued only to a current member of the workspace's team.
-    if (!(await userHasWorkspaceMembership(result.userId, result.workspaceId))) {
-      return tokenError('invalid_grant', 'no longer a member of this workspace team');
-    }
-
-    await ensureUserAccount(result.userId, result.workspaceId);
-
-    const scope = result.scope ?? 'mcp';
-    const { token, expiresIn } = await signAccessToken({
-      userId: result.userId,
-      workspaceId: result.workspaceId,
-      clientId,
-      scope,
-    });
-    const refreshToken = await createRefreshToken({
-      clientId,
-      userId: result.userId,
-      workspaceId: result.workspaceId,
-      scope: result.scope,
-    });
-
-    return NextResponse.json(
-      {
-        access_token: token,
-        refresh_token: refreshToken,
-        token_type: 'Bearer',
-        expires_in: expiresIn,
-        scope,
-      },
-      { headers: { 'cache-control': 'no-store', pragma: 'no-cache' } },
-    );
+    const { userId, scope, ...binding } = result;
+    return issuePair({ binding: binding as TokenBinding, userId, clientId, scope });
   }
 
   if (grantType === 'refresh_token') {
@@ -168,41 +205,19 @@ export async function POST(req: NextRequest) {
     const result = await consumeRefreshToken({ token: refreshToken, clientId });
     if ('error' in result) return tokenError(result.error);
 
-    // Membership is re-checked on every refresh. A user who has left the
-    // workspace's team gets no new pair, and their remaining refresh tokens
-    // for the workspace are revoked (the presented one already is).
-    if (!(await userHasWorkspaceMembership(result.userId, result.workspaceId))) {
-      await revokeRefreshTokensForUserWorkspace(result.userId, result.workspaceId);
-      return tokenError('invalid_grant', 'no longer a member of this workspace team');
-    }
-
-    await ensureUserAccount(result.userId, result.workspaceId);
-
-    const scope = result.scope ?? 'mcp';
-    const { token, expiresIn } = await signAccessToken({
-      userId: result.userId,
-      workspaceId: result.workspaceId,
+    // The binding is re-checked on every refresh. When it no longer holds,
+    // no new pair is minted and the user's remaining refresh tokens for that
+    // workspace or grant are revoked (the presented one already is).
+    const { userId, scope, ...binding } = result;
+    return issuePair({
+      binding: binding as TokenBinding,
+      userId,
       clientId,
       scope,
+      onRefuse: () => typeof binding.grantId === 'string'
+        ? revokeRefreshTokensForGrant(binding.grantId)
+        : revokeRefreshTokensForUserWorkspace(userId, binding.workspaceId as string),
     });
-    // Rotate: prior refresh token was revoked by consume, mint a new one.
-    const newRefreshToken = await createRefreshToken({
-      clientId,
-      userId: result.userId,
-      workspaceId: result.workspaceId,
-      scope: result.scope,
-    });
-
-    return NextResponse.json(
-      {
-        access_token: token,
-        refresh_token: newRefreshToken,
-        token_type: 'Bearer',
-        expires_in: expiresIn,
-        scope,
-      },
-      { headers: { 'cache-control': 'no-store', pragma: 'no-cache' } },
-    );
   }
 
   return tokenError('unsupported_grant_type');

@@ -7,6 +7,7 @@ import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { findTeamSessionAccount } from './oauth/session-account';
+import { grantPrincipal, resolveTokenGrant } from './mcp-grants';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
@@ -76,48 +77,64 @@ const oauthAccountCache = new TTLCache<CachedAccount>({
 });
 
 /**
- * OAuth JWT path — verify the token, confirm the caller is still a member of
- * the token's workspace team, and act at the level of their team role.
+ * OAuth JWT path — verify the token, resolve what it grants against CURRENT
+ * team membership, and act at the level of the caller's team role.
+ *
+ * Two token shapes (lib/mcp-grants.ts):
+ *  - legacy `workspace_id` claim: an implicit single-workspace 'person' grant;
+ *    behaviour unchanged from before grants existed.
+ *  - `grant_id` claim: the grant's workspaces ∩ the user's current
+ *    memberships, resolved on every request (never cached, see resolveApiKey),
+ *    so a revoked grant or a removed membership stops authenticating on the
+ *    next call. The session is confined to those workspaces (`workspaceIds`).
+ *    A grant reaching workspaces in more than one team has no single team
+ *    account to act as here and does not authenticate on this path; a
+ *    workspace-bound transport resolves it per workspace instead.
  *
  * Account resolution: the `accounts` table has no column linking an account
  * to an individual user (no userId/ownerId/createdBy), so a session resolves
  * to one of its team's `type='user'` accounts, picked deterministically
  * (lib/oauth/session-account.ts). The level, which gates actions, comes from
  * the caller's own membership row; the person, which gates acting as a
- * claimed worker, is sessionUserId (lib/worker-owner.ts).
+ * claimed worker and every person-only action, is sessionUserId
+ * (lib/worker-owner.ts, lib/request-person.ts). An 'agent' grant carries no
+ * sessionUserId: it is attributed to the user (`oauthUserId`) but is never a
+ * person.
  */
 async function authenticateOauthJwt(jwt: string) {
   const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
   if (!claims) return null;
 
-  const userId = claims.sub;
+  const grant = await resolveTokenGrant(claims);
+  if (!grant || grant.workspaces.length === 0) return null;
 
-  // The JWT is scoped to a specific workspace. Use that workspace's team
-  // rather than the user's first team membership, which is wrong for
-  // multi-team users (the first membership may not match the requested workspace).
-  const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, claims.workspace_id),
-    columns: { teamId: true },
-  });
-  if (!workspace) return null;
-
-  // The caller must still be a member of the workspace's team; their role
-  // there sets the session level.
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId)),
-    columns: { teamId: true, role: true },
-  });
-  if (!membership) return null;
+  const teamIds = new Set(grant.workspaces.map((w) => w.teamId));
+  if (teamIds.size !== 1) return null;
+  const { teamId, role } = grant.workspaces[0];
 
   // Deterministic: the same token must act as the same account on every
   // request, or a session is refused on the workers it claimed.
-  const account = await findTeamSessionAccount(workspace.teamId);
+  const account = await findTeamSessionAccount(teamId);
   if (!account) return null;
 
-  // sessionUserId: the person behind this session. The account is shared by
-  // the whole team, so this is the only per-person identity a request carries
-  // (used to scope interactive-worker liveness and to attribute force claims).
-  return { ...account, scopes: null, workspaceIds: null, expiresAt: null, level: levelForTeamRole(membership.role), sessionUserId: userId as string };
+  const principal = grantPrincipal(grant);
+  return {
+    ...account,
+    scopes: null,
+    // Legacy tokens keep their historical team-wide reach; a grant token is
+    // confined to exactly the workspaces it currently reaches.
+    workspaceIds: grant.grantId ? grant.workspaces.map((w) => w.workspaceId) : null,
+    expiresAt: null,
+    level: levelForTeamRole(role),
+    // The person behind this session; absent on an 'agent' grant. The account
+    // is shared by the whole team, so this is the only per-person identity a
+    // request carries.
+    ...(principal.sessionUserId ? { sessionUserId: principal.sessionUserId } : {}),
+    oauthUserId: principal.oauthUserId,
+    actsAs: principal.actsAs,
+    oauthGrantId: grant.grantId,
+    grantScopes: grant.scopes,
+  };
 }
 
 /**
@@ -160,6 +177,11 @@ async function resolveApiKey(apiKey: string | null) {
   if (tokensModule.looksLikeJwt(apiKey)) {
     const hashed = hashApiKey(apiKey);
     if (negativeCache.get(hashed)) return null;
+
+    // A grant token is resolved on every request, never from a cache, so a
+    // revoked grant or a removed membership takes effect on the next call.
+    if (tokensModule.looksLikeGrantToken(apiKey)) return authenticateOauthJwt(apiKey);
+
     const cached = oauthAccountCache.get(hashed);
     if (cached) return cached;
 

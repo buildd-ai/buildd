@@ -33,6 +33,14 @@ export function getResourceUrl(workspaceId: string): string {
   return `${getIssuer()}/api/mcp-oauth/${workspaceId}`;
 }
 
+/**
+ * Account-level resource URL: the audience of a grant token, which is bound to
+ * a grant rather than to one workspace (lib/mcp-grants.ts).
+ */
+export function getAccountResourceUrl(): string {
+  return `${getIssuer()}/api/mcp`;
+}
+
 export function getJwtSecret(): Uint8Array {
   const secret = process.env.OAUTH_JWT_SECRET ?? process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (!secret) {
