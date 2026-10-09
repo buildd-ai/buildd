@@ -25,6 +25,7 @@ import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromCha
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
 import type { EntitlementBlock } from '@buildd/shared';
+import type { WaitingFor } from '@buildd/shared';
 
 export interface TaskPanelData {
   id: string;
@@ -64,7 +65,7 @@ export interface TaskPanelData {
     outputTokens: number;
     startedAt: string | null;
     completedAt: string | null;
-    waitingFor: { type: string; prompt: string; options?: string[] } | null;
+    waitingFor: WaitingFor | null;
     branch: string | null;
     milestones: Array<{ type: string; label: string; ts: number; [k: string]: unknown }> | null;
     account: { authType: string } | null;
