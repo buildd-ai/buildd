@@ -85,3 +85,35 @@ it('Home feeds human approval into manual readiness without enabling automatic m
   expect(automatic).toContain('if (isCurrentReviewApproved({');
   expect(automatic).not.toContain('github:');
 });
+
+describe('the human review card leads with one decision', () => {
+  const escalated = (output: Record<string, unknown>) => ({
+    ...base,
+    github: { reviewDecision: null, humanApproved: false },
+    reviewerTask: { ...escalation, result: { structuredOutput: { verdict: 'escalate', summary: 'protected migration paths', ...output } } },
+  });
+  it('drops the label prefix the card already shows', () => {
+    const review = resolveHumanPrReview(escalated({ escalationReason: 'Adds a table. Also renames nothing.' }));
+    expect(review?.reason).toBe('Adds a table. Also renames nothing.');
+    expect(review?.reason).not.toContain('Review required');
+  });
+  it('the reviewer recommendation is the decision line', () => {
+    const review = resolveHumanPrReview(escalated({ escalationReason: 'Adds a table. More detail.', recommendation: 'Approve the additive migration.' }));
+    expect(review?.decision).toBe('Approve the additive migration.');
+  });
+  it("without a recommendation the decision is the reason's first sentence", () => {
+    expect(resolveHumanPrReview(escalated({ escalationReason: 'Adds a table. More detail.' }))?.decision).toBe('Adds a table.');
+  });
+  it('a recommendation from the mission note is used when the row has none', () => {
+    expect(resolveHumanPrReview({ ...escalated({ escalationReason: 'Adds a table.' }), recommendation: 'Check the index name.' })?.decision).toBe('Check the index name.');
+  });
+  it('structured blockers ride along; old rows have none', () => {
+    expect(resolveHumanPrReview(escalated({ escalationReason: 'x.', blockers: [{ kind: 'migration', text: 'Adds a table' }] }))?.blockers)
+      .toEqual([{ kind: 'migration', text: 'Adds a table' }]);
+    expect(resolveHumanPrReview(escalated({ escalationReason: 'x.' }))?.blockers).toEqual([]);
+  });
+  it('the policy-only case is its own decision', () => {
+    const review = resolveHumanPrReview({ ...base, reviewerTask: null, github: null, policyTier: 'human' });
+    expect(review?.decision).toBe('Human approval required');
+  });
+});

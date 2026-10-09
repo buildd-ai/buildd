@@ -30,6 +30,7 @@
  */
 
 import { derivePrReviewStatus } from './pr-review-status';
+import { reviewDecisionLine, type ReviewBlocker } from './attention-line';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import type { LandingOwnership } from './pr-landing-ownership';
@@ -401,7 +402,12 @@ export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'r
 /** A review is an independent human action, never permission to merge. */
 export interface HumanPrReview {
   label: 'Review on GitHub' | 'Approve on GitHub';
+  /** The full reason, unprefixed: the card's label already says "Review required". */
   reason: string;
+  /** One sentence the card leads with: the reviewer's next step, else the reason's first sentence. */
+  decision: string;
+  /** Structured reasons; empty for reviews written before the reviewer returned them. */
+  blockers: ReviewBlocker[];
 }
 export interface GithubApprovalFacts {
   reviewDecision: string | null;
@@ -414,6 +420,8 @@ export function resolveHumanPrReview(input: {
   escalationReason: string | null;
   /** An explicit human handoff, rather than a verdict-gate refusal reason. */
   hasEscalationNote?: boolean;
+  /** The reviewer's next step from its mission note, when the task row carries none. */
+  recommendation?: string | null;
   policyTier: string;
   github: GithubApprovalFacts | null;
 }): HumanPrReview | null {
@@ -421,21 +429,33 @@ export function resolveHumanPrReview(input: {
     reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null,
     worker: null,
   });
+  // A reviewer's reason gets a decision line and blockers; a bare policy ask
+  // ("Human approval required") is already one line.
+  const make = (label: HumanPrReview['label'], reason: string, fromReviewer: boolean): HumanPrReview => ({
+    label,
+    reason,
+    decision: fromReviewer
+      ? reviewDecisionLine({ recommendation: status.recommendation ?? input.recommendation, reason })
+      : reason,
+    blockers: fromReviewer ? status.blockers : [],
+  });
+  const escalatedReason = () =>
+    status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human';
   // GitHub's aggregate decision includes required reviewers and code owners.
   // A human approval alone must not clear a remaining required approval.
   if (input.github?.reviewDecision === 'REVIEW_REQUIRED' || input.github?.reviewDecision === 'CHANGES_REQUESTED') {
-    return { label: 'Approve on GitHub', reason: status.state === 'escalated'
-      ? `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}`
-      : 'GitHub approval required' };
+    return status.state === 'escalated'
+      ? make('Approve on GitHub', escalatedReason(), true)
+      : make('Approve on GitHub', 'GitHub approval required', false);
   }
   if (input.github?.humanApproved) return null;
   const gate = evaluateReviewVerdictGate(status, input.currentHeadSha);
-  if (input.policyTier === 'human') return { label: 'Review on GitHub', reason: 'Human approval required' };
+  if (input.policyTier === 'human') return make('Review on GitHub', 'Human approval required', false);
   if (status.state === 'escalated' && gate.kind !== 'in_flight') {
-    return { label: 'Review on GitHub', reason: `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}` };
+    return make('Review on GitHub', escalatedReason(), true);
   }
   if (input.hasEscalationNote && input.escalationReason && status.state !== 'approved' && gate.kind !== 'in_flight') {
-    return { label: 'Review on GitHub', reason: `Review required · ${input.escalationReason}` };
+    return make('Review on GitHub', input.escalationReason, true);
   }
   return null;
 }

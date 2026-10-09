@@ -105,6 +105,10 @@ const CLASS_LABELS: Record<RiskClassName, string> = {
   public_api_contract: 'Public API contract',
 };
 
+export function riskClassLabel(name: RiskClassName): string {
+  return CLASS_LABELS[name] ?? name;
+}
+
 const ACTION_LABELS: Record<RiskClassAction, string> = {
   human: 'Human review',
   'agent-review': 'Agent review',
