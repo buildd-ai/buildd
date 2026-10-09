@@ -82,7 +82,7 @@ export default function WorkspacePicker({
                     value={w.id}
                     checked={selected.has(w.id)}
                     onChange={() => toggle(w.id)}
-                    className="h-4 w-4 shrink-0 accent-[var(--text-primary)]"
+                    className="h-4 w-4 shrink-0"
                   />
                   <span className="min-w-0 break-words">{w.name}</span>
                 </label>
