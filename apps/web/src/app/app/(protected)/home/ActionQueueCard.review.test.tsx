@@ -32,4 +32,21 @@ describe('human PR review card', () => {
     expect(html).not.toContain('Review required ·');
     expect(html).toContain('/pull/7/files');
   });
+
+  it('a ship card shows the short title, keeps the full one as tooltip, and carries the refresh line', () => {
+    const ship = {
+      ...item,
+      taskTitle: 'Ship mission: Incident sentinel',
+      refreshFirst: { prNumber: 8, prUrl: 'https://example.test/o/r/pull/8', taskId: null, chip: 'REVIEW' },
+    } as unknown as ActionQueueItem;
+    const html = renderToStaticMarkup(<ActionQueueCard item={ship} />);
+    expect(html).toContain('data-testid="human-pr-review-card"');
+    expect(html).toContain('>Ship Incident sentinel<');
+    expect(html).toContain('title="Ship mission: Incident sentinel"');
+    expect(html).toContain('data-testid="refresh-first"');
+    expect(html).toContain('PR #8');
+    // The refresh line sits after the review card, not inside its folded detail.
+    expect(html.indexOf('refresh-first')).toBeGreaterThan(html.indexOf('Review on GitHub'));
+    expect(html).toContain('Approve the additive migration after the branch refresh lands.');
+  });
 });
