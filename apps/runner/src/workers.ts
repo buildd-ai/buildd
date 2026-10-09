@@ -579,7 +579,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
-import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
@@ -1431,14 +1431,18 @@ export class WorkerManager {
       hasLiveSession: this.sessions.has(workerId),
       toolInFlight: !!worker.toolInFlight,
       waitingFor: worker.waitingFor,
+      backend: worker.taskBackend,
     });
     const decision = decide();
     if (decision.action === 'refuse') {
       console.log(`[Worker ${workerId}] Pause refused: ${decision.reason}`);
       const lastLabel = (worker.milestones[worker.milestones.length - 1] as { label?: string } | undefined)?.label;
-      if (decision.reason === 'unavailable' && lastLabel !== PAUSE_UNAVAILABLE_MESSAGE) {
-        this.addMilestone(worker, { type: 'status', label: PAUSE_UNAVAILABLE_MESSAGE, ts: Date.now() });
-        this.buildd.updateWorker(worker.id, { currentAction: PAUSE_UNAVAILABLE_MESSAGE, milestones: worker.milestones }).catch(() => {});
+      const unavailable = decision.reason === 'unavailable' ? PAUSE_UNAVAILABLE_MESSAGE
+        : decision.reason === 'unavailable_backend' ? PAUSE_UNAVAILABLE_CODEX_MESSAGE
+        : null;
+      if (unavailable && lastLabel !== unavailable) {
+        this.addMilestone(worker, { type: 'status', label: unavailable, ts: Date.now() });
+        this.buildd.updateWorker(worker.id, { currentAction: unavailable, milestones: worker.milestones }).catch(() => {});
         this.emit({ type: 'worker_update', worker });
       }
       return 'refuse';
@@ -3092,7 +3096,8 @@ export class WorkerManager {
   private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
     console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
-    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
+    // and a "Task failed" milestone right after "Paused" read as one.
     const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
@@ -6453,6 +6458,10 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName.startsWith('mcp__')) {
+            // An agent that starts with MCP calls (recall, update_progress)
+            // otherwise sits on "Setting up worktree..." until its first Bash.
+            worker.currentAction = `Using ${toolName.split('__')[1] || 'a tool'}`;
           } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
             // Asks nothing (e.g. `questions: []` used to "wait" on background
             // work). Not a question: never park, abort, or notify — the

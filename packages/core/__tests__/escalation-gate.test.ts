@@ -179,6 +179,12 @@ describe('escalationRule: the backtest\'s findings', () => {
     else expect(v).toBeNull();
   });
 
+  it('a90fc99b: under the human merge tier a rule never lands it; the merge is the person\'s', () => {
+    const v = escalationRule(policyOnly({ why: 'human_tier' }));
+    expect(v).toMatchObject({ owner: 'person' });
+    expect(v).not.toMatchObject({ action: 'policy_merge' });
+  });
+
   it('workflow and secrets paths always go to a person', () => {
     expect(escalationRule(policyOnly({ riskClasses: ['ci_deploy_config'] }))).toMatchObject({ owner: 'person', rail: 'protected_path' });
     expect(escalationRule(policyOnly({ riskClasses: ['destructive_schema_change', 'auth_and_secrets'] }))).toMatchObject({ owner: 'person', rail: 'protected_path' });

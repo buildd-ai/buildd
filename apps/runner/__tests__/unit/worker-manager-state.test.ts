@@ -460,6 +460,21 @@ describe('WorkerManager — state transitions', () => {
   });
 
   describe('Phase tracking', () => {
+    // Live pause proof (task 4b2b30a9): an agent that only made MCP calls
+    // before its first Bash call sat on "Setting up worktree..." for minutes.
+    test('an MCP tool call moves currentAction off "Setting up worktree..."', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-mcp' },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_m', name: 'mcp__buildd__buildd', input: { action: 'update_progress' } }] } },
+        BLOCK_UNTIL_ABORT,
+      ];
+      mockClaimTask.mockImplementation(async () => ({ workers: [{ id: 'w-mcp', branch: 'buildd/mcp', task: makeTask() }] }));
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-mcp')?.currentAction?.startsWith('Using ') === true);
+      expect(manager.getWorker('w-mcp')?.currentAction).toBe('Using buildd');
+    });
+
     test('creates milestones from text + tool_use sequences', async () => {
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-phase' },
@@ -948,6 +963,8 @@ describe('WorkerManager — state transitions', () => {
       expect(worker?.currentAction).toBe('Paused');
       // The session id survives, so Resume continues the same transcript.
       expect(worker?.sessionId).toBe('sess-w-pause');
+      // Nothing failed: no "Task failed" checkpoint after "Paused" (live pause proof, task 4b2b30a9).
+      expect(worker?.milestones.some((m: any) => m.type === 'checkpoint' && m.event === 'task_error')).toBe(false);
       const calls = mockUpdateWorker.mock.calls.filter((c: any[]) => c[0] === 'w-pause');
       expect(calls.some((c: any[]) => c[1]?.status === 'failed')).toBe(false);
       // The last report is the park, carrying the pause, so a sync in between cannot leave it running.
@@ -975,6 +992,28 @@ describe('WorkerManager — state transitions', () => {
       expect(mockQueryResumes[0]).toBeUndefined();
       expect(mockQueryResumes[1]).toBe('sess-w-pause-resume');
       expect(manager.getWorker('w-pause-resume')?.worktreePath).toBe(worktree);
+    });
+
+    // Found live (task 4b2b30a9): a run budget failover moved to Codex resumed
+    // down the Claude path with its Codex thread id and failed with "No
+    // conversation found". Resume must follow the backend the session ran on.
+    test('Resume of a Codex session never resumes Claude with the Codex thread id', async () => {
+      liveSession('w-pause-codex');
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await waitFor(() => manager.getWorker('w-pause-codex')?.sessionId === 'sess-w-pause-codex');
+      await manager.pauseWorker('w-pause-codex');
+      await waitFor(() => manager.getWorker('w-pause-codex')?.status === 'waiting' && !manager.hasLiveSession('w-pause-codex'));
+      const worker = manager.getWorker('w-pause-codex')!;
+      worker.taskBackend = 'codex';
+      worker.codexThreadId = 'codex-thread-1';
+
+      mockMessages = [{ type: 'result', subtype: 'success', session_id: 'sess-w-pause-codex' }];
+      const before = mockQueryResumes.length;
+      await manager.sendMessage('w-pause-codex', 'Resume');
+      await new Promise(r => setTimeout(r, 500));
+
+      expect(mockQueryResumes.slice(before)).not.toContain('codex-thread-1');
     });
 
     test('waits for a running tool to finish before stopping', async () => {

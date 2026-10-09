@@ -50,7 +50,7 @@ import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
-export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red';
+export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red' | 'landing';
 
 /** How long after a skipped retry the sweep looks again. One gated tick past a normal CI run. */
 export const CI_RED_LOOK_AGAIN_MS = 30 * 60_000;

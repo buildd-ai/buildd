@@ -50,7 +50,8 @@ export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'u
  * verdict at the head: `policy` means the workspace's merge policy requires no
  * review (auto-threshold), so only T15's landing rails gate the merge.
  */
-export type ApprovalBasis = 'verdict' | 'human' | 'composition' | 'policy';
+/** `policy_rule`: the escalation gate's policy-merge rule approved exactly the heads in `approvedHeads` (PolicyMergeApproved). */
+export type ApprovalBasis = 'verdict' | 'human' | 'composition' | 'policy' | 'policy_rule';
 
 export type Verdict = 'approve' | 'request_changes' | 'escalate';
 export type RoundStatus = 'queued' | 'reviewing' | 'decided' | 'failed' | 'superseded';
