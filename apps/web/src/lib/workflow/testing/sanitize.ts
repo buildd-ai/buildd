@@ -13,6 +13,8 @@
  *  - repository full names (owner and name) → `org-…/repo-…`
  *  - branch names → `branch-…`, except the conventional trunk names
  *  - people (`human:<id>` and similar actor prefixes, emails) → `user-…`
+ *  - GitHub Actions run and job ids in URLs (`/actions/runs/<n>`, `/job/<n>`) →
+ *    digit strings of the same length
  *  - absolute timestamps → shifted so the delivery starts at 2000-01-01;
  *    relative timing survives, the date does not
  *  - prose (PR bodies, comments, summaries, reasons that embed user text) →
@@ -47,6 +49,8 @@ const SHA_RE = /\b[0-9a-f]{40}\b/gi;
 const ISO_RE = /\b(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)\b/g;
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 const IDENTITY_RE = new RegExp(`\\b(${IDENTITY_PREFIXES.join('|')}):([^:\\s]+)`, 'g');
+/** A run or job id in a GitHub Actions URL path; a bare number elsewhere (a PR number) is not identifying. */
+const ACTIONS_ID_RE = /\/(actions\/runs|job)\/(\d+)/g;
 const PSEUDO_USER_RE = /^user-[0-9a-f]{10}$/;
 
 /** A prose-shaped string, the rule `redactProse` and the exporter share. */
@@ -61,7 +65,10 @@ export function isProse(s: string): boolean {
  */
 export function redactProse<T>(v: T, key = ''): T {
   const walk = (x: unknown, k: string): unknown => {
-    if (typeof x === 'string') return x && (FREE_TEXT_KEYS.has(k.toLowerCase()) || isProse(x)) ? REDACTED : x;
+    if (typeof x === 'string') {
+      const kk = k.toLowerCase();
+      return x && (FREE_TEXT_KEYS.has(kk) || (isProse(x) && !PROSE_EXEMPT_KEYS.has(kk))) ? REDACTED : x;
+    }
     if (Array.isArray(x)) return x.map((y) => walk(y, k));
     if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x as J).map(([kk, y]) => [kk, walk(y, kk)]));
     return x;
@@ -90,6 +97,12 @@ export class Pseudonymizer {
 
   sha(v: string): string {
     return this.h('sha', v.toLowerCase(), 40);
+  }
+
+  /** A numeric id → a digit string of the same length (no leading zero). */
+  digits(kind: string, v: string): string {
+    const d = [...this.h(kind, v, Math.max(v.length, 1) * 2)].map((c) => String(parseInt(c, 16) % 10)).join('').slice(0, v.length);
+    return d[0] === '0' ? `1${d.slice(1)}` : d;
   }
 
   user(v: string): string {
@@ -150,6 +163,7 @@ export class Pseudonymizer {
       if (out === real || (/[/-]/.test(real) && real.length >= 6)) out = out.split(real).join(fake);
     }
     out = out.replace(UUID_RE, (m) => this.uuid(m));
+    out = out.replace(ACTIONS_ID_RE, (_m, seg: string, n: string) => `/${seg}/${this.digits(seg, n)}`);
     out = out.replace(SHA_RE, (m) => this.sha(m));
     out = out.replace(ISO_RE, this.shiftIso(createdAtMs));
     out = out.replace(EMAIL_RE, (m) => `${this.user(m)}@example.invalid`);
