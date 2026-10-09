@@ -104,7 +104,7 @@ export async function loadActivity(input: {
     const ws = byTask.get(t.id) ?? [];
     const type = rules.deriveTaskType(t);
     const isReview = type === 'review' || type === 'review-retry';
-    const waiting = ws.find(w => w.status === 'waiting_input')?.waitingFor as { prompt?: string } | null | undefined;
+    const waiting = ws.find(w => w.status === 'waiting_input')?.waitingFor;
     const local = input.localClientByTaskId.get(t.id);
     return {
       id: t.id,
