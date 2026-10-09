@@ -577,6 +577,20 @@ describe('POST /api/secrets never creates a personal row', () => {
     expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
   });
 
+  // A member's own agent API key is a personal inference key: the claim reads
+  // it (under a personal credential policy) from there, and these legacy
+  // purposes share a team-singleton unique index a personal row would collide with.
+  for (const [purpose, value] of [['anthropic_api_key', 'sk-ant-api-x'], ['openai_api_key', 'sk-x']] as const) {
+    it(`points a personal ${purpose} at /api/inference-keys, where agent runs read it`, async () => {
+      const res = await POST(createPostRequest({ value, purpose, userId: 'user-1' }));
+      expect(res.status).toBe(400);
+      const { error } = await res.json();
+      expect(error).toContain('/api/inference-keys');
+      expect(error).toContain('agent runs');
+      expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+    });
+  }
+
   it('never forwards a userId to the provider for a team row', async () => {
     const res = await POST(createPostRequest({ value: 'v', purpose: 'mcp_credential', label: 'GITHUB_TOKEN' }));
     expect(res.status).toBe(200);

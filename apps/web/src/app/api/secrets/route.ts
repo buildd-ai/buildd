@@ -182,11 +182,21 @@ export async function POST(req: NextRequest) {
   // This route stores team-owned credentials only. Connector and MCP credential
   // lookups resolve rows with no user (packages/core/secrets/team-scope.ts), so a
   // personal row here is never created: personal keys go through their own route.
+  //
+  // A member's own Anthropic or OpenAI key for agent runs is that same personal
+  // inference key: the host claim reads it for tasks they started when the
+  // team's credential policy is personal_first or personal_only
+  // (claim/personal-credential-injection.ts). The legacy agent purposes stay
+  // team-only: they share a team-singleton unique index a personal row would
+  // collide with, and every legacy reader assumes a team row.
   if (body.userId != null) {
+    const agentKeyProvider = purpose === 'anthropic_api_key' ? 'anthropic' : purpose === 'openai_api_key' ? 'openai' : null;
     return NextResponse.json(
       { error: purpose === 'inference_key'
         ? 'Personal inference keys are managed at /api/inference-keys'
-        : `A personal secret is not supported for purpose ${purpose}` },
+        : agentKeyProvider
+          ? `A personal ${agentKeyProvider} key is stored at /api/inference-keys (PUT with provider ${agentKeyProvider}, scope user); agent runs use it for your tasks when the team's credential policy is personal_first or personal_only`
+          : `A personal secret is not supported for purpose ${purpose}` },
       { status: 400 },
     );
   }
