@@ -36,6 +36,12 @@ mock.module('@/lib/pr-supersession-detect', () => ({
   sweepClosedUnsupersededPrs: mockClosedPrSweep,
 }));
 
+const ESCALATIONS_ZERO = { candidates: 0, dispatched: 0, queued: 0, skipped: 0, errors: 0 };
+const mockEscalationSweep = mock(() => Promise.resolve(ESCALATIONS_ZERO as any));
+mock.module('@/lib/escalation-dispatch', () => ({
+  sweepUndispatchedEscalations: mockEscalationSweep,
+}));
+
 const EARLY_RELEASE_ZERO = { enumerated: 0, processed: 0, refreshed: 0, escalated: 0, ignored: 0, skipped: 0, errors: 0 };
 const mockEarlyRelease = mock(() => Promise.resolve(EARLY_RELEASE_ZERO));
 mock.module('@/lib/early-release-reconciler', () => ({
@@ -131,6 +137,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
     mockClosedPrSweep.mockReset();
     mockClosedPrSweep.mockResolvedValue(CLOSED_ZERO);
+    mockEscalationSweep.mockReset();
+    mockEscalationSweep.mockResolvedValue(ESCALATIONS_ZERO);
     mockReconcile.mockResolvedValue(ZERO);
     mockDeadZone.mockResolvedValue({ total: 0, sparked: 0, exhausted: 0, skipped: 0 });
     mockLandingSweep.mockReset();
@@ -345,6 +353,23 @@ describe('GET /api/cron/pr-reconcile', () => {
     const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
     expect(res.status).toBe(200);
     expect((await res.json()).closedPrs.error).toContain('detect failed');
+  });
+
+  // ── Undispatched escalation-gate verdicts (task c06dedf5) ─────────────────
+
+  it('dispatches undispatched Buildd-owned gate verdicts hourly and reports it', async () => {
+    mockEscalationSweep.mockResolvedValue({ candidates: 3, dispatched: 2, queued: 1, skipped: 0, errors: 0 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockEscalationSweep).toHaveBeenCalledTimes(1);
+    expect((await res.json()).escalations).toEqual({ candidates: 3, dispatched: 2, queued: 1, skipped: 0, errors: 0 });
+  });
+
+  it('an escalation sweep failure does not fail the run', async () => {
+    mockEscalationSweep.mockRejectedValue(new Error('ledger down'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).escalations.error).toContain('ledger down');
   });
 
   // The deferred-startAt sweep is gone from this route: a future startAt is a

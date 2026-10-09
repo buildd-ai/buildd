@@ -33,6 +33,23 @@ async function defaultLoadPolicy(workspaceId: string): Promise<Pick<MergePolicy,
   return parseMergePolicyRead((ws.gitConfig as { mergePolicy?: unknown } | null)?.mergePolicy);
 }
 
+/**
+ * The rule merge alone, for the escalation dispatcher (lib/escalation-dispatch.ts):
+ * false when the workspace merge policy keeps the merge for a person.
+ */
+export async function runPolicyMerge(
+  p: { workspaceId: string; prNumber: number; headSha: string },
+  deps: RuleExecutorDeps = {},
+): Promise<boolean> {
+  const policy = await (deps.loadPolicy ?? defaultLoadPolicy)(p.workspaceId);
+  if (!policyAllowsRuleMerge(policy)) return false;
+  const merge = deps.policyMerge ?? (await import('./workflow/seam')).policyMergeThroughKernel;
+  await merge({ ...p, reason: POLICY_MERGE_REASON });
+  return true;
+}
+
+const POLICY_MERGE_REASON = 'policy-only escalation; CI green on the reviewed head, not a draft, not XL, risk classes that landed cleanly';
+
 export function escalationRuleExecutor(deps: RuleExecutorDeps = {}) {
   return async (s: GatedSubject, action: EscalationAction): Promise<void> => {
     if (action !== 'policy_merge' || s.prNumber == null || !s.headSha) return;
@@ -41,7 +58,7 @@ export function escalationRuleExecutor(deps: RuleExecutorDeps = {}) {
     const merge = deps.policyMerge ?? (await import('./workflow/seam')).policyMergeThroughKernel;
     await merge({
       workspaceId: s.workspaceId, prNumber: s.prNumber, headSha: s.headSha,
-      reason: 'policy-only escalation; CI green on the reviewed head, not a draft, not XL, risk classes that landed cleanly',
+      reason: POLICY_MERGE_REASON,
     });
   };
 }
