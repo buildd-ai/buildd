@@ -899,6 +899,12 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     const [req2, ctx2] = makeRequest('42', { overrides: { verdict: true } });
     await POST(req2, ctx2);
     expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ verdict: true });
+
+    // The person's reason rides along, for the kernel's bypass record.
+    mockLandPr.mockClear();
+    const [req3, ctx3] = makeRequest('42', { overrides: { freshness: true }, reason: 'base keeps moving' });
+    await POST(req3, ctx3);
+    expect(mockLandPr.mock.calls[0]![0].actor).toMatchObject({ override: { freshness: true }, overrideReason: 'base keeps moving' });
   });
 
   it('enforce: no override flag passes no override to landPr', async () => {
@@ -1196,6 +1202,20 @@ describe('POST /api/prs/[prNumber]/merge — kernel-owned PR (Slice C)', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
     expect(recordedFacts).toEqual([]);
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
+  });
+
+  it('a freshness or size override reaches the kernel with its kinds and the person\'s reason (the spent-treadmill escape hatch)', async () => {
+    mockLandThroughKernel.mockResolvedValue(kernelMerged);
+    const [req, ctx] = makeRequest('42', { overrides: { freshness: true }, reason: 'base keeps moving; CI green on this head' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockLandThroughKernel.mock.calls[0]![0]).toMatchObject({
+      actor: 'human:u-1', override: { reason: 'base keeps moving; CI green on this head', kinds: ['freshness'] },
+    });
+    mockLandThroughKernel.mockClear();
+    const [req2, ctx2] = makeRequest('42', { overrides: { size: true } });
+    await POST(req2, ctx2);
+    expect(mockLandThroughKernel.mock.calls[0]![0].override).toMatchObject({ kinds: ['size'], reason: expect.any(String) });
   });
 
   it('a stale answer from the kernel itself (the screen went stale after the check) is a 409 with the current view', async () => {
