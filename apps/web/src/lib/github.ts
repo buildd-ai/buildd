@@ -178,6 +178,24 @@ export interface MergePullRequestResult {
   indeterminate?: boolean;
   /** GitHub's HTTP status, when a response was received at all. */
   status?: number;
+  /** How long GitHub asked us to wait before calling again (`retry-after`, or `x-ratelimit-reset` once the quota is spent). */
+  retryAfterMs?: number;
+}
+
+/**
+ * When GitHub said to come back, in ms from `now`: `retry-after` (seconds) on a
+ * secondary rate limit or a 5xx, else `x-ratelimit-reset` (epoch seconds) when
+ * `x-ratelimit-remaining` is 0. Null when it said nothing usable.
+ * https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+ */
+export function retryAfterFromHeaders(headers: Headers, now = Date.now()): number | null {
+  const after = headers.get('retry-after');
+  if (after != null && /^\s*\d+\s*$/.test(after)) return Number(after) * 1000;
+  const reset = headers.get('x-ratelimit-reset');
+  if (headers.get('x-ratelimit-remaining') === '0' && reset != null && /^\s*\d+\s*$/.test(reset)) {
+    return Math.max(0, Number(reset) * 1000 - now);
+  }
+  return null;
 }
 
 // Merge a pull request via REST API
@@ -227,9 +245,10 @@ export async function mergePullRequest(
     return { merged: true, message: data?.message || 'Pull request merged', status: response.status };
   }
 
+  const retryAfterMs = retryAfterFromHeaders(response.headers);
   if (data?.message) {
     // GitHub gave us a real, parseable reason for refusing — a definitive answer.
-    return { merged: false, message: data.message, status: response.status };
+    return { merged: false, message: data.message, status: response.status, ...(retryAfterMs != null ? { retryAfterMs } : {}) };
   }
 
   // Non-2xx with no parseable body: a proxy hop, an empty-body error, or a
@@ -240,6 +259,7 @@ export async function mergePullRequest(
     message: `GitHub returned ${response.status} with no readable response body`,
     indeterminate: true,
     status: response.status,
+    ...(retryAfterMs != null ? { retryAfterMs } : {}),
   };
 }
 
