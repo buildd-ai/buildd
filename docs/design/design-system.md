@@ -325,7 +325,10 @@ their exemptions in `mobile-type-floor.test.ts`.
 All seven are built in `apps/web/src/components/ui/` (`Chip`, `Eyebrow`,
 `Section`, `Lede`, `PrimaryAction`, `Disclosure`, `Sheet`), each with a unit or
 DOM test beside it. Only `Chip` and `Sheet` have been swapped in so far; the
-**Replaces** lists of the other five are follow-up migrations.
+**Replaces** lists of the other five are follow-up migrations. `Card` and
+`Notice` (below) are built the same way; so far only the planning-task status
+on the task page renders `Notice`, the rest of their **Replaces** lists are
+follow-ups too.
 
 Location: `apps/web/src/components/ui/`, next to `Dialog`, `Select`,
 `Combobox`, `Switch`. Tokens only, no raw hex, no `text-[Npx]`, square chrome,
@@ -372,7 +375,14 @@ its own cell (pattern, frame) pair, so it reads in greyscale
 All in `components/ui/`, from the refined-UI prototype:
 
 - `Lifecycle`: `Build → Audit → Land` with the current step, and its repair /
-  recovering / needs-you variants.
+  recovering / needs-you variants. It is the only drawing of that track:
+  Activity rows and Home's delivery rows (`lifecycleState(kind)` maps a
+  delivery kind onto it), the mission drawer (with `notes`, one phrase per
+  step) and the task page's run strip (`runLifecycleState` reads the run
+  evidence; the nine phases sit behind its "Run evidence" disclosure).
+  **Props:** `state`, `repairs?` (`repair N` while repairing, `↻N` for rounds
+  already taken), `notes?: [build, audit, land]`, `className?`. Spans only, so
+  it can sit inside a link or a button row.
 - `TaskStrip`: `size="lg"` is the interactive strip (one button per task,
   ← → / Home / End, tick-row marks per spec §5, a mark never restyles a cell,
   cells capped at 56px on desktop); `size="sm"` replaces progress bars and,
@@ -383,6 +393,52 @@ All in `components/ui/`, from the refined-UI prototype:
 - `MissionRow`, `Segmented` (a radio group), `Criteria`.
 - L3: `.card-decision` (1.5px `--dec-frame` on `--inset`) and `.btn-ink` (the
   charcoal primary). The Home review cards wear them.
+
+### Card
+
+**Purpose:** the L2 card: one standalone object on a page (a release, a
+connector, a revision). Not for a decision (that is L3, `.card-decision` +
+`.btn-ink`) and not for a group inside a section (L1: a hairline divider, no
+frame).
+
+**Built:** `components/ui/Card.tsx`.
+
+**Props:** `as?` (element or component, default `div`), `padding?: 'sm' | 'md'`
+(12px / 16px, default `md`), `interactive?` (a linked card: hover fill and a
+2px ink focus ring), `bare?` (no frame, only the padding, for a card nested
+in a card), `className?`, and any prop of the element (`href`, `aria-*`,
+`data-testid`).
+
+**Look:** the `.card` class: `--card` fill, 1px `--border`, `--radius-card`
+(6px), no shadow (`card-shadow.test.ts`). `<Card>` and a hand-written `.card`
+are the same card; `.card-interactive` carries the hover and focus states.
+
+**Replaces:** the census's ad-hoc framed boxes: the retired 2px ink frame
+(`border-2 border-border-strong`), hairline square or rounded boxes with
+padding, and fill-only panels, wherever the box is a standalone object.
+
+### Notice
+
+**Purpose:** the one inline alert: saved, heads up, failed, for your
+information. A status line, not a decision; a notice that asks for a person's
+call is an L3 decision card instead.
+
+**Built:** `components/ui/Notice.tsx`.
+
+**Props:** `tone?: 'ok' | 'warn' | 'err' | 'info'` (default `info`), `title?`,
+`children` (the body), `action?: { label, href } | { label, onClick }` (at most
+one), `className?`, `data-testid?`.
+
+**Look:** the `.notice` / `.notice-<tone>` classes: a 1px frame in the tone's
+hue on `--radius-card`, text in the same hue, no tint fill (state colours never
+fill a card, §2.5). `info` is neutral: `--border-strong` frame, `--text-primary`
+text, never orange. The title leads with a glyph per tone (`✓ ! ✕ i`), so the
+tone never reads by colour alone. The action is a `.btn .btn-sm`, never a
+primary fill. `err` is `role="alert"`; every other tone is `role="status"`.
+
+**Replaces:** tinted alert boxes (`bg-status-*/N border-status-*/N`), 1px
+state-hue frames that only report a state, and the bare `.notice` markup.
+`.notice-warn` is new; the orange `.notice-info` is now neutral.
 
 ### Eyebrow
 
