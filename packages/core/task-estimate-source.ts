@@ -236,6 +236,12 @@ export function priorAggregateQuery(cutoff: Date): SQL {
        WHERE t.task_class = 'work'
          AND t.status = 'completed'
          AND t.created_at < ${at}::timestamptz
+         -- Whole tasks only: one with a session ending at/after the cutoff would
+         -- be sized from a truncated slice of itself, biasing the prior low.
+         AND NOT EXISTS (
+           SELECT 1 FROM workers wf
+            WHERE wf.task_id = t.id AND wf.completed_at >= ${at}::timestamptz
+         )
     ),
     spent AS (
       SELECT w.task_id,
@@ -263,8 +269,8 @@ export function priorAggregateQuery(cutoff: Date): SQL {
            COUNT(*) AS n,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY s.minutes) AS p50_minutes,
            percentile_cont(0.8) WITHIN GROUP (ORDER BY s.minutes) AS p80_minutes,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY s.tokens) AS p50_tokens,
-           percentile_cont(0.8) WITHIN GROUP (ORDER BY s.tokens) AS p80_tokens,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY s.tokens) FILTER (WHERE s.tokens > 0) AS p50_tokens,
+           percentile_cont(0.8) WITHIN GROUP (ORDER BY s.tokens) FILTER (WHERE s.tokens > 0) AS p80_tokens,
            AVG(COALESCE(r.n, 0)) AS repairs_per_task
       FROM done d
       JOIN spent s ON s.task_id = d.id
