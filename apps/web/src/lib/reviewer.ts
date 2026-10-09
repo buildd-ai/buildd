@@ -48,7 +48,7 @@ import {
 import type { CriterionReviewerFinding } from '@buildd/shared';
 import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
 import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
-import { REVIEW_BLOCKER_KINDS, type ReviewBlocker } from './review-decision';
+import { REVIEW_BLOCKER_KINDS, type ReviewBlocker } from './attention-line';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 

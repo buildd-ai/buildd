@@ -30,7 +30,7 @@
  */
 
 import { derivePrReviewStatus } from './pr-review-status';
-import { reviewDecisionLine, type ReviewBlocker } from './review-decision';
+import { reviewDecisionLine, type ReviewBlocker } from './attention-line';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import type { LandingOwnership } from './pr-landing-ownership';

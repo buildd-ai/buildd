@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseReviewBlockers, firstSentence, reviewDecisionLine, blockerLabel } from './review-decision';
+import { parseReviewBlockers, firstSentence, reviewDecisionLine, blockerLabel } from './attention-line';
 
 describe('parseReviewBlockers', () => {
   it('keeps well-formed entries and drops the rest', () => {

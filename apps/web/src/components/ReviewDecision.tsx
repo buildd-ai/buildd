@@ -2,7 +2,7 @@
 
 import Chip from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
-import { blockerLabel, type ReviewBlocker } from '@/lib/review-decision';
+import { blockerLabel, type ReviewBlocker } from '@/lib/attention-line';
 
 /**
  * The body of a review card, in reading order: the one decision asked of you,

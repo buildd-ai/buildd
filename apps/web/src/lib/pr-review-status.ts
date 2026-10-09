@@ -7,7 +7,7 @@
  * `pr-review-request.ts`.
  */
 
-import { parseReviewBlockers, type ReviewBlocker } from './review-decision';
+import { parseReviewBlockers, type ReviewBlocker } from './attention-line';
 
 /** Bound on a single callback delivery. A hanging endpoint must not stall a verdict. */
 export const REVIEW_CALLBACK_TIMEOUT_MS = 5_000;

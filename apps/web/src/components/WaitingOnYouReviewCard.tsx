@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
 import { ReviewDecision } from './ReviewDecision';
-import { reviewDecisionLine } from '@/lib/review-decision';
+import { reviewDecisionLine } from '@/lib/attention-line';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
