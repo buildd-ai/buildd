@@ -40,13 +40,32 @@ describe('ActivityView: Now', () => {
     expect(html).toContain('33/35 landed ›');
   });
 
-  it('expanded evidence leads with the current head; the repair sits before the older head', () => {
-    const cur = html.indexOf('data-current="true"');
-    const rep = html.indexOf('data-testid="activity-repair"');
-    const old = html.indexOf('data-current="false"');
-    expect(cur).toBeGreaterThan(-1);
-    expect(rep).toBeGreaterThan(cur);
-    expect(old).toBeGreaterThan(rep);
+  it('expanded evidence shows the current head before the older one', () => {
+    expect(html.indexOf('data-current="true"')).toBeGreaterThan(-1);
+    expect(html.indexOf('data-current="false"')).toBeGreaterThan(html.indexOf('data-current="true"'));
+  });
+
+  it('repair attempts are indented children of their delivery, visible without expanding', () => {
+    const collapsed = render(4, 'now', []);
+    const list = collapsed.match(/<ul[^>]*data-testid="activity-repairs"[^>]*>/)?.[0] ?? '';
+    expect(list).toContain('ml-3');
+    expect(collapsed).toContain('data-testid="activity-repair"');
+    // A child sits inside its delivery's block, after the delivery line.
+    const row = collapsed.indexOf('data-testid="activity-now-row"');
+    expect(collapsed.indexOf('data-testid="activity-repairs"')).toBeGreaterThan(row);
+    // Never a second copy inside the expanded evidence.
+    const ev = html.slice(html.indexOf('data-testid="activity-evidence"'));
+    expect(ev.slice(0, ev.indexOf('Task page'))).not.toContain('data-testid="activity-repair"');
+  });
+
+  it('states are glyph + word through the shared pill, not colour alone', () => {
+    const pills = [...html.matchAll(/<span[^>]*data-testid="delivery-state"[^>]*>(.*?)<\/span>([^<]+)/g)];
+    expect(pills.length).toBeGreaterThan(0);
+    for (const m of pills) {
+      expect(m[1]).toContain('aria-hidden="true"');
+      expect(m[2].trim().length).toBeGreaterThan(0);
+    }
+    expect(html).not.toContain('data-testid="delivery-chip"');
   });
 
   it('draws no square strips, histograms or running-now carousel', () => {

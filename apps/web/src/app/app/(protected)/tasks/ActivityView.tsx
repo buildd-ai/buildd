@@ -9,11 +9,14 @@
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { DeliveryChip, DeliveryEvidence, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryEvidence, DeliveryTrack, TONE_TEXT } from '@/components/delivery/DeliveryParts';
+import { DeliveryStatePill } from '@/components/delivery/DeliveryStatePill';
+import StatePill from '@/components/ui/StatePill';
+import type { StateKey } from '@/components/ui/states';
 import { repairBadge } from '@/lib/delivery-projection';
 import {
   filterEpisodes, filterNow,
-  type ActivityNow, type ActivityOutcome, type ActivityScope, type Episode, type LatestTask, type NowGroup, type NowRow,
+  type ActivityNow, type ActivityOutcome, type ActivityScope, type EvidenceEntry, type Episode, type LatestTask, type NowGroup, type NowRow,
 } from '@/lib/activity-delivery';
 import type { LocalSessionView } from '@/lib/local-session-view';
 import { Select } from '@/components/ui/Select';
@@ -197,6 +200,8 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
   const [open, setOpen] = useState(startOpen);
   const expandable = row.evidence.length > 0;
   const rounds = row.delivery.repairRounds;
+  // Repair attempts are children of their delivery: always visible, never a row of their own, oldest first.
+  const repairs = row.evidence.filter((e): e is Extract<EvidenceEntry, { type: 'repair' }> => e.type === 'repair').sort((a, b) => a.round - b.round);
   const head = (
     <>
       <span className="line-clamp-2 min-w-0 break-words text-body font-semibold text-text-primary">{row.title}</span>
@@ -205,7 +210,7 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
         {expandable && <span aria-hidden="true" className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-90' : ''}`}>›</span>}
       </span>
       <span className="col-span-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <DeliveryChip kind={row.delivery.kind} />
+        <DeliveryStatePill kind={row.delivery.kind} />
         <DeliveryTrack kind={row.delivery.kind} rounds={rounds} />
         {row.live && <span className="inline-flex items-center gap-1.5 text-meta text-text-muted"><span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />agent live</span>}
         {row.prNumber && <span className="font-mono text-meta text-text-muted">#{row.prNumber}</span>}
@@ -221,9 +226,14 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
       ) : (
         <Link href={row.href} className={grid}>{head}</Link>
       )}
+      {repairs.length > 0 && (
+        <ul data-testid="activity-repairs" aria-label="Repair attempts" className="mb-2 ml-3 border-l border-border-strong pl-3">
+          {repairs.map(r => <RepairChild key={r.round} entry={r} />)}
+        </ul>
+      )}
       {expandable && open && (
         <div id={`ev-${row.id}`} data-testid="activity-evidence" className="pb-3">
-          {row.evidence.map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
+          {row.evidence.filter(e => e.type !== 'repair').map((e, i) => <DeliveryEvidence key={i} entry={e} />)}
           <div className="mt-3 flex flex-wrap gap-2">
             <Link href={row.href} className="inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-body font-semibold md:min-h-9">Task page ›</Link>
             {missionHref && <Link href={missionHref} className="inline-flex min-h-11 items-center border border-border-default px-3.5 font-mono text-body md:min-h-9">Open in mission ›</Link>}
@@ -231,6 +241,22 @@ function NowRowView({ row, missionHref, nowMs, startOpen }: { row: NowRow; missi
         </div>
       )}
     </div>
+  );
+}
+
+const REPAIR_STATE: Record<Extract<EvidenceEntry, { type: 'repair' }>['status'], StateKey> = {
+  running: 'fixing', pushed: 'review', failed: 'failed', queued: 'queued',
+};
+const REPAIR_WHY: Record<string, string> = { ci: 'CI failed', conflict: 'branch conflict', review: 'review asked for changes' };
+
+/** One repair attempt, indented under its delivery: `↻ Repairing · Repair 1 · CI failed`. */
+function RepairChild({ entry }: { entry: Extract<EvidenceEntry, { type: 'repair' }> }) {
+  const why = entry.reason ? REPAIR_WHY[entry.reason] ?? null : null;
+  return (
+    <li data-testid="activity-repair" data-status={entry.status} className="flex flex-wrap items-baseline gap-x-2 py-0.5 text-meta text-text-secondary">
+      <StatePill state={REPAIR_STATE[entry.status]} variant="plain" />
+      <span>Repair {entry.round}{why ? ` · ${why}` : ''}{entry.sha ? ` · ${entry.sha}` : ''}</span>
+    </li>
   );
 }
 
@@ -250,7 +276,7 @@ function EpisodeView({ episode, nowMs }: { episode: Episode; nowMs: number }) {
         <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{age(episode.at, nowMs)}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <DeliveryChip kind={episode.kind} />
+        <DeliveryStatePill kind={episode.kind} />
         {episode.repairRounds > 0 && <span className="font-mono text-meta text-status-warning">{repairBadge(episode.repairRounds)}</span>}
         <span className="min-w-0 break-words text-meta text-text-muted">{episode.missionTitle ?? 'Standalone'}</span>
       </div>
