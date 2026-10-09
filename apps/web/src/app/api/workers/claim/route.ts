@@ -25,6 +25,7 @@ import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
   learnOauthCapacity,
@@ -1167,7 +1168,9 @@ export async function POST(req: NextRequest) {
             : undefined,
         ),
       ),
-      columns: { slug: true, model: true, workspaceId: true, teamId: true },
+      // Personal rows ride along (team-level, workspaceId NULL); which one a
+      // task may use is decided per task by its requester below.
+      columns: { ...ROLE_VISIBILITY_COLUMNS, model: true },
     });
   }
 
@@ -2360,6 +2363,7 @@ export async function POST(req: NextRequest) {
     const taskTier = (task as any).tier as RegistryTier | null | undefined;
     const roleRow = pickRoleRowForTask(roleModelRows, {
       roleSlug, workspaceId: task.workspaceId, teamId: taskTeamId,
+      requesterUserId: slugHasPersonalRows(roleModelRows, roleSlug) ? await lazyRequester(task)() : null,
     });
     // Precedence: pin → tasks.tier → role exact id → matrix + role floor. An
     // inferred role never touches the model (role-routing.md §4.1).

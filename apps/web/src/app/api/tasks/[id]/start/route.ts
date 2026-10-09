@@ -145,12 +145,12 @@ export async function POST(
     const roleSlug = (task as any).roleSlug as string | null;
     const teamId = (task.workspace as any)?.teamId as string | null;
     if (roleSlug && teamId) {
-      const connectorFailures = await checkConnectorRouting(roleSlug, task.workspaceId, teamId);
+      const connectorFailures = await checkConnectorRouting(roleSlug, task.workspaceId, teamId, { task });
       if (connectorFailures) {
         const detail = connectorFailures
           .map(f => `'${f.connectorName}' (${f.mode})`)
           .join(', ');
-        const alternativeRole = await findAlternativeRole(roleSlug, task.workspaceId, teamId);
+        const alternativeRole = await findAlternativeRole(roleSlug, task.workspaceId, teamId, { task });
         return NextResponse.json({
           error: `Task cannot be started: role '${roleSlug}' has connector issues: ${detail}`,
           gateReason: 'connector_routing_mismatch',

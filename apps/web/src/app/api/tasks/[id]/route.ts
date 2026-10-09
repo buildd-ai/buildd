@@ -8,6 +8,7 @@ import { and, eq, inArray, desc } from 'drizzle-orm';
 import { emit } from '@/lib/core-emit';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
+import { lazyRequester } from '@buildd/core/role-visibility';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -436,6 +437,8 @@ export async function PATCH(
           roleSlug: roleSlug !== undefined ? (roleSlug || null) : task.roleSlug,
           workspaceId: task.workspaceId,
           teamId: (task as any).workspace?.teamId ?? null,
+          // Who the task is for decides which personal role's refs count.
+          requesterUserId: await lazyRequester(task)(),
         });
         if (!check.ok) {
           return NextResponse.json({ error: check.error }, { status: 400 });
