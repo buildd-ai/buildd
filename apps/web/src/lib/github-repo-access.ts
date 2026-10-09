@@ -285,7 +285,7 @@ function permissionPhrase(gaps: MissingPermission[]): string {
 
 /** Where a person fixes this inside Buildd. */
 export function repoAccessSettingsPath(workspaceId: string): string {
-  return `/app/workspaces/${workspaceId}/config#github-access`;
+  return `/app/settings/workspace/${workspaceId}#github-access`;
 }
 
 export function describeRepoAccessProblem(

@@ -204,7 +204,7 @@ describe('remediation copy', () => {
     });
     expect(body.code).toBe('github_repo_access_required');
     expect(body.reason).toBe('repo_not_selected');
-    expect(body.settingsUrl).toBe('https://buildd.example/app/workspaces/ws-1/config#github-access');
+    expect(body.settingsUrl).toBe('https://buildd.example/app/settings/workspace/ws-1#github-access');
     expect(body.agentGuidance).toContain('do not create one');
     expect(body.agentGuidance).toContain('gh');
     expect(body.agentGuidance).toContain('never duplicated');

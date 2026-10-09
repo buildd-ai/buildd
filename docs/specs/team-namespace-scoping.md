@@ -187,14 +187,14 @@ by the active team; switching the active team MUST change the set shown.
   workspaces are listed.
 - AC-2: GIVEN `GET /api/workspaces?teamId=A` with session auth and the user a
   member of A, THEN every returned workspace has `teamId === A`.
-- AC-3: WHEN the active team changes to B, THEN `/app/workspaces` shows team B's
+- AC-3: WHEN the active team changes to B, THEN `/app/settings/workspaces` shows team B's
   workspaces.
 - AC-4 (error): GIVEN `?teamId=X` where the user is not a member of X, THEN the
   response excludes X's workspaces (empty or HTTP 403).
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/workspaces/page.tsx` (currently
-  `getUserWorkspaceIds(user.id)` across all teams)
+- `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx` (the one
+  workspaces list; `/app/workspaces` redirects here)
 - `apps/web/src/app/api/workspaces/route.ts` (GET — add `teamId` filter)
 - `apps/web/src/lib/team-access.ts` (`getUserWorkspaceIds` — add team-scoped
   variant)
@@ -253,7 +253,7 @@ choice when the user belongs to multiple teams.
   submits, THEN the resource is created in A (explicit choice overrides default).
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/workspaces/new/page.tsx` (`loadTeams` —
+- `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx` (`loadTeams` —
   currently defaults to personal team)
 - `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx` (reads
   `localStorage 'buildd:lastTeamId'` — replace with active-team cookie)
@@ -329,10 +329,10 @@ across tabs/views are a defect.
   header shows "Idle" — NOT a count of 0.
 
 **Code surface**:
-- `apps/web/src/app/app/(protected)/team/page.tsx` — `totalActiveWorkerCount` is
+- `apps/web/src/app/app/(protected)/settings/roles/page.tsx` — `totalActiveWorkerCount` is
   derived from `activeWorkers.length` (all workers in scope), separate from role
   attribution logic.
-- `apps/web/src/app/app/(protected)/team/TeamGrid.tsx` — header badge uses
+- `apps/web/src/app/app/(protected)/settings/roles/TeamGrid.tsx` — header badge uses
   `totalActiveWorkerCount`; unattributed workers surfaced in idle section label.
-- Test: `apps/web/src/app/app/(protected)/team/page.test.ts` — covers the
+- Test: `apps/web/src/app/app/(protected)/settings/roles/page.test.ts` — covers the
   unattributed-worker case (AC-2).

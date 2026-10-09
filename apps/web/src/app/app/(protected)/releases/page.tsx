@@ -52,7 +52,7 @@ export default async function ReleasesPage({
         </div>
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No team found.</p>
-          <p className="text-xs text-text-muted"><Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to track releases.</p>
+          <p className="text-xs text-text-muted"><Link href="/app/settings/team/new" className="text-primary hover:underline">Create a team</Link> to track releases.</p>
         </div>
       </div>
     );

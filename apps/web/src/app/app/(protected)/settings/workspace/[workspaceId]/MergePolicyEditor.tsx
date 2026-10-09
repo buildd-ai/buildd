@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { MergePolicy, MergePolicyTier, WorkspacePolicyConfig } from '@buildd/shared';
@@ -9,6 +9,9 @@ import { PolicyRescanSheet } from '@/components/PolicyRescanSheet';
 import { describePolicyConfig, riskClassLabel } from '@/lib/workspace-health';
 import { applyPolicySuggestions, type PolicySuggestion } from '@/lib/policy-suggestions';
 import { Select } from '@/components/ui/Select';
+import Segmented from '@/components/ui/Segmented';
+import { TonePill } from '@/components/ui/StatePill';
+import type { StateTone } from '@/components/ui/states';
 
 interface Role {
   slug: string;
@@ -31,8 +34,6 @@ interface Props {
   policySuggestions?: PolicySuggestion[];
   roles: Role[];
   missionOverrides: MissionOverride[];
-  /** Right of the page title (the workspace's "Move to team…"). */
-  headerAction?: ReactNode;
   /**
    * Holds `manage_workspace_settings` in the workspace's team (overrides
    * applied). False: the policy in effect, read-only, with no Save or re-scan.
@@ -44,32 +45,34 @@ interface Props {
 const TIER_OPTIONS: { value: MergePolicyTier; label: string; hint: string }[] = [
   {
     value: 'auto-threshold',
-    label: 'Auto-Threshold',
+    label: 'Auto-threshold',
     hint: 'Merges when CI passes and the PR is within the size limit.',
   },
   {
     value: 'agent-review',
-    label: 'Agent Review',
+    label: 'Agent review',
     hint: 'An agent reviews the PR before it can merge.',
   },
   {
     value: 'human',
-    label: 'Human Gate',
+    label: 'Human gate',
     hint: 'A person approves and merges each PR.',
   },
 ];
 
-const TIER_BADGE_CLASS: Record<MergePolicyTier, string> = {
-  'auto-threshold': 'bg-status-success/15 text-status-success border border-status-success/25',
-  'agent-review': 'bg-status-warning/15 text-status-warning border border-status-warning/25',
-  'human': 'bg-status-error/15 text-status-error border border-status-error/25',
+const TIER_TONE: Record<MergePolicyTier, StateTone> = {
+  'auto-threshold': 'ok',
+  'agent-review': 'run',
+  'human': 'dec',
 };
 
 const TIER_LABEL: Record<MergePolicyTier, string> = {
   'auto-threshold': 'Auto',
-  'agent-review': 'Agent Review',
-  'human': 'Human Gate',
+  'agent-review': 'Agent review',
+  'human': 'Human gate',
 };
+
+const INPUT = 'w-full px-3 py-2 font-mono text-base md:text-sm bg-input border border-border-default focus:outline-none focus:border-border-strong';
 
 export default function MergePolicyEditor({
   workspaceId,
@@ -79,7 +82,6 @@ export default function MergePolicyEditor({
   policySuggestions = [],
   roles,
   missionOverrides: initialOverrides,
-  headerAction,
   canEdit = true,
 }: Props) {
   const router = useRouter();
@@ -169,90 +171,56 @@ export default function MergePolicyEditor({
     }
   }
 
+  const tierHint = TIER_OPTIONS.find(o => o.value === policy.tier)?.hint;
+
   return (
-    <div className="space-y-8">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-sm text-text-muted">
-        <Link href="/app/settings/workspaces" className="hover:text-text-primary transition-colors">Workspaces</Link>
-        <span>/</span>
-        <span className="text-text-primary">{workspaceName}</span>
-        <span>/</span>
-        <span className="text-text-primary">Merge Policy</span>
+    <div className="py-4 first:pt-0 last:pb-0 space-y-5" data-testid="merge-policy-editor">
+      <div>
+        <h3 className="text-sm font-medium text-text-primary">Merge policy</h3>
+        <p className="mt-0.5 text-xs text-text-secondary">
+          When and how PRs agents open in {workspaceName} are merged.
+        </p>
+        {!canEdit && (
+          <p data-testid="merge-policy-read-only" className="mt-1 text-xs text-text-muted">Admins can change this.</p>
+        )}
       </div>
-
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-text-primary">Merge Policy</h1>
-          <p className="mt-1 text-sm text-text-muted">
-            Controls when and how PRs created by agents are merged in <strong>{workspaceName}</strong>.
-          </p>
-        </div>
-        {headerAction && <div className="shrink-0">{headerAction}</div>}
-      </div>
-
-      {!canEdit && (
-        <p data-testid="merge-policy-read-only" className="text-xs text-text-muted">Admins can change this.</p>
-      )}
 
       {/* A disabled fieldset disables every control inside it: the current
           policy stays readable, nothing in it can be changed. */}
-      <fieldset disabled={!canEdit} className="space-y-8 min-w-0">
+      <fieldset disabled={!canEdit} className="space-y-5 min-w-0">
       {/* Tier selector */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium text-text-primary">Policy Tier</h2>
-        <div className="flex flex-col gap-2">
-          {TIER_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setPolicy(p => ({ ...p, tier: opt.value }))}
-              className={`text-left p-3 min-h-[52px] border rounded-lg transition-colors ${
-                policy.tier === opt.value
-                  ? 'border-accent-border bg-accent-soft'
-                  : 'border-border-default hover:border-border-strong bg-card'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                  policy.tier === opt.value ? 'border-accent-border' : 'border-border-default'
-                }`}>
-                  {policy.tier === opt.value && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-accent-text" />
-                  )}
-                </div>
-                <span className="text-sm font-medium text-text-primary">{opt.label}</span>
-              </div>
-              <p className="text-xs text-text-muted leading-relaxed pl-5">{opt.hint}</p>
-            </button>
-          ))}
-        </div>
-      </section>
+      <div className="space-y-2">
+        <Segmented<MergePolicyTier>
+          label="Policy tier"
+          items={TIER_OPTIONS.map(o => ({ value: o.value, label: o.label }))}
+          value={policy.tier}
+          onChange={tier => setPolicy(p => ({ ...p, tier }))}
+        />
+        {tierHint && <p className="text-xs text-text-muted">{tierHint}</p>}
+      </div>
 
       {/* Tier 1 config */}
       {policy.tier === 'auto-threshold' && (
-        <section className="space-y-4 p-4 bg-card border border-border-default rounded-lg">
-          <h2 className="text-sm font-medium text-text-primary">Threshold Settings</h2>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Max lines (additions + deletions)</label>
-            <input
-              type="number"
-              min="1"
-              value={maxLines}
-              onChange={e => setMaxLines(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
-              placeholder="800"
-            />
-            <p className="text-xs text-text-muted">PRs exceeding this size won&apos;t auto-merge.</p>
-          </div>
-        </section>
+        <div className="space-y-1">
+          <label htmlFor="merge-policy-max-lines" className="text-sm text-text-primary">Max lines (additions + deletions)</label>
+          <input
+            id="merge-policy-max-lines"
+            type="number"
+            min="1"
+            value={maxLines}
+            onChange={e => setMaxLines(e.target.value)}
+            className={INPUT}
+            placeholder="800"
+          />
+          <p className="text-xs text-text-muted">PRs exceeding this size won&apos;t auto-merge.</p>
+        </div>
       )}
 
       {/* Tier 2 config */}
       {policy.tier === 'agent-review' && (
-        <section className="space-y-4 p-4 bg-card border border-border-default rounded-lg">
-          <h2 className="text-sm font-medium text-text-primary">Agent Review Settings</h2>
-
+        <div className="space-y-4">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-text-secondary">Reviewer role</label>
+            <label className="text-sm text-text-primary">Reviewer role</label>
             {roles.length > 0 ? (
               <Select
                 aria-label="Reviewer role"
@@ -264,28 +232,29 @@ export default function MergePolicyEditor({
             ) : (
               <p className="text-xs text-text-muted">
                 No roles found in this workspace.{' '}
-                <Link href="/app/team" className="underline text-accent-text">Create a role</Link> first.
+                <Link href="/app/settings/roles" className="underline text-text-primary">Create a role</Link> first.
               </p>
             )}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-text-secondary">Confidence threshold (0–1)</label>
+              <label htmlFor="merge-policy-confidence" className="text-sm text-text-primary">Confidence threshold (0–1)</label>
               <input
+                id="merge-policy-confidence"
                 type="number"
                 min="0"
                 max="1"
                 step="0.05"
                 value={maxConfidence}
                 onChange={e => setMaxConfidence(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
+                className={INPUT}
               />
               <p className="text-xs text-text-muted">Escalate if reviewer confidence is below this.</p>
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium text-text-secondary">Gate condition</label>
+              <label className="text-sm text-text-primary">Gate condition</label>
               <Select
                 aria-label="Gate condition"
                 value={gateCondition}
@@ -297,7 +266,7 @@ export default function MergePolicyEditor({
               />
             </div>
           </div>
-        </section>
+        </div>
       )}
 
       {/* Protected paths — detected from the repo, never typed */}
@@ -323,15 +292,16 @@ export default function MergePolicyEditor({
       />
 
       {/* Stall notify */}
-      <section className="space-y-2">
-        <h2 className="text-sm font-medium text-text-primary">Stall Notification</h2>
+      <div className="space-y-1">
+        <label htmlFor="merge-policy-stall" className="text-sm text-text-primary">Stall notification</label>
         <div className="flex items-center gap-3">
           <input
+            id="merge-policy-stall"
             type="number"
             min="1"
             value={stallMinutes}
             onChange={e => setStallMinutes(e.target.value)}
-            className="w-28 px-3 py-2 text-sm bg-input border border-border-default rounded focus:outline-none focus:border-accent-border"
+            className={`${INPUT} w-28`}
             placeholder="30"
           />
           <span className="text-sm text-text-muted">minutes</span>
@@ -339,15 +309,15 @@ export default function MergePolicyEditor({
         <p className="text-xs text-text-muted">
           Pushover alert after this long. Default 30 min for review, 5 min for auto.
         </p>
-      </section>
+      </div>
       </fieldset>
 
-      {/* Save button */}
-      {canEdit && <div className="flex items-center gap-3">
+      {canEdit && <div className="flex flex-wrap items-center gap-3">
         <button
+          type="button"
           onClick={save}
           disabled={saving}
-          className="px-4 py-2 text-sm font-medium bg-accent-text text-white rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
+          className="btn min-h-11"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
@@ -360,45 +330,42 @@ export default function MergePolicyEditor({
 
       {/* Per-mission overrides */}
       {missionOverrides.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium text-text-primary">Mission Overrides</h2>
-          <p className="text-xs text-text-muted">These missions use a different merge policy than the workspace default.</p>
-          <div className="border border-border-default rounded-lg overflow-hidden">
-            {missionOverrides.map((m, i) => (
-              <div
-                key={m.id}
-                className={`flex items-center gap-3 px-4 min-h-[52px] ${i < missionOverrides.length - 1 ? 'border-b border-border-default' : ''}`}
-              >
-                <span
-                  className={`shrink-0 px-2 py-0.5 text-[11px] md:text-[10px] font-semibold rounded-full ${TIER_BADGE_CLASS[m.policy.tier]}`}
-                >
-                  {TIER_LABEL[m.policy.tier]}
-                </span>
+        <div className="space-y-2">
+          <div>
+            <h4 className="text-sm font-medium text-text-primary">Mission overrides</h4>
+            <p className="mt-0.5 text-xs text-text-muted">These missions use a different merge policy than the workspace default.</p>
+          </div>
+          <ul className="divide-y divide-border-default border-y border-border-default">
+            {missionOverrides.map(m => (
+              <li key={m.id} className="flex items-center gap-3 min-h-[52px]">
+                <TonePill tone={TIER_TONE[m.policy.tier]} className="shrink-0">{TIER_LABEL[m.policy.tier]}</TonePill>
                 <Link
                   href={`/app/missions/${m.id}`}
-                  className="flex-1 text-sm text-text-primary hover:text-accent-text truncate transition-colors"
+                  className="flex-1 min-w-0 text-sm text-text-primary hover:underline truncate"
                 >
                   {m.title}
                 </Link>
                 <div className="flex items-center gap-1 shrink-0">
                   <button
+                    type="button"
                     onClick={() => setEditingOverride(m)}
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-xs text-text-muted hover:text-text-primary transition-colors px-2"
+                    className="btn btn-quiet min-h-11"
                   >
                     Edit
                   </button>
                   <button
+                    type="button"
                     onClick={() => removeOverride(m.id)}
                     disabled={removingMissionId === m.id}
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-xs text-status-error hover:text-status-error/80 disabled:opacity-50 transition-colors px-2"
+                    className="btn btn-quiet min-h-11"
                   >
                     {removingMissionId === m.id ? 'Removing…' : 'Remove'}
                   </button>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
-        </section>
+          </ul>
+        </div>
       )}
 
       {/* Inline override editor — shared component, same save path as mission detail */}
@@ -439,11 +406,11 @@ export function DetectedPathsSection({
 }) {
   const rows = policyConfig ? describePolicyConfig(policyConfig).filter(r => r.paths.length > 0) : [];
   return (
-    <section className="space-y-3" data-testid="merge-policy-detected-paths">
+    <div className="space-y-2" data-testid="merge-policy-detected-paths">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h2 className="text-sm font-medium text-text-primary">Protected paths</h2>
-          <p className="mt-1 text-xs text-text-muted">
+          <h4 className="text-sm font-medium text-text-primary">Protected paths</h4>
+          <p className="mt-0.5 text-xs text-text-muted">
             Detected from the repo per risk class
             {policyConfig ? <> (preset <span className="text-text-secondary">{policyConfig.preset}</span>)</> : null}.
             PRs that touch them escalate.
@@ -459,12 +426,12 @@ export function DetectedPathsSection({
         </button>
       </div>
       {rows.length > 0 ? (
-        <ul className="divide-y divide-border-default border border-border-default rounded-lg bg-card">
+        <ul className="divide-y divide-border-default border-y border-border-default">
           {rows.map(row => (
-            <li key={row.name} className="px-4 py-3">
+            <li key={row.name} className="py-3">
               <div className="flex items-baseline justify-between gap-3">
-                <span className="text-[13px] text-text-primary">{row.label}</span>
-                <span className="text-[11px] uppercase tracking-wide text-text-secondary">{row.actionLabel}</span>
+                <span className="text-sm text-text-primary">{row.label}</span>
+                <span className="text-xs text-text-secondary">{row.actionLabel}</span>
               </div>
               <ul className="mt-1 space-y-0.5">
                 {row.paths.map(p => (
@@ -481,7 +448,7 @@ export function DetectedPathsSection({
             : 'No risk-class policy. Re-scan to detect protected paths.'}
         </p>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -531,11 +498,11 @@ export function PolicySuggestionsSection({
   }
 
   return (
-    <section className="space-y-3" data-testid="merge-policy-suggestions">
+    <div className="space-y-2" data-testid="merge-policy-suggestions">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h2 className="text-sm font-medium text-text-primary">Flagged in review</h2>
-          <p className="mt-1 text-xs text-text-muted">Risky paths recent PRs touched that no class covers.</p>
+          <h4 className="text-sm font-medium text-text-primary">Flagged in review</h4>
+          <p className="mt-0.5 text-xs text-text-muted">Risky paths recent PRs touched that no class covers.</p>
         </div>
         {canEdit && suggestions.length > 1 && (
           <button type="button" className="btn min-h-11 shrink-0 self-start" disabled={busy} onClick={() => void add(suggestions)}>
@@ -543,9 +510,9 @@ export function PolicySuggestionsSection({
           </button>
         )}
       </div>
-      <ul className="divide-y divide-border-default border border-border-default bg-card">
+      <ul className="divide-y divide-border-default border-y border-border-default">
         {suggestions.map(s => (
-          <li key={s.path} className="flex items-center justify-between gap-3 px-4 py-2">
+          <li key={s.path} className="flex items-center justify-between gap-3 py-2">
             <div className="min-w-0">
               <p className="font-mono text-xs text-text-primary break-all">{s.path}</p>
               <p className="text-xs text-text-muted">{riskClassLabel(s.class)}</p>
@@ -565,6 +532,6 @@ export function PolicySuggestionsSection({
         ))}
       </ul>
       {error && <p className="text-xs text-status-error">{error}</p>}
-    </section>
+    </div>
   );
 }

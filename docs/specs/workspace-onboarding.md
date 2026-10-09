@@ -126,7 +126,7 @@ pure function of repo facts and no step writes to the repo's default branch.
 - Pure core: `computeReadiness` in `packages/core/workspace-readiness.ts` with detectors in `packages/core/readiness/`; `packages/core/ecosystem-detect.ts` (lockfile table shared with `apps/runner/src/env-verify.ts`); `renderOnboardingTemplate` in `packages/core/onboarding-render.ts` over `packages/core/onboarding-templates/`; `planScaffold` in `packages/core/onboarding-scaffold.ts`; `authorSpec` in `packages/core/onboarding-spec.ts`.
 - IO shell: `gatherReadinessInput` in `apps/web/src/lib/workspace-readiness-io.ts` (bounded manifest reads).
 - Shared: `ONBOARDING_INTERVIEW` in `packages/shared/src/onboarding-interview.ts`; the `WorkspaceOnboardingConfig` type in `packages/shared/src/types.ts`, hung off `WorkspaceGitConfig` in `packages/core/db/schema.ts`.
-- Dashboard: `ReadinessCard.tsx`, `RepoLinkCard.tsx` and `SpecWizard.tsx` under `apps/web/src/app/app/(protected)/workspaces/[id]/config/`.
+- Dashboard: `ReadinessCard.tsx`, `RepoLinkCard.tsx` and `SpecWizard.tsx` under `apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/`.
 - Skill: `.claude/skills/workspace-onboarding/SKILL.md` (at most 8 KB, enforced by `scripts/workspace-onboarding-skill.test.ts`).
 
 **Out of scope**:

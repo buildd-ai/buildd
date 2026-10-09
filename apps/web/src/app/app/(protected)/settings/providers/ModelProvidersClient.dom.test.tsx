@@ -189,11 +189,13 @@ describe('set, replace, remove', () => {
     expect(buttons(c).filter((b) => b !== 'What runs?')).toEqual([]);
   });
 
-  it('subscription seats link to the browser flow; gateways link to their form under Advanced', async () => {
+  it('subscription seats link to the browser flow; gateways link to their form under Routing', async () => {
     await mount();
-    expect($('[data-testid="provider-connect-seat"]', cardOf('codex-subscription'))!.getAttribute('href')).toBe('/app/settings/runners#agent-backends');
+    expect($('[data-testid="provider-connect-seat"]', cardOf('codex-subscription'))!.getAttribute('href')).toBe('/app/settings/models#sign-ins');
     expect(button(cardOf('claude-subscription'), 'Add setup token')).toBeDefined();
-    expect($('a[href="#advanced"]', cardOf('litellm'))).toBeTruthy();
+    expect($('a[href="#routing"]', cardOf('litellm'))).toBeTruthy();
+    expect($('#routing')).toBeTruthy();
+    // Old #advanced links still land on the section.
     expect($('#advanced')).toBeTruthy();
   });
 });

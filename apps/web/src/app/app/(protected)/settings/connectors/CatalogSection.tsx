@@ -1,16 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import SettingsSection from '../SettingsSection';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
+import Disclosure from '@/components/ui/Disclosure';
+import { TonePill } from '@/components/ui/StatePill';
 import { Select } from '@/components/ui/Select';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
 import { CATALOG_POLICIES, type CatalogPolicy, type ConnectorClientSupport, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
-
-const SOURCE_LABEL: Record<ResolvedCatalogEntry['source'], string> = {
-  builtin: 'Built-in',
-  platform: 'Buildd',
-  team: 'Your team',
-};
 
 const POLICY_LABEL: Record<CatalogPolicy, string> = {
   blocked: 'Blocked',
@@ -110,9 +107,8 @@ export default function CatalogSection() {
   if (!loaded || !canManage) return null;
 
   return (
-    <SettingsSection
+    <Section
       title="Catalog"
-      bare
       action={
         <button type="button" className="btn btn-sm" onClick={() => setShowAdd((v) => !v)} data-testid="catalog-add-toggle">
           {showAdd ? 'Cancel' : 'Add team entry'}
@@ -120,9 +116,9 @@ export default function CatalogSection() {
       }
     >
       {message && (
-        <div className={`notice mb-3 ${message.type === 'ok' ? 'notice-ok' : 'notice-err'}`} data-testid="catalog-message">
+        <Notice tone={message.type === 'ok' ? 'ok' : 'err'} className="mb-3" data-testid="catalog-message">
           {message.text}
-        </div>
+        </Notice>
       )}
 
       {showAdd && (
@@ -131,19 +127,21 @@ export default function CatalogSection() {
         />
       )}
 
-      <div className="card divide-y divide-border-default">
+      {/* The per-row Blocked / Available / Preinstalled seg stays as is: the
+          owner has not decided whether it becomes a select. */}
+      <ul className="divide-y divide-border-default">
         {entries.map((entry) => (
-          <div key={entry.slug} className="p-4" data-testid={`catalog-entry-${entry.slug}`}>
+          <li key={entry.slug} className="py-3" data-testid={`catalog-entry-${entry.slug}`}>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 sm:gap-4">
               <div className="flex-1 min-w-0 flex items-start gap-3">
                 <ConnectorIcon name={entry.name} iconUrl={entry.iconUrl} size={20} />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-text-primary">{entry.name}</span>
-                    <span className="text-xs font-mono text-text-muted">{SOURCE_LABEL[entry.source]}</span>
+                    {/* Only a team's own entries are tagged; built-in is the default. */}
+                    {entry.source === 'team' && <TonePill tone="q">Team</TonePill>}
                   </div>
-                  {entry.description && <div className="text-xs text-text-muted mt-0.5">{entry.description}</div>}
-                  <div className="text-xs text-text-muted font-mono truncate">{entry.url}</div>
+                  {entry.description && <div className="text-xs text-text-secondary mt-0.5">{entry.description}</div>}
                   {entry.policy === 'preinstalled' && (
                     <div className="text-xs text-text-secondary mt-1">
                       Added to every workspace. Roles still choose which connectors they use.
@@ -155,6 +153,9 @@ export default function CatalogSection() {
                     </div>
                   )}
                   {entry.clientSupport && <ClientSupportNote support={entry.clientSupport} />}
+                  <Disclosure summary={<span className="text-xs">Details</span>} className="mt-1">
+                    <p className="pb-1 text-xs text-text-muted font-mono break-all">{entry.url}</p>
+                  </Disclosure>
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:flex-shrink-0 sm:justify-end">
@@ -187,22 +188,25 @@ export default function CatalogSection() {
                 )}
               </div>
             </div>
-          </div>
+          </li>
         ))}
-      </div>
-    </SettingsSection>
+      </ul>
+    </Section>
   );
 }
 
-/** The provider won't let buildd sign in yet: say so, and where the owner fixes it. */
+/**
+ * The provider won't let buildd sign in yet: say so, and where the owner fixes
+ * it. Not a decision for this page, so a muted info notice, never orange.
+ */
 export function ClientSupportNote({ support }: { support: ConnectorClientSupport }) {
   return (
-    <div className="text-xs text-status-warning mt-1" data-testid="connector-client-support">
+    <Notice tone="info" className="mt-2 text-xs" data-testid="connector-client-support">
       {support.detail}{' '}
       <a href={support.actionUrl} target="_blank" rel="noreferrer" className="underline">
         {support.actionLabel}
       </a>
-    </div>
+    </Notice>
   );
 }
 
@@ -292,7 +296,7 @@ function AddTeamEntryForm({ onAdded }: { onAdded: () => void | Promise<void> }) 
           <Select aria-label="Category" value={category} onChange={setCategory} options={CATEGORY_OPTIONS} />
         </div>
       </div>
-      {error && <div className="notice notice-err" data-testid="catalog-add-error">{error}</div>}
+      {error && <Notice tone="err" data-testid="catalog-add-error">{error}</Notice>}
       <div className="flex justify-end">
         <button type="submit" className="btn btn-primary" disabled={submitting || !name.trim() || !url.trim()}>
           {submitting ? 'Checking…' : 'Add to catalog'}
