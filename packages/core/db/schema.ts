@@ -4408,7 +4408,16 @@ export const oauthCodes = pgTable('oauth_codes', {
 }));
 
 export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
-  token: text('token').primaryKey(),
+  // SHA-256 (hex) of the refresh token. The token itself is never stored; it
+  // is looked up by its hash (apps/web/src/lib/oauth/storage.ts). The column
+  // keeps its original name so existing rows were hashed in place.
+  tokenHash: text('token').primaryKey(),
+  // One family per sign-in: set at the authorization-code exchange and carried
+  // by every rotated token. Presenting an already-rotated token revokes the
+  // family. `familyIssuedAt` is the sign-in time; the family's absolute
+  // lifetime counts from it (REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS).
+  familyId: uuid('family_id').defaultRandom().notNull(),
+  familyIssuedAt: timestamp('family_issued_at', { withTimezone: true }).defaultNow().notNull(),
   clientId: text('client_id').notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   // Legacy single-workspace token. Exactly one of workspaceId / grantId is set.
@@ -4424,6 +4433,7 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   expiresIdx: index('oauth_refresh_tokens_expires_at_idx').on(t.expiresAt),
   userWorkspaceIdx: index('oauth_refresh_tokens_user_workspace_idx').on(t.userId, t.workspaceId),
   grantIdx: index('oauth_refresh_tokens_grant_idx').on(t.grantId),
+  familyIdx: index('oauth_refresh_tokens_family_idx').on(t.familyId),
   oneBinding: check('oauth_refresh_tokens_one_binding', sql`num_nonnulls(${t.workspaceId}, ${t.grantId}) = 1`),
 }));
 

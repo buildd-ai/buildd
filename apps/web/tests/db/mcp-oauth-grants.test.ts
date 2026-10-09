@@ -265,7 +265,7 @@ describe('the token endpoint on a grant', () => {
     const second = await res.json() as { access_token: string; refresh_token: string };
     const c2 = await tokens.verifyAccessTokenAnyAudience(second.access_token);
     expect(c2 && tokens.isGrantClaims(c2) && c2.grant_id).toBe(grantId);
-    const [rt] = await q<{ grant_id: string; workspace_id: string | null }>(sql`SELECT grant_id, workspace_id FROM oauth_refresh_tokens WHERE token = ${second.refresh_token}`);
+    const [rt] = await q<{ grant_id: string; workspace_id: string | null }>(sql`SELECT grant_id, workspace_id FROM oauth_refresh_tokens WHERE token = ${storage.hashRefreshToken(second.refresh_token)}`);
     expect(rt).toEqual({ grant_id: grantId, workspace_id: null });
     const [g] = await q<{ acts_as: string }>(sql`SELECT acts_as FROM mcp_oauth_grants WHERE id = ${grantId}::uuid`);
     expect(g.acts_as).toBe('agent');
@@ -286,7 +286,7 @@ describe('the token endpoint on a grant', () => {
     const text = await res.text();
     expect(JSON.parse(text).error).toBe('invalid_grant');
     for (const id of [grantId, a.workspaceId, a.teamId, userId]) expect(text).not.toContain(id);
-    const [s] = await q<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM oauth_refresh_tokens WHERE token = ${spare}`);
+    const [s] = await q<{ revoked_at: string | null }>(sql`SELECT revoked_at FROM oauth_refresh_tokens WHERE token = ${storage.hashRefreshToken(spare)}`);
     expect(s.revoked_at).not.toBeNull();
   });
 
