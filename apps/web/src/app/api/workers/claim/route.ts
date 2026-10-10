@@ -6,7 +6,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
@@ -87,6 +87,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
+import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -437,11 +438,7 @@ export async function POST(req: NextRequest) {
 
   if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
-      {
-        error: 'Max concurrent workers limit reached',
-        limit: account.maxConcurrentWorkers,
-        current: runnerSlotWorkers.length,
-      },
+      accountLimitRefusal({ code: 'max_concurrent_workers', limit: account.maxConcurrentWorkers, current: runnerSlotWorkers.length }),
       { status: 429 }
     );
   }
@@ -453,22 +450,14 @@ export async function POST(req: NextRequest) {
       parseFloat(account.totalCost.toString()) >= parseFloat(account.maxCostPerDay.toString())
     ) {
       return NextResponse.json(
-        {
-          error: 'Daily cost limit exceeded',
-          limit: account.maxCostPerDay,
-          current: account.totalCost,
-        },
+        accountLimitRefusal({ code: 'daily_cost_limit', limit: account.maxCostPerDay, current: account.totalCost }),
         { status: 429 }
       );
     }
   } else if (account.authType === 'oauth') {
     if (!interactiveSession && account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
       return NextResponse.json(
-        {
-          error: 'Max concurrent sessions limit reached',
-          limit: account.maxConcurrentSessions,
-          current: account.activeSessions,
-        },
+        accountLimitRefusal({ code: 'max_concurrent_sessions', limit: account.maxConcurrentSessions, current: account.activeSessions }),
         { status: 429 }
       );
     }
@@ -1282,6 +1271,9 @@ export async function POST(req: NextRequest) {
   // gate (it is in `filteredTasks`), so the SQL probe never runs for it; the
   // loop knows which gate held it, so it says so (see deferTask).
   let explicitTaskExclusion: ClaimTaskExclusion | null = null;
+  // The budget and rate-limit walls this request held a task on, named in a
+  // budget_exhausted refusal (task e7e8740a).
+  const budgetWalls = new BudgetWalls();
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
@@ -2253,11 +2245,14 @@ export async function POST(req: NextRequest) {
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
+    // Which walls set claudePoolBlocked, named if this task is deferred on them.
+    let claudeWall: { kind: ClaimBudgetWall['kind']; resetsAt: Date | string | null } | null = null;
 
     if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
+      claudeWall = { kind: 'account_seat', resetsAt: effectiveBudgetResetAt(account.budgetExhaustedAt!, account.budgetResetsAt) };
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
@@ -2273,6 +2268,7 @@ export async function POST(req: NextRequest) {
             await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
           } else {
             claudePoolBlocked = true;
+            claudeWall = { kind: 'tenant_budget', resetsAt: tenantBudget.budgetResetsAt };
           }
         }
       }
@@ -2284,7 +2280,10 @@ export async function POST(req: NextRequest) {
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
     const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
-    if (pauses.has('claude')) claudePoolBlocked = true;
+    if (pauses.has('claude')) {
+      claudePoolBlocked = true;
+      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+    }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
     // model route is the OAuth seat (./claude-model-route): a task the team
@@ -2305,8 +2304,9 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
+        budgetWalls.add('provider_pause', 'codex', pauses.get('codex')!.resetsAt);
         deferTask(task, 'budget_paused', {
-          backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
+          backend: 'codex', wall: 'provider_pause', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
           ...(backendPinned ? { pinned: true } : {}),
         });
         continue;
@@ -2352,7 +2352,12 @@ export async function POST(req: NextRequest) {
       if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
-        deferTask(task, 'budget_paused', { backend: 'claude', ...(backendPinned ? { pinned: true } : {}) });
+        if (claudeWall) budgetWalls.add(claudeWall.kind, 'claude', claudeWall.resetsAt);
+        deferTask(task, 'budget_paused', {
+          backend: 'claude',
+          ...(claudeWall ? { wall: claudeWall.kind, resetsAt: isoOrNull(claudeWall.resetsAt) } : {}),
+          ...(backendPinned ? { pinned: true } : {}),
+        });
         continue;
       }
     }
@@ -3201,9 +3206,17 @@ export async function POST(req: NextRequest) {
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
     const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
+      if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
+        budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+      }
+      const walls = budgetWalls.list();
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
-        diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+        diagnostics: {
+          reason: 'budget_exhausted',
+          ...(walls.length > 0 ? { budgetBlock: { walls, summary: describeBudgetWalls(walls, { interactive: !!interactiveSession }) } } : {}),
+          ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
+        } satisfies ClaimDiagnostics,
       });
     }
     // Distinguish true lock-contention (race_lost) from "all candidates were
