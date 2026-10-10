@@ -9,7 +9,7 @@
 import TaskErrorEvidence from '../../(protected)/tasks/[id]/TaskErrorEvidence';
 import type { ErrorEvidenceItem } from '../../(protected)/tasks/[id]/error-evidence';
 
-const excerpt = (branch: string) => `Branch "${branch}" was missing on remote — starting fresh from "dev".`;
+const excerpt = (branch: string) => `Branch "${branch}" was missing on remote - starting fresh from "dev".`;
 
 const base = (over: Partial<ErrorEvidenceItem>): ErrorEvidenceItem => ({
   id: 'fixture-trace', pattern: 'resume_branch_fallback', source: 'git-operations', ts: '2026-09-30T13:46:04.000Z',
