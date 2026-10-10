@@ -171,6 +171,7 @@
     "./decision-readout-source": "./decision-readout-source.ts",
     "./decision-kind-post-session-triage": "./decision-kind-post-session-triage.ts",
     "./decision-kind-scout-probe-selection": "./decision-kind-scout-probe-selection.ts",
+    "./decision-kind-failure-incident-triage": "./decision-kind-failure-incident-triage.ts",
     "./decision-shadow-harness": "./decision-shadow-harness.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",

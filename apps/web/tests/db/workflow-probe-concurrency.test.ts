@@ -157,6 +157,8 @@ describe('FIXED (625449c7): an effect claimed in a batch whose lease runs out mi
       }
       return fn!(e);
     }])) as EffectHandlers;
+    // Effects queued together tie on not_before: run finalize last so B has it to re-claim.
+    await q(sql`UPDATE workflow_effects SET not_before = now() - interval '1 minute' WHERE delivery_id = ${pr.deliveryId}::uuid AND kind <> 'finalize_mission_pr'`);
     const a = await runEffects({ handlers: forA, deliveryId: pr.deliveryId, limit: 25 });
     const [fin] = await q<{ status: string; attempt_count: number; last_error: string | null; outcome: string | null }>(
       sql`SELECT status, attempt_count, last_error, outcome FROM workflow_effects WHERE delivery_id = ${pr.deliveryId}::uuid AND kind = 'finalize_mission_pr'`);
