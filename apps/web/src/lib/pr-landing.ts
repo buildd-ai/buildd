@@ -51,7 +51,7 @@ import {
   type DispatchConflictRetryResult,
 } from '@/lib/conflict-retry';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
-import { isGeneratedMigrationPath } from '@/lib/migration-safety';
+import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta } from '@/lib/workflow/base-delta';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { ChecksState, LandingAlertInput } from '@/lib/pr-landing-alert';
@@ -269,16 +269,12 @@ export const TREADMILL_MAX_REFRESHES = POLICY_DEFAULTS.treadmillMaxRefreshes;
 /**
  * Once a cycle's refreshes are spent, a head our refresh produced may land
  * across a base gap of up to this many commits — still only when the moved
- * files are listable, disjoint from the PR's and free of migrations, schema and
- * lockfiles. This is what stops a busy base from starving a clean PR: the
- * refresh treadmill ends in a merge, not in a page.
+ * files are listable, disjoint from the PR's and free of risky paths
+ * (`isRiskyLandingPath`). This is what stops a busy base from starving a clean
+ * PR: the refresh treadmill ends in a merge, not in a page. One constant with
+ * the kernel's S15 rule (workflow/base-delta.ts).
  */
-export const TREADMILL_EXHAUSTED_MAX_BASE_COMMITS = 20;
-
-const LOCKFILE = /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.lock$/;
-const SCHEMA_FILE = 'packages/core/db/schema.ts';
-
-const isRiskyPath = (path: string) => isGeneratedMigrationPath(path) || path === SCHEMA_FILE || LOCKFILE.test(path);
+export { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS };
 
 export type TreadmillVerdict =
   | { accepted: true }
@@ -313,11 +309,8 @@ export function evaluateTreadmillBound(input: {
   if (!baseFiles || !prFiles) {
     return { accepted: false, reason: 'could not list the files on one side of the gap' };
   }
-  const risky = [...baseFiles, ...prFiles].find(isRiskyPath);
-  if (risky) return { accepted: false, unsafe: true, reason: `the gap involves a migration, schema or lockfile (${risky})` };
-  const mine = new Set(prFiles);
-  const overlap = baseFiles.find((f) => mine.has(f));
-  if (overlap) return { accepted: false, unsafe: true, reason: `the base changed a file this PR changes (${overlap})` };
+  const verdict = judgeBaseDelta({ baseCommits: baseCommitsSince, baseFiles, prFiles }, maxBaseCommits);
+  if (!verdict.tolerated) return { accepted: false, unsafe: verdict.cause === 'refresh_unsafe', reason: verdict.reason };
   return { accepted: true };
 }
 
@@ -602,8 +595,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   let marker: LandingMarker | null = null;
   // Set once the verdict and CI rails have passed: from here on the PR is "approved and green".
   let approvedGreenAtMs: number | null = null;
-  // Set when a behind head lands under the spent-cycle freshness rule rather than the ordinary bound.
-  let freshnessRule: 'spent_cycle' | null = null;
+  // Set when a behind head lands under the spent-cycle freshness rule rather than the ordinary bound,
+  // or (a kernel-owned PR) under the kernel's disjoint-delta rule.
+  let freshnessRule: 'spent_cycle' | 'disjoint_delta' | null = null;
+  // A kernel-owned PR the kernel tolerated behind its base: T15 re-reads the base delta at merge time.
+  let landBehind = false;
 
   const done = (outcome: LandingOutcome, reason: string, extra: Record<string, unknown> = {}): LandingOutcome => {
     if (input.mode === 'off') return outcome;
@@ -892,7 +888,12 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       const next = t.cycle < t.maxCycles
         ? `Next: landing opens a fresh refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m (cycle ${t.cycle} of ${t.maxCycles}); a person can merge it now with a freshness override`
         : `Next: every refresh cycle is used (${t.maxCycles}), so a person lands it: merge it with a freshness override, or wait for a quiet base and retry`;
-      return human('refresh_exhausted', `the base kept moving after ${t.refreshes} refreshes. ${next}`, { ...extra, treadmillCycle: t.cycle });
+      if (t.cause?.kind === 'refresh_unsafe') {
+        const files = t.cause.files.length ? ` (${t.cause.files.join(', ')})` : '';
+        return human('refresh_unsafe', `after ${t.refreshes} refreshes the base still changes what this PR changes${files}, so a green on an older base is not proof. ${next}`, { ...extra, treadmillCycle: t.cycle, files: t.cause.files });
+      }
+      const gapNote = t.cause?.reason ? ` (${t.cause.reason})` : '';
+      return human('refresh_exhausted', `the base kept moving after ${t.refreshes} refreshes${gapNote}. ${next}`, { ...extra, treadmillCycle: t.cycle });
     }
     if (state !== 'APPROVED' && !overridable) {
       // ESCALATED is terminal for the kernel: no event moves it back to APPROVED on its own.
@@ -987,6 +988,14 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       const gap = `PR is ${behindBy ? `${behindBy} commit${behindBy === 1 ? '' : 's'}` : 'behind'} behind ${baseRef}`;
       if (override.freshness) {
         bypass(GATE_SLUGS.MERGE_BASE_FRESHNESS, `${gap}; a person merged it anyway`, { baseRef, behindBy });
+      } else if (kernelView && act) {
+        // S15 is the kernel's for its PRs: T12 reads the base delta and either refreshes, escalates
+        // with the precise cause, or tolerates a small, disjoint, risk-free delta on an approved
+        // head. Tolerated, the merge below asks T15 to land it behind, which checks the rule again.
+        const r = await refreshOrTolerate(gap, baseRef);
+        if (r !== 'tolerated') return r;
+        landBehind = true;
+        freshnessRule = 'disjoint_delta';
       } else {
         const spent = refreshCycleCount(marker, liveHead, now()) >= policyValue('treadmillMaxRefreshes');
         const tolerated = await treadmillAccepts(baseRef, spent);
@@ -1034,6 +1043,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       mergeMethod,
       ...(kernelOverride ? { override: kernelOverride } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
+      ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
     });
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
@@ -1066,6 +1076,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'behind': return done({ kind: 'updating_branch', newHeadSha: liveHead }, `the kernel is refreshing the branch: ${k.message}`, extra);
       case 'conflict': return done({ kind: 'needs_fix', fix: 'conflict', reason: k.message }, k.message, { ...extra, fix: 'conflict', fixDispatched: true });
       case 'refused': return human('merge_failed', k.message, extra);
+      // The base moved again between T12's tolerance and the merge: back to T12, which refreshes or escalates.
+      case 'rejected':
+        if (k.reason === 'behind_not_tolerated' && baseRef) return refresh(k.message, baseRef);
+        return waiting(k.message, extra);
       // A lost answer is verified by the kernel before anything re-calls GitHub; a moved head or
       // a stale screen is re-read; a delivery not ready to land is the kernel's to move on.
       default: return waiting(k.message, extra);
@@ -1184,9 +1198,16 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
    * after the cooldown — and the page says so.
    */
   async function refresh(why: string, base: string, unsafe = false): Promise<LandingOutcome> {
+    const r = await refreshOrTolerate(why, base, unsafe);
+    // A tolerated delta found after a refused merge: the next pass lands it from the top.
+    return r === 'tolerated' ? waiting(`the kernel tolerates this head behind ${base}; landing re-reads (${why})`, { refresh: 'tolerated' }) : r;
+  }
+
+  async function refreshOrTolerate(why: string, base: string, unsafe = false): Promise<LandingOutcome | 'tolerated'> {
     const stored = marker?.refreshCount ?? 0;
     const count = refreshCycleCount(marker, liveHead, now());
-    if (count >= policyValue('treadmillMaxRefreshes')) {
+    // A kernel-owned PR's refresh budget is the kernel's (S15): its own ledger decides, not the legacy marker.
+    if (!kernelView && count >= policyValue('treadmillMaxRefreshes')) {
       const next = `Next: landing starts a new refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m and lands it in the first quiet window; a person can merge it now with a freshness override`;
       return unsafe
         ? human('refresh_unsafe', `after ${count} refreshes the base still changes what this PR changes (${why}), so a green on an older base is not proof. ${next}`, { refreshCount: count })
@@ -1204,6 +1225,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     } catch (err) {
       return human('merge_failed', `could not refresh the branch: ${errMessage(err)}`);
     }
+    if (res.behindTolerated) return 'tolerated';
     if (res.branchUpdated) {
       const after = await readLivePr(installationId, repoFullName, prNumber).catch(() => null);
       const newHead = after?.headSha ?? liveHead;
@@ -1276,6 +1298,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
     if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted && res.refreshTreadmill !== undefined && res.refreshUnsafe) {
+      return human('refresh_unsafe', `the base keeps changing what this PR changes after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
+    }
     if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
       return human('refresh_exhausted', `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
     }

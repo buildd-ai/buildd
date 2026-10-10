@@ -6,7 +6,7 @@ export interface BillingView {
   plan: TeamPlan;
   planLabel: string;
   status: { label: string; tone: ChipTone } | null;
-  /** "4 of 5 seats used" on Team; members otherwise. */
+  /** "4 of 5 members" on Team; members otherwise. */
   seatsLine: string;
   /** Live subscription: change it in the portal, never stack a second Checkout. */
   subscribed: boolean;
@@ -25,7 +25,7 @@ export const PLAN_LABELS: Record<TeamPlan, string> = { free: 'Free', pro: 'Pro',
 export const PLAN_FEATURES: Record<TeamPlan, string[]> = {
   free: ['1 member', 'Small knowledge base', 'Decisions on your own model key'],
   pro: ['1 member', 'Full knowledge base', 'Decisions included'],
-  team: [`${TEAM_PLAN_MIN_SEATS} seats or more`, 'Shared full knowledge base', 'Decisions included'],
+  team: [`${TEAM_PLAN_MIN_SEATS} members or more`, 'Shared full knowledge base', 'Decisions included'],
 };
 
 const STATUS: Record<string, { label: string; tone: ChipTone }> = {
@@ -51,7 +51,7 @@ export function billingView(
   const paidSeats = plan === 'team' ? Math.max(TEAM_PLAN_MIN_SEATS, team.paidSeats ?? 0) : null;
   const people = (n: number) => `${n} ${n === 1 ? 'member' : 'members'}`;
   const seatsLine = paidSeats !== null
-    ? `${used} of ${paidSeats} seats used${usage.pending > 0 ? `, ${usage.pending} invited` : ''}`
+    ? `${used} of ${paidSeats} members${usage.pending > 0 ? `, ${usage.pending} invited` : ''}`
     : `${people(usage.members)}${usage.pending > 0 ? `, ${usage.pending} invited` : ''}`;
 
   return {

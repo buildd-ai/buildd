@@ -65,6 +65,7 @@ export type PrActivityKind =
   | 'review_escalated'
   | 'review_failed'
   | 'lede_corrected'
+  | 'copy_review'
   | 'human_review_required'
   | 'ci_fixing'
   | 'migration_collision_fixing'
@@ -287,6 +288,9 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'human', label: 'CI still failing · needs a human', noteLabel: 'Details', urlLabel: 'CI run' };
     case 'lede_corrected':
       return { tone: 'plain', label: 'Opening line corrected', noteLabel: 'Original', aside: true };
+    case 'copy_review':
+      // `detail` says whether the strings block the merge ("required") or are advice.
+      return { tone: 'plain', label: 'Copy review', noteLabel: 'Strings to rewrite', aside: true };
     case 'review_superseded_by_merge':
       return { tone: 'done', label: 'Merged by a human · review cancelled' };
     case 'fix_superseded_by_approval':
@@ -470,7 +474,7 @@ function stateBlock(kept: NormalizedEntry[]): string {
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'review_queued', 'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
-  'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
+  'review_escalated', 'review_failed', 'lede_corrected', 'copy_review', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
   'review_superseded_by_merge', 'work_superseded',
