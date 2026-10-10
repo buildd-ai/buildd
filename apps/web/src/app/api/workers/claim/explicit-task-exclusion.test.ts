@@ -157,6 +157,16 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.detail).toContain('Health');
   });
 
+  it('a workspace pause with a known end says until when', () => {
+    const r = classifyExplicitTaskExclusion(
+      probe({ gates: { workspacePaused: false }, workspacePausedUntil: new Date(NOW.getTime() + 2 * 60 * 60 * 1000) }),
+      NOW,
+    );
+    expect(r.code).toBe('workspace_paused');
+    expect(r.detail).toContain(`New starts in this workspace are paused until ${new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString()}.`);
+    expect(r.detail).toContain('Health');
+  });
+
   it('a held mission outranks the local executor (held is the pause)', () => {
     expect(classifyExplicitTaskExclusion(probe({ gates: { missionHeld: false, missionLocal: false } }), NOW).code).toBe('mission_held');
   });

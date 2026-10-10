@@ -23,6 +23,19 @@ describe('describeExplicitDeferral', () => {
     }
   });
 
+  it('names which wall held a named task and when it lifts', () => {
+    const seat = describeExplicitDeferral('budget_paused', { backend: 'claude', wall: 'account_seat', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(seat).toContain("The account's Claude session limit is reached");
+    expect(seat).toContain('Jan 1, 20:00 UTC');
+    const pause = describeExplicitDeferral('budget_paused', { backend: 'codex', wall: 'provider_pause', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(pause).toContain('Codex rate limit');
+    expect(pause).toContain('no provider to fail over to');
+    // Without a wall it still says the provider and the time.
+    const bare = describeExplicitDeferral('budget_paused', { backend: 'claude', resetsAt: '2099-01-01T20:00:00.000Z' }).detail;
+    expect(bare).toContain('claude');
+    expect(bare).toContain('2099-01-01T20:00:00.000Z');
+  });
+
   it('says the hosted runner allowance is used, with the numbers and the way out', () => {
     const d = describeExplicitDeferral('hosted_runner_hours', { used: 50, limit: 50, resetsAt: '2026-11-01T00:00:00.000Z' }).detail;
     expect(d).toContain('Hosted runner allowance used');

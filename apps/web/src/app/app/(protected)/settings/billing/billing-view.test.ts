@@ -21,7 +21,7 @@ describe('billingView', () => {
     );
     expect(v).toMatchObject({ subscribed: true, hasCustomer: true, upgrades: [], paidSeats: 7, used: 6 });
     expect(v.status).toEqual({ label: 'active', tone: 'success' });
-    expect(v.seatsLine).toBe('6 of 7 seats used, 1 invited');
+    expect(v.seatsLine).toBe('6 of 7 members, 1 invited');
   });
 
   it('a failed payment reads as a warning, not as orange', () => {

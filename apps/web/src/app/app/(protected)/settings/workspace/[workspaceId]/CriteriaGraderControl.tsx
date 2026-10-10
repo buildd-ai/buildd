@@ -33,7 +33,7 @@ export function CriteriaGraderControl({
             </span>
             <Segmented<CriteriaGraderValue> label="Criteria grading" items={OPTIONS} value={value} onChange={onChange} />
             <p className="text-xs text-text-muted mt-1">
-                Auto uses your API key if you set one. Otherwise a runner grades on your team&apos;s seat.
+                Auto uses your API key if you set one. Otherwise a runner uses your team&apos;s subscription.
             </p>
         </div>
     );

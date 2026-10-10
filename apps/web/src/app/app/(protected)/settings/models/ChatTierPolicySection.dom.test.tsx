@@ -44,7 +44,7 @@ describe('ChatTierPolicySection', () => {
   it('explains a leftover reset once and turning it off writes only that flag', async () => {
     team.chatCapNewSessionTier = true;
     await mount();
-    expect(q('legacy-reset-notice')!.textContent).toContain('not a limit');
+    expect(q('legacy-reset-notice')!.textContent).toContain('People can pick a higher tier afterwards.');
     await act(async () => { q('legacy-reset-off')!.click(); });
     await flush();
     expect(patches).toEqual([{ chatCapNewSessionTier: false }]);

@@ -24,13 +24,13 @@ describe('ModelUsagePanel', () => {
       <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(1000, 200) }} tierLabel="Premium" />,
     );
     expect(html).toContain('Premium');
-    expect(html).toContain('Model Usage');
-    expect(html.indexOf('Premium')).toBeLessThan(html.indexOf('Model Usage'));
+    expect(html).toContain('Model usage');
+    expect(html.indexOf('Premium')).toBeLessThan(html.indexOf('Model usage'));
   });
 
   test('omits the tier when the task has none', () => {
     const html = renderToStaticMarkup(<ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(1, 1) }} />);
-    expect(html).toContain('Model Usage');
+    expect(html).toContain('Model usage');
   });
 
   test('makes it visible that more than one model ran', () => {
@@ -78,7 +78,7 @@ describe('ModelUsagePanel', () => {
     const html = renderToStaticMarkup(
       <ModelUsagePanel modelUsage={{ 'claude-opus-5': usage(0, 0) }} turns={12} />,
     );
-    expect(html).toContain('Model Usage');
+    expect(html).toContain('Model usage');
     expect(html).not.toContain('0k in');
     expect(html).not.toContain('0k out');
   });
