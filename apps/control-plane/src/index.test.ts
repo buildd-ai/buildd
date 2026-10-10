@@ -105,3 +105,45 @@ describe('health', () => {
     expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', commit: 'abc123' });
   });
 });
+
+describe('deep health', () => {
+  const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
+  const deep = (auth?: string) => new Request('https://control-plane.buildd.dev/__control-plane/health?deep=1', auth ? { headers: { Authorization: auth } } : {});
+
+  it('is a 404 without CRON_SECRET, and makes no outbound call', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r)); return new Response('x'); }) as typeof fetch;
+    try {
+      for (const auth of [undefined, 'Bearer wrong', 'Bearer s3cret-but-longer']) {
+        expect((await worker.fetch(deep(auth), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx)).status).toBe(404);
+      }
+      // No secret configured: never open.
+      expect((await worker.fetch(deep('Bearer '), { EXECUTION_MODE: 'own' }, ctx)).status).toBe(404);
+      expect(seen).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('with the secret runs the probes, and never echoes upstream error text', async () => {
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (r: RequestInfo | URL) => { seen.push(String(r instanceof Request ? r.url : r)); throw new Error('upstream-said-something-private'); }) as typeof fetch;
+    try {
+      const res = await worker.fetch(deep('Bearer s3cret'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
+      const text = await res.text();
+      expect(res.status).toBe(503);
+      expect(seen).toContain('https://api.github.com/zen');
+      expect(JSON.parse(text)).toMatchObject({ ok: false, github: 0 });
+      expect(text).not.toContain('upstream-said-something-private');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('shallow health stays public', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', CRON_SECRET: 's3cret' }, ctx);
+    expect([res.status, (await res.json() as { ok: boolean }).ok]).toEqual([200, true]);
+  });
+});

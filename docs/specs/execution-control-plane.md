@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
 related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
-verified_by: [apps/control-plane/src/index.test.ts]
+verified_by: [apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
 supersedes: []
 ---
 # Execution Control Plane
@@ -60,10 +60,32 @@ runs, so the execution handlers never differ between the two hosts.
   2026-10-10). Paths it does not serve pass through to Vercel.
 - `EXECUTION_MODE=shadow` passes every request through. That is the rollback,
   with no DNS or route change.
+- `/__control-plane/health` is public and reports only liveness, mode and the
+  deployed commit.
+  `?deep=1` probes GitHub (anonymous and as the App), Pusher, storage and
+  Redis from the Worker; it needs `Authorization: Bearer <CRON_SECRET>`, is a
+  404 without it, and reports each probe as a status or ok/fail word, never
+  upstream error text (`index.test.ts`).
 - `.github/workflows/deploy-control-plane.yml` deploys the Worker on every
   successful Production deployment of the web app, at that deployment's SHA and
   so after its migrations, and fails unless `/__control-plane/health?deep=1`
   then reports that SHA with every dependency healthy.
+- It ships code with `wrangler versions upload` + `versions deploy`, never
+  `wrangler deploy`. Its token (`CF_DISPATCH_API_TOKEN`) can upload and deploy
+  Worker versions but cannot reach the zone's Workers Routes. That was verified
+  on 2026-10-10: `wrangler deploy` with the token uploaded the script, then
+  failed on `/zones/<id>/workers/routes` with "No access". A versions upload
+  and deploy with the same token succeeded. Routes and the custom domain are
+  changed only by hand, with `wrangler deploy` from an account login.
+- A failed Worker deploy is noticed by the release health watcher, not by the
+  workflow's own red run. After a release's grace (`CONTROL_PLANE_GRACE_MINUTES`),
+  the watcher degrades the release and files a degradation task when the web
+  app runs the release and `/api/deploy-identity` reports the Worker on
+  another commit (`release-health-watcher.test.ts`).
+- `/api/deploy-identity` reports the Worker's commit and mode beside the web
+  app's SHA, read from the shallow health with a short timeout. `null` means
+  the Worker did not answer; `lockstep: false` means the two hosts run
+  different code.
 
 **Acceptance criteria**:
 - AC-4: GIVEN a production web deploy of SHA X THEN the Worker's health reports
