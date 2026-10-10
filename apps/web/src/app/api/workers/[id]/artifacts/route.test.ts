@@ -631,6 +631,29 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
     mockShouldNotifyOnArtifact.mockResolvedValue(true);
   });
 
+  it('a keyed re-create that sends no content keeps the stored body', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' });
+    const existing = { id: 'artifact-1', content: 'Original body', title: 'Old title', shareToken: null };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    let setVals: any = null;
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        setVals = vals;
+        return { where: mock(() => ({ returning: mock(() => [{ ...existing, ...vals }]) })) };
+      }),
+    });
+
+    const res = await POST(
+      createMockPostRequest({ type: 'content', title: 'New title', key: 'my-artifact' }, 'bld_test'),
+      { params: mockParams },
+    );
+
+    expect(res.status).toBe(200);
+    expect(setVals.content).toBe('Original body');
+    expect(setVals.title).toBe('New title');
+  });
+
   it('does not notify on upsert when content and title are unchanged', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({
