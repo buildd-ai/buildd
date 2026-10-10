@@ -14,7 +14,7 @@
  */
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
-import type { ChatTierName } from '@buildd/shared';
+import { CHAT_MAX_MESSAGE_CHARS, type ChatTierName } from '@buildd/shared';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
@@ -114,6 +114,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         value={value}
         onChange={onChange}
         onSend={onSend}
+        maxLength={CHAT_MAX_MESSAGE_CHARS}
         onStop={onStop}
         busy={busy}
         disabled={disabled}
