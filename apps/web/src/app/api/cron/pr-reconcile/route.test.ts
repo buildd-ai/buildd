@@ -36,12 +36,6 @@ mock.module('@/lib/pr-supersession-detect', () => ({
   sweepClosedUnsupersededPrs: mockClosedPrSweep,
 }));
 
-const SUPERSEDED_ZERO = { candidates: 0, retired: 0, kept: 0, skipped: 0 };
-const mockSupersededRefresh = mock(() => Promise.resolve(SUPERSEDED_ZERO as any));
-mock.module('@/lib/superseded-refresh-prs', () => ({
-  sweepSupersededRefreshPrs: mockSupersededRefresh,
-}));
-
 const EARLY_RELEASE_ZERO = { enumerated: 0, processed: 0, refreshed: 0, escalated: 0, ignored: 0, skipped: 0, errors: 0 };
 const mockEarlyRelease = mock(() => Promise.resolve(EARLY_RELEASE_ZERO));
 mock.module('@/lib/early-release-reconciler', () => ({
@@ -147,8 +141,6 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
     mockEarlyRelease.mockReset();
     mockEarlyRelease.mockResolvedValue(EARLY_RELEASE_ZERO);
-    mockSupersededRefresh.mockReset();
-    mockSupersededRefresh.mockResolvedValue(SUPERSEDED_ZERO);
     mockEmit.mockReset();
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
@@ -353,21 +345,6 @@ describe('GET /api/cron/pr-reconcile', () => {
     const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
     expect(res.status).toBe(200);
     expect((await res.json()).closedPrs.error).toContain('detect failed');
-  });
-
-  it('runs the superseded-refresh sweep hourly and reports it', async () => {
-    mockSupersededRefresh.mockResolvedValue({ candidates: 1, retired: 1, kept: 0, skipped: 0 });
-    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
-    expect(res.status).toBe(200);
-    expect(mockSupersededRefresh).toHaveBeenCalledTimes(1);
-    expect((await res.json()).supersededRefresh).toEqual({ candidates: 1, retired: 1, kept: 0, skipped: 0 });
-  });
-
-  it('a superseded-refresh sweep failure does not fail the run', async () => {
-    mockSupersededRefresh.mockRejectedValue(new Error('refresh sweep failed'));
-    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
-    expect(res.status).toBe(200);
-    expect((await res.json()).supersededRefresh.error).toContain('refresh sweep failed');
   });
 
   // The deferred-startAt sweep is gone from this route: a future startAt is a

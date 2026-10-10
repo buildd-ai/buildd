@@ -20,7 +20,7 @@ const {
   sweepSupersededRefreshPrs,
   verifyRefreshSuperseded,
   REFRESH_SUPERSESSION_MARKER,
-} = await import('./superseded-refresh-prs');
+} = await import('./pr-supersession-refresh');
 
 const BRANCH = 'mission/abc-integration';
 const refresh = (trunkSha: string, missionHeadSha: string) => ({ trunk: 'dev', trunkSha, missionHeadSha });

@@ -224,7 +224,7 @@ export async function retireSupersededRefreshPr(opts: {
     if (!recorded.ok && recorded.status !== 409) throw new Error(`record refused: ${recorded.error}`);
   } catch (err) {
     const reason = `retire failed: ${err instanceof Error ? err.message : String(err)}`;
-    console.error(`[superseded-refresh-prs] #${older.prNumber}: ${reason}`);
+    console.error(`[pr-supersession-refresh] #${older.prNumber}: ${reason}`);
     fireGateEvent({
       gate: GATE_SLUGS.RETRY_PR_SUPERSESSION,
       surface: 'cron pr-reconcile',
@@ -323,7 +323,7 @@ export async function sweepSupersededRefreshPrs(
     let done = false;
     for (const newer of successors) {
       const out = await retireSupersededRefreshPr({ installationId, older, newer, api: deps.api }).catch((err): RetireOutcome => {
-        console.error(`[superseded-refresh-prs] sweep failed for #${older.prNumber}:`, err);
+        console.error(`[pr-supersession-refresh] sweep failed for #${older.prNumber}:`, err);
         return { outcome: 'kept', prNumber: older.prNumber, reason: 'error' };
       });
       if (out.outcome === 'retired') { result.retired++; done = true; break; }
