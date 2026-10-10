@@ -79,6 +79,7 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
+import { sweepSupersededRefreshPrs } from '@/lib/superseded-refresh-prs';
 import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
 import { reconcileEarlyReleases, type ReconcileEarlyReleasesResult } from '@/lib/early-release-reconciler';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
@@ -117,7 +118,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles, supersededRefresh] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -209,6 +210,12 @@ export async function GET(req: NextRequest) {
       restartTreadmillCycles({ cooldownMs: LANDING_CYCLE_COOLDOWN_MS }).catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
+      // Older integration-refresh PRs a newer, merged refresh fully replaced:
+      // verified against live ancestry and content, then closed with the edge
+      // recorded (lib/superseded-refresh-prs.ts). Idempotent. Isolated.
+      sweepSupersededRefreshPrs().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
       // Module backstops for lossy webhooks (e.g. merge readiness outcome
       // labels). Core only emits; modules.ts lists who reacts. Each
       // subscriber is isolated by emit().
@@ -288,6 +295,13 @@ export async function GET(req: NextRequest) {
         `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped}`,
       );
     }
+    if ('error' in supersededRefresh) {
+      console.error('[SupersededRefreshPrs] error:', supersededRefresh.error);
+    } else {
+      console.log(
+        `[SupersededRefreshPrs] candidates=${supersededRefresh.candidates} retired=${supersededRefresh.retired} kept=${supersededRefresh.kept} skipped=${supersededRefresh.skipped}`,
+      );
+    }
     if ('error' in earlyRelease) {
       console.error('[EarlyReleaseReconciler] error:', earlyRelease.error);
     } else {
@@ -328,13 +342,15 @@ export async function GET(req: NextRequest) {
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
         + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued)
         + ('error' in treadmillCycles ? 0 : treadmillCycles.restarted)
+        + ('error' in supersededRefresh ? 0 : supersededRefresh.retired)
         + ('error' in earlyRelease ? 0 : earlyRelease.refreshed + earlyRelease.escalated),
       errors:
         reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors + earlyReleaseErrors
         + ('error' in kernelFloor ? 1 : kernelFloor.errors)
-        + ('error' in treadmillCycles ? 1 : treadmillCycles.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles },
+        + ('error' in treadmillCycles ? 1 : treadmillCycles.errors)
+        + ('error' in supersededRefresh ? 1 : 0),
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, earlyRelease, kernelOutbox, trunk, kernelFloor, treadmillCycles, supersededRefresh },
     });
 
     return NextResponse.json({
@@ -355,6 +371,7 @@ export async function GET(req: NextRequest) {
       trunk,
       kernelFloor,
       treadmillCycles,
+      supersededRefresh,
       earlyRelease,
     });
   });
