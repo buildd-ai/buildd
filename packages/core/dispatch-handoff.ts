@@ -514,13 +514,16 @@ export function mergeIntoPendingSql(ids: readonly string[]): SQL {
 WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id)
 UPDATE task_dispatch_outbox o
 SET status = 'delivered', delivered_at = now(), delivered_via = 'merged_into_pending',
-    merged_into = twin.id, updated_at = now()
-FROM ids, LATERAL (
-  SELECT p.id FROM task_dispatch_outbox p
-  WHERE p.task_id = o.task_id AND p.dedupe_key = o.dedupe_key AND p.status = 'pending'
-  LIMIT 1
-) twin
+    merged_into = (
+      SELECT p.id FROM task_dispatch_outbox p
+      WHERE p.task_id = o.task_id AND p.dedupe_key = o.dedupe_key AND p.status = 'pending'
+      ORDER BY p.created_at, p.id LIMIT 1),
+    updated_at = now()
+FROM ids
 WHERE o.id = ids.id AND o.status = 'handed_off'
+  AND EXISTS (
+    SELECT 1 FROM task_dispatch_outbox p
+    WHERE p.task_id = o.task_id AND p.dedupe_key = o.dedupe_key AND p.status = 'pending')
 RETURNING o.id`;
 }
 
