@@ -31,6 +31,9 @@ describe('isToolPreamble — structural, not phrase-coupled', () => {
     'Decided to keep the old route as a redirect',
     'Warning: this migration drops a column',
     'Tests pass',
+    'I confirm the estimate',
+    'The log confirms the estimate',
+    'Confirmed the estimate',
     'The claim route does not filter by role',
     "I've traced it to the scheduler",
   ])('substantive prose stays visible: %s', (text) => {

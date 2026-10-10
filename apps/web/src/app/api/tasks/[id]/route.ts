@@ -72,6 +72,8 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //     each with a shareUrl. `dispatch` returns the task's dispatch outbox
 //     trail (cause, status, transport, handedOffAt, deliveredVia, attempts,
 //     lastError), oldest first.
+//   include=estimate — the task's frozen estimate (task-estimates experiment),
+//     omitted when none was written.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -202,6 +204,25 @@ export async function GET(
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
     if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
+    // Task estimates experiment (packages/core/task-estimate-source.ts): the
+    // frozen estimate, when one was written. Absent row => no field.
+    if (include.has('estimate')) {
+      const estimate = await import('@buildd/core/task-estimate-source')
+        .then(m => m.readTaskEstimate(id))
+        .catch(() => null);
+      if (estimate) {
+        response.estimate = {
+          estimatorVersion: estimate.estimatorVersion,
+          p50Minutes: estimate.p50Minutes,
+          p80Minutes: estimate.p80Minutes,
+          p50Tokens: estimate.p50Tokens,
+          p80Tokens: estimate.p80Tokens,
+          expectedRepairs: estimate.expectedRepairs,
+          summary: estimate.explanation?.summary ?? null,
+          createdAt: estimate.createdAt,
+        };
+      }
+    }
     const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.

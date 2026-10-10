@@ -71,7 +71,7 @@ export const MOBILE_TAB_LIMIT = 5;
  * module reads it through lib/health-nav.ts. Operator is buildd's own tooling
  * and only platform operators see it (lib/platform-operator.ts).
  */
-export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'usage' | 'insights' | 'operator';
+export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'estimates' | 'usage' | 'insights' | 'operator';
 
 export interface HealthNavItem {
   id: HealthSectionId;
@@ -87,6 +87,7 @@ export const HEALTH_NAV: readonly HealthNavItem[] = [
   { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
   { id: 'failures', label: 'Failures', href: '/app/health/failures' },
   { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
+  { id: 'estimates', label: 'Estimates', href: '/app/health/estimates' },
   { id: 'usage', label: 'Usage', href: '/app/health/usage' },
   { id: 'insights', label: 'Insights', href: '/app/health/insights' },
   { id: 'operator', label: 'Operator', href: '/app/health/operator', operatorOnly: true },
@@ -113,6 +114,7 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/chat') return 'Chat';
   if (pathname === '/app/missions') return 'Missions';
+  if (pathname === '/app/missions/plan') return 'Plan';
   if (pathname === '/app/releases') return 'Releases';
   if (pathname === '/app/initiatives') return 'Initiatives';
   if (pathname === '/app/workspaces') return 'Workspaces';

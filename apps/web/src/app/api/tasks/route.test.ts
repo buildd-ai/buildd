@@ -131,6 +131,12 @@ mock.module('@/lib/task-manifest-prediction', () => ({
   scheduleCreationManifestShadow: mockScheduleCreationManifestShadow,
 }));
 
+// Task estimates experiment: the real hook (lib/task-estimate-hook.ts) runs;
+// only the core write is stubbed, so these tests see whether creation waits
+// on it or fails with it.
+const mockWriteTaskEstimate = mock(async (_taskId: string, _deps?: unknown): Promise<string> => 'skipped');
+mock.module('@buildd/core/task-estimate-source', () => ({ writeTaskEstimate: mockWriteTaskEstimate }));
+
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -5057,5 +5063,44 @@ describe('POST /api/tasks — a task filed without a role gets its kind\'s defau
     const { inserted } = await create({ title: '[friction] something broke', kind: 'engineering' }, [roleRow('builder')]);
     expect(inserted).toBeDefined();
     expect(inserted.roleSlug).toBeUndefined();
+  });
+});
+
+describe('POST /api/tasks — task estimate (experiment) never blocks or fails creation', () => {
+  beforeEach(() => {
+    resetPostMocks();
+    intakeOverride = null;
+    mockWriteTaskEstimate.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => ({ returning: mock(() => [{ ...values, id: 'task-e', status: 'pending' }]) })),
+    });
+  });
+
+  const post = () => POST(createMockRequest({
+    method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Add a thing' },
+  }));
+
+  it('creation returns while the estimate write is still pending (it is not awaited)', async () => {
+    let started = false;
+    mockWriteTaskEstimate.mockImplementation(() => { started = true; return new Promise<string>(() => {}); });
+    const response = await post();
+    expect(response.status).toBe(200);
+    await settleFireAndForget(() => started);
+    expect(mockWriteTaskEstimate.mock.calls[0][0]).toBe('task-e');
+  });
+
+  it('creation succeeds when the estimate write rejects', async () => {
+    mockWriteTaskEstimate.mockImplementation(async () => { throw new Error('db down'); });
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect((await response.json()).id).toBe('task-e');
+    await settleFireAndForget(() => mockWriteTaskEstimate.mock.calls.length > 0);
+    expect(mockWriteTaskEstimate).toHaveBeenCalledTimes(1);
   });
 });

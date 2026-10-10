@@ -18,6 +18,7 @@ import { wakeTasks } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { scheduleCreationManifestShadow } from './task-manifest-prediction';
+import { scheduleTaskEstimate } from './task-estimate-hook';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -436,6 +437,8 @@ export async function approvePlan(
     // files a missing-scope step would declare. After the response, record
     // only; the hook decides eligibility and never throws.
     scheduleCreationManifestShadow(created, { teamId: workspace?.teamId ?? null }, after);
+    // Task estimates experiment (task-estimate-hook.ts): after the response, never throws.
+    scheduleTaskEstimate(created, after);
 
     refToId[step.ref] = created.id;
     refToTitle[step.ref] = step.title;

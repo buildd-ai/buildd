@@ -158,6 +158,12 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Task estimates (experiment, packages/core/task-estimate.ts). Opt-in per
+  // team: NULL or a missing key = off. `enabled` writes a frozen estimate for
+  // every new task and shows estimate surfaces. Read only through
+  // packages/core/task-estimate-source.ts (taskEstimatesEnabled). Removal: see
+  // packages/core/TASK-ESTIMATES-REMOVAL.md.
+  taskEstimates: jsonb('task_estimates').$type<{ enabled?: boolean; setBy?: string; setAt?: string } | null>(),
   // Enforceable model-tier ceilings (most restrictive layer wins): the team's
   // cap, per-workspace caps, what an auto tier over the cap does, and an audit
   // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
@@ -6136,6 +6142,80 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+/**
+ * How a task estimate was made (packages/core/task-estimate.ts). Content-free
+ * apart from `clusterLabel` (a directory prefix in this task's own workspace)
+ * and `summary` (one sentence built from numbers and that label). Never holds
+ * another workspace's paths, titles or text.
+ */
+export interface TaskEstimateExplanation {
+  sources: Array<{ source: 'neighbours' | 'clusters' | 'prior'; n: number; weight: number }>;
+  clusterLabel: string | null;
+  /** 0..1: how much the new-repo prior counted. Falls as local history grows. */
+  priorWeight: number;
+  summary: string;
+}
+
+/**
+ * Task estimates experiment: one frozen row per task per estimator version.
+ * Insert-only. A re-estimate is a new version, never an update, so accuracy is
+ * always scored against what was predicted before the work started. Its own
+ * table (docs/design/experiment-lifecycle.md: an experiment brings its own
+ * payload table); dropping it reverts the experiment without touching a task row.
+ */
+export const taskEstimates = pgTable('task_estimates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  estimatorVersion: text('estimator_version').notNull(),
+  p50Minutes: real('p50_minutes').notNull(),
+  p80Minutes: real('p80_minutes').notNull(),
+  p50Tokens: integer('p50_tokens').notNull(),
+  p80Tokens: integer('p80_tokens').notNull(),
+  expectedRepairs: real('expected_repairs').notNull().default(0),
+  explanation: jsonb('explanation').$type<TaskEstimateExplanation>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskVersionIdx: uniqueIndex('task_estimates_task_version_idx').on(t.taskId, t.estimatorVersion),
+  workspaceCreatedIdx: index('task_estimates_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type TaskEstimate = typeof taskEstimates.$inferSelect;
+export type NewTaskEstimate = typeof taskEstimates.$inferInsert;
+
+/**
+ * What a task estimated in `task_estimates` actually took, kept next to it
+ * (packages/core/task-estimate-actuals.ts). One row per task, rewritten as the
+ * task settles (a merge after the last session fills in wall time); the frozen
+ * estimate row is never touched. Work tasks only: attempt and bookkeeping
+ * tasks are other tasks' cost, counted as `repairs` on their parent.
+ */
+export const taskEstimateActuals = pgTable('task_estimate_actuals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  /** Sum of completed-session durations: the cost measure. */
+  agentMinutes: real('agent_minutes').notNull(),
+  /** Input + output tokens over the same sessions. */
+  tokens: integer('tokens').notNull(),
+  /** Retry (attempt) tasks that hang off this task. */
+  repairs: integer('repairs').notNull().default(0),
+  workerCount: integer('worker_count').notNull().default(0),
+  firstStartedAt: timestamp('first_started_at', { withTimezone: true }),
+  /** First start to merge; to the last session's end when nothing merged. Null with no start. */
+  wallMinutes: real('wall_minutes'),
+  wallBasis: text('wall_basis').$type<'merge' | 'last_session'>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskIdx: uniqueIndex('task_estimate_actuals_task_idx').on(t.taskId),
+  teamIdx: index('task_estimate_actuals_team_idx').on(t.teamId),
+}));
+
+export type TaskEstimateActuals = typeof taskEstimateActuals.$inferSelect;
+export type NewTaskEstimateActuals = typeof taskEstimateActuals.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
