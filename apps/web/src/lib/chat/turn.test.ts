@@ -1524,3 +1524,68 @@ describe("a turn's canonical answer (task b4f273ac)", () => {
     expect(seen[0].previous).toBe('No fix is queued: the task is held on an open question.');
   });
 });
+
+describe('long messages (8,000 is a presentation threshold, not a limit)', () => {
+  const mk = () => new MockLanguageModelV4({ doStream: async () => textStream('ok') as any });
+
+  for (const n of [8_001, 32_000, 100_000, 200_000]) {
+    it(`accepts ${n.toLocaleString('en-US')} characters, astral Unicode included, and stores them byte for byte`, async () => {
+      const text = '𝔘ñ✓'.repeat(Math.ceil(n / 4)).slice(0, n);
+      const { turn } = harness({ model: mk() });
+      const { res } = await turn(userMsg(text));
+      expect(res.status).toBe(200);
+      const stored = messages.find(m => m.role === 'user')!;
+      expect(stored.parts.find((p: any) => p.type === 'text').text).toBe(text.trim());
+    });
+  }
+
+  it('refuses one character over the cap with the limit stated, before routing, limits or the model', async () => {
+    const model = mk();
+    let routed = 0;
+    let limited = 0;
+    const { turn } = harness({
+      model,
+      route: async () => { routed++; return { tier: 'standard' as const, allowWrites: true, source: 'fallback' as const }; },
+      limits: async () => { limited++; return { ok: true as const, budgetWarning: false }; },
+    });
+    const { res, text } = await turn(userMsg('x'.repeat(200_001)));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ code: 'message_too_long', limit: 200_000, chars: 200_001 });
+    expect(JSON.parse(text).error).toContain('200,000');
+    expect([routed, limited, model.doStreamCalls.length, messages.length]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('tells an empty message apart from a long one', async () => {
+    const { turn } = harness({ model: mk() });
+    const { res, text } = await turn(userMsg('   '));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text).code).toBe('message_empty');
+  });
+
+  it('routing sees an excerpt, and the model a bounded history, while storage keeps everything', async () => {
+    const model = mk();
+    let routedMessage = '';
+    const { turn } = harness({
+      model,
+      route: async (...a: any[]) => { routedMessage = a[0].message; return { tier: 'standard' as const, allowWrites: true, source: 'fallback' as const }; },
+    });
+    const first = 'a'.repeat(200_000);
+    await turn(userMsg(first));
+    await turn({ ...userMsg('b'.repeat(200_000)), id: 'client-2' });
+    await turn({ ...userMsg('c'.repeat(200_000)), id: 'client-3' });
+    const prompt = JSON.stringify(model.doStreamCalls.at(-1)!.prompt);
+    expect(prompt).not.toContain(first);
+    expect(prompt).toContain('Earlier pasted text, 200,000 characters');
+    expect(prompt).toContain('c'.repeat(200_000));
+    expect(messages.filter(m => m.role === 'user').map(m => m.parts.find((p: any) => p.type === 'text').text.length)).toEqual([200_000, 200_000, 200_000]);
+    expect(routedMessage.length).toBe(200_000); // the router excerpts it itself (routing.ts)
+  });
+});
+
+describe('maxUserTextFromEnv', () => {
+  it('reads a positive integer override and falls back to the shared default', async () => {
+    const { maxUserTextFromEnv } = await import('./turn');
+    expect(maxUserTextFromEnv('50000')).toBe(50_000);
+    for (const bad of [undefined, '', '0', '-1', '1.5', 'lots']) expect(maxUserTextFromEnv(bad)).toBe(200_000);
+  });
+});
