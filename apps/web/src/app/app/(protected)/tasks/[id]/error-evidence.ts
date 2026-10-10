@@ -31,6 +31,8 @@ export interface ErrorEvidenceItem {
   presentation: TracePresentation;
   reason: string;
   decidedBy: 'rule' | 'model';
+  /** A plain name for the event, when a rule knows it; the row shows it instead of the excerpt. */
+  headline: string | null;
   attempt: { label: string; workerId: string | null };
   /** What the agent did just before / after, oldest first (at most 4 each). */
   before: ErrorEvidenceContextLine[];
@@ -147,6 +149,7 @@ export function buildErrorEvidenceItems(input: {
       presentation: consequence.presentation,
       reason: consequence.reason,
       decidedBy: consequence.decidedBy,
+      headline: consequence.headline ?? null,
       attempt: {
         label: (t.workerId && input.attemptLabelByWorker.get(t.workerId)) || FALLBACK_ATTEMPT,
         workerId: t.workerId ?? null,
@@ -184,22 +187,20 @@ const ATTENTION_BY_FAMILY = {
   lint: 'Lint did not pass, so CI may reject the change.',
 } as const;
 
-/** What the trace affects, in plain words. */
-export function affectsLine(item: Pick<ErrorEvidenceItem, 'presentation' | 'command' | 'pattern'>): string {
+/**
+ * What the trace means for the result, in one plain sentence. The rule's own
+ * reason when it has one; the verify-family line for a failed check, which
+ * says what it costs. Rows and the evidence sheet both show only this, once.
+ */
+export function affectsLine(item: Pick<ErrorEvidenceItem, 'presentation' | 'command' | 'pattern' | 'reason' | 'decidedBy'>): string {
   const family = item.command ? verifyFamilyOf(item.command) : null;
-  switch (item.presentation) {
-    case 'needs_attention':
-      if (family) return ATTENTION_BY_FAMILY[family];
+  if (item.presentation === 'needs_attention') {
+    if (family) return ATTENTION_BY_FAMILY[family];
+    if (item.decidedBy === 'model') {
       return item.command
         ? 'This command failed and the work never got past it.'
         : 'This error may have stopped the work.';
-    case 'recovered':
-      return family
-        ? `A later ${family === 'typecheck' ? 'type check' : family} run passed; the result does not depend on this.`
-        : 'The work got past this; the result does not depend on it.';
-    case 'noise':
-      return 'No effect on the result; expected while exploring.';
-    default:
-      return 'Not clear whether this affected the result.';
+    }
   }
+  return item.reason;
 }
