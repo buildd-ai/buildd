@@ -6,7 +6,7 @@ last_verified: 2026-08-31
 summary: The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/ingest.ts, packages/core/knowledge-store/chunker.ts, packages/core/mcp-tools.ts]
-related: [mcp-action-contracts, mission-task-lifecycle]
+related: [mcp-action-contracts, mission-task-lifecycle, pluggable-knowledge-store]
 keywords: [knowledge_chunks, rrf, bm25, voyage-code-3, query_knowledge, spec_compare]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
@@ -211,7 +211,7 @@ caller for manual judgement — the tool MUST NOT compute a verdict itself.
 - MCP handler: `packages/core/mcp-tools.ts` — `spec_compare` action branch
 - Knowledge store retrieval: `packages/core/knowledge-store/pg-vector-store.ts`
 
-**Out of scope**: The `TurbopufferStore` alternate backend (interface-ready,
-not yet implemented). The ingestion CLI scripts (operational tooling, not a
+**Out of scope**: Alternate index backends (none exist; the pipeline/backend
+split and any external provider are specified in `pluggable-knowledge-store`). The ingestion CLI scripts (operational tooling, not a
 runtime contract). The external memory service API (separate repo
 `buildd-ai/memory`).

@@ -164,10 +164,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (4)
+## Draft (5)
 
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
+- [Pluggable Knowledge Store](./pluggable-knowledge-store.md) · @max — verified 2026-10-10
+  The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 - [Real and Virtual Cost](./real-and-virtual-cost.md) · @max — verified 2026-10-07
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
