@@ -2304,3 +2304,24 @@ describe('createReviewerTask — policy suggestions', () => {
     expect((insertedTask?.context as any).policySuggestions).toBeUndefined();
   });
 });
+
+describe('renderDeltaScopeSection', () => {
+  it('scopes findings to the merge-base diff and quotes the current PR body', async () => {
+    const { renderDeltaScopeSection } = await import('./reviewer');
+    const out = renderDeltaScopeSection({
+      baseRef: 'dev',
+      headSha: 'abc123',
+      prBody: '## Dev merge\nThe redesign came from dev.',
+    });
+    expect(out).toContain('git diff origin/dev...abc123');
+    expect(out).toContain('NOT the range between two head SHAs');
+    expect(out).toContain('The redesign came from dev.');
+  });
+
+  it('says so when the body is empty and does not assume a base', async () => {
+    const { renderDeltaScopeSection } = await import('./reviewer');
+    const out = renderDeltaScopeSection({ baseRef: null, headSha: 'abc123', prBody: null });
+    expect(out).toContain('origin/<base>...abc123');
+    expect(out).toContain('(empty or could not be read)');
+  });
+});

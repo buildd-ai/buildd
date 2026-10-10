@@ -694,6 +694,7 @@ export async function createReviewerTask(
         deltaFiles: params.deltaFiles,
         missionCriteria,
         baseRef: params.baseRef,
+        prBody: params.prBody,
       })
     : await buildReviewerContextWithMeta({
         originalTaskId,
@@ -899,6 +900,8 @@ inherit it: your output is a fresh verdict, reached by reading the delta below, 
 the prior one.
 
 {{policySection}}
+
+{{scopeSection}}
 
 {{diffSummary}}{{patchBlock}}
 {{criteriaBlock}}
@@ -1519,6 +1522,54 @@ interface BuildDeltaContextParams {
    * bound then falls back to `pulls/{n}/files`, which is weaker.
    */
   baseRef?: string | null;
+  /** The PR's current body, when the caller already has it. Read from GitHub when omitted. */
+  prBody?: string | null;
+}
+
+/** Longest PR body quoted into a delta prompt. */
+const DELTA_PR_BODY_MAX_CHARS = 4000;
+
+/**
+ * The scope rule and the current PR body for a delta re-review.
+ *
+ * The delta is `priorHead..head`. When dev was merged into the PR branch in
+ * between, that range contains code that came from the base, not from the PR,
+ * and the prior feedback (carried forward verbatim) can be about that code. A
+ * reviewer that judges the SHA-to-SHA delta then re-asks, round after round,
+ * for changes the PR does not own. The PR is what `origin/<base>...head`
+ * shows, so findings are judged against that, and the body is quoted as it is
+ * NOW so a request to "say it in the body" can be checked against the body.
+ *
+ * @internal exported for tests.
+ */
+export function renderDeltaScopeSection(params: {
+  baseRef: string | null;
+  headSha: string;
+  prBody: string | null | undefined;
+}): string {
+  const baseRef = params.baseRef && SAFE_BASE_REF.test(params.baseRef) ? params.baseRef : null;
+  const diff = baseRef ? `git diff origin/${baseRef}...${params.headSha}` : `git diff origin/<base>...${params.headSha}`;
+  const lines = [
+    '## What Counts as This PR\'s Change',
+    '',
+    `The PR is what \`${diff}\` shows (three dots: from the merge-base) — NOT the range between two head SHAs.`,
+    'If the base branch was merged into the PR since your prior verdict, the delta below can contain',
+    'code that came from the base. Before you keep or repeat any prior request-changes point, check',
+    'that the file and lines it names appear in that merge-base diff. A point about code the PR does',
+    'not touch (a base-branch redesign, tests the base deleted) is NOT a finding against this PR: drop it.',
+    'Do not re-ask for something that is already done — read the PR body below before asking for a body change.',
+  ];
+  const body = typeof params.prBody === 'string' ? params.prBody.trim() : '';
+  lines.push('', '### PR body (current)', '');
+  if (!body) {
+    lines.push('(empty or could not be read)');
+  } else {
+    const clean = sanitizeUntrustedText(body).text;
+    lines.push(
+      clean.length > DELTA_PR_BODY_MAX_CHARS ? `${clean.slice(0, DELTA_PR_BODY_MAX_CHARS)}\n…(truncated)` : clean,
+    );
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1593,6 +1644,19 @@ async function boundDeltaFilenames(params: {
  */
 export async function buildDeltaReviewerContext(params: BuildDeltaContextParams): Promise<string> {
   const { originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig, priorVerdict } = params;
+  let scopeBaseRef: string | null = params.baseRef ?? null;
+  let scopeBody: string | null | undefined = params.prBody;
+  if (scopeBody === undefined || !scopeBaseRef) {
+    try {
+      const { githubApi } = await import('@/lib/github');
+      const pr = await githubApi(params.installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      if (scopeBody === undefined) scopeBody = typeof pr?.body === 'string' ? pr.body : null;
+      if (!scopeBaseRef) scopeBaseRef = typeof pr?.base?.ref === 'string' && pr.base.ref ? pr.base.ref : null;
+    } catch (err) {
+      console.warn(`[reviewer] Failed to fetch PR #${prNumber} for delta scope:`, err);
+    }
+  }
+  const scopeSection = renderDeltaScopeSection({ baseRef: scopeBaseRef, headSha, prBody: scopeBody });
   const thresholdText = renderConfidenceThreshold(params.confidenceThreshold);
 
   let files: ReviewerPatchFile[] = [];
@@ -1728,6 +1792,7 @@ ${securityEscalationRules()}`;
     feedbackLine,
     escalationLine,
     policySection,
+    scopeSection,
     diffSummary,
     patchBlock,
     criteriaBlock,
