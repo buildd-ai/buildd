@@ -253,6 +253,12 @@ export interface LocalWorker {
    * left in progress with the real conflicts). Appended to the system prompt.
    */
   derivedMergeNote?: string;
+  /**
+   * Lines of the worktree's mergiraf ledger (merge-drivers.ts MERGIRAF_LEDGER)
+   * already reported. Set when merge drivers are registered; undefined means
+   * no drivers, so nothing to report.
+   */
+  mergirafLedgerOffset?: number;
   /** Where a usage-limit death's work went: `origin/<branch>@<sha>` or `archive:<path>`. */
   recoveryRef?: string;
   /**

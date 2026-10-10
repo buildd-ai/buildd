@@ -664,11 +664,12 @@ export function evaluateAllDocs(config: ConformanceConfig, now?: Date): DocEvalu
 // ─── Watch set (§4) ─────────────────────────────────────────────────────────
 
 /**
- * §4's watch set: `docs/design/**` UNION every path referenced in any `path`,
- * `file`, or `entry` field across all spec and design docs. Deliberately NOT
- * `docs/specs/**` in full — the design doc names only `docs/design/**` as the
- * always-watched prefix; a spec doc's own file only enters the set via its
- * own assertions, same as any other doc.
+ * §4's watch set: `docs/design/**` and `docs/specs/**` UNION every path
+ * referenced in any `path`, `file`, or `entry` field across all spec and
+ * design docs. §4 originally named only `docs/design/**`, but a spec's
+ * declared status decides a contradiction on its own: a new `active` spec with
+ * no assertions, or a status flip, references no asserted path. Watching
+ * specs only through their assertions let such a change skip the checker.
  *
  * Fields are collected from every syntactically valid assertion regardless
  * of doc type or declared status — the watch set answers "what code proves or
@@ -698,8 +699,8 @@ export function computeWatchSet(config: ConformanceConfig): WatchSet {
     }
   }
 
-  const designPrefix = config.designRoot.endsWith('/') ? config.designRoot : `${config.designRoot}/`;
-  return { prefixes: [designPrefix], paths: [...paths].sort() };
+  const prefixes = [config.designRoot, config.specsRoot].map((r) => (r.endsWith('/') ? r : `${r}/`));
+  return { prefixes, paths: [...paths].sort() };
 }
 
 /** Whether a repo-root-relative changed file falls inside the watch set. */

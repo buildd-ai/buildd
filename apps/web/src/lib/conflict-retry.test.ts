@@ -117,6 +117,12 @@ const mockObserveConflict = mock(async (_p: any) => ({ handled: false }) as any)
 const realSeam = await import('@/lib/workflow/seam');
 mock.module('@/lib/workflow/seam', () => ({ ...realSeam, observeConflict: mockObserveConflict }));
 
+// GitHub reads: by default every call fails (as with no credentials), so the
+// dispatch path degrades exactly as before; one test answers the PR read.
+const mockGithubApi = mock(async (..._a: unknown[]) => { throw new Error('no github in tests'); }) as any;
+const realGithub = await import('@/lib/github');
+mock.module('@/lib/github', () => ({ ...realGithub, githubApi: (...a: unknown[]) => mockGithubApi(...a) }));
+
 import {
   classifyMergeFailure,
   kernelConflictOutcome,
@@ -221,6 +227,38 @@ function makeInput(overrides?: Partial<ConflictRetryInput>): ConflictRetryInput 
 }
 
 describe('buildConflictRetryTask', () => {
+  describe('context.prBase (the PR\'s real base, read by the runner\'s pre-merge)', () => {
+    it('is stamped when the PR base is known', () => {
+      const result = buildConflictRetryTask(makeInput({ prBase: 'dev' }));
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('is the trunk for a mission ship PR whose head is the integration branch', () => {
+      const result = buildConflictRetryTask(makeInput({
+        worker: { id: 'worker-xyz', branch: 'mission/x-1234abcd', prNumber: 42 },
+        prBase: 'dev',
+      }));
+      expect(result!.context.resumeBranch).toBe('mission/x-1234abcd');
+      expect(result!.context.prBase).toBe('dev');
+    });
+
+    it('falls back to the PR refs the migration path already reads', () => {
+      const result = buildConflictRetryTask(makeInput({ prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' } }));
+      expect(result!.context.prBase).toBe('main');
+    });
+
+    it('is absent when unknown: never guessed', () => {
+      expect(buildConflictRetryTask(makeInput())!.context).not.toHaveProperty('prBase');
+      expect(buildConflictRetryTask(makeInput({ prBase: null }))!.context).not.toHaveProperty('prBase');
+    });
+
+    it('is absent when the name is not a plain branch name', () => {
+      for (const bad of ['--upload-pack=x', 'origin/../x', 'a b', '', ' dev']) {
+        expect(buildConflictRetryTask(makeInput({ prBase: bad }))!.context).not.toHaveProperty('prBase');
+      }
+    });
+  });
+
   it('returns a retry task on the first iteration', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result).not.toBeNull();
@@ -557,6 +595,34 @@ describe('dispatchConflictRetry', () => {
     mockUpdateReturning.mockResolvedValue([]);
     capturedUpdateSet = null;
     capturedUpdateWhere = null;
+  });
+
+  describe('context.prBase from the PR read', () => {
+    it('stamps the base GitHub reports for the PR', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockGithubApi.mockImplementation(async (_inst: unknown, path: unknown) => {
+        if (String(path).endsWith('/pulls/99')) {
+          return { head: { ref: 'mission/x-1234abcd', repo: { full_name: 'acme/app' } }, base: { ref: 'dev' } };
+        }
+        throw new Error('unexpected github call');
+      });
+      // The re-check against the base tip confirms a real conflict, so a retry is filed.
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      try {
+        await dispatchConflictRetry(BASE_PARAMS);
+        expect(capturedInsertValues?.context?.prBase).toBe('dev');
+      } finally {
+        mockGithubApi.mockImplementation(async () => { throw new Error('no github in tests'); });
+      }
+    });
+
+    it('leaves it absent when the PR read fails', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, githubInstallation: { installationId: 5 } });
+      mockUpdateBehindPrBranch.mockResolvedValueOnce({ kind: 'conflict', reason: '422 merge conflict' });
+      await dispatchConflictRetry(BASE_PARAMS);
+      expect(capturedInsertValues?.context).toBeDefined();
+      expect(capturedInsertValues.context).not.toHaveProperty('prBase');
+    });
   });
 
   // A retry that ended without pushing leaves the PR head unchanged, so it

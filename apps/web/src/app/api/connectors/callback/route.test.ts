@@ -168,7 +168,7 @@ describe('GET /api/connectors/callback', () => {
     });
   });
 
-  it('redirects to /app/settings/connectors?error=missing_code_or_state when code absent', async () => {
+  it('redirects to /app/settings/connections?error=missing_code_or_state when code absent', async () => {
     const req = makeRequest({ state: 'abc' });
     const res = await GET(req);
     expect(res.status).toBe(307);
@@ -259,10 +259,10 @@ describe('GET /api/connectors/callback', () => {
     const req = makeRequest({ code: 'authcode123', state });
     const res = await GET(req);
 
-    // Should redirect to /app/settings/connectors?connected=...
+    // Should redirect to /app/settings/connections?connected=...
     expect(res.status).toBe(307);
     const loc = res.headers.get('location') ?? '';
-    expect(loc).toContain('/app/settings/connectors');
+    expect(loc).toContain('/app/settings/connections');
     expect(loc).toContain('connected=conn-uuid-1');
 
     // Token exchange was called

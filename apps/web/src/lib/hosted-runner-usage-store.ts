@@ -20,10 +20,12 @@ import {
   allowanceLevel,
   forecastMonthEnd,
   hostedRunnerBannerText,
+  hostedRunnerMeterView,
   rollUpRunnerUsage,
   runnerUsageFromReport,
   taskRunnerUsage,
   type AllowanceLevel,
+  type HostedRunnerMeterView,
   type HostedRunnerRollup,
   type RunnerUsageRow,
   type UsageSize,
@@ -194,6 +196,39 @@ export async function workspaceNames(ids: string[]): Promise<Map<string, string>
     .from(workspaces)
     .where(inArray(workspaces.id, ids));
   return new Map(rows.map(r => [r.id, r.name]));
+}
+
+/** A team's month on the hosted runner, shaped for the meter and its table. */
+export interface HostedRunnerMonth {
+  meter: HostedRunnerMeterView;
+  rows: Array<{ workspaceId: string; name: string; tasks: number; wallSeconds: number; size: UsageSize; countedSeconds: number }>;
+}
+
+/**
+ * The team's month on the hosted runner, or null when there is nothing to
+ * show (no allowance and no hosted runs: a self-hosted team). Never throws:
+ * a failed read hides the section, not the page.
+ */
+export async function loadHostedRunnerMonth(teamId: string, now = new Date()): Promise<HostedRunnerMonth | null> {
+  try {
+    const summary = await teamHostedRunnerSummary(teamId, now);
+    if (summary.allowanceHours === null && summary.rollup.runs === 0) return null;
+    const names = await workspaceNames(summary.rollup.workspaces.map(w => w.workspaceId));
+    return {
+      meter: hostedRunnerMeterView({ allowanceHours: summary.allowanceHours, countedSeconds: summary.rollup.countedSeconds, forecast: summary.forecast }, now),
+      rows: summary.rollup.workspaces.map(w => ({
+        workspaceId: w.workspaceId,
+        name: names.get(w.workspaceId) ?? 'Workspace',
+        tasks: w.tasks,
+        wallSeconds: w.wallSeconds,
+        size: w.size,
+        countedSeconds: w.countedSeconds,
+      })),
+    };
+  } catch (err) {
+    console.error('[hosted-runner] month summary failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
 }
 
 export type { AllowanceLevel, HostedRunnerRollup };

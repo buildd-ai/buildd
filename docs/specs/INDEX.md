@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (64)
+## Active (65)
 
 ### auth (8)
 
@@ -85,7 +85,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (10)
+### runners (11)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
@@ -101,8 +101,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-10-10
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
+- [Runner Pre-Merge, Derived Files and Mergiraf](./runner-pre-merge.md) · @max — verified 2026-10-10
+  Before a conflict agent starts, the runner MUST merge the right base with derived-file and mergiraf drivers, MUST record every file mergiraf resolved, and MUST NOT push mergiraf's work without an agent.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-10-07
@@ -174,7 +176,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Every worker's tokens and cost MUST carry a basis, real (charged per token) or virtual (list-price value of plan usage), and every rollup MUST report the two separately rather than as one sum.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-09
+- [Workflow State Kernel](./workflow-state-kernel.md) · @max — verified 2026-10-10
   One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 
 ## Superseded (3)

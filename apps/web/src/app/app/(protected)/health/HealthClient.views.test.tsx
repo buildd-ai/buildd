@@ -237,10 +237,17 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('/app/schedules');
   });
 
-  it('Overview lists an access problem under Problems, linking to Failures', () => {
+  it("Overview lists an access problem under Problems, linking a member to the workspace's settings", () => {
     const html = render({ ...everything, page: 'overview' });
     expect(html).toContain('data-testid="problem-access"');
     expect(html).toContain('ws: runs can&#x27;t get access');
+    expect(html).toContain('href="/app/settings/workspace/ws-1"');
+    // Failures moved to the admin app: a member never gets a link to it.
+    expect(html).not.toContain('/app/health/failures');
+  });
+
+  it('links the platform owner from Overview to Failures', () => {
+    const html = render({ ...everything, page: 'overview', operator: true });
     expect(html).toContain('href="/app/health/failures"');
   });
 
@@ -272,7 +279,7 @@ describe('HealthClient — pages', () => {
     }
   });
 
-  it('Overview lists the merged failure groups and links to the Failures page', () => {
+  it('Overview names the merged failure groups in one row and links to Activity history', () => {
     const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
     const failures = words.map((w, i) => ({
       workerId: `w${i}`, taskId: `t${i}`, taskTitle: `Task ${w}`, workspaceName: 'ws',
@@ -288,7 +295,9 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('data-testid="top-failure-groups"');
     expect(html).toContain('data-testid="problem-failures"');
     expect(html).toContain('Failures: 8 causes this week');
-    expect(html).toContain('href="/app/health/failures"');
+    // A member reads failed work in Activity's History; Failures is the owner's.
+    expect(html).toContain('href="/app/tasks?view=history"');
+    expect(html).not.toContain('/app/health/failures');
     // The old 24h signature rows and their overflow line are gone from Overview.
     expect(html).not.toContain('data-testid="problem-failure-group"');
     expect(html).not.toContain('data-testid="problems-denominator"');

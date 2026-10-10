@@ -203,6 +203,24 @@ export interface ConflictRetryInput {
   semanticConflict?: SemanticAssessment;
   /** The conflict basis (`conflictBasisKey`) this attempt repairs, stamped on its context. */
   conflictBasis?: string | null;
+  /**
+   * The PR's real base branch (plain name, e.g. `dev`), stamped as
+   * `context.prBase`. The runner merges it before the agent starts; without it
+   * the runner derives the base itself and reads a mission ship PR's base as
+   * its own integration branch. Falls back to `prRefs.baseRef`; absent when
+   * neither is known, never guessed.
+   */
+  prBase?: string | null;
+}
+
+/** A branch name safe to merge as `origin/<name>`. */
+export function isPlainBranchName(name: unknown): name is string {
+  return typeof name === 'string'
+    && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)
+    && !name.includes('..')
+    && !name.includes('//')
+    && !name.endsWith('/')
+    && !name.endsWith('.lock');
 }
 
 /** The conflict an attempt repairs: the PR head and the base tip it conflicts with. */
@@ -231,6 +249,7 @@ export interface ConflictRetryTask {
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
   const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, migrationSplit, semanticConflict, prRefs, conflictBasis } = params;
+  const prBase = params.prBase ?? prRefs?.baseRef ?? null;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -321,6 +340,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       maxConflictIterations: maxIterations,
       ...(conflictBasis ? { conflictBasis } : {}),
       prNumber: worker.prNumber,
+      ...(isPlainBranchName(prBase) ? { prBase } : {}),
       ...lineageStamp(originalTask, [worker.prNumber]),
       // Cross-repo override: when the PR is in a different repo than the task's workspace,
       // pass the PR repo URL so the worker resolver can find the correct directory.
@@ -1150,12 +1170,16 @@ export async function dispatchConflictRetry(
     });
   }
 
-  let prRefs: ConflictRetryInput['prRefs'] = null;
-  if (migrationCollision && installationId) {
-    prRefs = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`)
+  // The PR's refs: its base is stamped on every retry (context.prBase, read by
+  // the runner's pre-merge); the head only changes the migration brief, so
+  // other retries keep their descriptions. Best-effort: a failed read leaves
+  // the base absent and the runner derives it as before.
+  const fetchedRefs: ConflictRetryInput['prRefs'] = installationId
+    ? await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`)
       .then(pr => (pr?.head?.ref ? { headRef: String(pr.head.ref), baseRef: pr.base?.ref ? String(pr.base.ref) : null } : null))
-      .catch(() => null);
-  }
+      .catch(() => null)
+    : null;
+  const prRefs: ConflictRetryInput['prRefs'] = migrationCollision ? fetchedRefs : null;
 
   const basis = params.baseSha ? conflictBasisKey(headSha, params.baseSha) : null;
   const buildRetry = (maxConflictIterations?: number) => buildConflictRetryTask({
@@ -1174,6 +1198,7 @@ export async function dispatchConflictRetry(
     prRepoUrl,
     migrationCollision,
     prRefs,
+    prBase: fetchedRefs?.baseRef ?? null,
     semanticConflict,
     conflictBasis: basis,
     ...(maxConflictIterations !== undefined ? { maxConflictIterations } : {}),

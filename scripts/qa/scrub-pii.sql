@@ -254,6 +254,7 @@ DELETE FROM agent_capability_decisions;
 DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
 -- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM landing_lanes;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
