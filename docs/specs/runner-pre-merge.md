@@ -11,6 +11,14 @@ keywords: [derivedFiles, mergiraf, pre-merge, Pre-merge milestone, Merge milesto
 verified_by: [apps/runner/__tests__/unit/merge-drivers.test.ts, apps/runner/__tests__/unit/mergiraf-ledger.test.ts, apps/web/src/lib/conflict-retry.test.ts, packages/core/__tests__/mcp-tools-get-task-milestones.test.ts, packages/core/__tests__/derived-files-detect.test.ts, apps/web/src/app/api/workspaces/[id]/route.test.ts]
 supersedes: []
 assertions:
+  - id: register-merge-drivers
+    type: symbol
+    name: registerMergeDrivers
+    path: apps/runner/src/merge-drivers.ts
+  - id: mergiraf-ledger
+    type: symbol
+    name: MERGIRAF_LEDGER
+    path: apps/runner/src/merge-drivers.ts
   - id: normalize-derived-files
     type: symbol
     name: normalizeDerivedFiles
@@ -33,7 +41,7 @@ assertions:
     symbol: mergeBaseWithDerivedFiles
     entry: apps/runner/src/workers.ts
     as: call
-  - id: mergiraf-ledger
+  - id: read-mergiraf-ledger
     type: symbol
     name: readMergirafLedger
     path: apps/runner/src/merge-drivers.ts
