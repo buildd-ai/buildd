@@ -11,7 +11,9 @@
 
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, taskSubjectReports } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, taskSubjectReports, workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { copyReviewConfigOf } from '@buildd/shared';
+import { changedCopyStrings, renderCopyReviewSection, DEFAULT_COPY_INSTRUCTIONS } from './copy-review';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
@@ -98,6 +100,19 @@ export interface ReviewerTaskOutput {
     finding: CriterionReviewerFinding;
     reason: string;
   }>;
+  /**
+   * Per-string copy verdicts, returned only when the prompt carried a copy
+   * review section (workspace `gitConfig.copyReview`; see lib/copy-review.ts).
+   * Under mode 'gate' a `rewrite` sends the PR back to the builder.
+   */
+  copyFindings?: Array<{
+    path: string;
+    line?: number;
+    text: string;
+    verdict: 'ok' | 'rewrite';
+    rewrite?: string;
+    reason?: string;
+  }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -152,6 +167,24 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
         'ONLY when the PR\'s opening lede contradicts the diff: one plain-language sentence that is actually true of this change. Correctness, never taste — omit this for a lede that is accurate but clumsy, dull or badly worded. Same rules as the author\'s: one sentence, no file paths, no endpoint or symbol names.',
     },
     criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
+    copyFindings: {
+      type: 'array',
+      description:
+        'ONLY when the prompt has a "Copy review" section: one entry per listed string you judged. verdict "rewrite" needs rewrite (the exact replacement text) and reason (the rule broken).',
+      items: {
+        type: 'object',
+        required: ['path', 'text', 'verdict'],
+        properties: {
+          path: { type: 'string' },
+          line: { type: 'number' },
+          text: { type: 'string' },
+          verdict: { type: 'string', enum: ['ok', 'rewrite'] },
+          rewrite: { type: 'string' },
+          reason: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
   },
   additionalProperties: false,
 } as const;
@@ -509,6 +542,48 @@ export async function findLiveReviewerTaskForHead(
  * path both land here, and before this guard each one dispatched another agent
  * onto the same commit. Callers must skip dispatch on a deduplicated result.
  */
+/**
+ * The copy review section for a workspace that opted in (`gitConfig.copyReview`),
+ * or '' when it hasn't or the PR adds no user-facing strings. Uses the PR's
+ * patches (fetched once when the caller has none) and the workspace's Copy
+ * Editor role as the judging instructions. Never throws: a failure omits the
+ * section, and the verdict path then has no copy findings to act on.
+ */
+async function loadCopyReviewSection(params: {
+  workspaceId: string;
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  files?: GithubPrFile[];
+}): Promise<string> {
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, params.workspaceId),
+      columns: { gitConfig: true, teamId: true },
+    });
+    const config = copyReviewConfigOf(ws?.gitConfig);
+    if (!config) return '';
+    let files = params.files;
+    if (!files?.length || files.every((f) => f.patch == null)) {
+      const { githubApi } = await import('@/lib/github');
+      const fetched = await githubApi(params.installationId, `/repos/${params.repoFullName}/pulls/${params.prNumber}/files?per_page=300`);
+      files = Array.isArray(fetched) ? (fetched as GithubPrFile[]) : [];
+    }
+    const strings = changedCopyStrings(files, config);
+    if (strings.length === 0) return '';
+    const roles = await db.query.workspaceSkills.findMany({
+      where: and(eq(workspaceSkills.slug, 'copy-editor'), eq(workspaceSkills.enabled, true)),
+      columns: { content: true, workspaceId: true, teamId: true },
+    });
+    const role = roles.find((r) => r.workspaceId === params.workspaceId)
+      ?? roles.find((r) => !r.workspaceId && ws?.teamId && r.teamId === ws.teamId);
+    return renderCopyReviewSection({ config, strings, instructions: role?.content ?? DEFAULT_COPY_INSTRUCTIONS });
+  } catch (err) {
+    console.warn(`[reviewer] copy review section for PR #${params.prNumber} not built:`, err);
+    return '';
+  }
+}
+
 export async function createReviewerTask(
   params: CreateReviewerTaskParams,
 ): Promise<{ id: string; deduplicated?: true } | null> {
@@ -640,7 +715,14 @@ export async function createReviewerTask(
         return built.text;
       });
 
-  const description = params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext;
+  const copySection = await loadCopyReviewSection({
+    workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    files: params.priorVerdict ? params.deltaFiles : params.prFiles,
+  });
+  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${copySection}`;
 
   const title = reviewerTitle(prNumber, originalTask.title);
 
