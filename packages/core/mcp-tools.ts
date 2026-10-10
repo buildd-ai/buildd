@@ -462,6 +462,27 @@ function requireFullUuid(id: unknown, paramName: string): string {
 }
 
 /**
+ * An account-level claim refusal (HTTP 429 from the claim route: worker slots,
+ * daily cost, concurrent sessions) as one line, or null for any other error.
+ * The route's body carries `code` and a `detail` sentence (task e7e8740a);
+ * without this the caller saw a raw "API error: 429 - {...}".
+ */
+export function describeAccountLimitError(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : '';
+  const m = /^API error: 429 - ([\s\S]*)$/.exec(msg);
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[1]);
+    if (typeof body?.code === 'string' && typeof body?.detail === 'string') {
+      return `Nothing claimed: ${body.code}. ${body.detail}`;
+    }
+  } catch {
+    // Not JSON: fall through to the caller's own error handling.
+  }
+  return null;
+}
+
+/**
  * Human-readable reply for a claim that returned no workers. The claim route
  * always computes `diagnostics.reason` (and, for an explicit taskId, the gate
  * that excluded it as `diagnostics.taskExclusion`); the old reply discarded it
@@ -484,6 +505,8 @@ export function describeEmptyClaim(data: any, taskId?: string): string {
   if (data.budgetResetsAt) detail.push(`budget resets at ${data.budgetResetsAt}`);
 
   const lines = [`Nothing claimed: ${d.reason}${detail.length ? ` (${detail.join('; ')})` : ''}.`];
+  // Which budget or rate-limit wall held the claim, and when it lifts.
+  if (typeof d.budgetBlock?.summary === 'string' && d.budgetBlock.summary) lines.push(d.budgetBlock.summary);
   if (taskId) {
     if (d.taskExclusion) {
       lines.push(`Task ${taskId} was excluded: ${d.taskExclusion.code}. ${d.taskExclusion.detail}`);
@@ -2574,18 +2597,25 @@ export async function handleBuilddAction(
         ? undefined
         : requireFullUuid(params.taskId, 'taskId');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      const data = await api('/api/workers/claim', {
-        method: 'POST',
-        body: JSON.stringify({
-          maxTasks: params.maxTasks || 1,
-          workspaceId: wsId,
-          runner: 'mcp',
-          ...(taskId ? { taskId } : {}),
-          // Admin-only on the server, and only with a taskId; see
-          // ClaimTasksInput.forceOverride.
-          ...(taskId && params.force === true ? { forceOverride: true } : {}),
-        }),
-      });
+      let data: any;
+      try {
+        data = await api('/api/workers/claim', {
+          method: 'POST',
+          body: JSON.stringify({
+            maxTasks: params.maxTasks || 1,
+            workspaceId: wsId,
+            runner: 'mcp',
+            ...(taskId ? { taskId } : {}),
+            // Admin-only on the server, and only with a taskId; see
+            // ClaimTasksInput.forceOverride.
+            ...(taskId && params.force === true ? { forceOverride: true } : {}),
+          }),
+        });
+      } catch (err) {
+        const limit = describeAccountLimitError(err);
+        if (limit) return text(limit);
+        throw err;
+      }
 
       const workers = data.workers || [];
       if (workers.length === 0) return text(describeEmptyClaim(data, taskId));
