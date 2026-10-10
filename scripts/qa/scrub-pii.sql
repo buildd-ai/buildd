@@ -244,6 +244,8 @@ DELETE FROM gate_events;
 DELETE FROM failure_incidents;
 -- Who deployed what with which credential reference: an audit trail, not app state.
 DELETE FROM deployment_audit_events;
+-- Writes made through the platform-owner API: an audit trail, not app state.
+DELETE FROM platform_admin_audit_events;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
