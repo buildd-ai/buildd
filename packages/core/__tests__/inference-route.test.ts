@@ -95,3 +95,37 @@ describe('single-provider compatible inference', () => {
     expect(result).toMatchObject({ route: 'openrouter', vendor: 'anthropic', keyScope: 'user' });
   });
 });
+
+describe('OpenAI vendor routing', () => {
+  const openai = { teamId: 't', vendor: 'openai', model: 'gpt-5' } as const;
+  const keyed = (byProvider: Partial<Record<string, 'team' | 'workspace' | 'user'>>): ResolveInferenceRouteDeps => ({
+    resolveInferenceCredential: async o => {
+      const scope = byProvider[String(o.provider)];
+      return scope ? { provider: o.provider as 'openai' | 'openrouter', key: 'example-key', scope, purpose: 'inference_key', secretId: 's' } : null;
+    },
+    resolveLiteLLMGateway: async () => null,
+  });
+
+  it('with only an OpenAI key, an OpenAI model resolves on the OpenAI route', async () => {
+    expect(await resolveInferenceRoute(openai, keyed({ openai: 'team' }))).toMatchObject({ route: 'openai', modelId: 'gpt-5', keyScope: 'team' });
+  });
+  it('with no OpenAI key, falls back to OpenRouter with the vendor-prefixed slug', async () => {
+    const r = await resolveInferenceRoute(openai, keyed({ openrouter: 'team' }));
+    expect(r).toMatchObject({ route: 'openrouter', vendor: 'openai', model: 'gpt-5', modelId: 'openai/gpt-5' });
+  });
+  it('with no key at all resolves to nothing, so callers can say what is missing', async () => {
+    expect(await resolveInferenceRoute(openai, keyed({}))).toBeNull();
+  });
+  it('reports a workspace override and a personal key as the scope that paid', async () => {
+    expect((await resolveInferenceRoute({ ...openai, workspaceId: 'w' }, keyed({ openai: 'workspace' })))?.keyScope).toBe('workspace');
+    expect((await resolveInferenceRoute({ ...openai, userId: 'u' }, keyed({ openai: 'user' })))?.keyScope).toBe('user');
+  });
+  it('hands the team policy and workspace to the resolver for the OpenAI route', async () => {
+    const seen: any[] = [];
+    await resolveInferenceRoute({ ...openai, workspaceId: 'w', userId: 'u', keyPolicy: 'team' }, {
+      resolveInferenceCredential: async o => { seen.push(o); return null; },
+      resolveLiteLLMGateway: async () => null,
+    });
+    expect(seen[0]).toMatchObject({ provider: 'openai', workspaceId: 'w', userId: 'u', keyPolicy: 'team' });
+  });
+});
