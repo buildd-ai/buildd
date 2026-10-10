@@ -2940,6 +2940,13 @@ describe('describeUnfiledRefreshOutcome — the cause, never a bare "unknown"', 
     expect(d.page).toBe('refresh_exhausted');
     expect(d.reason).toMatch(/base kept moving after 3 refreshes/);
   });
+  it('S15: a tolerated behind head is not a dedup and pages nobody; the base changing the PR\'s own files pages refresh_unsafe', () => {
+    const t = describeUnfiledRefreshOutcome({ dispatched: false, behindTolerated: true });
+    expect(t).toMatchObject({ refreshOutcome: 'behind_tolerated', page: null });
+    const u = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshUnsafe: true, refreshReason: 'the base changed files this PR changes (src/a.ts)' });
+    expect(u.page).toBe('refresh_unsafe');
+    expect(u.reason).toContain('src/a.ts');
+  });
   it('an exhausted refresh with only a reason carries the reason', () => {
     const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)' });
     expect(d.page).toBe('refresh_failed');

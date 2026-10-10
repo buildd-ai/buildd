@@ -630,6 +630,17 @@ export interface DispatchConflictRetryResult {
   refreshExhausted?: boolean;
   /** Set when the kernel's treadmill bound escalated: how many refreshes the base outran. */
   refreshTreadmill?: number;
+  /**
+   * S15, with `refreshExhausted`: the kernel read the base delta and the base keeps
+   * changing what this PR changes (shared files, risky paths), not merely moving.
+   */
+  refreshUnsafe?: boolean;
+  /**
+   * S15 disjoint-delta rule: the PR is behind, but its approved head's base delta is
+   * small, disjoint and risk-free, so the kernel neither refreshed nor escalated it.
+   * The door lands it (T15 checks the rule again at merge time).
+   */
+  behindTolerated?: boolean;
   /** Legacy path: the classified update-branch failure. The kernel path has none. */
   refreshFailure?: BranchUpdateFailure | null;
   /** Why, in words: the raw GitHub error (legacy) or the kernel's escalation detail. */
@@ -677,6 +688,7 @@ export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetry
         dispatched: false, refreshExhausted: true, kernel,
         refreshReason: detail ?? 'the kernel escalated the refresh to a person (landing_needs_human)',
         ...(typeof refreshes === 'number' ? { refreshTreadmill: refreshes } : {}),
+        ...(r.decision.evidence?.cause === 'refresh_unsafe' ? { refreshUnsafe: true } : {}),
       };
     }
     if (a?.mode === 'agent') return { dispatched: true, ...(a.taskId ? { taskId: a.taskId } : {}), kernel };
@@ -696,6 +708,7 @@ export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetry
     return { dispatched: state === 'REPAIRING', kernel };
   }
   if (r.reason === 'not_conflicting') return { dispatched: false, alreadyUpToDate: true, kernel };
+  if (r.reason === 'behind_tolerated') return { dispatched: false, behindTolerated: true, kernel };
   if (r.reason === 'dependency_bot_pr') return { dispatched: false, dependencyBot: true, kernel };
   if (r.reason === 'head_not_current') return { dispatched: false, headChanged: true, kernel };
   if (r.reason === 'fix_in_flight') {
@@ -740,6 +753,7 @@ async function kernelConflictRetry(
     maxAgentAttempts: disabled ? 0 : policyValue('maxConflictIterations'),
     humanInitiated: params.humanInitiated,
     source: params.humanInitiated ? 'human:conflict' : 'door:conflict',
+    maxBaseCommits: policyValue('treadmillMaxBaseCommits'),
   });
   if (!seen.handled) return null;
   const out = kernelConflictOutcome(seen);
