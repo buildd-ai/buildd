@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "buildd-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  // nodejs_compat_populate_process_env: the shared handlers read config from
+  // process.env (packages/core/config.ts), exactly as on Vercel.
+  "compatibility_flags": ["nodejs_compat", "nodejs_compat_populate_process_env"],
+  "observability": { "enabled": true },
+  // Not routed yet: no hostname until the cutover switch exists.
+  "workers_dev": false,
+  // The handlers are apps/web's own; `next/server` resolves to a shim and `@/`
+  // to apps/web/src (tsconfig.json paths, which wrangler's bundler honors).
+  // CommonJS globals a few bundled libraries read at load (typescript, via
+  // the reviewer's copy review). Workers define neither.
+  "define": { "__filename": "\"/worker.js\"", "__dirname": "\"/\"" },
+  "alias": {
+    "next/server": "./src/next-server-shim.ts",
+    "dotenv": "./src/dotenv-shim.ts",
+    "server-only": "./src/empty-shim.ts",
+    "@ast-grep/napi": "./src/ast-grep-shim.ts"
+  }
+}

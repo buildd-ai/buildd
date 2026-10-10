@@ -1,0 +1,16 @@
+{
+  "name": "@buildd/control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Execution control plane Worker: claims, heartbeats, worker results, GitHub webhooks and Dispatch callbacks, served from the same handlers apps/web runs, so execution survives a web outage.",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "type-check": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261009.1",
+    "wrangler": "4.149.0"
+  },
+  "license": "FSL-1.1-ALv2"
+}
