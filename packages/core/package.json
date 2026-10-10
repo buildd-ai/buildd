@@ -182,6 +182,7 @@
     "./mission-branch-trace": "./mission-branch-trace.ts",
     "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
+    "./copy-rules": "./copy-rules.ts",
     "./no-prod-data-prose": "./no-prod-data-prose.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
