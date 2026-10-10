@@ -1,0 +1,86 @@
+name: Deploy Recover
+
+# A release merge whose Vercel production build fails for an infrastructure
+# reason (Google Fonts fetch, build killed by SIGKILL/OOM, network) leaves
+# production on the previous release with nothing to say so. Two jobs:
+#
+# - recover: on a failed Production deployment, if its build log matches a
+#   known infra cause, redeploy the same commit once. A second failure for the
+#   same SHA, or a failure with no known cause, fails this job (the alert).
+# - verify: on a successful Production deployment, confirm /api/deploy-identity
+#   reports the deployed SHA within 10 minutes.
+#
+# NOTE: deployment_status workflows always run from the file on the repository's
+# DEFAULT branch (`dev`), even for deploys of `main` (see cron-sync.yml).
+#
+# Requires repo secret VERCEL_TOKEN (recover is skipped with a warning without it).
+
+on:
+  deployment_status: {}
+
+permissions:
+  deployments: read
+  contents: read
+
+jobs:
+  recover:
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      (github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.deployment.sha }}
+      TARGET_URL: ${{ github.event.deployment_status.target_url }}
+    steps:
+      - name: Redeploy once on a known infrastructure failure
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN not set; cannot inspect or redeploy the failed production build of $SHA"
+            exit 1
+          fi
+          # Production deployments of this commit that have already failed.
+          failed=0
+          for id in $(gh api "repos/${{ github.repository }}/deployments?sha=$SHA&environment=Production" --jq '.[].id'); do
+            state=$(gh api "repos/${{ github.repository }}/deployments/$id/statuses" --jq '.[0].state')
+            case "$state" in failure|error) failed=$((failed+1));; esac
+          done
+          if [ "$failed" -gt 1 ]; then
+            echo "::error::Production build of $SHA failed again after a redeploy; needs a human"
+            exit 1
+          fi
+          # Inspect the failed deployment's build log (no quotes: target_url is a vercel.com/deployment URL).
+          npx --yes vercel@latest inspect "$TARGET_URL" --logs --token "$VERCEL_TOKEN" > build.log 2>&1 || true
+          if grep -Eqi "turbopack-next/internal/font/google|Failed to fetch .* from Google Fonts|SIGKILL|Killed|JavaScript heap out of memory|ECONNRESET|ETIMEDOUT|EAI_AGAIN|getaddrinfo" build.log; then
+            echo "Known infrastructure failure; redeploying $SHA once"
+            npx --yes vercel@latest redeploy "$TARGET_URL" --target=production --token "$VERCEL_TOKEN"
+          else
+            echo "::error::Production build of $SHA failed and the log matches no known infrastructure cause"
+            tail -n 40 build.log
+            exit 1
+          fi
+
+  verify:
+    if: >
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for deploy-identity to report the deployed SHA
+        env:
+          SHA: ${{ github.event.deployment.sha }}
+        run: |
+          for i in $(seq 1 20); do
+            got=$(curl -fsS -m 20 https://buildd.dev/api/deploy-identity | jq -r .sha || true)
+            if [ "$got" = "$SHA" ]; then
+              echo "deploy-identity reports $SHA"
+              exit 0
+            fi
+            echo "attempt $i: deploy-identity reports '${got:-none}', want $SHA"
+            sleep 30
+          done
+          echo "::error::deploy-identity did not reach $SHA within 10 minutes"
+          exit 1
