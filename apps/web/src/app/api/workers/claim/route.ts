@@ -246,6 +246,15 @@ export async function POST(req: NextRequest) {
   // as a runner id and gets every runner rule (cooldown, reaper liveness).
   const interactiveSession = verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), account.id);
 
+  // Whose seat the run will use. A verified interactive session runs on its own
+  // credentials, and so does an explicit `runner: 'mcp'` claim of one named task
+  // (an MCP client that never got the marker): neither draws on the account
+  // seat's budget or on a provider wall a runner's seat hit. Read BEFORE
+  // `runner` is rewritten to 'mcp-unverified' below. A cloud executor / task
+  // token never qualifies, and a runner with its own id stays walled.
+  const runsOnCallersSeat = !!interactiveSession
+    || (runner === 'mcp' && !!taskId && !cloudExecutor);
+
   // Admin force-claim of ONE named task: the MCP equivalent of the dashboard's
   // "Start with override" (friction cad81659). Only for an admin token, only
   // with a taskId, and only on a task in the admin's OWN team's workspace (a
@@ -2255,7 +2264,7 @@ export async function POST(req: NextRequest) {
     // Which walls set claudePoolBlocked, named if this task is deferred on them.
     let claudeWall: { kind: ClaimBudgetWall['kind']; resetsAt: Date | string | null } | null = null;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !runsOnCallersSeat) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
@@ -2286,7 +2295,7 @@ export async function POST(req: NextRequest) {
     // above: the wall was hit by a runner's seat, and the session runs the task
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
-    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
     if (pauses.has('claude')) {
       claudePoolBlocked = true;
       claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
@@ -3247,7 +3256,7 @@ export async function POST(req: NextRequest) {
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     // Exception: interactive sessions have their own credentials and do not consume
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
-    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !runsOnCallersSeat;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
         budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
@@ -3566,7 +3575,7 @@ export async function POST(req: NextRequest) {
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
-    ...(accountBudgetExhausted && !interactiveSession && {
+    ...(accountBudgetExhausted && !runsOnCallersSeat && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
