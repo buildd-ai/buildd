@@ -13,6 +13,7 @@ import { ARTIFACT_TYPES, isArtifactType } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { notifyTeamOf, type NotifyPayload } from '@/lib/notify';
 import { isReviewArtifact } from '@/lib/artifact-prominence';
+import { upsertedContent } from '@/lib/artifact-upsert-content';
 
 /** GET's auth. A per-task token is accepted here and confined in GET. */
 async function authenticateRequest(req: NextRequest) {
@@ -211,7 +212,7 @@ export async function POST(
       .update(artifacts)
       .set({
         title,
-        content: content || null,
+        content: upsertedContent(existing.content, content),
         metadata: artifactMetadata,
         type,
         updatedAt: new Date(),
@@ -220,7 +221,7 @@ export async function POST(
       .returning();
 
     // Notify if opted in and content or title changed (not on every upsert).
-    if (notifyOnCreate && (existing.content !== (content || null) || existing.title !== title)) {
+    if (notifyOnCreate && (existing.content !== upsertedContent(existing.content, content) || existing.title !== title)) {
       await notifyWorkspaceArtifact(updated, id);
     }
 

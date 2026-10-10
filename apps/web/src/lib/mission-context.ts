@@ -3,6 +3,7 @@ import { tasks, missions, taskSchedules, workspaceSkills, workers, artifacts, wo
 import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { CRITERIA_REARM_TEMPLATE, MISSION_PROMPT_DEFAULTS, MISSION_PROMPT_IDS } from './mission-prompts';
 import { eq, and, or, isNull, inArray, desc, sql } from 'drizzle-orm';
+import { contextArtifactsWhere } from '@/lib/context-artifact-ids';
 import { computeMissionProgress, computeInitiativeProgress, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import { detectMissionPhase, type MissionPhaseData } from './heartbeat-helpers';
 import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-context';
@@ -597,7 +598,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   let referencedArtifacts: typeof priorArtifacts = [];
   if (mission.contextArtifactIds?.length) {
     referencedArtifacts = await db.query.artifacts.findMany({
-      where: inArray(artifacts.id, mission.contextArtifactIds),
+      where: contextArtifactsWhere(mission.contextArtifactIds, mission.teamId),
       limit: 10,
       columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
     });
