@@ -420,7 +420,15 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM missions) s WHERE m.i
 UPDATE tasks t SET
   -- The mission-PR owner is recognised by this prefix (isMissionPrTask); losing
   -- it makes every opted-in mission read "mission PR not opened" on the clone.
-  title = CASE WHEN t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %'
+  -- Surface audits are recognised by their title prefix (hasMemberScopedDeps);
+  -- losing it makes them appear as regular tasks needing a decision on the clone.
+  title = CASE
+    WHEN t.title ~ '^\[surface audit\] round [0-9]+: '
+    THEN substring(t.title, 1, position(': ' in t.title) + 2) ||
+      pg_temp.qa_title('Task', s.n, substr(t.title, position(': ' in t.title) + 3))
+    WHEN t.title LIKE '[surface audit] %'
+    THEN '[surface audit] ' || pg_temp.qa_title('Task', s.n, substr(t.title, 17))
+    WHEN t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %'
     THEN 'Ship mission: ' || pg_temp.qa_title('Task', s.n, substr(t.title, 15))
     ELSE pg_temp.qa_title('Task', s.n, t.title) END,
   -- Derived from the real title; NULL makes taskDisplayLabel re-derive it from the scrubbed one.
