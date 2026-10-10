@@ -5,7 +5,7 @@
  * and the add / verify / remove handlers. Fixtures are illustrative.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/storage', width: 1280, height: 800 });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/integrations', width: 1280, height: 800 });
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 

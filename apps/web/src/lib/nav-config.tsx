@@ -122,7 +122,6 @@ export function mobilePageTitle(pathname: string): string | null {
   // keeps the section's name.
   const healthItem = healthItemFor(pathname);
   if (healthItem) return healthItem.id === 'overview' ? 'Health' : healthItem.label;
-  if (pathname === '/app/artifacts') return 'Artifacts';
   if (WORKSPACE_MEMORY_PATH.test(pathname)) return 'Memory';
   if (pathname === '/app/settings') return 'Settings';
   // Each settings section is a full page on a phone (list → detail); the

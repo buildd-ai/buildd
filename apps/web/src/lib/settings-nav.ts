@@ -6,7 +6,9 @@
  *
  * Every item is its own route so a section is linkable. Groups are labels
  * only; they have no page of their own. A group is one scope: your own
- * settings, or the team's. No page mixes the two.
+ * settings, or the team's. One page holds both: Connected apps lists the apps
+ * you signed in and the team's MCP connectors, since both are outside tools;
+ * its team half follows manage_connectors.
  */
 
 import type { Permission } from './permission-registry';
@@ -18,15 +20,12 @@ export type SettingsSectionId =
   | 'connections'
   | 'team'
   | 'roles'
-  | 'budgets'
   | 'billing'
   | 'models'
   | 'workspaces'
   | 'runners'
   | 'alerts'
-  | 'github'
-  | 'connectors'
-  | 'storage';
+  | 'integrations';
 
 export interface SettingsNavItem {
   id: SettingsSectionId;
@@ -36,8 +35,6 @@ export interface SettingsNavItem {
   description: string;
   /** Other path prefixes that belong to this section (detail pages). */
   alsoMatches?: string[];
-  /** Listed only while BILLING_ENFORCED is on (see settingsNavFor). */
-  billingOnly?: boolean;
   /**
    * Team sections: the permissions behind the page's controls. Holding none of
    * them, the viewer sees the page read-only (settingsReadOnly). Your own
@@ -91,7 +88,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'connections',
         label: 'Connected apps',
         href: '/app/settings/connections',
-        description: 'Apps signed in to buildd as you over MCP, and what each one reaches.',
+        description: 'Apps signed in to buildd as you, and the outside tools your agents can call.',
       },
     ],
   },
@@ -114,19 +111,11 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         manage: ['manage_agent_roles'],
       },
       {
-        id: 'budgets',
-        label: 'Budgets',
-        href: '/app/settings/budgets',
-        description: 'What you and the team spend, and daily caps.',
-        manage: ['manage_team_settings'],
-      },
-      {
         id: 'billing',
-        label: 'Billing',
+        label: 'Billing and budgets',
         href: '/app/settings/billing',
-        description: 'The plan, seats and invoices.',
-        billingOnly: true,
-        manage: ['manage_billing'],
+        description: 'The plan and seats, what you and the team spend, and daily caps.',
+        manage: ['manage_billing', 'manage_team_settings'],
       },
       {
         id: 'models',
@@ -158,25 +147,11 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         manage: ['manage_team_notifications'],
       },
       {
-        id: 'github',
-        label: 'GitHub and Vercel',
-        href: '/app/settings/github',
-        description: 'Repository access and preview deploys.',
-        manage: ['manage_github_installation', 'manage_team_credentials'],
-      },
-      {
-        id: 'connectors',
-        label: 'MCP connectors',
-        href: '/app/settings/connectors',
-        description: 'Outside tools your agents can call, and which workspaces get them.',
-        manage: ['manage_connectors'],
-      },
-      {
-        id: 'storage',
-        label: 'Storage',
-        href: '/app/settings/storage',
-        description: 'The bucket where run evidence is kept: logs, test reports and transcripts.',
-        manage: ['manage_evidence_backends'],
+        id: 'integrations',
+        label: 'Integrations',
+        href: '/app/settings/integrations',
+        description: 'GitHub, Vercel, and the bucket where run evidence is kept.',
+        manage: ['manage_github_installation', 'manage_team_credentials', 'manage_evidence_backends'],
       },
     ],
   },
@@ -184,15 +159,24 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
 
 export const SETTINGS_ITEMS: SettingsNavItem[] = SETTINGS_NAV.flatMap((g) => g.items);
 
+/** The billing section while BILLING_ENFORCED is off: the same page, budgets only. */
+const BUDGETS_ONLY: Pick<SettingsNavItem, 'label' | 'description'> = {
+  label: 'Budgets',
+  description: 'What you and the team spend, and daily caps.',
+};
+
 /**
- * The nav as a viewer sees it. Billing is hidden entirely while
- * BILLING_ENFORCED is off; the caller (a server component) reads the switch
- * and passes it in, so this module stays env-free for the client sub-nav.
+ * The nav as a viewer sees it. While BILLING_ENFORCED is off the billing page
+ * holds budgets only, so it is named for that. The caller (a server component)
+ * reads the switch and passes it in, so this module stays env-free for the
+ * client sub-nav.
  */
 export function settingsNavFor(opts: { billing: boolean }): SettingsNavGroup[] {
-  return SETTINGS_NAV
-    .map((g) => ({ ...g, items: g.items.filter((i) => opts.billing || !i.billingOnly) }))
-    .filter((g) => g.items.length > 0);
+  if (opts.billing) return SETTINGS_NAV;
+  return SETTINGS_NAV.map((g) => ({
+    ...g,
+    items: g.items.map((i) => (i.id === 'billing' ? { ...i, ...BUDGETS_ONLY } : i)),
+  }));
 }
 
 /**
@@ -236,10 +220,10 @@ export const LEGACY_SETTINGS_ANCHORS: Record<string, string> = {
   'runner-tokens': '/app/settings/runners',
   'inference-spending': '/app/settings/models',
   'provider-keys': '/app/settings/models',
-  connectors: '/app/settings/connectors',
+  connectors: '/app/settings/connections',
   notifications: '/app/settings/notifications',
-  github: '/app/settings/github',
-  vercel: '/app/settings/github',
+  github: '/app/settings/integrations',
+  vercel: '/app/settings/integrations',
   timezone: '/app/settings/team',
   'workspace-ci-policy': '/app/settings/workspaces',
   'danger-zone': '/app/settings/workspaces',

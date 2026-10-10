@@ -22,7 +22,7 @@ export default function ConnectorReconnectBanner() {
           <span className="font-semibold">{expired.connectorName}</span> needs to reconnect
         </span>
         <Link
-          href={`/app/settings/connectors?reconnect=${expired.connectorId}`}
+          href={`/app/settings/connections?reconnect=${expired.connectorId}`}
           className="px-2 py-0.5 rounded text-xs font-medium bg-status-error text-white hover:bg-status-error/80 transition-colors"
           onClick={dismiss}
         >
