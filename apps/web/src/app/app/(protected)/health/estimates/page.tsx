@@ -7,6 +7,9 @@ import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { fetchLiveEstimateRows } from '@buildd/core/task-estimate-accuracy-source';
 import { computeTaskEstimateReadout } from '@buildd/core/task-estimate-accuracy';
 import { EstimatesClient } from './EstimatesClient';
+import {
+  FIXTURE_EMPTY_READOUT, FIXTURE_POINTS, FIXTURE_READOUT, isEstimatesFixtureState,
+} from './estimates-fixtures';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,9 +23,26 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 /** `/app/health/estimates`: how close the frozen task estimates were to what the work took. */
-export default async function HealthEstimatesPage() {
+export default async function HealthEstimatesPage({ searchParams }: { searchParams?: Promise<{ state?: string }> }) {
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
+
+  // `?state=` renders static fixture data (after sign-in, before any team lookup) so every variant can be audited.
+  const fixture = (await searchParams)?.state;
+  if (isEstimatesFixtureState(fixture)) {
+    if (fixture === 'error') {
+      return (
+        <Shell>
+          <p className="text-body text-text-muted" role="alert" data-testid="estimates-error">
+            Couldn&apos;t load estimate accuracy. Try again in a moment.
+          </p>
+        </Shell>
+      );
+    }
+    return fixture === 'enabled-empty'
+      ? <EstimatesClient readout={FIXTURE_EMPTY_READOUT} points={[]} />
+      : <EstimatesClient readout={FIXTURE_READOUT} points={FIXTURE_POINTS} />;
+  }
 
   const cookieStore = await cookies();
   const teamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
