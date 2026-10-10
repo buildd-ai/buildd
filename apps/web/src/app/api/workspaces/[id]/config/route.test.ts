@@ -140,7 +140,7 @@ describe('GET /api/workspaces/[id]/config', () => {
     const res = await GET(req, { params: mockParams });
 
     expect(res.status).toBe(404);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-2', 'ws-1');
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-2' }), 'ws-1');
   });
 
   it('returns 404 for a session user without access to the workspace', async () => {

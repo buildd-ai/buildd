@@ -22,6 +22,12 @@
  * classified `agent_run`. Rules that tighten on `agent_run` must also look at
  * the session user before refusing.
  *
+ * An account-level 'agent' grant session is no person but shares that same
+ * account with every other grant session in the team. On that account a
+ * worker is its own only when its connecting user claimed it
+ * (`notThisAgentsWorker`); any other worker there is refused, never treated
+ * as its own run.
+ *
  * Liveness is NOT checked here: a PR can be recorded for a worker that has
  * already finished, as it can today.
  */
@@ -30,6 +36,7 @@ import { workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { taskScopeAllowsWorker, type TaskScope } from '@/lib/task-token-auth';
+import { agentConnectionUserId, type ClaimingCaller } from '@/lib/worker-owner';
 import type { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { isOrchestrationTask } from '@buildd/shared';
 import type { PrOwnershipTask } from './pr-ownership';
@@ -39,7 +46,7 @@ import type { GithubCapability } from './github';
 
 export type WorkerPrCapability = Extract<GithubCapability, 'pr.create' | 'pr.adopt'>;
 
-export interface WorkerPrCaller {
+export interface WorkerPrCaller extends ClaimingCaller {
   id: string;
   teamId: string | null;
   taskScope?: TaskScope;
@@ -51,6 +58,21 @@ export interface WorkerPrSubject {
   taskId: string | null;
   workspaceId: string | null;
   workspace?: { id?: string; teamId: string | null } | null;
+  claimedByUserId?: string | null;
+}
+
+/**
+ * True when an agent grant session meets a worker on its own (shared) account
+ * that its connecting user did not claim: another member's agent or person
+ * session, or a key. Such a worker is not this agent's to act as.
+ */
+export function notThisAgentsWorker(
+  caller: ClaimingCaller & { id: string },
+  worker: { accountId: string | null; claimedByUserId?: string | null },
+): boolean {
+  const user = agentConnectionUserId(caller);
+  if (!user || worker.accountId !== caller.id) return false;
+  return (worker.claimedByUserId ?? null) !== user;
 }
 
 export type WorkerPrActor =
@@ -102,6 +124,9 @@ export async function authorizeWorkerPrCapability(
   if (!(await canActOnWorkerPr(caller, worker, getGrants))) {
     return { allowed: false, status: 403, error: REFUSED, reasonCode: 'not_team_or_runner' };
   }
+  if (notThisAgentsWorker(caller, worker)) {
+    return { allowed: false, status: 403, error: REFUSED, reasonCode: 'not_team_or_runner' };
+  }
   // A per-task token may act only for its own task's worker, minted by the
   // worker's own account. Team membership does not widen it.
   if (caller.taskScope && (worker.accountId !== caller.id || !taskScopeAllowsWorker(caller, worker))) {
@@ -138,16 +163,19 @@ export async function missionOfPr(workspaceId: string, prNumber: number): Promis
  * An orchestration task (organizer, planning, heartbeat) may also act on a
  * PR of another task on its own mission: tidying its mission's PRs is its
  * job, other missions' PRs are not. Exempt, unchanged: people (a session
- * user on the shared account) and teammates on other accounts.
+ * user on the shared account) and teammates on other accounts. An agent grant
+ * session acts only through a worker its connecting user claimed on the
+ * shared account (`notThisAgentsWorker`).
  *
  * What this cannot see: a shared runner key naming a worker it also claimed.
  * merge_pr without workerId resolves the PR's own worker, which a shared key
  * cannot be told apart from. Per-task tokens close that; this does not try.
  */
 export async function agentRunMayActOnPr(
-  caller: { id: string; taskScope?: TaskScope } & object,
+  caller: { id: string; taskScope?: TaskScope } & ClaimingCaller,
   worker: {
     accountId: string | null;
+    claimedByUserId?: string | null;
     workspaceId?: string | null;
     taskId?: string | null;
     prNumber?: number | null;
@@ -157,6 +185,7 @@ export async function agentRunMayActOnPr(
   deps: { missionOfPr?: typeof missionOfPr } = {},
 ): Promise<boolean> {
   if ((caller as { sessionUserId?: string | null }).sessionUserId) return true;
+  if (notThisAgentsWorker(caller, worker)) return false;
   if (worker.accountId !== caller.id) return !caller.taskScope;
   if (caller.taskScope && worker.taskId !== caller.taskScope.taskId) return false;
   if (worker.prNumber === prNumber || taskLinksPr(worker.task, prNumber)) return true;
