@@ -60,10 +60,14 @@ runs, so the execution handlers never differ between the two hosts.
   2026-10-10). Paths it does not serve pass through to Vercel.
 - `EXECUTION_MODE=shadow` passes every request through. That is the rollback,
   with no DNS or route change.
-- Lockstep with the web app's production commit is owed: until the release
-  workflow deploys it, the Worker is redeployed by hand after each release.
+- `.github/workflows/deploy-control-plane.yml` deploys the Worker on every
+  successful Production deployment of the web app, at that deployment's SHA and
+  so after its migrations, and fails unless `/__control-plane/health?deep=1`
+  then reports that SHA with every dependency healthy.
 
 **Acceptance criteria**:
+- AC-4: GIVEN a production web deploy of SHA X THEN the Worker's health reports
+  commit X and `ok: true` (`index.test.ts`; the workflow enforces it).
 - AC-3: GIVEN the Vercel project paused WHEN a runner claims through
   buildd.dev THEN the claim is answered by the Worker against production
   Postgres. Passed on 2026-10-10 (artifact `control-plane-cutover-evidence`).

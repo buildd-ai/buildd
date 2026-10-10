@@ -98,3 +98,10 @@ describe('pusher shim', () => {
     expect(url.searchParams.get('auth_signature')).toBe('da454824c97ba181a32ccc17a72625ba02771f50b50e1e7430e47a1f3f457e6c');
   });
 });
+
+describe('health', () => {
+  it('reports the deployed commit, so release CI can verify lockstep with the web app', async () => {
+    const res = await worker.fetch(new Request('https://control-plane.buildd.dev/__control-plane/health'), { EXECUTION_MODE: 'own', GIT_SHA: 'abc123' }, { waitUntil() {}, passThroughOnException() {} } as never);
+    expect(await res.json()).toEqual({ ok: true, service: 'control-plane', mode: 'own', commit: 'abc123' });
+  });
+});

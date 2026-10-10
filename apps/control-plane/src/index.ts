@@ -56,7 +56,7 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
   return null;
 }
 
-interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string }
+interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; GIT_SHA?: string }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -64,7 +64,7 @@ export default {
     // The Worker's own hostname has no origin behind it.
     const ownHost = !!env.CONTROL_PLANE_HOST && url.hostname === env.CONTROL_PLANE_HOST;
     if (url.pathname === '/__control-plane/health') {
-      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE) };
+      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE), commit: env.GIT_SHA ?? null };
       // ?deep=1: an unauthenticated GitHub API call through the outbound
       // fetch, the dependency the 2026-10-10 cutover lost (no User-Agent).
       if (url.searchParams.get('deep') === '1') {
