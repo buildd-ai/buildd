@@ -6,7 +6,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/github?github=unavailable' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/integrations?github=unavailable' });
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 

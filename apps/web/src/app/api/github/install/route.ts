@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   // The operator-facing detail (which env vars) stays in the server log.
   if (!isGitHubAppConfigured()) {
     console.warn('[github/install] GitHub App not configured: set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_ID');
-    return NextResponse.redirect(new URL('/app/settings/github?github=unavailable', req.url));
+    return NextResponse.redirect(new URL('/app/settings/integrations?github=unavailable', req.url));
   }
 
   const config = getGitHubAppConfig();

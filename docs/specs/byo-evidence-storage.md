@@ -88,8 +88,8 @@ anonymous GitHub API calls were rate-limited.
 - **Corpus**: `'evidence'` is in `Corpus`, `ALL_CORPORA` and `CORPORA`;
   `packages/core/evidence-chunker.ts` and `apps/web/src/lib/evidence-indexer.ts`,
   swept hourly by `/api/cron/evidence-index`.
-- **UI**: Settings → Storage
-  (`apps/web/src/app/app/(protected)/settings/storage/`) with the lifecycle
+- **UI**: Settings → Integrations, evidence storage
+  (`apps/web/src/app/app/(protected)/settings/integrations/`) with the lifecycle
   snippet, and the task page's evidence files list (`TaskEvidenceFiles`).
 
 **NOT IMPLEMENTED:**
@@ -176,7 +176,7 @@ never List. The result sets `status` and reuses the `secrets` health columns
 `POST /api/secrets/[id]/verify` does for the Cloudflare token. A `failing`
 backend raises a health alert (NOT IMPLEMENTED).
 
-Surfaces: Settings → Storage (admin), MCP `manage_evidence_backends` (admin
+Surfaces: Settings → Integrations, evidence storage (admin), MCP `manage_evidence_backends` (admin
 token), and chat read-only status.
 
 **Access to the list.** A workspace-scoped backend names a bucket and endpoint
@@ -623,10 +623,10 @@ corpus").
 
 ### 6. Settings UI and Evidence tab
 
-- **Scope:** Settings → Storage (add, edit, verify, remove a backend; status and
+- **Scope:** Settings → Integrations, evidence storage (add, edit, verify, remove a backend; status and
   last error; lifecycle-rule snippet) and the task-page Evidence tab (object
   list, tail viewer with grep, short-lived presigned GET for download, UI only).
-- **Paths:** `apps/web/src/app/app/(protected)/settings/storage/**`,
+- **Paths:** `apps/web/src/app/app/(protected)/settings/integrations/**`,
   `apps/web/src/app/app/(protected)/tasks/[id]/**` (Evidence tab), the presign
   route for downloads under `apps/web/src/app/api/evidence/`.
 - **Depends on:** 1 for the settings page; 4 for the Evidence tab.

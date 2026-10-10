@@ -421,7 +421,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                 {canEdit && (
                   <>
                     {' '}
-                    <Link href="/app/settings/github" className="underline text-text-primary hover:no-underline">
+                    <Link href="/app/settings/integrations" className="underline text-text-primary hover:no-underline">
                       Add one in Settings, GitHub and Vercel
                     </Link>
                   </>
