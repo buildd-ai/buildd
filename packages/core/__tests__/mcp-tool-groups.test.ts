@@ -8,7 +8,7 @@ import { allActions } from '../mcp-tools';
 import {
   ACTION_AREA, ACTION_SUMMARY, MCP_TOOL_GROUPS, actionHelp, actionSignature, actionsOfGroup, derivedSignature,
   mcpGroupOf, mcpGroupOfToolName, mcpGroupToolName, mcpGroupPurpose, MCP_GROUP_PURPOSE_PARTS, SIGNATURE_OVERRIDE_ACTIONS,
-  MCP_GROUP_PARAMS, mcpGroupParamsSchema, ACTION_LISTING, splitListed,
+  MCP_GROUP_PARAMS, mcpGroupParamsSchema, ACTION_LISTING, splitListed, requiredParamsOf,
 } from '../mcp-tool-groups';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -194,6 +194,49 @@ describe('typed params', () => {
     const s = mcpGroupParamsSchema('missions', actionsOfGroup('missions')) as { type: string; additionalProperties?: unknown };
     expect(s.type).toBe('object');
     expect(s.additionalProperties).not.toBe(false);
+  });
+});
+
+describe('a strict model can fill every group tool (task 6d3c3355)', () => {
+  // A schema-constrained model emits only declared properties: a params
+  // schema with no properties made it send {} for every buildd_work call.
+  const declared = (g: Parameters<typeof mcpGroupParamsSchema>[0]) =>
+    mcpGroupParamsSchema(g, actionsOfGroup(g)).properties as Record<string, unknown>;
+
+  it('requiredParamsOf reads the non-optional names of a signature', () => {
+    expect(requiredParamsOf('create_pr')).toEqual(['title', 'head', 'lede']);
+    expect(requiredParamsOf('update_progress')).toEqual([]);
+    expect(requiredParamsOf('manage_secrets')).toEqual(['action']);
+    expect(requiredParamsOf('memory_delete')).toEqual(['id']);
+  });
+
+  it('every required param of every group action is a declared property', () => {
+    // Listed actions: in the schema the tool sends. Rare (More:) actions: in
+    // the group's params registry, so they appear once a level lists them.
+    const missing: string[] = [];
+    for (const g of MCP_TOOL_GROUPS) {
+      const listed = mcpGroupParamsSchema(g, splitListed(actionsOfGroup(g)).listed).properties as Record<string, unknown>;
+      const props = declared(g);
+      for (const a of actionsOfGroup(g)) {
+        const pool = splitListed(actionsOfGroup(g)).listed.includes(a) ? listed : props;
+        for (const r of requiredParamsOf(a)) if (!pool[r]) missing.push(`${g}.${a}.${r}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('work declares the lifecycle fields a worker sends', () => {
+    const p = declared('work');
+    for (const n of ['taskId', 'progress', 'message', 'summary', 'error', 'structuredOutput', 'discardEdits',
+      'title', 'head', 'lede', 'body', 'type', 'content', 'defaultChoice']) {
+      expect(p[n], n).toBeDefined();
+    }
+  });
+
+  it('every group params schema is explicitly open, so untyped fields still pass', () => {
+    for (const g of MCP_TOOL_GROUPS) {
+      expect((mcpGroupParamsSchema(g, actionsOfGroup(g)) as { additionalProperties?: unknown }).additionalProperties, g).toBe(true);
+    }
   });
 });
 

@@ -55,6 +55,7 @@ import {
   mcpGroupOfToolName,
   mcpGroupToolName,
   mcpGroupParamsSchema,
+  requiredParamsOf,
   splitListed,
   type McpToolGroup,
 } from "@buildd/core/mcp-tool-groups";
@@ -233,6 +234,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
       return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
     }
     return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
+  }
+  // A schema-constrained model fills only declared properties; when it sends
+  // nothing, say so instead of letting the action fail on each field in turn.
+  const required = requiredParamsOf(action);
+  // Only for an action the level may call: above-level calls still reach the
+  // handler, which refuses them exactly as the `buildd` tool does.
+  if (required.length > 0 && Object.keys(params).length === 0 && actionsForLevel(accountLevel, scopes, reach).includes(action)) {
+    return { kind: 'reply', isError: true, text: `${action}: params arrived empty. It needs ${required.join(', ')}: call ${tool} with {"action":"${action}","params":{${required.map(r => `"${r}": ...`).join(', ')}}}.` };
   }
   return { kind: 'dispatch', action, params };
 }

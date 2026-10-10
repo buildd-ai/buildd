@@ -631,6 +631,12 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
       items: { type: 'object', properties: { type: { type: 'string', enum: ['command', 'all_prs_merged', 'no_open_tasks', 'artifact_exists', 'description'] } } },
     }, [{ text: 'Completion gates, null clears; prefer {type:"command",command}', actions: MISSION_WRITES }]),
     param('awaitingOnly', bool, [{ text: 'get_visual_review: only screens awaiting you', actions: ['get_visual_review'] }]),
+    param('feature', str, [{ text: 'Feature or term to check', actions: ['spec_compare'] }]),
+    param('discrepancyId', str, [{ text: 'Discrepancy UUID', actions: ['get_discrepancy', 'adjudicate_discrepancy', 'promote_discrepancy'] }]),
+    param('reason', str, [{ text: 'Why (recorded)', actions: ['adjudicate_discrepancy'] }]),
+    param('entityType', { type: 'string', enum: ['mission'] }, [{ text: 'What to link', actions: ['link_tracker'] }]),
+    param('entityId', str, [{ text: 'Mission UUID to link', actions: ['link_tracker'] }]),
+    param('url', str, [{ text: 'Tracker URL (e.g. a Linear project)', actions: ['link_tracker'] }]),
   ],
   tasks: [
     param('taskId', str, [{ text: 'Task UUID', actions: ['get_task', 'update_task', 'get_task_messages', 'approve_plan', 'reject_plan', 'correct_task_result'] }]),
@@ -644,6 +650,9 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
+    param('description', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
+    param('kind', { type: 'string', enum: ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'] }, [{ text: 'Shape of the work', actions: ['create_task'] }]),
+    param('feedback', str, [{ text: 'Why the plan is rejected', actions: ['reject_plan'] }]),
   ],
   analytics: [
     param('workspaceId', str, [
@@ -660,9 +669,11 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
+    param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('releaseId', str, [{ text: 'Release UUID', actions: ['get_release'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
@@ -671,9 +682,51 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
     param('delegation', { type: 'object' }, [{ text: 'Cross-workspace grant', actions: ['update_schedule'] }]),
+    param('name', str, [{ text: 'Schedule name', actions: ['create_schedule'] }]),
+    param('cronExpression', str, [{ text: 'Cron expression', actions: ['create_schedule', 'update_schedule'] }]),
+    param('title', str, [{ text: 'Title of the tasks it files', actions: ['create_schedule'] }]),
   ],
-  work: [],
-  admin: [],
+  work: [
+    param('taskId', str, [{ text: 'Task to pick up', actions: ['claim_task'] }]),
+    param('progress', num, [{ text: 'Percent, 0-100', actions: ['update_progress'] }]),
+    param('message', str, [{ text: 'What you are doing', actions: ['update_progress'] }]),
+    param('summary', str, [{ text: 'What you delivered', actions: ['complete_task'] }]),
+    param('error', str, [{ text: 'Set to fail', actions: ['complete_task'] }]),
+    param('structuredOutput', { type: 'object' }, [{ text: 'e.g. handoff.delivered', actions: ['complete_task'] }]),
+    param('discardEdits', str, [{ text: 'Why edits are scratch', actions: ['complete_task'] }]),
+    param('title', str, [{ text: 'PR, artifact or note title', actions: ['create_pr', 'create_artifact', 'upload_artifact', 'post_note'] }]),
+    param('head', str, [{ text: 'Your assigned branch', actions: ['create_pr'] }]),
+    param('lede', str, [{ text: 'One plain sentence', actions: ['create_pr'] }]),
+    param('body', str, [{ text: 'PR or note body', actions: ['create_pr', 'post_note'] }]),
+    param('type', str, [
+      { text: 'Artifact type, e.g. report', actions: ['create_artifact', 'upload_artifact'] },
+      { text: 'note: decision|question|warning|suggestion|update', actions: ['post_note'] },
+      { text: 'event type', actions: ['emit_event', 'query_events'] },
+    ]),
+    param('content', str, [{ text: 'Artifact text', actions: ['create_artifact'] }]),
+    param('defaultChoice', str, [{ text: 'Question: what you chose', actions: ['post_note'] }]),
+    param('filename', str, [{ text: 'File name', actions: ['upload_artifact'] }]),
+    param('mimeType', str, [{ text: 'MIME type', actions: ['upload_artifact'] }]),
+    param('sizeBytes', num, [{ text: 'Exact bytes', actions: ['upload_artifact'] }]),
+    param('provider', str, [{ text: 'e.g. cloudflare', actions: ['deploy'] }]),
+    param('project', str, [{ text: 'Project', actions: ['deploy'] }]),
+    param('environment', str, [{ text: 'Environment', actions: ['deploy'] }]),
+    param('credentialRef', str, [{ text: 'Credential ref', actions: ['deploy'] }]),
+    param('operation', str, [{ text: 'status|put_secret|upload_worker|ensure_bucket', actions: ['deploy'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['record_pr_supersession', 'get_page_source'] }]),
+    param('supersedingPrNumber', num, [{ text: 'Merged PR carrying the work', actions: ['record_pr_supersession'] }]),
+    param('reason', str, [{ text: 'Why (recorded)', actions: ['record_pr_supersession', 'suggest_schedule_update'] }]),
+    param('label', str, [{ text: 'Event label', actions: ['emit_event'] }]),
+  ],
+  admin: [
+    param('action', str, [{ text: 'Sub-action (list, get, set, update, ...): see the action line', actions: ['manage_experiments', 'manage_providers', 'manage_secrets', 'manage_workspaces', 'manage_watched_projects', 'manage_model_tiers', 'manage_evidence_backends'] }]),
+    param('workspaceId', str, [{ text: WS, actions: ['manage_workspaces', 'list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill', 'trigger_release'] }]),
+    param('slug', str, [{ text: 'Skill or role slug', actions: ['register_skill', 'get_skill', 'update_skill', 'delete_skill'] }]),
+    param('name', str, [{ text: 'Skill or role name', actions: ['register_skill', 'update_skill'] }]),
+    param('content', str, [{ text: 'Skill body (markdown)', actions: ['register_skill', 'update_skill'] }]),
+    param('op', { type: 'string', enum: ['find_duplicates', 'find_decayed', 'archive'] }, [{ text: 'Consolidation step', actions: ['consolidate_knowledge'] }]),
+    param('id', str, [{ text: 'Memory ID', actions: ['memory_delete'] }]),
+  ],
 };
 
 /**
@@ -681,7 +734,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
  * No schema-level description: the tool description's signatures already say what params takes, and
  * repeating "per the signature above" on every group cost ~100 tokens of the 6k budget.
  */
-export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>> } {
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>>; additionalProperties: true } {
   const listed = new Set(actions);
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
@@ -689,5 +742,19 @@ export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly stri
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }
-  return { type: 'object', properties };
+  // Open on purpose: fields not typed here still pass through.
+  return { type: 'object', properties, additionalProperties: true };
+}
+
+/**
+ * The params an action cannot do without: the non-optional names of its
+ * signature (`{title, head, lede, body?}` -> title, head, lede). Alternatives
+ * (`workspaceId?|repo?`, `corpus?+sourceIds?`) and `…` never count.
+ */
+export function requiredParamsOf(action: string): string[] {
+  const sig = actionSignature(action).replace(/^\{|\}$/g, '');
+  return sig.split(',').map(t => t.trim())
+    .filter(t => /^[A-Za-z_][\w]*(?::|$)/.test(t))
+    .map(t => t.split(':')[0])
+    .filter((n, i, all) => all.indexOf(n) === i);
 }
