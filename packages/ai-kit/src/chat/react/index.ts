@@ -33,8 +33,8 @@ export {
 } from './composer-store';
 export {
   thinkingSteps, stepWeight, liveStep, pinnedStep, stepGroups, THINKING_TAIL, THINKING_TAIL_ID, type StepGroup, isApprovalPart, approvalRowGroup, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
-  formatCost, formatPer1k,
-  type ToolRowState, type ApprovalRowGroup,
+  formatCost, formatPer1k, composeTurn,
+  type ToolRowState, type ApprovalRowGroup, type TurnPhase, type TurnComposition,
 } from './model';
 
 // 0.5.0: lifted from buildd's chat.
