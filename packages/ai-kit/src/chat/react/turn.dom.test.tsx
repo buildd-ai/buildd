@@ -185,6 +185,26 @@ describe('ChatThread compose="turn" (0.22.0)', () => {
     expect(answer.compareDocumentPosition(o) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('a turn with steps keeps its line through the answer ("Writing the answer"), then folds in the same slot', async () => {
+    const step = { type: 'data-step', data: { id: 'w1', label: 'Filed a task', state: 'done', weight: 'key' } };
+    const parts = (state: 'streaming' | 'done') => [step, write('w1'), { type: 'text', text: FINAL, state }];
+    await render(h(kit.ChatThread, props(turn(parts('streaming')), 'streaming')));
+    expect($('[data-testid="kit-thinking-live"] .kit-live-label')?.textContent).toBe('Writing the answer');
+    // The key step stops pinning while the answer is written: the line alone holds the slot.
+    expect($('[data-testid="kit-thinking-pinned"]')).toBeNull();
+    const fold = { summary: () => 'Did 1 step', isOpen: () => false, onToggle: () => {} };
+    await render(h(kit.ChatThread, props(turn(parts('done')), 'ready', { turnFold: fold })));
+    const msg = $('.kit-msg[data-role="assistant"]')!;
+    expect(msg.children[0].getAttribute('data-testid')).toBe('kit-thinking');
+    expect($('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 1 step');
+  });
+
+  it('without compose="turn" the line still drops while the answer is written (0.17 behaviour)', async () => {
+    const step = { type: 'data-step', data: { id: 'w1', label: 'Filed a task', state: 'done', weight: 'key' } };
+    await render(h(kit.ChatThread, { messages: turn([step, write('w1'), { type: 'text', text: FINAL, state: 'streaming' }]), status: 'streaming', answer: 'replace' }));
+    expect($('[data-testid="kit-thinking-live"]')).toBeNull();
+  });
+
   it('the default compose is unchanged: no phases', async () => {
     await render(h(kit.ChatThread, { messages: turn([read('r1'), { type: 'text', text: FINAL }]), status: 'ready', answer: 'replace' }));
     expect($('.kit-phase')).toBeNull();
