@@ -254,6 +254,13 @@
       "when": 1791642045837,
       "tag": "0288_spooky_bucky",
       "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1791650391170,
+      "tag": "0289_slimy_jigsaw",
+      "breakpoints": true
     }
   ]
 }
