@@ -10,6 +10,7 @@ import type { StateTone } from '@/components/ui/states';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo, type MissionHealth } from '@/lib/mission-helpers';
 import { hasPendingDeliverableWork } from '@buildd/core/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -88,6 +89,10 @@ export default async function RoleProfilePage({
   });
 
   if (!role) notFound();
+
+  // Editing needs manage_agent_roles in the role's team (overrides applied);
+  // without it this page is the read-only view and the editor redirects here.
+  const canEdit = await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', role.teamId).catch(() => false);
 
   // Resolve workspace name for scope display
   const scopeWorkspaceName = role.workspaceId
@@ -248,6 +253,7 @@ export default async function RoleProfilePage({
   return (
     <SettingsPage
       title={role.name}
+      readOnly={!canEdit}
       description={
         <span className="flex flex-col gap-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -260,9 +266,11 @@ export default async function RoleProfilePage({
         </span>
       }
     >
-      <div>
-        <PrimaryAction href={editHref}>Edit role</PrimaryAction>
-      </div>
+      {canEdit && (
+        <div>
+          <PrimaryAction href={editHref}>Edit role</PrimaryAction>
+        </div>
+      )}
 
       {currentWorker && currentWorker.task && (
         <Section title="Current task">

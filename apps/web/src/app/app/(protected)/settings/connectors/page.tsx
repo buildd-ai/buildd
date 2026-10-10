@@ -4,11 +4,12 @@ import ConnectionsClient from './ConnectionsClient';
 import CatalogSection from './CatalogSection';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { teamIdsHolding } from '../_lib/settings-permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Connections → MCP connectors. Was two places: /app/connections
+ * Settings › Team › MCP connectors. Was two places: /app/connections
  * (add, share, delete) and a Settings section (which workspaces get each one).
  * next.config redirects /app/connections here with its query, so the OAuth
  * callback's `?connected=` and the banner's `?reconnect=` still arrive.
@@ -24,9 +25,7 @@ export default async function ConnectorsSettingsPage({
   ]);
 
   return (
-    <SettingsPage
-      title="MCP connectors"
-    >
+    <SettingsPage title="MCP connectors" readOnly={settingsReadOnly('connectors', perms)}>
       {/* Each control follows manage_connectors in the team it acts on, with
           that team's overrides: the API refuses the same writes. */}
       <ConnectionsClient
