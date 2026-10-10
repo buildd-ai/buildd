@@ -8,8 +8,7 @@ mock.module('next/navigation', () => ({
 
 const { WorkspaceHealthCard } = await import('./WorkspaceHealthCard');
 
-const workspace = { id: 'ws-1', name: 'app', teamId: 'team-a' };
-const teams = [{ id: 'team-a', name: 'Team A' }, { id: 'team-b', name: 'Team B' }];
+const workspace = { id: 'ws-1', name: 'app' };
 
 const legacy: WorkspaceHealthInput = {
   name: 'app',
@@ -17,25 +16,25 @@ const legacy: WorkspaceHealthInput = {
   configStatus: 'unconfigured',
   accessMode: 'open',
   gitConfig: null,
-  userTeamCount: 2,
 };
 
 const render = (input: WorkspaceHealthInput) =>
   renderToStaticMarkup(
-    <WorkspaceHealthCard workspace={workspace} teams={teams} items={checkWorkspaceHealth(input)} />,
+    <WorkspaceHealthCard workspace={workspace} items={checkWorkspaceHealth(input)} />,
   );
 
 describe('WorkspaceHealthCard', () => {
   it('renders nothing when there is nothing to show', () => {
-    expect(render({ ...legacy, configStatus: 'admin_confirmed', accessMode: 'restricted', userTeamCount: 1 })).toBe('');
+    expect(render({ ...legacy, configStatus: 'admin_confirmed', accessMode: 'restricted' })).toBe('');
   });
 
   it('renders one button per line, labelled with the action', () => {
     const html = render(legacy);
     expect(html).toContain('Workspace health');
     expect(html).toContain('>Review proposed policy<');
-    expect(html).toContain('>Move to team…<');
-    expect(html.match(/<button/g)).toHaveLength(2);
+    // Move to team lives under Danger zone only
+    expect(html).not.toContain('Move to team');
+    expect(html.match(/<button/g)).toHaveLength(1);
     // open access is open within the owning team — never offered as a fix
     expect(html).not.toContain('Restrict to team members');
   });
@@ -48,7 +47,7 @@ describe('WorkspaceHealthCard', () => {
 
   it('keeps every action button at least 44px tall', () => {
     const buttons = render(legacy).match(/<button[^>]*>/g) ?? [];
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(1);
     for (const b of buttons) expect(b).toContain('min-h-11');
   });
 });
