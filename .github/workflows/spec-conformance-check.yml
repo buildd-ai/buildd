@@ -15,22 +15,27 @@
 # an unlisted base branch means zero runs, which looks exactly like a green
 # check to anything that only looks for *failing* ones.
 #
-# Delta gate (§4): scripts/spec-conformance-delta-gate.ts reads the last
-# fully-checked commit from a keyed buildd artifact (`spec-conformance-last-sha`)
-# and skips the checker step when the diff against it touches nothing in the
-# watch set. The `check` subcommand only ever GETs — safe to run from any
-# number of concurrent PR checks. The `record` write-back runs only on push to
-# dev: a PR's tip generally isn't an ancestor of dev, and dev is the one
-# context where "last fully-checked commit" is a meaningful, serialized,
-# linear pointer. Both subcommands fail open (never skip, never error the
-# build) when WORKSPACE_ID/BUILDD_API_KEY are unavailable.
+# No delta gate. This job used to skip the checker when the diff against the
+# last-recorded sha (`spec-conformance-last-sha`) touched nothing in the watch
+# set, and `record` advanced that sha on push to dev even when the checker
+# FAILED. So a red push was followed by green ones: each later push diffed
+# against the failing commit, saw nothing watched, and skipped. dev stayed
+# green over a failing checker, and the failure surfaced only on the next PR
+# that happened to touch docs/specs. The checker is filesystem-only and runs in
+# well under a second, less than the gate's own artifact lookup, so it now
+# runs on every event. The ledger workflow still uses the gate under its own
+# key; there it saves DB writes, not checker time.
+#
+# Schedule: a `skip_until` suppression expires on a date, not a commit, so a
+# doc can start contradicting with nothing pushed. The daily run catches that
+# on dev instead of on the next unrelated PR.
 #
 # Contradiction watch: a PR that flips a doc's derived status without
 # updating its declared frontmatter can merge to dev without itself failing
 # this check (see PR #2352 — the doc wasn't in that PR's own failure path),
 # leaving dev's own tip red for whichever unrelated PR merges next to
-# diagnose. scripts/spec-conformance-contradiction-watch.ts runs only on push
-# to dev, after the checker, and diffs the freshly evaluated contradiction
+# diagnose. scripts/spec-conformance-contradiction-watch.ts runs only on dev
+# (push or schedule), after the checker, and diffs the freshly evaluated contradiction
 # set against the last-recorded one (`spec-conformance-contradiction-docs`
 # artifact) — a NEW contradiction files a `[friction]` task immediately
 # instead of waiting on the next PR author to notice. Best-effort only: never
@@ -43,6 +48,9 @@ on:
     branches: [dev]
   pull_request:
     branches: ['**', main, dev, 'mission/**']
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -69,18 +77,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Delta gate — decide whether anything watched changed
-        id: gate
-        run: bun run scripts/spec-conformance-delta-gate.ts check
-
       - name: Run spec conformance checker
-        if: steps.gate.outputs.skip != 'true'
         run: bun run specs:conformance -- --fail-on-contradiction
 
-      - name: Alert on new spec-conformance contradictions (push to dev only)
-        if: always() && github.event_name == 'push' && steps.gate.outputs.skip != 'true'
+      - name: Alert on new spec-conformance contradictions (dev only)
+        if: always() && github.event_name != 'pull_request'
         run: bun run scripts/spec-conformance-contradiction-watch.ts
-
-      - name: Delta gate — record HEAD as last-checked (push to dev only)
-        if: always() && github.event_name == 'push'
-        run: bun run scripts/spec-conformance-delta-gate.ts record

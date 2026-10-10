@@ -10,6 +10,43 @@ related: [base-refresh-classification, live-sibling-conflict-probe, mission-task
 keywords: [derivedFiles, mergiraf, pre-merge, Pre-merge milestone, Merge milestone, merge driver, rerere, buildd-mergiraf-log, conflict retry, mission refresh, refreshTrunk, prBase, lockfile, no-agent finish, derived_merge]
 verified_by: [apps/runner/__tests__/unit/merge-drivers.test.ts, apps/runner/__tests__/unit/mergiraf-ledger.test.ts, apps/web/src/lib/conflict-retry.test.ts, packages/core/__tests__/mcp-tools-get-task-milestones.test.ts, packages/core/__tests__/derived-files-detect.test.ts, apps/web/src/app/api/workspaces/[id]/route.test.ts]
 supersedes: []
+assertions:
+  - id: normalize-derived-files
+    type: symbol
+    name: normalizeDerivedFiles
+    path: packages/shared/src/derived-files.ts
+  - id: workspace-patch-enforces-derived-files
+    type: symbol_reachable
+    symbol: normalizeDerivedFiles
+    entry: apps/web/src/app/api/workspaces/[id]/route.ts
+    as: call
+  - id: plan-merge-drivers
+    type: symbol
+    name: planMergeDrivers
+    path: apps/runner/src/merge-drivers.ts
+  - id: plan-pre-merge
+    type: symbol
+    name: planPreMerge
+    path: apps/runner/src/merge-drivers.ts
+  - id: runner-pre-merges-with-derived-files
+    type: symbol_reachable
+    symbol: mergeBaseWithDerivedFiles
+    entry: apps/runner/src/workers.ts
+    as: call
+  - id: mergiraf-ledger
+    type: symbol
+    name: readMergirafLedger
+    path: apps/runner/src/merge-drivers.ts
+  - id: no-agent-finish-rule
+    type: symbol
+    name: canFinishWithoutAgent
+    path: apps/runner/src/merge-drivers.ts
+  - id: merge-drivers-tests
+    type: test_file
+    path: apps/runner/__tests__/unit/merge-drivers.test.ts
+  - id: mergiraf-ledger-tests
+    type: test_file
+    path: apps/runner/__tests__/unit/mergiraf-ledger.test.ts
 ---
 
 # Runner Pre-Merge, Derived Files and Mergiraf

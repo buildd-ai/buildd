@@ -571,6 +571,22 @@ describe('computeWatchSet', () => {
     expect(isWatched('docs/design/brand-new-doc-not-yet-discovered.md', watchSet)).toBe(true);
   });
 
+  // A spec's declared status alone decides a contradiction: a new `active`
+  // spec with no assertions, or a status flip, touches nothing an assertion
+  // points at. Watching only docs/design/ skipped exactly those changes.
+  test('always watches docs/specs/** in full, independent of any assertion', () => {
+    const dir = join(root, 'watch-specs-prefix');
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'specs', 'no-assertions.md'), ['---', 'status: active', '---', '# No assertions', ''].join('\n'));
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const watchSet = computeWatchSet(config);
+
+    expect(watchSet.prefixes).toContain('docs/specs/');
+    expect(isWatched('docs/specs/no-assertions.md', watchSet)).toBe(true);
+    expect(isWatched('docs/specs/brand-new-spec.md', watchSet)).toBe(true);
+  });
+
   test('collects path/file/entry fields from assertions across both spec and design docs', () => {
     const dir = join(root, 'watch-assertion-fields');
     mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
@@ -621,8 +637,8 @@ describe('computeWatchSet', () => {
     expect(isWatched('apps/web/src/app/api/unrelated/route.ts', watchSet)).toBe(false);
   });
 
-  test('a doc that lives outside docs/specs/** only enters the watch set via its own referenced paths, not wholesale', () => {
-    const dir = join(root, 'watch-specs-not-wholesale');
+  test('a file outside both doc roots that no assertion references is not watched', () => {
+    const dir = join(root, 'watch-unreferenced');
     mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
     mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
     writeFileSync(join(dir, 'docs', 'specs', 'untouched.md'), ['---', 'status: draft', '---', '# Untouched', ''].join('\n'));
@@ -630,7 +646,8 @@ describe('computeWatchSet', () => {
     const config = resolveConformanceConfig({ repoRoot: dir });
     const watchSet = computeWatchSet(config);
 
-    expect(isWatched('docs/specs/untouched.md', watchSet)).toBe(false);
+    expect(isWatched('apps/web/src/unrelated.ts', watchSet)).toBe(false);
+    expect(isWatched('docs/testing.md', watchSet)).toBe(false);
   });
 
   test('an assertion missing id (invalid) does not contribute its path to the watch set', () => {
