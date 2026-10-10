@@ -19,17 +19,7 @@
   },
   "internal-jargon": {
     "apps/web/src/app/app/(protected)/health/_components/FailureGroups.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/CloudflareGatewayTokens.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/CloudflareSection.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/HostRunnerToggle.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/_lib/cloudflare-state.ts": 1,
-    "apps/web/src/app/app/(protected)/settings/billing/BillingActions.tsx": 2,
-    "apps/web/src/app/app/(protected)/settings/billing/billing-view.ts": 2,
-    "apps/web/src/app/app/(protected)/settings/budgets/SpendTables.tsx": 2,
-    "apps/web/src/app/app/(protected)/settings/runners/CloudRunnerRow.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/storage/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/CriteriaGraderControl.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ExecutorSection.tsx": 1,
     "apps/web/src/components/onboarding/GettingStartedChecklist.tsx": 1
   },
   "warning-instead-of-default": {
