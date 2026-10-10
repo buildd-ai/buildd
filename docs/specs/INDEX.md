@@ -139,7 +139,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### tasks (12)
 
-- [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-08-30
+- [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-10-10
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
