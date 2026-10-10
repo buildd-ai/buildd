@@ -831,4 +831,12 @@ describe('bounded reads on GET /api/artifacts/[artifactId]', () => {
     expect((await get('?view=section&section=s99')).status).toBe(400);
     expect(ledger).toHaveLength(0);
   });
+
+  it('a body-less file artifact gets no read view, and keeps its download URL', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...own, content: null, storageKey: 'artifacts/ws-1/u/f.pdf' });
+    const { artifact } = await (await get('?view=auto')).json();
+    expect(artifact.read).toBeUndefined();
+    expect(artifact.downloadUrl).toBe('https://signed.example/artifacts/ws-1/u/f.pdf');
+    expect(ledger).toHaveLength(0);
+  });
 });

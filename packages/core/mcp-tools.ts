@@ -4932,7 +4932,7 @@ export async function handleBuilddAction(
       ].filter(Boolean).join('\n');
 
       if (art.read && art.read.view !== 'full') return text(`${meta}\n\n${renderArtifactRead(art.read)}`);
-      const content = art.read?.text ?? (art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)'));
+      const content = art.read?.text || art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)');
 
       return text(`${meta}\n\n## Content\n\n${content}`);
     }

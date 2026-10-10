@@ -125,7 +125,9 @@ export async function GET(
     throw err;
   }
   let read: ReturnType<typeof readArtifactBody> | null = null;
-  if (selector) {
+  // A body-less artifact (a file, a link) has nothing to read in part: it
+  // answers as before, with its download URL.
+  if (selector && body.content !== null) {
     try {
       read = readArtifactBody(body.content ?? '', selector);
     } catch (err) {

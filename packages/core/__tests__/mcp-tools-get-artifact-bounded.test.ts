@@ -43,4 +43,10 @@ describe('get_artifact: bounded reads', () => {
     expect(out).toContain('1 match(es) for "signing key"');
     expect(out).toContain('line 812 (offset 40,210):');
   });
+
+  it('a file artifact with no inline body still points at its download URL', async () => {
+    const out = await run(apiReturning({ type: 'file', content: null, downloadUrl: 'https://signed.example/f.pdf', read: { view: 'full', text: '', chars: 0 } }, []), {});
+    expect(out).toContain('(file artifact — see Download URL above)');
+    expect(out).toContain('https://signed.example/f.pdf');
+  });
 });
