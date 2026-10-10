@@ -1,5 +1,5 @@
 {
-  "id": "67dc982a-6f58-4d8f-90bb-b89085bfcea2",
+  "id": "11e16ea0-5b13-44f8-b7e2-4bbe156b045d",
   "prevId": "29cc314a-3d6f-4420-b6ba-f746488d44c3",
   "version": "7",
   "dialect": "postgresql",
@@ -1195,8 +1195,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.artifact_links": {
-      "name": "artifact_links",
+    "public.artifact_reads": {
+      "name": "artifact_reads",
       "schema": "",
       "columns": {
         "id": {
@@ -1212,41 +1212,59 @@
           "primaryKey": false,
           "notNull": true
         },
-        "artifact_revision": {
-          "name": "artifact_revision",
+        "revision": {
+          "name": "revision",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
-        },
-        "subject_kind": {
-          "name": "subject_kind",
-          "type": "text",
-          "primaryKey": false,
           "notNull": true
         },
-        "subject_id": {
-          "name": "subject_id",
+        "workspace_id": {
+          "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "relation": {
-          "name": "relation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "team_id": {
-          "name": "team_id",
+        "account_id": {
+          "name": "account_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "view": {
+          "name": "view",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selector": {
+          "name": "selector",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "returned_chars": {
+          "name": "returned_chars",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_chars": {
+          "name": "total_chars",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
         },
         "created_at": {
           "name": "created_at",
@@ -1257,8 +1275,8 @@
         }
       },
       "indexes": {
-        "artifact_links_unique_idx": {
-          "name": "artifact_links_unique_idx",
+        "artifact_reads_artifact_idx": {
+          "name": "artifact_reads_artifact_idx",
           "columns": [
             {
               "expression": "artifact_id",
@@ -1267,40 +1285,22 @@
               "nulls": "last"
             },
             {
-              "expression": "subject_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "relation",
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "artifact_links_subject_idx": {
-          "name": "artifact_links_subject_idx",
+        "artifact_reads_task_idx": {
+          "name": "artifact_reads_task_idx",
           "columns": [
             {
-              "expression": "subject_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
+              "expression": "task_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1312,30 +1312,11 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "artifact_links_artifact_id_artifacts_id_fk": {
-          "name": "artifact_links_artifact_id_artifacts_id_fk",
-          "tableFrom": "artifact_links",
-          "tableTo": "artifacts",
-          "columnsFrom": [
-            "artifact_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "artifact_links_normative_is_pinned": {
-          "name": "artifact_links_normative_is_pinned",
-          "value": "\"artifact_links\".\"relation\" <> 'normative_reference' OR \"artifact_links\".\"artifact_revision\" IS NOT NULL"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.artifact_revisions": {

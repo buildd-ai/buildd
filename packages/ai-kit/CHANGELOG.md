@@ -12,6 +12,22 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.24.0 — 2026-10-10
+
+Minor: the history budget counts tokens, not characters.
+
+- `limits.historyChars` is replaced by `limits.historyTokens` (default 100,000
+  estimated tokens). A character count let 200,000 CJK characters, about
+  200,000 tokens, through whole. `estimateTokens` counts ASCII at four
+  characters a token and anything else at one, and tool inputs and outputs now
+  count toward the budget.
+- A single message estimated over the budget is a 400
+  `code: 'message_too_long_for_model'`, with `tokens` and `limitTokens`, refused
+  before any spend. An app should send such a paste as an attachment.
+- After dropping old messages the history starts with a user message, and on an
+  approval continuation the user message being answered is never replaced.
+- New exports: `estimateTokens`, `messageTokens`, `messageFitsModel`, `modelTooBig`.
+
 ## 0.23.0 — 2026-10-10
 
 Minor: long messages are accepted, and the model's view of a long conversation stays bounded.
