@@ -346,6 +346,19 @@ describe('shot captions', () => {
     expect(run[1].qa.state).toBe('force-start-dialog');
   });
 
+  it('names the theme where a light and a dark shot share a route and viewport (the audit requires both)', () => {
+    const run = withVariants(toVisualShots([
+      shotRow('a', 'app-missions-mobile.png', '/app/missions', 'mobile', { theme: 'light' }),
+      shotRow('bb', 'app-missions-mobile.png', '/app/missions', 'mobile', { theme: 'dark' }),
+      shotRow('ccc', 'app-missions-desktop.png', '/app/missions', 'desktop', { theme: 'dark' }),
+    ]));
+    expect(run.map(shotCaption)).toEqual([
+      '/app/missions · light · mobile',
+      '/app/missions · dark · mobile',
+      '/app/missions · dark · desktop',
+    ]);
+  });
+
   it('titleVariant drops route words, viewport words, the theme and the extension', () => {
     const [s] = toVisualShots([shotRow('a', 'app-tasks-dark-empty-mobile.png', '/app/tasks', 'mobile', { theme: 'dark' })]);
     expect(titleVariant(s)).toBe('empty');

@@ -169,7 +169,7 @@ export function titleVariant(shot: Pick<VisualShot, 'title' | 'qa'>): string | n
 /**
  * Fill each shot's `variant`: the state key and the explicit `qa.variant`
  * always (`force-start-dialog`, `force-start-dialog · eur`); otherwise the
- * title's variant, for shots whose route, viewport and state collide with
+ * title's variant and the theme, for shots whose route, viewport and state collide with
  * another shot's (EUR and JPY invoices both read `/invoices/:id · desktop`). A
  * route with one shot per viewport gets none, so captions only grow where they
  * must. The state leads, so a state shot is its own cell, never the base one.
@@ -180,7 +180,8 @@ export function withVariants(shots: readonly VisualShot[]): VisualShot[] {
   for (const s of shots) perCell.set(cell(s), (perCell.get(cell(s)) ?? 0) + 1);
   const colliding = new Set(shots.filter(s => (perCell.get(cell(s)) ?? 0) > 1).map(s => `${s.qa.route}\u0000${s.qa.state ?? ''}`));
   return shots.map((s) => {
-    const own = s.qa.variant ?? (colliding.has(`${s.qa.route}\u0000${s.qa.state ?? ''}`) ? titleVariant(s) : null);
+    const own = s.qa.variant
+      ?? (colliding.has(`${s.qa.route}\u0000${s.qa.state ?? ''}`) ? [titleVariant(s), s.qa.theme].filter(Boolean).join(' · ') || null : null);
     const variant = [s.qa.state, own].filter(Boolean).join(' · ') || null;
     return variant === (s.variant ?? null) ? s : { ...s, variant };
   });
