@@ -207,6 +207,7 @@
     "apps/web/src/components/ArtifactCodeBody.test.tsx": 2,
     "apps/web/src/components/chat/ChatWorkspace.tsx": 1,
     "apps/web/src/components/waiting-on-you-tokens.test.ts": 1,
+    "apps/web/src/lib/oauth/account-consent.ts": 3,
     "apps/web/src/lib/visual-review-model.fixtures.ts": 1
   },
   "roundedFullChips": {

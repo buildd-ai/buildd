@@ -303,7 +303,15 @@ export function resolveTaskPrBase(args: {
     return { base: caller, source: 'caller', integrationBase, enforced: false };
   }
 
-  const ctxBase = contextBaseBranch?.trim();
+  // CI retries, conflict retries, answer resumes and infra requeues write the
+  // prior attempt's branch to BOTH `baseBranch` and `resumeBranch`: a
+  // continuity marker (where to resume from), not a PR base. Read as a base, the
+  // retry's new head is told to open a PR into the prior head, which `create_pr`
+  // refuses as a fast-forward descendant of its own lineage.
+  const resumeBranch = (args.task?.context as Record<string, unknown> | null | undefined)?.resumeBranch;
+  const isContinuityMarker =
+    !!contextBaseBranch && typeof resumeBranch === 'string' && resumeBranch === contextBaseBranch;
+  const ctxBase = isContinuityMarker ? undefined : contextBaseBranch?.trim();
   // A `context.baseBranch` equal to the head is the recovery-task current-head
   // marker, and one equal to a vanished integration branch is the very ref we
   // are routing around — neither is a base.

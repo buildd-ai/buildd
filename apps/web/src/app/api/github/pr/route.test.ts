@@ -5855,7 +5855,7 @@ describe('GET /api/github/pr', () => {
       const data = await res.json();
       expect(data.evidenceObjects).toBeUndefined();
       expect(mockLoadInlineEvidence).not.toHaveBeenCalled();
-      expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('account-1', 'workspace-1');
+      expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'account-1' }), 'workspace-1');
     });
 
     it('includes the list, audited as get_pr to the account, when the key reaches the workspace', async () => {

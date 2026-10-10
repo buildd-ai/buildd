@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
 import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
+import { normalizeTeamCodingPolicy, parseCodingPolicyLayer, resolveCodingPolicy, describeEffectiveCodingPolicy } from '@buildd/core/coding-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
-import { teams, teamMembers, users } from '@buildd/core/db/schema';
+import { teams, teamMembers, users, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
@@ -89,6 +90,7 @@ export async function GET(
         monthlyCostMonth: true,
         budgetAlertsSent: true,
         enabledBackends: true,
+        codingPolicy: true,
         inferenceFeatureModes: true,
         enabledDecisionShadows: true,
         decisionModel: true,
@@ -127,7 +129,10 @@ export async function GET(
 
     return NextResponse.json({
       // Sanitized, so a client's roleHas() answers what the server will enforce.
-      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team') },
+      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team'),
+        // What the team layer allows for Coding, for the Models page. Workspace
+        // and personal layers narrow it further per task at claim time.
+        effectiveCodingPolicy: describeEffectiveCodingPolicy(resolveCodingPolicy({ team: parseCodingPolicyLayer(team.codingPolicy?.team) })) },
       members: memberList,
       currentUserRole,
     });
@@ -161,7 +166,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, codingPolicy } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -187,6 +192,14 @@ export async function PATCH(
         );
       }
       updates.enabledBackends = [...new Set(enabledBackends as string[])];
+    }
+    if (codingPolicy !== undefined) {
+      // Enforceable Coding provider / payment-source restriction (a refusal, not
+      // a redirect like enabledBackends). Strictly validated; null clears it.
+      const owned = new Set((await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, id))).map(w => w.id));
+      const normalized = normalizeTeamCodingPolicy(codingPolicy, owned);
+      if ('error' in normalized) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      updates.codingPolicy = normalized.value;
     }
     if (inferenceFeatureModes !== undefined) {
       // Per-feature overrides for server-side features ({ feature: 'server' |

@@ -41,7 +41,7 @@ export async function GET(
         const access = await verifyWorkspaceAccess(auth.user.id, id);
         if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
-        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
@@ -77,7 +77,7 @@ export async function PUT(
         const access = await verifyWorkspaceAccess(auth.user.id, id);
         if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
-        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
@@ -131,7 +131,7 @@ export async function POST(
         const access = await verifyWorkspaceAccess(auth.user.id, id);
         if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
-        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 

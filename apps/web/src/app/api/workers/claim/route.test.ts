@@ -419,6 +419,18 @@ mock.module('@buildd/core/model-tier-ceiling-store', () => ({
     return realResolveTierCeiling({ team, workspaceId: subject.workspaceId, userId, member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null }, surface);
   },
 }));
+// Coding provider policy: real resolver over inputs the test supplies. Default
+// (no layers) is unrestricted, which must leave every other test unchanged.
+const { resolveCodingPolicy: realResolveCodingPolicy } = await import('@buildd/core/coding-policy');
+const codingPolicyTest = { inputs: {} as Record<string, any>, fail: false, requesterAsked: 0 };
+mock.module('@buildd/core/coding-policy-store', () => ({
+  codingPolicyLoader: () => async (subject: any) => {
+    if (codingPolicyTest.fail) throw new Error('db down');
+    const userId = typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null;
+    if (codingPolicyTest.inputs.member) codingPolicyTest.requesterAsked++;
+    return realResolveCodingPolicy({ ...codingPolicyTest.inputs, requesterKnown: !!userId || !codingPolicyTest.inputs.member });
+  },
+}));
 mock.module('@buildd/core/tier-pool-source', () => ({
   drawAgentPoolArm: mockDrawAgentPoolArm,
   applyAgentPoolArm: mockApplyAgentPoolArm,
@@ -777,6 +789,9 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('Max concurrent workers limit reached');
     expect(data.limit).toBe(2);
     expect(data.current).toBe(2);
+    // Task e7e8740a: the refusal names its limit and what lifts it.
+    expect(data.code).toBe('max_concurrent_workers');
+    expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
   });
 
   it('returns 429 when daily cost limit exceeded for API auth type', async () => {
@@ -801,6 +816,8 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(429);
     const data = await res.json();
     expect(data.error).toBe('Daily cost limit exceeded');
+    expect(data.code).toBe('daily_cost_limit');
+    expect(data.detail).toContain('$15.00 of its $10.00 daily limit');
   });
 
   it('returns 429 when max concurrent sessions reached for OAuth auth type', async () => {
@@ -824,6 +841,8 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(429);
     const data = await res.json();
     expect(data.error).toBe('Max concurrent sessions limit reached');
+    expect(data.code).toBe('max_concurrent_sessions');
+    expect(data.detail).toContain('limit of 2 concurrent sessions');
   });
 
   // Defense-in-depth for the 2026-05-25 misroute incident: even if the MCP-layer
@@ -1340,6 +1359,61 @@ describe('POST /api/workers/claim', () => {
       // at reset time instead of stalling on its hourly fallback.
       expect(data.diagnostics.reason).toBe('budget_exhausted');
       expect(data.budgetResetsAt).toBeTruthy();
+    });
+
+    // Task e7e8740a: a budget refusal names the wall that held it and when it lifts.
+    it('names the account seat wall and its reset on a budget_exhausted refusal', async () => {
+      const account = exhaustedOauthAccount();
+      mockAuthenticateApiKey.mockResolvedValue(account);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.diagnostics.budgetBlock.walls).toEqual([
+        { kind: 'account_seat', backend: 'claude', resetsAt: new Date(account.budgetResetsAt).toISOString() },
+      ]);
+      expect(data.diagnostics.budgetBlock.summary).toContain("The account's Claude session limit is reached. It lifts at");
+      expect(data.diagnostics.budgetBlock.summary).toContain('A claim from your own Claude Code session runs on your seat and can start now.');
+    });
+
+    it('names a recorded team rate limit as the wall', async () => {
+      const resetsAt = new Date(Date.now() + 90 * 60 * 1000);
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedOauthAccount(), budgetExhaustedAt: null, budgetResetsAt: null });
+      mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'rate_limit' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.diagnostics.budgetBlock.walls).toEqual([
+        { kind: 'provider_pause', backend: 'claude', resetsAt: resetsAt.toISOString() },
+      ]);
+      expect(data.diagnostics.budgetBlock.summary).toContain('A run hit the Claude rate limit for this team.');
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    it('tells a caller who named the task which wall deferred it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { ...codexRunner, taskId: 'task-1' },
+      }));
+      const data = await res.json();
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics.taskExclusion?.code).toBe('budget_paused');
+      expect(data.diagnostics.taskExclusion?.detail).toContain("The account's Claude session limit is reached");
     });
 
     // Reverse direction. Codex has its own pool, so a Codex rate-limit must not
@@ -2388,6 +2462,61 @@ describe('POST /api/workers/claim', () => {
         const data = await claim();
         expect(data.workers.length).toBe(0);
         expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+    });
+
+    describe('coding provider policy', () => {
+      afterEach(() => { codingPolicyTest.inputs = {}; codingPolicyTest.fail = false; codingPolicyTest.requesterAsked = 0; });
+      const withTask = (patch: Record<string, unknown>) => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), ...patch }]);
+        return sets;
+      };
+      const claim = async () => (await (await POST(claimReq())).json()) as any;
+
+      it('no policy: claims as before', async () => {
+        const sets = withTask({});
+        expect((await claim()).workers.length).toBe(1);
+        expect(sets.find(v => v.status === 'assigned')).toBeDefined();
+      });
+
+      it('a denied Codex task is held, never rewritten onto Claude', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        const sets = withTask({ backend: 'codex' });
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(sets.find(v => v.status === 'assigned')).toBeUndefined();
+      });
+
+      it('an allowed backend still claims under a Claude-only policy', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        withTask({ backend: 'claude' });
+        expect((await claim()).workers.length).toBe(1);
+      });
+
+      it('an empty allow list denies everything (fails closed)', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: [] } };
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('an unreadable policy holds the task rather than assuming none', async () => {
+        codingPolicyTest.fail = true;
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('a cloud executor under a native-only source policy waits instead of metering', async () => {
+        codingPolicyTest.inputs = { team: { allowedSources: ['runner_native'] } };
+        withTask({});
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner', executor: 'cloud' } }));
+        const data = (await res.json()) as any;
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
       });
     });
 

@@ -12,6 +12,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
@@ -44,7 +45,7 @@ import {
 } from '@/lib/pr-review-status';
 import { requestingPerson } from '@/lib/request-person';
 
-type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null };
+type Account = { id: string; teamId: string; taskScope?: TaskScope; sessionUserId?: string | null } & GrantScopedAccount;
 
 const FORCE_NEEDS_PERSON = 'force re-reviews a head that already has a verdict, which is a person\'s call: ask the owner, or re-review from the dashboard. Without force, a review is requested once the PR head moves.';
 
@@ -69,7 +70,8 @@ function accountScope(account: Account): TargetScope {
   }
   return {
     teamIds: [account.teamId],
-    workspaceIds: () => getTeamWorkspaceIds(account.teamId),
+    // A grant session or a workspace-restricted key: only what it may reach.
+    workspaceIds: async () => constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)),
     foreignWorkspace: 'forbidden',
   };
 }
@@ -112,6 +114,9 @@ async function resolveTarget(
         ? { error: 'Workspace belongs to a different team', status: 403 }
         : { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     }
+    // In the team is necessary, not sufficient: a grant session or a
+    // workspace-restricted key reaches only its own list.
+    if (!(await scope.workspaceIds()).includes(ws.id)) return { error: `Workspace '${workspaceIdInput}' not found`, status: 404 };
     return { workspace: ws as ResolvedTarget['workspace'] };
   }
 

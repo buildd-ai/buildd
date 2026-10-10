@@ -166,10 +166,12 @@ const SAFE: Record<string, string[]> = {
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
     'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
     'model_upgrade_policy', // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
-    'model_tier_ceilings'], // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
+    'model_tier_ceilings', // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
+    'coding_policy'], // backend ids and payment sources from fixed sets, keyed by workspace id, one boolean (packages/core/coding-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs', // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
-    'model_tier_ceilings'], // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
+    'model_tier_ceilings', // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
+    'coding_policy'], // { allowedBackends, allowedSources } from fixed sets (packages/core/coding-policy.ts)
   users: ['timezone'],
   workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
     'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)

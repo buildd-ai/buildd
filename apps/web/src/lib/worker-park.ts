@@ -12,6 +12,7 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { workers } from '@buildd/core/db/schema';
 import { PARKABLE_WORKER_STATUSES } from '@buildd/shared';
+import { claimingUserId, type ClaimingCaller } from './worker-owner';
 
 /** Same as the standalone waiting_input timeout (stale-workers.ts cleanupStuckWaitingInput). */
 export const PARK_MAX_MS = 24 * 60 * 60 * 1000;
@@ -31,12 +32,12 @@ export function parkedUntilFor(now: Date, isMissionTask: boolean): Date {
 
 /**
  * The caller a predicate below is scoped to: the authenticated account, plus
- * the OAuth session user and per-task token scope when there are any.
+ * the OAuth session user (or an agent grant's connecting user) and per-task
+ * token scope when there are any.
  */
-export interface WorkerCaller {
+export interface WorkerCaller extends ClaimingCaller {
   id: string;
   teamId?: string | null;
-  sessionUserId?: string | null;
   taskScope?: { taskId: string } | null;
 }
 
@@ -48,7 +49,7 @@ export interface WorkerCaller {
  * row on a missing account id, or a session with no team id.
  */
 export function ownedByCaller(caller: WorkerCaller): SQL {
-  const sessionUser = caller.sessionUserId ?? null;
+  const sessionUser = claimingUserId(caller);
   if (!caller.id || (sessionUser !== null && !caller.teamId)) return sql`false`;
   const taskId = caller.taskScope?.taskId;
   return and(

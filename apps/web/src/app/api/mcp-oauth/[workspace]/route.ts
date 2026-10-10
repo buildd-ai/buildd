@@ -53,7 +53,9 @@ import { MCP_SESSION_ID_HEADER, mintMcpSessionId, verifyMcpSessionId } from '@/l
 import { authenticateApiKey } from '@/lib/api-auth';
 import { scheduleInteractiveTouch } from '@/lib/interactive-worker-liveness';
 import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/interactive-session';
+import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from '@/lib/self-origin';
 import { getIssuer } from '@/lib/oauth/config';
+import { LEGACY_ENDPOINT_NOTICE, deprecationHeaders } from '@/lib/mcp-grant-session';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
 import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
@@ -76,11 +78,11 @@ function unauthorized(workspace: string) {
   });
 }
 
-/** See createApi in /api/mcp: `interactiveMarker` is the server-signed session marker. */
-function createApi(jwt: string, interactiveMarker?: string | null): ApiFn {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.NEXTAUTH_URL || 'https://buildd.dev';
+/**
+ * See createApi in /api/mcp: `baseUrl` is this server's own origin
+ * (lib/self-origin.ts), `interactiveMarker` the server-signed session marker.
+ */
+function createApi(baseUrl: string, jwt: string, interactiveMarker?: string | null): ApiFn {
 
   return async (endpoint, options = {}) => {
     const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -148,7 +150,9 @@ Tools:
 - \`recall\` (read knowledge) / \`learn\` (write knowledge) — preferred over buildd_memory.
 - \`buildd_memory\`: DEPRECATED. Kept for compatibility; use recall/learn instead.
 
-Workspace is bound to this connector — pass workspaceId only when overriding (rare).`,
+Workspace is bound to this connector — pass workspaceId only when overriding (rare).
+
+${LEGACY_ENDPOINT_NOTICE}`,
     },
   );
 
@@ -322,7 +326,9 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
-  const api = createApi(jwt, signInteractiveSession({
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+  const api = createApi(selfOrigin, jwt, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? claims.sub ?? null,
     sessionKey,
@@ -362,9 +368,9 @@ async function handle(req: Request, workspace: string): Promise<Response> {
 
   try {
     const res = await transport.handleRequest(req);
-    if (!sessionIdToReturn) return res;
     const headers = new Headers(res.headers);
-    headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    for (const [k, v] of Object.entries(deprecationHeaders())) headers.set(k, v);
+    if (sessionIdToReturn) headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } finally {
     await transport.close();
