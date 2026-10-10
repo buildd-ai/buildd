@@ -9538,6 +9538,71 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.reason).toBe('budget_exhausted');
   });
 
+  // `runner: 'mcp'` with an explicit taskId runs on the caller's own seat even
+  // with no signed marker (an MCP client that never got one), so a wall hit by a
+  // runner's seat is not its wall. A runner with its own id stays walled.
+  describe('runsOnCallersSeat: explicit mcp claim without the marker', () => {
+    const exhausted = () => ({
+      ...account(),
+      authType: 'oauth',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+    });
+    const pauseClaude = () => mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+
+    afterEach(() => mockBackendPausesFindMany.mockResolvedValue([]));
+
+    it('claims with the account budget exhausted', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.reason).not.toBe('budget_exhausted_partial');
+    });
+
+    it('claims with the account budget exhausted and forceOverride', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims while the team pause log walls Claude', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+      pauseClaude();
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics).toBeUndefined();
+    });
+
+    it('is still walled without a taskId', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', taskId: undefined })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a runner with its own id is still walled even with taskId and force', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'runner-7', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a cloud executor declaring mcp is still walled', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', executor: 'cloud' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+  });
+
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
