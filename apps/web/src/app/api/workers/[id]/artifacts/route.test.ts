@@ -631,6 +631,46 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
     mockShouldNotifyOnArtifact.mockResolvedValue(true);
   });
 
+  describe('a task token re-creating by key', () => {
+    const tokenAccount = { id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 } };
+    const ownWorker = { id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1', task: { id: 'task-1' } };
+    const updateSpy = () => {
+      const set = mock((vals: any) => ({ where: mock(() => ({ returning: mock(() => [{ id: 'artifact-1', ...vals }]) })) }));
+      mockArtifactsUpdate.mockReturnValue({ set });
+      return set;
+    };
+
+    it("cannot take over another task's artifact", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-other' });
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'other-worker', content: 'theirs' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(409);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('cannot take over a mission-level artifact', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValue(ownWorker);
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: null, missionId: 'm-1', content: 'organizer plan' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(409);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it("may re-create an earlier attempt's artifact on its own task", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-1' });
+      mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'earlier-attempt', content: 'v1', title: 'T' });
+      const set = updateSpy();
+      const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'report', content: 'v2' }, 'bld_test'), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalled();
+    });
+  });
+
   it('a keyed re-create that sends no content keeps the stored body', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
     mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' });

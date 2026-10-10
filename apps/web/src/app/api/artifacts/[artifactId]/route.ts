@@ -12,6 +12,7 @@ import { isAuditStorageKey } from '@/lib/storage-keys';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
+import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
@@ -87,6 +88,27 @@ export async function GET(
     if (refusal) return refusal;
   }
 
+  // ?revision=N reads that immutable revision's body instead of the current one.
+  const revisionParam = req.nextUrl.searchParams.get('revision');
+  let requestedRevision: number | null = null;
+  if (revisionParam !== null) {
+    requestedRevision = Number(revisionParam);
+    if (!Number.isInteger(requestedRevision) || requestedRevision < 1) {
+      return NextResponse.json({ error: 'revision must be a positive integer' }, { status: 400 });
+    }
+  }
+  const revisionNumber = requestedRevision ?? artifact.currentRevision;
+  const revision = revisionNumber > 0 ? await getArtifactRevision(artifact.id, revisionNumber) : null;
+  if (requestedRevision !== null && !revision) {
+    return NextResponse.json(
+      { error: `Artifact has no revision ${requestedRevision} (current revision is ${artifact.currentRevision})` },
+      { status: 404 },
+    );
+  }
+  const body = requestedRevision !== null && revision
+    ? { content: revision.content, storageKey: revision.storageKey }
+    : { content: artifact.content, storageKey: artifact.storageKey };
+
   // A token only addresses a live share while the artifact is public.
   const shareUrl = artifact.shareToken && artifact.visibility === 'public'
     ? `${appBaseUrl()}/share/${artifact.shareToken}`
@@ -96,18 +118,28 @@ export async function GET(
   // URL under the same access check as above so a key-only caller (an agent
   // that may not use credentials from disk) can still read the bytes.
   let downloadUrl: string | null = null;
-  if (artifact.storageKey && isStorageConfigured()) {
+  if (body.storageKey && isStorageConfigured()) {
     try {
-      downloadUrl = await generateDownloadUrl(artifact.storageKey);
+      downloadUrl = await generateDownloadUrl(body.storageKey);
     } catch {
       downloadUrl = null;
     }
   }
 
   // Return full artifact without the worker relation
-  const { worker: _worker, ...artifactData } = artifact;
+  const { worker: _worker, contentAuthor: _contentAuthor, ...artifactData } = artifact;
   return NextResponse.json({
-    artifact: { ...artifactData, shareUrl, downloadUrl },
+    artifact: {
+      ...artifactData,
+      ...body,
+      shareUrl,
+      downloadUrl,
+      // `revision` is the body returned; `currentRevision` the latest. Pass
+      // currentRevision back as PATCH expectedRevision to refuse a lost update.
+      revision: revision
+        ? { revision: revision.revision, contentHash: revision.contentHash, sizeBytes: revision.sizeBytes, author: revision.author, createdAt: revision.createdAt }
+        : null,
+    },
   });
 }
 
@@ -167,9 +199,17 @@ export async function PATCH(
   }
 
   const body = await req.json();
-  const { title, content, metadata } = body;
+  const { title, content, metadata, expectedRevision } = body;
   if (metadata !== undefined && !isJsonObject(metadata)) {
     return NextResponse.json({ error: 'metadata must be an object' }, { status: 400 });
+  }
+  if (expectedRevision !== undefined) {
+    if (content === undefined) {
+      return NextResponse.json({ error: 'expectedRevision guards a content write; send content with it' }, { status: 400 });
+    }
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+      return NextResponse.json({ error: 'expectedRevision must be a non-negative integer' }, { status: 400 });
+    }
   }
 
   const updateFields: Record<string, unknown> = {
@@ -177,16 +217,38 @@ export async function PATCH(
   };
 
   if (title !== undefined) updateFields.title = title;
-  if (content !== undefined) updateFields.content = content;
   // Merged in SQL against the row the UPDATE sees, not the value read above:
   // two overlapping PATCHes of one shot must not lose either update.
   if (metadata !== undefined) updateFields.metadata = artifactMetadataMergeSql(metadata);
 
-  const [updated] = await db
-    .update(artifacts)
-    .set(updateFields)
-    .where(eq(artifacts.id, artifactId))
-    .returning();
+  let updated: typeof artifacts.$inferSelect;
+  if (content !== undefined) {
+    // A body write is a new immutable revision (lib/artifact-revisions.ts).
+    const written = await writeArtifactBody(
+      artifactId,
+      { content, expectedRevision, author: `account:${account.id}` },
+      updateFields,
+    );
+    if (!written.ok) {
+      return written.conflict
+        ? NextResponse.json(
+          {
+            error: `Artifact changed since revision ${expectedRevision}: it is now at revision ${written.currentRevision}. Re-read it, then write on top of that revision.`,
+            code: 'revision_conflict',
+            currentRevision: written.currentRevision,
+          },
+          { status: 409 },
+        )
+        : NextResponse.json({ error: 'Artifact not found' }, { status: 404 });
+    }
+    updated = written.artifact;
+  } else {
+    [updated] = await db
+      .update(artifacts)
+      .set(updateFields)
+      .where(eq(artifacts.id, artifactId))
+      .returning();
+  }
 
   // An audit shot changed (a fix link, a re-labelled finding): the mission
   // page refreshes on worker:artifact, so its thumbnails follow. Thin payload,

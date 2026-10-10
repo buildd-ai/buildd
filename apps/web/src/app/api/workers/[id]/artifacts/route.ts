@@ -128,6 +128,22 @@ export async function POST(
       ),
     });
 
+    // A key is unique per workspace, so the upsert can land on any artifact
+    // there. A task token may take over only its own task's worker artifacts,
+    // never another task's, a mission's or an initiative's (those routes apply
+    // the same rule to their own levels).
+    if (existing && account.taskScope && existing.workerId !== id) {
+      const owner = existing.workerId
+        ? await db.query.workers.findFirst({ where: eq(workers.id, existing.workerId), columns: { taskId: true } })
+        : null;
+      if (!owner || !worker.taskId || owner.taskId !== worker.taskId) {
+        return NextResponse.json(
+          { error: 'That key belongs to an artifact outside this task. Use another key, or the mission-level artifact action for a mission artifact.' },
+          { status: 409 },
+        );
+      }
+    }
+
     if (existing) {
       // Update existing artifact, preserve shareToken
       // Sensitive: never store content prose; storageKey is also blocked (no R2 upload)
