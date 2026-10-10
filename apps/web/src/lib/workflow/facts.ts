@@ -13,6 +13,7 @@
  *
  * Routes reach this through seam.ts.
  */
+import type { BaseDeltaFact } from './base-delta';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
@@ -62,6 +63,12 @@ export interface GithubFactReader {
    * null = unreadable; never read as "deleted".
    */
   branchExists?(repoFullName: string, ref: string): Promise<boolean | null>;
+  /**
+   * S15's base delta: the commits the base `baseRef` has that `headSha` does not,
+   * the files they changed, and the files the PR changes. A side that cannot be
+   * read or listed in full is null; never read as "nothing changed".
+   */
+  baseDelta?(repoFullName: string, prNumber: number, headSha: string, baseRef: string): Promise<BaseDeltaFact | null>;
 }
 
 export type FactInput =

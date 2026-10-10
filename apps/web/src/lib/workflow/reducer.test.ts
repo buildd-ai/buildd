@@ -1554,6 +1554,98 @@ describe('S15 cycles: a spent treadmill gets a fresh refresh budget after the co
   });
 });
 
+describe('S15 disjoint-delta rule (88318f31, #4283): an approved head on a busy base lands across a small, disjoint, risk-free gap', () => {
+  // H1 is the head the platform's third refresh produced (its own_refresh carry is in approvedHeads).
+  const spent = [1, 2, 3].map((n) => A({ id: `m${n}`, family: 'conflict', mode: 'mechanical', attemptNo: n, boundHeadSha: `B${n}`, triggerReason: 'behind', status: 'ended', outcome: 'delivered', taskId: null, reportedShas: n === 3 ? ['H1'] : [`B${n + 1}`] }));
+  const oneRefresh = [A({ id: 'm1', family: 'conflict', mode: 'mechanical', attemptNo: 1, boundHeadSha: 'B1', triggerReason: 'behind', status: 'ended', outcome: 'delivered', taskId: null, reportedShas: ['H1'] })];
+  const approved = (rows: AttemptSnapshot[], o: Partial<DeliverySnapshot> = {}) => V(D({ state: 'APPROVED', approvedHeads: ['H0', 'H1'], approvalBasis: 'verdict', ...o }), [], rows);
+  const delta = (o: Partial<{ baseCommits: number | null; baseFiles: string[] | null; prFiles: string[] | null; requiresUpToDate: boolean }> = {}) =>
+    ({ baseCommits: 4, baseFiles: ['src/x.ts', 'src/y.ts'], prFiles: ['src/a.ts'], ...o });
+  const behind = (v: KernelView, baseDelta: ReturnType<typeof delta> | null = delta()) =>
+    run(v, { type: 'ConflictObserved', actor: 'door:conflict', headSha: 'H1', mergeable: 'behind', maxAgentAttempts: 3, ...(baseDelta ? { baseDelta, maxBaseCommits: 3 } : {}) });
+  const land = (v: KernelView, baseDelta: ReturnType<typeof delta> | null = delta(), o: Partial<Extract<Command, { type: 'LandingRequested' }>> = {}) =>
+    run(v, { type: 'LandingRequested', actor: 'system:sweep', door: 'land_pr:sweep', headSha: 'H1', live: live('H1', { mergeableState: 'clean' }), rails: { passed: true }, ...(baseDelta ? { baseDelta, maxBaseCommits: 3 } : {}), ...o });
+
+  test('a spent budget with a disjoint, risk-free gap within the wide bound is tolerated: no refresh, no escalation', () => {
+    expectResult(behind(approved(spent)), 'rejected', 'behind_tolerated');
+    expectResult(behind(approved(spent), delta({ baseCommits: 20 })), 'rejected', 'behind_tolerated');
+  });
+
+  test('…and T15 lands it, recording the rule it landed under', () => {
+    const dec = applied(land(approved(spent)));
+    expect(dec.toState).toBe('LANDING');
+    expect(effectKinds(dec)).toContain('merge_call');
+    expect(dec.evidence).toMatchObject({ coverage: 'verdict', freshness: { optimistic: true, behindBy: 4, baseFiles: 2, rule: 'spent_cycle' } });
+  });
+
+  test('before the budget is spent, a platform-refreshed head within the ordinary bound is tolerated; a larger gap is refreshed', () => {
+    expectResult(behind(approved(oneRefresh), delta({ baseCommits: 2 })), 'rejected', 'behind_tolerated');
+    expect(applied(land(approved(oneRefresh), delta({ baseCommits: 2 }))).evidence).toMatchObject({ freshness: { rule: 'bounded' } });
+    const dec = applied(behind(approved(oneRefresh), delta({ baseCommits: 4 })));
+    expect(dec.toState).toBe('REPAIRING');
+    expect(effectKinds(dec)).toContain('refresh_branch');
+  });
+
+  test('a head the platform never refreshed is refreshed first, however small the gap', () => {
+    const dec = applied(behind(approved([]), delta({ baseCommits: 1 })));
+    expect(effectKinds(dec)).toContain('refresh_branch');
+    expectResult(land(approved([]), delta({ baseCommits: 1 })), 'rejected', 'behind_not_tolerated');
+  });
+
+  test('a base delta that changes the PR\'s own file escalates the spent treadmill as refresh_unsafe, naming the file', () => {
+    const dec = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', 'src/a.ts'] })));
+    expect(dec.toState).toBe('ESCALATED');
+    expect(dec.patch.stateReason).toBe('landing_needs_human');
+    expect(dec.evidence).toMatchObject({ treadmill: true, cause: 'refresh_unsafe', files: ['src/a.ts'], behindBy: 4 });
+    expect(String(dec.evidence.reason)).toContain('src/a.ts');
+    expectResult(land(approved(spent), delta({ baseFiles: ['src/a.ts'] })), 'rejected', 'behind_not_tolerated');
+  });
+
+  test('risky paths on either side of the gap are never landed across', () => {
+    for (const risky of ['packages/core/drizzle/0300_x.sql', 'packages/core/db/schema.ts', 'bun.lock', 'apps/web/package.json', '.github/workflows/build.yml', 'scripts/no-em-dash-copy.test.ts']) {
+      const dec = applied(behind(approved(spent), delta({ baseFiles: ['src/x.ts', risky] })));
+      expect(dec.evidence).toMatchObject({ cause: 'refresh_unsafe', files: [risky] });
+      expectResult(land(approved(spent), delta({ prFiles: ['src/a.ts', risky] })), 'rejected', 'behind_not_tolerated');
+    }
+  });
+
+  test('a gap past the wide bound, or one that cannot be listed, escalates as refresh_exhausted', () => {
+    const big = applied(behind(approved(spent), delta({ baseCommits: 21 })));
+    expect(big.evidence).toMatchObject({ treadmill: true, cause: 'refresh_exhausted', behindBy: 21 });
+    expect(applied(behind(approved(spent), delta({ baseFiles: null }))).evidence).toMatchObject({ cause: 'refresh_exhausted' });
+    expect(applied(behind(approved(spent), delta({ baseCommits: null }))).evidence).toMatchObject({ cause: 'refresh_exhausted' });
+  });
+
+  test('a base that requires an up-to-date branch is always refreshed, never landed across', () => {
+    expect(applied(behind(approved(oneRefresh), delta({ baseCommits: 1, requiresUpToDate: true }))).toState).toBe('REPAIRING');
+    expect(applied(behind(approved(spent), delta({ requiresUpToDate: true }))).evidence).toMatchObject({ cause: 'refresh_exhausted' });
+    // GitHub's own live read saying `behind` at merge time is the same thing.
+    expectResult(land(approved(spent), delta(), { live: live('H1', { mergeableState: 'behind' }) }), 'rejected', 'behind_not_tolerated');
+  });
+
+  test('a head no approval covers is never tolerated: T12 refreshes or escalates, T15 refuses', () => {
+    const unreviewed = V(D({ state: 'AWAITING_REVIEW', approvedHeads: ['H0'], approvalBasis: 'verdict' }), [], spent);
+    expect(applied(behind(unreviewed)).toState).toBe('ESCALATED');
+    expectResult(land(approved(spent, { approvedHeads: ['H0'] })), 'rejected', 'head_not_approved');
+  });
+
+  test('without the base-delta fact both transitions decide as before (recorded commands replay unchanged)', () => {
+    const esc = applied(behind(approved(spent), null));
+    expect(esc.evidence).toEqual({ actor: 'door:conflict', repairKind: 'behind', headSha: 'H1', refreshes: 3, treadmill: true, cycle: 1 });
+    expect(applied(land(approved(spent), null)).evidence).not.toHaveProperty('freshness');
+  });
+
+  test('a freshness override lands past the rule (recorded as a bypass); a real conflict is still repaired, not landed across', () => {
+    const esc = V(D({ state: 'ESCALATED', stateReason: 'landing_needs_human', approvedHeads: ['H1'], approvalBasis: 'verdict' }), [], spent);
+    const dec = applied(land(esc, delta({ baseFiles: ['src/a.ts'] }), { actor: 'human:u1', door: 'dashboard_override', override: { reason: 'r', kinds: ['freshness'] } }));
+    expect(dec.toState).toBe('LANDING');
+    expect(dec.evidence).not.toHaveProperty('freshness');
+    const dirty = applied(run(approved(spent), { type: 'ConflictObserved', actor: 'door:conflict', headSha: 'H1', mergeable: 'dirty', maxAgentAttempts: 3 }));
+    expect(dirty.toState).toBe('REPAIRING');
+    expect(dirty.patch.stateReason).toBe('conflict');
+  });
+});
+
 describe('EffectDead (§10.3, 67d34094): a critical dead effect hands the delivery to a person', () => {
   const dead = (v: KernelView, effectKind: Extract<Command, { type: 'EffectDead' }>['effectKind'], o: Partial<Extract<Command, { type: 'EffectDead' }>> = {}) =>
     run(v, { type: 'EffectDead', actor: 'kernel', effectId: 'e1', effectKind, dedupeKey: `${effectKind}:d1:x`, lastError: 'boom', ...o });
