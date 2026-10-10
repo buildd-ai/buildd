@@ -120,7 +120,7 @@ export default function ChatTierPolicySection({ teamId, isAdmin }: { teamId: str
         {legacyReset && (
           <div className="flex flex-col gap-2 border-t border-border-default pt-2" data-testid="legacy-reset-notice">
             <p className="text-meta text-text-muted">
-              This team still resets chats that open above {tier ?? 'the starting tier'} down to it. That is a convenience, not a limit: people can pick higher afterwards.
+              Chats that open above {tier ?? 'the starting tier'} reset to it. People can pick a higher tier afterwards.
             </p>
             {isAdmin && (
               <div className="flex flex-wrap gap-2">
