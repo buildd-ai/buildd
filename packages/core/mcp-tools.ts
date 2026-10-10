@@ -917,7 +917,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
-    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body) } — fetch full artifact content by ID, with its current revision and sha256; file artifacts include a short-lived presigned download URL',
+    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -2226,6 +2226,38 @@ async function mirrorWorkProduct(
   } catch {
     // Best-effort — never fail the underlying action if indexing fails.
     return null;
+  }
+}
+
+
+/** A bounded artifact read (GET /api/artifacts/:id?view=…), as text an agent can act on. */
+function renderArtifactRead(read: any): string {
+  const n = (x: number) => Number(x).toLocaleString('en-US');
+  switch (read.view) {
+    case 'outline': {
+      const rows = (read.sections as any[]).map((s) => `${'  '.repeat(Math.max(0, s.level - 1))}- ${s.id}: ${s.title} (${n(s.chars)} chars)`);
+      return [
+        `## Outline (${n(read.chars)} characters, ${n(read.sections.length)} sections)`,
+        '',
+        rows.length ? rows.join('\n') : '(no headings: read it with view "range", offset and length)',
+        '',
+        'Read one part with view "section" and its id, search with view "grep" and grep, or pass full: true for the whole body.',
+      ].join('\n');
+    }
+    case 'section':
+      return `## Section ${read.section.id}: ${read.section.title} (${n(read.section.chars)} chars${read.truncated ? ', cut at 20,000; read the rest with view "range"' : ''})\n\n${read.text}`;
+    case 'range':
+      return `## Characters ${n(read.offset)}–${n(read.offset + read.length)} of ${n(read.chars)}${read.truncated ? ' (cut at 20,000)' : ''}\n\n${read.text}`;
+    case 'grep':
+      return [
+        `## ${n(read.matches.length)} match(es) for "${read.pattern}"${read.truncated ? ' (first 50)' : ''}`,
+        '',
+        ...(read.matches as any[]).map((m) => `line ${n(m.line)} (offset ${n(m.offset)}):\n${m.text}`),
+      ].join('\n');
+    case 'meta':
+      return `## ${n(read.chars)} characters, ${n(read.sections)} sections. Read the outline with view "outline".`;
+    default:
+      return '';
   }
 }
 
@@ -4837,8 +4869,13 @@ export async function handleBuilddAction(
     case 'get_artifact': {
       if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
-      const revisionQuery = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
-      const data = await api(`/api/artifacts/${params.artifactId}${revisionQuery}`);
+      const qs = new URLSearchParams();
+      if (params.revision !== undefined) qs.set('revision', String(params.revision));
+      qs.set('view', params.full === true ? 'full' : String(params.view ?? 'auto'));
+      for (const k of ['section', 'offset', 'length', 'grep', 'context'] as const) {
+        if (params[k] !== undefined) qs.set(k, String(params[k]));
+      }
+      const data = await api(`/api/artifacts/${params.artifactId}?${qs}`);
       const art = data.artifact;
 
       const meta = [
@@ -4854,7 +4891,8 @@ export async function handleBuilddAction(
         art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
       ].filter(Boolean).join('\n');
 
-      const content = art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)');
+      if (art.read && art.read.view !== 'full') return text(`${meta}\n\n${renderArtifactRead(art.read)}`);
+      const content = art.read?.text ?? (art.content || (art.downloadUrl ? '(file artifact — see Download URL above)' : '(no content)'));
 
       return text(`${meta}\n\n## Content\n\n${content}`);
     }

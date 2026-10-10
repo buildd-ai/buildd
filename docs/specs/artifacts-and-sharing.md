@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
+verified_by: [packages/core/__tests__/artifact-read.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -454,6 +454,37 @@ row in place (§1); its earlier bodies stay readable.
 - Writer and reads: `apps/web/src/lib/artifact-revisions.ts` — `writeArtifactBody`, `getArtifactRevision`
 - Redaction: `packages/core/artifact-redaction.ts` — `redactArtifactText`
 - Context references: `apps/web/src/lib/context-artifact-ids.ts`
+
+## 7. Bounded reads and read provenance
+
+**Capability statement**: An agent MUST be able to work from a long artifact
+by reading parts of it, and every read MUST record what it actually returned,
+so "available to the agent" is never mistaken for "read by the agent".
+
+**Invariants**:
+- `GET /api/artifacts/[id]?view=` returns one part of the body in `read`, with
+  `content` null: `outline` (Markdown headings with ids and offsets, ignoring
+  fenced code), `section` (by outline id), `range` (offset and length), `grep`
+  (literal, case-insensitive, at most 50 matches), `meta`, `full`, or `auto`
+  (whole when at most 20,000 characters, else the outline). A section or range
+  returns at most 20,000 characters and says when it was cut.
+- Without `view` the response is unchanged: the whole body. MCP `get_artifact`
+  asks for `auto` unless `full: true`.
+- Every GET that returns any body appends one `artifact_reads` row: revision,
+  view, selector, characters returned and total, caller account/user/task.
+  The ledger is content-free, FK-free and written after the response; a failed
+  ledger write never fails the read.
+- An unknown view or section is a 400 and records nothing.
+
+**Acceptance criteria**:
+- AC-7.1: GIVEN a 200-page reference WHEN an agent reads its outline, one
+  search and three sections THEN under 5% of its characters are returned, and
+  the full body is still byte-identical on explicit request.
+- AC-7.2: GIVEN any bounded read THEN the ledger names the exact view and selector.
+
+**Code surface**:
+- Views: `packages/core/artifact-read.ts` — `parseReadSelector`, `readArtifactBody`, `outlineOf`
+- Ledger: `apps/web/src/lib/artifact-reads.ts` — `recordArtifactRead`
 
 ## Verification gaps
 

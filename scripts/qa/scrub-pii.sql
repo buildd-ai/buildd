@@ -530,6 +530,8 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.
 -- snapshots the pre-scrub body when the UPDATE above changes it. Drop it all,
 -- after that UPDATE: a clone keeps current bodies only.
 DELETE FROM artifact_revisions;
+-- The read ledger's selectors hold search text agents typed.
+DELETE FROM artifact_reads;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

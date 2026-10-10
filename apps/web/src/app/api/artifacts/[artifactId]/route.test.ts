@@ -43,6 +43,10 @@ mock.module('@/lib/member-repo-access', () => ({
   memberRepoAccessSubject: (a: { sessionUserId?: string } | null, u: { id: string } | null) => (a ? a.sessionUserId ?? null : u?.id ?? null),
 }));
 
+// What the read ledger was handed (lib/artifact-reads.ts writes it after the response).
+const ledger: any[] = [];
+mock.module('@/lib/artifact-reads', () => ({ recordArtifactRead: (row: any) => { ledger.push(row); } }));
+
 let storageConfigured = true;
 mock.module('@/lib/storage', () => ({
   isStorageConfigured: () => storageConfigured,
@@ -783,5 +787,48 @@ describe('artifact revisions on /api/artifacts/[artifactId]', () => {
     expect((await GET(missing, { params: mockParams })).status).toBe(404);
     const bad = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=0`, { headers: { authorization: 'Bearer bld_test' } });
     expect((await GET(bad, { params: mockParams })).status).toBe(400);
+  });
+});
+
+describe('bounded reads on GET /api/artifacts/[artifactId]', () => {
+  const doc = '# Guide\nintro\n## Setup\nsetup text\n## Rotate keys\nrevoke the old key last\n';
+  const own = { id: ARTIFACT_ID, workspaceId: 'ws-1', worker: { accountId: 'account-1' }, currentRevision: 0, content: doc, storageKey: null };
+  const get = (qs: string) => GET(
+    new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}${qs}`, { headers: { authorization: 'Bearer bld_test' } }),
+    { params: mockParams },
+  );
+  beforeEach(() => {
+    ledger.length = 0;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', taskScope: { taskId: 'task-9', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
+    mockArtifactsFindFirst.mockResolvedValue(own);
+  });
+
+  it('view=outline returns the sections and not the body, and records an outline read of 0 body characters', async () => {
+    const res = await get('?view=outline');
+    expect(res.status).toBe(200);
+    const { artifact } = await res.json();
+    expect(artifact.content).toBeNull();
+    expect(artifact.sizeChars).toBe(doc.length);
+    expect(artifact.read.sections.map((x: any) => x.title)).toEqual(['Guide', 'Setup', 'Rotate keys']);
+    expect(ledger).toEqual([expect.objectContaining({ artifactId: ARTIFACT_ID, view: 'outline', returnedChars: 0, totalChars: doc.length, taskId: 'task-9', accountId: 'account-1' })]);
+  });
+
+  it('view=section returns that section and records exactly which one', async () => {
+    const { artifact } = await (await get('?view=section&section=s3')).json();
+    expect(artifact.read.text).toBe('## Rotate keys\nrevoke the old key last\n');
+    expect(ledger[0]).toMatchObject({ view: 'section', selector: { section: 's3' }, returnedChars: artifact.read.text.length });
+  });
+
+  it('a plain GET still returns the whole body and records a full read', async () => {
+    const { artifact } = await (await get('')).json();
+    expect(artifact.content).toBe(doc);
+    expect(artifact.read).toBeUndefined();
+    expect(ledger[0]).toMatchObject({ view: 'full', returnedChars: doc.length });
+  });
+
+  it('a bad view or unknown section is a 400 and records nothing', async () => {
+    expect((await get('?view=everything')).status).toBe(400);
+    expect((await get('?view=section&section=s99')).status).toBe(400);
+    expect(ledger).toHaveLength(0);
   });
 });
