@@ -74,7 +74,7 @@ describe('GET /api/workspaces/[id]/error-traces', () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
     const res = await GET(req('', { authorization: 'Bearer bld_x' }), params());
     expect(res.status).toBe(404);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-1' }), WS);
     expect(mockSelect).not.toHaveBeenCalled();
   });
 

@@ -67,7 +67,7 @@ export async function GET(
     const isOwner = artifact.worker?.accountId === account.id;
     if (!isOwner) {
       if (artifact.workspaceId) {
-        const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
+        const hasAccess = await verifyAccountWorkspaceAccess(account, artifact.workspaceId);
         if (!hasAccess) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }
@@ -157,7 +157,7 @@ export async function PATCH(
   const isOwner = artifact.worker?.accountId === account.id;
   if (!isOwner) {
     if (artifact.workspaceId) {
-      const hasAccess = await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(account, artifact.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }

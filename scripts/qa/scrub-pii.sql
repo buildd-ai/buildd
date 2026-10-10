@@ -232,6 +232,8 @@ DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens 
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
+DELETE FROM mcp_oauth_grant_workspaces;  -- MCP connection grants: a person's consent, not app state
+DELETE FROM mcp_oauth_grants;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults

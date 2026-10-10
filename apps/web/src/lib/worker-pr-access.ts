@@ -13,9 +13,10 @@
 //     the account never claimed, stays refused.
 
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
+import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from './grant-scope';
 
 export async function canActOnWorkerPr(
-  account: { id: string; teamId: string | null },
+  account: { id: string; teamId: string | null } & GrantScopedAccount,
   worker: {
     accountId: string | null;
     workspaceId?: string | null;
@@ -23,6 +24,10 @@ export async function canActOnWorkerPr(
   },
   getGrants: typeof getAccountWorkspacePermissions = getAccountWorkspacePermissions,
 ): Promise<boolean> {
+  // A grant session acts only in its granted workspaces; being in the same
+  // team as the PR's workspace is not enough (lib/grant-scope.ts). Writes are
+  // gated by scope at authentication (a read grant never reaches a PR write).
+  if (isGrantSession(account) && !assertGrantedWorkspace(account, worker.workspaceId ?? worker.workspace?.id, 'read')) return false;
   if (worker.workspace?.teamId != null && worker.workspace.teamId === account.teamId) return true;
   if (worker.accountId == null || worker.accountId !== account.id) return false;
 

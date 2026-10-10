@@ -1,5 +1,5 @@
 {
-  "id": "aee6d04a-2e4b-49ae-b4a6-46c49e508e20",
+  "id": "003647d1-e6cb-45e0-b032-199a72261b87",
   "prevId": "348ec532-b782-4eb2-a662-815a5aa07b8f",
   "version": "7",
   "dialect": "postgresql",
@@ -8551,6 +8551,211 @@
       },
       "isRLSEnabled": false
     },
+    "public.mcp_oauth_grant_workspaces": {
+      "name": "mcp_oauth_grant_workspaces",
+      "schema": "",
+      "columns": {
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "mcp_oauth_grant_workspaces_workspace_idx": {
+          "name": "mcp_oauth_grant_workspaces_workspace_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "mcp_oauth_grant_workspaces_grant_id_mcp_oauth_grants_id_fk": {
+          "name": "mcp_oauth_grant_workspaces_grant_id_mcp_oauth_grants_id_fk",
+          "tableFrom": "mcp_oauth_grant_workspaces",
+          "tableTo": "mcp_oauth_grants",
+          "columnsFrom": [
+            "grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "mcp_oauth_grant_workspaces_workspace_id_workspaces_id_fk": {
+          "name": "mcp_oauth_grant_workspaces_workspace_id_workspaces_id_fk",
+          "tableFrom": "mcp_oauth_grant_workspaces",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "mcp_oauth_grant_workspaces_grant_id_workspace_id_pk": {
+          "name": "mcp_oauth_grant_workspaces_grant_id_workspace_id_pk",
+          "columns": [
+            "grant_id",
+            "workspace_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.mcp_oauth_grants": {
+      "name": "mcp_oauth_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acts_as": {
+          "name": "acts_as",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scopes": {
+          "name": "scopes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "mcp_oauth_grants_user_idx": {
+          "name": "mcp_oauth_grants_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "mcp_oauth_grants_user_id_users_id_fk": {
+          "name": "mcp_oauth_grants_user_id_users_id_fk",
+          "tableFrom": "mcp_oauth_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "mcp_oauth_grants_client_id_oauth_clients_client_id_fk": {
+          "name": "mcp_oauth_grants_client_id_oauth_clients_client_id_fk",
+          "tableFrom": "mcp_oauth_grants",
+          "tableTo": "oauth_clients",
+          "columnsFrom": [
+            "client_id"
+          ],
+          "columnsTo": [
+            "client_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "mcp_oauth_grants_acts_as_valid": {
+          "name": "mcp_oauth_grants_acts_as_valid",
+          "value": "\"mcp_oauth_grants\".\"acts_as\" in ('person', 'agent')"
+        },
+        "mcp_oauth_grants_scopes_valid": {
+          "name": "mcp_oauth_grants_scopes_valid",
+          "value": "jsonb_typeof(\"mcp_oauth_grants\".\"scopes\") = 'array' and jsonb_array_length(\"mcp_oauth_grants\".\"scopes\") > 0 and \"mcp_oauth_grants\".\"scopes\" <@ '[\"read\",\"write\"]'::jsonb"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.memories": {
       "name": "memories",
       "schema": "",
@@ -10866,7 +11071,13 @@
           "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "redirect_uri": {
           "name": "redirect_uri",
@@ -10956,12 +11167,30 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "oauth_codes_grant_id_mcp_oauth_grants_id_fk": {
+          "name": "oauth_codes_grant_id_mcp_oauth_grants_id_fk",
+          "tableFrom": "oauth_codes",
+          "tableTo": "mcp_oauth_grants",
+          "columnsFrom": [
+            "grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "oauth_codes_one_binding": {
+          "name": "oauth_codes_one_binding",
+          "value": "num_nonnulls(\"oauth_codes\".\"workspace_id\", \"oauth_codes\".\"grant_id\") = 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.oauth_refresh_tokens": {
@@ -10973,6 +11202,20 @@
           "type": "text",
           "primaryKey": true,
           "notNull": true
+        },
+        "family_id": {
+          "name": "family_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "family_issued_at": {
+          "name": "family_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "client_id": {
           "name": "client_id",
@@ -10990,7 +11233,13 @@
           "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "scope": {
           "name": "scope",
@@ -11054,6 +11303,36 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "oauth_refresh_tokens_grant_idx": {
+          "name": "oauth_refresh_tokens_grant_idx",
+          "columns": [
+            {
+              "expression": "grant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "oauth_refresh_tokens_family_idx": {
+          "name": "oauth_refresh_tokens_family_idx",
+          "columns": [
+            {
+              "expression": "family_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -11082,12 +11361,30 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "oauth_refresh_tokens_grant_id_mcp_oauth_grants_id_fk": {
+          "name": "oauth_refresh_tokens_grant_id_mcp_oauth_grants_id_fk",
+          "tableFrom": "oauth_refresh_tokens",
+          "tableTo": "mcp_oauth_grants",
+          "columnsFrom": [
+            "grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "oauth_refresh_tokens_one_binding": {
+          "name": "oauth_refresh_tokens_one_binding",
+          "value": "num_nonnulls(\"oauth_refresh_tokens\".\"workspace_id\", \"oauth_refresh_tokens\".\"grant_id\") = 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.orchestration_decisions": {
@@ -16808,337 +17105,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.task_estimate_actuals": {
-      "name": "task_estimate_actuals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_minutes": {
-          "name": "agent_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tokens": {
-          "name": "tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repairs": {
-          "name": "repairs",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "worker_count": {
-          "name": "worker_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "first_started_at": {
-          "name": "first_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_minutes": {
-          "name": "wall_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_basis": {
-          "name": "wall_basis",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimate_actuals_task_idx": {
-          "name": "task_estimate_actuals_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimate_actuals_team_idx": {
-          "name": "task_estimate_actuals_team_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimate_actuals_team_id_teams_id_fk": {
-          "name": "task_estimate_actuals_team_id_teams_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_workspace_id_workspaces_id_fk": {
-          "name": "task_estimate_actuals_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_task_id_tasks_id_fk": {
-          "name": "task_estimate_actuals_task_id_tasks_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_estimates": {
-      "name": "task_estimates",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "estimator_version": {
-          "name": "estimator_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_minutes": {
-          "name": "p50_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_minutes": {
-          "name": "p80_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_tokens": {
-          "name": "p50_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_tokens": {
-          "name": "p80_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_repairs": {
-          "name": "expected_repairs",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "explanation": {
-          "name": "explanation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimates_task_version_idx": {
-          "name": "task_estimates_task_version_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "estimator_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimates_workspace_created_idx": {
-          "name": "task_estimates_workspace_created_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimates_team_id_teams_id_fk": {
-          "name": "task_estimates_team_id_teams_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_workspace_id_workspaces_id_fk": {
-          "name": "task_estimates_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_task_id_tasks_id_fk": {
-          "name": "task_estimates_task_id_tasks_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.task_outcomes": {
       "name": "task_outcomes",
       "schema": "",
@@ -19453,12 +19419,6 @@
         },
         "chat_retro": {
           "name": "chat_retro",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_estimates": {
-          "name": "task_estimates",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
