@@ -19,7 +19,7 @@ export default function CloudRunnerRow({ teamId }: { teamId: string }) {
           <span className="text-sm font-semibold text-text-primary">Cloud runner</span>
           {loaded && <StatusChip tone={state.tone}>{state.chip}</StatusChip>}
         </div>
-        <div className="mt-1 truncate text-meta text-text-muted">One container per task</div>
+        <div className="mt-1 truncate text-meta text-text-muted">Each task gets its own environment</div>
       </div>
       {loaded && (
         <a href="#cloudflare" className="btn shrink-0">
