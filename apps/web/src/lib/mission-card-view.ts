@@ -63,7 +63,7 @@ import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { taskRowsStripOrder } from './mission-strip-order';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import { deriveCiRedChains } from './ci-red-chain';
-import { classifyMissionWait, type WaitClassifiableTask } from './heartbeat-prepass';
+import { classifyMissionWait, type WaitClassifiableTask } from './mission-wait';
 import { continueOnRunnerBlockedReason, deriveLocalStrand, type LocalStrand } from './local-strand';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
