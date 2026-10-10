@@ -910,7 +910,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI host can take longer.
+      for (let i = 0; i < 100 && manager.getWorker('w-bad-config')?.status !== 'done'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Worker should still complete successfully
       const worker = manager.getWorker('w-bad-config');
