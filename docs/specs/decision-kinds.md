@@ -18,6 +18,10 @@ assertions:
     type: "symbol"
     name: "scoutProbeSelectionKind"
     path: "packages/core/decision-kind-scout-probe-selection.ts"
+  - id: "failure-incident-triage-kind"
+    type: "symbol"
+    name: "failureIncidentTriageKind"
+    path: "packages/core/decision-kind-failure-incident-triage.ts"
   - id: "define-buildd-decision-kind"
     type: "symbol"
     name: "defineBuilddDecisionKind"
@@ -89,6 +93,16 @@ It keeps its own fact collection, trigger rules, probe catalogue and
 execution; the kind owns only the decision contract. Adding an escalation
 model or a challenger after measuring is a binding change
 (`POST_SESSION_TRIAGE_BINDING` and its scout counterpart), not a caller change.
+
+A third kind, `buildd.failure_incident_triage`
+(`packages/core/decision-kind-failure-incident-triage.ts`), is wired from day
+one by the Failure Pattern Sentinel (`apps/web/src/lib/failure-incident-actions.ts`).
+It answers `known_noise` \| `monitor` \| `systemic_bug` \| `page_now` with a
+`cause_<cause>` reason code, on bounded counters only. A `critical` floor is
+`page_now` by rule; the fallback is the decision matching the rule engine's
+floor severity. The caller only ever raises severity from the answer, never
+lowers it. Capability `failure_incident_triage` (opt-in), rollout `live`, no
+escalation or outcome source yet.
 
 `packages/core/decision-shadow-harness.ts` gives a feature an in-memory
 ledger (`createSyntheticDecisionLedger`) wired the same way as the database
@@ -164,9 +178,10 @@ code anyway. The seam is the same for all of them:
 - `packages/core/decision-policy.ts` — routes, plan, ledger write, challenger
 - `packages/core/decision-kind-post-session-triage.ts` — `postSessionTriageKind`, `POST_SESSION_TRIAGE_CONFIG`
 - `packages/core/decision-kind-scout-probe-selection.ts` — `scoutProbeSelectionKind`, `SCOUT_PROBE_SELECTION_CONFIG`
+- `packages/core/decision-kind-failure-incident-triage.ts` — `failureIncidentTriageKind`, `FAILURE_INCIDENT_TRIAGE_CONFIG`
 - `packages/core/decision-shadow-harness.ts` — synthetic ledger and comparison table
 - `packages/core/decision-outcomes.ts`, `packages/core/decision-readout.ts` — labels and readout
-- `packages/core/inference-policy.ts` — the `post_session_triage` and `scout_probe_selection` capabilities
+- `packages/core/inference-policy.ts` — the `post_session_triage`, `scout_probe_selection` and `failure_incident_triage` capabilities
 
 ## Out of scope
 

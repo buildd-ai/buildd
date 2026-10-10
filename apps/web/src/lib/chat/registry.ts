@@ -143,6 +143,7 @@ export const CHAT_TOOL_SPECS = withAreas({
   explain: one(read('GET /api/explain')),
   get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
   get_failure_analytics: one(read('GET /api/health/failures')),
+  list_incidents: one(read('GET /api/health/incidents')),
   dispatch_health: one(deferred('ops read over the transport; the dashboard section covers chat users')),
   get_manifest_coverage: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
   get_path_claim_stats: one(deferred('aggregate route needs conversation-team pinning before chat exposure')),
@@ -298,7 +299,7 @@ export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATI
 
 export const ALL_CHAT_TOOL_SPECS: Record<string, ChatToolSpec> = { ...CHAT_TOOL_SPECS, ...CHAT_NATIVE_TOOL_SPECS };
 
-export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated';
+export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only';
 
 /** MCP actions chat never offers, and why. */
 export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string; deepLink?: string }> = {
@@ -325,6 +326,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
+  list_workspaces: { reason: 'connection-only', note: 'Discovery for an MCP connection that reaches several workspaces; a chat conversation is already bound to its team and workspace.' },
 };
 
 /**

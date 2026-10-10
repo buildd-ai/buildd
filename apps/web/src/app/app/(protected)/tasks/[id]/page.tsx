@@ -744,6 +744,7 @@ export default async function TaskDetailPage({
             : paused
               ? `rate-limited until ${paused.toISOString().slice(11, 16)} UTC`
               : undefined,
+          ...(!a.configured ? { addKeyHref: '/app/settings/models#keys' } : {}),
         } satisfies BackendOption;
       });
   }

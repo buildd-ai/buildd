@@ -11,12 +11,16 @@
 
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, taskSubjectReports } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, taskSubjectReports, workspaces, workspaceSkills } from '@buildd/core/db/schema';
+import { copyReviewConfigOf } from '@buildd/shared';
+import { changedCopyStrings, renderCopyReviewSection, DEFAULT_COPY_INSTRUCTIONS } from './copy-review';
+// The verdict handler reaches the copy gate through this module (one review-module entry point).
+export { applyCopyReviewGate, parseCopyFindings } from './copy-review';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
@@ -98,6 +102,19 @@ export interface ReviewerTaskOutput {
     finding: CriterionReviewerFinding;
     reason: string;
   }>;
+  /**
+   * Per-string copy verdicts, returned only when the prompt carried a copy
+   * review section (workspace `gitConfig.copyReview`; see lib/copy-review.ts).
+   * Under mode 'gate' a `rewrite` sends the PR back to the builder.
+   */
+  copyFindings?: Array<{
+    path: string;
+    line?: number;
+    text: string;
+    verdict: 'ok' | 'rewrite';
+    rewrite?: string;
+    reason?: string;
+  }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -152,6 +169,24 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
         'ONLY when the PR\'s opening lede contradicts the diff: one plain-language sentence that is actually true of this change. Correctness, never taste — omit this for a lede that is accurate but clumsy, dull or badly worded. Same rules as the author\'s: one sentence, no file paths, no endpoint or symbol names.',
     },
     criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
+    copyFindings: {
+      type: 'array',
+      description:
+        'ONLY when the prompt has a "Copy review" section: one entry per listed string you judged. verdict "rewrite" needs rewrite (the exact replacement text) and reason (the rule broken).',
+      items: {
+        type: 'object',
+        required: ['path', 'text', 'verdict'],
+        properties: {
+          path: { type: 'string' },
+          line: { type: 'number' },
+          text: { type: 'string' },
+          verdict: { type: 'string', enum: ['ok', 'rewrite'] },
+          rewrite: { type: 'string' },
+          reason: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
   },
   additionalProperties: false,
 } as const;
@@ -273,7 +308,9 @@ export function preflightEscalationCheck(
 ): { shouldEscalate: true; reason: string } | { shouldEscalate: false } {
   // The inspector loads the complete paginated file list, so honor an unsafe
   // result even if GitHub's initial files response was truncated.
-  if (migrationSafety && !migrationSafety.safe) {
+  // A data migration is the reviewer's call when the workspace says so
+  // (mergePolicy.dataMigrations); the risk-class check below still applies.
+  if (migrationSafety && !migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
     return { shouldEscalate: true, reason: migrationSafety.reason };
   }
   if (prFiles.some((file) => isSchemaTouchingFile(file.filename))) {
@@ -403,6 +440,12 @@ export interface CreateReviewerTaskParams {
    * is told the verdict rather than asked to assess schema risk itself.
    */
   migrationSafety?: MigrationSafety;
+  /**
+   * The workspace lets the reviewer agent decide data migrations
+   * (`agentReviewsDataMigrations`). The prompt then asks the reviewer to judge
+   * the data change instead of saying a person will.
+   */
+  agentDecidesDataMigrations?: boolean;
   /** The PR's files, when the caller already fetched them. See BuildContextParams. */
   prFiles?: GithubPrFile[];
   /** The PR's body, when the caller already has it. Read for its lede only. */
@@ -501,6 +544,48 @@ export async function findLiveReviewerTaskForHead(
  * path both land here, and before this guard each one dispatched another agent
  * onto the same commit. Callers must skip dispatch on a deduplicated result.
  */
+/**
+ * The copy review section for a workspace that opted in (`gitConfig.copyReview`),
+ * or '' when it hasn't or the PR adds no user-facing strings. Uses the PR's
+ * patches (fetched once when the caller has none) and the workspace's Copy
+ * Editor role as the judging instructions. Never throws: a failure omits the
+ * section, and the verdict path then has no copy findings to act on.
+ */
+async function loadCopyReviewSection(params: {
+  workspaceId: string;
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  files?: GithubPrFile[];
+}): Promise<string> {
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, params.workspaceId),
+      columns: { gitConfig: true, teamId: true },
+    });
+    const config = copyReviewConfigOf(ws?.gitConfig);
+    if (!config) return '';
+    let files = params.files;
+    if (!files?.length || files.every((f) => f.patch == null)) {
+      const { githubApi } = await import('@/lib/github');
+      const fetched = await githubApi(params.installationId, `/repos/${params.repoFullName}/pulls/${params.prNumber}/files?per_page=300`);
+      files = Array.isArray(fetched) ? (fetched as GithubPrFile[]) : [];
+    }
+    const strings = changedCopyStrings(files, config);
+    if (strings.length === 0) return '';
+    const roles = await db.query.workspaceSkills.findMany({
+      where: and(eq(workspaceSkills.slug, 'copy-editor'), eq(workspaceSkills.enabled, true)),
+      columns: { content: true, workspaceId: true, teamId: true },
+    });
+    const role = roles.find((r) => r.workspaceId === params.workspaceId)
+      ?? roles.find((r) => !r.workspaceId && ws?.teamId && r.teamId === ws.teamId);
+    return renderCopyReviewSection({ config, strings, instructions: role?.content ?? DEFAULT_COPY_INSTRUCTIONS });
+  } catch (err) {
+    console.warn(`[reviewer] copy review section for PR #${params.prNumber} not built:`, err);
+    return '';
+  }
+}
+
 export async function createReviewerTask(
   params: CreateReviewerTaskParams,
 ): Promise<{ id: string; deduplicated?: true } | null> {
@@ -621,6 +706,7 @@ export async function createReviewerTask(
         policyConfig: params.policyConfig,
         confidenceThreshold: params.confidenceThreshold,
         migrationSafety: params.migrationSafety,
+        agentDecidesDataMigrations: params.agentDecidesDataMigrations,
         prFiles: params.prFiles,
         prBody: params.prBody,
         baseRef: params.baseRef,
@@ -631,7 +717,14 @@ export async function createReviewerTask(
         return built.text;
       });
 
-  const description = params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext;
+  const copySection = await loadCopyReviewSection({
+    workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    files: params.priorVerdict ? params.deltaFiles : params.prFiles,
+  });
+  const description = `${params.compositionScope ? `${diffContext}${compositionScopeSection(params.compositionScope)}` : diffContext}${copySection}`;
 
   const title = reviewerTitle(prNumber, originalTask.title);
 
@@ -852,6 +945,8 @@ interface BuildContextParams {
   confidenceThreshold?: number;
   /** See `CreateReviewerTaskParams.migrationSafety`. */
   migrationSafety?: MigrationSafety;
+  /** See `CreateReviewerTaskParams.agentDecidesDataMigrations`. */
+  agentDecidesDataMigrations?: boolean;
   /**
    * The PR's files, when the caller already fetched them. The webhook fetches
    * this exact endpoint for the policy override and the pre-flight check, so
@@ -1010,10 +1105,13 @@ function securityEscalationRules(): string {
  * classification + risk-class resolution), which is the whole point of
  * splitting it out of reviewer discretion.
  */
-function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined): string {
+function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined, agentDecidesDataMigrations?: boolean): string {
   if (!migrationSafety) return '';
   if (migrationSafety.operationClass === 'EXPAND') {
     return '\nMigration classifier verdict: EXPAND (additive-only) — this PR\'s schema change already passed the mechanical migration classifier. Do not re-assess schema risk yourself; judge the diff on its other merits.';
+  }
+  if (!migrationSafety.safe && migrationSafety.kind === 'data' && agentDecidesDataMigrations) {
+    return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. It moves data, and this workspace lets you decide data migrations: approve it only if every statement targets exactly the rows it should (check each WHERE clause), is safe to run twice, and matches what the task describes. Escalate if you can't tell what rows it touches.`;
   }
   return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. This is a non-additive schema change; a human-review escalation for it is enforced server-side regardless of your verdict.`;
 }
@@ -1319,7 +1417,7 @@ async function buildReviewerContextWithMeta(
   // (see PR #1809 AC-5). The mechanical migration classifier verdict — when the
   // caller computed one — is appended so the reviewer is told the schema-risk
   // discriminator's answer instead of being asked to judge it itself.
-  const classifierNote = renderMigrationClassifierNote(params.migrationSafety);
+  const classifierNote = renderMigrationClassifierNote(params.migrationSafety, params.agentDecidesDataMigrations);
   const thresholdText = renderConfidenceThreshold(params.confidenceThreshold);
   let policySection: string;
   let uncoveredSection = '';

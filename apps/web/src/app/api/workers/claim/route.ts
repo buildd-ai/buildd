@@ -1,17 +1,19 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import type { ClaimBudgetWall, ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
 import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
+import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -85,6 +87,7 @@ import { guardClaimedRetry } from '@/lib/supersession';
 import { cancelSkippedTask, claimFix as claimKernelFix, isRepairRole } from '@/lib/workflow/seam';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
+import { BudgetWalls, accountLimitRefusal, describeBudgetWalls, isoOrNull } from './claim-limits';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
@@ -104,7 +107,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachAgentEndpoints, attachCloudToolSearchHint, runnerSupportsAgentEndpoint, runnerSupportsEndpointHeaders } from './agent-endpoint-injection';
 import {
   attachPersonalCredentials,
   decidePersonalCredential,
@@ -211,6 +214,8 @@ export async function POST(req: NextRequest) {
 
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
+  // An explicit opt-in means the literal boolean, never a truthy stand-in.
+  claimAcrossAccessible = claimAcrossAccessible === true;
 
   // A per-task token claims its own task and nothing else.
   if (account.taskScope) {
@@ -286,6 +291,14 @@ export async function POST(req: NextRequest) {
   let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
   const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
     claimableWorkspaceIdsMemo ??= (async () => {
+      // A grant session claims only inside its granted workspaces (grant ∩
+      // current membership, this request), whatever the shared team account's
+      // open workspaces or links would allow, and a restricted workspace it was
+      // granted is claimable without a link (lib/grant-scope.ts).
+      if (isGrantSession(account)) {
+        return constrainToGranted(account, account.workspaceIds ?? [], 'write')
+          .filter((id) => !workspaceId || id === workspaceId);
+      }
       // Get workspaces this account can claim from
       // 1. Open workspaces of the account's own team ("open" = open within the team)
       // 2. Any workspace where the account has an explicit canClaim link
@@ -425,11 +438,7 @@ export async function POST(req: NextRequest) {
 
   if (!interactiveSession && runnerSlotWorkers.length >= account.maxConcurrentWorkers) {
     return NextResponse.json(
-      {
-        error: 'Max concurrent workers limit reached',
-        limit: account.maxConcurrentWorkers,
-        current: runnerSlotWorkers.length,
-      },
+      accountLimitRefusal({ code: 'max_concurrent_workers', limit: account.maxConcurrentWorkers, current: runnerSlotWorkers.length }),
       { status: 429 }
     );
   }
@@ -441,22 +450,14 @@ export async function POST(req: NextRequest) {
       parseFloat(account.totalCost.toString()) >= parseFloat(account.maxCostPerDay.toString())
     ) {
       return NextResponse.json(
-        {
-          error: 'Daily cost limit exceeded',
-          limit: account.maxCostPerDay,
-          current: account.totalCost,
-        },
+        accountLimitRefusal({ code: 'daily_cost_limit', limit: account.maxCostPerDay, current: account.totalCost }),
         { status: 429 }
       );
     }
   } else if (account.authType === 'oauth') {
     if (!interactiveSession && account.maxConcurrentSessions && account.activeSessions >= account.maxConcurrentSessions) {
       return NextResponse.json(
-        {
-          error: 'Max concurrent sessions limit reached',
-          limit: account.maxConcurrentSessions,
-          current: account.activeSessions,
-        },
+        accountLimitRefusal({ code: 'max_concurrent_sessions', limit: account.maxConcurrentSessions, current: account.activeSessions }),
         { status: 429 }
       );
     }
@@ -496,7 +497,20 @@ export async function POST(req: NextRequest) {
   // pending task across all of them (ranked/picked below). That is declared
   // intent, not the accidental ambiguity the guard targets — so allow it while
   // still rejecting silent multi-workspace claims (e.g. a misconfigured MCP).
-  if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
+  if (isGrantSession(account) && !workspaceId && !claimAcrossAccessible) {
+    // The same guard for a grant session, counted over what it was granted.
+    const granted = constrainToGranted(account, account.workspaceIds ?? [], 'write');
+    if (granted.length > 1) {
+      return NextResponse.json(
+        {
+          error: 'workspaceId required for OAuth tokens with access to multiple workspaces',
+          accessibleWorkspaces: granted.length,
+          hint: 'Pass workspaceId in the request body, or claimAcrossAccessible: true to claim across your granted workspaces only.',
+        },
+        { status: 400 },
+      );
+    }
+  } else if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
     // Also count open workspaces of the account's own team — those are
@@ -1257,6 +1271,9 @@ export async function POST(req: NextRequest) {
   // gate (it is in `filteredTasks`), so the SQL probe never runs for it; the
   // loop knows which gate held it, so it says so (see deferTask).
   let explicitTaskExclusion: ClaimTaskExclusion | null = null;
+  // The budget and rate-limit walls this request held a task on, named in a
+  // budget_exhausted refusal (task e7e8740a).
+  const budgetWalls = new BudgetWalls();
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
   // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
@@ -1934,6 +1951,11 @@ export async function POST(req: NextRequest) {
       // bypassed and recorded.
       const softVerdicts = softHolderIds.size > 0
         ? evaluateSoftOverlaps(task as any, softHolders, {
+            // Only same-PR conflict/collision attempts get this exemption. Other
+            // soft evidence, active claims and genuine migration mutexes remain.
+            repairSubjectPrs: (task as any).taskClass === 'attempt' && task.conflictRetryPrNumber != null
+              ? (openPrTasksByWorkspace.get(task.workspaceId) ?? []).filter(p => p.prNumber === task.conflictRetryPrNumber)
+              : [],
             isHardSurface: (paths, kind) => touchesHardOverlapSurface(paths, kind, (task as any).workspace?.gitConfig ?? null),
           })
         : [];
@@ -2223,11 +2245,14 @@ export async function POST(req: NextRequest) {
     const tenantCtx = (taskContext?.tenantContext as { tenantId?: string }) || null;
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
+    // Which walls set claudePoolBlocked, named if this task is deferred on them.
+    let claudeWall: { kind: ClaimBudgetWall['kind']; resetsAt: Date | string | null } | null = null;
 
     if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
+      claudeWall = { kind: 'account_seat', resetsAt: effectiveBudgetResetAt(account.budgetExhaustedAt!, account.budgetResetsAt) };
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
       if (workspaceTeamId) {
@@ -2243,6 +2268,7 @@ export async function POST(req: NextRequest) {
             await db.delete(tenantBudgets).where(eq(tenantBudgets.id, tenantBudget.id));
           } else {
             claudePoolBlocked = true;
+            claudeWall = { kind: 'tenant_budget', resetsAt: tenantBudget.budgetResetsAt };
           }
         }
       }
@@ -2254,7 +2280,10 @@ export async function POST(req: NextRequest) {
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
     const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
-    if (pauses.has('claude')) claudePoolBlocked = true;
+    if (pauses.has('claude')) {
+      claudePoolBlocked = true;
+      claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
+    }
 
     // Does a Claude run of THIS task draw on that walled pool? Only when its
     // model route is the OAuth seat (./claude-model-route): a task the team
@@ -2275,8 +2304,9 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
+        budgetWalls.add('provider_pause', 'codex', pauses.get('codex')!.resetsAt);
         deferTask(task, 'budget_paused', {
-          backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
+          backend: 'codex', wall: 'provider_pause', resetsAt: pauses.get('codex')!.resetsAt.toISOString(),
           ...(backendPinned ? { pinned: true } : {}),
         });
         continue;
@@ -2322,7 +2352,12 @@ export async function POST(req: NextRequest) {
       if (!backendPinned && codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_seat_exhausted')) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
-        deferTask(task, 'budget_paused', { backend: 'claude', ...(backendPinned ? { pinned: true } : {}) });
+        if (claudeWall) budgetWalls.add(claudeWall.kind, 'claude', claudeWall.resetsAt);
+        deferTask(task, 'budget_paused', {
+          backend: 'claude',
+          ...(claudeWall ? { wall: claudeWall.kind, resetsAt: isoOrNull(claudeWall.resetsAt) } : {}),
+          ...(backendPinned ? { pinned: true } : {}),
+        });
         continue;
       }
     }
@@ -2939,8 +2974,11 @@ export async function POST(req: NextRequest) {
     // The authenticated OAuth session user, never the client-relayed session
     // marker: an OAuth session acts as its team's shared account, so this is
     // what PATCH /api/workers/[id] matches to let only the claimer act as the
-    // worker (lib/worker-owner.ts). NULL for a bld_ key.
-    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+    // worker (lib/worker-owner.ts). An account-level 'agent' grant records
+    // the user who connected it: every grant session in a team shares one
+    // account, so this is what keeps one member's agent off another's claim.
+    // NULL for a bld_ key.
+    const claimedByUserId = claimingUserId(account);
     // Same rule as the pre-check: a session is not limited, and a runner's
     // count leaves the person's own sessions out.
     const accountSlotPredicate = interactiveSession
@@ -3168,9 +3206,17 @@ export async function POST(req: NextRequest) {
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
     const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
+      if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
+        budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
+      }
+      const walls = budgetWalls.list();
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
-        diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
+        diagnostics: {
+          reason: 'budget_exhausted',
+          ...(walls.length > 0 ? { budgetBlock: { walls, summary: describeBudgetWalls(walls, { interactive: !!interactiveSession }) } } : {}),
+          ...(explicitTaskExclusion ? { taskExclusion: explicitTaskExclusion } : {}),
+        } satisfies ClaimDiagnostics,
       });
     }
     // Distinguish true lock-contention (race_lost) from "all candidates were
@@ -3403,6 +3449,7 @@ export async function POST(req: NextRequest) {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+        runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
   const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0

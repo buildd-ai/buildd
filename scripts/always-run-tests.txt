@@ -117,3 +117,7 @@ packages/core/__tests__/pr-fact-write-sites.test.ts
 # that adds such a cast is anywhere in the repo, never next to these tests.
 apps/web/src/lib/waiting-for-options-guard.test.ts
 scripts/jsonb-casts.test.ts
+# Enumerate every tracked source file for a workspace check handed a bare
+# account id, which judges a grant session's shared team account instead of
+# its grant.
+apps/web/src/lib/grant-scope.test.ts

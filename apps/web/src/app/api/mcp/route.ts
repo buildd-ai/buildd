@@ -28,6 +28,9 @@ import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller, isOrchestrationTaskToken } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
 import { INTERACTIVE_SESSION_HEADER, MCP_SESSION_ID_HEADER, mintMcpSessionId, signInteractiveSession, verifyMcpSessionId } from "@/lib/interactive-session";
+import { ensureTeamSessionAccount } from "@/lib/oauth/ensure-session-account";
+import { resolveSelfOrigin, selfOriginUnconfiguredResponse } from "@/lib/self-origin";
+import { claimingUserId } from "@/lib/worker-owner";
 import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCallerScope, resolveRepoParamWorkspaceId, workerRunnerSupportsGroupTools } from "@/lib/mcp-request-scope";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
@@ -54,6 +57,19 @@ import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-he
 import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
 import { builddServerInfo } from "@/lib/mcp-server-info";
 import { memberHasRepoAccess, memberRepoAccessMessage } from "@/lib/member-repo-access";
+import { looksLikeGrantToken, verifyAccessTokenAnyAudience, isGrantClaims } from "@/lib/oauth/tokens";
+import { getIssuer } from "@/lib/oauth/config";
+import { authenticateGrantSession, GRANT_WORKSPACE_HEADER } from "@/lib/api-auth";
+import {
+  describeGrantWorkspaces,
+  grantTokenScopes,
+  resolveGrantWorkspaceRef,
+  resolveTokenGrant,
+  type GrantWorkspaceChoice,
+  type GrantWorkspaceResolution,
+} from "@/lib/mcp-grants";
+import type { ToolResult, WorkspaceListing } from "@buildd/core/mcp-tools";
+import { callWorkspaceRef, grantWorkspaceRefusal, toListing, type JsonRpcMessage } from "@/lib/mcp-grant-session";
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -118,10 +134,12 @@ function extractBearerToken(req: Request): string | null {
  * (lib/interactive-session.ts): it tells the REST routes this call comes from
  * a person's MCP session, which a client-supplied `runner: 'mcp'` cannot.
  */
-function createApi(apiKey: string, interactiveMarker?: string | null): ApiFn {
-  const baseUrl = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.NEXTAUTH_URL || "https://buildd.dev";
+/**
+ * `baseUrl` is this server's own origin (lib/self-origin.ts). Every call
+ * forwards the caller's bearer, so it is never a hardcoded host: a route that
+ * cannot resolve it refuses before building the API.
+ */
+function createApi(baseUrl: string, apiKey: string, interactiveMarker?: string | null, boundWorkspaceId?: string): ApiFn {
 
   return async (endpoint, options = {}) => {
     const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -131,6 +149,9 @@ function createApi(apiKey: string, interactiveMarker?: string | null): ApiFn {
         Authorization: `Bearer ${apiKey}`,
         ...(interactiveMarker ? { [INTERACTIVE_SESSION_HEADER]: interactiveMarker } : {}),
         ...options.headers,
+        // An account-level grant session acts in exactly this workspace on
+        // every self-call (lib/api-auth.ts). Set last so no caller overrides it.
+        ...(boundWorkspaceId ? { [GRANT_WORKSPACE_HEADER]: boundWorkspaceId } : {}),
       },
     });
 
@@ -190,7 +211,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null, principal?: ActionContext['principal']) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null, principal?: ActionContext['principal'], grantSession?: GrantSessionOptions) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -258,6 +279,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
+    ...(grantSession ? { listWorkspaces: grantSession.listWorkspaces } : {}),
     getMemoryClient: async (targetWorkspaceId?: string) => {
       // A named workspace (the task claim_task just claimed) is checked
       // directly, and its store is its own team's — no account-team fallback,
@@ -390,7 +412,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes, { principal, orchestrationTaskToken }),
+      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes, { principal, orchestrationTaskToken })
+        + (grantSession ? `\n\n${grantSession.instructions}` : ''),
     }
   );
 
@@ -416,12 +439,25 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         args = { action: routed.action, params: routed.params };
       }
 
+      // A grant session whose call named no usable workspace: refused before
+      // anything runs, with the granted choices only.
+      if (grantSession?.refusal && !(args?.action === 'list_workspaces')) return grantSession.refusal;
+      // Defence in depth for a write grant (no token scopes, so the check
+      // below is skipped): a named workspace must be the bound one.
+      if (grantSession && tokenScopes == null && tokenWorkspaceIds != null) {
+        const named = ((args?.params || {}) as Record<string, unknown>).workspaceId;
+        if (typeof named === 'string' && !tokenWorkspaceIds.includes(named)) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'forbidden', reason: 'Workspace outside token restriction' }) }], isError: true };
+        }
+      }
+
       if (tokenScopes != null) {
         const p = (args?.params || {}) as Record<string, unknown>;
         const action = args?.action as string;
         const required = requiredScopeForMcpTool(name, args as Record<string, unknown>);
         if (!required || !hasTokenScope(tokenScopes, required)) return { content: [{type:'text' as const,text:JSON.stringify({error:'forbidden',requiredScope:required})}], isError:true };
-        if (tokenWorkspaceIds != null) {
+        // list_workspaces names no workspace; it lists only what the caller reaches.
+        if (tokenWorkspaceIds != null && action !== 'list_workspaces') {
           const corpus = name === 'recall' ? args?.scope : p.corpus;
           if ((name === 'recall' || (name === 'buildd_memory' && action === 'query_knowledge')) && (Array.isArray(corpus) ? corpus.includes('initiative') : corpus === 'initiative')) return {content:[{type:'text' as const,text:JSON.stringify({error:'forbidden',reason:'Initiative knowledge is team-wide'})}],isError:true};
           const target = typeof p.workspaceId === 'string' ? p.workspaceId : await getWorkspaceId();
@@ -903,25 +939,36 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
 // ── Request Handler ──────────────────────────────────────────────────────────
 
+/**
+ * RFC 9728: an unauthenticated (or no longer valid) call points OAuth clients
+ * at the account-level protected-resource metadata, so a client connecting to
+ * `<issuer>/api/mcp` discovers the authorization server and the account
+ * consent flow. API-key callers ignore the header.
+ */
+function unauthorizedResponse(error: string): Response {
+  const resourceMetadata = `${getIssuer()}/.well-known/oauth-protected-resource/api/mcp`;
+  return new Response(JSON.stringify({ error }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "WWW-Authenticate": `Bearer realm="buildd", resource_metadata="${resourceMetadata}"`,
+    },
+  });
+}
+
 async function handleMcpRequest(req: Request): Promise<Response> {
   // Auth
   const apiKey = extractBearerToken(req);
-  if (!apiKey) {
-    return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  if (!apiKey) return unauthorizedResponse("Missing Authorization header");
+
+  // An account-level OAuth grant token: resolved per request against the
+  // workspace the request names (handleGrantMcpRequest).
+  if (looksLikeGrantToken(apiKey)) return handleGrantMcpRequest(req, apiKey);
 
   // A per-task token (cloud container) is accepted only as its own worker:
   // `?worker=` is required and checked below.
   const account = await authenticateTaskScopedCaller(apiKey, req);
-  if (!account) {
-    return new Response(JSON.stringify({ error: "Invalid API key" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  if (!account) return unauthorizedResponse("Invalid API key");
 
   // Resolve workspace from query params: ?workspace= (ID) or ?repo= (repo name)
   const url = new URL(req.url);
@@ -958,7 +1005,7 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     }
   }
 
-  if (account.workspaceIds != null && (!workspaceId || !tokenWorkspaceAllowed(account.workspaceIds, workspaceId) || !(await verifyAccountWorkspaceAccess(account.id, workspaceId)))) return new Response(JSON.stringify({error:'forbidden'}), {status:403});
+  if (account.workspaceIds != null && (!workspaceId || !tokenWorkspaceAllowed(account.workspaceIds, workspaceId) || !(await verifyAccountWorkspaceAccess(account, workspaceId)))) return new Response(JSON.stringify({error:'forbidden'}), {status:403});
 
   // A `?worker=` id is the worker this session acts as; it must be one the
   // calling account runs, or one in its own team's workspaces.
@@ -997,7 +1044,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
   });
 
   // Create per-request API wrapper, server, and transport
-  const api = createApi(apiKey, signInteractiveSession({
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+  const api = createApi(selfOrigin, apiKey, signInteractiveSession({
     accountId: account.id,
     userId: (account as { sessionUserId?: string }).sessionUserId ?? null,
     sessionKey,
@@ -1034,6 +1083,172 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     await server.close();
   }
 }
+
+// ── Account-level grant sessions ────────────────────────────────────────────
+
+/** What createMcpServer needs to serve an account-level grant session. */
+interface GrantSessionOptions {
+  /** list_workspaces: the grant's workspaces ∩ current membership. */
+  listWorkspaces: () => Promise<WorkspaceListing[]>;
+  /** Appended to the server instructions. */
+  instructions: string;
+  /** Returned for every tool call except list_workspaces, when set. */
+  refusal?: ToolResult;
+}
+
+function grantJsonError(status: number, body: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+/**
+ * /api/mcp on an account-level grant token (docs/specs/auth-oauth-boundaries.md,
+ * "Canonical MCP transport").
+ *
+ * The token names a grant, never a workspace. On every request the grant is
+ * resolved to its workspaces ∩ the user's current team memberships, and the
+ * request is served in exactly one of them:
+ *  - the workspace a tool call names (params.workspaceId: UUID, owner/repo or
+ *    name), matched among the granted workspaces only;
+ *  - else the connection's `?workspace=` / `?repo=`, matched the same way;
+ *  - else the workspace of the `?worker=` the session acts as;
+ *  - else the only granted workspace.
+ * Anything else is a structured refusal listing granted workspaces only.
+ * The session then acts as that workspace's team account at the user's role
+ * there, confined to that workspace, and every internal self-call carries the
+ * same binding, so the REST routes see the same one-workspace session. A
+ * read-only grant is a read-scoped session. An agent grant has no person.
+ */
+async function handleGrantMcpRequest(req: Request, jwt: string): Promise<Response> {
+  const claims = await verifyAccessTokenAnyAudience(jwt);
+  if (!claims || !isGrantClaims(claims)) return unauthorizedResponse("Invalid access token");
+  const grant = await resolveTokenGrant(claims);
+  if (!grant || !grant.grantId || grant.workspaces.length === 0) return unauthorizedResponse("Invalid access token");
+  const choices = await describeGrantWorkspaces(grant);
+  if (choices.length === 0) return unauthorizedResponse("Invalid access token");
+
+  const url = new URL(req.url);
+
+  // The connection's own default, if its URL names one.
+  const connectionRef = url.searchParams.get("workspace") || url.searchParams.get("repo");
+  let connectionDefault: GrantWorkspaceChoice | null = null;
+  if (connectionRef) {
+    const r = resolveGrantWorkspaceRef(choices, connectionRef);
+    if (r.kind !== 'ok') return grantJsonError(r.kind === 'ambiguous' ? 400 : 403, JSON.parse(grantWorkspaceRefusal(r).content[0].text));
+    connectionDefault = r.workspace;
+  }
+
+  // A `?worker=` must be in a granted workspace; its workspace is the default.
+  const workerParam = url.searchParams.get("worker");
+  if (workerParam) {
+    const w = isUuidLike(workerParam)
+      ? await db.query.workers.findFirst({ where: eq(workersTable.id, workerParam), columns: { workspaceId: true } })
+      : null;
+    const ws = w?.workspaceId ? choices.find((c) => c.workspaceId === w.workspaceId) : undefined;
+    if (!ws || (connectionDefault && connectionDefault.workspaceId !== ws.workspaceId)) {
+      return grantJsonError(403, { error: "Worker not found for this account" });
+    }
+    connectionDefault = ws;
+  }
+
+  // The tool calls in this request, and the one workspace they act in.
+  let body: unknown = undefined;
+  if (req.method === "POST") {
+    try { body = await req.clone().json(); } catch { body = undefined; }
+  }
+  const messages: JsonRpcMessage[] = Array.isArray(body) ? body : body && typeof body === 'object' ? [body as JsonRpcMessage] : [];
+  const calls = messages.filter((m) => m?.method === 'tools/call');
+
+  let target: GrantWorkspaceChoice | null = connectionDefault ?? (choices.length === 1 ? choices[0] : null);
+  let refusal: ToolResult | undefined;
+  const targets = new Set<string>();
+  for (const call of calls) {
+    const args = call.params?.arguments;
+    if (args?.action === 'list_workspaces') continue;
+    const { ref, holder } = callWorkspaceRef(args);
+    const r: GrantWorkspaceResolution = ref
+      ? resolveGrantWorkspaceRef(choices, ref)
+      : connectionDefault ? { kind: 'ok', workspace: connectionDefault } : resolveGrantWorkspaceRef(choices, null);
+    if (r.kind !== 'ok') { refusal = grantWorkspaceRefusal(r); break; }
+    // Downstream sees the resolved id, never the name: no second, wider
+    // name lookup can happen behind this one.
+    if (holder && holder.workspaceId !== r.workspace.workspaceId) holder.workspaceId = r.workspace.workspaceId;
+    targets.add(r.workspace.workspaceId);
+    target = r.workspace;
+  }
+  if (!refusal && targets.size > 1) {
+    refusal = { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'workspace_conflict', message: 'One request can act in one workspace. Send these calls separately.' }) }] };
+  }
+
+  const listWorkspaces = async () => choices.map(toListing);
+  const teamCount = new Set(choices.map((c) => c.teamId)).size;
+  const readOnly = !grant.scopes.includes('write');
+  const instructions = `**Account-level connection:** reaches ${choices.length} workspace${choices.length === 1 ? '' : 's'}${teamCount > 1 ? ` across ${teamCount} teams` : ''}${readOnly ? ', read only' : ''}, as ${grant.actsAs === 'agent' ? 'your agent (person-only actions are refused)' : 'you'}. `
+    + (choices.length > 1 && !connectionDefault
+      ? 'Call `list_workspaces`, then pass workspaceId (UUID, owner/repo or name) on every other action; a call without one is refused with the choices, never routed to a default.'
+      : `Calls act in "${(connectionDefault ?? choices[0]).name}" unless they pass another workspaceId.`);
+
+  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+  const incomingSessionId = req.headers.get(MCP_SESSION_ID_HEADER);
+  // A grant session spans teams, so its session id is bound to the grant,
+  // not to one team's account.
+  const sessionBinding = `grant:${grant.grantId}`;
+  const sessionKey = verifyMcpSessionId(incomingSessionId, sessionBinding);
+  const sessionIdToReturn = sessionKey ? incomingSessionId : mintMcpSessionId(sessionBinding);
+  const toolSurface = mcpToolSurfaceFor({
+    workerParam,
+    runnerSupportsGroupTools: workerParam ? await workerRunnerSupportsGroupTools(workerParam) : null,
+  });
+  const principal: ActionContext['principal'] = grant.actsAs === 'person' ? 'person' : 'key';
+
+  const selfOrigin = resolveSelfOrigin(req);
+  if (!selfOrigin) return selfOriginUnconfiguredResponse();
+
+  let server: Server;
+  if (target && !refusal) {
+    // The grant reaches this workspace (granted ∩ membership, above), so a
+    // missing session means its team has no session account yet: one joined
+    // after connecting. Provision it and retry, rather than answer 401, which
+    // a client reads as signed out of every workspace on the connection.
+    let account = await authenticateGrantSession(jwt, target.workspaceId);
+    if (!account && await ensureTeamSessionAccount(grant.userId, target.teamId)) {
+      account = await authenticateGrantSession(jwt, target.workspaceId);
+    }
+    if (!account) return unauthorizedResponse("Invalid access token");
+    if (workerParam && !(await isWorkerInCallerScope(workerParam, account))) {
+      return grantJsonError(403, { error: "Worker not found for this account" });
+    }
+    const sessionUserId = (account as { sessionUserId?: string }).sessionUserId ?? null;
+    // Interactive claims and their liveness belong to the user behind the
+    // connection, person or agent: an agent grant has no session user, but
+    // its claims are its connecting user's (lib/worker-owner.ts).
+    const claimUserId = claimingUserId(account);
+    scheduleInteractiveTouch({ accountId: account.id, userId: claimUserId, sessionKey, level: account.level });
+    const api = createApi(selfOrigin, jwt, signInteractiveSession({ accountId: account.id, userId: claimUserId, sessionKey }), target.workspaceId);
+    const isSensitive = (await resolveWorkspaceDataClass(target.workspaceId)) === 'sensitive';
+    server = createMcpServer(api, account.level as 'worker' | 'admin', target.workspaceId, undefined, account.teamId, workerParam || undefined, 'oauth', appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, false, sessionUserId, principal, { listWorkspaces, instructions });
+  } else {
+    // Discovery only: initialize, tools/list, list_workspaces, or a refused
+    // call. No workspace is bound, so a self-call here authenticates as nothing.
+    const level = choices.some((c) => c.level === 'admin') ? 'admin' : 'worker';
+    const api = createApi(selfOrigin, jwt, null);
+    server = createMcpServer(api, level, undefined, undefined, undefined, workerParam || undefined, 'oauth', appBaseUrl, false, undefined, toolSurface, grantTokenScopes(grant.scopes), choices.map((c) => c.workspaceId), false, null, principal, { listWorkspaces, instructions, refusal: refusal ?? (calls.length > 0 ? grantWorkspaceRefusal({ kind: 'required', choices }) : undefined) });
+  }
+
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  await server.connect(transport);
+  try {
+    const res = await transport.handleRequest(req, body !== undefined ? { parsedBody: body } : undefined);
+    if (!sessionIdToReturn) return res;
+    const headers = new Headers(res.headers);
+    headers.set(MCP_SESSION_ID_HEADER, sessionIdToReturn);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  } finally {
+    await transport.close();
+    await server.close();
+  }
+}
+
+const isUuidLike = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 // ── Next.js Route Handlers ───────────────────────────────────────────────────
 

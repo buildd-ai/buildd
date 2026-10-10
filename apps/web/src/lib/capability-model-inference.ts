@@ -50,8 +50,8 @@ export const MODEL_INFERENCE_CAPABILITY = 'model.inference' as const;
 export const MODEL_INFERENCE_OPERATIONS = ['decide'] as const;
 export type ModelInferenceOperation = typeof MODEL_INFERENCE_OPERATIONS[number];
 
-/** Who is paid. `openrouter`: the team's OpenRouter key. `litellm`: the team's gateway. */
-export type ModelInferenceProvider = 'openrouter' | 'litellm';
+/** Who is paid. `openrouter`: the team's OpenRouter key. `litellm`: the team's gateway. `cloudflare`: Clef on the team's Cloudflare token. */
+export type ModelInferenceProvider = 'openrouter' | 'litellm' | 'cloudflare';
 
 // ── Platform ceilings (a grant may narrow these, never widen them) ───────────
 
@@ -542,7 +542,9 @@ export const resolveTeamDecisionRoute: RouteResolver = async ({ teamId, workspac
     allowPlatformKey: false,
   });
   if (!route.apiKey) return null;
-  const provider: ModelInferenceProvider = config?.via === 'litellm' ? 'litellm' : 'openrouter';
+  // Jev through Cloudflare's gateway still spends the OpenRouter key; only Clef pays Cloudflare.
+  const provider: ModelInferenceProvider = config?.via === 'litellm' ? 'litellm'
+    : route.endpoint?.kind === 'workers-ai' ? 'cloudflare' : 'openrouter';
   return {
     apiKey: route.apiKey,
     provider,

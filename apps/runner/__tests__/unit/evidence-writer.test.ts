@@ -574,3 +574,17 @@ describe('secret channel coverage', () => {
     }
   });
 });
+
+describe('model endpoint headers are redacted', () => {
+  test('an AI Gateway token is on the redactor list, whole and without its Bearer scheme', () => {
+    const worker = {
+      modelEndpoint: {
+        kind: 'cloudflare', baseUrl: 'https://gateway.example', authToken: 'upstream-key', authHeader: 'x-api-key', models: {},
+        headers: { 'cf-aig-authorization': 'Bearer gw-run-token-value' },
+      },
+    };
+    const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
+    expect(values).toContain('Bearer gw-run-token-value');
+    expect(values).toContain('gw-run-token-value');
+  });
+});

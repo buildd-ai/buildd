@@ -224,4 +224,11 @@ export const reviewSubscribers: readonly AnySubscriber[] = [
     await captureReviewFeedback(commentRowFromEvent(e.comment), e.owner, e);
     if (e.owner?.workspaceId) console.log(`[webhook] review comment captured: PR #${e.prNumber} ${e.comment.path ?? '(no path)'}`);
   }),
+  // Hourly backstop: older integration-refresh PRs a newer merged refresh fully
+  // replaced are verified and retired (lib/pr-supersession-refresh.ts). Idempotent.
+  subscriber('reviews', 'sweep.pr_hourly', 'superseded-refresh-sweep', async () => {
+    const { sweepSupersededRefreshPrs } = await import('@/lib/pr-supersession-refresh');
+    const r = await sweepSupersededRefreshPrs();
+    console.log(`[SupersededRefreshPrs] candidates=${r.candidates} retired=${r.retired} kept=${r.kept} skipped=${r.skipped}`);
+  }),
 ];
