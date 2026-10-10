@@ -353,7 +353,7 @@ export default async function MissionDetailPage({
     computeSupersededFailedTasks(
       mission.id,
       (mission.workspaceId as string | null) ?? null,
-      failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt })),
+      failedDeliverableRows.map((t) => ({ id: t.id, title: t.title, subjectPrNumber: (t as { subjectPrNumber?: number | null }).subjectPrNumber ?? null, createdAt: t.createdAt, roleSlug: t.roleSlug })),
     ).catch(() => new Map()),
     // One DeliveryView load for the page (§17.5): the failure reading, the
     // board/strip, the timeline cards and the structure view all read it.

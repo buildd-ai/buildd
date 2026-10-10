@@ -482,3 +482,12 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
     principal = null;
   });
 });
+describe('warm handover team settings', () => {
+  it('stores all supported modes and rejects invalid policy', async () => {
+    for (const mode of ['off', 'repo', 'deps']) {
+      expect((await PATCH(patchReq({ warmHandover: mode }), ctx)).status).toBe(200);
+      expect(capturedUpdates.at(-1).warmHandover).toBe(mode);
+    }
+    for (const value of [null, true, 'unknown']) expect((await PATCH(patchReq({ warmHandover: value }), ctx)).status).toBe(400);
+  });
+});

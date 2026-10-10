@@ -38,6 +38,8 @@ export const SETTINGS_ROUTE_MOVES = [
   // Models: keys, routing, tiers and AI features on one page.
   { source: '/app/settings/providers', destination: '/app/settings/models' },
   { source: '/app/settings/ai', destination: '/app/settings/models' },
+  // Your own keys: the Models page's old Mine tab is Settings › You › Keys.
+  { source: '/app/settings/models', has: [{ type: 'query', key: 'scope', value: 'mine' }], destination: '/app/settings/keys' },
   // Workspaces: one list and one settings page per workspace.
   { source: '/app/workspaces', destination: '/app/settings/workspaces' },
   { source: '/app/workspaces/new', destination: '/app/settings/workspaces/new' },

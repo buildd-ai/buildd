@@ -133,6 +133,20 @@ function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
   );
 }
 
+/**
+ * A read-only row's body: its status and one line of meta as text. A folded
+ * standalone row never shows its body; a row embedded in a provider row shows
+ * this in place of the sign-in controls.
+ */
+function SignInStatus({ testId, chip, meta }: { testId: string; chip: ReactNode; meta: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs" data-testid={testId}>
+      {chip}
+      <span className="text-text-muted">{meta}</span>
+    </div>
+  );
+}
+
 /** The row-level half of StrandedWorkNotice: visible while the row is folded. */
 function StrandedChip({ stat }: { stat?: BackendStrandStat | null }) {
   if (!stat || stat.strandedPending <= 0) return null;
@@ -386,11 +400,6 @@ export default function AgentBackendsSection({ workspaces, currentTeamId, manage
 
   return (
     <>
-      {readOnly && (
-        <p data-testid="credentials-read-only" className="px-4 py-3 text-xs text-text-secondary">
-          Admins can change these.
-        </p>
-      )}
       <StoredSeatNotice kinds={storedSeats} />
       {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
           key is a collapsed fallback inside the same row. */}
@@ -1287,6 +1296,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         </button>
       ) : undefined}
     >
+      {readOnly ? <SignInStatus testId="claude-signin-status" chip={<>{chip}<StrandedChip stat={strand} /></>} meta={meta} /> : (<>
       {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
@@ -1402,6 +1412,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         </div>
         )}
       </div>
+      </>)}
       {confirmDialog}
     </ConnectionRow>
   );
@@ -1687,6 +1698,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         </button>
       ) : undefined}
     >
+      {readOnly ? <SignInStatus testId="codex-signin-status" chip={<>{chip}<StrandedChip stat={strand} /></>} meta={meta} /> : (<>
       {scopeControl}
 
       <StrandedWorkNotice stat={strand} />
@@ -1764,6 +1776,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
+      </>)}
       {confirmDialog}
     </ConnectionRow>
   );

@@ -38,13 +38,25 @@ const EXPECTED: Array<[string, string, Record<string, string>?]> = [
 
 describe('settings route moves', () => {
   it('redirects every moved route to its new home', async () => {
-    const redirects = await nextConfig.redirects!();
+    const redirects = (await nextConfig.redirects!()).filter((x) => !x.has);
     for (const [source, destination] of EXPECTED) {
       const r = redirects.find((x) => x.source === source);
       expect(r ? `${source} → ${r.destination}` : `${source} → (none)`).toBe(`${source} → ${destination}`);
       expect(r!.permanent).toBe(false);
     }
-    expect(SETTINGS_ROUTE_MOVES).toHaveLength(EXPECTED.length);
+    expect(SETTINGS_ROUTE_MOVES.filter((m) => !('has' in m))).toHaveLength(EXPECTED.length);
+  });
+
+  it('sends your keys from the old Mine tab on Models to You › Keys', async () => {
+    const redirects = await nextConfig.redirects!();
+    const mine = redirects.filter((x) => x.source === '/app/settings/models');
+    expect(mine).toHaveLength(1);
+    expect(mine[0].destination).toBe('/app/settings/keys');
+    expect(mine[0].has).toEqual([{ type: 'query', key: 'scope', value: 'mine' }]);
+    expect(mine[0].permanent).toBe(false);
+    // Only the Mine tab moves: Team and Workspace keys stay on Models.
+    expect(existsSync(pageFile('/app/settings/models'))).toBe(true);
+    expect(existsSync(pageFile('/app/settings/keys'))).toBe(true);
   });
 
   it('matches a fixed segment before the param route beside it', () => {

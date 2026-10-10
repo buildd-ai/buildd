@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CriteriaGraderControl, normalizeCriteriaGrader } from './CriteriaGraderControl';
+import { CriteriaGraderControl, criteriaGraderLabel, normalizeCriteriaGrader } from './CriteriaGraderControl';
 
 describe('CriteriaGraderControl', () => {
   it('renders the three options and the helper copy', () => {
@@ -31,5 +31,13 @@ describe('normalizeCriteriaGrader', () => {
     expect(normalizeCriteriaGrader('llm')).toBe('auto');
     expect(normalizeCriteriaGrader('api')).toBe('api');
     expect(normalizeCriteriaGrader('runner')).toBe('runner');
+  });
+});
+
+describe('criteriaGraderLabel', () => {
+  it('names each value the way the control does', () => {
+    expect(criteriaGraderLabel('auto')).toBe('Auto');
+    expect(criteriaGraderLabel('api')).toBe('API key');
+    expect(criteriaGraderLabel('runner')).toBe('Runner');
   });
 });

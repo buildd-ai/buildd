@@ -48,7 +48,8 @@ import {
  *     `prepMs` no longer adds the repo steps a second time: they run inside dispatch-to-claim.
  * 14: adds `depsOverlap` (deps restore + install in the background behind a Bash gate) and its phases.
  */
-export const RUN_REPORT_VERSION = 14;
+/** 15: adds verified dependency handover policy, verification and install measurements. */
+export const RUN_REPORT_VERSION = 15;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -839,6 +840,7 @@ export interface RunReport {
    * `fallback: 'reset_failed'`: the reset did not verify clean, so the
    * attempt started in a fresh container.
    */
+  handover: import('./lifecycle').HandoverReport & { installMs: number | null; fullStoreHash?: boolean };
   reusedContainer: ReusedContainer | null;
   /**
    * Who paid for this attempt's model calls: the deployer's own Claude token
@@ -929,6 +931,7 @@ export interface RunReportInput {
   /** The class this agent is (the container class actually used). Absent: standard. */
   runnerSize?: RunnerSize;
   /** buildd's decision that routed the dispatch here, if one reached the agent. */
+  handover?: import('./lifecycle').HandoverReport;
   runnerSizeDecision?: RunnerSizeDecision | null;
 }
 
@@ -1100,6 +1103,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
         versionChanged: typeof r.versionChanged === 'boolean' ? r.versionChanged : null,
       }];
     }),
+    handover: handoverSection(input.handover, durationsMs.install ?? null),
     reusedContainer: reusedContainerSection(input.reusedContainer, durationsMs),
     modelAuth: input.modelAuth === 'owner_seat' || input.modelAuth === 'metered' ? input.modelAuth : null,
     depsOverlap: depsOverlapSection(phase, metric),
@@ -1202,4 +1206,18 @@ export async function deliverRunReport(
     }
   }
   return last;
+}
+
+
+function handoverSection(v: RunReportInput['handover'], installMs: number | null): RunReport['handover'] {
+  return {
+    mode: v?.mode === 'repo' || v?.mode === 'deps' ? v.mode : 'off',
+    verifyMs: msOrNull(v?.verifyMs),
+    entriesChanged: count(v?.entriesChanged), entriesExplained: count(v?.entriesExplained), entriesDeleted: count(v?.entriesDeleted),
+    fellBack: v?.fellBack === true,
+    ...(typeof v?.reason === 'string' && /^[a-z_]{1,80}$/.test(v.reason) ? { reason: v.reason } : {}),
+    storeHashMs: msOrNull(v?.storeHashMs),
+    fullStoreHash: (v as { fullStoreHash?: boolean } | undefined)?.fullStoreHash === true,
+    installMs,
+  };
 }

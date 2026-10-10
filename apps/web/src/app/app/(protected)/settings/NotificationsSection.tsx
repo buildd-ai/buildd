@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Section from '@/components/ui/Section';
 import Lede from '@/components/ui/Lede';
 import ChannelRow from './notifications/ChannelRow';
@@ -19,8 +19,6 @@ interface Props {
    * which channels are set and which events fire, read-only. Defaults to true.
    */
   canManage?: boolean;
-  /** Your own channel (PersonalPushoverKey), listed between the team's two. */
-  personal?: ReactNode;
 }
 
 type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
@@ -38,12 +36,13 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
 ];
 
 /**
- * Settings › Notifications. One Channels list (the team's Pushover app, your
- * own Pushover key, the team's webhook) as L1 rows with one state vocabulary,
- * then "Team alerts": which events reach the team's channels. Team alerts route
- * to THIS team's own channel; teams with no channel get nothing.
+ * Settings › Team › Alerts. One Channels list (the team's Pushover app, the
+ * team's webhook) as L1 rows with one state vocabulary, then "Team alerts":
+ * which events reach the team's channels. Team alerts route to THIS team's own
+ * channel; teams with no channel get nothing. Without `canManage` everything
+ * reads as values, with no controls; the page says who manages it.
  */
-export default function NotificationsSection({ workspaces, currentTeamId, canManage = true, personal }: Props) {
+export default function NotificationsSection({ workspaces, currentTeamId, canManage = true }: Props) {
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
@@ -146,7 +145,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
   }
 
   const hasTeam = teamWorkspaces.length > 0 && !!teamId;
-  if (!hasTeam && !personal) return null;
+  if (!hasTeam) return null;
 
   const hasPushover = state?.channels.pushover ?? false;
   const hasWebhook = state?.channels.webhook ?? false;
@@ -181,104 +180,107 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
     <>
       <Section title="Channels">
         <ul className="divide-y divide-border-default" data-testid="notification-channels">
-          {hasTeam && (
-            <ChannelRow
-              title="Pushover · team"
-              connected={hasPushover}
-              sub="The team's own Pushover app. Team alerts go here."
-              actions={channelActions('pushover', hasPushover)}
-              testId="channel-pushover-team"
-            >
-              {canManage && editing === 'pushover' ? (
-                <>
-                  <input
-                    type="password"
-                    aria-label="Pushover app token"
-                    value={pushoverAppToken}
-                    onChange={(e) => setPushoverAppToken(e.target.value)}
-                    placeholder="App token (your Pushover application)"
-                    className={inputClass}
-                  />
-                  <input
-                    type="password"
-                    aria-label="Pushover user or group key"
-                    value={pushoverKey}
-                    onChange={(e) => setPushoverKey(e.target.value)}
-                    placeholder="u… (user or group key)"
-                    className={inputClass}
-                  />
-                  <p className="text-xs text-text-muted">
-                    Both are in your Pushover account. The app token comes from creating an application.
-                  </p>
-                  {formButtons('pushover', !!pushoverAppToken.trim() && !!pushoverKey.trim())}
-                </>
-              ) : null}
-            </ChannelRow>
-          )}
-          {personal}
-          {hasTeam && (
-            <ChannelRow
-              title="Webhook"
-              connected={hasWebhook}
-              sub="Team alerts as JSON to any URL: Slack, Discord or your own."
-              actions={channelActions('webhook', hasWebhook)}
-              testId="channel-webhook"
-            >
-              {canManage && editing === 'webhook' ? (
-                <>
-                  <input
-                    type="url"
-                    aria-label="Webhook URL"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="https://example.com/buildd-alerts"
-                    className={inputClass}
-                  />
-                  {formButtons('webhook', !!webhookUrl.trim())}
-                </>
-              ) : null}
-            </ChannelRow>
-          )}
+          <ChannelRow
+            title="Pushover · team"
+            connected={hasPushover}
+            sub="The team's own Pushover app. Team alerts go here."
+            actions={channelActions('pushover', hasPushover)}
+            testId="channel-pushover-team"
+          >
+            {canManage && editing === 'pushover' ? (
+              <>
+                <input
+                  type="password"
+                  aria-label="Pushover app token"
+                  value={pushoverAppToken}
+                  onChange={(e) => setPushoverAppToken(e.target.value)}
+                  placeholder="App token (your Pushover application)"
+                  className={inputClass}
+                />
+                <input
+                  type="password"
+                  aria-label="Pushover user or group key"
+                  value={pushoverKey}
+                  onChange={(e) => setPushoverKey(e.target.value)}
+                  placeholder="u… (user or group key)"
+                  className={inputClass}
+                />
+                <p className="text-xs text-text-muted">
+                  Both are in your Pushover account. The app token comes from creating an application.
+                </p>
+                {formButtons('pushover', !!pushoverAppToken.trim() && !!pushoverKey.trim())}
+              </>
+            ) : null}
+          </ChannelRow>
+          <ChannelRow
+            title="Webhook"
+            connected={hasWebhook}
+            sub="Team alerts as JSON to any URL: Slack, Discord or your own."
+            actions={channelActions('webhook', hasWebhook)}
+            testId="channel-webhook"
+          >
+            {canManage && editing === 'webhook' ? (
+              <>
+                <input
+                  type="url"
+                  aria-label="Webhook URL"
+                  value={webhookUrl}
+                  onChange={(e) => setWebhookUrl(e.target.value)}
+                  placeholder="https://example.com/buildd-alerts"
+                  className={inputClass}
+                />
+                {formButtons('webhook', !!webhookUrl.trim())}
+              </>
+            ) : null}
+          </ChannelRow>
         </ul>
       </Section>
 
-      {hasTeam && (
-        <Section
-          title="Team alerts"
-          action={!canManage ? (
-            <span data-testid="notifications-read-only" className="text-xs text-text-muted">Admins can change this.</span>
-          ) : undefined}
-        >
-          <Lede className="mb-2">Which events reach this team&apos;s channels.</Lede>
-          {loading ? (
-            <p className="text-sm text-text-muted">Loading…</p>
-          ) : (
-            <ul className="divide-y divide-border-default" data-testid="notification-events">
-              {EVENT_LABELS.map(({ key, label, hint }) => (
-                <li key={key}>
-                  <label className={`flex items-start justify-between gap-3 py-3 ${canManage ? 'cursor-pointer' : ''}`}>
-                    <span className="min-w-0">
-                      <span className="block text-sm text-text-primary">{label}</span>
-                      <span className="block text-xs text-text-secondary">{hint}</span>
-                    </span>
+      <Section title="Team alerts">
+        <Lede className="mb-2">Which events reach this team&apos;s channels.</Lede>
+        {loading ? (
+          <p className="text-sm text-text-muted">Loading…</p>
+        ) : (
+          <ul className="divide-y divide-border-default" data-testid="notification-events">
+            {EVENT_LABELS.map(({ key, label, hint }) => (
+              <li key={key}>
+                {canManage ? (
+                  <label className="flex items-start justify-between gap-3 py-3 cursor-pointer">
+                    <EventText label={label} hint={hint} />
                     <input
                       type="checkbox"
                       checked={state?.preferences[key] ?? true}
-                      disabled={busy || !canManage}
+                      disabled={busy}
                       onChange={(e) => toggle(key, e.target.checked)}
                       className="mt-1 h-4 w-4 flex-shrink-0"
                     />
                   </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
-      )}
+                ) : (
+                  <div className="flex items-start justify-between gap-3 py-3">
+                    <EventText label={label} hint={hint} />
+                    <span data-testid="event-state" className="text-sm text-text-secondary shrink-0">
+                      {(state?.preferences[key] ?? true) ? 'On' : 'Off'}
+                    </span>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
 
       {msg && (
         <p role={msg.type === 'error' ? 'alert' : 'status'} className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</p>
       )}
     </>
+  );
+}
+
+function EventText({ label, hint }: { label: string; hint: string }) {
+  return (
+    <span className="min-w-0">
+      <span className="block text-sm text-text-primary">{label}</span>
+      <span className="block text-xs text-text-secondary">{hint}</span>
+    </span>
   );
 }

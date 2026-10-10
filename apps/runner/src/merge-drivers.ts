@@ -450,6 +450,50 @@ export function formatPreMergeMilestone(result: DerivedMergeResult): string {
   }
 }
 
+export interface PreMergePlan {
+  /** The remote ref to merge into the checked-out branch. */
+  ref: string;
+  kind: 'retry' | 'mission_pr_retry' | 'mission_refresh';
+  /** False when the task's own output (e.g. opening a PR) still needs the agent. */
+  mayFinishWithoutAgent: boolean;
+}
+
+const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+/**
+ * Which ref the runner merges before the agent starts, or null for none.
+ *
+ * - A conflict retry merges its PR base (`prBaseRef`).
+ * - A retry whose PR base is its own branch is a mission's ship PR (head = the
+ *   integration branch, base = trunk): runner-side base resolution reads it as
+ *   the integration branch, and merging a branch into itself is always "up to
+ *   date". It merges trunk instead.
+ * - A mission refresh (`context.refreshTrunk`) merges trunk into the
+ *   integration branch. Its agent still opens the refresh PR, so it never
+ *   finishes without one.
+ * - Migration collisions are renumbered, never merged here.
+ */
+export function planPreMerge(
+  context: Record<string, unknown> | null | undefined,
+  prBaseRef: string | undefined,
+  trunk: string,
+): PreMergePlan | null {
+  if (!context) return null;
+  const errorType = (context.failureContext as { errorType?: unknown } | undefined)?.errorType;
+  if (errorType !== 'merge_conflict' && errorType !== 'semantic_conflict') return null;
+  if (typeof context.refreshTrunk === 'string') {
+    const refreshTrunk = context.refreshTrunk;
+    return BRANCH_NAME.test(refreshTrunk)
+      ? { ref: `origin/${refreshTrunk}`, kind: 'mission_refresh', mayFinishWithoutAgent: false }
+      : null;
+  }
+  if (!isConflictRetryContext(context) || !prBaseRef) return null;
+  if (prBaseRef === `origin/${context.resumeBranch}`) {
+    return BRANCH_NAME.test(trunk) ? { ref: `origin/${trunk}`, kind: 'mission_pr_retry', mayFinishWithoutAgent: true } : null;
+  }
+  return { ref: prBaseRef, kind: 'retry', mayFinishWithoutAgent: true };
+}
+
 /** The prompt section telling the agent what the runner already did. Null when there is nothing to say. */
 export function formatDerivedMergeNote(result: DerivedMergeResult, baseRef: string): string | null {
   if (result.status === 'merged') {

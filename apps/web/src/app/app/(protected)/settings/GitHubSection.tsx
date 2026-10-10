@@ -21,8 +21,8 @@ interface Installation {
 
 /**
  * `disconnectableIds`: installations the person may disconnect (the server
- * page computes the DELETE route's rule). Any other row offers Sync only and
- * says who can change it. Omitted = every row.
+ * page computes the DELETE route's rule). Any other row offers Sync only,
+ * which anyone who can see it may run. Omitted = every row.
  */
 export default function GitHubSection({ disconnectableIds }: { disconnectableIds?: string[] } = {}) {
   const [installations, setInstallations] = useState<Installation[]>([]);
@@ -186,15 +186,13 @@ export default function GitHubSection({ disconnectableIds }: { disconnectableIds
                   >
                     {syncing === inst.id ? 'Syncing…' : 'Sync'}
                   </button>
-                  {!disconnectableIds || disconnectableIds.includes(inst.id) ? (
+                  {(!disconnectableIds || disconnectableIds.includes(inst.id)) && (
                     <button
                       onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}
                       className="btn btn-sm btn-danger"
                     >
                       Disconnect
                     </button>
-                  ) : (
-                    <span data-testid={`github-read-only-${inst.id}`} className="self-center text-xs text-text-muted">Admins can disconnect this.</span>
                   )}
                 </div>
               </li>

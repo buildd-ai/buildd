@@ -1,3 +1,4 @@
+import WarmHandoverSection from '@/components/WarmHandoverSection';
 import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers } from '@buildd/core/db/schema';
@@ -12,11 +13,13 @@ import PrimaryAction from '@/components/ui/PrimaryAction';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
 import { pickShownTeam } from './shown-team';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
+import { NO_PERMISSIONS, settingsPermissions } from '../_lib/settings-permissions';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team: a team's people, its timezone, and who can do what (team
+ * Settings › Team › Members: a team's people, its timezone, and who can do what (team
  * permission overrides). Shows the active team, or `?team=<id>` when the
  * person is a member of it, so a link to another team (the old
  * /app/teams/[id]) lands on that team's members.
@@ -34,7 +37,7 @@ export default async function TeamSettingsPage({
 
   if (!shown) {
     return (
-      <SettingsPage title="Team">
+      <SettingsPage title="Members">
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-text-muted">Not on a team.</p>
           <PrimaryAction href="/app/settings/team/new">Create a team</PrimaryAction>
@@ -57,13 +60,16 @@ export default async function TeamSettingsPage({
   const role = shown.role as 'owner' | 'admin' | 'member';
   const permissionOverrides = team ? await getTeamPermissionOverrides(team.id) : null;
   const otherTeams = userTeams.filter((t) => t.id !== shown.id);
+  // The shown team's flags (it can differ from the active team via ?team=).
+  // A failed overrides read holds nothing, as loadSettingsContext does.
+  const perms = permissionOverrides ? settingsPermissions({ role, slug: team?.slug ?? shown.slug }, user.id, permissionOverrides) : NO_PERMISSIONS;
 
   const sections = (
     <>
-      <TimezoneSection
-        teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}
-        currentTeamId={shown.id}
-      />
+      <WarmHandoverSection teamId={shown.id} canEdit={roleHas(role, 'manage_team_settings', permissionOverrides)} />
+
+      {/* This team only: another team's timezone is on its own Members page. */}
+      <TimezoneSection teams={[{ id: shown.id, name: shown.name }]} currentTeamId={shown.id} />
 
       {/* A personal team has one member, its owner: there is nothing to grant. */}
       {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
@@ -71,7 +77,7 @@ export default async function TeamSettingsPage({
   );
 
   return (
-    <SettingsPage title="Team">
+    <SettingsPage title="Members" readOnly={settingsReadOnly('team', perms)}>
       {otherTeams.length > 0 && (
         <details data-testid="team-switcher" className="group text-sm">
           <summary className="flex min-h-11 md:min-h-0 cursor-pointer list-none items-center gap-1.5 text-text-secondary">

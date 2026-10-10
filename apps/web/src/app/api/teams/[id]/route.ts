@@ -9,6 +9,7 @@ import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
+import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 
@@ -101,6 +102,7 @@ export async function GET(
         chatCapNewSessionTier: true,
         taskEstimates: true,
         timezone: true,
+        warmHandover: true,
         permissionOverrides: true,
       },
     });
@@ -171,6 +173,10 @@ export async function PATCH(
       updatedAt: new Date(),
     };
 
+    if ('warmHandover' in body) {
+      if (!isWarmHandover(body.warmHandover)) return NextResponse.json({ error: "warmHandover must be 'off', 'repo' or 'deps'" }, { status: 400 });
+      updates.warmHandover = body.warmHandover;
+    }
     if (name !== undefined) updates.name = name;
     if (enabledBackends !== undefined) {
       // Provider-enablement toggle. Must be a non-empty subset of the known

@@ -446,6 +446,55 @@ describe('canCompleteMission — task rows', () => {
       const d = await canCompleteMission('m1');
       expect(d.ok).toBe(true);
     });
+
+    // A stalled round-2 audit, then a later audit that completed with passing
+    // phone and desktop shots: the visual review model records the stalled
+    // one as replaced, and the gate reads that instead of the bare row.
+    describe('replaced by a later completed audit', () => {
+      const stalled = () => ({ ...audit('failed', { errorType: 'infra_stalled' }, '[surface audit] round 2: Mobile nav'), id: 'a-stalled' });
+      const later = () => ({ ...audit('completed', null), id: 'a-later' });
+
+      it('closes normally when the model records the replacement', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        visualModel = { phase: 'reviewed', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [{ auditTaskId: 'a-stalled', replacedBy: ['a-later'] }] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.ok).toBe(true);
+        expect(d.infraStalledTitles).toEqual([]);
+        // One model read serves the replacement and the review hold.
+        expect(mockLoadVisualReview).toHaveBeenCalledTimes(1);
+      });
+
+      it('still blocks when nothing replaced it (missing shot, unresolved finding)', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        visualModel = { phase: 'stalled', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+        expect(d.infraStalledTitles).toEqual(['[surface audit] round 2: Mobile nav']);
+      });
+
+      it('fails closed: a model read error keeps the stall blocking', async () => {
+        activeMission();
+        taskRows = [work('completed', 'Build the nav'), stalled(), later()];
+        mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+      });
+
+      it('never clears a stalled implementation task, whatever the model says', async () => {
+        activeMission();
+        taskRows = [{ ...work('failed', 'Deploy the worker', { result: { errorType: 'infra_stalled' } }), id: 'b-stalled' }, later()];
+        visualModel = { phase: 'reviewed', roundCapOpen: false, summary: { awaitingHuman: 0 }, cells: [], replacedAudits: [{ auditTaskId: 'b-stalled', replacedBy: ['a-later'] }] };
+
+        const d = await canCompleteMission('m1');
+        expect(d.code).toBe('infra_stalled');
+        expect(d.infraStalledTitles).toEqual(['Deploy the worker']);
+      });
+    });
   });
 
   it('allows completion when deliverables are a mix of completed and (non-infra) failed', async () => {

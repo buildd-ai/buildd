@@ -799,11 +799,14 @@ export async function createReviewerTask(
     .onConflictDoNothing()
     .returning({ id: tasks.id });
 
-  if (!reviewerTask && subjectAnchor?.headSha) {
-    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, subjectAnchor.headSha);
+  // Fall back to the raw headSha: a missing anchor must not turn a lost
+  // concurrent-producer race into a null (the route's 500).
+  const dedupeSha = subjectAnchor?.headSha || headSha;
+  if (!reviewerTask && dedupeSha) {
+    const winner = await findLiveReviewerTaskForHead(workspaceId, prNumber, dedupeSha);
     if (winner) {
       console.log(
-        `[reviewer] PR #${prNumber} at ${subjectAnchor.headSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
+        `[reviewer] PR #${prNumber} at ${dedupeSha.slice(0, 7)}: a concurrent producer filed reviewer task ${winner.id} first — not dispatching a second`,
       );
       return { id: winner.id, deduplicated: true };
     }

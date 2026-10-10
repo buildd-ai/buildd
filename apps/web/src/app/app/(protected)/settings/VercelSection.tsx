@@ -118,10 +118,7 @@ export default function VercelSection({ teams, manageableTeamIds }: Props) {
   const canManage = !manageableTeamIds || manageableTeamIds.includes(selectedTeamId);
 
   return (
-    <Section
-      title="Vercel"
-      action={!canManage ? <span data-testid="vercel-read-only" className="text-xs text-text-muted">Admins can change this.</span> : undefined}
-    >
+    <Section title="Vercel">
       <div className="space-y-4">
         <p className="text-sm text-text-secondary">
           Create a token at{' '}

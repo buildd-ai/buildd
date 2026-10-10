@@ -160,8 +160,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
+function session(opts: { depsFallback?: boolean; deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.depsFallback ? { depsFallback: true } : {}),
     ...(opts.deferUpload ? { deferUpload: true } : {}),
     ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
@@ -366,6 +367,17 @@ describe('restore before clone', () => {
     expect(readFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'utf-8')).toBe('kept\n');
     expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
     expect(logs.some(m => m.includes('reused container'))).toBe(true);
+  });
+
+  test('dependency fallback restores the normal cache after a verified git seed', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    const cacheDir = join(dir, 'fallback-cache');
+    const next = session({ cacheDir, reusedContainer: true, depsFallback: true });
+    next.cloneHooks().afterSeed!(seedClone);
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf8')).toBe('module.exports = 1;\n');
+    expect(store.calls.some(c => c.startsWith('PIPE ') && c.endsWith('/cache'))).toBe(true);
   });
 
   test('a reused container with no cache on disk restores the cache as usual', async () => {
@@ -608,6 +620,13 @@ describe('refresh rules', () => {
     // Only after success, so a failing task never spends its exit on an upload.
     expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'failed' })).toEqual({ decision: 'none' });
     expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'wait_timeout' })).toEqual({ decision: 'none' });
+  });
+
+  test('decideWarmRefresh: the 25% growth rule is the binding threshold on a mid-size cache, with no disk I/O', () => {
+    const base = 8 * 1024 * 1024;
+    const warm = { source: 'warm' as const, ageMs: 0, fetchBytes: 0, restoredCacheBytes: base };
+    expect(decideWarmRefresh({ result: warm, end: 'completed', currentCacheBytes: Math.ceil(base * 1.26) })).toEqual({ decision: 'refresh', reason: 'cache_growth' });
+    expect(decideWarmRefresh({ result: warm, end: 'completed', currentCacheBytes: Math.floor(base * 1.24) })).toEqual({ decision: 'none' });
   });
 
   test('a fresh warm restore uploads nothing; an old one uploads a new generation after success', async () => {

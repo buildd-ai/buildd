@@ -24,6 +24,7 @@ const { OPT_IN_CAPABILITIES } = await import('@buildd/core/inference-policy');
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelFeatures } = await import('./ModelFeatures');
+const { describeControls } = await import('../_lib/form-controls');
 
 let team: Record<string, unknown> = {};
 const patches: Record<string, unknown>[] = [];
@@ -172,6 +173,7 @@ describe('ModelFeatures', () => {
     expect(host.querySelectorAll('[role="switch"]:not([disabled])').length).toBe(0);
     expect(host.querySelectorAll('[role="radio"]').length).toBe(0);
     expect(q('[data-testid="feature-criteria_grading"]')!.textContent).toContain('Server');
-    expect(host.textContent).toContain('Only a team owner or admin');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change these|can change this/);
   });
 });

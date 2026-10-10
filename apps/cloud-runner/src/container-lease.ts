@@ -79,8 +79,8 @@ export interface ReuseEnv {
   CONTAINER_REUSE_SLOTS?: string;
 }
 
-export function containerReuseEnabled(env: ReuseEnv): boolean {
-  return env.CONTAINER_REUSE === '1';
+export function containerReuseEnabled(env: ReuseEnv, mode: unknown = 'off'): boolean {
+  return env.CONTAINER_REUSE === '1' && (mode === 'repo' || mode === 'deps');
 }
 
 export function resolveReuseWindowMs(env: ReuseEnv): number {
@@ -136,6 +136,7 @@ export interface WarmContainer {
   baselinePrepMs: number | null;
   /** That run deferred its warm snapshot upload: made at expiry, skipped on a handover. */
   uploadPending?: boolean;
+  depsDigest?: string;
 }
 
 /**
@@ -146,7 +147,7 @@ export interface WarmContainer {
  * `prepMs` and `savedMs` are filled in when the report is assembled.
  */
 export type ReusedContainer =
-  | { fromTaskId: string; idleMs: number; baselinePrepMs: number | null; resetMs?: number | null; prepMs?: number | null; savedMs?: number | null; uploadSkipped?: boolean }
+  | { fromTaskId: string; idleMs: number; baselinePrepMs: number | null; resetMs?: number | null; prepMs?: number | null; savedMs?: number | null; uploadSkipped?: boolean; depsDigest?: string }
   | { fromTaskId: string; idleMs: number; fallback: 'reset_failed'; resetMs?: number | null };
 
 export type LeaseClaimDecision =
