@@ -12,6 +12,30 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.22.0 — 2026-10-10
+
+Minor: a turn laid out in fixed regions, so streaming never moves what is on screen.
+
+- `ChatThread compose="turn"` (default `parts`, unchanged): an assistant turn
+  draws its work line, its tool rows under it, then each phase in a keyed
+  `.kit-phase` frame: the answer slot (latest prose of the phase), hand-offs
+  and custom rows, the approval card that closed the phase, and its results.
+  The reply to a decision is the next phase's answer, a new node below the
+  card; the rationale above the card stays the same node in the same place.
+  Turn errors draw after the last phase.
+- `renderPhaseResults(message, phase, ctx)`: what a phase produced, drawn
+  only once the phase is settled (closed, or the turn done), so a card never
+  mounts above prose still streaming. With `toolRows="rich"` and
+  `renderObject` the default draws the phase's calls' objects here instead of
+  under their rows.
+- `composeTurn(parts, { streaming })` and `TurnPhase`, `TurnComposition`: the
+  pure plan behind it. Append-stable: a new part never changes an earlier
+  phase's range, answer or key.
+- `ThinkingPanel holdLine`: keep the live line ("Writing the answer") while
+  the answer streams instead of dropping it, and drop the pinned step then.
+  `compose="turn"` sets it for a turn with steps, so the folded line lands in
+  a slot that was already filled.
+
 ## 0.21.0 — 2026-10-09
 
 Minor: Cloudflare's Clef decision models, and decisions through Cloudflare AI Gateway.

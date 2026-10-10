@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { ListProvidersResponse, ProviderApiScope } from '@buildd/shared';
 import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
@@ -10,6 +10,7 @@ import Notice from '@/components/ui/Notice';
 import CredentialPolicySelector from './CredentialPolicySelector';
 import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
+import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
 import { ADVANCED_ANCHOR, SCOPE_TABS, coverageText, coverageView, groupProviders, isScopeTab } from './providers-view';
 
@@ -23,18 +24,22 @@ import { ADVANCED_ANCHOR, SCOPE_TABS, coverageText, coverageView, groupProviders
  * what each stored row serves today come from the response, never from a copy
  * here. Keys never come back beyond last4.
  *
+ * A provider row shows every way it is connected in its opened detail: the
+ * key, a subscription sign-in and a runner sign-in (`signIns`, the Claude and
+ * Codex logins, at the same scope tab). There is no separate sign-ins section.
+ *
  * Routing: what the cards don't cover (gateway, agent endpoint, decision
- * model). A gateway change reloads the cards, so both sections live in one
- * component; `between` renders between them (the page's Runner sign-ins).
+ * model) and the provider routing toggle. A gateway change reloads the cards,
+ * so both sections live in one component.
  */
-export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], between }: {
+export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns }: {
   teamId: string;
   /** Fallback for the Routing section until the list loads. */
   isAdmin: boolean;
   /** The team's workspaces, for the Workspace tab and the agent endpoint. */
   workspaces?: EndpointWorkspace[];
-  /** Rendered between Keys and Routing. */
-  between?: ReactNode;
+  /** Props for the sign-ins folded into the Claude and OpenAI rows. Omitted: the rows hold keys only. */
+  signIns?: Pick<ComponentProps<typeof AgentBackendsSection>, 'workspaces' | 'currentTeamId' | 'manageableTeamIds' | 'canManage' | 'canManageRouting'>;
 }) {
   const params = useSearchParams();
   const initialScope = params.get('scope');
@@ -62,15 +67,25 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 
   useEffect(() => { void load(); }, [load]);
 
+  // Old deep link (getting-started, failed-task page): open the Claude row on its key field.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#agent-key') setOpenRow('claude');
+  }, []);
+
   const flow = providerFlowMessage(params);
   const canManageRouting = data ? data.caller.can.manage_inference_providers : isAdmin;
+  // The Claude and OpenAI rows ask for the sign-ins at the tab's scope; a personal key has none.
+  const signInScope = scope === 'workspace' ? 'workspace' : 'team';
   const tabDisabled = (id: ProviderApiScope) => (id === 'workspace' && workspaces.length === 0) || (id === 'mine' && data?.caller.canSetMine === false);
 
-  return (
+  const render = (slots: SignInSlots | null) => (
     <>
       <Section title="Keys" id="keys" className="scroll-mt-20">
         {/* Old links: /app/settings/providers and #provider-keys land here. */}
         <span id="provider-keys" aria-hidden="true" />
+        {/* Old links: #sign-ins, #agent-backends (the sign-ins section these rows now hold). */}
+        <span id="sign-ins" aria-hidden="true" />
+        <span id="agent-backends" aria-hidden="true" />
         <div className="space-y-6">
           {flow && (
             <p role={flow.tone === 'err' ? 'alert' : 'status'} className={`text-body ${flow.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{flow.text}</p>
@@ -80,6 +95,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
               {LOAD_ERROR}
             </Notice>
           )}
+
+          {slots?.notice}
 
           {data && showWhoPays(data) && (
             <CredentialPolicySelector
@@ -151,6 +168,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                         onChanged={load}
                         open={openRow === g.id}
                         onToggle={(o) => setOpenRow(o ? g.id : null)}
+                        signIn={scope === 'mine' || !slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
                       />
                     ))}
                   </ul>
@@ -161,8 +179,6 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
         </div>
       </Section>
 
-      {between}
-
       <Section title="Routing" id={ADVANCED_ANCHOR} className="scroll-mt-20">
         {/* Old #advanced links (the section's previous name). */}
         <span id="advanced" aria-hidden="true" />
@@ -171,9 +187,17 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
           <GatewayCard teamId={teamId} canManage={canManageRouting} onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
           <DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} />
           <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} />
+          {slots && <div className="border-y border-border-default">{slots.routing}</div>}
         </div>
       </Section>
     </>
+  );
+
+  if (!signIns || signIns.workspaces.length === 0) return render(null);
+  return (
+    <AgentBackendsSection {...signIns} scope={signInScope} workspaceId={signInScope === 'workspace' ? workspaceId : null}>
+      {render}
+    </AgentBackendsSection>
   );
 }
 

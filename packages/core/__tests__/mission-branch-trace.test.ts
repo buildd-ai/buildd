@@ -74,6 +74,14 @@ describe('describeWorktreeFallback', () => {
       candidate: 'buildd/abcd1234-some-task', reason: 'missing', defaultBranch: 'dev', integrationBase: A.branch,
     });
     expect(d.pattern).toBe('resume_branch_fallback');
+    expect(d.excerpt).toBe('Branch "buildd/abcd1234-some-task" was missing on remote — starting fresh from "dev".');
+  });
+
+  it('never promises a PR: the runner does not know whether one existed', () => {
+    for (const reason of ['missing', 'diverged'] as const) {
+      const d = describeWorktreeFallback({ candidate: 'buildd/abcd1234-some-task', reason, defaultBranch: 'dev' });
+      expect(d.excerpt).not.toMatch(/\bPR\b/);
+    }
   });
 
   it('keeps resume_branch_fallback for a diverged branch, even a mission one', () => {

@@ -217,6 +217,36 @@ const ESCALATION_COPY: Record<string, string> = {
   unsafe_to_merge: 'Unsafe to merge',
 };
 
+/**
+ * `landing_needs_human` says which kind of refusal it was (S15 / T16 / §6.7), so a
+ * person reading "a person has to land it" knows whether the base kept moving
+ * faster than CI, the base keeps changing what the PR changes (and which files),
+ * GitHub itself refused the merge, or the branch could not be updated. A policy
+ * refusal (deny path, human tier, migration) is its own escalation reason.
+ */
+export function landingEscalationCopy(t: TransitionRef | null | undefined): { headline: string; detail: string | null } {
+  const ev = t?.evidence ?? null;
+  const str = (k: string): string | null => (ev && typeof ev[k] === 'string' && (ev[k] as string).trim() ? (ev[k] as string).trim() : null);
+  if (t?.command === 'ConflictObserved' && ev?.treadmill === true) {
+    const files = Array.isArray(ev.files) ? (ev.files as unknown[]).filter((f): f is string => typeof f === 'string') : [];
+    if (ev.cause === 'refresh_unsafe') {
+      return {
+        headline: 'Landing held: the base keeps changing what this PR changes',
+        detail: files.length ? `the base changed ${files.join(', ')}` : str('deltaReason'),
+      };
+    }
+    const refreshes = typeof ev.refreshes === 'number' ? ev.refreshes : null;
+    const behindBy = typeof ev.behindBy === 'number' ? ev.behindBy : null;
+    return {
+      headline: 'Landing held: the base kept moving faster than CI',
+      detail: [refreshes != null ? `refreshed ${refreshes} times` : null, behindBy != null ? `${behindBy} commits behind` : null].filter(Boolean).join(', ') || null,
+    };
+  }
+  if (t?.command === 'MergeCallResult') return { headline: 'GitHub refused the merge; a person has to land it', detail: str('detail') };
+  if (t?.command === 'MechanicalRepairFailed') return { headline: 'Updating the branch kept failing; a person has to land it', detail: str('reason') };
+  return { headline: ESCALATION_COPY.landing_needs_human, detail: evidenceDetail(t) };
+}
+
 function evidenceDetail(t: TransitionRef | null | undefined): string | null {
   const ev = t?.evidence;
   if (!ev) return null;
@@ -291,8 +321,12 @@ export function deriveDeliveryView(input: DeliveryViewInput): DeliveryView | nul
       break;
     case 'LANDING': headline = 'Merging'; break;
     case 'ESCALATED':
-      headline = ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
-      detail = evidenceDetail(input.lastTransition);
+      if (d.stateReason === 'landing_needs_human') {
+        ({ headline, detail } = landingEscalationCopy(input.lastTransition));
+      } else {
+        headline = ESCALATION_COPY[d.stateReason ?? ''] ?? 'Needs a decision';
+        detail = evidenceDetail(input.lastTransition);
+      }
       cta = { action: 'open_pr', label: 'Review on GitHub' };
       break;
     case 'MERGED': headline = 'Merged'; break;

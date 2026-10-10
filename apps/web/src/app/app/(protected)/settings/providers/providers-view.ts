@@ -51,8 +51,6 @@ export const SCOPE_TABS: readonly { id: ProviderApiScope; label: string }[] = [
   { id: 'mine', label: 'Mine' },
 ];
 
-/** Where subscription seats are connected in the browser today: Runner sign-ins, on this page. */
-export const SEAT_CONNECT_HREF = '/app/settings/models#sign-ins';
 /** The LiteLLM gateway and custom endpoint forms: the Routing section further down this page. */
 export const ADVANCED_ANCHOR = 'routing';
 

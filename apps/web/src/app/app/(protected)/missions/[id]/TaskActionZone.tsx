@@ -29,6 +29,8 @@ import type { TaskFailureKind } from '@/lib/task-failure-kind';
 import { verificationFailedCopy } from '@/lib/task-failure-kind';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
+import CredentialBlockedNotice from '@/components/credentials/CredentialBlockedNotice';
+import type { CredentialBlock } from '@/lib/credential-block-copy';
 import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
@@ -89,6 +91,8 @@ export interface TaskActionZoneProps {
    * place of "Run now": it starts by itself when the limit lifts.
    */
   entitlementBlock?: EntitlementBlock | null;
+  /** Why a queued task cannot be claimed: its backend has no key (task context `credentialBlock`). */
+  credentialBlock?: CredentialBlock | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -112,6 +116,7 @@ export default function TaskActionZone({
   runnerPicker = false,
   hideQueuedNote = false,
   entitlementBlock = null,
+  credentialBlock = null,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -304,6 +309,9 @@ export default function TaskActionZone({
 
       {/* Queued on a plan limit → the entitlement state; it starts by itself */}
       {waitingOnPlan && entitlementBlock && <EntitlementBlockedNotice block={entitlementBlock} />}
+
+      {/* Queued with no key for its backend → say so, with the way to add one */}
+      {has('run_now') && phase === 'pending' && !waitingOnPlan && credentialBlock && <CredentialBlockedNotice block={credentialBlock} />}
 
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (

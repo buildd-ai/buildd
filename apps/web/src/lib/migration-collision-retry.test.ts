@@ -12,7 +12,8 @@ mock.module('@/lib/pr-activity-comment', () => ({
 
 import { tryDispatchMigrationCollisionRetry } from './migration-collision-retry';
 
-const COLLISION = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 };
+// A slot taken on the base: nothing open is ahead, so the renumber runs now.
+const COLLISION = { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' as const };
 
 const BASE_PARAMS = {
   collision: COLLISION,
@@ -56,6 +57,25 @@ describe('tryDispatchMigrationCollisionRetry', () => {
     const entry = mockAppendPrActivity.mock.calls[0][0].entry;
     expect(entry.kind).toBe('migration_collision_fixing');
     expect(entry.kind).not.toBe('human_review_required');
+  });
+
+  it('waits, files nothing, and stays handled while an earlier open PR holds the same slot', async () => {
+    const open = { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 };
+
+    const result = await tryDispatchMigrationCollisionRetry({ ...BASE_PARAMS, collision: open });
+
+    expect(result).toEqual({ handled: true, queuedBehind: 100 });
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('waits on a base collision whose next slot an earlier open PR is also taking', async () => {
+    const lane = { ...COLLISION, queuedBehind: 4084 };
+
+    const result = await tryDispatchMigrationCollisionRetry({ ...BASE_PARAMS, collision: lane });
+
+    expect(result).toEqual({ handled: true, queuedBehind: 4084 });
+    expect(mockDispatchConflictRetry).not.toHaveBeenCalled();
   });
 
   it('dispatches a slot taken on the base the same way, naming the base migration', async () => {
