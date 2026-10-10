@@ -80,7 +80,7 @@ async function unfold() {
 
 // One card per turn, a row per write (docs/design/chat-write-approval-v2.md).
 describe('the live line while a turn streams', () => {
-  const live = async (messages: Msgs, status: 'streaming' | 'submitted' = 'streaming') => {
+  const live = async (messages: Msgs, status: 'streaming' | 'submitted' | 'ready' = 'streaming') => {
     const views = fixtures.fixtureViews('split');
     const source = { load: async (r: { kind: string; id: string }) => views[`${r.kind}:${r.id}`] ?? { title: r.id } };
     await act(async () => {
@@ -137,10 +137,10 @@ describe('the live line while a turn streams', () => {
     expect(panelText()).toBe('');
   });
 
-  it('a write without a card pins as the object it filed, and the next write replaces it; reads never pin', async () => {
+  it('a write without a card pins as its row while the turn works; its object mounts once, in the results, when the turn lands', async () => {
     const write = (id: string, taskId: string, title: string) => [
       { type: 'tool-create_task', toolCallId: id, state: 'output-available', input: { title }, output: { data: {}, objects: [{ kind: 'task', id: taskId, fallbackText: title }] } },
-      { type: 'data-step', id, data: { id, label: 'Drafted a task', state: 'done', weight: 'key' } },
+      { type: 'data-step', id, data: { id, label: `Drafted ${title}`, state: 'done', weight: 'key' } },
     ];
     const read = (id: string, state = 'done') => [
       { type: 'tool-get_task', toolCallId: id, state: state === 'done' ? 'output-available' : 'input-available', input: {}, output: { data: {}, objects: [{ kind: 'task', id: `r-${id}`, fallbackText: 'Read one' }] } },
@@ -150,11 +150,19 @@ describe('the live line while a turn streams', () => {
     await live(msg([...read('r1'), ...read('r2', 'active')]));
     expect(q('[data-testid="kit-thinking-pinned"]')).toBeNull();
     await live(msg([...read('r1'), ...write('w1', 'task-a', 'First'), ...read('r2', 'active')]));
-    expect(q('[data-testid="kit-thinking-pinned"] [data-testid="feed-objects"]')?.textContent).toContain('First');
+    expect(q('[data-testid="kit-thinking-pinned"]')?.textContent).toContain('Drafted First');
+    // No card yet: it would only move once the answer streams in above it.
+    expect(q('[data-testid="object-card"]')).toBeNull();
     await live(msg([...read('r1'), ...write('w1', 'task-a', 'First'), ...write('w2', 'task-b', 'Second'), ...read('r2', 'active')]));
     expect(qa('[data-testid="kit-thinking-pinned"]')).toHaveLength(1);
     expect(q('[data-testid="kit-thinking-pinned"]')!.textContent).toContain('Second');
     expect(q('[data-testid="kit-thinking-pinned"]')!.textContent).not.toContain('First');
+    const done = msg([...read('r1'), ...write('w1', 'task-a', 'First'), ...write('w2', 'task-b', 'Second'), ...read('r2'), { type: 'text', text: 'Filed both.' }]);
+    await live(done, 'ready');
+    const groups = qa('[data-testid="feed-group"]');
+    expect(groups.map(g => g.dataset.group)).toEqual(['created', 'created', 'referenced']);
+    expect(groups[0].textContent).toContain('First');
+    expect(groups[1].textContent).toContain('Second');
   });
 
   it('a message saved before steps were weighed still unfolds sensibly: its failure is key', async () => {
@@ -731,26 +739,168 @@ describe("a turn's answer: live, then replaced in place", () => {
     expect(q('[data-turn-error]')?.textContent).toBe('Stopped.');
   });
 
-  it('an approval continuation settles on the prose after the decision, the card kept', async () => {
+  it('an approval continuation: rationale and card hold their place, the reply is a new answer below the card', async () => {
     const messages = fixtures.chatFixture('propose').messages;
     await show({ messages, status: 'ready' });
     const turn = messages.at(-1)!;
     const asking = regions().at(-1)!;
-    const card = q('[data-testid="approval-card"]') ?? q('[data-testid="kit-approval"]');
+    const card = q('[data-approval-id="approval-1"]')!;
     expect(card).not.toBeNull();
-    const resumed = [...messages.slice(0, -1), {
+    const resumed = (state: 'streaming' | 'done') => [...messages.slice(0, -1), {
       ...turn,
       parts: [
         ...turn.parts.map(p => ((p as { approval?: { id: string } }).approval
           ? { ...p, state: 'output-available', approval: { id: (p as { approval: { id: string } }).approval.id, approved: true }, output: { summary: 'mission filed', data: {}, objects: [fixtures.missionRef] } }
           : p)),
         { type: 'step-start' },
-        { type: 'text', text: 'Filed it. Planning starts now; I will post here when the first tasks are out.' },
+        { type: 'text', text: 'Filed it. Planning starts now; I will post here when the first tasks are out.', state },
       ],
     }];
-    await show({ messages: resumed as Msgs, status: 'ready' });
-    expect(regions().at(-1)).toBe(asking);
+    await show({ messages: resumed('streaming') as Msgs, status: 'streaming' });
+    const answers = qa('[data-role="assistant"]').at(-1)!.querySelectorAll<HTMLElement>('[data-testid="kit-answer"]');
+    expect(answers).toHaveLength(2);
+    // Nothing reparented: the rationale is the same node, still above its card, and the card is the same node.
+    expect(answers[0]).toBe(asking);
+    expect(answers[0].textContent).toContain('Here’s a draft.');
+    expect(q('[data-approval-id="approval-1"]')).toBe(card);
+    expect(card.compareDocumentPosition(answers[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(answers[1].dataset.answer).toBe('live');
+    // The mission it filed is the card's receipt, between the card and the reply.
+    const receipt = q('[data-kind="mission"]')!;
+    expect(card.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(receipt.compareDocumentPosition(answers[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await show({ messages: resumed('done') as Msgs, status: 'ready' });
+    expect(regions().at(-1)).toBe(answers[1]);
     expect(regions().at(-1)!.textContent).toContain('Filed it.');
-    expect(qa('[data-role="assistant"]').at(-1)!.querySelectorAll('[data-testid="kit-answer"]')).toHaveLength(1);
+    expect(qa('[data-kind="mission"]')).toHaveLength(1);
+  });
+});
+
+describe('a turn\'s results: grouped by what produced them, after the answer', () => {
+  it('the slow sequence (interim, read, write, late card, longer final): nothing on screen moves, reparents or shows twice', async () => {
+    const frames = fixtures.composedFrames();
+    const views = fixtures.fixtureViews('composed');
+    // The cards load only when told to: a slow network.
+    let release: () => void = () => {};
+    const gate = new Promise<void>(r => { release = r; });
+    const source = { load: async (r: { kind: string; id: string }) => { await gate; return views[`${r.kind}:${r.id}`]; } };
+    const draw = async (f: (typeof frames)[number]) => {
+      await act(async () => {
+        root.render(
+          <ObjectStoreProvider source={source}>
+            <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+              <ChatFeed messages={f.messages as Msgs} agent={fixtures.ORGANIZER} status={f.status} />
+            </ChatActionsProvider>
+          </ObjectStoreProvider>,
+        );
+      });
+    };
+    const turn = () => qa('[data-role="assistant"]').at(-1)!;
+    /** Every block on screen, in order: what must keep its node, parent and order from frame to frame. */
+    const blocks = () => [...turn().querySelectorAll<HTMLElement>('.kit-msg-head, [data-testid="kit-answer"], [data-testid="feed-group"], [data-testid="object-card"]')];
+    let seen: HTMLElement[] = [];
+    for (const [i, f] of frames.entries()) {
+      await draw(f);
+      const now = blocks();
+      // What was on screen is still there, under the same parent, in the same order.
+      const kept = seen.filter(el => el.isConnected);
+      expect(kept).toHaveLength(seen.length);
+      expect(now.filter(el => kept.includes(el))).toEqual(kept);
+      // One answer, ever; and no card above it while it streams.
+      expect(turn().querySelectorAll('[data-testid="kit-answer"]')).toHaveLength(1);
+      if (i < frames.length - 1) expect(turn().querySelector('[data-testid="object-card"]')).toBeNull();
+      seen = now;
+    }
+    const answer = turn().querySelector('[data-testid="kit-answer"]')!;
+    expect(answer.textContent).toContain(fixtures.COMPOSED_FINAL);
+    expect(turn().textContent).not.toContain(fixtures.COMPOSED_EARLY);
+    const groups = qa('[data-testid="feed-group"]');
+    expect(groups.map(g => g.querySelector('[data-testid="feed-group-label"]')!.textContent)).toEqual(['Created · 1 task', 'Referenced · 1 task']);
+    expect(groups.every(g => answer.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    // Late payloads: the shells reserve their height and then fill in place, same groups.
+    const shells = qa('[data-testid="object-card"][data-state="loading"]');
+    expect(shells).toHaveLength(2);
+    expect(shells.every(c => c.hasAttribute('data-reserve'))).toBe(true);
+    await act(async () => { release(); await gate; await new Promise(r => setTimeout(r, 0)); });
+    expect(qa('[data-testid="object-card"][data-state="loading"]')).toHaveLength(0);
+    expect(qa('[data-testid="feed-group"]')).toEqual(groups);
+  });
+
+  it('read: what the answer names is cited under it as one Referenced group, the rest of the list folded inside', async () => {
+    await render(fixtures.chatFixture('running').messages as Msgs);
+    const turn = qa('[data-role="assistant"]').at(-1)!;
+    const answer = turn.querySelector('[data-testid="kit-answer"]')!;
+    const group = turn.querySelector<HTMLElement>('[data-testid="feed-group"]')!;
+    expect(group.dataset.group).toBe('referenced');
+    expect(group.querySelector('[data-testid="feed-group-label"]')!.textContent).toBe('Referenced · 1 task');
+    expect(answer.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(group.querySelector('[data-testid="feed-more-objects"]')).not.toBeNull();
+    // Nothing from the turn sits between the work line and the answer.
+    expect(qa('[data-role="assistant"] [data-testid="feed-objects"]').every(o => answer.compareDocumentPosition(o) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  it('a list with nothing named is just its folded row, which names itself', async () => {
+    const msgs = [{ id: 'a', role: 'assistant', parts: [
+      { type: 'tool-list_tasks', toolCallId: 'l1', state: 'output-available', input: {}, output: { data: [], objects: [fixtures.taskRef, fixtures.questionRef] } },
+      { type: 'text', text: 'Nothing needs you.' },
+    ] }] as unknown as Msgs;
+    await render(msgs);
+    expect(q('[data-testid="feed-group"]')).toBeNull();
+    expect(q('[data-testid="feed-more-objects"]')?.textContent).toContain('Also read');
+  });
+
+  it('write many + read: each write is one Created group holding all it made; references after', async () => {
+    const t = (id: string) => ({ kind: 'task', id, workspaceId: fixtures.WS.id, fallbackText: `Task ${id}` });
+    const msgs = [{ id: 'a', role: 'assistant', parts: [
+      { type: 'tool-get_task', toolCallId: 'g1', state: 'output-available', input: {}, output: { data: {}, objects: [fixtures.taskRef] } },
+      { type: 'tool-create_task', toolCallId: 'c1', state: 'output-available', input: {}, output: { data: {}, objects: [t('n1'), t('n2')] } },
+      { type: 'text', text: 'Filed two follow-ups for the rates service.' },
+    ] }] as unknown as Msgs;
+    await render(msgs);
+    const groups = qa('[data-testid="feed-group"]');
+    expect(groups.map(g => [g.dataset.group, g.querySelector('[data-testid="feed-group-label"]')!.textContent])).toEqual([
+      ['created', 'Created · 2 tasks'], ['referenced', 'Referenced · 1 task'],
+    ]);
+    expect(groups[0].querySelectorAll('[data-testid="object-card"]')).toHaveLength(2);
+    expect(groups[0].getAttribute('aria-label')).toBe('Created: 2 tasks');
+  });
+
+  it('a re-render with the same parts (reconnect) draws every card once, in the same nodes', async () => {
+    const msgs = fixtures.chatFixture('running').messages as Msgs;
+    const views = fixtures.fixtureViews('running');
+    const source = { load: async (r: { kind: string; id: string }) => views[`${r.kind}:${r.id}`] };
+    const draw = async (messages: Msgs) => {
+      await act(async () => {
+        root.render(
+          <ObjectStoreProvider source={source}>
+            <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+              <ChatFeed messages={messages} agent={fixtures.ORGANIZER} />
+            </ChatActionsProvider>
+          </ObjectStoreProvider>,
+        );
+      });
+      await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    };
+    await draw(msgs);
+    const before = qa('[data-testid="feed-group"], [data-testid="object-card"]');
+    await draw(msgs.map(m => ({ ...m, parts: [...m.parts] })) as Msgs);
+    const after = qa('[data-testid="feed-group"], [data-testid="object-card"]');
+    expect(after).toHaveLength(before.length);
+    expect(after.every((el, i) => el === before[i])).toBe(true);
+  });
+
+  it('the agent\'s header is drawn while the turn streams, so landing adds nothing above the answer', async () => {
+    const streaming = fixtures.chatFixture('streaming');
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={{ load: async () => { throw new Error('Not found'); } }}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <ChatFeed messages={streaming.messages as Msgs} agent={fixtures.ORGANIZER} status="streaming" />
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+    const turn = qa('[data-role="assistant"]').at(-1)!;
+    expect(turn.querySelector('.kit-msg-head')?.textContent).toContain('buildd');
   });
 });
