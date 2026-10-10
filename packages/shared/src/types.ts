@@ -1675,6 +1675,12 @@ export interface ClaimDiagnostics {
    * The budget and rate-limit walls this claim was held by, set on a
    * budget_exhausted refusal: which wall, on which provider, and when it lifts.
    * `summary` is the same thing as one or two sentences for a person.
+   * A wall is listed only where a task was actually deferred on it.
+   *
+   * Only these hard walls produce budget_exhausted. The learned forecast
+   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
+   * (hosted runner hours) never do: they hold a claim under their own
+   * deferral reason, and the forecast never holds an explicit start.
    */
   budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
