@@ -137,7 +137,7 @@ export default function ActivityView({ mode, now, history, nowMs, hrefs, mission
         {loadError ? (
           <div role="alert" data-testid="activity-load-error" className="mt-8 border-2 border-status-error px-4 py-3 text-body text-text-primary">
             <p className="font-semibold">Activity could not load.</p>
-            <p className="mt-1 text-text-secondary">This is a failure to read your tasks, not an empty list.</p>
+            <p className="mt-1 text-text-secondary">Your tasks could not be read. Try again.</p>
             <a href={hrefs[mode]} className="mt-2 inline-flex min-h-11 items-center text-meta text-accent-text">Try again ›</a>
           </div>
         ) : mode === 'now' ? (

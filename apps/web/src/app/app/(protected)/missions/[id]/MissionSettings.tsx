@@ -5,9 +5,11 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
+import Notice from '@/components/ui/Notice';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
-import { humanPickableRoles } from '@buildd/shared';
+import { humanPickableRoles, type GoalCriterion } from '@buildd/shared';
+import MissionDecisionSheet, { type SurfaceAuditDecision } from './MissionDecisionSheet';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -48,7 +50,24 @@ export function quickAddRoleOptions(roles: { slug: string; name: string }[]): { 
   return [{ value: '', label: 'Any role' }, ...humanPickableRoles(roles).map(r => ({ value: r.slug, label: r.name }))];
 }
 
+/**
+ * What the mission-detail page already knows about whether Complete would be
+ * refused, so the drawer can open the decision sheet without a request that can
+ * only fail. The server stays the authority: a refusal the page did not
+ * predict (`surface_audit_missing`) opens the same sheet.
+ */
+export interface CompletionDecisionInfo {
+  goalCriteria: GoalCriterion[];
+  failingCriterionIndex: number | null;
+  fileWorkHref: string;
+  /** The mission states criteria and they have not all passed. */
+  criteriaUnmet: boolean;
+  /** Set when the page already knows the completion blocker is a missing visual audit. */
+  surfaceAudit?: SurfaceAuditDecision | null;
+}
+
 interface MissionSettingsProps {
+  completionDecision?: CompletionDecisionInfo | null;
   missionId: string;
   currentStatus: string;
   cronExpression: string | null;
@@ -85,6 +104,7 @@ export default function MissionSettings({
   displayState,
   hasPrimaryAction = false,
   executor = null,
+  completionDecision = null,
 }: MissionSettingsProps) {
   const router = useRouter();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -103,6 +123,9 @@ export default function MissionSettings({
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [executorLoading, setExecutorLoading] = useState(false);
+  // Set when Complete needs a person's decision first; renders the decision sheet.
+  const [decisionAudit, setDecisionAudit] = useState<SurfaceAuditDecision | null>(null);
+  const [decisionOpen, setDecisionOpen] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
   /**
@@ -178,6 +201,50 @@ export default function MissionSettings({
     const ok = await patchMission({ status: newStatus });
     if (ok) router.refresh();
     setStatusLoading(false);
+  }
+
+  const executorLocal = executor === 'local';
+
+  // Complete is a decision, not a write, whenever the page knows it is blocked:
+  // the same sheet the mission's decision banner uses carries the exits
+  // (visual audit, audited waiver, criteria). Otherwise try it, and let the
+  // server's structured refusal route to that sheet instead of a dead end.
+  async function handleComplete() {
+    setError(null);
+    if (completionDecision && (completionDecision.surfaceAudit || completionDecision.criteriaUnmet)) {
+      setDecisionAudit(completionDecision.surfaceAudit ?? null);
+      setDecisionOpen(true);
+      return;
+    }
+    setStatusLoading(true);
+    try {
+      const res = await fetch(`/api/missions/${missionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: 'completed' }),
+      });
+      if (res.ok) {
+        router.refresh();
+        return;
+      }
+      const body = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (body?.code === 'surface_audit_missing') {
+        setDecisionAudit({
+          paths: Array.isArray(body.uiPaths) ? body.uiPaths.filter((p: unknown): p is string => typeof p === 'string') : [],
+          executorLocal,
+        });
+        setDecisionOpen(true);
+        return;
+      }
+      setError(typeof body?.error === 'string' && body.error
+        ? body.error
+        : `Could not complete the mission (HTTP ${res.status}). It is not completed.`);
+    } catch {
+      setError('Could not reach buildd. The mission is not completed.');
+    } finally {
+      setStatusLoading(false);
+    }
   }
 
   // Arming a mission means both things a stalled mission needs: the orchestrator
@@ -317,6 +384,27 @@ export default function MissionSettings({
 
   return (
     <div className="space-y-4">
+      {decisionOpen && (decisionAudit || completionDecision?.criteriaUnmet) && (
+        <div className="min-w-0 max-w-full" role="region" aria-label="Complete mission" data-testid="mission-complete-decision">
+         <Notice tone="warn">
+          <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
+            <span className="font-semibold text-accent-text">Decision needed. </span>
+            {decisionAudit
+              ? 'This mission changed screens that have not had a visual audit. Run one, or complete it with a written reason.'
+              : 'This mission\'s goal criteria have not all passed. File the work, fix a criterion, or complete it anyway.'}
+          </p>
+          <MissionDecisionSheet
+            missionId={missionId}
+            goalCriteria={completionDecision?.goalCriteria ?? []}
+            failingCriterionIndex={completionDecision?.failingCriterionIndex ?? null}
+            fileWorkHref={completionDecision?.fileWorkHref ?? `/app/missions/${missionId}`}
+            criteriaUnmet={completionDecision?.criteriaUnmet ?? false}
+            surfaceAudit={decisionAudit}
+          />
+         </Notice>
+        </div>
+      )}
+
       {/* ── Primary CTA — state driven, and silent when the header already
           made a suggestion. ── */}
       {mayOfferPrimary && (
@@ -346,7 +434,7 @@ export default function MissionSettings({
           {!isHeld && displayState === 'review' && (
             <div className="flex flex-wrap items-center gap-3">
               <button
-                onClick={() => handleStatusChange('completed')}
+                onClick={handleComplete}
                 disabled={statusLoading}
                 className="w-full md:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white text-body font-semibold hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
@@ -495,7 +583,7 @@ export default function MissionSettings({
             {displayState !== 'review' && (
               <>
                 <button
-                  onClick={() => handleStatusChange('completed')}
+                  onClick={handleComplete}
                   disabled={statusLoading}
                   className="inline-flex min-h-11 items-center md:min-h-0 text-meta text-status-success/70 hover:text-status-success transition-colors disabled:opacity-50"
                 >
