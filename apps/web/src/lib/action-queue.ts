@@ -40,7 +40,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'INCIDENT' | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
@@ -254,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -270,8 +270,11 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
-  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). kind === 'incident' — the gate's reason. */
   failureMessage?: string;
+  /** kind === 'incident' — a Sentinel incident the escalation gate gave to the owner (lib/failure-incident-escalation.ts). */
+  incidentId?: string;
+  incidentTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -572,8 +575,11 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
-  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. INCIDENT: the gate's reason. */
   failureMessage?: string;
+  /** Set when chip === 'INCIDENT' — the incident and its title. */
+  incidentId?: string;
+  incidentTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
@@ -675,8 +681,10 @@ export interface ActionQueueItem {
 // dies must not take the finding with it — but never counts as actionable.
 // FAILED sits with RECONNECT: both are a credential the owner has to supply
 // before anything else can run.
+// INCIDENT leads: the escalation gate hands a Sentinel incident to the owner
+// only when it is critical, or nothing is fixing it.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'INCIDENT', 'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -1541,6 +1549,20 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
+        });
+      }
+    } else if (item.kind === 'incident') {
+      const key = `incident:${item.incidentId}`;
+      if (item.incidentId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'INCIDENT',
+          incidentId: item.incidentId,
+          incidentTitle: item.incidentTitle,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
         });
       }
     } else if (item.kind === 'failed') {

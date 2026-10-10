@@ -1526,3 +1526,13 @@ describe('buildFailedTaskItems — tasks waiting on GitHub access', () => {
     expect(items.map(i => i.fixHref)).toEqual(['/app/settings/workspace/ws-1#github-access', '/app/settings/workspace/ws-2#github-access']);
   });
 });
+
+describe('incident items', () => {
+  it('become one actionable INCIDENT row per incident', () => {
+    const item: WaitingOnYouRawItem = { kind: 'incident', incidentId: 'i1', incidentTitle: 'Retry forks', failureMessage: 'why', fixHref: '/app/incidents/i1', fixLabel: 'Open incident' };
+    const q = buildActionQueue([item, { ...item }], []);
+    expect(q).toHaveLength(1);
+    expect(q[0]).toMatchObject({ subjectKey: 'incident:i1', chip: 'INCIDENT', incidentId: 'i1', incidentTitle: 'Retry forks', fixHref: '/app/incidents/i1' });
+    expect(isActionableChip('INCIDENT')).toBe(true);
+  });
+});
