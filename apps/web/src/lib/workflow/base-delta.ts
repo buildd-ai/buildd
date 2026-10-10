@@ -14,7 +14,12 @@
  *
  * No I/O: the base delta is read by the seam / door and arrives as a fact.
  */
-import { isGeneratedMigrationPath } from '../migration-safety';
+/**
+ * A generated Drizzle migration; the same pattern as migration-safety.ts
+ * `isGeneratedMigrationPath` (kept here so the kernel imports no module;
+ * base-delta.test.ts pins the two together).
+ */
+const MIGRATION_PATH = /(?:^|\/)drizzle\/\d{4}_[^/]+\.sql$/;
 
 /**
  * Once a refresh cycle is spent, a head may land across a base gap of up to
@@ -41,7 +46,7 @@ const REPO_INVARIANT_TEST = /^scripts\/[^/]+\.test\.ts$/;
  * (they decide what "green" means) and repo-wide invariant tests.
  */
 export function isRiskyLandingPath(path: string): boolean {
-  return isGeneratedMigrationPath(path)
+  return MIGRATION_PATH.test(path)
     || path === SCHEMA_FILE
     || LOCKFILE.test(path)
     || PACKAGE_MANIFEST.test(path)
