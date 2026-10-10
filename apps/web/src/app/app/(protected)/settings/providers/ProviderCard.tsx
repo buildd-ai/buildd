@@ -66,14 +66,14 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
       <div className="flex items-center gap-3 min-h-12 py-1.5">
         <button
           type="button"
-          className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-left min-h-11"
+          className="flex-1 min-w-0 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-left min-h-11"
           aria-expanded={open}
           data-testid="provider-row-toggle"
           onClick={() => onToggle(!open)}
         >
           <span className="text-body font-semibold text-text-primary">{group.label}</span>
           <span className={`text-meta ${TONE[state.tone]}`} data-testid="provider-card-state">{state.word}</span>
-          {rows[0] && <span className="text-meta text-text-muted font-mono" data-testid="provider-masked">{maskedValue(rows[0])}</span>}
+          {rows[0] && <span className={`text-meta text-text-muted ${maskedValue(rows[0]).startsWith('…') ? 'font-mono' : ''}`} data-testid="provider-masked">{maskedValue(rows[0])}</span>}
         </button>
         {action && !editing && (
           <button type="button" className="btn shrink-0" onClick={startEdit}>{action}</button>
