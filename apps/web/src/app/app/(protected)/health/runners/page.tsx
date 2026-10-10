@@ -5,19 +5,26 @@ import { workspaces } from '@buildd/core/db/schema';
 import { displayWorkspaceName } from '@buildd/shared';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { isPaused } from '@/lib/workspace-pause';
 import WorkspacePausePanel from '@/components/WorkspacePausePanel';
 import { renderHealthPage } from '../_lib/render-health';
 
 export const dynamic = 'force-dynamic';
 
-/** The active team's workspaces with their "pause new starts" state, for the control on this page. */
+/**
+ * The active team's workspaces with their "pause new starts" state, for the
+ * control on this page. Pausing is manage_workspace_settings (the
+ * pause-starts route enforces it): without it there are no rows, so a member
+ * sees no control.
+ */
 async function pauseRows() {
   const user = await getCurrentUser();
   if (!user) return [];
   const teamIds = await getUserTeamIds(user.id);
   if (teamIds.length === 0) return [];
   const activeTeamId = (await resolveActiveTeamId(user.id, (await cookies()).get('buildd-team')?.value)) ?? teamIds[0];
+  if (!await can({ kind: 'user', userId: user.id }, 'manage_workspace_settings', activeTeamId).catch(() => false)) return [];
   const rows = await db
     .select({ id: workspaces.id, name: workspaces.name, until: workspaces.newStartsPausedUntil })
     .from(workspaces)

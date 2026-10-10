@@ -15,6 +15,7 @@ globalThis.fetch = mockFetch as any;
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: RunnerTokensSection } = await import('./RunnerTokensSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 const account = {
   id: 'fixture-token', name: 'Analytics client', type: 'service', authType: 'api',
@@ -141,5 +142,31 @@ describe('RunnerTokensSection: one primary', () => {
     expect(primaries[0].textContent).toBe('Create a runner token');
     expect(primaries[0].getAttribute('href')).toBe('/app/settings/runners/tokens/new');
     expect(host.querySelector('[data-testid="new-token"]')).toBeNull();
+  });
+});
+
+/** Read-only for a member: only what they may do, which is making their own token. */
+describe('RunnerTokensSection: a member without manage_team_keys', () => {
+  it('reads every token detail as text; New token is the one control', async () => {
+    await mount({ maxConcurrentWorkers: 3, hostRunner: true, canManageHostRunner: false });
+    await expandToken();
+    expect(host.textContent).toContain('Workers: 3');
+    expect(host.textContent).toContain('Trusted');
+    expect(describeControls(host)).toEqual(['a "+ New token"']);
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);
+  });
+
+  it('may delete a token they made themselves', async () => {
+    await mount({ canManageHostRunner: false, canDelete: true });
+    await expandToken();
+    expect(describeControls(host)).toEqual(['a "+ New token"', 'button "Delete"']);
+  });
+
+  it('an admin keeps Regenerate key and Delete', async () => {
+    await mount({ canManageHostRunner: true });
+    await expandToken();
+    const labels = describeControls(host);
+    expect(labels).toContain('button "Regenerate key"');
+    expect(labels).toContain('button "Delete"');
   });
 });

@@ -1,5 +1,5 @@
 /**
- * What the Providers page shows for one provider at one scope tab, derived
+ * What the Models and Keys pages show for one provider at one scope, derived
  * from `GET /api/providers` only. Pure and db-free (client components import
  * it).
  *
@@ -44,12 +44,6 @@ export const SHAPE_NOUN: Record<ProviderShapeId, string> = {
   gateway: 'Gateway',
   endpoint: 'Endpoint',
 };
-
-export const SCOPE_TABS: readonly { id: ProviderApiScope; label: string }[] = [
-  { id: 'team', label: 'Team' },
-  { id: 'workspace', label: 'Workspace' },
-  { id: 'mine', label: 'Mine' },
-];
 
 /** The LiteLLM gateway and custom endpoint forms: the Routing section further down this page. */
 export const ADVANCED_ANCHOR = 'routing';
@@ -194,10 +188,6 @@ export function effectivePolicy(policy: Pick<ProviderPolicySummary, 'credentialP
 export function policySentence(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
   const opt = POLICY_OPTIONS.find((o) => o.value === effectivePolicy(policy))!;
   return `${opt.label}. ${opt.hint}`;
-}
-
-export function isScopeTab(v: string | null): v is ProviderApiScope {
-  return v === 'team' || v === 'workspace' || v === 'mine';
 }
 
 // ── Rows ─────────────────────────────────────────────────────────────────────

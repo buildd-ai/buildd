@@ -57,6 +57,11 @@
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
  *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
+ *   QA_THEME                        — "light" or "dark": emulates prefers-color-scheme, so any app that
+ *                                     follows the OS theme renders in it, and also seeds buildd's own
+ *                                     `buildd-theme` key. Recorded on every capture as `theme` (copy into
+ *                                     the shot's metadata.qa.theme). Unset keeps the app default and
+ *                                     records no theme.
  */
 
 import { connectReviewBrowser, exposeService } from './browser-provider';
@@ -64,7 +69,7 @@ import type { BrowserContextOptions } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { resolveViewport } from './viewport';
+import { resolveTheme, resolveViewport, type QaTheme } from './viewport';
 import { bootFailure, isModuleLoadError } from './boot';
 import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
 import {
@@ -80,8 +85,10 @@ import {
 // non-fatal warning, and leave the Capture step hanging with a live browser
 // and nothing left to await.
 let contextOptions: BrowserContextOptions;
+let QA_THEME: QaTheme | null;
 try {
   contextOptions = resolveViewport(process.env.QA_VIEWPORT);
+  QA_THEME = resolveTheme(process.env.QA_THEME);
 } catch (err) {
   console.error(`[capture] ${(err as Error).message}`);
   process.exit(1);
@@ -236,10 +243,12 @@ if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
   console.log(storageStateFromSecret ? '[capture] using storage state from VISUAL_QA_STORAGE_STATE' : `[capture] using storage state from ${STORAGE_STATE_PATH}`);
 }
 
+// QA_THEME=light|dark emulates prefers-color-scheme, which is how most apps
+// pick a theme. Unset keeps the app default.
+if (QA_THEME) contextOptions.colorScheme = QA_THEME;
 const context = await browser.newContext(contextOptions);
-// QA_THEME=light|dark seeds the theme the app's boot script reads, before any
-// page script runs. Unset keeps the app default (dark).
-const QA_THEME = process.env.QA_THEME?.trim();
+// ...and also seeds buildd's own stored choice, which its boot script reads
+// before the media query, before any page script runs.
 if (QA_THEME) {
   await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
   console.log(`[capture] theme ${QA_THEME}`);
@@ -335,6 +344,8 @@ type Capture = {
   source: string;
   /** A QA_PLAN state key: copy into the shot's metadata.qa.state. Absent on the base shot. */
   state?: string;
+  /** light | dark from QA_THEME: copy into the shot's metadata.qa.theme. Absent when QA_THEME was unset. */
+  theme?: QaTheme;
   /** The step that did not settle. The shot was still taken, at that point. */
   stepFailed?: StepFailure;
   /** Writes the page tried during the steps, aborted by the guard. */
@@ -353,11 +364,12 @@ const captures: Capture[] = [];
 
 for (const route of routes) {
   // Present only on a state shot, so a QA_ROUTES run's entries are unchanged.
-  const stateField = route.state ? { state: route.state } : {};
+  // The theme rides along the same way: present only when QA_THEME was set.
+  const shotFields = { ...(route.state ? { state: route.state } : {}), ...(QA_THEME ? { theme: QA_THEME } : {}) };
   if (route.skipReason) {
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url: `${BASE_URL}${route.path}`,
@@ -391,7 +403,7 @@ for (const route of routes) {
       if (wall.kind === 'config_error') {
         captures.push({
           source: PAGE_SOURCE,
-          ...stateField,
+          ...shotFields,
           id: route.id,
           path: route.path,
           url,
@@ -473,7 +485,7 @@ for (const route of routes) {
     const boot = bootFailure(navStatus, moduleErrors);
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url,
@@ -495,7 +507,7 @@ for (const route of routes) {
     console.error(`[capture] FAIL  ${route.id}: ${(err as Error).message}`);
     captures.push({
       source: PAGE_SOURCE,
-      ...stateField,
+      ...shotFields,
       id: route.id,
       path: route.path,
       url,

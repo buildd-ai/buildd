@@ -2,13 +2,13 @@
 title: Artifacts and Sharing
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-10-10
 summary: Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
+verified_by: [apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -34,6 +34,13 @@ assertions:
   - id: "public-read-tests"
     type: "test_file"
     path: "apps/web/src/app/api/share/[token]/route.test.ts"
+  - id: "artifact-body-writer"
+    type: "symbol"
+    name: "writeArtifactBody"
+    path: "apps/web/src/lib/artifact-revisions.ts"
+  - id: "artifact-revision-tests"
+    type: "test_file"
+    path: "apps/web/tests/db/artifact-revisions.test.ts"
 ---
 # Artifacts and Sharing
 
@@ -391,6 +398,62 @@ mirroring of artifacts (`mirrorWorkProduct` / `buildArtifactCard`) and its
 retrieval scoping — see `knowledge-store-retrieval`.
 
 ---
+
+## 6. Body history and lost-update protection
+
+**Capability statement**: Every change to an artifact's body MUST be kept as an
+immutable, hashed revision, and a writer that names the revision it read MUST
+NOT overwrite a body that has moved on since. A keyed upsert still updates one
+row in place (§1); its earlier bodies stay readable.
+
+**Invariants**:
+- A body is `content` plus `storageKey`. Every insert or update that sets or
+  changes either one appends an `artifact_revisions` row in the same statement
+  (trigger `artifacts_record_revision`), so no write path can skip it. Title-,
+  metadata- or visibility-only writes append nothing.
+- `artifacts.current_revision` is owned by the trigger; a value a writer sets
+  is ignored. 0 means the body was written before revisions existed, and it is
+  snapshotted as revision 1 (author `legacy`) on its first change.
+- `content_hash` is sha256 hex over the UTF-8 content. A file body records the
+  storage key with a NULL hash until its bytes are verified.
+- A revision row is never rewritten (trigger `artifact_revisions_immutable`).
+  The one permitted change fills a NULL hash or size, once.
+- Redacting a value from artifacts (a leaked secret) MUST go through
+  `redactArtifactText`: it rewrites the current body, which records a redacted
+  revision, then deletes every revision still holding the value. An UPDATE of
+  `artifacts.content` alone leaves the value in history, and snapshots a legacy
+  body into it.
+- A keyed re-create that sends no `content` keeps the stored body. An explicit
+  `null` or `""` clears it, and the clearing is itself a revision.
+- `PATCH /api/artifacts/[id]` with `content` and `expectedRevision` writes only
+  if the body is still at that revision. Otherwise it returns 409
+  `revision_conflict` with `currentRevision`, and nothing in that PATCH is
+  written. The author recorded is the writer of that statement only.
+- On the worker artifacts route, a per-task token may re-create by key a
+  worker artifact of its own task, its own schedule (each run is a new task
+  updating the same key) or its own mission. Another task's, or a mission-,
+  initiative- or workspace-level artifact, is a 409, as on the mission and
+  initiative routes.
+- Mission and initiative `contextArtifactIds` accept only artifacts the caller
+  can read, in a workspace of the owning team. The planning-context read drops
+  any stored id outside the mission's team.
+
+**Acceptance criteria**:
+- AC-6.1: GIVEN an artifact at revision N WHEN its content changes THEN
+  revision N+1 is recorded and revision N's content and hash are unchanged.
+- AC-6.2: GIVEN two writers who both read revision N WHEN both write with
+  `expectedRevision = N` THEN exactly one write lands, the other receives 409
+  with `currentRevision = N+1`, and both bodies remain readable.
+- AC-6.3: GIVEN `GET /api/artifacts/[id]?revision=K` THEN the response body is
+  revision K's, with its hash; an unknown K is a 404.
+- AC-6.4: GIVEN a mission create naming another team's artifact id THEN the
+  request is a 400 that lists the id without confirming it exists.
+
+**Code surface**:
+- Trigger: `packages/core/drizzle/0289_artifact_revisions_trigger.sql`
+- Writer and reads: `apps/web/src/lib/artifact-revisions.ts` — `writeArtifactBody`, `getArtifactRevision`
+- Redaction: `packages/core/artifact-redaction.ts` — `redactArtifactText`
+- Context references: `apps/web/src/lib/context-artifact-ids.ts`
 
 ## Verification gaps
 

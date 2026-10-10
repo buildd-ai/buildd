@@ -10,6 +10,7 @@ import { loadInitiativeList } from '@/lib/initiative-list';
 import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
 import type { InitiativeStatus } from '@/lib/initiative-view';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
 
 // GET /api/initiatives — list initiatives for the user's team(s), with rolled-up progress
 export async function GET(req: NextRequest) {
@@ -138,6 +139,15 @@ export async function POST(req: NextRequest) {
       effectiveOwner = parsed.value;
     }
 
+    const contextArtifacts = await checkContextArtifactIds(
+      contextArtifactIds,
+      apiAccount ? { account: apiAccount } : { userId: user!.id },
+      teamId,
+    );
+    if (!contextArtifacts.ok) {
+      return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
+    }
+
     const [initiative] = await db
       .insert(initiatives)
       .values({
@@ -147,7 +157,7 @@ export async function POST(req: NextRequest) {
         workspaceId: workspaceId || null,
         status: effectiveStatus,
         priority: priority || 0,
-        contextArtifactIds: contextArtifactIds || [],
+        contextArtifactIds: contextArtifacts.ids,
         createdByUserId: user?.id || null,
         ownerUserId: effectiveOwner,
         targetDate: effectiveTargetDate,

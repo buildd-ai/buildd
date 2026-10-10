@@ -67,6 +67,7 @@ export default function HostedRunnerFixture() {
           effective="large"
           source="derived"
           reason="low_disk"
+          canEdit
           monthLine={workspaceRunnerMonthLine({ wallSeconds: 9.1 * H, countedSeconds: 18.2 * H })}
         />
 

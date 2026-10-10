@@ -36,7 +36,7 @@ describe('dependency handover (synthetic pnpm sha512 content-addressed store)', 
 
 // A local packed package exercises the actual pnpm layout without registry/network access.
 test('real pnpm frozen install regenerates a deleted planted bin shim', () => {
-  const base = mkdtempSync(join(process.cwd(), '.dependency-fixture-')); roots.push(base);
+  const base = mkdtempSync(join(tmpdir(), 'dependency-fixture-')); roots.push(base);
   const repoRoot = join(base, 'repo'); const storeDir = join(base, 'store');
   const packageDir = join(base, 'package');
   mkdirSync(repoRoot); mkdirSync(packageDir);
@@ -45,6 +45,8 @@ test('real pnpm frozen install regenerates a deleted planted bin shim', () => {
   chmodSync(join(packageDir, 'cli.js'), 0o755);
   const packed = spawnSync('tar', ['-czf', join(base, 'fixture.tgz'), '-C', base, 'package']);
   expect(packed.status).toBe(0);
+  // An empty workspace file pins pnpm's root here, so it never walks up into an enclosing checkout.
+  writeFileSync(join(repoRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
   writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ private: true, dependencies: { 'warm-fixture-bin': 'file:../fixture.tgz' } }));
   const install = (frozen: boolean) => spawnSync('pnpm', ['install', '--ignore-scripts', '--store-dir', storeDir, ...(frozen ? ['--frozen-lockfile'] : ['--no-frozen-lockfile'])], {
     cwd: repoRoot, encoding: 'utf8', timeout: 60000, env: { ...process.env, CI: 'true', HOME: base },

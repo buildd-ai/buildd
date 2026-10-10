@@ -41,9 +41,9 @@ export default async function AccountSettingsPage() {
       {/* The rules chat loads into every one of your turns; yours only. */}
       <StandingRulesSection />
 
-      {/* What chat runs on for you; your own keys are managed on Models. */}
+      {/* What chat runs on for you; your own keys are managed on You › Keys. */}
       {currentTeamId && (
-        <Section title="Models">
+        <Section title="Keys">
           <div className="border-y border-border-default">
             <PersonalProviderKeys teamId={currentTeamId} isAdmin={perms.manage_inference_providers} />
           </div>

@@ -345,6 +345,8 @@ describe('assertion coverage over the real migration corpus', () => {
     //    nullability to check it against.
     //  - 0282_legacy_repair_overlap_edges: idempotent data fix for untagged
     //    conflict/collision attempt edges, with no schema assertions.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(3);
+    //  - 0289_artifact_revisions_trigger: plpgsql functions and triggers only
+    //    (artifact body history); its table and columns are in 0288.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(4);
   });
 });

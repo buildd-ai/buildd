@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { resolveViewport } from './viewport';
+import { resolveTheme, resolveViewport } from './viewport';
 
 describe('resolveViewport', () => {
   test('defaults to the desktop viewport when unset', () => {
@@ -37,5 +37,22 @@ describe('resolveViewport', () => {
     expect(() => resolveViewport('390')).toThrow(/QA_VIEWPORT/);
     expect(() => resolveViewport('0x844')).toThrow(/QA_VIEWPORT/);
     expect(() => resolveViewport('phone')).toThrow(/QA_VIEWPORT/);
+  });
+});
+
+describe('resolveTheme', () => {
+  test('unset keeps the app default: no emulation, no theme recorded', () => {
+    expect(resolveTheme(undefined)).toBeNull();
+    expect(resolveTheme('  ')).toBeNull();
+  });
+
+  test('light and dark, case-insensitive', () => {
+    expect(resolveTheme('light')).toBe('light');
+    expect(resolveTheme(' DARK ')).toBe('dark');
+  });
+
+  test('rejects anything else instead of shooting the default theme under the wrong label', () => {
+    expect(() => resolveTheme('sepia')).toThrow(/QA_THEME/);
+    expect(() => resolveTheme('both')).toThrow(/QA_THEME/);
   });
 });

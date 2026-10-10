@@ -212,6 +212,46 @@ describe('refused before any spend', () => {
     expect((await send({ role: 'user', parts: [] })).res.status).toBe(400);
     expect((await send(userMsg('   '))).res.status).toBe(400);
   });
+
+  it('an empty message and a too-long one are told apart, and a refused one spends nothing', async () => {
+    const model = mockModel(textStream('x'));
+    const { send } = harness({ model });
+    const empty = await send(userMsg('  '));
+    expect(JSON.parse(empty.text)).toMatchObject({ code: 'message_empty' });
+    const long = await send(userMsg('x'.repeat(200_001)));
+    expect(long.res.status).toBe(400);
+    expect(JSON.parse(long.text)).toMatchObject({ code: 'message_too_long', limit: 200_000, chars: 200_001 });
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(saved()).toHaveLength(0);
+  });
+});
+
+describe('long messages', () => {
+  for (const n of [8_001, 32_000, 100_000, 200_000]) {
+    it(`accepts ${n.toLocaleString('en-US')} characters and stores them byte for byte`, async () => {
+      const text = '𝔘ñ✓'.repeat(Math.ceil(n / 4)).slice(0, n);
+      const { send } = harness({ model: mockModel(textStream('ok')) });
+      const { res } = await send(userMsg(text));
+      expect(res.status).toBe(200);
+      const user = saved().find(m => m.role === 'user')!;
+      expect((user.parts[0] as { text: string }).text).toBe(text.trim());
+    });
+  }
+
+  it('sends the model a bounded history but keeps every stored message whole', async () => {
+    const model = mockModel(textStream('ok'));
+    const { send } = harness({ model, limits: { historyChars: 250_000 } });
+    const first = 'a'.repeat(200_000);
+    await send(userMsg(first));
+    const second = await send({ ...userMsg('b'.repeat(200_000)), id: 'client-2' });
+    expect(second.res.status).toBe(200);
+    const prompt = JSON.stringify(model.doStreamCalls.at(-1)!.prompt);
+    expect(prompt).toContain('Earlier pasted text, 200,000 characters');
+    expect(prompt).toContain('b'.repeat(200_000));
+    expect(prompt).not.toContain(first);
+    const stored = saved().filter(m => m.role === 'user').map(m => (m.parts[0] as { text: string }).text.length);
+    expect(stored).toEqual([200_000, 200_000]);
+  });
 });
 
 describe('the model comes from the plan', () => {

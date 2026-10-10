@@ -10,6 +10,7 @@ import { computeMissionProgress, computeInitiativeProgress, type ChildMissionPro
 import { parseInitiativeStatus, parseOwnerUserId, parseTargetDate } from '@/lib/initiative-fields';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
 
 /** Check if an initiative is accessible: team match OR open-access workspace. */
 async function hasInitiativeAccess(initiative: { teamId: string; workspaceId: string | null }, teamIds: string[], accountId?: string | null): Promise<boolean> {
@@ -156,7 +157,15 @@ export async function PATCH(
     }
     if (priority !== undefined) updateData.priority = priority;
     if (workspaceId !== undefined) updateData.workspaceId = workspaceId || null;
-    if (contextArtifactIds !== undefined) updateData.contextArtifactIds = contextArtifactIds || [];
+    if (contextArtifactIds !== undefined) {
+      const checked = await checkContextArtifactIds(
+        contextArtifactIds,
+        apiAccount ? { account: apiAccount } : { userId: user!.id },
+        existing.teamId,
+      );
+      if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+      updateData.contextArtifactIds = checked.ids;
+    }
 
     const [updated] = await db
       .update(initiatives)

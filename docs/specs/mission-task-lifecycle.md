@@ -1749,9 +1749,15 @@ Manifests-are-the-enforcement contract above).
 
 **Checklist** (reused from the Weekly mobile UI audit, scoped to the paths
 declared by the mission's own builder tasks instead of the whole app): 390pt/320pt
-viewport walk, the CTA set derived from live server state for every state the
-mission introduced, empty/error/loading rendering, no duplicate chrome titles.
-The audit task files defects as tasks in the **same mission** (not friction
+viewport walk, both themes (every required route in light and dark,
+`metadata.qa.theme`; completion counts a route only with both), the first screen
+at 390 showing what the page is for, the CTA set derived from live server state
+for every state the mission introduced, empty/error/loading rendering, nothing
+shown twice (the same fact, count or action, or duplicate chrome titles), and
+before/after against trunk on a mission branch. A workspace may add two items via
+`gitConfig.visualQa`: `designRules` (a repo path every shot is checked against)
+and `reference` (an approved design reference findings compare against); both
+are off when absent. The audit task files defects as tasks in the **same mission** (not friction
 reports) and completes with an artifact.
 
 **Idempotency**: Re-running decomposition (the organizer creating tasks again)

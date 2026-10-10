@@ -4,6 +4,7 @@ import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, s
 import { and, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
 import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbeats';
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import {
@@ -284,6 +285,11 @@ export async function loadHealth({
 
   const wsById = new Map((teamWorkspaceRows as any[]).map((w: any) => [w.id as string, w.name as string] as const));
 
+  // Team-wide spend (the budget forecast) is for people holding
+  // view_team_usage in the active team; a member's Health never loads it.
+  const seesTeamSpend = need('budgetForecast')
+    && await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false);
+
   // Parallel fetches: runners, usage, schedules, recent failures, credential
   // health, budget forecast, consumption, aggregated failure analytics, and
   // backends stranding pending work
@@ -444,7 +450,7 @@ export async function loadHealth({
       : [] as CredentialHealthItem[],
 
     // Budget forecast
-need('budgetForecast') ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null) : null,
+seesTeamSpend ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null) : null,
     // Consumption: tokens / cost / turns / tool calls per task, by role. TREND —
     // obeys the page window (it used to be pinned to 7d while the section above
     // it was pinned to 30d, so the page published two windows and named neither).

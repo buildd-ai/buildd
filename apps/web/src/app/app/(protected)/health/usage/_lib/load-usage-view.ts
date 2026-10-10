@@ -23,7 +23,11 @@ import {
 } from '@/lib/action-events';
 
 export type UsageViewResult =
-  | { kind: 'ok'; view: UsageDrilldownView; wsFilter: string | null; roleUsage: RoleUsageData | null; monthly: MonthlyBudgetForecast | null }
+  | {
+      kind: 'ok'; view: UsageDrilldownView; wsFilter: string | null; roleUsage: RoleUsageData | null; monthly: MonthlyBudgetForecast | null;
+      /** 'team': every task in the team (view_team_usage). 'mine': only tasks this person started. */
+      scope: 'team' | 'mine';
+    }
   | { kind: 'no-workspaces' };
 
 /**
@@ -31,6 +35,11 @@ export type UsageViewResult =
  * Health → Operator (where the turns go: code navigation, shell, buildd
  * actions). `includeInternals` loads the buildd action log only for the page
  * that shows it.
+ *
+ * Team-wide figures (every task, the month's spend, usage by role) need
+ * view_team_usage in the active team. Without it the page is the person's own
+ * tasks only, and the team's spend is never read. Operator (platform
+ * operators only) always reads the team.
  */
 export async function loadUsageView({
   userId,
@@ -71,17 +80,19 @@ export async function loadUsageView({
   // every delta into an artefact of the cap.
   const previousStart = new Date(now - 2 * windowMs);
 
-  const showRoleUsage = !includeInternals && await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId);
+  const seesTeam = includeInternals || await can({ kind: 'user', userId }, 'view_team_usage', activeTeamId).catch(() => false);
+  const showRoleUsage = seesTeam && !includeInternals;
+  const forUserId = seesTeam ? undefined : userId;
   const [rows, previousRows, actionRows, actionWorkers, roleUsage, forecast] = await Promise.all([
-    fetchUsageRows({ workspaceIds: scopedWsIds, windowStart }).catch(() => []),
-    fetchUsageRows({ workspaceIds: scopedWsIds, windowStart: previousStart, windowEnd: windowStart })
+    fetchUsageRows({ workspaceIds: scopedWsIds, windowStart, forUserId }).catch(() => []),
+    fetchUsageRows({ workspaceIds: scopedWsIds, windowStart: previousStart, windowEnd: windowStart, forUserId })
       .catch(() => []),
     // Guarded like every sibling: a failure here costs this one panel, not the
     // page. `null` from the pair below renders nothing rather than a zero.
     includeInternals ? fetchActionEvents({ workspaceIds: scopedWsIds, windowStart }).catch(() => null) : Promise.resolve(null),
     includeInternals ? countWorkersInWindow({ workspaceIds: scopedWsIds, windowStart }).catch(() => null) : Promise.resolve(null),
     showRoleUsage ? loadFlowUsage(scopedWsIds, resolution.window, now).catch(() => null) : Promise.resolve(null),
-    !includeInternals ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null) : Promise.resolve(null),
+    seesTeam && !includeInternals ? getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null) : Promise.resolve(null),
   ]);
 
   const previousScan = describeScan(previousRows, previousStart, USAGE_ROW_LIMIT);
@@ -104,5 +115,5 @@ export async function loadUsageView({
       : null,
   });
 
-  return { kind: 'ok', view, wsFilter: wsFilter ?? null, roleUsage, monthly: forecast?.monthly ?? null };
+  return { kind: 'ok', view, wsFilter: wsFilter ?? null, roleUsage, monthly: forecast?.monthly ?? null, scope: seesTeam ? 'team' : 'mine' };
 }

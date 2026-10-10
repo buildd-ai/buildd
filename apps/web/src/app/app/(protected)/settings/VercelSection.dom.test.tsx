@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: VercelSection } = await import('./VercelSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 beforeEach(() => {
   globalThis.fetch = mock(async () => new Response(JSON.stringify({ secrets: [] }), { status: 200 })) as unknown as typeof fetch;
@@ -57,13 +58,19 @@ describe('VercelSection: read-only without manage_team_credentials', () => {
     }), { status: 200 })) as unknown as typeof fetch;
   };
 
-  it('member: lists the token, no add form, no Delete', async () => {
+  it('member: lists the token as text, with no control and no who-can line', async () => {
     withToken();
     await mount([]);
     expect(host.textContent).toContain('Prod health');
-    expect(host.querySelector('input')).toBeNull();
-    expect([...host.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Delete');
-    expect(host.querySelector('[data-testid="vercel-read-only"]')!.textContent).toBe('Admins can change this.');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.querySelector('[data-testid="vercel-read-only"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);
+  });
+
+  it('member with no token: says so, with no add form', async () => {
+    await mount([]);
+    expect(host.textContent).toContain('No tokens.');
+    expect(describeControls(host)).toEqual([]);
   });
 
   it('admin: Delete and add are offered', async () => {

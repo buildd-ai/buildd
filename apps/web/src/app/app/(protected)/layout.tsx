@@ -11,6 +11,7 @@ import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
 import ConnectorReconnectBanner from '@/components/ConnectorReconnectBanner';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isBillingEnforced } from '@buildd/core/entitlements';
 import { getUserTeamsWithDetails, getUserWorkspaceIds, resolveActiveTeamScope, type ActiveTeamScope } from '@/lib/team-access';
 import { getChatAvailability } from '@/lib/chat-availability';
 import { ChatEntryProvider, ChatShortcut, type ChatEntryValue } from '@/components/chat/ChatEntry';
@@ -106,6 +107,7 @@ export default async function ProtectedLayout({
                 currentTeamId={currentTeamId}
                 userInitial={userInitial}
                 workspaces={teamWorkspaces}
+                billing={isBillingEnforced()}
                 banners={
                   <>
                     {/* Tasks needing input */}

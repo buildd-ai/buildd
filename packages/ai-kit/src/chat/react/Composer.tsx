@@ -65,7 +65,16 @@ export interface ChatComposerProps {
    * (a keyboard shortcut). Default: a generated id.
    */
   inputId?: string;
+  /**
+   * Longest message Send accepts, in characters (0.23.0). Near it a count
+   * shows; past it Send does nothing and the draft stays, so a long paste is
+   * never lost to a refusal. No limit without it.
+   */
+  maxLength?: number;
 }
+
+/** The count appears once a draft reaches this share of `maxLength`. */
+export const COMPOSER_COUNT_FROM = 0.9;
 
 export const DEFAULT_BUSY_PLACEHOLDER = 'Steer while I think…';
 
@@ -74,7 +83,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   placeholder = 'Ask anything…', onSteer, busyPlaceholder = DEFAULT_BUSY_PLACEHOLDER,
   scope, tools, tier, formFallbackHref, formFallback, formFallbackLabel = 'Fill in a form instead',
   showFormFallback = true, label = 'Message', autoFocus, className,
-  leading, actions, edge, footer, mood = null, compact = false, inputId: inputIdProp,
+  leading, actions, edge, footer, mood = null, compact = false, inputId: inputIdProp, maxLength,
 }, ref) {
   const [inner, setInner] = useState(defaultValue);
   const [steerSent, setSteerSent] = useState(false);
@@ -84,6 +93,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const generatedId = useId();
   const inputId = inputIdProp ?? generatedId;
   const hintId = useId();
+  const countId = useId();
 
   const set = (v: string) => {
     if (!controlled) setInner(v);
@@ -103,9 +113,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     },
   }));
 
+  const over = maxLength !== undefined && text.trim().length > maxLength;
   const submit = () => {
     const t = text.trim();
-    if (!t || disabled) return;
+    if (!t || disabled || over) return;
     if (busy) {
       if (!onSteer) return;
       onSteer(t);
@@ -126,6 +137,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   const steering = busy && !!onSteer;
   const empty = !text.trim();
+  const showCount = maxLength !== undefined && text.trim().length >= maxLength * COMPOSER_COUNT_FROM;
   return (
     <div className={`kit-chat${className ? ` ${className}` : ''}`}>
       <form
@@ -150,9 +162,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           onChange={e => set(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={steering ? busyPlaceholder : placeholder}
-          aria-describedby={steering ? hintId : undefined}
+          aria-describedby={[steering ? hintId : null, showCount ? countId : null].filter(Boolean).join(' ') || undefined}
           data-testid="kit-composer-input"
         />
+        {showCount && (
+          <p id={countId} className="kit-composer-count" data-over={over || undefined} aria-live="polite" data-testid="kit-composer-count">
+            {text.trim().length.toLocaleString('en-US')} / {maxLength!.toLocaleString('en-US')} characters{over ? '. Shorten it to send.' : ''}
+          </p>
+        )}
         {steering && (
           <p id={hintId} className="kit-steer-hint" aria-live="polite">
             {steerSent ? 'Sent. It applies at the next step.' : 'What you send now applies at the next step.'}
@@ -173,7 +190,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               className="kit-send"
               aria-label={steering ? 'Steer' : 'Send'}
               // Not dimmed: a faded arrow fails contrast. Assistive tech hears it; submit() ignores it.
-              aria-disabled={disabled || empty ? true : undefined}
+              aria-disabled={disabled || empty || over ? true : undefined}
               data-testid="kit-send"
             >
               <span aria-hidden="true">↑</span>

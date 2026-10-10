@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { PERMISSIONS, roleHas, type Permission } from '@/lib/permission-registry';
-import { NO_PERMISSIONS, settingsPermissions, teamIdsHolding } from './settings-permissions';
+import { NO_PERMISSIONS, permsInAnyTeam, settingsPermissions, teamIdsHolding } from './settings-permissions';
 
 const ALL = Object.keys(PERMISSIONS) as Permission[];
 const team = (role: string, slug = 'acme') => ({ role, slug });
@@ -56,5 +56,16 @@ describe('teamIdsHolding', () => {
     };
     expect(teamIdsHolding(byTeam, 'manage_connectors')).toEqual(['a', 'c']);
     expect(teamIdsHolding(byTeam, 'create_workspace')).toEqual(['a']);
+  });
+});
+
+describe('permsInAnyTeam', () => {
+  it('holds a permission held in any one team, and nothing with no teams', () => {
+    const member = settingsPermissions({ role: 'member', slug: 'a' }, 'u', {});
+    const admin = settingsPermissions({ role: 'admin', slug: 'b' }, 'u', {});
+    expect(permsInAnyTeam({ a: member, b: admin }).create_workspace).toBe(true);
+    expect(permsInAnyTeam({ a: member }).create_workspace).toBe(false);
+    expect(permsInAnyTeam({ a: member }).create_personal_roles).toBe(true);
+    expect(Object.values(permsInAnyTeam({})).some(Boolean)).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { Select } from '@/components/ui/Select';
 import StatePill, { StatusPill, TonePill } from '@/components/ui/StatePill';
 import type { StateKey } from '@/components/ui/states';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -48,7 +49,49 @@ interface Props {
    */
   effectiveTrigger?: ReleaseTrigger;
   hasRepo: boolean;
+  /** Holds manage_workspace_settings. False: the release settings as text, no controls. */
+  canEdit: boolean;
 }
+
+interface TriggerOption {
+  value: ReleaseTrigger;
+  label: string;
+  badge?: string;
+  help: string;
+  disabled?: boolean;
+}
+
+const TRIGGER_OPTIONS: TriggerOption[] = [
+  {
+    value: 'on_mission_complete',
+    label: 'When mission completes',
+    badge: 'Recommended',
+    help: 'Releases once after every task in a mission finishes, as one ship.',
+  },
+  {
+    value: 'every_merge',
+    label: 'Every merge',
+    help: 'Releases on each completed task. Use for hotfix workspaces or repos that ship continuously.',
+  },
+  {
+    value: 'manual',
+    label: 'Manual only',
+    help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
+  },
+  {
+    value: 'scheduled',
+    label: 'Scheduled',
+    disabled: true,
+    help: 'Coming soon. Releases on a cron schedule, such as nightly.',
+  },
+];
+
+const STRATEGY_LABEL: Record<StrategyOption, string> = {
+  none: 'None',
+  branch_merge: 'Branch merge',
+  workflow_dispatch: 'Workflow dispatch',
+  script: 'Script',
+};
 
 const TERMINAL_DEPLOY_STATES = new Set(['READY', 'ERROR', 'CANCELED', 'TIMEOUT', null]);
 
@@ -83,7 +126,7 @@ function ReleaseStatus({ status }: { status: string | null | undefined }) {
   return <StatusPill status={status} />;
 }
 
-export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo }: Props) {
+export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo, canEdit }: Props) {
   const cfg = initialReleaseConfig;
 
   const [strategy, setStrategy] = useState<StrategyOption>(
@@ -225,146 +268,144 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
       <form onSubmit={handleSave} className="space-y-5">
         <div className="space-y-5">
 
-          {/* Strategy selector */}
-          <div>
-            <label className="block text-sm text-text-primary mb-1">Strategy</label>
-            <Select
-              aria-label="Strategy"
-              value={strategy}
-              onChange={(v) => setStrategy(v as StrategyOption)}
-              options={[
-                { value: 'none', label: 'None', description: 'Releases off' },
-                { value: 'branch_merge', label: 'Branch merge', description: 'Merge source into production' },
-                { value: 'workflow_dispatch', label: 'Workflow dispatch', description: 'Trigger GitHub Actions' },
-                { value: 'script', label: 'Script', description: 'Coming soon', disabled: true },
+          {canEdit ? (
+            <>
+              {/* Strategy selector */}
+              <div>
+                <label className="block text-sm text-text-primary mb-1">Strategy</label>
+                <Select
+                  aria-label="Strategy"
+                  value={strategy}
+                  onChange={(v) => setStrategy(v as StrategyOption)}
+                  options={[
+                    { value: 'none', label: 'None', description: 'Releases off' },
+                    { value: 'branch_merge', label: 'Branch merge', description: 'Merge source into production' },
+                    { value: 'workflow_dispatch', label: 'Workflow dispatch', description: 'Trigger GitHub Actions' },
+                    { value: 'script', label: 'Script', description: 'Coming soon', disabled: true },
+                  ]}
+                />
+                {strategy === 'none' && (
+                  <p className="text-xs text-text-muted mt-1">buildd won&apos;t run releases for this workspace.</p>
+                )}
+              </div>
+
+              {/* branch_merge fields */}
+              {strategy === 'branch_merge' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Source (e.g. dev)</label>
+                    <input
+                      type="text"
+                      value={ref}
+                      onChange={(e) => setRef(e.target.value)}
+                      placeholder="dev"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Production (e.g. main)</label>
+                    <input
+                      type="text"
+                      value={prodBranch}
+                      onChange={(e) => setProdBranch(e.target.value)}
+                      placeholder="main"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* workflow_dispatch fields */}
+              {strategy === 'workflow_dispatch' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Workflow file (e.g. release.yml)</label>
+                    <input
+                      type="text"
+                      value={workflowFile}
+                      onChange={(e) => setWorkflowFile(e.target.value)}
+                      placeholder="release.yml"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-text-primary mb-1">Ref (e.g. dev)</label>
+                    <input
+                      type="text"
+                      value={ref}
+                      onChange={(e) => setRef(e.target.value)}
+                      placeholder="dev"
+                      className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Trigger policy */}
+              {isReleaseEnabled && (
+                <div>
+                  <span className="block text-sm text-text-primary mb-1">Trigger</span>
+                  <div className="divide-y divide-border-default border-y border-border-default">
+                    {TRIGGER_OPTIONS.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className={`flex items-start gap-3 py-3 ${
+                          opt.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="trigger"
+                          value={opt.value}
+                          checked={trigger === opt.value}
+                          disabled={opt.disabled}
+                          onChange={() => !opt.disabled && setTrigger(opt.value)}
+                          className="mt-0.5 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-text-primary">{opt.label}</span>
+                            {opt.badge && <TonePill tone="ok">{opt.badge}</TonePill>}
+                            {opt.disabled && <span className="text-xs text-text-muted">Coming soon</span>}
+                          </div>
+                          <p className="text-xs text-text-muted mt-0.5">{opt.help}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  {trigger === 'on_mission_complete' && (
+                    <p className="text-xs text-text-muted mt-2">
+                      Tasks outside a mission don&apos;t trigger a release with this setting.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <ReadOnlyFacts
+              facts={[
+                { label: 'Strategy', value: STRATEGY_LABEL[strategy], testId: 'release-strategy-value' },
+                ...(strategy === 'branch_merge'
+                  ? [
+                      { label: 'Source', value: <span className="font-mono">{ref}</span> },
+                      { label: 'Production', value: <span className="font-mono">{prodBranch}</span> },
+                    ]
+                  : []),
+                ...(strategy === 'workflow_dispatch'
+                  ? [
+                      { label: 'Workflow file', value: <span className="font-mono">{workflowFile}</span> },
+                      { label: 'Ref', value: <span className="font-mono">{ref}</span> },
+                    ]
+                  : []),
+                ...(isReleaseEnabled
+                  ? [{
+                      label: 'Trigger',
+                      value: TRIGGER_OPTIONS.find((o) => o.value === trigger)?.label ?? trigger,
+                      note: TRIGGER_OPTIONS.find((o) => o.value === trigger)?.help,
+                    }]
+                  : []),
               ]}
             />
-            {strategy === 'none' && (
-              <p className="text-xs text-text-muted mt-1">buildd won&apos;t run releases for this workspace.</p>
-            )}
-          </div>
-
-          {/* branch_merge fields */}
-          {strategy === 'branch_merge' && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-text-primary mb-1">Source (e.g. dev)</label>
-                <input
-                  type="text"
-                  value={ref}
-                  onChange={(e) => setRef(e.target.value)}
-                  placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-text-primary mb-1">Production (e.g. main)</label>
-                <input
-                  type="text"
-                  value={prodBranch}
-                  onChange={(e) => setProdBranch(e.target.value)}
-                  placeholder="main"
-                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* workflow_dispatch fields */}
-          {strategy === 'workflow_dispatch' && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-text-primary mb-1">Workflow file (e.g. release.yml)</label>
-                <input
-                  type="text"
-                  value={workflowFile}
-                  onChange={(e) => setWorkflowFile(e.target.value)}
-                  placeholder="release.yml"
-                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-text-primary mb-1">Ref (e.g. dev)</label>
-                <input
-                  type="text"
-                  value={ref}
-                  onChange={(e) => setRef(e.target.value)}
-                  placeholder="dev"
-                  className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm font-mono"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Trigger policy */}
-          {isReleaseEnabled && (
-            <div>
-              <span className="block text-sm text-text-primary mb-1">Trigger</span>
-              <div className="divide-y divide-border-default border-y border-border-default">
-                {(
-                  [
-                    {
-                      value: 'on_mission_complete' as ReleaseTrigger,
-                      label: 'When mission completes',
-                      badge: 'Recommended',
-                      help: 'Releases once after every task in a mission finishes, as one ship.',
-                    },
-                    {
-                      value: 'every_merge' as ReleaseTrigger,
-                      label: 'Every merge',
-                      help: 'Releases on each completed task. Use for hotfix workspaces or repos that ship continuously.',
-                    },
-                    {
-                      value: 'manual' as ReleaseTrigger,
-                      label: 'Manual only',
-                      help: "You release by hand: 'Release now' on Home, or trigger_release over MCP.",
-                    },
-                    {
-                      value: 'scheduled' as ReleaseTrigger,
-                      label: 'Scheduled',
-                      disabled: true,
-                      help: 'Coming soon. Releases on a cron schedule, such as nightly.',
-                    },
-                  ] as Array<{
-                    value: ReleaseTrigger;
-                    label: string;
-                    badge?: string;
-                    help: string;
-                    disabled?: boolean;
-                  }>
-                ).map((opt) => (
-                  <label
-                    key={opt.value}
-                    className={`flex items-start gap-3 py-3 ${
-                      opt.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="trigger"
-                      value={opt.value}
-                      checked={trigger === opt.value}
-                      disabled={opt.disabled}
-                      onChange={() => !opt.disabled && setTrigger(opt.value)}
-                      className="mt-0.5 shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-text-primary">{opt.label}</span>
-                        {opt.badge && <TonePill tone="ok">{opt.badge}</TonePill>}
-                        {opt.disabled && <span className="text-xs text-text-muted">Coming soon</span>}
-                      </div>
-                      <p className="text-xs text-text-muted mt-0.5">{opt.help}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-              {trigger === 'on_mission_complete' && (
-                <p className="text-xs text-text-muted mt-2">
-                  Tasks outside a mission don&apos;t trigger a release with this setting.
-                </p>
-              )}
-            </div>
           )}
 
           {/* Vercel token status */}
@@ -376,17 +417,22 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               <TonePill tone="ok">Configured</TonePill>
             ) : (
               <span className="text-text-secondary">
-                <TonePill tone="dec">Not configured</TonePill>{' '}
-                <Link href="/app/settings/github" className="underline text-text-primary hover:no-underline">
-                  Add one in Settings, GitHub and Vercel
-                </Link>
+                <TonePill tone="dec">Not configured</TonePill>
+                {canEdit && (
+                  <>
+                    {' '}
+                    <Link href="/app/settings/integrations" className="underline text-text-primary hover:no-underline">
+                      Add one in Settings, GitHub and Vercel
+                    </Link>
+                  </>
+                )}
               </span>
             )}
           </div>
         </div>
 
         {/* Save button */}
-        <div className="flex flex-wrap items-center gap-4">
+        {canEdit && <div className="flex flex-wrap items-center gap-4">
           <button
             type="submit"
             disabled={saving}
@@ -396,7 +442,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
           </button>
           {saved && <span className="text-status-success text-sm">Saved</span>}
           {saveError && <span className="text-status-error text-sm">{saveError}</span>}
-        </div>
+        </div>}
 
         {/* Status strip */}
         {isReleaseEnabled && (

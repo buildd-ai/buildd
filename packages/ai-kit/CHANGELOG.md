@@ -12,6 +12,21 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.23.0 — 2026-10-10
+
+Minor: long messages are accepted, and the model's view of a long conversation stays bounded.
+
+- `DEFAULT_TURN_LIMITS.maxUserText` is 200,000 characters (was 8,000). A
+  message over it is a 400 with `code: 'message_too_long'`, `limit` and `chars`;
+  an empty one is `code: 'message_empty'`. Both are refused before any spend.
+- New `limits.historyChars` (default 400,000) and `fitHistoryToBudget`: the
+  history sent to the model replaces earlier long user text with a short note,
+  oldest first, then drops the oldest messages if still over. Stored messages
+  are never trimmed, and the newest message is always sent whole.
+- `userTextOf(message, max)` is exported for apps that run their own turn.
+- `ChatComposer maxLength`: a count shows near the limit; past it Send does
+  nothing and the draft stays in the box.
+
 ## 0.22.0 — 2026-10-10
 
 Minor: a turn laid out in fixed regions, so streaming never moves what is on screen.

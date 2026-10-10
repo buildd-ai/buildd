@@ -11,6 +11,17 @@ const base: MissionStateInput = {
 };
 
 describe('buildStateBecause', () => {
+  // A reviewer task is runner-claimable in a local-executor mission (claim gate
+  // exempts context.reviewerFor), so explain must not say runners never pick it up.
+  it('does not call a runner-claimable reviewer task local-session work', () => {
+    const open = { id: 'rev-1', title: 'Review PR #1', status: 'pending', runnerClaimable: true };
+    const view = deriveMissionStateView({ ...base, executor: 'local', openTasks: [{ id: 'rev-1', status: 'pending', title: 'Review PR #1' }] });
+    const chain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [open] });
+    expect(chain.map(l => l.claim).join('\n')).not.toContain('runners never pick up');
+    const plain = buildStateBecause(view, { missionId: 'm', workspaceId: 'ws' }, { openTasks: [{ ...open, runnerClaimable: false }] });
+    expect(plain.map(l => l.claim).join('\n')).toContain('runners never pick up');
+  });
+
   it('ends on the state and carries the mission ref on every link', () => {
     const view = deriveMissionStateView({
       ...base,

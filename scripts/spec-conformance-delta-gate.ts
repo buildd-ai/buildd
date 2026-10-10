@@ -2,6 +2,12 @@
 /**
  * §4 delta gate for docs/design/spec-conformance.md.
  *
+ * Only spec-discrepancy-ledger.yml uses it now (with `--key
+ * spec-discrepancy-ledger-last-sha`). The blocking checker in
+ * spec-conformance-check.yml dropped it: `record` advanced the sha even after
+ * a failing run, so later pushes skipped and dev went green over a failing
+ * checker. The checker is cheap enough to run on every event.
+ *
  * The Tier-2 CI job that evaluates spec/design frontmatter assertions is
  * cheap (filesystem + ripgrep, no LLM calls) but still worth skipping when
  * nothing relevant changed. §4's mechanism: a keyed buildd artifact
