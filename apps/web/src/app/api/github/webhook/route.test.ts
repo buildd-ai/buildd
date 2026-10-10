@@ -58,6 +58,7 @@ let jobInsertConflicts = false;
 let updateReturningByStatus: Record<string, any[]> = {};
 const mockApplyTaskCancelSideEffects = mock(() => Promise.resolve());
 const mockApplyTaskReopenSideEffects = mock(() => Promise.resolve());
+const mockCancelRetryAttemptsForMergedPr = mock((_input: any) => Promise.resolve());
 
 // ── Module mocks (must be before route import) ──────────────────────────────
 // Subscriptions ledger: the builders are stood in by tagged objects so a test
@@ -97,6 +98,10 @@ mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
   applyTaskReopenSideEffects: mockApplyTaskReopenSideEffects,
   emitTaskUpdated: mock(() => Promise.resolve()),
+}));
+
+mock.module('@/lib/retry-attempt-cleanup', () => ({
+  cancelRetryAttemptsForMergedPr: mockCancelRetryAttemptsForMergedPr,
 }));
 
 mock.module('@/lib/github', () => ({
@@ -7688,5 +7693,107 @@ describe('webhook → reviewer flows (characterization)', () => {
     const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'success' } });
     await POST(createWebhookRequest('check_suite', payload));
     expect(mockRetryCiFailureForPr).not.toHaveBeenCalled();
+  });
+
+  // ── PR merged: retry attempt cleanup ────────────────────────────────────
+  it('cancels open retry attempts when PR merges', async () => {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-merged-retry',
+      workspaceId: 'ws-retry-test',
+      taskId: 'task-retry',
+      prNumber: 100,
+      task: {
+        id: 'task-retry',
+        status: 'in_progress',
+        workspaceId: 'ws-retry-test',
+        release: 'false',
+        missionId: null,
+      },
+    });
+
+    const payload = {
+      action: 'closed',
+      pull_request: {
+        number: 100,
+        merged: true,
+        draft: false,
+        head: { ref: 'buildd/retry-fix', sha: 'sha-100' },
+        html_url: 'https://github.com/test-org/test-repo/pull/100',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+
+    mockCancelRetryAttemptsForMergedPr.mockClear();
+    const res = await POST(createWebhookRequest('pull_request', payload));
+    expect(res.status).toBe(200);
+
+    expect(mockCancelRetryAttemptsForMergedPr).toHaveBeenCalledWith({
+      workspaceId: 'ws-retry-test',
+      prNumber: 100,
+      reason: 'PR merged',
+    });
+  });
+
+  it('cancels open retry attempts when PR is closed without merge', async () => {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-closed-retry',
+      workspaceId: 'ws-retry-test-2',
+      taskId: 'task-retry-2',
+      prNumber: 101,
+      task: {
+        id: 'task-retry-2',
+        status: 'pending',
+        workspaceId: 'ws-retry-test-2',
+        release: 'false',
+        missionId: null,
+      },
+    });
+
+    const payload = {
+      action: 'closed',
+      pull_request: {
+        number: 101,
+        merged: false,
+        draft: false,
+        head: { ref: 'buildd/retry-fix-2', sha: 'sha-101' },
+        html_url: 'https://github.com/test-org/test-repo/pull/101',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+
+    mockCancelRetryAttemptsForMergedPr.mockClear();
+    const res = await POST(createWebhookRequest('pull_request', payload));
+    expect(res.status).toBe(200);
+
+    expect(mockCancelRetryAttemptsForMergedPr).toHaveBeenCalledWith({
+      workspaceId: 'ws-retry-test-2',
+      prNumber: 101,
+      reason: 'PR closed',
+    });
+  });
+
+  it('does not call retry cleanup when worker does not exist', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+
+    const payload = {
+      action: 'closed',
+      pull_request: {
+        number: 102,
+        merged: true,
+        draft: false,
+        head: { ref: 'buildd/no-worker', sha: 'sha-102' },
+        html_url: 'https://github.com/test-org/test-repo/pull/102',
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+
+    mockCancelRetryAttemptsForMergedPr.mockClear();
+    const res = await POST(createWebhookRequest('pull_request', payload));
+    expect(res.status).toBe(200);
+
+    expect(mockCancelRetryAttemptsForMergedPr).not.toHaveBeenCalled();
   });
 });

@@ -1771,6 +1771,13 @@ export interface ClaimDiagnostics {
      * re-tiered. The gate event's detail is the structured policy_denied error.
      */
     tier_policy?: number;
+    /**
+     * A retry attempt task (attempt to fix a merged or closed PR) cannot be
+     * claimed because its target PR is already in a terminal state. The PR
+     * merge/close webhook should have cancelled this task, but the claim
+     * is checked for safety.
+     */
+    retry_pr_terminal?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).

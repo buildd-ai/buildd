@@ -1255,6 +1255,7 @@ export async function POST(req: NextRequest) {
     no_personal_credential: 0,
     provider_not_allowed: 0,
     tier_policy: 0,
+    retry_pr_terminal: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.

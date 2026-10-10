@@ -182,5 +182,12 @@ export function describeExplicitDeferral(
         detail: `Hosted runner allowance used${used !== null && limit !== null ? ` (${used} of ${limit} counted hours this month)` : ''}. It stays queued and starts automatically when the allowance refills${at ? ` (${at})` : ''} or grows, or a runner of your own can take it.`,
       };
     }
+    case 'retry_pr_terminal': {
+      const prNumber = num(detail.prNumber);
+      return {
+        code: reason,
+        detail: `Its target PR${prNumber ? ` #${prNumber}` : ''} is already merged or closed, so this retry attempt is no longer needed. The PR merge/close webhook cancelled this task automatically.`,
+      };
+    }
   }
 }

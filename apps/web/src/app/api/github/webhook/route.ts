@@ -40,6 +40,7 @@ import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
+import { cancelRetryAttemptsForMergedPr } from '@/lib/retry-attempt-cleanup';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
 import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
@@ -1047,6 +1048,15 @@ async function handlePullRequestEvent(event: {
   }
 
   if (pr.merged) {
+    // Cancel any open retry-attempt tasks for this PR since it's now merged
+    if (worker?.workspaceId) {
+      await cancelRetryAttemptsForMergedPr({
+        workspaceId: worker.workspaceId,
+        prNumber: pr.number,
+        reason: 'PR merged',
+      }).catch(err => console.error(`[webhook] retry cleanup failed for merged PR #${pr.number}:`, err));
+    }
+
     await emit({
       type: 'pr.merged', repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url,
       delivery: {
@@ -1062,6 +1072,15 @@ async function handlePullRequestEvent(event: {
 
   // Every close delivery: the reviews module resolves the sticky activity
   // comment and tells an on-demand review waiting on this PR that it closed.
+  // Also cancel retry attempts if the PR is closed (before checking if merged).
+  if (!pr.merged && worker?.workspaceId) {
+    await cancelRetryAttemptsForMergedPr({
+      workspaceId: worker.workspaceId,
+      prNumber: pr.number,
+      reason: 'PR closed',
+    }).catch(err => console.error(`[webhook] retry cleanup failed for closed PR #${pr.number}:`, err));
+  }
+
   await emit({
     type: 'pr.close_delivered',
     repoFullName: repository.full_name,
