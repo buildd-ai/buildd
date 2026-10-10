@@ -4,7 +4,7 @@ import ExecutorSection, { describeExecutorSource } from './ExecutorSection';
 
 const render = (props: Partial<Parameters<typeof ExecutorSection>[0]> = {}) =>
   renderToStaticMarkup(
-    <ExecutorSection workspaceId="ws-1" explicit={null} effective="any" source="default" {...props} />,
+    <ExecutorSection workspaceId="ws-1" explicit={null} effective="any" source="default" canEdit {...props} />,
   );
 
 describe('ExecutorSection', () => {
@@ -24,6 +24,12 @@ describe('ExecutorSection', () => {
 
   it('shows automatic when nothing is stored', () => {
     expect(render()).toContain('Automatic');
+  });
+
+  it('without settings permission: the value as text and no picker', () => {
+    const html = render({ explicit: 'host', effective: 'host', source: 'explicit', canEdit: false });
+    expect(html).not.toContain('workspace-executor-select');
+    expect(html).toMatch(/>Host</);
   });
 });
 

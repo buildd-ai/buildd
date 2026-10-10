@@ -15,6 +15,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: StorageSection } = await import('./StorageSection');
 const { default: BackendForm } = await import('./BackendForm');
+const { describeControls } = await import('../_lib/form-controls');
 
 const ID = '22222222-2222-4222-8222-222222222222';
 const LEAKED_ID = 'AKIALEAKEDLEAKED0000';
@@ -272,15 +273,29 @@ describe('add, verify, remove', () => {
     expect(byTestId('storage-empty')).not.toBeNull();
   });
 
-  it('a member who cannot manage sees no add, edit or remove', async () => {
+  it('a member reads each backend as text: no add, verify, edit or remove, and no who-can line', async () => {
     list = [BACKEND];
     canManage = false;
     await mount();
     expect(byTestId('storage-add')).toBeNull();
-    expect(byTestId('storage-read-only')!.textContent).toBe('Admins can change this.');
+    expect(byTestId('storage-read-only')).toBeNull();
+    expect(describeControls(host)).toEqual([]);
     await click(document.body.querySelector(`[data-testid="storage-row-${ID}"] button[aria-expanded]`));
+    expect(byTestId('storage-details')!.textContent).toContain('acme-evidence');
     expect(byTestId('storage-edit')).toBeNull();
     expect(byTestId('storage-remove')).toBeNull();
+    expect(byTestId('storage-verify')).toBeNull();
+    // The lifecycle rule stays readable; copying it changes nothing.
     expect(byTestId('storage-lifecycle')).not.toBeNull();
+    expect(describeControls(host)).toEqual(['button "Copy"', 'button "Copy"']);
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);
+  });
+
+  it('a member with no backend reads the buildd default, with no control', async () => {
+    canManage = false;
+    await mount();
+    expect(byTestId('storage-empty')).not.toBeNull();
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toContain('Admins can');
   });
 });

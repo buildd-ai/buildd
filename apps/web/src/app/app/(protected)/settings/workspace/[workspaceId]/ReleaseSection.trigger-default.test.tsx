@@ -64,6 +64,7 @@ describe('ReleaseSection — displayed trigger matches the policy the server run
         initialReleaseConfig={noTriggerConfig}
         effectiveTrigger={resolveReleaseTrigger(noTriggerConfig)}
         hasRepo={true}
+        canEdit
       />,
     );
     const checked = radioChecked(html);
@@ -80,6 +81,7 @@ describe('ReleaseSection — displayed trigger matches the policy the server run
         initialReleaseConfig={cfg}
         effectiveTrigger={resolveReleaseTrigger(cfg)}
         hasRepo={true}
+        canEdit
       />,
     );
     const checked = radioChecked(html);

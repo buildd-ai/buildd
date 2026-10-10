@@ -58,6 +58,8 @@ export interface StateBecauseExtras {
     title: string | null;
     status: string;
     live?: boolean;
+    /** A reviewer task: runners claim it even in a local-executor mission. */
+    runnerClaimable?: boolean;
     missingBrowser?: boolean;
     /**
      * Unmet dependencies of a pending row. Such a row cannot be claimed, so it
@@ -199,7 +201,7 @@ function openTaskLinks(
     }
     // A local-executor mission: its rows are the person's session's to claim,
     // so "no live worker" (read: a runner should have it) is the wrong claim.
-    if (w.local && !t.live) {
+    if (w.local && !t.live && !t.runnerClaimable) {
       return link(
         t.status === 'pending'
           ? `Task "${t.title ?? t.id}" is pending, waiting for a local session to claim it (runners never pick up this mission's tasks).`

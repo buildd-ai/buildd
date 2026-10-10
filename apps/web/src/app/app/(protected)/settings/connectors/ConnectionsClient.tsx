@@ -365,15 +365,13 @@ export default function ConnectionsClient({
         {embedded
           ? <h2 className="section-label">Your connectors</h2>
           : <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>}
-        {canManage ? (
+        {canManage && (
           <button
             onClick={() => setShowAddModal(true)}
             className="btn btn-primary"
           >
             Add connector
           </button>
-        ) : (
-          <span data-testid="connectors-read-only" className="text-xs text-text-muted">Admins can change this.</span>
         )}
       </div>
 
@@ -416,12 +414,12 @@ export default function ConnectionsClient({
                       cross-team access is granted explicitly via the Sharing panel. */}
                   {connector.blockedByPolicy && (
                     <div className="text-xs text-status-error mt-1">
-                      Blocked by team policy. Agents can&apos;t use it; the saved connection is kept. A team admin can unblock it under Catalog.
+                      Blocked by team policy. Agents can&apos;t use it; the saved connection is kept.{canManage && ' A team admin can unblock it under Catalog.'}
                     </div>
                   )}
                   {!connector.shared && (
                     <div className="text-xs text-text-secondary mt-1">
-                      Available to all workspaces in this team. Share with other teams via Sharing.
+                      Available to all workspaces in this team.{canManage && ' Share with other teams via Sharing.'}
                     </div>
                   )}
                   <Disclosure summary={<span className="text-xs">Details</span>} className="mt-1">

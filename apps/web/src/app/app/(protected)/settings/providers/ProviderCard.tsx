@@ -10,6 +10,7 @@ import type {
 import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButton';
 import { formatCheckedAgo } from '@/lib/provider-keys-client';
 import {
+  ADMINS_ONLY,
   ADVANCED_ANCHOR,
   SHAPE_NOUN,
   cardView,
@@ -91,7 +92,9 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
             </p>
           )}
           {closed && <p className="text-meta text-text-muted" data-testid="provider-closed">{closed}</p>}
-          {readOnly && <p className="text-meta text-text-muted" data-testid="provider-read-only">{readOnly}</p>}
+          {/* "Admins can change this" is said once, at the top of the page
+              (SettingsPage readOnly); a reason only this row has is said here. */}
+          {readOnly && readOnly !== ADMINS_ONLY && <p className="text-meta text-text-muted" data-testid="provider-read-only">{readOnly}</p>}
           {editing && paste.length > 0 && (
             <PasteEditor
               group={group}
@@ -105,7 +108,7 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
             />
           )}
           {editing && group.id === 'openrouter' && rows.length === 0 && scope !== 'workspace' && (
-            <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo="/app/settings/models" />
+            <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo={scope === 'mine' ? '/app/settings/keys' : '/app/settings/models'} />
           )}
           {form && (
             <p className="text-meta"><a href={`#${ADVANCED_ANCHOR}`} className="underline text-text-secondary hover:text-text-primary">Edit under Routing</a></p>

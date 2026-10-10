@@ -254,6 +254,7 @@ DELETE FROM agent_capability_decisions;
 DELETE FROM task_dispatch_outbox;
 -- Workflow kernel ledger: facts, transitions and effects carry repo names, PR
 -- heads and evidence payloads. Children first (effects reference transitions).
+DELETE FROM landing_lanes;
 DELETE FROM workflow_effects;
 DELETE FROM workflow_transitions;
 DELETE FROM workflow_facts;
@@ -522,8 +523,14 @@ UPDATE artifacts a SET
   content = pg_temp.qa_text(a.content),
   storage_key = CASE WHEN a.storage_key IS NULL THEN NULL ELSE 'artifacts/' || a.id END,
   share_token = CASE WHEN a.share_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(a.id::text) END,
-  metadata = pg_temp.qa_json(a.metadata)
+  metadata = pg_temp.qa_json(a.metadata),
+  content_author = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.id = s.id;
+
+-- Body history holds every body an artifact ever had, and the revision trigger
+-- snapshots the pre-scrub body when the UPDATE above changes it. Drop it all,
+-- after that UPDATE: a clone keeps current bodies only.
+DELETE FROM artifact_revisions;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.

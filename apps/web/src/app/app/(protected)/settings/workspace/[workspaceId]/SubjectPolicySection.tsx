@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 interface SubjectPolicy {
   mode?: 'observe' | 'propose' | 'enforce';
@@ -13,6 +14,8 @@ interface SubjectPolicy {
 interface Props {
   workspaceId: string;
   initialPolicy: SubjectPolicy | null;
+  /** Holds manage_workspace_settings. False: the policy as text, no controls. */
+  canEdit: boolean;
 }
 
 const DEFAULTS: Required<SubjectPolicy> = {
@@ -23,7 +26,7 @@ const DEFAULTS: Required<SubjectPolicy> = {
   proposalGraceHours: 24,
 };
 
-export default function SubjectPolicySection({ workspaceId, initialPolicy }: Props) {
+export default function SubjectPolicySection({ workspaceId, initialPolicy, canEdit }: Props) {
   const merged = { ...DEFAULTS, ...initialPolicy };
 
   const [autoClose, setAutoClose] = useState(merged.autoCloseBuilddSupersededPrs);
@@ -57,13 +60,34 @@ export default function SubjectPolicySection({ workspaceId, initialPolicy }: Pro
     }
   }
 
-  return (
-    <div className="py-4 first:pt-0 last:pb-0">
+  const header = (
+    <>
       <h3 className="text-sm font-medium text-text-primary">Subject anchor policy</h3>
       <p className="text-xs text-text-secondary mt-0.5 mb-4">
         How buildd tracks and deduplicates tasks anchored to a shared subject (a PR, a
         recurring error, or a mission), and what context it gives them. Defaults are observe-only.
       </p>
+    </>
+  );
+
+  if (!canEdit) {
+    return (
+      <div className="py-4 first:pt-0 last:pb-0">
+        {header}
+        <ReadOnlyFacts
+          facts={[
+            { label: 'Prior-work injection', value: priorWork ? 'On' : 'Off' },
+            { label: 'Auto-close superseded buildd-authored PRs', value: autoClose ? 'On' : 'Off' },
+            ...(autoClose ? [{ label: 'Conflict-dead grace period', value: `${merged.conflictDeadDays} days` }] : []),
+          ]}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="py-4 first:pt-0 last:pb-0">
+      {header}
 
       <div className="space-y-4">
         {/* Prior-work injection */}
