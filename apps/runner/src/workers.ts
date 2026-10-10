@@ -1622,7 +1622,10 @@ export class WorkerManager {
         const now = Date.now();
         const resetMs = new Date(budgetResetsAt).getTime();
         const delayMs = Math.max(0, resetMs - now);
-        console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
+        // The server names the wall when it knows it (task e7e8740a): the
+        // account seat, a team rate limit, or a tenant budget.
+        const wallSummary = diagnostics?.budgetBlock?.summary;
+        console.warn(`[WorkerManager] ${wallSummary ?? 'Account OAuth budget exhausted.'} Next claim at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
         // Wake up to poll the instant the budget resets. Without this the runner
         // only recovered on its hourly fallback poll (RUNNER_HEARTBEAT_INTERVAL_MS)

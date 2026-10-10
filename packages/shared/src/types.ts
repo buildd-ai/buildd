@@ -1575,6 +1575,17 @@ export type ClaimTaskExclusionCode =
   | 'rate_limited'
   | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
+/** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
+export interface ClaimBudgetWall {
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  backend: AgentBackend;
+  resetsAt: string | null;
+}
+
+/** Why the account refused a claim outright (HTTP 429), named for the caller. */
+export type ClaimAccountLimitCode = 'max_concurrent_workers' | 'daily_cost_limit' | 'max_concurrent_sessions';
+
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
   /** One human sentence, including the override when there is one. */
@@ -1603,6 +1614,12 @@ export interface ClaimDiagnostics {
    * all_candidates_deferred and race_lost responses.
    */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
+  /**
+   * The budget and rate-limit walls this claim was held by, set on a
+   * budget_exhausted refusal: which wall, on which provider, and when it lifts.
+   * `summary` is the same thing as one or two sentences for a person.
+   */
+  budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
