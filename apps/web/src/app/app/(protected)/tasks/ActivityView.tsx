@@ -251,8 +251,8 @@ function NowGroupView({ group, nowMs, openRowIds }: { group: NowGroup; nowMs: nu
       {group.rows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
       {group.moreWaiting > 0 && (
         group.href
-          ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting, not on you ›</Link>
-          : <Disclosure summary={`+${group.moreWaiting} more waiting, not on you`}>
+          ? <Link href={group.href} className="flex min-h-11 items-center text-meta text-text-muted">+{group.moreWaiting} more waiting ›</Link>
+          : <Disclosure summary={`+${group.moreWaiting} more waiting`}>
               {group.hiddenWaitingRows.map(r => <NowRowView key={r.id} row={r} nowMs={nowMs} startOpen={openRowIds.includes(r.id)} />)}
             </Disclosure>
       )}
