@@ -419,6 +419,18 @@ mock.module('@buildd/core/model-tier-ceiling-store', () => ({
     return realResolveTierCeiling({ team, workspaceId: subject.workspaceId, userId, member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null }, surface);
   },
 }));
+// Coding provider policy: real resolver over inputs the test supplies. Default
+// (no layers) is unrestricted, which must leave every other test unchanged.
+const { resolveCodingPolicy: realResolveCodingPolicy } = await import('@buildd/core/coding-policy');
+const codingPolicyTest = { inputs: {} as Record<string, any>, fail: false, requesterAsked: 0 };
+mock.module('@buildd/core/coding-policy-store', () => ({
+  codingPolicyLoader: () => async (subject: any) => {
+    if (codingPolicyTest.fail) throw new Error('db down');
+    const userId = typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null;
+    if (codingPolicyTest.inputs.member) codingPolicyTest.requesterAsked++;
+    return realResolveCodingPolicy({ ...codingPolicyTest.inputs, requesterKnown: !!userId || !codingPolicyTest.inputs.member });
+  },
+}));
 mock.module('@buildd/core/tier-pool-source', () => ({
   drawAgentPoolArm: mockDrawAgentPoolArm,
   applyAgentPoolArm: mockApplyAgentPoolArm,
@@ -2450,6 +2462,61 @@ describe('POST /api/workers/claim', () => {
         const data = await claim();
         expect(data.workers.length).toBe(0);
         expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+    });
+
+    describe('coding provider policy', () => {
+      afterEach(() => { codingPolicyTest.inputs = {}; codingPolicyTest.fail = false; codingPolicyTest.requesterAsked = 0; });
+      const withTask = (patch: Record<string, unknown>) => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), ...patch }]);
+        return sets;
+      };
+      const claim = async () => (await (await POST(claimReq())).json()) as any;
+
+      it('no policy: claims as before', async () => {
+        const sets = withTask({});
+        expect((await claim()).workers.length).toBe(1);
+        expect(sets.find(v => v.status === 'assigned')).toBeDefined();
+      });
+
+      it('a denied Codex task is held, never rewritten onto Claude', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        const sets = withTask({ backend: 'codex' });
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(sets.find(v => v.status === 'assigned')).toBeUndefined();
+      });
+
+      it('an allowed backend still claims under a Claude-only policy', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        withTask({ backend: 'claude' });
+        expect((await claim()).workers.length).toBe(1);
+      });
+
+      it('an empty allow list denies everything (fails closed)', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: [] } };
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('an unreadable policy holds the task rather than assuming none', async () => {
+        codingPolicyTest.fail = true;
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('a cloud executor under a native-only source policy waits instead of metering', async () => {
+        codingPolicyTest.inputs = { team: { allowedSources: ['runner_native'] } };
+        withTask({});
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner', executor: 'cloud' } }));
+        const data = (await res.json()) as any;
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
       });
     });
 
