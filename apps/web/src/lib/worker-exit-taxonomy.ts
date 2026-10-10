@@ -1,4 +1,4 @@
-import { INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
+import { INTERACTIVE_WORKER_BUSY_MAX_MS, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 
 export type WorkerExitCause =
   | 'code_failure'
@@ -123,12 +123,21 @@ export const NEVER_STARTED_ERROR =
   'Worker was never started by a runner (claimed but no session began) — cleaned up as a bookkeeping artifact, not a task failure';
 
 /**
- * Error text for an interactive (MCP-claimed) worker reaped after its account
- * made no MCP call for INTERACTIVE_WORKER_IDLE_TTL_MS. Its own text, because
+ * Error text for an interactive (MCP-claimed) worker reaped after its session
+ * made no MCP call and sent no hook event for INTERACTIVE_WORKER_IDLE_TTL_MS
+ * (and its presence was not inside a turn). Its own text, because
  * "never started by a runner" is always true of such a worker and says nothing.
  */
 export const INTERACTIVE_ABANDONED_ERROR =
-  'Interactive worker released: no MCP activity from its session for 2 hours (claim_task worker, not run by a runner)';
+  'Interactive worker released: no MCP call or plugin hook touched this claim for 2 hours, and no open buildd plugin session holding it (or of its claimant, in its workspace) was heard from or inside a command in that time (claim_task worker, not run by a runner); the task went back to pending and can be claimed again';
+
+/**
+ * Error text for an interactive worker released by the hard backstop
+ * (INTERACTIVE_WORKER_BUSY_MAX_MS): its claim saw no activity for that long,
+ * so a session that says it is mid-command, or is merely open, no longer keeps it.
+ */
+export const INTERACTIVE_BACKSTOP_ERROR =
+  'Interactive worker released: no MCP call or plugin hook touched this claim for 8 hours, the hard backstop, which applies even while a session of its claimant is open or says it is inside a command (claim_task worker, not run by a runner); the task went back to pending and can be claimed again';
 
 /** Error text for a completion that landed on a task cancelled while the session ran. */
 export const TASK_CANCELLED_UNDER_SESSION_ERROR =
@@ -269,14 +278,20 @@ export function classifyReportedFailure(input: {
  */
 export function classifyStaleExit(worker: {
   runner?: string | null;
+  /** Interactive only: which signal expired depends on how long the claim was quiet. */
+  updatedAt?: Date | string | null;
   startedAt?: Date | string | null;
   turns?: number | null;
   costUsd?: string | number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
-}): { exitCause: WorkerExitCause; error: string } {
+}, now: Date = new Date()): { exitCause: WorkerExitCause; error: string } {
   if (worker.runner === INTERACTIVE_WORKER_RUNNER) {
-    return { exitCause: worker.startedAt ? 'infra_failure' : 'never_started', error: INTERACTIVE_ABANDONED_ERROR };
+    const quietFor = worker.updatedAt ? now.getTime() - new Date(worker.updatedAt).getTime() : 0;
+    return {
+      exitCause: worker.startedAt ? 'infra_failure' : 'never_started',
+      error: quietFor >= INTERACTIVE_WORKER_BUSY_MAX_MS ? INTERACTIVE_BACKSTOP_ERROR : INTERACTIVE_ABANDONED_ERROR,
+    };
   }
   if (!worker.startedAt) {
     return { exitCause: 'never_started', error: NEVER_STARTED_ERROR };

@@ -39,7 +39,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -53,6 +53,8 @@ const REQUEST_TIMEOUT_MS = 3_000;
 export const WORKSPACE_REFRESH_MS = 10 * 60_000;
 const LIST_TIMEOUT_MS = 2_000;
 const STDIN_TIMEOUT_MS = 2_000;
+/** A `/clear`'s new session picks up the old one's claims only this soon after it ended. */
+export const CLEAR_HANDOFF_MS = 60_000;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const WORKER_ID_RE = /Worker ID:\**\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -113,16 +115,23 @@ function normalizeClaudeLike(client, p, env) {
   const base = { clientSessionId, cwd: typeof p.cwd === 'string' ? p.cwd : process.cwd() };
   switch (p.hook_event_name) {
     case 'SessionStart':
-      return { ...base, event: 'start', interactive: attended(client, env) };
+      // `clear`: the same process goes on under this new session id, and takes
+      // over the claims the cleared one held (see takeClearHandoff).
+      return { ...base, event: 'start', interactive: attended(client, env), ...(p.source === 'clear' ? { afterClear: true } : {}) };
     case 'UserPromptSubmit':
       // Every event that can create the presence carries the flag: a session
       // outside a workspace repo sends no start, so its first event is a bind
-      // (or a touch healing a missed start).
-      return { ...base, event: 'touch', interactive: attended(client, env) };
+      // (or a touch healing a missed start). A prompt starts a turn: `busy`.
+      return { ...base, event: 'touch', busy: true, interactive: attended(client, env) };
+    // A tool is about to run. A long command fires nothing until it returns,
+    // so the session says it is inside a turn first; buildd keeps its claims
+    // while it is (up to a hard backstop). Only a flip is sent at once.
+    case 'PreToolUse':
+      return { ...base, event: 'touch', busy: true, light: true };
     // The end of the agent's turn: the last chance to hand it a waiting
     // message this turn, so it is never throttled.
     case 'Stop':
-      return { ...base, event: 'touch', force: true, interactive: attended(client, env) };
+      return { ...base, event: 'touch', force: true, busy: false, interactive: attended(client, env) };
     case 'PostToolUse': {
       // A successful buildd claim binds. Any other tool call is a turn
       // boundary: a (throttled) touch, whose answer says whether a message waits.
@@ -341,6 +350,34 @@ export function shouldSkip(event, state, now = Date.now(), force = false) {
   return !force && event === 'touch' && typeof state.lastSentAt === 'number' && now - state.lastSentAt < TOUCH_INTERVAL_MS;
 }
 
+/** Whether this event changes the turn state buildd last heard. A flip is never throttled. */
+export function busyFlips(n, state) {
+  return typeof n.busy === 'boolean' && n.busy !== (state.busy === true);
+}
+
+function clearHandoffPath(env, client, cwd) {
+  return join(stateDir(env), `clear-${createHash('sha256').update(`${client}:${cwd}`).digest('hex').slice(0, 32)}.json`);
+}
+
+/**
+ * A `/clear` that ends a session holding claims leaves a note for the session
+ * that continues in the same folder: Claude Code fires SessionEnd(clear) for
+ * the old id, then SessionStart(source: clear) for the new one, and neither
+ * payload names the other. The note holds only the old id, stays on this
+ * machine, and is taken once.
+ */
+export function writeClearHandoff(env, client, cwd, fromSessionId, now = Date.now()) {
+  writeState(clearHandoffPath(env, client, cwd), { from: fromSessionId, at: now });
+}
+
+export function takeClearHandoff(env, client, cwd, now = Date.now()) {
+  const file = clearHandoffPath(env, client, cwd);
+  const h = readState(file);
+  if (typeof h.from !== 'string') return null;
+  try { rmSync(file, { force: true }); } catch { /* taken again: still within the window only */ }
+  return typeof h.at === 'number' && now - h.at >= 0 && now - h.at <= CLEAR_HANDOFF_MS ? h.from : null;
+}
+
 /** The exact body POSTed. Built from the normalized event only. */
 export function buildBody(client, n, repo, usage = null) {
   return {
@@ -352,6 +389,8 @@ export function buildBody(client, n, repo, usage = null) {
     ...(typeof n.interactive === 'boolean' ? { interactive: n.interactive } : {}),
     ...(n.event === 'bind' ? { workerId: n.workerId } : {}),
     ...(n.event === 'end' ? { reason: n.reason } : {}),
+    ...(n.event === 'touch' && typeof n.busy === 'boolean' ? { busy: n.busy } : {}),
+    ...(n.event === 'start' && n.continuesSessionId ? { continuesSessionId: n.continuesSessionId } : {}),
     ...(usage && (n.event === 'touch' || n.event === 'end') ? { usage } : {}),
   };
 }
@@ -652,8 +691,23 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   if (!auth) return { sent: false, why: 'no_key', output: hookOutput(client, hookEventName, null) };
 
   const file = statePath(stateDir(env), client, n.clientSessionId);
-  const state = readState(file);
-  if (shouldSkip(n.event, state, now, n.force === true)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
+  let state = readState(file);
+  // A cleared conversation's claims (and their usage totals) carry over to
+  // the session that continues it, here and on the server.
+  if (n.event === 'start' && n.afterClear) {
+    const from = takeClearHandoff(env, client, n.cwd, now);
+    const prev = from && from !== n.clientSessionId ? readState(statePath(stateDir(env), client, from)) : null;
+    if (prev?.claims && Object.keys(prev.claims).length > 0) {
+      n.continuesSessionId = from;
+      state = {
+        ...state, scope: 'in',
+        claims: { ...prev.claims, ...(state.claims ?? {}) },
+        claimedAt: { ...(prev.claimedAt ?? {}), ...(state.claimedAt ?? {}) },
+        ...(prev.usage && !state.usage ? { usage: prev.usage } : {}),
+      };
+    }
+  }
+  if (shouldSkip(n.event, state, now, n.force === true || busyFlips(n, state))) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
 
   // Scope. A claim is explicit buildd work, so bind always goes and the session
   // is in scope from then on. Otherwise the folder decides, once per session
@@ -681,7 +735,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
   let usageState = state.usage;
   let usageReport = null;
   const claimsNow = state.claims && Object.keys(state.claims).length > 0 ? state.claims : null;
-  if (client === 'claude' && env.BUILDD_HOOK_USAGE !== '0' && claimsNow && (n.event === 'touch' || n.event === 'end')) {
+  if (client === 'claude' && env.BUILDD_HOOK_USAGE !== '0' && claimsNow && !n.light && (n.event === 'touch' || n.event === 'end')) {
     try {
       const c = collectUsage(state.usage, payload?.transcript_path, claimsNow, state.claimedAt);
       usageState = c.usage;
@@ -706,14 +760,23 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     debug('request failed', err?.message ?? err);
   }
   // claims: worker id -> the subagent that claimed it (null: the session itself).
-  const claims = n.event === 'bind' ? { ...(state.claims ?? {}), [n.workerId]: n.agentId ?? null } : state.claims;
-  const claimedAt = n.event === 'bind' ? { ...(state.claimedAt ?? {}), [n.workerId]: state.claimedAt?.[n.workerId] ?? now } : state.claimedAt;
+  // Hooks of one session can run concurrently (PreToolUse is async), so the
+  // claims are merged with what is on disk now: a racing write never drops a bind.
+  const onDisk = readState(file);
+  const claims = { ...(onDisk.claims ?? {}), ...(state.claims ?? {}), ...(n.event === 'bind' ? { [n.workerId]: n.agentId ?? null } : {}) };
+  const claimedAt = { ...(onDisk.claimedAt ?? {}), ...(state.claimedAt ?? {}) };
+  if (n.event === 'bind') claimedAt[n.workerId] = claimedAt[n.workerId] ?? now;
   writeState(file, {
     ...state, scope, lastSentAt: now, lastEvent: n.event,
-    ...(claims ? { claims } : {}),
-    ...(claimedAt ? { claimedAt } : {}),
+    ...(Object.keys(claims).length > 0 ? { claims } : {}),
+    ...(Object.keys(claimedAt).length > 0 ? { claimedAt } : {}),
     ...(usageState ? { usage: usageState } : {}),
+    // What buildd last heard about the turn; unchanged if this send failed.
+    ...(typeof n.busy === 'boolean' && result ? { busy: n.busy } : {}),
   });
+  if (n.event === 'end' && n.reason === 'clear' && Object.keys(claims).length > 0) {
+    writeClearHandoff(env, client, n.cwd, n.clientSessionId, now);
+  }
   return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload) };
 }
 

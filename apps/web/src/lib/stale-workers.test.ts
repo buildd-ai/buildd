@@ -894,6 +894,62 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     expect(taskUpdateSet.status).toBe('completed');
   });
 
+  // An interactive session's lease ran out while its client may still be
+  // running a long command: a PR opened mid-work is not the task done, and the
+  // same client must be able to claim it again at once (no infra backoff).
+  it('never completes a reaped interactive worker\'s task; requeues it with no backoff', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, commitCount: 3, branch: 'b', error: null },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([]); // heartbeat orphans
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'in_progress', parentTaskId: null });
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: true, hasArtifacts: false, hasStructuredOutput: false, hasCommits: true, hasAny: true, details: 'PR #42, 3 commits',
+    });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWakeTask.mockClear();
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.some(v => v.status === 'completed')).toBe(false);
+    const requeue = taskSets.find(v => v.status === 'pending');
+    expect(requeue).toBeDefined();
+    expect(requeue.startAt).toBeUndefined();
+    expect(requeue.context).toBeUndefined(); // no infraRetryCount charged
+    expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
+  });
+
+  it('leaves a reaped interactive worker\'s finished task as it is', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'mcp-1', taskId: 'task-1', runner: 'mcp', status: 'running', startedAt: new Date(), turns: 0, costUsd: '0', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', status: 'completed', parentTaskId: null });
+    const taskSets: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskSets.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskSets.filter(v => 'status' in v)).toEqual([]);
+  });
+
   it('promotes task to completed when stale worker has artifacts but no PR', async () => {
     mockWorkersFindMany
       .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0 }])

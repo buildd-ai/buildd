@@ -101,7 +101,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A local coding session with the buildd plugin MUST show as seat-free presence, bind only to the worker its own verified claim_task minted, and release it exactly once on exit without completing work.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-10-04
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-29
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-10-09
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-07
   The visual-auditor role is eligible only after a selected browser provider proves usable; a cloud browser reaches registered container-local services through a task-scoped CDP relay.

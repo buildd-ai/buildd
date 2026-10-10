@@ -2,7 +2,7 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-29
+last_verified: 2026-10-09
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
@@ -370,9 +370,27 @@ id, and every runner rule applies to its workers.
   user as the interactive claimer (`context.interactiveClaimUserId`) are
   touched; a token with no user covers the account's interactive workers.
   Trigger-level tokens touch nothing. `update_progress` bumps it as before.
-- An interactive worker with no MCP activity for
+- An interactive worker with no MCP or hook activity for
   `INTERACTIVE_WORKER_IDLE_TTL_MS` (2 hours) is reaped by an account-scoped arm,
-  booked with its own error text, and does not consume a retry attempt.
+  booked with its own error text, and does not consume a retry attempt. MCP
+  silence, client presence, a running command and the claim are separate
+  signals, so the arm spares a worker while (a) an open plugin presence holding
+  it was heard from within the TTL, or marked itself inside a turn
+  (`local_sessions.busy_since`, set by `UserPromptSubmit`/`PreToolUse`, cleared
+  by `Stop`) and was heard from within `INTERACTIVE_WORKER_BUSY_MAX_MS`
+  (8 hours); or (b) the worker was itself active within 8 hours and an open
+  presence of its claimant (the claiming account, the person the claim
+  recorded, or when it recorded nobody a member of the claiming account's
+  team) in its workspace was heard from within the TTL. 8 hours is the hard
+  backstop: a client that died mid-turn, or a person whose session merely
+  stays open, never holds a claim past it.
+- The release text names the signal that expired: `INTERACTIVE_ABANDONED_ERROR`
+  (2 hours with no touch and no live presence) or `INTERACTIVE_BACKSTOP_ERROR`
+  (8 hours with no touch, whatever the presence says).
+- A reaped interactive worker's task is never completed from its deliverables
+  (a PR opened mid-work is not the work done) and is never charged an infra
+  retry or backoff: an open task goes straight back to `pending`, so the same
+  client can claim it again at once; a terminal task keeps its status.
 - `waiting_input` interactive workers stay governed by the waiting_input timeout.
 - The buildd agent plugin's hooks can also keep an interactive worker alive,
   but only the one bound to that hook's own session presence, under the same
@@ -385,14 +403,22 @@ id, and every runner rule applies to its workers.
   WHEN `cleanupStaleWorkers` runs THEN it is left untouched.
 - AC-9b: GIVEN an interactive worker whose account made no MCP call for over 2
   hours WHEN `cleanupStaleWorkers` runs THEN it is marked `failed` with
-  `INTERACTIVE_ABANDONED_ERROR` and its task is reclaimed as below.
+  `INTERACTIVE_ABANDONED_ERROR` and its open task goes back to `pending` with no
+  backoff, never `completed`, even with a PR on the worker.
+- AC-9c: GIVEN an interactive worker last touched 3 hours ago, held by an open
+  presence whose `busy_since` is set and that was last heard from 3 hours ago
+  (one long command) WHEN `cleanupStaleWorkers` runs THEN it is left untouched;
+  GIVEN the same presence last heard from 9 hours ago (the client died
+  mid-turn) THEN it is reaped with `INTERACTIVE_BACKSTOP_ERROR`.
 
 **Code surface**:
 - `apps/web/src/lib/interactive-worker-liveness.ts`: `touchInteractiveWorkers()`,
   `interactiveAbandonedScope()`, `runnerWorkerOnly()`
 - `apps/web/src/lib/stale-workers.ts`: `staleWorkerScope()`
-- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS` in
-  `packages/shared/src/runner-liveness.ts`
+- `apps/web/src/lib/interactive-worker-liveness.ts`: `heldByLivePresence()`,
+  `claimantPresenceAlive()`
+- Constants: `INTERACTIVE_WORKER_RUNNER`, `INTERACTIVE_WORKER_IDLE_TTL_MS`,
+  `INTERACTIVE_WORKER_BUSY_MAX_MS` in `packages/shared/src/runner-liveness.ts`
 
 ---
 

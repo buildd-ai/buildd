@@ -130,9 +130,20 @@ export const RUNNER_STALE_CUTOFF_MS = 2.5 * RUNNER_HEARTBEAT_INTERVAL_MS;
 // calls (each call bumps `workers.updated_at`, see
 // apps/web/src/lib/interactive-worker-liveness.ts), and is reaped only after
 // this long with no MCP activity at all, so an abandoned claim still frees up.
+// The buildd plugin's hooks count as activity too, and a presence that marked
+// itself inside a turn keeps its claims longer (INTERACTIVE_WORKER_BUSY_MAX_MS).
 
 /** `workers.runner` value for a worker minted by an MCP `claim_task`. */
 export const INTERACTIVE_WORKER_RUNNER = 'mcp';
 
 /** Reap an interactive worker only after this long without any MCP activity. */
 export const INTERACTIVE_WORKER_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The hard backstop on the plugin's "turn in progress" mark (local_sessions
+ * .busy_since). A long silent command fires no hook until it returns, so a
+ * presence that said it was busy keeps its claims past the idle TTL, but only
+ * while it was last heard from within this window: a client that died mid-turn
+ * (reboot, kill) never clears the mark, and its claims still free up.
+ */
+export const INTERACTIVE_WORKER_BUSY_MAX_MS = 8 * 60 * 60 * 1000;
