@@ -1,6 +1,6 @@
 {
-  "id": "30b80b35-8f8c-41b2-af41-3688c73bd633",
-  "prevId": "af23db34-1a0e-471d-a679-7cd68cff0a44",
+  "id": "073c2f37-b8f7-41fb-be6d-7c5735e6a70a",
+  "prevId": "05a2c24f-1a9b-4c82-b1cb-e563fa5f1102",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19281,6 +19281,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "warm_handover": {
+          "name": "warm_handover",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'off'"
         },
         "permission_overrides": {
           "name": "permission_overrides",

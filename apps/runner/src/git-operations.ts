@@ -220,6 +220,7 @@ export interface InstallOptions {
    * improvised one.
    */
   allToolchains?: boolean;
+  frozenOnly?: boolean;
   timeoutMs?: number;
 }
 
@@ -299,7 +300,7 @@ export async function installWorkspaceDeps(
   // declared manifest's install runs in the provision gate instead.
   emitPhase('install_start');
   try {
-    return await runInstalls(worktreePath, workerId, runnable, installEnv, opts.timeoutMs ?? HOST_INSTALL_TIMEOUT_MS);
+    return await runInstalls(worktreePath, workerId, runnable, installEnv, opts.timeoutMs ?? HOST_INSTALL_TIMEOUT_MS, opts.frozenOnly);
   } finally {
     emitPhase('install_end');
   }
@@ -311,6 +312,7 @@ async function runInstalls(
   runnable: Array<{ plan: ReturnType<typeof detectInstallPlans>[number]; command: InstallCommand }>,
   installEnv: Record<string, string> | undefined,
   timeoutMs: number,
+  frozenOnly = false,
 ): Promise<InstallOutcome> {
   const dirs: string[] = [];
   let usedUnfrozen = false;
@@ -352,7 +354,7 @@ async function runInstalls(
       continue;
     } catch (err) {
       const failure = classifyInstallFailure(err);
-      if (failure !== 'lockfile-drift') {
+      if (failure !== 'lockfile-drift' || frozenOnly) {
         console.warn(
           `[Worker ${workerId}] ${command.bin} install in ${plan.dir} failed (${failure}): ${errMessage(err)}`,
         );
@@ -1314,7 +1316,7 @@ export async function setupWorktree(
     });
     const isDeclared = declared.source === 'manifest' && !!declared.manifest?.install?.command;
     // A cloud container installs every Node lockfile toolchain; a host runner, bun only.
-    const installOpts: InstallOptions = cloud ? { allToolchains: true, timeoutMs: CLOUD_INSTALL_TIMEOUT_MS } : {};
+    const installOpts: InstallOptions = cloud ? { allToolchains: true, timeoutMs: CLOUD_INSTALL_TIMEOUT_MS, frozenOnly: process.env.BUILDD_WARM_HANDOVER === 'deps' } : {};
     const deferredInstall = !isDeclared && setupOpts.deferInstall
       ? () => installWorkspaceDeps(worktreePath, workerId, installEnv, installOpts)
       : undefined;
