@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { callerOwnsWorker } from './worker-owner';
+import { agentConnectionUserId, callerOwnsWorker, claimingUserId } from './worker-owner';
 
 // Invariant: only the principal that claimed a worker may act as it. For a
 // bld_ key that principal is the account. An OAuth session resolves to an
@@ -61,5 +61,41 @@ describe('callerOwnsWorker', () => {
       expect(callerOwnsWorker(scoped, worker)).toBe(true);
       expect(callerOwnsWorker(scoped, { ...worker, taskId: 'task-2' })).toBe(false);
     });
+  });
+});
+
+// An account-level 'agent' grant carries no session user (it is never a
+// person), but every grant session in a team shares one account. Its claims
+// belong to the user who connected it.
+describe('agent connections own as the user who connected them', () => {
+  const agent = (userId: string, extra: Record<string, unknown> = {}) =>
+    ({ id: 'acct-1', teamId: 'team-1', authType: 'oauth', oauthGrantId: `g-${userId}`, oauthUserId: userId, actsAs: 'agent' as const, workspaceIds: ['ws-1'], grantScopes: ['read', 'write'], ...extra });
+  const claimedBy = (userId: string | null) => ({ accountId: 'acct-1', taskId: 'task-1', workspaceId: 'ws-1', claimedByUserId: userId });
+
+  it('claims as its connecting user', () => {
+    expect(claimingUserId(agent('user-a'))).toBe('user-a');
+    expect(agentConnectionUserId(agent('user-a'))).toBe('user-a');
+  });
+
+  it('owns what its user claimed, and nothing another member or a key claimed', () => {
+    expect(callerOwnsWorker(agent('user-a'), claimedBy('user-a'))).toBe(true);
+    expect(callerOwnsWorker(agent('user-b'), claimedBy('user-a'))).toBe(false);
+    expect(callerOwnsWorker(agent('user-a'), claimedBy(null))).toBe(false);
+  });
+
+  it('an oauthUserId alone, without an agent grant, owns nothing', () => {
+    expect(claimingUserId({ oauthUserId: 'user-a', actsAs: 'agent' })).toBeNull();
+    expect(claimingUserId({ oauthUserId: 'user-a', oauthGrantId: 'g' })).toBeNull();
+    expect(callerOwnsWorker({ id: 'acct-1', teamId: 'team-1', oauthUserId: 'user-a' } as any, claimedBy('user-a'))).toBe(false);
+  });
+
+  it('a person session claims as the person, and is not an agent connection', () => {
+    const person = { sessionUserId: 'user-a', oauthUserId: 'user-a', oauthGrantId: 'g', actsAs: 'person' as const };
+    expect(claimingUserId(person)).toBe('user-a');
+    expect(agentConnectionUserId(person)).toBeNull();
+  });
+
+  it('a bld_ key claims as nobody', () => {
+    expect(claimingUserId({})).toBeNull();
   });
 });

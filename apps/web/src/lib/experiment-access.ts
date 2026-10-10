@@ -57,7 +57,7 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
   if (bearer && account) {
     let teamId: string | null = (account as { teamId?: string | null }).teamId ?? null;
     if (workspaceId) {
-      if (!(await verifyAccountWorkspaceAccess(account.id, workspaceId))) return notFound('Workspace');
+      if (!(await verifyAccountWorkspaceAccess(account, workspaceId))) return notFound('Workspace');
       const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
       teamId = ws?.teamId ?? null;
     }

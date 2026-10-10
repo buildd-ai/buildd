@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { DEP_SATISFYING_STATUSES, dependenciesSatisfied, dependencySatisfied, depsGate, outsideSurfaceAuditMission } from './deps-gate';
 import { sql } from 'drizzle-orm';
+import { MIGRATION_PATH_RE } from '@buildd/core/path-overlap';
 import {
   DEP_SATISFYING_STATUSES as CONTRACT_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -120,6 +121,8 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
       ...CONTRACT_STATUSES,
       DEP_UNBLOCKING_PR_LIFECYCLE,
       ...EARLY_RELEASE_SATISFYING_DECISIONS,
+      MIGRATION_PATH_RE.source,
+      'mission/%',
       '[surface audit] %',
     ]);
   });
@@ -129,7 +132,7 @@ describe('dependenciesSatisfied() — emitted SQL', () => {
     // this pins the shape: the arm is AND NOT'd per dependency, scoped to audit
     // titles, and compares the dependency's mission to the outer (dependent) row's.
     const text = renderGate();
-    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $6');
+    expect(text).toContain('AND NOT ( "tasks"."mission_id" IS NOT NULL AND "tasks"."title" LIKE $8');
     expect(text).toContain('t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id"');
   });
 
@@ -244,5 +247,24 @@ describe('outsideSurfaceAuditMission(): rendered', () => {
       + 'SELECT 1 FROM "tasks" t3 WHERE t3.id = dep_id::uuid AND t3.mission_id = "tasks"."mission_id" ) )',
     );
     expect(q.params).toEqual(['[surface audit] %']);
+  });
+});
+
+describe('dependencySatisfied(): migration edge onto another landing base', () => {
+  it('releases an inferred migration edge whose PR targets a different base, merged or not', () => {
+    const text = renderGate();
+    // Only edges the claim minted, never a caller-declared dependency.
+    expect(text).toContain(`"tasks"."path_declaration"->'inferredDependsOn' ? (dep_id::uuid)::text`);
+    // The dependency must itself touch a migration path.
+    expect(text).toMatch(/mp ~\* \$\d+/);
+    expect(renderParams()).toContain(MIGRATION_PATH_RE.source);
+    // A PR with an unknown base keeps the edge closed.
+    expect(text).toContain('w4.pr_base_ref IS NOT NULL');
+    // Holder merged into mission/<x>, dependent on trunk -> differs.
+    expect(text).toContain('w4.pr_base_ref IS DISTINCT FROM (');
+    expect(text).toMatch(/w4\.pr_base_ref LIKE \$\d+/);
+    expect(renderParams()).toContain('mission/%');
+    // The dependent's base is its mission's integration branch only when enabled.
+    expect(text).toContain('m.integration_branch_enabled IS TRUE');
   });
 });

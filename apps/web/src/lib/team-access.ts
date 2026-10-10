@@ -1,4 +1,5 @@
 import { cache } from 'react';
+import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from './grant-scope';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces, accountWorkspaces, teams, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, sql } from 'drizzle-orm';
@@ -70,6 +71,13 @@ export const verifyWorkspaceAccess = cache(async (
 });
 
 /**
+ * The account a workspace check is about: the authenticated session object
+ * (preferred, and required for a grant session to be judged by its grant), or
+ * a bare account id for a caller that has no session in hand.
+ */
+export type AccountRef = string | (GrantScopedAccount & { id: string });
+
+/**
  * Verify an API key account has access to a workspace.
  *
  * Applies the shared rule in `workspace-reach.ts`:
@@ -80,12 +88,23 @@ export const verifyWorkspaceAccess = cache(async (
  * Cached per-request via React cache() so layout + page share the same result.
  */
 export const verifyAccountWorkspaceAccess = cache(async (
-  accountId: string,
+  accountRef: AccountRef,
   workspaceId: string,
   permission?: 'canClaim' | 'canCreate'
 ): Promise<boolean> => {
   // A non-UUID can never name a workspace; querying with one throws 22P02 (a 500).
   if (!isUuid(workspaceId)) return false;
+
+  // A grant session reaches exactly its granted workspaces (grant ∩ current
+  // membership, resolved this request), independent of the shared team
+  // account's links and of access_mode (lib/grant-scope.ts). Only the session
+  // object carries that list, which is why callers pass the account, not its id.
+  if (typeof accountRef !== 'string' && isGrantSession(accountRef)) {
+    return assertGrantedWorkspace(accountRef, workspaceId, permission ? 'write' : 'read');
+  }
+  // A session-carried restriction (a scoped key) narrows before the DB row is read.
+  if (typeof accountRef !== 'string' && !assertGrantedWorkspace(accountRef, workspaceId, 'read')) return false;
+  const accountId = typeof accountRef === 'string' ? accountRef : accountRef.id;
 
   const scopeAccount = await db.query.accounts.findFirst({where: eq(accounts.id, accountId), columns: {workspaceIds:true, teamId:true}});
   if (scopeAccount?.workspaceIds != null && !scopeAccount.workspaceIds.includes(workspaceId)) return false;
