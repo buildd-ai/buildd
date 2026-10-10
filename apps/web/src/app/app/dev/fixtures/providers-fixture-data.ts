@@ -114,6 +114,7 @@ export function fixtureResponse(o: {
   canSetMine?: boolean;
   credentialPolicy?: ProviderPolicySummary['credentialPolicy'];
   teamId?: string;
+  personalKeyCount?: number;
 }): ListProvidersResponse {
   const workspaceId = o.workspaceId ?? null;
   const canSetMine = o.canSetMine ?? true;
@@ -123,6 +124,7 @@ export function fixtureResponse(o: {
     workspaceId,
     caller: { principal: 'person', can: o.admin === false ? MEMBER_CAN : ADMIN_CAN, canSetMine },
     policy: fixturePolicy(o.credentialPolicy ?? null),
+    personalKeyCount: o.personalKeyCount ?? 0,
     providers: fixtureListings(rows, { workspace: !!workspaceId, mine: canSetMine }),
   };
 }
