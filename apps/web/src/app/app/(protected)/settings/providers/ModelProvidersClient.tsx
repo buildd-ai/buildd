@@ -12,7 +12,7 @@ import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { ADVANCED_ANCHOR, SCOPE_TABS, groupProviders, isScopeTab } from './providers-view';
+import { ADVANCED_ANCHOR, SCOPE_TABS, coverageText, coverageView, groupProviders, isScopeTab } from './providers-view';
 
 /**
  * Settings → Models, the Keys and Routing sections. Keys: every model provider
@@ -139,6 +139,20 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                 </div>
               )}
             </div>
+
+            {data && (
+              <dl className="inset-panel mb-3 space-y-1 text-meta" data-testid="provider-coverage" aria-label="What is covered">
+                {coverageView(data).map((l) => (
+                  <div key={l.surface} className="flex flex-wrap gap-x-2" data-testid={`coverage-${l.surface}`} data-covered={l.usedBy.length > 0 ? 'true' : 'false'}>
+                    <dt className="w-44 shrink-0 text-text-secondary">{l.label}</dt>
+                    <dd className={`min-w-0 break-words ${l.usedBy.length ? 'text-text-primary' : 'text-text-muted'}`}>{coverageText(l)}</dd>
+                  </div>
+                ))}
+                <p className="pt-1 text-text-muted">
+                  Claude Code and cloud coding need an Anthropic-compatible route. A ChatGPT login signs in Codex only.
+                </p>
+              </dl>
+            )}
 
             <div role="tabpanel">
               {data
