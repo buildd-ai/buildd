@@ -171,7 +171,26 @@ WHERE id = ${id}::uuid AND status = 'delivering' AND attempt_count = ${attemptCo
 RETURNING id, status`;
 }
 
-export type EffectHandler = (e: ClaimedEffect) => Promise<{ outcome?: string } | void>;
+/**
+ * Puts a claimed row back to `pending`, due after `delayMs`, and hands its
+ * claim back (`attempt_count - 1`): a wait is not a failure, so it neither
+ * backs off nor counts toward `dead`. Fenced to the attempt that ran, like ack.
+ */
+export function parkEffectSql(id: string, attemptCount: number, outcome: string, delayMs: number): SQL {
+  return sql`-- workflow:park_effect
+UPDATE workflow_effects
+SET status = 'pending', attempt_count = GREATEST(attempt_count - 1, 0), outcome = ${outcome.slice(0, 200)}::text,
+    not_before = now() + make_interval(secs => ${delayMs}::int / 1000.0),
+    lease_until = NULL, updated_at = now()
+WHERE id = ${id}::uuid AND status = 'delivering' AND attempt_count = ${attemptCount}::int
+RETURNING id`;
+}
+
+/**
+ * `park`: the handler cannot act yet and nothing is wrong (the landing lane is
+ * held). The row stays pending without spending an attempt; see `parkEffectSql`.
+ */
+export type EffectHandler = (e: ClaimedEffect) => Promise<{ outcome?: string; park?: { delayMs: number } } | void>;
 export type EffectHandlers = Partial<Record<EffectKind, EffectHandler>>;
 
 export interface DrainSummary {
@@ -264,6 +283,12 @@ export async function runEffects(opts: { handlers: EffectHandlers; limit?: numbe
       if (!handler) throw new Error(`no handler for ${e.kind}`);
       const res = await withLeaseHeartbeat(exec, e, () => handler(e));
       const outcome = (res && res.outcome) || 'ok';
+      if (res && res.park) {
+        const parked = (await exec(parkEffectSql(e.id, e.attemptCount, outcome, res.park.delayMs))).rows ?? [];
+        // Counted as skipped: it did nothing this pass, and it is still owed.
+        if (!parked.length) summary.lost++; else summary.skipped++;
+        continue;
+      }
       const acked = (await exec(ackEffectSql(e.id, e.attemptCount, outcome))).rows ?? [];
       // A handler that outlived its lease (heartbeat lost) settles nothing: the re-claiming attempt answers.
       if (!acked.length) summary.lost++;
