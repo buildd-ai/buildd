@@ -56,7 +56,23 @@ export function matchRoute(method: string, pathname: string): { route: Route; pa
   return null;
 }
 
-interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string }
+interface Env { EXECUTION_MODE?: string; CONTROL_PLANE_HOST?: string; CRON_SECRET?: string }
+
+/**
+ * Deep health makes outbound calls (GitHub, Pusher, storage, Redis) on every
+ * request, so only a caller holding CRON_SECRET may ask for it; anyone else
+ * gets the same 404 as a path that does not exist.
+ */
+export function deepHealthAllowed(request: Request, env: Env): boolean {
+  const secret = env.CRON_SECRET;
+  if (!secret) return false;
+  const got = request.headers.get('authorization') ?? '';
+  const want = `Bearer ${secret}`;
+  if (got.length !== want.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= got.charCodeAt(i) ^ want.charCodeAt(i);
+  return diff === 0;
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -67,29 +83,30 @@ export default {
       const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE) };
       // ?deep=1: an unauthenticated GitHub API call through the outbound
       // fetch, the dependency the 2026-10-10 cutover lost (no User-Agent).
+      // Probes report ok/fail and a status code, never upstream error text.
       if (url.searchParams.get('deep') === '1') {
-        const gh = await fetch('https://api.github.com/zen').catch((e: Error) => ({ status: 0, statusText: e.message }) as Response);
+        if (!deepHealthAllowed(request, env)) return new Response('Not Found', { status: 404 });
+        const gh = await fetch('https://api.github.com/zen').catch(() => ({ status: 0 }) as Response);
         health.github = gh.status;
         // And as the GitHub App, with the real key: the JWT the installation
         // tokens are minted from.
         const app = await import('@/lib/github')
           .then(async ({ generateAppJWT }) => fetch('https://api.github.com/app', { headers: { Authorization: `Bearer ${await generateAppJWT()}`, Accept: 'application/vnd.github+json' } }))
-          .catch((e: Error) => ({ status: 0, statusText: e.message }) as Response);
+          .catch(() => ({ status: 0 }) as Response);
         health.githubApp = app.status;
-        if (app.status !== 200) health.githubAppError = String(app.statusText || '').slice(0, 200);
         // Realtime: the dashboard learns of claims and progress through Pusher.
         health.pusher = await import('@/lib/pusher')
           .then(({ triggerEventChecked }) => triggerEventChecked('control-plane-health', 'ping', { at: Date.now() }))
-          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+          .catch(() => 'error');
         // Object storage (run evidence, uploads): a HEAD of a key that cannot
         // exist must answer "not there", not throw.
         health.storage = await import('@/lib/storage')
           .then(async ({ isStorageConfigured, objectExists }) => (isStorageConfigured() ? ((await objectExists('control-plane-health/none')) ? 'unexpected' : 'ok') : 'unconfigured'))
-          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+          .catch(() => 'error');
         // Cache (API-key lookups): a miss must answer null, not throw.
         health.redis = await import('@/lib/redis')
           .then(async ({ isRedisConfigured, getCachedApiKey }) => (isRedisConfigured() ? ((await getCachedApiKey('control-plane-health')) === null ? 'ok' : 'unexpected') : 'unconfigured'))
-          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+          .catch(() => 'error');
         health.ok = gh.status === 200 && app.status === 200 && health.pusher === 'sent' && health.storage === 'ok' && health.redis === 'ok';
       }
       return Response.json(health, { status: health.ok ? 200 : 503 });

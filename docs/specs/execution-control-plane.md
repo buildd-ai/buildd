@@ -60,6 +60,11 @@ runs, so the execution handlers never differ between the two hosts.
   2026-10-10). Paths it does not serve pass through to Vercel.
 - `EXECUTION_MODE=shadow` passes every request through. That is the rollback,
   with no DNS or route change.
+- `/__control-plane/health` is public and reports only liveness and mode.
+  `?deep=1` probes GitHub (anonymous and as the App), Pusher, storage and
+  Redis from the Worker; it needs `Authorization: Bearer <CRON_SECRET>`, is a
+  404 without it, and reports each probe as a status or ok/fail word, never
+  upstream error text (`index.test.ts`).
 - Lockstep with the web app's production commit is owed: until the release
   workflow deploys it, the Worker is redeployed by hand after each release.
 
