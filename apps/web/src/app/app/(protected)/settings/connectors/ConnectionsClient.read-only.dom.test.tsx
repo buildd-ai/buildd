@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ConnectionsClient } = await import('./ConnectionsClient');
+const { describeControls } = await import('../_lib/form-controls');
 
 let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -25,6 +26,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 const CONNECTORS = [
   { id: 'c1', name: 'Linear', url: 'https://mcp.example.com/linear', authMode: 'oauth', status: 'expired' },
   { id: 'c2', name: 'Docs', url: 'https://mcp.example.com/docs', authMode: 'header', status: 'not_connected' },
+  { id: 'c3', name: 'Tracker', url: 'https://mcp.example.com/tracker', authMode: 'oauth', status: 'connected', blockedByPolicy: true },
 ];
 
 async function mount(canManage: boolean) {
@@ -55,7 +57,13 @@ describe('ConnectionsClient: member vs admin', () => {
     expect(host.textContent).toContain('Linear');
     expect(host.textContent).toContain('Expired');
     expect(labels()).toEqual([]);
-    expect(host.querySelector('[data-testid="connectors-read-only"]')!.textContent).toBe('Admins can change this.');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.querySelector('[data-testid="connectors-read-only"]')).toBeNull();
+    // A blocked row keeps its reason; who may unblock it is the page's one line.
+    expect(host.textContent).toContain('Blocked by team policy.');
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this|team admin can/);
+    // Sharing is a control a member does not have, so the row does not point at it.
+    expect(host.textContent).not.toContain('via Sharing');
   });
 
   it('admin: add, reconnect, set key, sharing and delete', async () => {

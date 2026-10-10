@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: CapsForm } = await import('./CapsForm');
+const { describeControls } = await import('../_lib/form-controls');
 
 let team: Record<string, unknown> = {};
 const patches: Record<string, unknown>[] = [];
@@ -60,9 +61,9 @@ describe('CapsForm', () => {
   it('draws a set cap in ink, even read-only', async () => {
     team = { chatDailyBudgetUsd: '12.50', chatUserDailyBudgetUsd: null };
     await mount('team', false);
-    const el = input('cap-team')!;
+    const el = host.querySelector('[data-testid="cap-team-value"]')!;
+    expect(el.textContent).toBe('$12.50/day');
     expect(el.className).toContain('text-text-primary');
-    expect(el.className).not.toMatch(/disabled:opacity-(?!100)/);
   });
 
   it('saves what was typed, in the $N/day form', async () => {
@@ -86,9 +87,10 @@ describe('CapsForm', () => {
     expect(input('cap-team')!.value).toBe('$12.50/day');
   });
 
-  it('members see the caps read-only', async () => {
+  it('members see the caps as values, with no form controls and no per-section admin line', async () => {
     await mount('team', false);
-    expect(input('cap-team')!.disabled).toBe(true);
-    expect(host.querySelector('[data-testid="caps-save"]')).toBeNull();
+    expect(describeControls(host)).toEqual([]);
+    expect(host.querySelector('[data-testid="cap-team-value"]')!.textContent).toBe('Default $20/day');
+    expect(host.textContent).not.toContain('Admins can change');
   });
 });

@@ -30,5 +30,8 @@ it('shows inherited team policy and respects read-only access', async () => {
   globalThis.fetch = mock(async () => new Response(JSON.stringify({ team: { warmHandover: 'deps' } }))) as any;
   await mount({ teamId: 'team-fixture', workspaceId: 'workspace-fixture', canEdit: false });
   expect(host.textContent).toContain('Team default: Verified dependencies');
-  expect(host.querySelector<HTMLButtonElement>('[data-testid="warm-handover-select"]')!.disabled).toBe(true);
+  // Read-only is the value as text, not a disabled select.
+  expect(host.querySelector('[data-testid="warm-handover-select"]')).toBeNull();
+  expect(host.querySelector('[data-testid="warm-handover-value"]')!.textContent).toBe('Team default');
+  expect(host.querySelectorAll('button, input, select, [role="combobox"]').length).toBe(0);
 });

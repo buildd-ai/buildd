@@ -3,6 +3,7 @@ import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { teamIdsHolding } from '../_lib/settings-permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
 import ModelTiersClient from './ModelTiersClient';
@@ -16,12 +17,14 @@ import ChatRetroSection from '@/lib/chat-retro/ChatRetroSection';
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Models: every model concern on one page, in the order you set it
- * up. Keys (every way a provider is connected: key, subscription and runner
- * sign-in, in one row per provider), Routing (gateway, decision model,
+ * Settings › Team › Models: every team model concern on one page, in the order
+ * you set it up. Keys (the team's, then one workspace's at a time; every way a
+ * provider is connected: key, subscription and runner sign-in, in one row per
+ * provider), Routing (gateway, decision model,
  * agent endpoint), Tiers (which model each tier runs, limits, upgrades) and
  * Features (where AI features run). Was /app/settings/providers and
- * /app/settings/ai; next.config redirects both here.
+ * /app/settings/ai; next.config redirects both here. Your own keys are
+ * You › Keys (the old `?scope=mine` redirects there).
  *
  * Every section is a client component that loads its own data, so one failed
  * read blanks that section, not the page. Each control follows the permission
@@ -43,7 +46,7 @@ export default async function ModelsSettingsPage() {
   const hasTeamKey = await hasTeamInferenceKey(teamId).catch(() => false);
 
   return (
-    <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide>
+    <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide readOnly={settingsReadOnly('models', perms)}>
       <ModelProvidersClient
         teamId={teamId}
         isAdmin={perms.manage_inference_providers}
@@ -68,7 +71,8 @@ export default async function ModelsSettingsPage() {
         {/* Old /app/settings#inference-spending links. */}
         <span id="inference-spending" aria-hidden="true" />
         <ModelFeatures teamId={teamId} canManage={perms.manage_team_settings} hasTeamKey={hasTeamKey} />
-        <ChatRetroSection teamId={teamId} isAdmin={perms.manage_chat_retro} />
+        {/* Its settings and lessons are admin-only reads: members have no values to see. */}
+        {perms.manage_chat_retro && <ChatRetroSection teamId={teamId} isAdmin />}
       </Section>
     </SettingsPage>
   );
