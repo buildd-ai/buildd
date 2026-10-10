@@ -74,12 +74,12 @@ let root: ReturnType<typeof createRoot>;
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 async function flush() { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); }
-async function mount(o: FixtureOpts = {}, workspaces = WORKSPACES) {
+async function mount(o: FixtureOpts = {}, withSignIns = false, workspaces = WORKSPACES) {
   opts = o;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} />); });
+  await act(async () => { root.render(<ModelProvidersClient teamId="t" isAdmin={o.admin !== false} workspaces={workspaces} signIns={withSignIns ? { workspaces: workspaces.map((w) => ({ ...w, teamId: 't' })), currentTeamId: 't' } : undefined} />); });
   await flush();
   await flush();
 }
@@ -161,11 +161,27 @@ describe('connect: one input, the format decides', () => {
     expect($('[role="alert"]', cardOf('claude'))!.textContent).toContain('sk-ant-api');
   });
 
-  it('a subscription that signs in through the browser is a link inside the row, not text on the page', async () => {
-    await mount();
+  it('sign-ins are folded into the provider row, not linked to another section', async () => {
+    await mount({}, true);
     expect($('[data-testid="provider-connect-seat"]', cardOf('openai'))).toBeNull();
+    expect($('#sign-ins')).toBeTruthy();
+    // Shut, the Claude and OpenAI sign-ins are hidden; open, they show.
+    expect($('[data-testid="provider-sign-in"]', cardOf('openai'))!.hasAttribute('hidden')).toBe(true);
     await click(toggle('openai'));
-    expect($('[data-testid="provider-connect-seat"]', cardOf('openai'))!.getAttribute('href')).toBe('/app/settings/models#sign-ins');
+    const openai = $('[data-testid="provider-sign-in"]', cardOf('openai'))!;
+    expect(openai.hasAttribute('hidden')).toBe(false);
+    expect($('[data-testid="codex-row"]', openai)).toBeTruthy();
+    await click(toggle('claude'));
+    expect($('[data-testid="claude-row"]', $('[data-testid="provider-sign-in"]', cardOf('claude'))!)).toBeTruthy();
+    // One row per provider: no second row header for the same provider.
+    expect(host.querySelectorAll('[data-testid="codex-row"] button[aria-expanded]')).toHaveLength(0);
+    expect($('[data-testid="provider-sign-in"]', cardOf('openrouter'))).toBeNull();
+  });
+
+  it('the page has no Runner sign-ins section', async () => {
+    await mount({}, true);
+    expect(host.textContent).not.toContain('Runner sign-ins');
+    expect($('[data-testid="models-sign-ins"]')).toBeNull();
   });
 
   it('gateways set up under Routing', async () => {
@@ -226,7 +242,7 @@ describe('scope tabs', () => {
   });
 
   it('with no workspaces the Workspace tab is disabled', async () => {
-    await mount({}, []);
+    await mount({}, false, []);
     expect(($('[data-testid="scope-tab-workspace"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
