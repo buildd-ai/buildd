@@ -180,6 +180,14 @@ describe('GET /api/providers', () => {
     expect(JSON.stringify(body)).not.toContain('another-team');
   });
 
+  it('counts personal model keys across the team (never whose), for showing "Who pays"', async () => {
+    asMember();
+    const { body } = await call(await GET(req('GET', '/api/providers')));
+    // u-member's and u-other's personal Anthropic keys; the other team's row and the MCP secret don't count.
+    expect(body.personalKeyCount).toBe(2);
+    expect(JSON.stringify(body)).not.toContain('u-other');
+  });
+
   it('lists a workspace’s own rows when asked, and summarises a gateway by its key’s last four', async () => {
     asAdmin();
     const { body } = await call(await GET(req('GET', '/api/providers?workspaceId=ws-1')));

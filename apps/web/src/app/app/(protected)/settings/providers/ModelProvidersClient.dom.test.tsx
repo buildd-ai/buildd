@@ -99,81 +99,85 @@ async function type(input: HTMLInputElement, value: string) {
   });
 }
 
-describe('one card per provider, in registry order', () => {
-  it('renders every registry provider with what it serves and the reason for what it cannot', async () => {
+const toggle = (id: string) => $('[data-testid="provider-row-toggle"]', cardOf(id));
+
+describe('one row per provider, in registry order', () => {
+  it('Claude and OpenAI each group their key and subscription; no compatibility text anywhere', async () => {
     await mount();
     const ids = [...host.querySelectorAll('[data-testid^="provider-card-"][data-scope]')].map((e) => e.getAttribute('data-testid')!.replace('provider-card-', ''));
-    expect(ids).toEqual(['anthropic', 'claude-subscription', 'openai', 'codex-subscription', 'openrouter', 'litellm', 'custom-endpoint']);
-    expect($('[data-testid="provider-serves"]', cardOf('openai'))!.textContent).toContain('Chat · codex runs');
-    const not = $('[data-testid="provider-not"]', cardOf('openai'))!.textContent!;
-    expect(not).toContain('Claude Code speaks the Anthropic Messages API');
-    expect(not).toContain('Not cloud runs');
+    expect(ids).toEqual(['claude', 'openai', 'openrouter', 'litellm', 'custom-endpoint']);
+    const text = host.textContent!;
+    expect(text).not.toMatch(/Not (chat|codex|claude|cloud)/i);
+    expect(text).not.toContain('What runs?');
+    expect(text).not.toMatch(/\bruns\b|wire|seat/i);
   });
 
-  it('a stored row shows its last four, health and what it serves today, never the value', async () => {
+  it('a row is name, status word, masked key and one action; detail opens on tap', async () => {
     await mount({ rows: [{ provider: 'anthropic', scope: 'team', last4: 'a1b2' }] });
-    const c = cardOf('anthropic');
+    const c = cardOf('claude');
     expect(c.getAttribute('data-set')).toBe('true');
+    expect($('[data-testid="provider-card-state"]', c)!.textContent).toBe('Working');
+    expect($('[data-testid="provider-masked"]', c)!.textContent).toBe('…a1b2');
+    expect(buttons(c)).toContain('Replace');
+    expect($('[data-testid="provider-detail"]', c)).toBeNull();
+    await click(toggle('claude'));
     expect($('[data-testid="provider-row"]', c)!.textContent).toContain('…a1b2');
-    expect($('[data-testid="provider-card-state"]', c)!.textContent).toContain('healthy');
-    expect($('[data-testid="provider-row-serves"]', c)!.textContent).toBe('Used for chat · claude runs · cloud runs');
-  });
-});
-
-describe('scope tabs', () => {
-  it('Workspace shows the team row it inherits, and pastes go to that workspace', async () => {
-    await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
-    await click($('[data-testid="scope-tab-workspace"]'));
-    const c = cardOf('anthropic');
-    expect($('[data-testid="provider-inherits"]', c)!.textContent).toContain('Inherits team: API key …a1b2');
-    await click(button(c, 'Add API key'));
-    await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
-    await click(button(c, 'Save'));
-    const put = calls.find((x) => x.method === 'PUT')!;
-    expect(put.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: 'ws-a', shape: 'api_key' });
+    expect(buttons(c)).toContain('Remove');
   });
 
-  it('Mine closes a provider the registry keeps team-only, with its reason', async () => {
-    await mount({ credentialPolicy: 'personal_first' });
-    await click($('[data-testid="scope-tab-mine"]'));
-    expect($('[data-testid="provider-closed"]', cardOf('litellm'))!.textContent).toContain("team's shared configuration");
-    expect(buttons(cardOf('litellm'))).not.toContain('Add API key');
-    expect(button(cardOf('anthropic'), 'Add API key')).toBeDefined();
-  });
-
-  it('Mine is read-only under a team-only policy', async () => {
-    await mount({ credentialPolicy: 'team' });
-    await click($('[data-testid="scope-tab-mine"]'));
-    expect($('[data-testid="provider-read-only"]', cardOf('anthropic'))!.textContent).toBe("Your team's policy doesn't use personal keys.");
-  });
-
-  it('?scope=mine opens on Mine', async () => {
-    search = new URLSearchParams('scope=mine');
-    await mount({ credentialPolicy: 'personal_first' });
-    expect($('[data-testid="scope-tab-mine"]')!.getAttribute('aria-selected')).toBe('true');
-    expect(cardOf('anthropic').getAttribute('data-scope')).toBe('mine');
-  });
-
-  it('with no workspaces the Workspace tab is disabled', async () => {
-    await mount({}, []);
-    expect(($('[data-testid="scope-tab-workspace"]') as HTMLButtonElement).disabled).toBe(true);
-  });
-});
-
-describe('set, replace, remove', () => {
-  it('a pasted key is sent once and never stays in the DOM', async () => {
+  it('only one row is open at a time', async () => {
     await mount();
-    const c = cardOf('anthropic');
-    await click(button(c, 'Add API key'));
-    await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
-    await click(button(c, 'Save'));
-    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(1);
+    await click(toggle('claude'));
+    await click(toggle('openai'));
+    expect($('[data-testid="provider-detail"]', cardOf('claude'))).toBeNull();
+    expect($('[data-testid="provider-detail"]', cardOf('openai'))).toBeTruthy();
+  });
+});
+
+describe('connect: one input, the format decides', () => {
+  it('a Claude API key goes to Anthropic', async () => {
+    await mount();
+    await click(button(cardOf('claude'), 'Connect Claude'));
+    await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, PASTED);
+    await click(button(cardOf('claude'), 'Save'));
+    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', shape: 'api_key', scope: 'team' });
     expect(host.innerHTML).not.toContain(PASTED);
-    expect($('[data-testid="provider-row"]', cardOf('anthropic'))!.textContent).toContain('…0000');
+  });
+
+  it('a Claude setup token goes to the subscription', async () => {
+    await mount();
+    await click(button(cardOf('claude'), 'Connect Claude'));
+    await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, 'sk-ant-oat01-illustrative-not-real');
+    await click(button(cardOf('claude'), 'Save'));
+    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'claude-subscription', shape: 'setup_token' });
+  });
+
+  it('something that is neither is refused before anything is sent', async () => {
+    await mount();
+    await click(button(cardOf('claude'), 'Connect Claude'));
+    await type($('input[type="password"]', cardOf('claude')) as HTMLInputElement, 'not-a-key');
+    await click(button(cardOf('claude'), 'Save'));
+    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(0);
+    expect($('[role="alert"]', cardOf('claude'))!.textContent).toContain('sk-ant-api');
+  });
+
+  it('a subscription that signs in through the browser is a link inside the row, not text on the page', async () => {
+    await mount();
+    expect($('[data-testid="provider-connect-seat"]', cardOf('openai'))).toBeNull();
+    await click(toggle('openai'));
+    expect($('[data-testid="provider-connect-seat"]', cardOf('openai'))!.getAttribute('href')).toBe('/app/settings/models#sign-ins');
+  });
+
+  it('gateways set up under Routing', async () => {
+    await mount();
+    expect($('a[href="#routing"]', cardOf('litellm'))!.textContent).toBe('Set up');
+    expect($('#routing')).toBeTruthy();
+    expect($('#advanced')).toBeTruthy();
   });
 
   it('remove asks first, then deletes at the tab scope', async () => {
     await mount({ rows: [{ provider: 'openai', scope: 'team' }] });
+    await click(toggle('openai'));
     await click(button(cardOf('openai'), 'Remove'));
     await click(button(cardOf('openai'), 'Confirm remove'));
     const del = calls.find((x) => x.method === 'DELETE')!;
@@ -181,70 +185,86 @@ describe('set, replace, remove', () => {
     expect(del.url).toContain('scope=team');
     expect(cardOf('openai').getAttribute('data-set')).toBe('false');
   });
-
-  it('a member sees rows read-only with "Admins can change this"', async () => {
-    await mount({ admin: false, rows: [{ provider: 'anthropic', scope: 'team' }] });
-    const c = cardOf('anthropic');
-    expect($('[data-testid="provider-read-only"]', c)!.textContent).toBe('Admins can change this.');
-    expect(buttons(c).filter((b) => b !== 'What runs?')).toEqual([]);
-  });
-
-  it('subscription seats link to the browser flow; gateways link to their form under Routing', async () => {
-    await mount();
-    expect($('[data-testid="provider-connect-seat"]', cardOf('codex-subscription'))!.getAttribute('href')).toBe('/app/settings/models#sign-ins');
-    expect(button(cardOf('claude-subscription'), 'Add setup token')).toBeDefined();
-    expect($('a[href="#routing"]', cardOf('litellm'))).toBeTruthy();
-    expect($('#routing')).toBeTruthy();
-    // Old #advanced links still land on the section.
-    expect($('#advanced')).toBeTruthy();
-  });
 });
 
-describe('credential policy', () => {
-  it('unset: says agents use team keys and that picking one opts agent runs in', async () => {
-    await mount({ credentialPolicy: null });
-    const unset = $('[data-testid="credential-policy-unset"]')!.textContent!;
-    expect(unset).toContain('No policy chosen: agents use team keys.');
-    expect(unset).toContain('apply it to agent runs');
-    const radios = [...host.querySelectorAll('input[name="credential-policy"]')] as HTMLInputElement[];
-    expect(radios.map((r) => r.value)).toEqual(['team', 'personal_first', 'personal_only']);
-    expect(radios.some((r) => r.checked)).toBe(false);
-  });
-
-  it('an admin picks one: PATCH credentialPolicy, and the unset line goes away', async () => {
-    await mount({ credentialPolicy: null });
-    await click(host.querySelector('input[value="personal_first"]') as HTMLInputElement);
-    expect(calls.find((x) => x.method === 'PATCH')!.body).toEqual({ teamId: 't', credentialPolicy: 'personal_first' });
-    expect($('[data-testid="credential-policy-unset"]')).toBeNull();
-    expect((host.querySelector('input[value="personal_first"]') as HTMLInputElement).checked).toBe(true);
-  });
-
-  it('a member reads the policy as one sentence, no radios', async () => {
-    await mount({ admin: false, credentialPolicy: 'personal_only' });
-    expect(host.querySelector('input[name="credential-policy"]')).toBeNull();
-    expect($('[data-testid="credential-policy-line"]')!.textContent).toBe('Agent runs and chat: your key only (no team key).');
-  });
-});
-
-describe('What runs?', () => {
-  it('asks the explain endpoint per surface the provider serves, as team work on Team', async () => {
+describe('scope tabs', () => {
+  it('Workspace shows the team key it uses, and pastes go to that workspace', async () => {
     await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
-    await click(button(cardOf('anthropic'), 'What runs?'));
-    await flush();
-    const asked = calls.filter((x) => x.url.startsWith('/api/providers/explain')).map((x) => new URL(x.url, 'http://l').searchParams);
-    expect(asked.map((p) => p.get('surface'))).toEqual(['chat', 'agent-claude', 'cloud-egress']);
-    expect(asked.every((p) => p.get('as') === 'team' && p.get('provider') === 'anthropic')).toBe(true);
-    const lines = [...cardOf('anthropic').querySelectorAll('[data-testid="provider-explain-line"]')].map((e) => e.textContent);
-    expect(lines).toContain('Claude runs use Anthropic: API key, team key.');
+    await click($('[data-testid="scope-tab-workspace"]'));
+    const c = cardOf('claude');
+    expect($('[data-testid="provider-card-state"]', c)!.textContent).toBe('Team key');
+    await click(button(c, 'Connect Claude'));
+    expect($('[data-testid="provider-inherits"]', c)!.textContent).toContain('…a1b2');
+    await type($('input[type="password"]', c) as HTMLInputElement, PASTED);
+    await click(button(c, 'Save'));
+    expect(calls.find((x) => x.method === 'PUT')!.body).toMatchObject({ provider: 'anthropic', scope: 'workspace', workspaceId: 'ws-a', shape: 'api_key' });
   });
 
-  it('on Mine it explains your own work', async () => {
+  it('Mine: team-only providers say so only when opened, with no action', async () => {
     await mount({ credentialPolicy: 'personal_first' });
     await click($('[data-testid="scope-tab-mine"]'));
-    await click(button(cardOf('openai'), 'What runs?'));
-    await flush();
-    const asked = calls.filter((x) => x.url.startsWith('/api/providers/explain')).map((x) => new URL(x.url, 'http://l').searchParams);
-    expect(asked.every((p) => p.get('as') === 'self')).toBe(true);
+    expect($('[data-testid="provider-card-state"]', cardOf('litellm'))!.textContent).toBe('Not available');
+    expect(buttons(cardOf('litellm')).filter((b) => b !== 'LiteLLM gateway')).toEqual([expect.stringContaining('LiteLLM')]);
+    await click(toggle('litellm'));
+    expect($('[data-testid="provider-closed"]', cardOf('litellm'))!.textContent).toContain("team's shared configuration");
+    expect(button(cardOf('claude'), 'Connect Claude')).toBeDefined();
+  });
+
+  it('Mine is read-only under a team-only policy', async () => {
+    await mount({ credentialPolicy: 'team' });
+    await click($('[data-testid="scope-tab-mine"]'));
+    expect(button(cardOf('claude'), 'Connect Claude')).toBeUndefined();
+    await click(toggle('claude'));
+    expect($('[data-testid="provider-read-only"]', cardOf('claude'))!.textContent).toBe("Your team's policy doesn't use personal keys.");
+  });
+
+  it('?scope=mine opens on Mine', async () => {
+    search = new URLSearchParams('scope=mine');
+    await mount({ credentialPolicy: 'personal_first' });
+    expect($('[data-testid="scope-tab-mine"]')!.getAttribute('aria-selected')).toBe('true');
+    expect(cardOf('claude').getAttribute('data-scope')).toBe('mine');
+  });
+
+  it('with no workspaces the Workspace tab is disabled', async () => {
+    await mount({}, []);
+    expect(($('[data-testid="scope-tab-workspace"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a member sees rows with no actions, and why only when opened', async () => {
+    await mount({ admin: false, rows: [{ provider: 'anthropic', scope: 'team' }] });
+    const c = cardOf('claude');
+    expect(buttons(c).filter((b) => !b?.startsWith('Claude'))).toEqual([]);
+    await click(toggle('claude'));
+    expect($('[data-testid="provider-read-only"]', c)!.textContent).toBe('Admins can change this.');
+  });
+});
+
+describe('who pays', () => {
+  it('hidden while nobody in the team has a personal key and the policy is the default', async () => {
+    await mount({ credentialPolicy: null, personalKeyCount: 0 });
+    expect($('[data-testid="credential-policy"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/No policy chosen|Pick one/);
+  });
+
+  it('shown once someone has a personal key, with Team key chosen by default and no warning', async () => {
+    await mount({ credentialPolicy: null, personalKeyCount: 1 });
+    const radios = [...host.querySelectorAll('[data-testid="credential-policy"] [role="radio"]')] as HTMLButtonElement[];
+    expect(radios.map((r) => r.textContent)).toEqual(['Team key', "Mine, then the team's", 'Mine only']);
+    expect(radios[0].getAttribute('aria-checked')).toBe('true');
+    expect($('[data-testid="credential-policy-hint"]')!.textContent).toBe("Everyone uses the team's key.");
+  });
+
+  it('an admin switches it: PATCH credentialPolicy', async () => {
+    await mount({ credentialPolicy: null, personalKeyCount: 1 });
+    const mine = [...host.querySelectorAll('[role="radio"]')].find((r) => r.textContent === "Mine, then the team's") as HTMLButtonElement;
+    await click(mine);
+    expect(calls.find((x) => x.method === 'PATCH')!.body).toEqual({ teamId: 't', credentialPolicy: 'personal_first' });
+  });
+
+  it('a member reads it as one line', async () => {
+    await mount({ admin: false, credentialPolicy: 'personal_only' });
+    expect(host.querySelector('[role="radio"]')).toBeNull();
+    expect($('[data-testid="credential-policy-line"]')!.textContent).toBe('Mine only. You need your own key to start work.');
   });
 });
 
@@ -253,9 +273,9 @@ for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     beforeEach(() => {
       (window as unknown as { happyDOM: { setViewport(v: { width: number; height: number }): void } }).happyDOM.setViewport(vp);
     });
-    it('renders every card and the policy without an em dash', async () => {
-      await mount({ rows: [{ provider: 'anthropic', scope: 'team' }] });
-      expect(host.querySelectorAll('[data-testid^="provider-card-"][data-scope]').length).toBe(7);
+    it('renders every row and the policy without an em dash', async () => {
+      await mount({ rows: [{ provider: 'anthropic', scope: 'team' }], personalKeyCount: 1 });
+      expect(host.querySelectorAll('[data-testid^="provider-card-"][data-scope]').length).toBe(5);
       expect($('[data-testid="credential-policy"]')!.textContent).not.toContain('—');
       for (const c of host.querySelectorAll('[data-testid^="provider-card-"][data-scope]')) expect(c.textContent).not.toContain('—');
     });

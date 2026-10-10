@@ -583,6 +583,28 @@ notification text) follows the same rules as a PR lede:
    disabled. Jobs run on Claude." The rules are data in
    `packages/core/copy-rules.ts`; **`bun run copy:check`** (CI, a ratchet like
    the design drift check below; `--list` prints every hit) fails on new ones.
+8. **Say what it does, never what it doesn't** (`not-this-its-that`). This
+   card, from Settings → Models, is the pattern to avoid:
+
+   > Serves Claude runs
+   > Not chat: A subscription seat signs in a runner; buildd's server never spends a seat.
+   > Not codex runs: A Claude subscription signs in Claude Code; the Codex CLI cannot use it.
+
+   It now reads: **Claude · Working · Subscription …bAAA**. If a limit
+   matters, show it where someone acts and it blocks them, as a fact with
+   the way out ("Add a Codex key"), never as a list of negations on a card.
+   "X, not Y" contrasts count too.
+9. **No internal words** (`internal-jargon`): wire, CLI, container, seat,
+   "Claude runs". Name what the reader sees: Claude agents, your runners.
+10. **A default, not a warning** (`warning-instead-of-default`). If the system
+    already behaves one way, show that option as chosen. No "No policy
+    chosen. Pick one to…".
+11. **Say it once** (`duplicate-explanation`). A sentence rendered twice in
+    one file, on a card and again in its disclosure, counts.
+12. **Change the flow before the words.** When a page needs explaining, it
+    mirrors the data model. Collapse it: one row per thing the reader knows
+    (Claude, not "Anthropic" plus "Claude subscription"), one input that
+    works out what was pasted, a control hidden until it can matter.
 
 ---
 
