@@ -2612,6 +2612,33 @@ export const artifactRevisions = pgTable('artifact_revisions', {
 }));
 
 /**
+ * What an artifact read actually returned, one row per GET that hands back
+ * any of an artifact's body: which revision, which view (full, outline,
+ * section, range, grep) and how many characters. "Available to the agent" is
+ * not "read by the agent"; verification cites this. Content-free (ids,
+ * selectors, counts) and FK-free like memory_uses: the ledger must never make a
+ * read fail, and it outlives the rows it names. Written after the response.
+ */
+export const artifactReads = pgTable('artifact_reads', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').notNull(),
+  revision: integer('revision').notNull(),
+  workspaceId: uuid('workspace_id'),
+  accountId: uuid('account_id'),
+  userId: uuid('user_id'),
+  taskId: uuid('task_id'),
+  view: text('view').notNull().$type<'full' | 'meta' | 'outline' | 'section' | 'range' | 'grep'>(),
+  /** The view's own arguments: { section } | { offset, length } | { pattern }. */
+  selector: jsonb('selector').$type<Record<string, unknown>>(),
+  returnedChars: integer('returned_chars').notNull(),
+  totalChars: integer('total_chars').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactIdx: index('artifact_reads_artifact_idx').on(t.artifactId, t.createdAt),
+  taskIdx: index('artifact_reads_task_idx').on(t.taskId),
+}));
+
+/**
  * Living Specs: governed intent with immutable revisions (Living Specs v2, G1).
  * A spec is a stable identity; its body lives in one artifact (`body_artifact_id`)
  * so storage, history, hashes, bounded reads and redaction are the artifact
