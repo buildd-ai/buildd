@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import { sql } from 'drizzle-orm';
 import { assertDbConfigured, q, seedWorkspace } from './harness';
 
-const { createSpecDraft, reviseSpecDraft, getSpec, listSpecs } = await import('../../src/lib/specs/store');
+const { createSpecDraft, reviseSpecDraft, relateSpec, getSpec, listSpecs } = await import('../../src/lib/specs/store');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
@@ -123,5 +123,52 @@ describe('workspace scoping', () => {
     const child = await createSpecDraft(A(), { workspaceId: wsA, title: 'child', parentSpecId: spec.id, body: 'R-1: x' });
     expect(child.ok && child.spec.parentSpecId).toBe(spec.id);
     expect(await createSpecDraft(A(), { workspaceId: wsA, title: 'orphan', parentSpecId: '00000000-0000-4000-8000-000000000000', body: 'x' })).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe('relating specs', () => {
+  test('a parent is set, changed and cleared, and the body version does not move', async () => {
+    const [{ spec: child }, { spec: p1 }, { spec: p2 }] = [await draft(), await draft(), await draft()];
+    const set = await relateSpec(A(), child.id, { parentSpecId: p1.id });
+    expect(set.ok && [set.spec.parentSpecId, set.spec.version]).toEqual([p1.id, 1]);
+    const moved = await relateSpec(agent(), child.id, { parentSpecId: p2.id });
+    expect(moved.ok && moved.spec.parentSpecId).toBe(p2.id);
+    const cleared = await relateSpec(A(), child.id, { parentSpecId: null });
+    expect(cleared.ok && cleared.spec.parentSpecId).toBe(null);
+  });
+
+  test('a relation that would close a cycle is refused and writes nothing', async () => {
+    const [{ spec: a }, { spec: b }, { spec: c }] = [await draft(), await draft(), await draft()];
+    expect((await relateSpec(A(), b.id, { parentSpecId: a.id })).ok).toBe(true);
+    expect((await relateSpec(A(), c.id, { parentSpecId: b.id })).ok).toBe(true);
+    // a -> c would make a its own grandchild's child.
+    expect(await relateSpec(A(), a.id, { parentSpecId: c.id })).toMatchObject({ ok: false, status: 409 });
+    expect(await relateSpec(A(), a.id, { parentSpecId: a.id })).toMatchObject({ ok: false, status: 409 });
+    const [{ parent }] = await q<{ parent: string | null }>(sql`SELECT parent_spec_id AS parent FROM specs WHERE id = ${a.id}::uuid`);
+    expect(parent).toBe(null);
+  });
+
+  test('a parent in another workspace, an unknown parent, or another team\'s caller is refused', async () => {
+    const { spec } = await draft();
+    const other = await createSpecDraft({ kind: 'user', userId: userB }, { workspaceId: wsB, title: 'elsewhere', body: 'R-1: x' });
+    if (!other.ok) throw new Error(other.error);
+    expect(await relateSpec(A(), spec.id, { parentSpecId: other.spec.id })).toMatchObject({ ok: false, status: 404 });
+    expect(await relateSpec(A(), spec.id, { parentSpecId: '00000000-0000-4000-8000-000000000000' })).toMatchObject({ ok: false, status: 404 });
+    expect(await relateSpec({ kind: 'user', userId: userB }, spec.id, { parentSpecId: null })).toMatchObject({ ok: false, status: 404 });
+    expect(await relateSpec(A(), spec.id, { parentSpecId: 'nope' })).toMatchObject({ ok: false, status: 400 });
+  });
+});
+
+describe('nothing here approves', () => {
+  test('an agent asking for status approved on create, revise or relate still leaves a draft with no approver', async () => {
+    const created = await createSpecDraft(agent(), { workspaceId: wsA, title: `Agent ${rand()}`, body: BODY_1, status: 'approved', approvedBy: 'agent' } as any);
+    if (!created.ok) throw new Error(created.error);
+    const revised = await reviseSpecDraft(agent(), created.spec.id, { expectedVersion: 1, body: BODY_1 + 'more\n', status: 'approved' } as any);
+    await relateSpec(agent(), created.spec.id, { parentSpecId: null, status: 'approved' } as any);
+    expect(revised.ok).toBe(true);
+    const [row] = await q<{ status: string; approved: string | null }>(sql`SELECT status, approved_revision AS approved FROM specs WHERE id = ${created.spec.id}::uuid`);
+    expect(row).toEqual({ status: 'draft', approved: null });
+    const [{ n }] = await q<{ n: number }>(sql`SELECT count(*)::int AS n FROM spec_revisions WHERE spec_id = ${created.spec.id}::uuid AND (approved_by IS NOT NULL OR approved_at IS NOT NULL)`);
+    expect(n).toBe(0);
   });
 });

@@ -7,14 +7,14 @@ summary: A Living Spec MUST keep every revision immutable and readable as writte
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/requirements.ts, apps/web/src/app/api/specs/route.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
-keywords: [living spec, spec revision, expectedVersion, version conflict, normative, requirement id, approval]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts]
+keywords: [living spec, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
 
 Governed intent, database-canonical for specs created through Buildd (decision
-D-1; repo-owned `docs/specs` stay Git-canonical and are referenced at a commit).
+D-1; repo-owned `docs/specs` stay Git-canonical).
 Owned by Living Specs: only `apps/web/src/lib/specs/` writes `specs` and
 `spec_revisions` (docs/specs/execution-control-plane.md).
 
@@ -33,6 +33,11 @@ revision stays readable exactly as it was written.
 - Requirement ids (`R-n`, `AC-n`, `D-n`, `I-n`) are parsed from the body,
   first definition wins, fenced code ignored. They are not stored separately.
 - A parent spec must be in the same workspace.
+- `PUT /api/specs/[id]/parent { parentSpecId | null }` sets, changes or clears
+  the parent in one statement that walks the new parent's ancestors and writes
+  only when the spec is not among them: a parent that is the spec or one of its
+  descendants is a 409 and nothing is written. Relating is structure, not body:
+  the version does not move.
 
 ## 2. Drafts two writers cannot silently overwrite
 
@@ -54,14 +59,37 @@ whole or not at all.
   revising on top lands revision 3 (`apps/web/tests/db/specs.test.ts`).
 - AC-2: GIVEN revision 2 WHEN revision 1 is read THEN its body is unchanged.
 
-## 3. Reach
+## 3. Agents over MCP
+
+**Invariants**:
+- `manage_specs` (worker level) is `create_draft`, `get`, `revise`, `list` and
+  `relate` over the routes above, so their reach checks apply. Reads need
+  `tasks:read`, writes `tasks:write`.
+- A stale `revise` comes back as an error naming `currentVersion` and the
+  recovery (re-read, merge, revise on top); nothing is written.
+- `get` inlines a body up to 20,000 characters, else points at the bounded
+  artifact reads of its pinned revision (artifacts-and-sharing.md §7).
+- No sub-action or parameter approves or sets a status.
+
+**Code surface**:
+- `packages/core/mcp-specs.ts` — `handleSpecsAction`
+
+## 4. Reach
 
 **Invariants**:
 - Reading needs workspace access; creating and revising need `canCreate`. A
   task token reaches only its own task's workspace. Another team reads,
   lists and revises nothing (404).
 
-## 4. Approval (not built: G2)
+## 5. Repo-owned specs (not built)
+
+A Living Spec will reference a repo spec as `{path, commitSha}`. Deferred to
+task 496d5ef0: repo specs stay Git-canonical (D-1), so a reference is only
+honest with a reader that resolves the file at that commit through the GitHub
+App; storing a path and SHA with nothing to read them would claim a pin the
+platform cannot show. No column exists for it yet.
+
+## 6. Approval (not built: G2)
 
 Approving a revision is a person's act (owner or admin, or a delegated
 approver), never an agent's or a timer's (D-4). An approved revision is never

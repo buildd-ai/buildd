@@ -129,6 +129,44 @@ export async function reviseSpecDraft(caller: SpecCaller, specId: string, input:
   return { ok: true, spec: after, revision, unchanged: false };
 }
 
+/**
+ * Set, change or clear a spec's parent. The parent must be in the same
+ * workspace and must not be the spec or one of its descendants: one statement
+ * walks the new parent's ancestors and writes only when the spec is not among
+ * them, so a relate never closes a cycle. Structure, not body: the version
+ * (the body's CAS token) does not move.
+ */
+export async function relateSpec(caller: SpecCaller, specId: string, input: { parentSpecId: unknown }): Promise<{ ok: true; spec: SpecRow } | SpecError> {
+  if (!isUuid(specId)) return fail(404, 'Spec not found');
+  const parentSpecId = input.parentSpecId;
+  if (parentSpecId !== null && (typeof parentSpecId !== 'string' || !isUuid(parentSpecId))) return fail(400, 'parentSpecId must be a spec UUID, or null to clear it');
+  const [spec] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  if (!spec || !(await reach(caller, spec.workspaceId, true))) return fail(404, 'Spec not found');
+  if (parentSpecId === null) {
+    const [cleared] = await db.update(specs).set({ parentSpecId: null, updatedAt: new Date() }).where(eq(specs.id, specId)).returning();
+    return { ok: true, spec: cleared };
+  }
+  if (parentSpecId === specId) return fail(409, 'A spec cannot be its own parent');
+  const [parent] = await db.select({ workspaceId: specs.workspaceId }).from(specs).where(eq(specs.id, parentSpecId)).limit(1);
+  if (!parent || parent.workspaceId !== spec.workspaceId) return fail(404, 'Parent spec not found in this workspace');
+
+  const rows = await db.execute(sql`
+    WITH RECURSIVE ancestors(id, depth) AS (
+      SELECT ${parentSpecId}::uuid, 0
+      UNION ALL
+      SELECT s.parent_spec_id, a.depth + 1 FROM specs s JOIN ancestors a ON s.id = a.id
+      WHERE s.parent_spec_id IS NOT NULL AND a.depth < 1000
+    )
+    UPDATE specs SET parent_spec_id = ${parentSpecId}::uuid, updated_at = now()
+    WHERE id = ${specId}::uuid AND NOT EXISTS (SELECT 1 FROM ancestors WHERE id = ${specId}::uuid)
+    RETURNING id`);
+  if (((rows as { rows?: unknown[] }).rows ?? []).length === 0) {
+    return fail(409, 'That parent is this spec or one of its descendants: the relation would form a cycle');
+  }
+  const [after] = await db.select().from(specs).where(eq(specs.id, specId)).limit(1);
+  return { ok: true, spec: after };
+}
+
 export interface SpecView {
   spec: SpecRow;
   revision: SpecRevisionRow;
