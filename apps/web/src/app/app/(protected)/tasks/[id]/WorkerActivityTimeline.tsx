@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import { buildTape, countToolCalls } from './task-activity';
 import { buildMilestoneLog, isNarrationMilestone, type LogEntry } from './milestone-log';
@@ -81,7 +81,32 @@ export function ageLabel(ms: number): string {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-const AXIS_LABEL_VISIBILITY = ['', 'hidden @md:inline', 'hidden @xs:inline', 'hidden @lg:inline'];
+// 11px mono is ~6.6px a glyph; round up so a label never touches its neighbour.
+const AXIS_CHAR_PX = 7;
+const AXIS_MIN_GAP_PX = 12;
+
+/**
+ * Which of the 0/25/50/75% axis labels fit on a strip `widthPx` wide. Decided by
+ * the pixel gap between neighbouring labels (and the right-edge label), not by
+ * the strip's width: the same width holds two labels or four depending on how
+ * long the times print. The start label always stays; with no measured width
+ * (server render) only it shows.
+ */
+export function visibleAxisLabels(widthPx: number | null, axis: string[], end: string, live: boolean): boolean[] {
+  const shown = axis.map((_, i) => i === 0);
+  if (!widthPx) return shown;
+  const endLeft = widthPx - (end.length + (live ? 4 : 0)) * AXIS_CHAR_PX - (live ? 6 : 0);
+  let right = axis[0].length * AXIS_CHAR_PX;
+  for (let i = 1; i < axis.length; i++) {
+    const left = (widthPx * i) / 4;
+    const labelRight = left + axis[i].length * AXIS_CHAR_PX;
+    if (left >= right + AXIS_MIN_GAP_PX && labelRight + AXIS_MIN_GAP_PX <= endLeft) {
+      shown[i] = true;
+      right = labelRight;
+    }
+  }
+  return shown;
+}
 
 export function ActivityTape({
   milestones,
@@ -95,6 +120,19 @@ export function ActivityTape({
   live: boolean;
 }) {
   const tape = buildTape(milestones, { startMs, nowMs });
+  const axisRef = useRef<HTMLDivElement>(null);
+  const [axisWidth, setAxisWidth] = useState<number | null>(null);
+  const hasTape = tape.ticks.length > 0 || tape.flags.length > 0;
+  useLayoutEffect(() => {
+    const el = axisRef.current;
+    if (!el) return;
+    const measure = () => setAxisWidth(el.clientWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasTape]);
+  const axisShown = visibleAxisLabels(axisWidth, tape.axis, tape.end, live);
   if (tape.ticks.length === 0 && tape.flags.length === 0) return null;
   const lastFlag = tape.flags[tape.flags.length - 1];
   return (
@@ -136,12 +174,10 @@ export function ActivityTape({
         ))}
         {live && <span className="absolute right-0 top-0 bottom-0 w-[2px] bg-accent" aria-hidden="true" />}
       </div>
-      <div className="relative h-5 mt-1 font-mono text-[11px] text-text-muted tabular-nums">
+      <div ref={axisRef} className="relative h-5 mt-1 font-mono text-[11px] text-text-muted tabular-nums">
         {tape.axis.map((a, i) => (
-          // Labels give way by the strip's own width (not the viewport's): the
-          // start label always stays; the 50% label needs room next to the end
-          // label, and the 25% and 75% ones need more still.
-          <span key={i} data-axis={i} className={`absolute ${AXIS_LABEL_VISIBILITY[i]}`} style={{ left: `${i * 25}%` }}>{a}</span>
+          // Labels give way by the pixel gap to their neighbours (visibleAxisLabels).
+          <span key={i} data-axis={i} className={`absolute ${axisShown[i] ? '' : 'hidden'}`} style={{ left: `${i * 25}%` }}>{a}</span>
         ))}
         {/* The right edge prints the time it stands for, so the axis visibly
             reaches ELAPSED instead of stopping at the last labelled quarter. */}
