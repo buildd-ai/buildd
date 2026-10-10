@@ -625,6 +625,40 @@ describe('thread scroll', () => {
     expect(scroller().scrollTop).toBe(900);
   });
 
+  it('scrolled away, the block the reader is on holds its place when something above it grows', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    const grow = (n: number) => streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: [...m.parts, ...Array.from({ length: n }, () => ({ type: 'step-start' as const }))] } : m));
+    // The person's message is what the reader is looking at, 800px into the thread.
+    let at = 800;
+    place = el => (el.matches('.kit-msg[data-role="user"]') ? { top: at, height: 300 } : null);
+    await readerScrolls(900);
+    // A card above it loads and the thread grows 200px above the reader.
+    at = 1000;
+    await render({ messages: grow(1), status: 'streaming' });
+    expect(scroller().scrollTop).toBe(1100);
+    // The turn lands while the reader is away: still no jump, and no pull to the bottom.
+    at = 1003;
+    const done = grow(2).map((m: Msg) => (m.id === 'm2' ? { ...m, parts: m.parts.map(p => (p.type === 'text' ? { ...p, state: 'done' as const } : p)) } : m));
+    await render({ messages: done, status: 'ready' });
+    expect(scroller().scrollTop).toBe(1103);
+  });
+
+  it('scrolled away, growth below the reader moves nothing', async () => {
+    const streaming = fixtures.chatFixture('streaming').messages;
+    await mount({ messages: streaming, status: 'streaming' });
+    place = el => (el.matches('.kit-msg[data-role="user"]') ? { top: 800, height: 300 } : null);
+    await readerScrolls(900);
+    const grow = streaming.map((m: Msg) => (m.id === 'm2' ? { ...m, parts: [...m.parts, { type: 'step-start' as const }] } : m));
+    await render({ messages: grow, status: 'streaming' });
+    expect(scroller().scrollTop).toBe(900);
+  });
+
+  it('the thread owns its scroll anchoring, so the browser does not correct it a second time', async () => {
+    await render({ messages: fixtures.chatFixture('confirmed').messages });
+    expect(scroller().className).toContain('[overflow-anchor:none]');
+  });
+
   it('a finished reply taller than the view shows its head, not its tail', async () => {
     const streaming = fixtures.chatFixture('streaming').messages;
     await mount({ messages: streaming, status: 'streaming' });
