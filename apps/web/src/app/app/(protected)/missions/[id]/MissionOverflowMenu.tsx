@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from 'react';
 import SideSheet from '@/components/SideSheet';
-import MissionSettings from './MissionSettings';
+import MissionSettings, { type CompletionDecisionInfo } from './MissionSettings';
 import { VisualReviewSheetBody } from './MissionVisualReviewAction';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
 
@@ -18,6 +18,8 @@ interface Props {
   displayState: MissionDisplayState;
   hasPrimaryAction?: boolean;
   executor?: 'runner' | 'local' | null;
+  /** What Complete needs decided first (visual audit, unmet criteria); null on a finished mission. */
+  completionDecision?: CompletionDecisionInfo | null;
   /** The mission's settings (workspace, schedule, backend, merge policy…), below the actions. */
   settings?: ReactNode;
   /**
