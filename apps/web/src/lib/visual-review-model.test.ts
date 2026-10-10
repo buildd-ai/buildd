@@ -755,3 +755,67 @@ describe('buildVisualReviewModel: shots from the wrong ref (visual-qa-auditor.md
     expect(m.captureGaps.map(g => g.shotId)).toEqual([dialog.id]);
   });
 });
+
+describe('buildVisualReviewModel: a failed audit a later completed audit replaced', () => {
+  // The shape that held a finished mission at FAILED: a round-2 audit stalled
+  // on infrastructure (the capture clone never booted), then a later audit
+  // completed and stored passing phone and desktop shots of the same route.
+  const ROUTE = '/app/missions/:id';
+  const stalled = () => audit('t-stalled', 2, 'failed', 'w-stalled', {
+    createdAt: at(0), updatedAt: at(20), result: { errorType: 'infra_stalled' },
+    workers: [{ id: 'w-stalled', status: 'failed', startedAt: at(1) }],
+  });
+  const later = (status = 'completed', createdAt = at(60)) =>
+    audit('t-later', 1, status, 'w-later', { createdAt, updatedAt: at(80), workers: [{ id: 'w-later', status, startedAt: createdAt }] });
+  const passing = (min = 70) => [shot('w-later', ROUTE, 'mobile', 'ok', min), shot('w-later', ROUTE, 'desktop', 'ok', min + 1)];
+  const build = (over: Partial<BuildVisualReviewInput>) => buildVisualReviewModel(input({ requiredRoutesOf: () => [ROUTE], ...over }));
+
+  it('records the replacement and stops reading the stalled round as the phase', () => {
+    const m = build({ tasks: [stalled(), later()], shots: passing() });
+    expect(m.replacedAudits).toEqual([{ auditTaskId: 't-stalled', replacedBy: ['t-later'] }]);
+    expect(m.phase).toBe('reviewed');
+    // History is kept: the failed audit is still listed as failed.
+    expect(m.audits?.find(a => a.id === 't-stalled')).toMatchObject({ status: 'failed', errorType: 'infra_stalled' });
+  });
+
+  it('a newer-round replacement clears it too', () => {
+    const r3 = audit('t-later', 3, 'completed', 'w-later', { createdAt: at(60), workers: [{ id: 'w-later', status: 'completed', startedAt: at(60) }] });
+    expect(build({ tasks: [stalled(), r3], shots: passing() }).replacedAudits).toEqual([{ auditTaskId: 't-stalled', replacedBy: ['t-later'] }]);
+  });
+
+  it('a missing viewport keeps the failure', () => {
+    const m = build({ tasks: [stalled(), later()], shots: [shot('w-later', ROUTE, 'mobile', 'ok', 70)] });
+    expect(m.replacedAudits).toEqual([]);
+    expect(m.phase).toBe('stalled');
+  });
+
+  it('a later unresolved finding keeps the failure', () => {
+    const issue = [shot('w-later', ROUTE, 'mobile', 'issue', 70), shot('w-later', ROUTE, 'desktop', 'ok', 71)];
+    expect(build({ tasks: [stalled(), later()], shots: issue }).replacedAudits).toEqual([]);
+    const unsure = [shot('w-later', ROUTE, 'mobile', 'unsure', 70), shot('w-later', ROUTE, 'desktop', 'ok', 71)];
+    expect(build({ tasks: [stalled(), later()], shots: unsure }).replacedAudits).toEqual([]);
+  });
+
+  it('an open fix or the open round-cap question keeps the failure', () => {
+    const fix: VisualReviewTaskInput = { id: 'f1', title: `[surface fix] ${ROUTE}: header overflows`, status: 'pending' };
+    expect(build({ tasks: [stalled(), later(), fix], shots: passing() }).replacedAudits).toEqual([]);
+    expect(build({ tasks: [stalled(), later()], shots: passing(), roundCapOpen: true }).replacedAudits).toEqual([]);
+  });
+
+  it('only a completed audit that started after the failed one can replace it', () => {
+    expect(build({ tasks: [stalled(), later('failed')], shots: passing() }).replacedAudits).toEqual([]);
+    expect(build({ tasks: [stalled(), later('in_progress')], shots: passing() }).replacedAudits).toEqual([]);
+    // An earlier audit's shots say nothing about what the failed round was sent to check.
+    expect(build({ tasks: [stalled(), later('completed', at(-30))], shots: passing(-20) }).replacedAudits).toEqual([]);
+  });
+
+  it('unknown obligations are never mechanically replaced', () => {
+    expect(build({ tasks: [stalled(), later()], shots: passing(), requiredRoutesOf: () => [] }).replacedAudits).toEqual([]);
+    expect(buildVisualReviewModel(input({ tasks: [stalled(), later()], shots: passing() })).replacedAudits).toEqual([]);
+  });
+
+  it('wrong-ref shots are not evidence', () => {
+    const wrong = passing().map(s => ({ ...s, metadata: { qa: { ...(s.metadata.qa as object), ref: 'dev' } } }));
+    expect(build({ tasks: [stalled(), later()], shots: wrong, captureRef: 'mission/x' }).replacedAudits).toEqual([]);
+  });
+});
