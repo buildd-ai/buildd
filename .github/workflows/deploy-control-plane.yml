@@ -15,8 +15,19 @@ name: Deploy Control Plane
 # (`dev`), even for deploys of `main`.
 #
 # Auth: the same Cloudflare account as Dispatch (the buildd.dev zone), via
-# CF_DISPATCH_API_TOKEN / CF_DISPATCH_ACCOUNT_ID. The Worker's runtime secrets
-# are already on it; a deploy keeps them.
+# CF_DISPATCH_API_TOKEN / CF_DISPATCH_ACCOUNT_ID. That token can upload and
+# deploy Worker versions but has no access to the zone's Workers Routes
+# (verified 2026-10-10: `wrangler deploy` with it fails on
+# /zones/<id>/workers/routes). So this workflow ships code with
+# `wrangler versions upload` + `versions deploy`, which never touch routes or
+# the custom domain; those are set once and change only by hand, with
+# `wrangler deploy` from an account login. The Worker's runtime secrets are
+# already on it; a new version keeps them.
+#
+# A failed run is noticed by the release health watcher, not by this run's
+# red X: /api/deploy-identity reports the Worker's commit beside web's, and
+# the watcher degrades the release and files a task when they differ past the
+# grace window (apps/web/src/lib/release-health-watcher.ts).
 
 on:
   deployment_status: {}
@@ -82,15 +93,23 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_DISPATCH_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_DISPATCH_ACCOUNT_ID }}
-        run: bunx wrangler deploy --var "GIT_SHA:$SHA"
+        run: |
+          bunx wrangler versions upload --var "GIT_SHA:$SHA" --tag "${SHA:0:12}" --message "web $SHA" | tee upload.log
+          VERSION=$(grep -oE 'Worker Version ID: [0-9a-f-]+' upload.log | awk '{print $4}')
+          [ -n "$VERSION" ] || { echo "::error::wrangler versions upload printed no version id."; exit 1; }
+          bunx wrangler versions deploy "$VERSION@100%" -y
 
       # Lockstep is the contract: the Worker must report the SHA web deployed.
       - name: Verify the Worker runs this commit
         if: steps.present.outputs.present == 'true'
+        env:
+          # Deep health is a 404 without it.
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           url="https://control-plane.buildd.dev/__control-plane/health?deep=1"
+          [ -n "$CRON_SECRET" ] || { echo "::error::Missing CRON_SECRET; deep health needs it."; exit 1; }
           for i in $(seq 1 12); do
-            body=$(curl -fsS -m 15 "$url" || true)
+            body=$(curl -fsS -m 15 -H "Authorization: Bearer $CRON_SECRET" "$url" || true)
             # Deep health: GitHub (anonymous and as the App), Pusher, storage and
             # Redis from the Worker. The 2026-10-10 cutover lost GitHub (no
             # User-Agent) and Pusher (node-fetch) without any route failing.
