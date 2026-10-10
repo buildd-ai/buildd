@@ -106,7 +106,7 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
       body: JSON.stringify({ teamId, mode, ...(mode === 'soak' ? { soakHours: Number(hours) || 72 } : {}) }),
     }, 'Saved');
 
-  const disabled = !isAdmin || busy || !data;
+  const disabled = busy || !data;
   const mode = data?.policy.mode ?? 'latest-compatible';
   const withheld = data?.tiers.filter((t) => t.newer && t.withheld && t.withheld.reason === 'manual') ?? [];
 
@@ -120,6 +120,12 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
             <span data-testid="model-upgrade-source">{data ? SOURCE_TEXT[data.source] : ''}</span>
           </span>
         </span>
+        {!isAdmin ? (
+          // Read-only: the value, no control (the page says who manages it).
+          <span className="text-sm text-text-primary sm:text-right" data-testid="model-upgrade-mode-value">
+            {!data ? '…' : `${MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode}${mode === 'soak' ? ` for ${soakHours} hours` : ''}`}
+          </span>
+        ) : (<>
         <Select
           aria-labelledby="model-upgrade-mode-label"
           testId="model-upgrade-mode"
@@ -145,6 +151,7 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
             hours
           </label>
         )}
+        </>)}
       </div>
 
       {isAdmin && mode === 'manual' && withheld.length > 0 && (

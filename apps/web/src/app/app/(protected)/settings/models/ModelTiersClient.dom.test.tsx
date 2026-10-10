@@ -19,6 +19,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelTiersClient } = await import('./ModelTiersClient');
 const { CELLS_BODY, MODELS, POOLS_BODY } = await import('./model-tiers-fixtures');
+const { formControls } = await import('../_lib/form-controls');
 
 const requests: Array<{ url: string; method: string; body: any }> = [];
 beforeEach(() => {
@@ -139,6 +140,15 @@ describe('ModelTiersClient: the table', () => {
     expect(cell.tagName).toBe('DIV');
     await click(cell);
     expect(q('[data-testid="cell-editor"]')).toBeNull();
+  });
+
+  it('a member can only open views: History and what ran, nothing that edits', async () => {
+    await mount(false);
+    const ids = formControls(host).map((el) => el.getAttribute('data-testid') ?? '');
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.every((id) => id === 'tiers-history' || id.startsWith('tier-name-'))).toBe(true);
+    expect(host.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
   });
 });
 

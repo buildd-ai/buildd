@@ -6,6 +6,7 @@ import Link from 'next/link';
 import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
+import { settingsReadOnly } from '@/lib/settings-nav';
 import CapsForm from './CapsForm';
 import { timeZoneLabel } from './timezone-label';
 import { MySpend, PeopleSpend } from './SpendTables';
@@ -51,7 +52,7 @@ export default async function BudgetsSettingsPage() {
   }).catch(() => null);
 
   return (
-    <SettingsPage title="Budgets">
+    <SettingsPage title="Budgets" readOnly={settingsReadOnly('budgets', perms)}>
       <Section
         title="Your spend"
         action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}

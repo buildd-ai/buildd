@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/Select';
 import Segmented from '@/components/ui/Segmented';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 interface Role {
   slug: string;
@@ -36,7 +37,7 @@ interface Props {
   missionOverrides: MissionOverride[];
   /**
    * Holds `manage_workspace_settings` in the workspace's team (overrides
-   * applied). False: the policy in effect, read-only, with no Save or re-scan.
+   * applied). False: the policy in effect as text, with no controls.
    * Mission overrides are mission settings and stay as they are. Defaults to true.
    */
   canEdit?: boolean;
@@ -70,6 +71,16 @@ const TIER_LABEL: Record<MergePolicyTier, string> = {
   'auto-threshold': 'Auto',
   'agent-review': 'Agent review',
   'human': 'Human gate',
+};
+
+const GATE_LABEL: Record<'approve-and-merge' | 'approve-only', string> = {
+  'approve-and-merge': 'Approve and merge',
+  'approve-only': 'Approve only',
+};
+
+const DATA_MIGRATIONS_LABEL: Record<'person' | 'agent-review', string> = {
+  person: 'A person decides',
+  'agent-review': 'Reviewer agent decides',
 };
 
 const INPUT = 'w-full px-3 py-2 font-mono text-base md:text-sm bg-input border border-border-default focus:outline-none focus:border-border-strong';
@@ -184,14 +195,40 @@ export default function MergePolicyEditor({
         <p className="mt-0.5 text-xs text-text-secondary">
           When and how PRs agents open in {workspaceName} are merged.
         </p>
-        {!canEdit && (
-          <p data-testid="merge-policy-read-only" className="mt-1 text-xs text-text-muted">Admins can change this.</p>
-        )}
       </div>
 
-      {/* A disabled fieldset disables every control inside it: the current
-          policy stays readable, nothing in it can be changed. */}
-      <fieldset disabled={!canEdit} className="space-y-5 min-w-0">
+      {!canEdit ? (
+        <div className="space-y-5 min-w-0" data-testid="merge-policy-read-only">
+          <ReadOnlyFacts
+            facts={[
+              { label: 'Policy tier', value: TIER_OPTIONS.find(o => o.value === policy.tier)?.label ?? policy.tier, note: tierHint },
+              ...(policy.tier === 'auto-threshold'
+                ? [{ label: 'Max lines (additions + deletions)', value: <span className="font-mono">{maxLines}</span> }]
+                : []),
+              ...(policy.tier === 'agent-review'
+                ? [
+                    { label: 'Reviewer role', value: roles.find(r => r.slug === reviewerRole)?.name ?? (reviewerRole || 'None') },
+                    { label: 'Confidence threshold', value: <span className="font-mono">{maxConfidence}</span> },
+                    { label: 'Gate condition', value: GATE_LABEL[gateCondition] },
+                    { label: 'Data migrations', value: DATA_MIGRATIONS_LABEL[dataMigrations] },
+                  ]
+                : []),
+              { label: 'Stall notification', value: stallMinutes ? `${stallMinutes} minutes` : 'Default' },
+            ]}
+          />
+          <DetectedPathsSection policyConfig={policyConfig} />
+          {policyConfig && (
+            <PolicySuggestionsSection
+              workspaceId={workspaceId}
+              policyConfig={policyConfig}
+              suggestions={policySuggestions}
+              canEdit={false}
+              onApplied={() => router.refresh()}
+            />
+          )}
+        </div>
+      ) : (
+      <div className="space-y-5 min-w-0">
       {/* Tier selector */}
       <div className="space-y-2">
         <Segmented<MergePolicyTier>
@@ -264,8 +301,8 @@ export default function MergePolicyEditor({
                 value={gateCondition}
                 onChange={v => setGateCondition(v as 'approve-and-merge' | 'approve-only')}
                 options={[
-                  { value: 'approve-and-merge', label: 'Approve and merge' },
-                  { value: 'approve-only', label: 'Approve only', description: 'A human merges' },
+                  { value: 'approve-and-merge', label: GATE_LABEL['approve-and-merge'] },
+                  { value: 'approve-only', label: GATE_LABEL['approve-only'], description: 'A human merges' },
                 ]}
               />
             </div>
@@ -277,8 +314,8 @@ export default function MergePolicyEditor({
                 value={dataMigrations}
                 onChange={v => setDataMigrations(v as 'person' | 'agent-review')}
                 options={[
-                  { value: 'person', label: 'A person decides' },
-                  { value: 'agent-review', label: 'Reviewer agent decides', description: 'Lands on approval like any other PR' },
+                  { value: 'person', label: DATA_MIGRATIONS_LABEL.person },
+                  { value: 'agent-review', label: DATA_MIGRATIONS_LABEL['agent-review'], description: 'Lands on approval like any other PR' },
                 ]}
               />
               <p className="text-xs text-text-muted">Migrations that update, insert or delete rows. Dropping or renaming tables and columns always needs a person.</p>
@@ -301,7 +338,7 @@ export default function MergePolicyEditor({
 
       <PolicyRescanSheet
         workspaceId={workspaceId}
-        open={canEdit && rescanOpen}
+        open={rescanOpen}
         onClose={() => setRescanOpen(false)}
         onApplied={() => {
           setRescanOpen(false);
@@ -328,7 +365,8 @@ export default function MergePolicyEditor({
           Pushover alert after this long. Default 30 min for review, 5 min for auto.
         </p>
       </div>
-      </fieldset>
+      </div>
+      )}
 
       {canEdit && <div className="flex flex-wrap items-center gap-3">
         <button
@@ -420,7 +458,8 @@ export function DetectedPathsSection({
   onRescan,
 }: {
   policyConfig: WorkspacePolicyConfig | null;
-  onRescan: () => void;
+  /** Absent for someone who cannot change the policy: no Re-scan button. */
+  onRescan?: () => void;
 }) {
   const rows = policyConfig ? describePolicyConfig(policyConfig).filter(r => r.paths.length > 0) : [];
   return (
@@ -434,14 +473,16 @@ export function DetectedPathsSection({
             PRs that touch them escalate.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onRescan}
-          className="btn min-h-11 shrink-0 self-start"
-          data-testid="merge-policy-rescan"
-        >
-          Re-scan repo
-        </button>
+        {onRescan && (
+          <button
+            type="button"
+            onClick={onRescan}
+            className="btn min-h-11 shrink-0 self-start"
+            data-testid="merge-policy-rescan"
+          >
+            Re-scan repo
+          </button>
+        )}
       </div>
       {rows.length > 0 ? (
         <ul className="divide-y divide-border-default border-y border-border-default">
@@ -463,7 +504,7 @@ export function DetectedPathsSection({
         <p className="text-xs text-text-muted">
           {policyConfig
             ? 'No risk-class paths detected in this repo.'
-            : 'No risk-class policy. Re-scan to detect protected paths.'}
+            : onRescan ? 'No risk-class policy. Re-scan to detect protected paths.' : 'No risk-class policy.'}
         </p>
       )}
     </div>

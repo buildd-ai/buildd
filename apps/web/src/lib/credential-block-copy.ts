@@ -41,7 +41,7 @@ export function credentialBlockCopy(block: CredentialBlock): { line: string; cta
   return {
     line: `Needs a ${NOUN[block.route]} key`,
     cta: `Add a ${NOUN[block.route]} key`,
-    href: block.scope === 'personal' ? '/app/settings/models?scope=mine#keys' : '/app/settings/models#keys',
+    href: block.scope === 'personal' ? '/app/settings/keys' : '/app/settings/models#keys',
   };
 }
 
