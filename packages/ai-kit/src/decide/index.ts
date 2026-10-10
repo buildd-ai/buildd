@@ -1000,7 +1000,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
-export const KIT_VERSION = '0.21.0';
+export const KIT_VERSION = '0.22.0';
 
 /**
  * The version of the kit logic that turns a decision's definition into

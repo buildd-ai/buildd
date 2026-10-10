@@ -1,0 +1,1 @@
+ALTER TABLE "teams" ADD COLUMN "warm_handover" text DEFAULT 'off' NOT NULL;

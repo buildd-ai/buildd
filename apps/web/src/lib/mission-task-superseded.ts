@@ -8,7 +8,8 @@
  * platform read that as the mission being broken. This module answers, for a
  * batch of failed tasks, which of them are actually superseded: their target
  * PR merged, or a title-equivalent sibling task completed with a merged PR
- * after they were created.
+ * after they were created. A failed visual audit is superseded when a later
+ * completed audit replaced it (the visual review model's `replacedAudits`).
  *
  * Read-only and best-effort: a task this cannot classify is left un-superseded
  * (reported as a real failure), never the other way around — the cost of
@@ -18,20 +19,25 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 
 export interface SupersededCheckTask {
   id: string;
   title: string | null;
   subjectPrNumber: number | null;
   createdAt: Date | null;
+  /** Selects the audit route: only a `visual-auditor` row can be replaced by a later audit. */
+  roleSlug?: string | null;
 }
 
 export interface SupersededResult {
   taskId: string;
-  /** The PR that satisfied this task's deliverable. */
-  prNumber: number;
-  /** The sibling task that shipped it, when supersession was found via a title-equivalent retry. */
+  /** The PR that satisfied this task's deliverable. Null for a replaced audit, which opens none. */
+  prNumber: number | null;
+  /** The sibling task that shipped it (title-equivalent retry), or the audit that replaced it. */
   supersedingTaskId: string | null;
+  /** A failed visual audit a later completed audit replaced. */
+  replacedByAudit?: true;
 }
 
 /**
@@ -43,6 +49,9 @@ export interface SupersededResult {
  *  2. No subject anchor, or it didn't match: look for a same-mission task with
  *     the identical title, `completed`, created after this one, whose latest
  *     worker's PR merged — a retry that succeeded under a different task id.
+ *  3. A failed visual audit: the visual review model records it replaced by a
+ *     later completed audit with valid phone and desktop coverage and nothing
+ *     unresolved. Never applied to any other task; a read error replaces nothing.
  */
 export async function computeSupersededFailedTasks(
   missionId: string,
@@ -59,7 +68,9 @@ export async function computeSupersededFailedTasks(
     failedTasks.map(t => t.title).filter((t): t is string => !!t),
   )];
 
-  const [mergedWorkers, titleSiblings] = await Promise.all([
+  const failedAudits = failedTasks.filter(t => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG);
+
+  const [mergedWorkers, titleSiblings, replacedAudits] = await Promise.all([
     prNumbers.length > 0 && workspaceId != null
       ? db.query.workers.findMany({
           where: and(
@@ -87,13 +98,25 @@ export async function computeSupersededFailedTasks(
           },
         })
       : Promise.resolve([]),
+    failedAudits.length > 0
+      ? import('@/lib/visual-review-load')
+          .then(({ loadVisualReview }) => loadVisualReview({ id: missionId, workspaceId }))
+          .then(m => m.replacedAudits ?? [])
+          .catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const mergedPrNumbers = new Set(
     mergedWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
   );
 
+  for (const r of replacedAudits) {
+    if (!failedAudits.some(t => t.id === r.auditTaskId)) continue;
+    result.set(r.auditTaskId, { taskId: r.auditTaskId, prNumber: null, supersedingTaskId: r.replacedBy[0] ?? null, replacedByAudit: true });
+  }
+
   for (const t of failedTasks) {
+    if (result.has(t.id)) continue;
     if (t.subjectPrNumber != null && mergedPrNumbers.has(t.subjectPrNumber)) {
       result.set(t.id, { taskId: t.id, prNumber: t.subjectPrNumber, supersedingTaskId: null });
       continue;

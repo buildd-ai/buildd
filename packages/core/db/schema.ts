@@ -42,6 +42,7 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
+  warmHandover: text('warm_handover').$type<'off' | 'repo' | 'deps'>().default('off').notNull(),
 
   // Per-team permission grants: permission name -> team roles that hold it. An
   // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
@@ -485,6 +486,8 @@ export interface WorkspaceGitConfig {
   // Cloud-runner container class. Absent = derived from recent run reports
   // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
   runnerSize?: 'standard' | 'large';
+  /** Null/absent inherits the team policy. */
+  warmHandover?: 'off' | 'repo' | 'deps' | null;
   // Written by buildd, never by the settings form: the first derivation that
   // moved this workspace to `large`, kept so one light run does not move it back.
   runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
@@ -5610,6 +5613,26 @@ export const deploymentAuditEvents = pgTable('deployment_audit_events', {
 
 export type DeploymentAuditEvent = typeof deploymentAuditEvents.$inferSelect;
 export type NewDeploymentAuditEvent = typeof deploymentAuditEvents.$inferInsert;
+
+// Append-only: every write made through the platform-owner API (/api/admin/*),
+// with the value before and after. See apps/web/src/lib/admin/audit.ts.
+export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  // The platform-owner key's account. Kept as a plain id: the row outlives the key.
+  actorAccountId: uuid('actor_account_id'),
+  // e.g. 'experiment.update', 'team.experiment_flags.update'
+  action: text('action').notNull(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetId: text('target_id').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+}, (t) => ({
+  targetOccurredIdx: index('platform_admin_audit_events_target_occurred_idx').on(t.targetType, t.targetId, t.occurredAt),
+}));
+
+export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the

@@ -10,9 +10,10 @@ import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
 import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudExecutor } from './git-clone';
 import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
+import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
 import { emitPhase } from './phase-lines';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
@@ -34,7 +35,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2350,6 +2351,7 @@ export class WorkerManager {
         } catch (err) {
           console.warn(`[Worker ${worker.id}] Could not resolve role env for install (continuing without): ${err instanceof Error ? err.message : String(err)}`);
         }
+        if (isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER === 'deps') await depsPrelude();
         setupResult = await setupWorktree(
           workspacePath,
           claimedWorker.branch,
@@ -2369,7 +2371,7 @@ export class WorkerManager {
           },
           // Cloud: the install runs behind the agent session (deps-gate.ts).
           // A host runner installs inline, as before.
-          { deferInstall: isCloudExecutor(process.env) },
+          { deferInstall: isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER !== 'deps' },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -2418,16 +2420,19 @@ export class WorkerManager {
         if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
           try {
             registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
-            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
-              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
-              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+            const plan = derivedRules.length > 0
+              ? planPreMerge(fullTask.context, worker.prBaseRef, gitConfig?.targetBranch || defaultBranch)
+              : null;
+            if (plan) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, plan.ref, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${plan.ref} (${plan.kind}): ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
                 (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
-              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, plan.ref) ?? undefined;
+              if (plan.mayFinishWithoutAgent && canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: plan.ref };
               // Synced to the server, so the outcome (and what mergiraf did) is
-              // readable from get_task without access to the runner's log.
+              // readable from the task record without access to the runner's log.
               this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
           } catch (err) {
@@ -2577,7 +2582,7 @@ export class WorkerManager {
       if (installBlock) throw new Error(installBlock);
       const deps = depsJobs.get(worker);
       // Codex has no PreToolUse seam to gate on: it waits for the install here.
-      if (deps && (fullTask.backend || 'claude') === 'codex') await deps.job.promise;
+      if (deps && ((fullTask.backend || 'claude') === 'codex' || process.env.BUILDD_WARM_HANDOVER === 'deps')) await deps.job.promise;
       // A background install that already failed structurally blocks like an inline one.
       if (deps?.block) throw new Error(deps.block);
       // A cwd that cannot host the task blocks on the same rail, for the same
@@ -3337,8 +3342,6 @@ export class WorkerManager {
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
-    // Run report (cloud only): how much of the background deps work this start hid.
-    emitPhase('session_start');
     // A background install can fail structurally between the start check and
     // this registration; after it, the install's own handler aborts the session.
     const depsBlock = depsJobs.get(worker)?.block;
@@ -4130,6 +4133,11 @@ export class WorkerManager {
         const gate = await runProvisionGate({ root: cwd, env: cleanEnv, commit: baseCommit });
         if (gate.enforced) {
           for (const s of gate.steps) {
+            if (s.phase === 'install' && s.durationMs != null) {
+              const endedAt = Date.now();
+              emitPhase('install_start', { now: () => endedAt - s.durationMs! });
+              emitPhase('install_end', { now: () => endedAt });
+            }
             const dur = s.durationMs != null ? ` (${s.durationMs}ms)` : '';
             console.log(`[Worker ${worker.id}] provision ${s.status} [${s.phase}] ${s.label} — ${s.message}${dur}`);
           }
@@ -4149,6 +4157,15 @@ export class WorkerManager {
         if (msg.startsWith('Provision failed')) throw gateErr; // real block → outer catch reports it
         // Gate internals errored (not a policy block) — never wedge a task; log and proceed.
         console.warn(`[Worker ${worker.id}] Provision gate errored (proceeding): ${msg}`);
+      }
+
+      if (!resumeSessionId && isCloudExecutor(process.env) && process.env.BUILDD_WARM_HANDOVER === 'deps' && existsSync(join(cwd, '.git', 'HEAD'))) {
+        // The supervisor retains this digest. Disk metadata is never an expected value.
+        const manifest = captureDependencyManifest(cwd);
+        writeFileSync(join(cwd, DEPENDENCY_MANIFEST_FILENAME), JSON.stringify(manifest));
+        mkdirSync(join(cwd, '.git', 'info'), { recursive: true });
+        appendFileSync(join(cwd, '.git', 'info', 'exclude'), `\n/${DEPENDENCY_MANIFEST_FILENAME}\n`);
+        console.log(`BUILDD_DEPS_MANIFEST=${manifest.digest}`);
       }
 
       // Determine whether to load CLAUDE.md
@@ -4893,6 +4910,7 @@ export class WorkerManager {
         ? undefined
         : sessionModel;
 
+      emitPhase('session_start');
       const backendStream = backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
         sessionId: invocationSessionId,

@@ -188,3 +188,12 @@ describe('auto-recovery and systemic failures', () => {
     expect(deriveHomeAttention({ queue: [red(1), red(2)], missions: [], questions: [], held: [] })).toHaveLength(2);
   });
 });
+
+describe('a Sentinel incident the gate gave to the owner', () => {
+  it('is one Needs You item that opens the incident', () => {
+    const items = one({ subjectKey: 'incident:i1', chip: 'INCIDENT', taskTitle: undefined, taskId: undefined, incidentId: 'i1', incidentTitle: 'Retry forks across 3 tasks', failureMessage: 'A critical platform incident: the owner is told once, whatever else is running.', fixHref: '/app/incidents/i1', fixLabel: 'Open incident' });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ label: 'incident', tone: 'error', title: 'Retry forks across 3 tasks', actionType: 'incident', primary: { label: 'Open incident', href: '/app/incidents/i1' } });
+    expect(homeAttentionCopy(items).subline).toBe('1 incident');
+  });
+});
