@@ -173,6 +173,26 @@ describe('TierLimitSection', () => {
     expect(q('member-limits')!.textContent).toContain('Sam');
   });
 
+  it('names each card once: the title labels its select, no repeated row label', async () => {
+    await mount(true);
+    for (const [card, title, select] of [['my-limit', 'My maximum', 'self-all'], ['team-limit', 'Team maximum', 'team-all']]) {
+      const c = q(card)!;
+      expect(c.textContent!.split(title).length - 1).toBe(1);
+      const labelId = q(select)!.getAttribute('aria-labelledby')!;
+      expect(document.getElementById(labelId)!.textContent).toBe(title);
+    }
+  });
+
+  it('stacks label above select at narrow widths', async () => {
+    await mount(true);
+    await act(async () => { q('team-advanced')!.click(); });
+    for (const id of ['team-chat', 'over-cap-auto', 'ws-w1-all']) {
+      const row = q(id)!.closest('[data-limit-row]') as HTMLElement;
+      expect(row.className).toContain('flex-col');
+      expect(row.className).toContain('sm:flex-row');
+    }
+  });
+
   it('does not offer OAuth or subscription controls', async () => {
     await mount(true);
     expect(text().toLowerCase()).not.toContain('oauth');
