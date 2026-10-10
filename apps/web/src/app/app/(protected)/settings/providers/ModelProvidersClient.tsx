@@ -8,15 +8,17 @@ import { Select } from '@/components/ui/Select';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
 import CredentialPolicySelector from './CredentialPolicySelector';
-import ProviderCard from './ProviderCard';
+import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { ADVANCED_ANCHOR, SCOPE_TABS, isScopeTab } from './providers-view';
+import { ADVANCED_ANCHOR, SCOPE_TABS, groupProviders, isScopeTab } from './providers-view';
 
 /**
  * Settings → Models, the Keys and Routing sections. Keys: every model provider
- * in registry order, one card each, at the scope picked in the tabs (Team /
- * Workspace / Mine), with the team's credential policy on top. Built on
+ * in registry order, one row each (Claude and OpenAI each group their key and
+ * subscription into one row), at the scope picked in the tabs (Team /
+ * Workspace / Mine). "Who pays" shows only once it matters: a personal key
+ * exists in the team, or the policy is no longer the default. Built on
  * `/api/providers`: what a provider serves, the scopes it can be stored at and
  * what each stored row serves today come from the response, never from a copy
  * here. Keys never come back beyond last4.
@@ -42,6 +44,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
   const [error, setError] = useState<string | null>(null);
   // Bumped when the gateway changes: the sections that route through it reload.
   const [gatewayRev, setGatewayRev] = useState(0);
+  // One row open at a time.
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -60,7 +64,6 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 
   const flow = providerFlowMessage(params);
   const canManageRouting = data ? data.caller.can.manage_inference_providers : isAdmin;
-  const labelOf = (id: string) => data?.providers.find((p) => p.id === id)?.label ?? id;
   const tabDisabled = (id: ProviderApiScope) => (id === 'workspace' && workspaces.length === 0) || (id === 'mine' && data?.caller.canSetMine === false);
 
   return (
@@ -78,7 +81,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
             </Notice>
           )}
 
-          {data && (
+          {data && showWhoPays(data) && (
             <CredentialPolicySelector
               teamId={teamId}
               policy={data.policy}
@@ -120,19 +123,24 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
               )}
             </div>
 
-            <div className="space-y-2.5" role="tabpanel">
+            <div role="tabpanel">
               {data
-                ? data.providers.map((p) => (
-                  <ProviderCard
-                    key={p.id}
-                    provider={p}
-                    scope={scope}
-                    data={data}
-                    workspaceId={workspaceId}
-                    onChanged={load}
-                    labelOf={labelOf}
-                  />
-                ))
+                ? (
+                  <ul className="border-y border-border-default divide-y divide-border-default">
+                    {groupProviders(data.providers).map((g) => (
+                      <ProviderRow
+                        key={`${scope}-${g.id}`}
+                        group={g}
+                        scope={scope}
+                        data={data}
+                        workspaceId={workspaceId}
+                        onChanged={load}
+                        open={openRow === g.id}
+                        onToggle={(o) => setOpenRow(o ? g.id : null)}
+                      />
+                    ))}
+                  </ul>
+                )
                 : !error && <p className="text-body text-text-muted">Loading…</p>}
             </div>
           </div>
@@ -156,3 +164,10 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 }
 
 const LOAD_ERROR = "Couldn't load your providers.";
+
+/** "Who pays" matters once someone in the team has a personal key, or the policy was changed. */
+export function showWhoPays(data: Pick<ListProvidersResponse, 'policy' | 'personalKeyCount' | 'providers'>): boolean {
+  if (data.policy.credentialPolicy && data.policy.credentialPolicy !== 'team') return true;
+  if ((data.personalKeyCount ?? 0) > 0) return true;
+  return data.providers.some((p) => (p.set.mine?.length ?? 0) > 0);
+}

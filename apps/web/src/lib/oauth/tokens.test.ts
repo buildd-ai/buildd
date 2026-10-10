@@ -73,4 +73,33 @@ describe('OAuth tokens', () => {
     expect(looksLikeJwt('')).toBe(false);
     expect(looksLikeJwt('not.a.valid.jwt.shape')).toBe(false);
   });
+
+  it('a grant token names a grant, never a workspace, and is refused by the workspace verifier', async () => {
+    const { signGrantAccessToken, verifyAccessToken, verifyAccessTokenAnyAudience, isGrantClaims, looksLikeGrantToken } = await import('./tokens');
+    const { token } = await signGrantAccessToken({
+      userId: '00000000-0000-0000-0000-000000000001',
+      grantId: '00000000-0000-0000-0000-00000000f001',
+      clientId: 'c_test',
+      scope: 'mcp',
+    });
+    const claims = await verifyAccessTokenAnyAudience(token);
+    expect(claims && isGrantClaims(claims)).toBe(true);
+    expect((claims as Record<string, unknown>).workspace_id).toBeUndefined();
+    expect(looksLikeGrantToken(token)).toBe(true);
+    expect(await verifyAccessToken(token, '00000000-0000-0000-0000-000000000aaa')).toBeNull();
+  });
+
+  it('refuses a token naming both a workspace and a grant, or a grant at a workspace audience', async () => {
+    const { SignJWT } = await import('jose');
+    const { verifyAccessTokenAnyAudience } = await import('./tokens');
+    const { getJwtSecret, getIssuer, getResourceUrl, getAccountResourceUrl } = await import('./config');
+    const sign = (claims: Record<string, unknown>, aud: string) => new SignJWT(claims)
+      .setProtectedHeader({ alg: 'HS256' }).setSubject('00000000-0000-0000-0000-000000000001')
+      .setIssuer(getIssuer()).setAudience(aud).setIssuedAt().setExpirationTime('60s').sign(getJwtSecret());
+    const base = { scope: 'mcp', client_id: 'c_test' };
+    expect(await verifyAccessTokenAnyAudience(await sign({ ...base, workspace_id: 'ws', grant_id: 'g' }, getAccountResourceUrl()))).toBeNull();
+    expect(await verifyAccessTokenAnyAudience(await sign(base, getAccountResourceUrl()))).toBeNull();
+    expect(await verifyAccessTokenAnyAudience(await sign({ ...base, grant_id: 'g' }, getResourceUrl('ws')))).toBeNull();
+    expect(await verifyAccessTokenAnyAudience(await sign({ ...base, grant_id: 'g' }, getAccountResourceUrl()))).not.toBeNull();
+  });
 });

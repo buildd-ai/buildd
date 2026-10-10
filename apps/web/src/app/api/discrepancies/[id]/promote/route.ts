@@ -44,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const access = await verifyWorkspaceAccess(user.id, row.workspaceId);
     if (!access) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
   } else if (apiAccount) {
-    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, row.workspaceId);
+    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, row.workspaceId);
     if (!hasAccess) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
   }
 

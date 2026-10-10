@@ -9,6 +9,7 @@ import {
 } from '@/lib/providers/caller';
 import {
   deleteProviderCredential,
+  countPersonalKeys,
   listProviders,
   loadPolicySummary,
   planProviderWrite,
@@ -84,13 +85,14 @@ export async function GET(req: NextRequest) {
   const workspaceId = req.nextUrl.searchParams.get('workspaceId') || (caller.taskScope?.workspaceId ?? null);
   if (!taskScopeAllowsWorkspace(caller, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   try {
-    const [providers, policy, keys, creds, inference, settings] = await Promise.all([
+    const [providers, policy, keys, creds, inference, settings, personalKeyCount] = await Promise.all([
       listProviders({ teamId: caller.teamId, workspaceId, userId: caller.userId }),
       loadPolicySummary(caller.teamId),
       caller.may('manage_team_model_keys'),
       caller.may('manage_team_credentials'),
       caller.may('manage_inference_providers'),
       caller.may(POLICY_PERMISSION),
+      countPersonalKeys(caller.teamId),
     ]);
     const body: ListProvidersResponse = {
       teamId: caller.teamId,
@@ -101,6 +103,7 @@ export async function GET(req: NextRequest) {
         canSetMine: caller.principal === 'person',
       },
       policy,
+      personalKeyCount,
       providers,
     };
     return NextResponse.json(body, { headers: { 'Cache-Control': 'no-store' } });

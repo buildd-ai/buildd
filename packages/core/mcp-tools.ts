@@ -44,6 +44,8 @@ import type {
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
+  FailureIncident,
+  FailureIncidentSeverity,
 } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -320,6 +322,54 @@ export interface ActionContext {
   // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
   // web routes inject one; omitted (the runner), learn keeps today's rules.
   memoryDecider?: MemoryDecider;
+  // The workspaces this connection may act in, when the transport knows them
+  // better than the workspace listing route (an account-level OAuth grant:
+  // its granted workspaces ∩ current membership, across teams). Omitted, the
+  // action lists what GET /api/workspaces returns for the caller.
+  listWorkspaces?: () => Promise<WorkspaceListing[]>;
+}
+
+/** One row of list_workspaces. */
+export interface WorkspaceListing {
+  workspaceId: string;
+  name: string;
+  repo?: string | null;
+  teamId?: string | null;
+  teamName?: string | null;
+  /** The level the connection acts at there. */
+  level?: 'trigger' | 'worker' | 'admin';
+  /** What this connection may do there. */
+  access?: 'read' | 'read-write';
+}
+
+export const LIST_WORKSPACES_LIMIT_DEFAULT = 20;
+export const LIST_WORKSPACES_LIMIT_MAX = 50;
+
+/**
+ * list_workspaces output: one page, grouped by team, with the total and the
+ * next offset so a caller can page without guessing.
+ */
+export function renderWorkspaceListing(rows: WorkspaceListing[], params: Record<string, unknown>): string {
+  const rawLimit = Number(params.limit ?? LIST_WORKSPACES_LIMIT_DEFAULT);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), LIST_WORKSPACES_LIMIT_MAX) : LIST_WORKSPACES_LIMIT_DEFAULT;
+  const rawOffset = Number(params.offset ?? 0);
+  const offset = Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
+  const page = rows.slice(offset, offset + limit);
+  const teams: Array<{ teamId: string | null; teamName: string | null; workspaces: unknown[] }> = [];
+  for (const r of page) {
+    const key = r.teamId ?? null;
+    let t = teams.find((x) => x.teamId === key);
+    if (!t) { t = { teamId: key, teamName: r.teamName ?? null, workspaces: [] }; teams.push(t); }
+    t.workspaces.push({
+      id: r.workspaceId,
+      name: r.name,
+      ...(r.repo ? { repo: r.repo } : {}),
+      ...(r.level ? { level: r.level } : {}),
+      ...(r.access ? { access: r.access } : {}),
+    });
+  }
+  const next = offset + page.length < rows.length ? offset + page.length : null;
+  return JSON.stringify({ total: rows.length, offset, limit, nextOffset: next, teams }, null, 2);
 }
 
 export type ToolResult = {
@@ -412,6 +462,27 @@ function requireFullUuid(id: unknown, paramName: string): string {
 }
 
 /**
+ * An account-level claim refusal (HTTP 429 from the claim route: worker slots,
+ * daily cost, concurrent sessions) as one line, or null for any other error.
+ * The route's body carries `code` and a `detail` sentence (task e7e8740a);
+ * without this the caller saw a raw "API error: 429 - {...}".
+ */
+export function describeAccountLimitError(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : '';
+  const m = /^API error: 429 - ([\s\S]*)$/.exec(msg);
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[1]);
+    if (typeof body?.code === 'string' && typeof body?.detail === 'string') {
+      return `Nothing claimed: ${body.code}. ${body.detail}`;
+    }
+  } catch {
+    // Not JSON: fall through to the caller's own error handling.
+  }
+  return null;
+}
+
+/**
  * Human-readable reply for a claim that returned no workers. The claim route
  * always computes `diagnostics.reason` (and, for an explicit taskId, the gate
  * that excluded it as `diagnostics.taskExclusion`); the old reply discarded it
@@ -434,6 +505,8 @@ export function describeEmptyClaim(data: any, taskId?: string): string {
   if (data.budgetResetsAt) detail.push(`budget resets at ${data.budgetResetsAt}`);
 
   const lines = [`Nothing claimed: ${d.reason}${detail.length ? ` (${detail.join('; ')})` : ''}.`];
+  // Which budget or rate-limit wall held the claim, and when it lifts.
+  if (typeof d.budgetBlock?.summary === 'string' && d.budgetBlock.summary) lines.push(d.budgetBlock.summary);
   if (taskId) {
     if (d.taskExclusion) {
       lines.push(`Task ${taskId} was excluded: ${d.taskExclusion.code}. ${d.taskExclusion.detail}`);
@@ -450,6 +523,8 @@ export function describeEmptyClaim(data: any, taskId?: string): string {
 // Read-only schedule discovery is allowed at this level so any caller can
 // trace "what fired this notification?" without needing an admin token.
 export const triggerActions = [
+  // Discovery: which workspaces this connection can act in.
+  'list_workspaces',
   'list_tasks', 'get_task', 'create_task', 'create_artifact',
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
@@ -466,6 +541,10 @@ export const workerActions = [
   // Discrepancy ledger reads (§13) — same reasoning as spec_compare above:
   // read-only over rows the caller's workspace access already covers.
   'list_discrepancies', 'get_discrepancy',
+  // Which workspaces (and teams) this connection can act in, with the level
+  // and access in each: the one discovery call a multi-workspace connection
+  // needs before naming a workspaceId. Read-only.
+  'list_workspaces',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   // The agent's own read of messages sent to it (interactive / local-plugin
   // sessions; a runner-managed worker gets them from its runner instead).
@@ -503,6 +582,11 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  // Read-only over the Failure Pattern Sentinel's own ledger (GET
+  // /api/health/incidents) — same reasoning as get_failure_analytics above:
+  // the agent chasing "is this already a known incident?" needs this without
+  // a dashboard session.
+  'list_incidents',
   // Read-only, team-scoped Dispatch transport health (Postgres counts plus one
   // Worker /health probe). Worker level for the same reason: the agent asking
   // "did my wake get delivered?" is the one waiting on it.
@@ -807,6 +891,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
+    list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
@@ -873,6 +958,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. evidenceId also reads a runner-hosted Quality Scout run command log (cited in a probe result as evidence:<id>). With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     dispatch_health: '{ workspaceId? } — read-only Dispatch transport health for the caller\'s team (or one of its workspaces). Leads with a one-line verdict (healthy, or what is wrong), then the outbox counts (pending, due, overdue, delivering, stuck, handed off, unacked, unacked past the in-app fallback, orphaned, failed in 24h), deliveries in 24h by route (delivered_via), delivery latency p50/p95 (delivered_at minus not_before), whether the Dispatch Worker answers /health, the last hourly floor run\'s reconcile counts (platform-wide; any repair there is a bug signal), and workspaces not on the dispatch transport (the kill switch). Counts come from Postgres, which receipts keep in step with the Worker; the only Worker call is the /health probe. For one task\'s wakes use get_task include:["dispatch"]; for why a pending task has not started use explain.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    list_incidents: '{ workspaceId?, status? (CSV open|acknowledged|resolved, or "all"; default open,acknowledged), severity? (CSV low|medium|high|critical), rule? (CSV of rule names), signature? (exact), limit? (default 50, max 200) } — read-only: the Failure Pattern Sentinel\'s incident ledger. Each incident has severity, rule, first/last seen, counts, alert state and any linked fix task. Check it before filing a `[friction]` task: a systemic pattern may already be tracked. counts.total ignores limit.',
     get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — dispatch the sandbox capture with --ref captureRef.ref and record it on every shot as qa.ref / qa.refSource. Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     deploy: '{ workerId?, provider (required: cloudflare), project (required), environment (required), credentialRef (required — the stored credential\'s reference: its label, or the provider name when unlabelled), operation (required: status|put_secret|upload_worker|ensure_bucket), params? } — Platform Operator deployment, run server-side with a stored credential you never see. Allowed only when this task\'s role is the Platform Operator AND this workspace\'s Operator grant covers the operation\'s capabilities (deployments:read or deployments:write, plus deployment_secrets:use) for exactly this provider, project, environment and credential ref; anything else is refused with a reason (not_enabled, capability_not_granted, project_not_allowed, ...). The Cloudflare Worker is the project in production and <project>-<environment> elsewhere. params by operation — status: none (latest deployment id/versions, secret NAMES, workers.dev URL); put_secret: { name, value } (value is sent to the Worker and never echoed); upload_worker: { modules: [{ name, content }], mainModule?, compatibilityDate (YYYY-MM-DD), compatibilityFlags?, vars? } (a built module bundle, e.g. `wrangler deploy --dry-run --outdir dist`, which needs no credential; existing secrets are kept; 3 MB cap); ensure_bucket: { bucket? (default <script>-snapshots; must start with <script>-), lifecycle?: [{ id, prefix, expireDays }] }. Every call, allowed or refused, is written to the deployment audit trail with the credential reference only. Returns { auditId, target, operation, result } and never a credential.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
@@ -1194,6 +1280,43 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
       lines.push(`  … ${omitted} more (raise limit, max ${FAILURE_SIGNATURES_MAX}, or pass error=<text> to look one up)`);
     }
   }
+
+  return lines.join('\n');
+}
+
+/**
+ * Failure Pattern Sentinel incident list, newest/most-severe first (the route
+ * already sorted it). Every field on `FailureIncident` surfaces: severity,
+ * rule/reasonCode, first/last seen, occurrence/recurrence counts, impact,
+ * a representative ref, alert state and any linked fix task.
+ */
+function formatIncidentsList(
+  incidents: FailureIncident[],
+  counts: { total: number; bySeverity: Record<FailureIncidentSeverity, number> },
+): string {
+  const bySeverityLine = `${counts.bySeverity.critical} critical, ${counts.bySeverity.high} high, `
+    + `${counts.bySeverity.medium} medium, ${counts.bySeverity.low} low in scope`;
+  if (incidents.length === 0) return `No matching incidents (${bySeverityLine}).`;
+
+  const header = `${counts.total} incident(s) matched — ${bySeverityLine}`
+    + (counts.total > incidents.length ? ` (showing ${incidents.length}, raise limit for more)` : '');
+  const lines: string[] = [header];
+
+  incidents.forEach((inc, i) => {
+    const ref = [
+      inc.affectedRefs.taskIds[0] ? `task ${inc.affectedRefs.taskIds[0].slice(0, 8)}` : null,
+      inc.affectedRefs.prNumbers[0] !== undefined ? `PR #${inc.affectedRefs.prNumbers[0]}` : null,
+    ].filter(Boolean).join(' · ');
+    const alert = inc.lastAlertSeverity ? `alerted ${inc.lastAlertSeverity} @ ${inc.lastAlertedAt}` : 'not alerted';
+    const fix = inc.linkedFixTaskId ? `fix task ${inc.linkedFixTaskId.slice(0, 8)}` : 'no fix task';
+    const recurrence = inc.recurrenceCount > 0 ? ` · recurred ${inc.recurrenceCount}x` : '';
+    lines.push(
+      `  ${i + 1}. [${inc.severity.toUpperCase()}] ${inc.status} — ${truncateTo(inc.title, 160)}\n` +
+      `     ${inc.rule} (${inc.reasonCode}) · ${inc.occurrenceCount} occurrence(s)${recurrence}` +
+      ` · first ${inc.firstSeenAt} · last ${inc.lastSeenAt}\n` +
+      `     ${alert} · ${fix}${ref ? ` · e.g. ${ref}` : ''} · id ${inc.id}`,
+    );
+  });
 
   return lines.join('\n');
 }
@@ -2174,6 +2297,21 @@ export async function handleBuilddAction(
   if (fenceErr) return fenceErr;
 
   switch (action) {
+    case 'list_workspaces': {
+      if (ctx.listWorkspaces) return text(renderWorkspaceListing(await ctx.listWorkspaces(), params));
+      const data = await api('/api/workspaces');
+      const level = await ctx.getLevel();
+      const rows: WorkspaceListing[] = (data?.workspaces || []).map((w: any) => ({
+        workspaceId: w.id,
+        name: w.name,
+        repo: w.repo ?? null,
+        teamId: w.teamId ?? null,
+        teamName: w.team?.name ?? null,
+        level,
+      }));
+      return text(renderWorkspaceListing(rows, params));
+    }
+
     case 'list_tasks': {
       // Every filter here narrows the result, so one that is misspelled, malformed
       // or unsupported must fail loudly: dropped silently, the call returns the
@@ -2459,18 +2597,25 @@ export async function handleBuilddAction(
         ? undefined
         : requireFullUuid(params.taskId, 'taskId');
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
-      const data = await api('/api/workers/claim', {
-        method: 'POST',
-        body: JSON.stringify({
-          maxTasks: params.maxTasks || 1,
-          workspaceId: wsId,
-          runner: 'mcp',
-          ...(taskId ? { taskId } : {}),
-          // Admin-only on the server, and only with a taskId; see
-          // ClaimTasksInput.forceOverride.
-          ...(taskId && params.force === true ? { forceOverride: true } : {}),
-        }),
-      });
+      let data: any;
+      try {
+        data = await api('/api/workers/claim', {
+          method: 'POST',
+          body: JSON.stringify({
+            maxTasks: params.maxTasks || 1,
+            workspaceId: wsId,
+            runner: 'mcp',
+            ...(taskId ? { taskId } : {}),
+            // Admin-only on the server, and only with a taskId; see
+            // ClaimTasksInput.forceOverride.
+            ...(taskId && params.force === true ? { forceOverride: true } : {}),
+          }),
+        });
+      } catch (err) {
+        const limit = describeAccountLimitError(err);
+        if (limit) return text(limit);
+        throw err;
+      }
 
       const workers = data.workers || [];
       if (workers.length === 0) return text(describeEmptyClaim(data, taskId));
@@ -5314,6 +5459,37 @@ export async function handleBuilddAction(
       return text(JSON.stringify({ connectors: data.connectors ?? [] }));
     }
 
+    case 'list_incidents': {
+      // Read-only. Scoping is not re-implemented here: GET /api/health/incidents
+      // derives the team from the caller's bearer token and 404s a workspaceId
+      // outside it, exactly like get_failure_analytics above.
+      const rawWsId = typeof params.workspaceId === 'string' && params.workspaceId.trim()
+        ? params.workspaceId.trim()
+        : null;
+      let wsId: string | null = null;
+      if (rawWsId) {
+        wsId = await resolveWorkspaceId(api, rawWsId, ctx);
+      }
+
+      const qs: string[] = [];
+      if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
+      for (const [key, max] of [['status', Infinity], ['severity', Infinity], ['rule', Infinity]] as const) {
+        const raw = typeof params[key] === 'string' && params[key].trim() ? params[key].trim() : null;
+        if (raw) qs.push(`${key}=${encodeURIComponent(raw.slice(0, max === Infinity ? 200 : max))}`);
+      }
+      const rawSignature = typeof params.signature === 'string' && params.signature.trim() ? params.signature.trim() : null;
+      if (rawSignature) qs.push(`signature=${encodeURIComponent(rawSignature.slice(0, 300))}`);
+      const limit = typeof params.limit === 'number' ? Math.min(Math.max(Math.round(params.limit), 1), 200) : null;
+      if (limit) qs.push(`limit=${limit}`);
+
+      const data = await api(`/api/health/incidents${qs.length ? `?${qs.join('&')}` : ''}`);
+      const incidents = (data?.incidents ?? []) as FailureIncident[];
+      const counts = (data?.counts ?? { total: 0, bySeverity: { low: 0, medium: 0, high: 0, critical: 0 } }) as {
+        total: number;
+        bySeverity: Record<FailureIncidentSeverity, number>;
+      };
+      return text(formatIncidentsList(incidents, counts));
+    }
     case 'get_failure_analytics': {
       // Read-only. Scoping is not re-implemented here: GET /api/health/failures
       // derives the team from the caller's bearer token and 404s a workspaceId

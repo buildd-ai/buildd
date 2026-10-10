@@ -18,7 +18,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import * as ts from 'typescript';
-import { COPY_RULES, copyViolations, type CopyRuleId } from '../packages/core/copy-rules';
+import { COPY_RULES, DUPLICATE_MIN_WORDS, copyViolations, type CopyRuleId } from '../packages/core/copy-rules';
 
 export const BASELINE_FILE = 'scripts/copy-check.baseline.json';
 
@@ -116,10 +116,19 @@ export function scanSources(sources: { path: string; content: string }[]): { cou
   const violations: Violation[] = [];
   for (const { path, content } of sources) {
     if (!inScope(path)) continue;
+    const seen = new Set<string>();
     for (const s of extractCopy(path, content)) {
       for (const rule of copyViolations(s.text)) {
         violations.push({ file: path, line: s.line, rule: rule.id, text: s.text });
         counts[rule.id][path] = (counts[rule.id][path] ?? 0) + 1;
+      }
+      // duplicate-explanation: the second time one file renders the same sentence.
+      const key = s.text.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (key.split(' ').length >= DUPLICATE_MIN_WORDS) {
+        if (seen.has(key)) {
+          violations.push({ file: path, line: s.line, rule: 'duplicate-explanation', text: s.text });
+          counts['duplicate-explanation'][path] = (counts['duplicate-explanation'][path] ?? 0) + 1;
+        } else seen.add(key);
       }
     }
   }

@@ -140,7 +140,7 @@ describe('GET /api/workspaces/[id]/config', () => {
     const res = await GET(req, { params: mockParams });
 
     expect(res.status).toBe(404);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-2', 'ws-1');
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'acct-2' }), 'ws-1');
   });
 
   it('returns 404 for a session user without access to the workspace', async () => {
@@ -844,6 +844,53 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.gitConfig.branchStrategy).toBeUndefined();
+  });
+
+  it('turns on a copy review via PATCH, keeping the rest of gitConfig', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', branchStrategy: 'direct' } });
+
+    const copyReview = { voiceGuide: 'docs/design/design-system.md', lintCommand: 'bun run copy:check', mode: 'gate' };
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ copyReview }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.copyReview).toEqual(copyReview);
+    expect(data.gitConfig.branchStrategy).toBe('direct');
+  });
+
+  it('rejects a copy review without a voice guide via PATCH with 400', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ copyReview: { mode: 'gate' } }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.field).toBe('voiceGuide');
+  });
+
+  it('null copyReview via PATCH turns the copy review off', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', copyReview: { voiceGuide: 'VOICE.md', mode: 'review' } } });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ copyReview: null }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.copyReview).toBeUndefined();
+    expect(data.gitConfig.defaultBranch).toBe('dev');
   });
 
   it('saves branch_merge releaseConfig with trigger', async () => {
