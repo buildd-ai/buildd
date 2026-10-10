@@ -60,3 +60,13 @@ describe('EXECUTION_MODE', () => {
     }
   });
 });
+
+describe('the committed config', () => {
+  it('records the deployed cutover: the Worker owns the execution routes, and shadow is the one-line rollback', async () => {
+    const { readFileSync } = await import('node:fs');
+    const cfg = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+    expect(cfg).toContain('"EXECUTION_MODE": "own"');
+    for (const r of ['buildd.dev/api/workers/*', 'buildd.dev/api/github/webhook', 'buildd.dev/api/dispatch/v1/*']) expect(cfg).toContain(r);
+    expect(executionMode('shadow')).toBe('shadow');
+  });
+});

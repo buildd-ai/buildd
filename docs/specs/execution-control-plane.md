@@ -33,7 +33,7 @@ rewrite, and the two cannot drift.
 **Invariants**:
 - The Worker imports apps/web's own handlers for `POST /api/workers/claim`,
   `GET|PATCH /api/workers/[id]`, `POST /api/github/webhook`, and
-  `POST /api/dispatch/v1/resolve|receipts`. No other route is served.
+  `POST /api/dispatch/v1/resolve|receipts|relay` (the three Dispatch callbacks). No other route is served.
 - `next/server` resolves to a shim: `NextRequest` (Request plus `nextUrl`),
   `NextResponse` (`json`, `redirect`), `after()` (the request's
   `ctx.waitUntil`, and a throw outside a request, as in Next).
@@ -47,21 +47,33 @@ rewrite, and the two cannot drift.
   completes a task against the control plane THEN the task and worker end
   `completed` (`apps/control-plane/scripts/web-down-e2e.sh`, run 2026-10-10
   under wrangler dev against migrated Postgres: PASS).
-- AC-2: the router serves exactly the execution routes (`index.test.ts`).
+- AC-2: the router serves exactly these seven routes (`index.test.ts`).
 
-## 2. Cutover (not built)
+## 2. Cutover and lockstep
 
-Nothing routes to the Worker yet. Cutover needs, in order: the Worker deployed
-with the web app's secrets (Doppler is the source); the execution routes sent to
-it (edge path routing on buildd.dev, so runners and GitHub change nothing);
-one owner of the workflow-effect drain at a time, switched like
-`dispatch_transport`; and AC-1 run against the deployed Worker with the web
-deployment paused.
+**Capability statement**: The Worker MUST run exactly the commit production web
+runs, so the execution handlers never differ between the two hosts.
+
+**Invariants**:
+- The Worker owns `buildd.dev/api/workers/*`, `/api/github/webhook` and
+  `/api/dispatch/v1/*` (apex records proxied; `EXECUTION_MODE=own` since
+  2026-10-10). Paths it does not serve pass through to Vercel.
+- `EXECUTION_MODE=shadow` passes every request through. That is the rollback,
+  with no DNS or route change.
+- Lockstep with the web app's production commit is owed: until the release
+  workflow deploys it, the Worker is redeployed by hand after each release.
+
+**Acceptance criteria**:
+- AC-3: GIVEN the Vercel project paused WHEN a runner claims through
+  buildd.dev THEN the claim is answered by the Worker against production
+  Postgres. Passed on 2026-10-10 (artifact `control-plane-cutover-evidence`).
 
 ## Verification gaps
 
 1. The bundle carries the whole TypeScript compiler, through the reviewer's
    copy review (`apps/web/src/lib/copy-review.ts`), which is most of its
    18.6 MB (3.4 MB gzip). Startup CPU against the Workers limit is unmeasured.
-2. Only the claim path was exercised end to end; webhook and Dispatch
-   callbacks were exercised only to their auth refusals.
+2. Only the claim path was exercised end to end in production; webhook and
+   Dispatch callbacks were exercised only to their auth refusals.
+3. While the web app is down, crons, MCP and every non-execution route wait for
+   it; `after()` work gets the Workers 30 s `waitUntil` limit.
