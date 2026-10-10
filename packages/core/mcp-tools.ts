@@ -4790,6 +4790,7 @@ export async function handleBuilddAction(
         ``,
         `Upload the file:`,
         `curl -X PUT -H "Content-Type: ${mimeStr}" --data-binary @./${params.filename} "${data.uploadUrl}"`,
+        `It is served only once its bytes arrive at exactly ${params.sizeBytes} bytes; the first read verifies and hashes it (get_artifact shows uploadState).`,
         ``,
         `Download URL (permanent, for markdown embedding):`,
         data.downloadUrl,

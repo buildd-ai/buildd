@@ -54,6 +54,10 @@ mock.module('@buildd/core/db/schema', () => ({
   artifacts: 'artifacts',
 }));
 
+let finalizeResult: any = { state: 'ready', sha256: null, sizeBytes: null };
+const mockFinalize = mock(async (_id: string) => finalizeResult);
+mock.module('@/lib/artifact-upload', () => ({ finalizeArtifactUpload: mockFinalize }));
+
 const { GET } = await import('./route');
 
 const mockParams = Promise.resolve({ artifactId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
@@ -242,5 +246,44 @@ describe('GET /api/artifacts/[artifactId]/download', () => {
 
     expect(res.status).toBe(403);
     expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/artifacts/[artifactId]/download — an upload is served only once verified', () => {
+  beforeEach(() => {
+    mockFinalize.mockClear();
+    mockGenerateDownloadUrl.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-owner' });
+  });
+
+  it('a pending upload whose bytes have not arrived is a 409, and no URL is signed', async () => {
+    finalizeResult = { state: 'pending', reason: 'not_uploaded' };
+    mockArtifactsFindFirst.mockResolvedValue(artifact({ uploadState: 'pending' }));
+    const res = await GET(req({ apiKey: 'bld_x' }), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect((await res.json()).uploadState).toBe('pending');
+    expect(mockGenerateDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it('a pending upload whose bytes arrived is finalized by the read and served', async () => {
+    finalizeResult = { state: 'ready', sha256: 'ab', sizeBytes: 3 };
+    mockArtifactsFindFirst.mockResolvedValue(artifact({ uploadState: 'pending' }));
+    const res = await GET(req({ apiKey: 'bld_x' }), { params: mockParams });
+    expect(res.status).toBe(307);
+    expect(mockFinalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed upload is a 409 naming why', async () => {
+    finalizeResult = { state: 'failed', reason: 'size_mismatch: signed for 10 bytes, stored 9' };
+    mockArtifactsFindFirst.mockResolvedValue(artifact({ uploadState: 'failed' }));
+    const res = await GET(req({ apiKey: 'bld_x' }), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain('size_mismatch');
+  });
+
+  it('an artifact that is not an upload is served without a finalize call', async () => {
+    mockArtifactsFindFirst.mockResolvedValue(artifact());
+    expect((await GET(req({ apiKey: 'bld_x' }), { params: mockParams })).status).toBe(307);
+    expect(mockFinalize).not.toHaveBeenCalled();
   });
 });

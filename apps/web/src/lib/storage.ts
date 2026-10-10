@@ -135,3 +135,33 @@ export async function deleteObject(key: string): Promise<void> {
     Key: key,
   }));
 }
+
+/** An object's stored size and content type, or null when it does not exist. */
+export async function headObject(key: string): Promise<{ sizeBytes: number; contentType: string | null } | null> {
+  const client = getClient();
+  try {
+    const head = await client.send(new HeadObjectCommand({ Bucket: config.storageBucket, Key: key }));
+    return { sizeBytes: Number(head.ContentLength ?? 0), contentType: head.ContentType ?? null };
+  } catch (err) {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    const name = (err as { name?: string })?.name;
+    if (status === 404 || name === 'NotFound' || name === 'NoSuchKey') return null;
+    throw err;
+  }
+}
+
+/** sha256 (hex) and byte count of a stored object, streamed rather than buffered. */
+export async function sha256Object(key: string): Promise<{ sha256: string; sizeBytes: number }> {
+  const { createHash } = await import('crypto');
+  const client = getClient();
+  const res = await client.send(new GetObjectCommand({ Bucket: config.storageBucket, Key: key }));
+  const hash = createHash('sha256');
+  let sizeBytes = 0;
+  const body = res.Body as AsyncIterable<Uint8Array> | undefined;
+  if (!body) throw new Error(`object ${key} has no body`);
+  for await (const chunk of body) {
+    hash.update(chunk);
+    sizeBytes += chunk.byteLength;
+  }
+  return { sha256: hash.digest('hex'), sizeBytes };
+}

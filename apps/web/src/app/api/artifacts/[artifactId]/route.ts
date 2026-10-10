@@ -14,6 +14,7 @@ import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
 import { recordArtifactRead } from '@/lib/artifact-reads';
+import { finalizeArtifactUpload } from '@/lib/artifact-upload';
 import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
@@ -157,8 +158,15 @@ export async function GET(
   // A file artifact has no inline content; hand back a short-lived presigned
   // URL under the same access check as above so a key-only caller (an agent
   // that may not use credentials from disk) can still read the bytes.
+  // An upload hands out its bytes only once they are verified; reading it
+  // finalizes it if its uploader never did (lib/artifact-upload.ts).
+  let uploadState = artifact.uploadState;
+  if (uploadState === 'pending' && isStorageConfigured()) {
+    const finalized = (await finalizeArtifactUpload(artifact.id)).state;
+    if (finalized === 'ready' || finalized === 'failed') uploadState = finalized;
+  }
   let downloadUrl: string | null = null;
-  if (body.storageKey && isStorageConfigured()) {
+  if (body.storageKey && isStorageConfigured() && (!uploadState || uploadState === 'ready')) {
     try {
       downloadUrl = await generateDownloadUrl(body.storageKey);
     } catch {
@@ -175,6 +183,7 @@ export async function GET(
       // A bounded read returns its part in `read`, never the whole body beside it.
       ...(read ? { content: null, read } : {}),
       sizeChars: body.content?.length ?? null,
+      uploadState,
       shareUrl,
       downloadUrl,
       // `revision` is the body returned; `currentRevision` the latest. Pass
