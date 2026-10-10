@@ -27,3 +27,31 @@ export function getDeployIdentity(): DeployIdentity {
 }
 
 export const DEPLOYED_VERSION: string = pkg.version || '0.0.0';
+
+/**
+ * The execution control plane Worker's commit, beside the web app's, so one
+ * read answers "do both hosts run the same code" (docs/specs/execution-control-plane.md).
+ * Read from the Worker's public shallow health with a short timeout; `null`
+ * when it does not answer, never a throw, so this endpoint keeps answering.
+ */
+export const CONTROL_PLANE_HEALTH_URL = 'https://control-plane.buildd.dev/__control-plane/health';
+export const CONTROL_PLANE_TIMEOUT_MS = 1500;
+
+export interface ControlPlaneIdentity { commit: string | null; mode: string | null }
+
+export async function getControlPlaneIdentity(fetchImpl: typeof fetch = fetch): Promise<ControlPlaneIdentity | null> {
+  try {
+    const res = await fetchImpl(process.env.CONTROL_PLANE_HEALTH_URL || CONTROL_PLANE_HEALTH_URL, {
+      signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { commit?: unknown; mode?: unknown };
+    return {
+      commit: typeof body.commit === 'string' ? body.commit : null,
+      mode: typeof body.mode === 'string' ? body.mode : null,
+    };
+  } catch {
+    return null;
+  }
+}
