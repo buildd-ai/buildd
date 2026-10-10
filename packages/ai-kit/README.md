@@ -221,7 +221,7 @@ The request body is `ChatTurnRequest`: `{ message, ...appExtras }`. The client s
 | `docked?` | an object's data is in the instructions: blocks Allow |
 | `activeGroups?` | groups offered to the model this turn (all tools stay defined, so an approved call still runs) |
 | `admit?` | your rate limit / per-person cap, before any model call |
-| `limits?` | `{ maxSteps: 8, turnMs: 45_000, historyLimit: 40, storedLimit: 500, maxUserText: 200_000, historyChars: 400_000, maxOutputTokens: 4_096 }`. `historyChars` bounds the text the model is sent per turn (earlier long user text becomes a note; storage is untouched). `maxOutputTokens` caps every model step: without a cap OpenRouter reserves the model's whole output window against the key and a key with a daily or credit limit refuses every turn. `0` sends no cap |
+| `limits?` | `{ maxSteps: 8, turnMs: 45_000, historyLimit: 40, storedLimit: 500, maxUserText: 200_000, historyTokens: 100_000, maxOutputTokens: 4_096 }`. `historyTokens` bounds the estimated tokens the model is sent per turn (earlier long user text becomes a note; storage is untouched); one message over it is refused with `message_too_long_for_model`. `maxOutputTokens` caps every model step: without a cap OpenRouter reserves the model's whole output window against the key and a key with a daily or credit limit refuses every turn. `0` sends no cap |
 | `steering?` | `{ queue: SteerQueue, maxPerTurn?: 3 }`. Off when absent |
 | `onUsage?` | `TurnUsageRecord`: user, conversation, message, plan, tokens, cost, latency, outcome, `meta` from your key resolver. Carries identity; never sent to buildd |
 | `onStep?`, `onError?`, `metadata?`, `headers?`, `generateId?` | hooks |

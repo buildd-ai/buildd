@@ -434,10 +434,10 @@ export type ChatToolPartState =
 // ── Conversations and messages ────────────────────────────────────────────────
 
 /**
- * Longest chat message the server accepts, in characters. The server reads
- * CHAT_MAX_MESSAGE_CHARS to override it; this is the default and what the
- * composer counts against. Kept well under the platform's request body limit
- * (4.5 MB on Vercel functions; 200,000 four-byte characters is 800 KB).
+ * Longest chat message the server accepts, in characters, and what the
+ * composer counts against: one setting for both. Kept well under the
+ * platform's request body limit (4.5 MB on Vercel functions; 200,000 four-byte
+ * characters is 800 KB).
  */
 export const CHAT_MAX_MESSAGE_CHARS = 200_000;
 /**
