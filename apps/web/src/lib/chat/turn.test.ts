@@ -1530,7 +1530,8 @@ describe('long messages (8,000 is a presentation threshold, not a limit)', () =>
 
   for (const n of [8_001, 32_000, 100_000, 200_000]) {
     it(`accepts ${n.toLocaleString('en-US')} characters, astral Unicode included, and stores them byte for byte`, async () => {
-      const text = '𝔘ñ✓'.repeat(Math.ceil(n / 4)).slice(0, n);
+      // Mostly prose with astral and accented characters through it, as a pasted spec is.
+      const text = 'Spec line 𝔘 ñ ✓ with ordinary words around it. '.repeat(Math.ceil(n / 46)).slice(0, n);
       const { turn } = harness({ model: mk() });
       const { res } = await turn(userMsg(text));
       expect(res.status).toBe(200);
@@ -1582,10 +1583,30 @@ describe('long messages (8,000 is a presentation threshold, not a limit)', () =>
   });
 });
 
-describe('maxUserTextFromEnv', () => {
-  it('reads a positive integer override and falls back to the shared default', async () => {
-    const { maxUserTextFromEnv } = await import('./turn');
-    expect(maxUserTextFromEnv('50000')).toBe(50_000);
-    for (const bad of [undefined, '', '0', '-1', '1.5', 'lots']) expect(maxUserTextFromEnv(bad)).toBe(200_000);
+describe('a message too large for the model in one turn', () => {
+  it('200,000 CJK characters (about 200k tokens) are refused clearly, before any spend, and nothing is stored', async () => {
+    const model = new MockLanguageModelV4({ doStream: async () => textStream('ok') as any });
+    let routed = 0;
+    const { turn } = harness({ model, route: async () => { routed++; return { tier: 'standard' as const, allowWrites: true, source: 'fallback' as const }; } });
+    const { res, text } = await turn(userMsg('仕様書の本文です。'.repeat(25_000).slice(0, 200_000)));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ code: 'message_too_long_for_model', limitTokens: 100_000 });
+    expect(JSON.parse(text).error).toContain('attach it as a document');
+    expect([routed, model.doStreamCalls.length, messages.length]).toEqual([0, 0, 0]);
+  });
+
+  it('the same characters as English prose fit', async () => {
+    const { turn } = harness({ model: new MockLanguageModelV4({ doStream: async () => textStream('ok') as any }) });
+    expect((await turn(userMsg('plain english text. '.repeat(10_000)))).res.status).toBe(200);
+  });
+});
+
+describe('one cap for the composer and the server', () => {
+  it('the turn and the kit accept exactly the shared CHAT_MAX_MESSAGE_CHARS', async () => {
+    const { MAX_USER_TEXT } = await import('./turn');
+    const { CHAT_MAX_MESSAGE_CHARS } = await import('@buildd/shared');
+    const { DEFAULT_TURN_LIMITS } = await import('@builddai/ai-kit/chat/server');
+    expect(MAX_USER_TEXT).toBe(CHAT_MAX_MESSAGE_CHARS);
+    expect(DEFAULT_TURN_LIMITS.maxUserText).toBe(CHAT_MAX_MESSAGE_CHARS);
   });
 });
