@@ -2,10 +2,10 @@
 title: Runner Liveness
 status: active
 owner: max
-last_verified: 2026-09-29
+last_verified: 2026-10-10
 summary: The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 domain: runners
-surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
+surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/lib/lost-claim.ts, apps/runner/src/claim-handoff.ts, apps/web/src/app/api/workers/heartbeat/route.ts, apps/web/src/app/api/version/route.ts, packages/core/runner-health.ts]
 related: [provider-failover, mission-task-lifecycle]
 keywords: [worker_heartbeats, heartbeat_stale_ms, cleanupstaleworkers, waiting_input timeout, buildd_runner_poll_min, viewertoken, runner_commit, runner_version, deployed build sha, current_commit, disk_commit, commit_drift, update_available, update_available_since, tracked_branch, uptodatewithdeployed, list_runners]
 assertions:
@@ -22,6 +22,10 @@ assertions:
     type: symbol
     name: cleanupStuckWaitingInput
     path: apps/web/src/lib/stale-workers.ts
+  - id: release-unacknowledged-claims
+    type: symbol
+    name: releaseUnacknowledgedClaims
+    path: apps/web/src/lib/lost-claim.ts
   - id: record-runner-outcome
     type: symbol
     name: recordRunnerOutcome
@@ -285,6 +289,67 @@ branch in GitHub (`latestAvailable`).
   `drizzle-orm`, which makes WHERE-clause columns unobservable there)
 - Constants: `STALE_THRESHOLD_MS = 15 * 60 * 1000`,
   `IDLE_STALE_THRESHOLD_MS = 5 * 60 * 1000`
+
+---
+
+## Claim Handoff (lost claim response)
+
+The handoff has two boundaries. **CLAIMED** is the claim route's INSERT
+(`status = 'idle'`, `startedAt IS NULL`, `runner` = the claimant's
+`localUiUrl`). **SESSION_STARTED** is the runner's first `running` PATCH, which
+stamps `startedAt`. Between them only the reader of the claim response knows the
+worker exists. When the runner's request is aborted (client timeout,
+dropped connection, process restart) after the server committed, nobody read
+it. This was observed on a host runner: two claim polls timed out right after a
+self-update restart, and the worker one of them minted was reaped as
+`never_started` five minutes later.
+
+**Invariants**:
+- A runner that sends `claimHandoff: { pendingStartIds, claimInFlight }` on its
+  heartbeat MUST list every worker it has received but not yet started.
+  `activeWorkerIds` already covers started ones. The runner adds an id
+  synchronously when it reads the response, before it stops counting the
+  request as in flight.
+- The heartbeat route MUST release (fail, `exitCause: 'never_started'`, error
+  `CLAIM_RESPONSE_LOST_ERROR`) only rows of that account and that `runner`
+  which are still `idle` with `startedAt IS NULL`, were minted more than
+  `CLAIM_ACK_GRACE_MS` (90s, above the runner's 30s claim timeout) ago, appear
+  in neither list, and only while `claimInFlight` is false.
+- The release MUST be a compare-and-swap on `idle` + `startedAt IS NULL`. A
+  session-start PATCH that lands first keeps its worker, so a late
+  acknowledgement cannot produce two sessions.
+- Released tasks MUST resolve through the reaper's rules
+  (`resolveTasksOfReapedWorkers`): infra backoff, `MAX_INFRA_RETRIES`, the
+  kernel hook, a wake at `startAt` from the dispatch outbox's per-minute due
+  tick, and `infra_stalled` at the cap. A lost claim is never a code failure and
+  never a completion.
+- A runner that does not send `claimHandoff` (older build, `--once`) is never
+  asked; its rows are left to the 5-minute never-started reap.
+
+**Acceptance criteria**:
+- AC-CH1: GIVEN an unstarted row minted 2 minutes ago for runner R, and R's
+  heartbeat reports neither it nor a claim in flight, WHEN the heartbeat lands
+  THEN the row is failed with `CLAIM_RESPONSE_LOST_ERROR` and its task is
+  requeued.
+- AC-CH2: GIVEN the same row and `claimInFlight: true`, or the id in
+  `pendingStartIds` or `activeWorkerIds`, THEN it is untouched.
+- AC-CH3: GIVEN the runner's `running` PATCH lands between the select and the
+  release THEN the worker keeps running and the task is not requeued.
+
+**Observability**: each release logs one
+`[claim-handoff] {"event":"claim_unacknowledged_released",...}` line with
+worker, task, account, runner, `mintedAt` and `ageMs`. Each lost response logs
+`claim_rejected` with `status: 0` in the runner's `claims.log`. The released
+row's error text is its own failure signature, so count it apart from the
+generic never-started signature and add the two together when comparing totals
+before and after this change.
+
+**Code surface**:
+- Server: `apps/web/src/lib/lost-claim.ts`,
+  `apps/web/src/app/api/workers/heartbeat/route.ts`
+- Runner: `apps/runner/src/claim-handoff.ts` (`ClaimHandoffTracker`), wired in
+  `apps/runner/src/workers.ts` (`claimPendingTasks`, `claimAndStart`,
+  `sendHeartbeat`)
 
 ---
 

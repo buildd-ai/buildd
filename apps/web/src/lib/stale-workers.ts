@@ -705,9 +705,6 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
   }
 
   if (staleWorkers.length > 0) {
-    const staleWorkerIds = staleWorkers.map(w => w.id);
-    const staleTaskIds = staleWorkers.map(w => w.taskId).filter(Boolean) as string[];
-
     // Book each reaped worker under the cause that actually applies. One UPDATE
     // per cause keeps this to at most three statements for the whole batch.
     const byCause = new Map<WorkerExitCause, { ids: string[]; error: string }>();
@@ -761,46 +758,67 @@ export async function cleanupStaleWorkers(accountId: string): Promise<{ heartbea
     // any account and are skipped rather than charged to whoever is cleaning.
     await releaseConcurrencySeats(staleWorkers.map(w => w.accountId));
 
-    if (staleTaskIds.length > 0) {
-      // Fetch workspace IDs before updating, for dependency resolution
-      const staleTasks = await db.query.tasks.findMany({
-        where: inArray(tasks.id, staleTaskIds),
-        columns: { id: true, workspaceId: true },
-      });
-
-      // Only reset tasks that have NO other active workers (prevents duplicate claims)
-      const staleWorkerIds = staleWorkers.map(w => w.id);
-      for (const t of staleTasks) {
-        const otherActiveWorkers = await db.query.workers.findMany({
-          where: and(
-            eq(workers.taskId, t.id),
-            inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
-            not(inArray(workers.id, staleWorkerIds)),
-          ),
-          columns: { id: true },
-          limit: 1,
-        });
-
-        if (otherActiveWorkers.length === 0) {
-          const staleWorker = staleWorkers.find(w => w.taskId === t.id);
-          // Determine exit cause for this worker so reviewer tasks can distinguish
-          // infra failures (retry) from genuine timeouts (escalate)
-          let exitCauseForReview: WorkerExitCause | undefined;
-          if (staleWorker) {
-            const classification = classifyStaleExit(staleWorker as any);
-            exitCauseForReview = classification.exitCause;
-          }
-          await resolveStaleTask(t.id, t.workspaceId, staleWorker, exitCauseForReview);
-        } else {
-          await resolveCompletedTask(t.id, t.workspaceId);
-        }
-      }
-    }
+    await resolveTasksOfReapedWorkers(staleWorkers);
   }
 
   // 2. Fail active workers when their runner is offline — the one shared rule.
   const heartbeatOrphans = await failWorkersOfOfflineRunners({ accountIds: [accountId] });
   return { heartbeatOrphans };
+}
+
+type ReapedWorker = Parameters<typeof resolveStaleTask>[2] & {
+  taskId: string | null;
+  startedAt?: Date | string | null;
+  status?: string | null;
+};
+
+/**
+ * Settle the tasks of worker rows a sweep has just failed: requeue (with the
+ * infra backoff and caps in resolveStaleTask), complete on deliverables, or
+ * fail at the cap. A task that still has another live worker is left to it.
+ *
+ * Shared by the stale reaper and the lost-claim release (lib/lost-claim.ts),
+ * so a lost claim is resolved by exactly the rules a reaped one is.
+ */
+export async function resolveTasksOfReapedWorkers(
+  reaped: readonly ReapedWorker[],
+  exitCauseOverride?: WorkerExitCause,
+): Promise<void> {
+  const taskIds = reaped.map(w => w.taskId).filter(Boolean) as string[];
+  if (taskIds.length === 0) return;
+  // Fetch workspace IDs before updating, for dependency resolution
+  const staleTasks = await db.query.tasks.findMany({
+    where: inArray(tasks.id, taskIds),
+    columns: { id: true, workspaceId: true },
+  });
+
+  // Only reset tasks that have NO other active workers (prevents duplicate claims)
+  const reapedIds = reaped.map(w => w.id);
+  for (const t of staleTasks) {
+    const otherActiveWorkers = await db.query.workers.findMany({
+      where: and(
+        eq(workers.taskId, t.id),
+        inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
+        not(inArray(workers.id, reapedIds)),
+      ),
+      columns: { id: true },
+      limit: 1,
+    });
+
+    if (otherActiveWorkers.length === 0) {
+      const staleWorker = reaped.find(w => w.taskId === t.id);
+      // Determine exit cause for this worker so reviewer tasks can distinguish
+      // infra failures (retry) from genuine timeouts (escalate)
+      let exitCauseForReview: WorkerExitCause | undefined = exitCauseOverride;
+      if (staleWorker && !exitCauseForReview) {
+        const classification = classifyStaleExit(staleWorker as any);
+        exitCauseForReview = classification.exitCause;
+      }
+      await resolveStaleTask(t.id, t.workspaceId, staleWorker, exitCauseForReview);
+    } else {
+      await resolveCompletedTask(t.id, t.workspaceId);
+    }
+  }
 }
 
 /**

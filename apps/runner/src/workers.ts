@@ -12,6 +12,7 @@ import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudE
 import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
 import { captureDependencyManifest, DEPENDENCY_MANIFEST_FILENAME } from './dependency-manifest';
 import { emitPhase } from './phase-lines';
+import { ClaimHandoffTracker } from './claim-handoff';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -753,6 +754,8 @@ export class WorkerManager {
   private budgetResumeAtMs?: number;
   /** Consecutive claim replies whose budgetResetsAt was already past (N2 backoff). */
   private pastResetStreak = 0;
+  /** Claims in flight and workers received but not yet started, reported on every heartbeat (claim-handoff.ts). */
+  private claimHandoff = new ClaimHandoffTracker();
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -1132,6 +1135,11 @@ export class WorkerManager {
     return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
+  /** `??=`: some harnesses build the manager with Object.create (no field initializers). */
+  private handoff(): ClaimHandoffTracker {
+    return (this.claimHandoff ??= new ClaimHandoffTracker());
+  }
+
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
   async sendHeartbeatNow(): Promise<void> {
     await this.sendHeartbeat();
@@ -1154,7 +1162,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot());
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.heartbeatEnvironment(), getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION, getRunnerUpdateSnapshot(), this.handoff().snapshot());
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -1592,10 +1600,16 @@ export class WorkerManager {
         }>;
       };
       try {
-        claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment);
+        claimPollResult = await this.handoff().track(() => this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, advertisedRoleSlugs(this.environment), true, this.environment));
       } catch (err: any) {
         const { status, reason } = parseClaimError(err);
         claimLog({ event: 'claim_rejected', slotsRequested: slots, workersClaimed: 0, status, reason });
+        if (status === 0) {
+          // No HTTP response: the server may still have minted workers for this
+          // request. They are not ours to start; the next heartbeat reports we
+          // hold none of them and the server releases them (lib/lost-claim.ts).
+          console.warn(`[WorkerManager] Claim response lost (${reason}) — any workers it minted will be released on the next heartbeat`);
+        }
         this.claimPolls.recordPoll('rejected');
         this.emit({ type: 'claim_rejected', status, reason });
         this.onClaimServerErrorStreak(status);
@@ -1689,6 +1703,8 @@ export class WorkerManager {
             status: 'failed',
             error: `Runner failed to start session: ${message}`,
           }).catch(() => {});
+        } finally {
+          this.handoff().settle(claimedWorker.id);
         }
       }
       return started;
@@ -2001,7 +2017,7 @@ export class WorkerManager {
     // from the full task instead — matching the polling path (claimPendingTasks).
     let claimResult: { workers: any[]; diagnostics?: any };
     try {
-      claimResult = await this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment);
+      claimResult = await this.handoff().track(() => this.buildd.claimTask(1, task.workspaceId, this.config.localUiUrl, task.id, advertisedRoleSlugs(this.environment), false, this.environment));
     } catch (err: any) {
       const { status, reason } = parseClaimError(err);
       claimLog({ event: 'claim_rejected', slotsRequested: 1, workersClaimed: 0, taskId: task.id, status, reason });
@@ -2040,7 +2056,14 @@ export class WorkerManager {
     claimLog({ event: 'claim_success', slotsRequested: 1, workersClaimed: 1, taskId: task.id });
 
     const claimedWorker = claimed[0];
+    try {
+      return await this.startTargetedClaim(claimedWorker, task);
+    } finally {
+      this.handoff().settle(claimedWorker.id);
+    }
+  }
 
+  private async startTargetedClaim(claimedWorker: any, task: BuilddTask): Promise<LocalWorker | null> {
     // Prefer claim response task data (full) over Pusher event task data
     // (minimal payload); resolve the workspace from the FULL task (see note
     // above). Same preparation as the poll path — one shared routine.
