@@ -108,9 +108,13 @@ export function missionBranchUnresolvedDetail(input: MissionBranchUnresolvedInpu
  * (not routine — every task of that mission lands on trunk until somebody
  * acts). The second is told apart by comparing the missing ref against the
  * mission's own integration branch; when the mission row is unavailable, the
- * `mission/` shape is the fallback heuristic. Its excerpt also stops promising
- * "a new PR will be opened instead of updating the existing one", which is only
- * true of the resume case.
+ * `mission/` shape is the fallback heuristic.
+ *
+ * Neither excerpt promises a PR. The runner cannot tell from here whether the
+ * prior attempt ever opened one, made commits, or even started (a retry of a
+ * session that never began names a branch that was only ever assigned), so the
+ * excerpt states what happened and the task page decides what it cost from the
+ * prior attempt's record (apps/web/src/lib/trace-consequence.ts).
  */
 export function describeWorktreeFallback(args: {
   candidate: string;
@@ -144,8 +148,7 @@ export function describeWorktreeFallback(args: {
   }
   return {
     pattern: 'resume_branch_fallback',
-    excerpt: `Branch "${args.candidate}" was ${args.reason} on remote — starting fresh from "${args.defaultBranch}". `
-      + `A new PR will be opened instead of updating the existing one.`,
+    excerpt: `Branch "${args.candidate}" was ${args.reason} on remote — starting fresh from "${args.defaultBranch}".`,
     label: `Resume branch ${args.reason}: ${args.candidate} — starting fresh from ${args.defaultBranch}`,
   };
 }

@@ -24,6 +24,7 @@ const item = (over: Partial<ErrorEvidenceItem> = {}): ErrorEvidenceItem => ({
   excerpt: `$ ${LONG_CMD} [exit 1]\n${LONG_OUTPUT}`,
   command: LONG_CMD, exitCode: 1, output: LONG_OUTPUT,
   presentation: 'needs_attention', reason: 'A test run failed and never passed afterwards.', decidedBy: 'rule',
+  headline: null,
   attempt: { label: 'Attempt 2', workerId: 'w2' },
   before: [{ ts: '2026-09-30T14:01:00.000Z', text: 'Edit foo.ts' }],
   after: [{ ts: '2026-09-30T14:03:00.000Z', text: 'Task failed' }],
@@ -36,6 +37,21 @@ const noise = () => item({
   presentation: 'noise', reason: 'A read-only command found nothing; expected while exploring.',
 });
 const recovered = () => item({ id: 'r1', presentation: 'recovered', reason: 'A later test run passed.' });
+// The retry of a session that never began: its branch was only ever assigned.
+const freshStart = () => item({
+  id: 'f1', pattern: 'resume_branch_fallback', source: 'git-operations', command: null, exitCode: null,
+  excerpt: 'Branch "buildd/6f9a5b05-recon" was missing on remote — starting fresh from "dev".',
+  output: 'Branch "buildd/6f9a5b05-recon" was missing on remote — starting fresh from "dev".',
+  presentation: 'noise', headline: 'Started fresh after the previous session never began',
+  reason: 'It made no commits, so nothing was lost.',
+  before: [{ ts: '2026-09-30T14:01:00.000Z', text: 'Worktree created' }], after: [{ ts: '2026-09-30T14:03:00.000Z', text: 'Read spec.md' }],
+});
+const lostWork = () => item({
+  id: 'l1', pattern: 'resume_branch_fallback', source: 'git-operations', command: null, exitCode: null,
+  excerpt: 'Branch "buildd/x" was missing on remote — starting fresh from "dev".', output: 'Branch "buildd/x" was missing on remote — starting fresh from "dev".',
+  headline: "A previous attempt's commits were not on the remote",
+  reason: 'This attempt started over without them; check whether that work needs redoing.',
+});
 const unclear = () => item({ id: 'u1', command: 'make deploy', presentation: 'unclear', reason: 'The record does not say.' });
 
 let roots: Array<{ unmount(): void }> = [];
@@ -46,13 +62,13 @@ afterEach(() => {
   document.body.style.overflow = '';
 });
 
-async function mount(items: ErrorEvidenceItem[], terminalSucceeded = false) {
+async function mount(items: ErrorEvidenceItem[], terminalSucceeded = false, taskState: string | null = null) {
   const el = document.createElement('div');
   document.body.appendChild(el);
   const root = createRoot(el);
   roots.push(root);
   await act(async () => {
-    root.render(<TaskErrorEvidence items={items} taskTitle="Fix the login flow" terminalSucceeded={terminalSucceeded} />);
+    root.render(<TaskErrorEvidence items={items} taskTitle="Fix the login flow" terminalSucceeded={terminalSucceeded} taskState={taskState} />);
   });
   return el;
 }
@@ -102,7 +118,7 @@ describe('TaskErrorEvidence', () => {
   it('collapses diagnostic noise by default and never colours it red', async () => {
     const el = await mount([noise()]);
     const section = q(el, 'error-evidence-noise')!;
-    expect(section.textContent).toContain('Diagnostic (expected while exploring)');
+    expect(section.textContent).toContain('Diagnostic');
     expect(toggleFor(section).getAttribute('aria-expanded')).toBe('false');
     expect(qa(section, 'error-evidence-row')).toHaveLength(0);
     await click(toggleFor(section));
@@ -134,8 +150,8 @@ describe('TaskErrorEvidence', () => {
     expect(q(el, 'error-evidence-attention-count')!.textContent).toContain('2');
   });
 
-  it('renders nothing red once the task succeeded; attention items move under recovered', async () => {
-    const el = await mount([item(), noise()], true);
+  it('renders nothing red once the task succeeded; model-judged attention items move under recovered', async () => {
+    const el = await mount([item({ decidedBy: 'model' }), noise()], true);
     expect(q(el, 'error-evidence-attention')).toBeNull();
     expect(q(el, 'error-evidence-attention-count')).toBeNull();
     const section = q(el, 'error-evidence-recovered')!;
@@ -152,7 +168,7 @@ describe('TaskErrorEvidence', () => {
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     expect(dialog.textContent).toContain('Fix the login flow');
     expect(dialog.textContent).toContain('Attempt 2');
-    expect(dialog.textContent).toContain('A test run failed and never passed afterwards.');
+    expect(q(dialog, 'error-evidence-consequence')!.textContent).toBe('Tests did not pass, so the change is not verified.');
     expect(q(dialog, 'error-evidence-command')!.textContent).toBe(LONG_CMD);
     expect(q(dialog, 'error-evidence-output')!.textContent).toBe(LONG_OUTPUT);
     expect(dialog.textContent).toContain('Edit foo.ts');
@@ -175,6 +191,9 @@ describe('TaskErrorEvidence', () => {
     await click(toggleFor(q(el, 'error-evidence-noise')!));
     await click(q(el, 'error-evidence-row'));
     const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    // Not current, so the evidence waits behind its disclosure.
+    expect(q(dialog, 'error-evidence-command')).toBeNull();
+    await click(toggleFor(dialog));
     expect(q(dialog, 'error-evidence-command')!.textContent).toBe('grep -rn foo src 2>/dev/null');
     expect(hasRed(dialog)).toBe(false);
   });
@@ -184,5 +203,46 @@ describe('TaskErrorEvidence', () => {
     await click(q(el, 'error-evidence-row'));
     await click(document.querySelector('[role="dialog"] button[aria-label="Close"]') as HTMLElement);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('shows a fresh start after a never-started session as one compact diagnostic line, no PR claim', async () => {
+    const el = await mount([freshStart()], true, 'Done');
+    expect(q(el, 'error-evidence-recovered')).toBeNull();
+    expect(q(el, 'error-evidence-attention-count')).toBeNull();
+    const section = q(el, 'error-evidence-noise')!;
+    await click(toggleFor(section));
+    const row = q(section, 'error-evidence-row')!;
+    expect(row.textContent).toContain('Started fresh after the previous session never began');
+    expect(row.textContent).not.toContain('missing on remote');
+    expect(row.textContent).not.toMatch(/\bPR\b|landed|got past/);
+    expect(hasRed(q(el, 'task-error-evidence')!)).toBe(false);
+  });
+
+  it('its sheet leads with the task state and one consequence; excerpt and milestones behind a disclosure', async () => {
+    const el = await mount([freshStart()], true, 'Done');
+    await click(toggleFor(q(el, 'error-evidence-noise')!));
+    await click(q(el, 'error-evidence-row'));
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(q(dialog, 'error-evidence-task-state')!.textContent).toBe('Task: Done');
+    expect(q(dialog, 'error-evidence-consequence')!.textContent).toBe('It made no commits, so nothing was lost.');
+    expect(dialog.textContent).not.toMatch(/landed|got past|did not stop it|\bPR\b/);
+    expect(q(dialog, 'error-evidence-output')).toBeNull();
+    expect(dialog.textContent).not.toContain('Worktree created');
+    await click(toggleFor(dialog));
+    expect(q(dialog, 'error-evidence-output')!.textContent).toContain('missing on remote');
+    expect(dialog.textContent).toContain('Worktree created');
+    expect(hasRed(dialog)).toBe(false);
+  });
+
+  it('keeps lost work from an earlier attempt red and counted, even once the task succeeded', async () => {
+    const el = await mount([lostWork()], true, 'Done');
+    expect(q(el, 'error-evidence-attention-count')!.textContent).toContain('1');
+    const row = q(q(el, 'error-evidence-attention')!, 'error-evidence-row')!;
+    expect(row.textContent).toContain("A previous attempt's commits were not on the remote");
+    expect(row.textContent).toContain('check whether that work needs redoing');
+    await click(row);
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    // Current, so the evidence is open.
+    expect(q(dialog, 'error-evidence-output')).not.toBeNull();
   });
 });

@@ -37,6 +37,35 @@ export interface TraceConsequence {
   /** One plain clause: why the trace reads this way. */
   reason: string;
   decidedBy: 'rule' | 'model';
+  /**
+   * A plain headline that stands in for the raw excerpt in the normal view,
+   * when the rule knows what the event was (the excerpt stays in the evidence).
+   */
+  headline?: string;
+}
+
+/**
+ * How a succeeded task got there. It words the "this did not stop it" reason:
+ * only a merge is work that landed, a finished task without a PR (a report,
+ * an artifact) did not land anything, and a PR waiting to merge has not yet.
+ */
+export type TraceSettledAs = 'shipped' | 'done' | 'ready_to_merge';
+
+/**
+ * One earlier attempt at the task, as far as the resume-branch rule needs it:
+ * whether a fresh start lost anything depends on what that attempt produced.
+ */
+export interface PriorAttemptFact {
+  workerId: string;
+  branch: string | null;
+  /** Epoch ms. */
+  createdAt: number;
+  /** A session actually ran (not booked `never_started`). */
+  started: boolean;
+  /** Commits of its own (`commitCount`; `lastCommitSha` alone is just HEAD). */
+  commits: number;
+  /** Its PR merged, so its work landed whatever happened to the branch. */
+  merged: boolean;
 }
 
 /** How the task stands now, from the record. Only the fields the rules read. */
@@ -47,7 +76,79 @@ export interface TraceOutcomeContext {
   failed: boolean;
   /** A gating check on the task's open PR is red right now. */
   gatingCheckRed: boolean;
+  /** Which kind of success, for the reason's wording. Absent: 'done'. */
+  settledAs?: TraceSettledAs | null;
+  /** The task's attempts, for the resume-branch rule. Absent: that rule abstains. */
+  priorAttempts?: readonly PriorAttemptFact[];
 }
+
+/** The worker columns `priorAttemptFactsOf` reads. */
+export interface PriorAttemptWorker {
+  id: string;
+  branch?: string | null;
+  createdAt: Date | string;
+  startedAt?: Date | string | null;
+  exitCause?: string | null;
+  commitCount?: number | null;
+  mergedAt?: Date | string | null;
+}
+
+export function priorAttemptFactsOf(rows: readonly PriorAttemptWorker[]): PriorAttemptFact[] {
+  return rows.map(w => ({
+    workerId: w.id,
+    branch: w.branch ?? null,
+    createdAt: new Date(w.createdAt).getTime(),
+    started: !!w.startedAt && w.exitCause !== 'never_started',
+    commits: w.commitCount ?? 0,
+    merged: !!w.mergedAt,
+  }));
+}
+
+export const RESUME_FALLBACK_PATTERN = 'resume_branch_fallback';
+const RESUME_FALLBACK_EXCERPT = /^Branch "([^"]+)" was (missing|diverged) on remote/;
+
+/**
+ * A missing resume branch, judged by what the attempt that owned it produced.
+ * Null: no rule applies (diverged, or no prior attempt on record to judge by).
+ *
+ *  - it made no commits and opened no PR: a routine fresh start, diagnostic
+ *    only. The usual case is a retry of a session that never began, whose
+ *    branch was assigned but never pushed;
+ *  - its PR merged: the branch was cleaned up after landing, nothing lost;
+ *  - it made commits that did not merge: that work is not on the remote and
+ *    this attempt started without it. Real, and it stays real even when the
+ *    task later succeeded, because the success did not include that work.
+ */
+function resumeFallbackConsequence(t: ConsequenceTrace, priors: readonly PriorAttemptFact[] | undefined): TraceConsequence | null {
+  if (t.pattern !== RESUME_FALLBACK_PATTERN || !priors) return null;
+  const m = RESUME_FALLBACK_EXCERPT.exec(t.excerpt);
+  if (!m || m[2] !== 'missing') return null;
+  const at = tsOf(t) || Number.POSITIVE_INFINITY;
+  const owners = priors.filter(p => p.branch === m[1] && p.workerId !== t.workerId && p.createdAt <= at);
+  if (owners.length === 0) return null;
+  if (owners.some(p => p.commits > 0 && !p.merged)) {
+    return {
+      ...rule('needs_attention', 'This attempt started over without them; check whether that work needs redoing.'),
+      headline: 'A previous attempt\'s commits were not on the remote',
+    };
+  }
+  if (owners.some(p => p.merged)) {
+    return { ...rule('noise', 'Its PR had merged, so nothing was lost.'), headline: 'Started fresh after the previous attempt\'s branch was cleaned up' };
+  }
+  if (owners.every(p => !p.started)) {
+    return { ...rule('noise', 'It made no commits, so nothing was lost.'), headline: 'Started fresh after the previous session never began' };
+  }
+  return {
+    ...rule('noise', 'It made no commits, so nothing was lost.'),
+    headline: 'Started fresh; the previous attempt had pushed nothing',
+  };
+}
+
+const SETTLED_REASON: Record<TraceSettledAs, string> = {
+  shipped: 'The work merged; this did not stop it.',
+  done: 'The task finished; this did not stop it.',
+  ready_to_merge: 'The PR is ready to merge; this did not block it.',
+};
 
 /**
  * Commands that only read. A non-zero exit from one of these is how it says
@@ -121,6 +222,9 @@ const rule = (presentation: TracePresentation, reason: string): TraceConsequence
  * trace id; an `unclear` entry is what the decision model may refine.
  *
  * Order of the rules is the order of confidence:
+ *   0. a missing resume branch is judged by what the prior attempt produced
+ *      (`resumeFallbackConsequence`), before the outcome, since a later
+ *      success says nothing about whether earlier work was lost;
  *   1. a read-only command exiting 1/2 is noise;
  *   2. the runner's own "verify passed again" marker is a recovery;
  *   3. a test/typecheck/lint failure followed by a pass of the same kind is recovered;
@@ -140,6 +244,11 @@ export function classifyTracesByRule(
   const lastFailure = failures.reduce<ConsequenceTrace | null>((acc, t) => (!acc || tsOf(t) >= tsOf(acc) ? t : acc), null);
 
   for (const t of traces) {
+    const fallback = resumeFallbackConsequence(t, outcome.priorAttempts);
+    if (fallback) {
+      out.set(t.id, fallback);
+      continue;
+    }
     if (isExplorationNoise(t)) {
       out.set(t.id, rule('noise', 'A read-only command found nothing; expected while exploring.'));
       continue;
@@ -155,7 +264,7 @@ export function classifyTracesByRule(
       continue;
     }
     if (outcome.succeeded) {
-      out.set(t.id, rule('recovered', 'The task finished and its work landed; this did not stop it.'));
+      out.set(t.id, rule('recovered', SETTLED_REASON[outcome.settledAs ?? 'done']));
       continue;
     }
     if ((outcome.failed || outcome.gatingCheckRed) && family) {
