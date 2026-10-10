@@ -89,6 +89,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { decideModelAuthSource, stripInheritedApiKeys, NO_CODING_AUTH_MESSAGE } from './model-auth-source';
 import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
@@ -3705,8 +3706,24 @@ export class WorkerManager {
       if (!runnerLocalAllowed) {
         console.log(`[Worker ${worker.id}] This machine's own model credentials are not used: the claim carries the requester's own key and the team policy is personal keys only`);
       }
+      // BUILDD_MODEL_AUTH_SOURCE=runner: a stored/inherited API key or server
+      // seat is not consent to spend. Only a selected paid route is metered.
+      const authSource = decideModelAuthSource(process.env, {
+        isCodexTask,
+        runnerLocalAllowed,
+        teamEndpointSelected: !!worker.modelEndpoint || !!worker.modelEndpointIgnored,
+        runnerProviderSelected: !!(this.config.llmProvider?.provider === 'openrouter' || this.config.llmProvider?.baseUrl),
+        cloud: !!cloudCostBasis(process.env),
+      });
+      if (authSource.active) {
+        sessionLog(worker.id, 'info', 'model_auth_source', `source=${authSource.label}${authSource.blocked ? ' blocked=no_coding_auth' : ''}`, task.id);
+      }
+      if (authSource.blocked) {
+        throw new Error(NO_CODING_AUTH_MESSAGE);
+      }
+      if (authSource.dropInheritedApiKeys) stripInheritedApiKeys(cleanEnv);
       const seatDecision = applyHostSeatPolicy(cleanEnv, {
-        serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
+        serverSeatDelivered: !authSource.dropServerCredentials && !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
         isCodexTask,
         runnerLocalAllowed,
       });
@@ -3714,8 +3731,8 @@ export class WorkerManager {
       const modelEnv = applyModelEnv(cleanEnv, {
         hostSeat,
         llmProvider: this.config.llmProvider,
-        serverApiKey: worker.serverApiKey,
-        serverOauthToken: worker.serverOauthToken,
+        serverApiKey: authSource.dropServerCredentials ? undefined : worker.serverApiKey,
+        serverOauthToken: authSource.dropServerCredentials ? undefined : worker.serverOauthToken,
         tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
