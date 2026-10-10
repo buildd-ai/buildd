@@ -484,7 +484,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
   // Token, cost and diff counters are runner telemetry; help lists them.
-  update_progress: '{workerId?, progress, message?, plan?, kind?, …}',
+  update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',
   request_capability: '{capability, …}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
@@ -674,6 +674,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
+    param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
     param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
   ],
