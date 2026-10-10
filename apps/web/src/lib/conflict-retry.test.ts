@@ -1014,6 +1014,21 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
   });
 
+  it('a migration-only overlap with a not-yet-started task on another branch is not a dependsOn edge', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { status: 'pending', id: 'schema-feature', pathManifest: ['packages/core/db/schema.ts'], subjectPrNumber: null },
+      { status: 'in_progress', id: 'colliding-pr-task', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['colliding-pr-task']);
+  });
+
   it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {
     mockTaskFindFirst.mockResolvedValue({
       ...MOCK_TASK,

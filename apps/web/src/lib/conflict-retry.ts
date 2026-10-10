@@ -27,7 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { classifyManifestOverlap, findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
@@ -1252,6 +1252,17 @@ export async function dispatchConflictRetry(
           // repair wait on something that is itself waiting on the repair's own
           // subject, a structural deadlock rather than real serialization.
           if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
+          // A collision repair edits only its own PR's branch, so a migration/schema-only
+          // overlap with work that has not started is not real serialization — every
+          // schema-touching task overlaps `drizzle/**`, and waiting on them all meant a
+          // mechanical renumber never ran. Admitted (running) work keeps its edge: it can
+          // land first and move the free index. Also kept: the PR it collides with, and
+          // workspace-declared serialized surfaces.
+          const collidingPr = migrationCollision?.otherPrNumber;
+          if (migrationCollision && t.status === 'pending' && (collidingPr == null || (t.subjectPrNumber !== collidingPr && t.conflictRetryPrNumber !== collidingPr))) {
+            const overlap = classifyManifestOverlap(retryTask.pathManifest!, t.pathManifest as string[] | null);
+            if (overlap.kind === 'migration' && !overlapTouchesSerializedSurface(overlap.paths, gitConfig, overlap.kind)) return true;
+          }
           // Pending work with no stored edge can still wait on this PR through
           // the claim route's open-PR backstop. Reuse that exact predicate before
           // storing either a hard edge or soft evidence in the reverse direction.
