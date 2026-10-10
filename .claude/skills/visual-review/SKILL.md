@@ -133,6 +133,7 @@ don't turn it on by habit.
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
 | `plan` | `QA_PLAN` | A capture plan instead of `routes`: the JSON itself, or a repo path. See "Capture plans" below. |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
+| `theme` | `QA_THEME` | `light` or `dark`. Emulates `prefers-color-scheme` and seeds buildd's own `buildd-theme` key; recorded per capture as `theme`. Empty = app default, no theme recorded. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
 | `judge` | (step gate) | Default `false`. `true` = CI verdict on the team OAuth seat (see above). |
 
@@ -237,10 +238,37 @@ neither.
   scrolling? Headers, banners and filters that push it below the fold are a finding.
 - **Tap targets.** Roughly 44px or more, not crowded, nothing that only works on hover.
 - **Overflow.** No horizontal scroll, no clipped text, no table forced wider than the viewport.
-- **Both themes, if the change touches colour.** `QA_THEME=light` (or `dark`) sets the
-  theme before the page loads; shoot both. `QA_TEAM_ID=<team uuid>` renders as that team.
+- **Both themes.** `QA_THEME=light` (or `dark`) emulates `prefers-color-scheme` before the
+  page loads, so any app that follows the OS theme switches, and also seeds buildd's own
+  stored choice. A mission audit needs every required route in both: upload each shot with
+  `metadata.qa.theme` copied from `captures.json`, and completion counts a route only once it
+  has a light and a dark base shot (either viewport). The cheapest cover is two dispatches,
+  `viewport=mobile theme=light` and `theme=dark` for desktop; shoot both themes at 390 when
+  the change touches colour. `QA_TEAM_ID=<team uuid>` renders as that team.
+- **Nothing shown twice.** The same fact, count or action in two places on one page (a
+  count in the header and again in a card, two buttons for one action), and duplicate
+  chrome titles (the page heading and the header both rendering the same text).
+- **Before/after on a mission branch.** When `get_page_source` says
+  `captureRef.source: "mission_integration"`, shoot the same routes from the trunk the
+  mission merges into as well, and say in the finding what changed ("the empty state no
+  longer repeats the count"). Upload only the `captureRef.ref` shots: a shot from another
+  branch is listed as a capture gap.
+- **The workspace's design rules and reference, when set.** See below.
 - **Redirects and error states.** If a shot is the login page or an error boundary,
   you didn't review the page.
+
+## Design rules and reference (per workspace, optional)
+
+Two `gitConfig.visualQa` fields add checks to the auto-appended `[surface audit]` task.
+Both are off when absent, so one workspace's design system never reaches another's audit.
+
+| Field | Value | Effect |
+|---|---|---|
+| `designRules` | A repo path, e.g. `docs/design/design-system.md` | The checklist adds "check each shot against `<path>`", and the auditor reads it before judging. Absolute and `..` paths are ignored. |
+| `reference` | An artifact id or key, or an `http(s)` URL | Findings compare each shot with the approved design reference and say where the page departs from it. Read an artifact one with `get_artifact`. |
+
+Set them with `manage_workspaces action=update gitConfig={ visualQa: {...} }`, passing the **whole** existing `visualQa` object: the
+`gitConfig` merge is shallow, so sending only the new field drops `pageSource` and the rest.
 
 ## Gotchas
 
@@ -256,7 +284,8 @@ neither.
   either way.
 - **Port 3100 (shoot.sh's default) is often taken** by another session. Always pass
   a free `QA_PORT`. If the port is busy, the readiness probe can hit someone else's server.
-- **Headless comes up in the dark theme.** A shot being dark is not a regression.
+- **With no `QA_THEME`, headless comes up in buildd's default dark theme.** A shot being
+  dark is not a regression; set `QA_THEME` to choose.
 - **`Failed to load external module <pkg>-<hash>` is a real bug, locally and in CI.**
   Next auto-externalizes some packages (its `server-external-packages.jsonc`), and
   under `bun --bun next dev` Bun cannot resolve Turbopack's hashed alias for them.
