@@ -178,7 +178,7 @@ describe('GET /api/artifacts/[artifactId]/download', () => {
     const res = await GET(req({ apiKey: 'bld_member' }), { params: mockParams });
 
     expect(res.status).toBe(307);
-    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('account-member', 'ws-1');
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith(expect.objectContaining({ id: 'account-member' }), 'ws-1');
     expect(mockGenerateDownloadUrl).toHaveBeenCalled();
   });
 

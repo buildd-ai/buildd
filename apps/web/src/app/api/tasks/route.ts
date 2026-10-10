@@ -1,4 +1,5 @@
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -565,6 +566,12 @@ export async function POST(req: NextRequest) {
       workspaceId = access.workspace.id;
     } else if (apiAccount?.taskScope) {
       workspaceId = apiAccount.taskScope.workspaceId;
+    } else if (apiAccount && isGrantSession(apiAccount)) {
+      // A grant session never falls back to the shared team account's links:
+      // only its own (single) granted workspace can be implied.
+      const granted = constrainToGranted(apiAccount, apiAccount.workspaceIds ?? [], 'write');
+      if (granted.length !== 1) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
+      workspaceId = granted[0];
     } else if (apiAccount) {
       // Auto-resolve: if account linked to exactly one workspace, use it
       const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
@@ -625,7 +632,7 @@ export async function POST(req: NextRequest) {
 
     // Verify workspace access with actionable errors
     if (apiAccount) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId, 'canCreate');
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, workspaceId, 'canCreate');
       if (!hasAccess) {
         return NextResponse.json(
           { error: `Account "${apiAccount.name}" does not have permission to create tasks in this workspace.` },

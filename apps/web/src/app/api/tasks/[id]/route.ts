@@ -132,7 +132,7 @@ export async function GET(
       const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
       if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     } else if (apiAccount) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId);
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
@@ -297,7 +297,7 @@ export async function PATCH(
       const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
       if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     } else if (apiAccount) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId);
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
@@ -788,7 +788,7 @@ export async function DELETE(
       const access = await verifyWorkspaceAccess(user.id, task.workspaceId);
       if (!access) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     } else if (apiAccount) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId);
       if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 

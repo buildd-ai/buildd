@@ -322,6 +322,54 @@ export interface ActionContext {
   // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
   // web routes inject one; omitted (the runner), learn keeps today's rules.
   memoryDecider?: MemoryDecider;
+  // The workspaces this connection may act in, when the transport knows them
+  // better than the workspace listing route (an account-level OAuth grant:
+  // its granted workspaces ∩ current membership, across teams). Omitted, the
+  // action lists what GET /api/workspaces returns for the caller.
+  listWorkspaces?: () => Promise<WorkspaceListing[]>;
+}
+
+/** One row of list_workspaces. */
+export interface WorkspaceListing {
+  workspaceId: string;
+  name: string;
+  repo?: string | null;
+  teamId?: string | null;
+  teamName?: string | null;
+  /** The level the connection acts at there. */
+  level?: 'trigger' | 'worker' | 'admin';
+  /** What this connection may do there. */
+  access?: 'read' | 'read-write';
+}
+
+export const LIST_WORKSPACES_LIMIT_DEFAULT = 20;
+export const LIST_WORKSPACES_LIMIT_MAX = 50;
+
+/**
+ * list_workspaces output: one page, grouped by team, with the total and the
+ * next offset so a caller can page without guessing.
+ */
+export function renderWorkspaceListing(rows: WorkspaceListing[], params: Record<string, unknown>): string {
+  const rawLimit = Number(params.limit ?? LIST_WORKSPACES_LIMIT_DEFAULT);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), LIST_WORKSPACES_LIMIT_MAX) : LIST_WORKSPACES_LIMIT_DEFAULT;
+  const rawOffset = Number(params.offset ?? 0);
+  const offset = Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
+  const page = rows.slice(offset, offset + limit);
+  const teams: Array<{ teamId: string | null; teamName: string | null; workspaces: unknown[] }> = [];
+  for (const r of page) {
+    const key = r.teamId ?? null;
+    let t = teams.find((x) => x.teamId === key);
+    if (!t) { t = { teamId: key, teamName: r.teamName ?? null, workspaces: [] }; teams.push(t); }
+    t.workspaces.push({
+      id: r.workspaceId,
+      name: r.name,
+      ...(r.repo ? { repo: r.repo } : {}),
+      ...(r.level ? { level: r.level } : {}),
+      ...(r.access ? { access: r.access } : {}),
+    });
+  }
+  const next = offset + page.length < rows.length ? offset + page.length : null;
+  return JSON.stringify({ total: rows.length, offset, limit, nextOffset: next, teams }, null, 2);
 }
 
 export type ToolResult = {
@@ -473,6 +521,8 @@ export function describeEmptyClaim(data: any, taskId?: string): string {
 // Read-only schedule discovery is allowed at this level so any caller can
 // trace "what fired this notification?" without needing an admin token.
 export const triggerActions = [
+  // Discovery: which workspaces this connection can act in.
+  'list_workspaces',
   'list_tasks', 'get_task', 'create_task', 'create_artifact',
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
@@ -489,6 +539,10 @@ export const workerActions = [
   // Discrepancy ledger reads (§13) — same reasoning as spec_compare above:
   // read-only over rows the caller's workspace access already covers.
   'list_discrepancies', 'get_discrepancy',
+  // Which workspaces (and teams) this connection can act in, with the level
+  // and access in each: the one discovery call a multi-workspace connection
+  // needs before naming a workspaceId. Read-only.
+  'list_workspaces',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   // The agent's own read of messages sent to it (interactive / local-plugin
   // sessions; a runner-managed worker gets them from its runner instead).
@@ -835,6 +889,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
+    list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource, and the task\'s frozen estimate when its team opted into task estimates; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
@@ -2240,6 +2295,21 @@ export async function handleBuilddAction(
   if (fenceErr) return fenceErr;
 
   switch (action) {
+    case 'list_workspaces': {
+      if (ctx.listWorkspaces) return text(renderWorkspaceListing(await ctx.listWorkspaces(), params));
+      const data = await api('/api/workspaces');
+      const level = await ctx.getLevel();
+      const rows: WorkspaceListing[] = (data?.workspaces || []).map((w: any) => ({
+        workspaceId: w.id,
+        name: w.name,
+        repo: w.repo ?? null,
+        teamId: w.teamId ?? null,
+        teamName: w.team?.name ?? null,
+        level,
+      }));
+      return text(renderWorkspaceListing(rows, params));
+    }
+
     case 'list_tasks': {
       // Every filter here narrows the result, so one that is misspelled, malformed
       // or unsupported must fail loudly: dropped silently, the call returns the
