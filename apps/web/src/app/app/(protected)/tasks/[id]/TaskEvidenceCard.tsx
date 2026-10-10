@@ -87,7 +87,7 @@ export default function TaskEvidenceCard({
     <div className="mb-6" id="task-evidence" data-testid="task-evidence">
       {mismatch.length > 0 && (
         <div data-testid="task-mismatch" className="card mb-3 border-l-4 border-status-warning p-4">
-          <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-status-warning mb-2">
+          <div className="font-mono text-[11px] md:text-[10px] text-status-warning mb-2">
             Summary and record disagree
           </div>
           <ul className="space-y-1 text-sm text-text-primary">
@@ -99,7 +99,7 @@ export default function TaskEvidenceCard({
       )}
       {evidence && showEvidence && (
         <details className="card" open={status === 'failed'}>
-          <summary className="cursor-pointer min-h-11 flex items-center px-4 py-3 font-mono text-eyebrow font-bold uppercase tracking-[2px] text-status-error select-none">
+          <summary className="cursor-pointer min-h-11 flex items-center px-4 py-3 font-mono text-eyebrow font-bold text-status-error select-none">
             Evidence{label ? ` · ${label}` : ''}
           </summary>
           <div className="px-4 pb-4 space-y-3 border-t border-border-default pt-3">

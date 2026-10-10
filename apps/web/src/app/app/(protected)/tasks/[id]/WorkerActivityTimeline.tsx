@@ -199,9 +199,11 @@ export default function WorkerActivityTimeline({
 
       {visibleEntries.length > 0 && (
         <details className="mt-5 group" data-testid="worker-activity-log" open>
-          <summary className="cursor-pointer select-none font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary min-h-11 md:min-h-0 flex items-center gap-2">
+          {/* A toggle inside the Activity section, not a second header: the
+              tape counts tool calls, this counts the milestones they built. */}
+          <summary className="cursor-pointer select-none font-mono text-meta text-text-muted hover:text-text-secondary min-h-11 md:min-h-0 flex items-center gap-2">
             <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
-            Log · {entries.length} {entries.length === 1 ? 'milestone' : 'milestones'}
+            {entries.length} {entries.length === 1 ? 'milestone' : 'milestones'}
           </summary>
           <div className="space-y-1.5 mt-3">
             {visibleEntries.map((entry, i) => (
