@@ -1,3 +1,5 @@
+'use client';
+
 import { createContext, useContext, type ReactNode } from 'react';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
