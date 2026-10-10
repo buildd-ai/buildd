@@ -14,6 +14,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, taskSubjectReports, workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { copyReviewConfigOf } from '@buildd/shared';
 import { changedCopyStrings, renderCopyReviewSection, DEFAULT_COPY_INSTRUCTIONS } from './copy-review';
+// The verdict handler reaches the copy gate through this module (one review-module entry point).
+export { applyCopyReviewGate, parseCopyFindings } from './copy-review';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';

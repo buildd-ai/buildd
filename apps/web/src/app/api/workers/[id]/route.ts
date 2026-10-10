@@ -47,8 +47,7 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation } from '@/lib/reviewer';
-import { applyCopyReviewGate, parseCopyFindings } from '@/lib/copy-review';
+import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
 import { copyReviewConfigOf } from '@buildd/shared';
 import {
   checkDispatch,
