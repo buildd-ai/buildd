@@ -1,6 +1,6 @@
 {
-  "id": "05a2c24f-1a9b-4c82-b1cb-e563fa5f1102",
-  "prevId": "af23db34-1a0e-471d-a679-7cd68cff0a44",
+  "id": "016c56e9-0244-4374-8980-8afd084d3dbb",
+  "prevId": "30b80b35-8f8c-41b2-af41-3688c73bd633",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8378,6 +8378,12 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "busy_since": {
+          "name": "busy_since",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
