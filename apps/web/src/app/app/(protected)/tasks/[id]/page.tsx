@@ -110,6 +110,8 @@ import TaskVerdictBlock from './TaskVerdictBlock';
 import TaskErrorEvidence from './TaskErrorEvidence';
 import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
+import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
+import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
 import { resolveTraceConsequences } from '@/lib/trace-consequence';
@@ -1088,6 +1090,18 @@ export default async function TaskDetailPage({
             <div className="border border-border-default overflow-hidden">
               {workerHistory.map(({ worker, attemptLabel }) => {
                 const iconStyle = TASK_ICONS[worker.status] || DEFAULT_ICON;
+                const bookkeepingRetry = bookkeepingAttemptRetry(worker, task);
+                if (bookkeepingRetry) {
+                  const shownError = plainWorkerError(worker.error, taskBackend);
+                  return (
+                    <BookkeepingAttemptRow key={worker.id} workerId={worker.id} retry={bookkeepingRetry} attemptLabel={attemptLabel}>
+                      <p>Runner: {runnerLabel(worker) ?? worker.name}{worker.account && ` \u00B7 ${worker.account.name}`}</p>
+                      <p className="font-mono">Branch: <span title={worker.branch}>{displayBranchName(worker.branch)}</span></p>
+                      {shownError && <p className="font-mono" title={shownError.raw}>{shownError.text}</p>}
+                      <p className="font-mono">Worker {worker.id} · {worker.turns} turns</p>
+                    </BookkeepingAttemptRow>
+                  );
+                }
                 return (
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
