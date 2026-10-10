@@ -1,0 +1,81 @@
+[
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=0"
+  },
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=1"
+  },
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=2"
+  },
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=3"
+  },
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=4"
+  },
+  {
+    "route": "/app/dev/chat?state=composed&pane=closed&frame=5",
+    "states": [
+      {
+        "key": "cards-loaded",
+        "steps": [
+          {
+            "action": "waitMs",
+            "ms": 2500
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/chat?state=propose&pane=closed",
+    "states": [
+      {
+        "key": "deciding",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "testid:kit-approval-confirm"
+          },
+          {
+            "action": "waitMs",
+            "ms": 300
+          }
+        ]
+      },
+      {
+        "key": "reply-streaming",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "testid:kit-approval-confirm"
+          },
+          {
+            "action": "waitMs",
+            "ms": 1500
+          }
+        ]
+      },
+      {
+        "key": "reply-landed",
+        "steps": [
+          {
+            "action": "click",
+            "selector": "testid:kit-approval-confirm"
+          },
+          {
+            "action": "waitMs",
+            "ms": 4200
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/dev/chat?state=running&pane=closed"
+  },
+  {
+    "route": "/app/dev/chat?state=rows-done&pane=closed"
+  }
+]
