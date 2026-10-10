@@ -4,6 +4,7 @@ import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
 import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
+import { looksLikeMergeCommand, reportAgentMerges } from './merge-drivers';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
 import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js';
@@ -677,6 +678,28 @@ export class HookFactory {
       worker.toolInFlight = false;
 
       return {};
+    };
+  }
+
+  // Create a PostToolUse hook that reports what mergiraf did in a merge the
+  // agent ran itself (merge-drivers.ts ledger): a milestone for the record and,
+  // when it resolved code, an instruction to review those files and run their
+  // tests. A non-merge Bash call, or a worker with no drivers, returns {}.
+  createMergeLedgerHook(worker: LocalWorker): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PostToolUse') return {};
+      if ((input as any).tool_name !== 'Bash') return {};
+      const command = (input as any).tool_input?.command;
+      if (typeof command !== 'string' || !looksLikeMergeCommand(command)) return {};
+      try {
+        const context = reportAgentMerges(worker, (label) =>
+          this.ctx.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+        if (!context) return {};
+        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: context } };
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] mergiraf ledger read failed: ${err instanceof Error ? err.message : String(err)}`);
+        return {};
+      }
     };
   }
 
