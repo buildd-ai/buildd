@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
-import { CriteriaGraderControl, normalizeCriteriaGrader, type CriteriaGraderValue } from './CriteriaGraderControl';
+import { CriteriaGraderControl, criteriaGraderLabel, normalizeCriteriaGrader, type CriteriaGraderValue } from './CriteriaGraderControl';
+import { ReadOnlyFacts, type Fact } from './ReadOnlyFacts';
 
 interface GitConfig {
     defaultBranch: string;
@@ -44,13 +45,61 @@ function describeMergeTier(tier: 'auto-threshold' | 'agent-review' | 'human' | u
     return 'auto-merge on green CI, once the safety checks pass';
 }
 
+const BRANCHING_OPTIONS = [
+    { value: 'none', label: 'None (use CLAUDE.md / project conventions)' },
+    { value: 'trunk', label: 'Trunk-based (commit directly to default branch)' },
+    { value: 'feature', label: 'Feature branches' },
+    { value: 'gitflow', label: 'GitFlow (develop + feature branches)' },
+    { value: 'custom', label: 'Custom' },
+];
+
+const COMMIT_OPTIONS = [
+    { value: 'freeform', label: 'Freeform' },
+    { value: 'conventional', label: 'Conventional Commits (feat:, fix:, etc.)' },
+    { value: 'custom', label: 'Custom' },
+];
+
+const THINKING_OPTIONS = [
+    { value: 'none', label: 'Default (no override)' },
+    { value: 'adaptive', label: 'Adaptive (model decides when to think)' },
+    { value: 'enabled', label: 'Enabled (fixed budget)' },
+    { value: 'disabled', label: 'Disabled' },
+];
+
+const EFFORT_OPTIONS = [
+    { value: 'none', label: 'Default (no override)' },
+    { value: 'low', label: 'Low (faster, cheaper · simple tasks)' },
+    { value: 'medium', label: 'Medium (balanced)' },
+    { value: 'high', label: 'High (thorough)' },
+    { value: 'max', label: 'Max (most thorough · complex architecture)' },
+];
+
+const RUNNER_OPTIONS = [
+    { value: 'any', label: 'Any runner (no preference)' },
+    { value: 'user', label: 'User runners only (personal / local)' },
+    { value: 'service', label: 'Service runners only (CI / automated)' },
+];
+
+const BACKEND_OPTIONS = [
+    { value: 'default', label: 'Claude (platform default)' },
+    { value: 'claude', label: 'Claude' },
+    { value: 'codex', label: 'Codex (OpenAI)' },
+];
+
+/** An option's label, for the read-only view. */
+function optionLabel(options: Array<{ value: string; label: string }>, value: string): string {
+    return options.find(o => o.value === value)?.label ?? value;
+}
+
 interface Props {
     workspaceId: string;
     workspaceName: string;
     initialConfig?: GitConfig | null;
+    /** Holds manage_workspace_settings. False: every setting as text, no controls. */
+    canEdit: boolean;
 }
 
-export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Props) {
+export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEdit }: Props) {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -156,6 +205,117 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
         }
     }
 
+    // Who merges is the merge policy's call, not a checkbox here: the old
+    // "Auto-merge on green CI" toggle wrote a flag no merge gate reads.
+    const mergingLine = (
+        <p data-testid="git-config-merge-policy" className="text-xs text-text-secondary">
+            <span className="font-medium text-text-primary">Merging:</span>{' '}
+            {describeMergeTier(initialConfig?.mergePolicy?.tier)}
+            {!initialConfig?.mergePolicy?.tier && ' (default)'}.{' '}
+            Set by the workspace{' '}
+            <Link href={`/app/settings/workspace/${workspaceId}`} className="underline">merge policy</Link>;
+            a mission or a task that requires review can override it.
+        </p>
+    );
+
+    if (!canEdit) {
+        const onOff = (v: boolean) => (v ? 'On' : 'Off');
+        const mono = (v: string) => <span className="font-mono">{v}</span>;
+        const lines = (v: string) => v.split('\n').map(l => l.trim()).filter(Boolean).join(', ') || 'None';
+        const groups: Array<{ title: string; facts: Fact[]; after?: React.ReactNode }> = [
+            {
+                title: 'Branching',
+                facts: [
+                    { label: 'Default branch', value: mono(defaultBranch) },
+                    { label: 'Branching strategy', value: optionLabel(BRANCHING_OPTIONS, branchingStrategy) },
+                    { label: 'Branch prefix', value: branchPrefix ? mono(branchPrefix) : 'None' },
+                    { label: 'buildd branch naming', value: onOff(useBuildBranch) },
+                ],
+            },
+            {
+                title: 'Commits',
+                facts: [{ label: 'Commit style', value: optionLabel(COMMIT_OPTIONS, commitStyle) }],
+            },
+            {
+                title: 'Pull requests',
+                facts: [
+                    { label: 'Changes require a pull request', value: onOff(requiresPR) },
+                    { label: 'PR target branch', value: mono(targetBranch || defaultBranch || 'main') },
+                    ...(requiresPR ? [{ label: 'Auto-create PR when task completes', value: onOff(autoCreatePR) }] : []),
+                ],
+                after: mergingLine,
+            },
+            {
+                title: 'Agent instructions',
+                facts: [
+                    { label: 'Load CLAUDE.md from repository', value: onOff(useClaudeMd) },
+                    {
+                        label: 'Additional instructions',
+                        value: agentInstructions
+                            ? <span className="block whitespace-pre-wrap font-mono text-left">{agentInstructions}</span>
+                            : 'None',
+                    },
+                    { label: 'Bypass permission prompts', value: onOff(bypassPermissions) },
+                ],
+            },
+            {
+                title: 'Model settings',
+                facts: [{ label: 'Fallback model', value: fallbackModel ? mono(fallbackModel) : 'None' }],
+            },
+            {
+                title: 'Sandbox',
+                facts: [
+                    { label: 'Sandbox isolation', value: onOff(sandboxEnabled) },
+                    ...(sandboxEnabled
+                        ? [
+                            { label: 'Auto-allow bash commands when sandboxed', value: onOff(sandboxAutoAllowBash) },
+                            { label: 'Allowed domains', value: lines(sandboxAllowedDomains) },
+                            { label: 'Allow binding to localhost', value: onOff(sandboxAllowLocalBinding) },
+                            { label: 'Excluded commands', value: lines(sandboxExcludedCommands) },
+                        ]
+                        : []),
+                ],
+            },
+            {
+                title: 'Debug logging',
+                facts: [
+                    { label: 'SDK debug logging', value: onOff(debug) },
+                    { label: 'Debug log file', value: debugFile ? mono(debugFile) : 'None' },
+                ],
+            },
+            {
+                title: 'Thinking and effort',
+                facts: [
+                    { label: 'Thinking mode', value: optionLabel(THINKING_OPTIONS, thinkingType) },
+                    ...(thinkingType === 'enabled' ? [{ label: 'Budget tokens', value: mono(String(thinkingBudgetTokens)) }] : []),
+                    { label: 'Effort level', value: optionLabel(EFFORT_OPTIONS, effort) },
+                ],
+            },
+            {
+                title: 'Default runner preference',
+                facts: [
+                    { label: 'Runner type', value: optionLabel(RUNNER_OPTIONS, defaultRunnerPreference) },
+                    { label: 'Default agent backend', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
+                ],
+            },
+            {
+                title: 'Advanced',
+                facts: [{ label: 'Criteria grading', value: criteriaGraderLabel(criteriaGrader) }],
+            },
+        ];
+        return (
+            <div className="py-4 first:pt-0 last:pb-0 divide-y divide-border-default" data-testid="git-config-read-only">
+                {groups.map(g => (
+                    <div key={g.title} className="py-4 first:pt-0 last:pb-0">
+                        <h3 className="text-sm font-medium text-text-primary mb-3">{g.title}</h3>
+                        <ReadOnlyFacts facts={g.facts} />
+                        {g.after && <div className="mt-3">{g.after}</div>}
+                    </div>
+                ))}
+            </div>
+        );
+    }
+
     return (
         <form onSubmit={handleSubmit} className="py-4 first:pt-0 last:pb-0">
             {/* Unconfigured status is reported by the Workspace health row above the form. */}
@@ -183,13 +343,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <Select
                             value={branchingStrategy}
                             onChange={(v) => setBranchingStrategy(v as GitConfig['branchingStrategy'])}
-                            options={[
-                                { value: 'none', label: 'None (use CLAUDE.md / project conventions)' },
-                                { value: 'trunk', label: 'Trunk-based (commit directly to default branch)' },
-                                { value: 'feature', label: 'Feature branches' },
-                                { value: 'gitflow', label: 'GitFlow (develop + feature branches)' },
-                                { value: 'custom', label: 'Custom' },
-                            ]}
+                            options={BRANCHING_OPTIONS}
                         />
                     </div>
 
@@ -228,11 +382,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                     <Select
                         value={commitStyle}
                         onChange={(v) => setCommitStyle(v as GitConfig['commitStyle'])}
-                        options={[
-                            { value: 'freeform', label: 'Freeform' },
-                            { value: 'conventional', label: 'Conventional Commits (feat:, fix:, etc.)' },
-                            { value: 'custom', label: 'Custom' },
-                        ]}
+                        options={COMMIT_OPTIONS}
                     />
                 </div>
             </div>
@@ -288,16 +438,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         </div>
                     )}
 
-                    {/* Who merges is the merge policy's call, not a checkbox here: the old
-                        "Auto-merge on green CI" toggle wrote a flag no merge gate reads. */}
-                    <p data-testid="git-config-merge-policy" className="text-xs text-text-secondary">
-                        <span className="font-medium text-text-primary">Merging:</span>{' '}
-                        {describeMergeTier(initialConfig?.mergePolicy?.tier)}
-                        {!initialConfig?.mergePolicy?.tier && ' (default)'}.{' '}
-                        Set by the workspace{' '}
-                        <Link href={`/app/settings/workspace/${workspaceId}`} className="underline">merge policy</Link>;
-                        a mission or a task that requires review can override it.
-                    </p>
+                    {mergingLine}
                 </div>
             </div>
 
@@ -513,12 +654,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <Select
                             value={thinkingType}
                             onChange={(v) => setThinkingType(v as typeof thinkingType)}
-                            options={[
-                                { value: 'none', label: 'Default (no override)' },
-                                { value: 'adaptive', label: 'Adaptive (model decides when to think)' },
-                                { value: 'enabled', label: 'Enabled (fixed budget)' },
-                                { value: 'disabled', label: 'Disabled' },
-                            ]}
+                            options={THINKING_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Sets extended thinking. Override per task in task context.
@@ -550,13 +686,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <Select
                             value={effort}
                             onChange={(v) => setEffort(v as typeof effort)}
-                            options={[
-                                { value: 'none', label: 'Default (no override)' },
-                                { value: 'low', label: 'Low (faster, cheaper · simple tasks)' },
-                                { value: 'medium', label: 'Medium (balanced)' },
-                                { value: 'high', label: 'High (thorough)' },
-                                { value: 'max', label: 'Max (most thorough · complex architecture)' },
-                            ]}
+                            options={EFFORT_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Sets how much effort the model spends per response. Override per task in task context.
@@ -575,11 +705,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <Select
                             value={defaultRunnerPreference}
                             onChange={(v) => setDefaultRunnerPreference(v as typeof defaultRunnerPreference)}
-                            options={[
-                                { value: 'any', label: 'Any runner (no preference)' },
-                                { value: 'user', label: 'User runners only (personal / local)' },
-                                { value: 'service', label: 'Service runners only (CI / automated)' },
-                            ]}
+                            options={RUNNER_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Applies to new tasks in this workspace. Only runners of this type can claim them. Override per task.
@@ -591,11 +717,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                         <Select
                             value={defaultBackend}
                             onChange={(v) => setDefaultBackend(v as typeof defaultBackend)}
-                            options={[
-                                { value: 'default', label: 'Claude (platform default)' },
-                                { value: 'claude', label: 'Claude' },
-                                { value: 'codex', label: 'Codex (OpenAI)' },
-                            ]}
+                            options={BACKEND_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
                             Agent engine for new tasks in this workspace. Order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks need a connected ChatGPT/OpenAI credential.

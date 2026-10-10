@@ -126,7 +126,7 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
     }
   }
 
-  const disabled = !isAdmin || !loaded || dogfood;
+  const disabled = !loaded || dogfood;
 
   return (
     <div id="chat-retro" className="mt-10 max-w-4xl scroll-mt-20" data-testid="chat-retro-settings">
@@ -148,7 +148,10 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
           )}
           {!globallyEnabled && <p className="text-status-warning">Paused for everyone on this deployment right now, whatever you choose here.</p>}
         </div>
-        <div className="flex items-start justify-between gap-3 px-4 py-3">
+        {/* The settings and lessons are readable by managers only (the API refuses
+            others), so a member gets the explanation above and no value rows. */}
+        {isAdmin && (<>
+        <div className="flex items-start justify-between gap-3 px-4 py-3" data-testid="chat-retro-lessons-row">
           <span className="min-w-0">
             <span id="chat-retro-lessons-label" className="block text-sm text-text-primary">Record lessons</span>
             <span className="block text-xs text-text-muted">Labels and counts for each chat session. Nothing is filed.</span>
@@ -186,6 +189,7 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
             }}
           />
         </div>
+        </>)}
         {isAdmin && loaded && !dogfood && canActivateDogfood && (
           <DogfoodActivationRow onActivate={() => void activateDogfood()} />
         )}
@@ -210,9 +214,7 @@ export default function ChatRetroSection({ teamId, isAdmin }: { teamId: string; 
         )}
       </div>
       <div className="mt-2 min-h-5">
-        {isAdmin
-          ? msg && <span role="status" className={`text-xs ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>
-          : <p className="text-xs text-text-muted">Only a team owner or admin can change this or see its lessons.</p>}
+        {msg && <span role="status" className={`text-xs ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>}
       </div>
       {confirmDialog}
     </div>

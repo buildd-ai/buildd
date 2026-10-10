@@ -34,3 +34,14 @@ export function settingsPermissions(
 export function teamIdsHolding(byTeam: Readonly<Record<string, SettingsPermissions>>, permission: Permission): string[] {
   return Object.entries(byTeam).filter(([, perms]) => perms[permission]).map(([id]) => id);
 }
+
+/**
+ * A flag set holding each permission the person holds in at least one team.
+ * For a page that lists several teams' things at once (Workspaces, Runners,
+ * GitHub): it is read-only only when no team lets them change anything on it.
+ */
+export function permsInAnyTeam(byTeam: Readonly<Record<string, SettingsPermissions>>): SettingsPermissions {
+  return Object.freeze(
+    Object.fromEntries(ALL_PERMISSIONS.map((p) => [p, Object.values(byTeam).some((perms) => perms[p])])) as Record<Permission, boolean>,
+  );
+}

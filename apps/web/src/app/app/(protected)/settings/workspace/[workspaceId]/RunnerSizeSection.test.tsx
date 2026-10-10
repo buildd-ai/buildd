@@ -4,7 +4,7 @@ import RunnerSizeSection, { describeRunnerSizeSource } from './RunnerSizeSection
 
 const render = (props: Partial<Parameters<typeof RunnerSizeSection>[0]> = {}) =>
   renderToStaticMarkup(
-    <RunnerSizeSection workspaceId="ws-1" explicit={null} effective="standard" source="default" reason={null} {...props} />,
+    <RunnerSizeSection workspaceId="ws-1" explicit={null} effective="standard" source="default" reason={null} canEdit {...props} />,
   );
 
 describe('RunnerSizeSection', () => {
@@ -31,6 +31,12 @@ describe('RunnerSizeSection', () => {
 
   it('shows automatic when nothing is stored', () => {
     expect(render()).toContain('Automatic');
+  });
+
+  it('without settings permission: the size as text and no picker', () => {
+    const html = render({ effective: 'large', canEdit: false });
+    expect(html).not.toContain('workspace-runner-size-select');
+    expect(html).toMatch(/>Large</);
   });
 });
 

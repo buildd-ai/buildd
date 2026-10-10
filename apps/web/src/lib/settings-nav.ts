@@ -5,21 +5,26 @@
  * links working.
  *
  * Every item is its own route so a section is linkable. Groups are labels
- * only; they have no page of their own.
+ * only; they have no page of their own. A group is one scope: your own
+ * settings, or the team's. No page mixes the two.
  */
+
+import type { Permission } from './permission-registry';
 
 export type SettingsSectionId =
   | 'account'
+  | 'keys'
+  | 'notifications'
+  | 'connections'
   | 'team'
   | 'roles'
-  | 'connections'
   | 'budgets'
   | 'billing'
-  | 'workspaces'
   | 'models'
+  | 'workspaces'
   | 'runners'
+  | 'alerts'
   | 'github'
-  | 'notifications'
   | 'connectors'
   | 'storage';
 
@@ -33,108 +38,145 @@ export interface SettingsNavItem {
   alsoMatches?: string[];
   /** Listed only while BILLING_ENFORCED is on (see settingsNavFor). */
   billingOnly?: boolean;
+  /**
+   * Team sections: the permissions behind the page's controls. Holding none of
+   * them, the viewer sees the page read-only (settingsReadOnly). Your own
+   * sections have none: everything on them is yours to change.
+   */
+  manage?: readonly Permission[];
 }
+
+/** Whose settings a group holds: the signed-in person's, or the team's. */
+export type SettingsScope = 'you' | 'team';
 
 export interface SettingsNavGroup {
   label: string;
+  scope: SettingsScope;
   items: SettingsNavItem[];
 }
 
 export const SETTINGS_INDEX_HREF = '/app/settings';
 
+/** The one line a team page shows to someone who can't change it. */
+export const TEAM_MANAGED_LINE = 'Managed by your team admins.';
+
+/**
+ * Two groups, by whose setting it is. You: what only you see and change.
+ * Team: what everyone on the team shares; members see it read-only.
+ */
 export const SETTINGS_NAV: SettingsNavGroup[] = [
   {
-    label: 'You and your team',
+    label: 'You',
+    scope: 'you',
     items: [
       {
         id: 'account',
         label: 'Profile',
         href: '/app/settings/account',
-        description: 'Your sign-in, preferences, and standing rules for chat.',
+        description: 'Your sign-in, preferences, teams and standing rules for chat.',
       },
       {
+        id: 'keys',
+        label: 'Keys',
+        href: '/app/settings/keys',
+        description: 'Your own model keys, used when the team lets personal keys pay.',
+      },
+      {
+        id: 'notifications',
+        label: 'Notifications',
+        href: '/app/settings/notifications',
+        description: 'Your Pushover key, for alerts on work you watch.',
+      },
+      {
+        id: 'connections',
+        label: 'Connected apps',
+        href: '/app/settings/connections',
+        description: 'Apps signed in to buildd as you over MCP, and what each one reaches.',
+      },
+    ],
+  },
+  {
+    label: 'Team',
+    scope: 'team',
+    items: [
+      {
         id: 'team',
-        label: 'Team',
+        label: 'Members',
         href: '/app/settings/team',
         description: 'Who is on the team, what each person can change, and the team timezone.',
+        manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'manage_team_permissions', 'delete_team'],
       },
       {
         id: 'roles',
         label: 'Roles',
         href: '/app/settings/roles',
         description: 'The agents on the team: what each one does, its model and its tools.',
-      },
-      {
-        id: 'connections',
-        label: 'Connected apps',
-        href: '/app/settings/connections',
-        description: 'Apps you connected to buildd over MCP: what each one reaches, and whether it acts as you.',
+        manage: ['manage_agent_roles'],
       },
       {
         id: 'budgets',
         label: 'Budgets',
         href: '/app/settings/budgets',
         description: 'What you and the team spend, and daily caps.',
+        manage: ['manage_team_settings'],
       },
       {
         id: 'billing',
         label: 'Billing',
         href: '/app/settings/billing',
-        description: 'Your plan, seats and invoices.',
+        description: 'The plan, seats and invoices.',
         billingOnly: true,
+        manage: ['manage_billing'],
       },
-    ],
-  },
-  {
-    label: 'Agents and workspaces',
-    items: [
+      {
+        id: 'models',
+        label: 'Models',
+        href: '/app/settings/models',
+        description: 'Team and workspace keys, which model backs each tier, and AI features.',
+        manage: ['manage_inference_providers', 'manage_team_credentials', 'manage_team_model_keys', 'manage_model_tiers', 'manage_team_settings', 'manage_chat_retro'],
+      },
       {
         id: 'workspaces',
         label: 'Workspaces',
         href: '/app/settings/workspaces',
         description: 'Each repo agents work in: delivery, merge policy and where its work runs.',
         alsoMatches: ['/app/settings/workspace/'],
-      },
-      {
-        id: 'models',
-        label: 'Models',
-        href: '/app/settings/models',
-        description: 'Model keys and sign-ins, which model backs each tier, and AI features.',
+        manage: ['create_workspace', 'manage_workspace_settings'],
       },
       {
         id: 'runners',
         label: 'Runners',
         href: '/app/settings/runners',
         description: 'Runner tokens, the cloud runner and Cloudflare.',
+        manage: ['manage_team_keys', 'manage_team_model_keys'],
       },
-    ],
-  },
-  {
-    label: 'Integrations',
-    items: [
+      {
+        id: 'alerts',
+        label: 'Alerts',
+        href: '/app/settings/team-notifications',
+        description: "Where the team's alerts go: Pushover or a webhook, and which events.",
+        manage: ['manage_team_notifications'],
+      },
       {
         id: 'github',
         label: 'GitHub and Vercel',
         href: '/app/settings/github',
         description: 'Repository access and preview deploys.',
-      },
-      {
-        id: 'notifications',
-        label: 'Notifications',
-        href: '/app/settings/notifications',
-        description: 'Send alerts to Pushover, Slack, Discord or any webhook.',
+        manage: ['manage_github_installation', 'manage_team_credentials'],
       },
       {
         id: 'connectors',
         label: 'MCP connectors',
         href: '/app/settings/connectors',
         description: 'Outside tools your agents can call, and which workspaces get them.',
+        manage: ['manage_connectors'],
       },
       {
         id: 'storage',
         label: 'Storage',
         href: '/app/settings/storage',
         description: 'The bucket where run evidence is kept: logs, test reports and transcripts.',
+        manage: ['manage_evidence_backends'],
       },
     ],
   },
@@ -151,6 +193,18 @@ export function settingsNavFor(opts: { billing: boolean }): SettingsNavGroup[] {
   return SETTINGS_NAV
     .map((g) => ({ ...g, items: g.items.filter((i) => opts.billing || !i.billingOnly) }))
     .filter((g) => g.items.length > 0);
+}
+
+/**
+ * True when a team section shows the viewer values only: they hold none of
+ * the permissions behind its controls (team overrides applied). Your own
+ * sections are never read-only. The server enforces each write either way;
+ * this only decides what renders.
+ */
+export function settingsReadOnly(id: SettingsSectionId, perms: Readonly<Record<Permission, boolean>>): boolean {
+  const item = SETTINGS_ITEMS.find((i) => i.id === id);
+  if (!item?.manage) return false;
+  return !item.manage.some((p) => perms[p]);
 }
 
 /** The section a settings path belongs to, or null (the index, or not settings). */

@@ -157,7 +157,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
         </div>
       </section>
 
-      {!canManage && <p className="text-xs text-text-muted">Only a team owner or admin can change these.</p>}
       {err && <p role="alert" className="text-sm text-status-error">{err}</p>}
     </div>
   );

@@ -10,6 +10,11 @@ const OPTIONS: Array<{ value: CriteriaGraderValue; label: string }> = [
     { value: 'runner', label: 'Runner' },
 ];
 
+/** The option's label, for showing the value as text to someone who cannot change it. */
+export function criteriaGraderLabel(value: CriteriaGraderValue): string {
+    return OPTIONS.find(o => o.value === value)?.label ?? 'Auto';
+}
+
 /** `gitConfig.criteriaGrader` as the control shows it. Missing (or anything unknown) means auto. */
 export function normalizeCriteriaGrader(value: unknown): CriteriaGraderValue {
     return value === 'api' || value === 'runner' ? value : 'auto';

@@ -92,6 +92,14 @@ const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null =
 };
 
 describe('UsageClient — operator internals live elsewhere', () => {
+  it("a member's Usage says it is their own tasks; the team's figures have no such line", () => {
+    const mine = renderToStaticMarkup(<UsageClient view={view()} wsFilter={null} scope="mine" />);
+    expect(mine).toContain('data-testid="usage-scope-mine"');
+    expect(mine).toContain('Tasks you started.');
+    const team = renderToStaticMarkup(<UsageClient view={view()} wsFilter={null} />);
+    expect(team).not.toContain('usage-scope-mine');
+  });
+
   it('Usage alone shows per-task cost but none of the internal panels', () => {
     const html = renderToStaticMarkup(<UsageClient view={view()} wsFilter={null} />);
     expect(html).toContain('data-testid="usage-section-per-task"');

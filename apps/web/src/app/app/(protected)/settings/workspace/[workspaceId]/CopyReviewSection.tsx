@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { CopyReviewConfig, CopyReviewMode } from '@buildd/shared';
 import Segmented from '@/components/ui/Segmented';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 type Choice = 'off' | CopyReviewMode;
 
@@ -57,18 +58,40 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
   }
 
   const chosen = OPTIONS.find((o) => o.value === choice) ?? OPTIONS[0];
+  const header = (
+    <div>
+      <h3 className="text-sm font-medium text-text-primary">Copy review</h3>
+      <p className="text-xs text-text-secondary mt-0.5">Checks the UI text a PR adds against your voice guide.</p>
+    </div>
+  );
+
+  if (!canEdit) {
+    return (
+      <div id="copy-review" className="py-4 first:pt-0 last:pb-0 space-y-3">
+        {header}
+        <ReadOnlyFacts
+          facts={[
+            { label: 'Copy review', value: chosen.label, note: chosen.describe, testId: 'copy-review-value' },
+            ...(choice !== 'off'
+              ? [
+                  { label: 'Voice guide', value: <span className="font-mono">{voiceGuide}</span> },
+                  { label: 'Lint command', value: lintCommand ? <span className="font-mono">{lintCommand}</span> : 'None' },
+                ]
+              : []),
+          ]}
+        />
+      </div>
+    );
+  }
 
   return (
     <form id="copy-review" onSubmit={handleSave} className="py-4 first:pt-0 last:pb-0 space-y-3">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Copy review</h3>
-        <p className="text-xs text-text-secondary mt-0.5">Checks the UI text a PR adds against your voice guide.</p>
-      </div>
+      {header}
       <Segmented<Choice>
         label="Copy review"
         items={OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
         value={choice}
-        onChange={(v) => { if (canEdit) setChoice(v); }}
+        onChange={setChoice}
       />
       <p className="text-xs text-text-muted">{chosen.describe}</p>
       {choice !== 'off' && (
@@ -79,7 +102,6 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
               name="voiceGuide"
               value={voiceGuide}
               onChange={(e) => setVoiceGuide(e.target.value)}
-              disabled={!canEdit}
               required
               className="mt-1 w-full border border-border-default bg-surface-1 px-3 py-2 font-mono text-base md:text-sm"
             />
@@ -90,22 +112,19 @@ export default function CopyReviewSection({ workspaceId, initial, canEdit }: Pro
               name="lintCommand"
               value={lintCommand}
               onChange={(e) => setLintCommand(e.target.value)}
-              disabled={!canEdit}
               placeholder="bun run copy:check"
               className="mt-1 w-full border border-border-default bg-surface-1 px-3 py-2 font-mono text-base md:text-sm"
             />
           </label>
         </div>
       )}
-      {canEdit && (
-        <div className="flex flex-wrap items-center gap-3">
-          <button type="submit" disabled={saving} className="btn min-h-11">
-            {saving ? 'Saving…' : 'Save copy review'}
-          </button>
-          {saved && <span className="text-status-success text-sm">Saved</span>}
-          {saveError && <span className="text-status-error text-sm">{saveError}</span>}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="submit" disabled={saving} className="btn min-h-11">
+          {saving ? 'Saving…' : 'Save copy review'}
+        </button>
+        {saved && <span className="text-status-success text-sm">Saved</span>}
+        {saveError && <span className="text-status-error text-sm">{saveError}</span>}
+      </div>
     </form>
   );
 }

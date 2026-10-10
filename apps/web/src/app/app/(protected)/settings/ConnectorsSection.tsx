@@ -154,7 +154,6 @@ export default function ConnectorsSection({
 
   const manages = (teamId: string | undefined) => !manageableTeamIds || (!!teamId && manageableTeamIds.includes(teamId));
   const canReconnect = manages(selectedTeamId);
-  const anyEditable = workspaces.some((ws) => manages(ws.teamId));
 
   // Nothing to grant yet: the Add button above is the whole story. With several
   // teams the section stays, since its header holds the team switch.
@@ -165,9 +164,6 @@ export default function ConnectorsSection({
       title="Workspace access"
       action={
         <div className="flex items-center gap-2 min-w-0">
-          {!anyEditable && !loading && connectors.length > 0 && (
-            <span data-testid="workspace-access-read-only" className="text-xs text-text-muted">Admins can change this.</span>
-          )}
           {teams.length > 1 && (
             <Select
               aria-label="Team"
@@ -190,7 +186,7 @@ export default function ConnectorsSection({
       {loading ? (
         <p className="text-sm text-text-muted">Loading…</p>
       ) : connectors.length === 0 ? (
-        <p className="text-sm text-text-muted">Add a connector above, then choose its workspaces here.</p>
+        <p className="text-sm text-text-muted">{canReconnect ? 'Add a connector above, then choose its workspaces here.' : 'No connectors.'}</p>
       ) : (
         <ul className="divide-y divide-border-default">
           {connectors.map((connector) => (
