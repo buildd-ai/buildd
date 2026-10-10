@@ -2558,6 +2558,14 @@ export const artifacts = pgTable('artifacts', {
   // explicit Share action, which also (re)generates the shareToken.
   visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
+  // The revision `content` / `storageKey` currently hold (artifact_revisions.revision).
+  // Maintained by the artifacts_record_revision trigger, never by app code; a
+  // writer passes it back as a compare-and-swap guard. 0 = a body written before
+  // revisions existed, snapshotted as revision 1 on its first change.
+  currentRevision: integer('current_revision').notNull().default(0),
+  // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
+  // revision the trigger records. Optional: an unset author records the worker.
+  contentAuthor: text('content_author'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -2567,6 +2575,34 @@ export const artifacts = pgTable('artifacts', {
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
   missionIdx: index('artifacts_mission_idx').on(t.missionId),
   initiativeIdx: index('artifacts_initiative_idx').on(t.initiativeId),
+}));
+
+/**
+ * Immutable history of an artifact's body. Every write that changes
+ * `artifacts.content` or `artifacts.storage_key` appends one row, recorded by
+ * the artifacts_record_revision trigger (migration *_artifact_revisions_trigger)
+ * in the same statement
+ * as the write, so no write path can skip it. Rows are never updated: the
+ * artifact_revisions_immutable trigger refuses any change except filling a hash
+ * that was NULL (a file body, hashed once its bytes are verified).
+ */
+export const artifactRevisions = pgTable('artifact_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  content: text('content'),
+  storageKey: text('storage_key'),
+  // sha256 hex of the UTF-8 content; NULL for a file body until verified.
+  contentHash: text('content_hash'),
+  sizeBytes: integer('size_bytes'),
+  // The artifact's worker when this body was written, not necessarily its author.
+  workerId: uuid('worker_id'),
+  // The writer, when the write named one (artifacts.content_author); 'legacy'
+  // for a body snapshotted from before revisions existed.
+  author: text('author'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactRevisionIdx: uniqueIndex('artifact_revisions_artifact_revision_idx').on(t.artifactId, t.revision),
 }));
 
 /**
