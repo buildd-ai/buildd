@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
+verified_by: [apps/web/tests/db/artifact-links.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -454,6 +454,32 @@ row in place (§1); its earlier bodies stay readable.
 - Writer and reads: `apps/web/src/lib/artifact-revisions.ts` — `writeArtifactBody`, `getArtifactRevision`
 - Redaction: `packages/core/artifact-redaction.ts` — `redactArtifactText`
 - Context references: `apps/web/src/lib/context-artifact-ids.ts`
+
+## 9. Typed links
+
+**Capability statement**: An artifact MUST be attachable to every subject it
+informs (a chat message or conversation, a task, a mission, a plan) without
+copying it, and a link MUST NOT carry an artifact across a team or to a subject
+the linker cannot reach.
+
+**Invariants**:
+- One `artifact_links` row per (artifact, subject, relation). Relations:
+  context, requirement, normative_reference, design_reference, evidence, output.
+- A link is written only when the caller can read the artifact AND reach the
+  subject, and both belong to one team. Chat subjects are their creator's only.
+  Missing and unreachable read the same (404).
+- `normative_reference` always pins a revision: the current one when none is
+  given, enforced by the table's CHECK. No relation confers approval; only an
+  approved spec revision does (D-6).
+- `GET /api/artifacts/linked` returns a reference manifest (id, title, type,
+  relation, pin and its hash), never bodies.
+- Mission planning context reads the mission's links. The legacy
+  `missions.contextArtifactIds` is still read and no longer extended.
+- Owned by Living Specs: only `apps/web/src/lib/artifact-links.ts` writes the table.
+
+**Code surface**:
+- `apps/web/src/lib/artifact-links.ts`: `linkArtifact`, `unlinkArtifact`, `linksOfArtifact`, `artifactsLinkedTo`
+- `apps/web/src/app/api/artifacts/[artifactId]/links/route.ts`, `apps/web/src/app/api/artifacts/linked/route.ts`
 
 ## Verification gaps
 

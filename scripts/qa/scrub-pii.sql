@@ -531,6 +531,8 @@ FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM artifacts) s WHERE a.
 -- snapshots the pre-scrub body when the UPDATE above changes it. Drop it all,
 -- after that UPDATE: a clone keeps current bodies only.
 DELETE FROM artifact_revisions;
+-- Links carry ids only; who made one is an account or user id.
+UPDATE artifact_links SET created_by = NULL;
 
 -- Human visual-review decisions: the route pattern goes through qa_str, as the
 -- shot's metadata.qa.route does via qa_json, so cell_key stays joinable.
