@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/artifacts/[artifactId]/share/route.ts, apps/web/src/app/api/share/[token]/route.ts, apps/web/src/app/api/artifacts/upload-url/route.ts, apps/web/src/lib/storage-keys.ts]
 related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, credential-isolation]
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
-verified_by: [packages/core/__tests__/artifact-read.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
+verified_by: [apps/web/tests/db/artifact-upload.test.ts, packages/core/__tests__/artifact-read.test.ts, apps/web/tests/db/artifact-reads.test.ts, apps/web/tests/db/artifact-revisions.test.ts, apps/web/tests/db/context-artifact-ids.test.ts, apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -485,6 +485,29 @@ so "available to the agent" is never mistaken for "read by the agent".
 **Code surface**:
 - Views: `packages/core/artifact-read.ts` — `parseReadSelector`, `readArtifactBody`, `outlineOf`
 - Ledger: `apps/web/src/lib/artifact-reads.ts` — `recordArtifactRead`
+
+## 8. Upload readiness
+
+**Capability statement**: An uploaded file MUST NOT be served, linked or
+reported as attached until its stored bytes match what its upload URL was
+signed for, and an upload that never arrives MUST NOT linger.
+
+**Invariants**:
+- `POST /api/artifacts/upload-url` creates the row with `upload_state =
+  'pending'`. `upload_state` is set by the server only; metadata is
+  caller-writable and cannot mark an upload ready.
+- Finalize (`POST /api/artifacts/[id]/finalize`, the uploading worker only, or
+  lazily on the first read) HEADs the object, refuses a size other than the
+  signed one, streams a sha256 (refusing a mismatch with one the uploader
+  sent), fills it onto the revision, and sets `ready`; a mismatch sets
+  `failed` with `metadata.uploadError`.
+- A `pending` or `failed` upload gets no download URL: GET reports
+  `uploadState`, and the download route answers 409.
+- The maintenance cron finalizes uploads whose bytes arrived and, after 24
+  hours, deletes the row and object of one that never arrived or failed.
+
+**Code surface**:
+- `apps/web/src/lib/artifact-upload.ts` — `finalizeArtifactUpload`, `sweepStaleUploads`
 
 ## Verification gaps
 
