@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { db } from '@buildd/core/db';
 import { workspaces, githubInstallations, accountWorkspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { listOpenWorkspaces } from '@/lib/open-workspaces';
 
@@ -69,6 +70,18 @@ export async function POST(req: NextRequest) {
     }
     for (const ws of openWorkspaces) {
       allWorkspaces.set(ws.id, ws);
+    }
+
+    // A grant session matches only the workspaces it was granted, never the
+    // shared team account's links or the team's other open workspaces, and a
+    // restricted workspace it was granted needs no link (lib/grant-scope.ts).
+    if (isGrantSession(account)) {
+      allWorkspaces.clear();
+      const granted = constrainToGranted(account, account.workspaceIds ?? []);
+      if (granted.length > 0) {
+        const rows = await db.query.workspaces.findMany({ where: inArray(workspaces.id, granted), columns: { id: true, name: true, repo: true } });
+        for (const ws of rows) allWorkspaces.set(ws.id, ws);
+      }
     }
 
     // Normalize repo URLs for comparison

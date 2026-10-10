@@ -38,6 +38,13 @@ import {
   type RoundKind,
   type RoundSnapshot,
 } from './types';
+import {
+  DEFAULT_TREADMILL_MAX_BASE_COMMITS,
+  TREADMILL_EXHAUSTED_MAX_BASE_COMMITS,
+  judgeBaseDelta,
+  type BaseDeltaFact,
+  type BaseDeltaVerdict,
+} from './base-delta';
 
 export interface ReduceOptions {
   newId?: () => string;
@@ -820,6 +827,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { mergeable: cmd.mergeable, mergeableHeadSha: cmd.headSha },
         refusal: cmd.refusal ?? null,
         detail: cmd.detail ?? null,
+        baseDelta: kind === 'behind' ? cmd.baseDelta ?? null : null,
+        maxBaseCommits: cmd.maxBaseCommits,
       });
     }
 
@@ -918,6 +927,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
       const coverage = headCoverage(dd, cmd.headSha);
       if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
+      // S15: a door landing a head that is behind its base, under the disjoint-delta rule. The base
+      // delta was read now, so the rule is checked again at merge time; a freshness override skips it.
+      let freshness: Record<string, unknown> | null = null;
+      if (cmd.baseDelta && !(overrideDoor && ov?.kinds?.includes('freshness')) && cmd.baseDelta.baseCommits !== 0) {
+        const fact: BaseDeltaFact = { ...cmd.baseDelta, requiresUpToDate: cmd.baseDelta.requiresUpToDate === true || cmd.live.mergeableState === 'behind' };
+        const v = behindTolerance(dd, c.ledger('conflict', 'mechanical'), cmd.headSha, fact, cmd.maxBaseCommits);
+        if (!v.tolerated) return c.rejected('behind_not_tolerated', { missing: [v.reason] });
+        freshness = { optimistic: true, behindBy: v.baseCommits, baseFiles: v.baseFileCount, rule: v.rule };
+      }
       const landingVersion = dd.version + 1;
       return c.apply(landingKey(c.prKey, cmd.headSha, dd.version), 'LANDING', {
         guardHead: true,
@@ -927,7 +945,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
           payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
         }],
-        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state },
+        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state, ...(freshness ? { freshness } : {}) },
         bypass: overrideDoor
           ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}) }
           : null,
@@ -1798,10 +1816,39 @@ export function treadmillCycle(mechanical: AttemptSnapshot[]): { cycle: number; 
   return { cycle: markers.length + 1, refreshes };
 }
 
+/**
+ * S15's disjoint-delta rule over one delivery (base-delta.ts): may `head` land
+ * although its base moved? Only an approved head (any coverage: an exact-head
+ * verdict, a person, a composition, or a platform own_refresh carry). Before
+ * the cycle's refresh budget is spent, only a head the platform's own refresh
+ * produced, within the ordinary bound; once it is spent, any covered head,
+ * within the wider `TREADMILL_EXHAUSTED_MAX_BASE_COMMITS`. Either way only a
+ * listable, disjoint, risk-free base delta, and never on a base that requires
+ * an up-to-date branch.
+ */
+export function behindTolerance(
+  d: Pick<DeliverySnapshot, 'approvedHeads' | 'approvalBasis' | 'compositionHeads' | 'currentHeadSha'>,
+  mechanical: AttemptSnapshot[],
+  head: string,
+  fact: BaseDeltaFact,
+  ordinaryMax: number = DEFAULT_TREADMILL_MAX_BASE_COMMITS,
+  maxRefreshes: number = DEFAULT_MAX_BEHIND_REFRESHES,
+): BaseDeltaVerdict & { rule?: 'bounded' | 'spent_cycle' } {
+  if (headCoverage(d, head) === 'none') return { tolerated: false, cause: 'refresh_exhausted', reason: 'no approval covers this head' };
+  const spent = treadmillCycle(mechanical).refreshes >= maxRefreshes;
+  const refreshed = mechanical.some((a) => a.family === 'conflict' && a.mode === 'mechanical' && a.reportedShas.includes(head));
+  if (!spent && !refreshed) return { tolerated: false, cause: 'refresh_exhausted', reason: 'this head was not produced by a platform refresh' };
+  const v = judgeBaseDelta(fact, spent ? Math.max(TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, ordinaryMax) : ordinaryMax);
+  return v.tolerated ? { ...v, rule: spent ? 'spent_cycle' : 'bounded' } : v;
+}
+
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
   refusal?: Record<string, unknown> | null;
   detail?: Record<string, unknown> | null;
+  /** Behind only: the live base delta (S15 disjoint-delta rule). */
+  baseDelta?: BaseDeltaFact | null;
+  maxBaseCommits?: number;
 }): Decision {
   const d = c.d!;
   const family: AttemptFamily = kind === 'migration' ? 'migration' : 'conflict';
@@ -1814,21 +1861,35 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
   }
   const evidence = { repairKind: kind, headSha: head };
   if (kind === 'behind' && !o.mechanicalRefused) {
+    const mechanical = c.ledger(family, 'mechanical');
+    const maxRefreshes = o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES;
+    // S15 disjoint-delta rule: an approved head whose base gained only small, disjoint,
+    // risk-free changes is not refreshed again (and never escalated for a moving base). Nothing
+    // is recorded here: the door lands it through T15, which checks the same rule at merge time.
+    const tolerance = o.baseDelta ? behindTolerance(d, mechanical, head, o.baseDelta, o.maxBaseCommits, maxRefreshes) : null;
+    if (tolerance?.tolerated && d.state === 'APPROVED') return c.rejected('behind_tolerated');
     // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across
     // heads per cycle; a spent cycle escalates, and the landing sweep opens a new one after
     // the cooldown (TreadmillCycleRestarted) until MAX_TREADMILL_CYCLES are used.
-    const { refreshes, cycle } = treadmillCycle(c.ledger(family, 'mechanical'));
-    if (refreshes >= (o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES)) {
+    const { refreshes, cycle } = treadmillCycle(mechanical);
+    if (refreshes >= maxRefreshes) {
       const finalCycle = cycle >= MAX_TREADMILL_CYCLES;
+      // With the base delta read, the escalation says which: the base keeps changing what this
+      // PR changes (refresh_unsafe, naming the files), or it only kept moving (refresh_exhausted).
+      const why = tolerance && !tolerance.tolerated ? tolerance : null;
+      const because = why ? (why.cause === 'refresh_unsafe' ? `; ${why.reason}, so a green on an older base is not proof` : `; ${why.reason}`) : '';
       const detail = finalCycle
-        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
-        : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES}); landing retries with a fresh refresh budget after the cooldown`;
+        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
+        : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES})${because}; landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
         // a90fc99b: a cycle the landing sweep restarts after the cooldown is Buildd's wait, not a
         // page. Only the last cycle, which nothing restarts, tells a person.
-        effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail } }] : [],
-        evidence: { ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}) },
+        effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail, ...(why ? { cause: why.cause } : {}) } }] : [],
+        evidence: {
+          ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}),
+          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
+        },
       });
     }
   }

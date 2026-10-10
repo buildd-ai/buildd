@@ -5,7 +5,6 @@ import { loadSettingsContext } from '../_lib/settings-context';
 import { teamIdsHolding } from '../_lib/settings-permissions';
 import ModelProvidersClient from '../providers/ModelProvidersClient';
 import { PROVIDERS_DESCRIPTION } from '../providers/provider-copy';
-import AgentBackendsSection from '../AgentBackendsSection';
 import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
@@ -18,8 +17,8 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Settings → Models: every model concern on one page, in the order you set it
- * up. Keys (provider keys at team, workspace or personal scope), Runner
- * sign-ins (what agent runs log in with), Routing (gateway, decision model,
+ * up. Keys (every way a provider is connected: key, subscription and runner
+ * sign-in, in one row per provider), Routing (gateway, decision model,
  * agent endpoint), Tiers (which model each tier runs, limits, upgrades) and
  * Features (where AI features run). Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here.
@@ -49,25 +48,13 @@ export default async function ModelsSettingsPage() {
         teamId={teamId}
         isAdmin={perms.manage_inference_providers}
         workspaces={teamWorkspaces.map((w) => ({ id: w.id, name: w.name }))}
-        between={
-          <Section title="Runner sign-ins" id="sign-ins" className="scroll-mt-20">
-            {/* Old links: /app/settings/runners#agent-backends and /app/settings#agent-backends. */}
-            <span id="agent-backends" aria-hidden="true" />
-            {teamWorkspaces.length > 0 ? (
-              <div data-testid="models-sign-ins" className="border-y border-border-default divide-y divide-border-default">
-                <AgentBackendsSection
-                  workspaces={workspaces}
-                  currentTeamId={currentTeamId}
-                  manageableTeamIds={teamIdsHolding(permsByTeam, 'manage_team_credentials')}
-                  canManage={perms.manage_team_credentials}
-                  canManageRouting={perms.manage_team_settings}
-                />
-              </div>
-            ) : (
-              <p className="text-sm text-text-muted">Add a workspace to connect a runner sign-in.</p>
-            )}
-          </Section>
-        }
+        signIns={{
+          workspaces,
+          currentTeamId,
+          manageableTeamIds: teamIdsHolding(permsByTeam, 'manage_team_credentials'),
+          canManage: perms.manage_team_credentials,
+          canManageRouting: perms.manage_team_settings,
+        }}
       />
 
       <Section title="Tiers" id="tiers" className="scroll-mt-20">

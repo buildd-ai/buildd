@@ -2629,7 +2629,7 @@ export async function GET(req: NextRequest) {
     // GET /api/tasks/[id]/evidence applies. A session already passed team
     // membership above.
     const evidenceReachable = !!(worker.taskId && worker.workspaceId) && (
-      sessionUser ? true : await verifyAccountWorkspaceAccess(account!.id, worker.workspaceId)
+      sessionUser ? true : await verifyAccountWorkspaceAccess(account!, worker.workspaceId)
     );
     const evidenceObjects = evidenceReachable
       ? await loadInlineEvidence(worker.workspaceId, worker.taskId, {

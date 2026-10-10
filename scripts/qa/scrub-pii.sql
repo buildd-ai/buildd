@@ -232,11 +232,16 @@ DELETE FROM presence_tokens;        -- people's machine names; a clone's tokens 
 DELETE FROM device_codes;
 DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
+DELETE FROM mcp_oauth_grant_workspaces;  -- MCP connection grants: a person's consent, not app state
+DELETE FROM mcp_oauth_grants;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Failure incident ledger: titles and evidence refs echo task/PR titles and
+-- error text; derived from gate_events and worker failures, wiped with them.
+DELETE FROM failure_incidents;
 -- Who deployed what with which credential reference: an audit trail, not app state.
 DELETE FROM deployment_audit_events;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.

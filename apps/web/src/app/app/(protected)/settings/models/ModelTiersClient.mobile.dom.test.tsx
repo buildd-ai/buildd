@@ -134,7 +134,7 @@ describe('tier maximum on the tier cards', () => {
 
   it('marks premium-plus as set-but-not-served under a Premium maximum; the card stays visible', async () => {
     await mountWith({ agent: 'premium', chat: 'premium' });
-    expect(note('premium-plus')!.textContent).toContain('Can be set, not served');
+    expect(note('premium-plus')!.textContent).toContain("Won't be used until the maximum is raised");
     expect(document.querySelector('[data-testid="tier-card-premium-plus"]')).not.toBeNull();
     expect(note('premium')).toBeNull();
     expect(note('standard')).toBeNull();

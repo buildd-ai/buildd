@@ -12,6 +12,27 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.21.0 — 2026-10-09
+
+Minor: Cloudflare's Clef decision models, and decisions through Cloudflare AI Gateway.
+
+- `decide` endpoint `{ kind: 'workers-ai', baseURL }`: Clef (`clef`,
+  `clef-flash`) on Workers AI, directly or through an AI Gateway's `workers-ai`
+  path. Same questions and answers as Jev; the key is a Cloudflare API token;
+  the REST envelope is unwrapped. Default model `CLEF_MODEL`.
+- Every endpoint takes `headers`, sent with each request (an authenticated
+  gateway's `cf-aig-authorization`). Jev through a gateway is `systemone` with
+  the gateway's `openrouter` root as `baseURL`.
+- `CLEF_MODEL`, `CLEF_FLASH_MODEL`, `isClefModel`, `clefModelIds`,
+  `defaultDecisionModel(kind)`.
+- `DecisionProvider` gains `cloudflare` (Clef receipts). `ModelsUsageInput`
+  keeps the three `/models` providers (`ModelsProvider`), and `toModelsUsage`
+  throws on a `cloudflare` receipt because `/models` cannot price it.
+- `/models`: `cloudflareGatewayURL(ref, 'openrouter' | 'workers-ai')`,
+  `cloudflareWorkersAiURL(ref)`, `CLOUDFLARE_AI_GATEWAY_ROOT`, `CLOUDFLARE_API_ROOT`.
+- Fingerprints and versions of existing `systemone` and `chat` decisions are
+  unchanged; a `workers-ai` decision fingerprints apart from Jev.
+
 ## 0.20.0 — 2026-10-05
 
 Minor: `openai-codex` is a policy provider.

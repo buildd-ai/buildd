@@ -19,7 +19,8 @@ import { mappingSummary, prefillSource } from './endpoint-summary';
  * summary line with the full table behind a disclosure.
  */
 
-type Kind = 'gateway' | 'openrouter' | 'anthropic-compatible';
+type Kind = 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
+type Upstream = 'anthropic' | 'openrouter';
 type Choice = 'anthropic' | Kind;
 
 export interface MaskedAgentEndpointView {
@@ -49,6 +50,10 @@ export interface MaskedAgentEndpointView {
   storedKeyMissing?: boolean;
   /** Its own key differs from the stored OpenRouter key: someone should pick one. */
   legacyInlineKey?: boolean;
+  /** Cloudflare: the provider the AI Gateway forwards to. */
+  upstream?: Upstream | null;
+  /** Cloudflare: an AI Gateway Run token is saved. */
+  gatewayTokenSet?: boolean;
   health: 'healthy' | 'revoked' | 'unknown';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
@@ -62,17 +67,21 @@ const KIND_LABEL: Record<Kind, string> = {
   gateway: 'LiteLLM gateway',
   openrouter: 'OpenRouter',
   'anthropic-compatible': 'Anthropic-compatible URL',
+  cloudflare: 'Cloudflare AI Gateway',
 };
+
+const UPSTREAM_LABEL: Record<Upstream, string> = { anthropic: 'Anthropic', openrouter: 'OpenRouter' };
 
 /** Deferred tool loading when nothing is set: OpenRouter supports it, the others may not. */
 export function toolSearchDefault(kind: Kind): boolean {
-  return kind === 'openrouter';
+  return kind === 'openrouter' || kind === 'cloudflare';
 }
 
 const TOOL_SEARCH_HINT: Record<Kind, string> = {
   gateway: 'Loads MCP tools on demand to cut input tokens. Your gateway must pass Anthropic ToolSearch / tool_reference through, or tool runs fail.',
   openrouter: 'Loads MCP tools on demand to cut input tokens. On by default: OpenRouter supports Anthropic ToolSearch / tool_reference.',
   'anthropic-compatible': 'Loads MCP tools on demand to cut input tokens. The endpoint must support Anthropic ToolSearch / tool_reference, or tool runs fail.',
+  cloudflare: 'Loads MCP tools on demand to cut input tokens. On by default: the gateway passes requests through to Anthropic or OpenRouter unchanged.',
 };
 
 async function errorText(res: Response): Promise<string> {
@@ -155,12 +164,7 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
       <div className="card p-4 space-y-3 text-xs">
         {endpoints === undefined && <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Loading…</p>}
         {endpoints !== undefined && routes.length === 0 && (
-          <div className="space-y-1">
-            <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
-            <p className="text-text-muted">
-              Agent runs use the team&apos;s Anthropic key or Claude seat. An endpoint routes them through a proxy.
-            </p>
-          </div>
+          <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
         )}
         {team && (
           <TeamRoute endpoint={team} teamId={teamId} canManage={idle} workspaces={workspaces} copies={copies}
@@ -182,13 +186,9 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
         )}
         {routes.length > 0 && (
           <p className="text-text-muted" data-testid="agent-endpoint-metered">
-            Endpoint runs are metered on its key, not a Claude seat. The per-run dollar cap applies.
+            Billed to the endpoint&apos;s key. The per-task dollar cap applies.
           </p>
         )}
-        <p className="text-text-muted">
-          A workspace&apos;s own Anthropic key or seat overrides a team endpoint. So does a runner&apos;s own
-          <span className="font-mono"> LLM_PROVIDER</span> keeps using it.
-        </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
         {canManage && endpoints !== undefined && editing !== null && (
           <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} teamOpenRouterLast4={teamOpenRouterLast4} initialScope={editing}
@@ -263,6 +263,28 @@ function RouteDetail({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   if (e.kind === 'gateway') {
     return <p className="text-body text-text-secondary" data-testid="agent-endpoint-detail">Through the LiteLLM gateway in Team keys</p>;
   }
+  if (e.kind === 'cloudflare') {
+    const upstream = UPSTREAM_LABEL[e.upstream ?? 'anthropic'];
+    const last4 = e.last4 ? ` (…${e.last4})` : '';
+    return (
+      <div className="space-y-1">
+        <p className="text-body text-text-secondary" data-testid="agent-endpoint-detail">
+          Through the team&apos;s Cloudflare AI Gateway to {upstream}, with the {upstream} key in Team keys{last4}
+          {e.gatewayTokenSet ? '. Gateway token saved.' : ''}
+        </p>
+        {e.gatewayMissing && (
+          <p className="text-meta text-status-warning" data-testid="agent-endpoint-cf-missing">
+            The team&apos;s Cloudflare credential has no AI Gateway ID, so agents use Anthropic directly. Add one under Cloudflare.
+          </p>
+        )}
+        {!e.gatewayMissing && e.storedKeyMissing && (
+          <p className="text-meta text-status-warning" data-testid="agent-endpoint-cf-key-missing">
+            No {upstream} key in Team keys, so this routes nothing. Add one there.
+          </p>
+        )}
+      </div>
+    );
+  }
   if (e.kind === 'openrouter' && e.keySource === 'stored') {
     const last4 = e.last4 ? ` (…${e.last4})` : '';
     return <p className="text-body text-text-secondary" data-testid="agent-endpoint-detail">With the OpenRouter key in Team keys{last4}</p>;
@@ -294,7 +316,7 @@ function ToolSearchLine({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) 
 
 /** One summary line; the full model table opens under it. */
 function MappingDisclosure({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
-  if (e.kind === 'openrouter' || !e.mapping || e.mapping.length === 0) return null;
+  if (e.kind === 'openrouter' || (e.kind === 'cloudflare' && e.upstream === 'openrouter') || !e.mapping || e.mapping.length === 0) return null;
   return (
     <Disclosure summary={<span className="font-mono break-words" data-testid="agent-endpoint-mapping-summary">{mappingSummary(e.mapping)}</span>}>
       <ul className="border-t border-border-default" data-testid="agent-endpoint-mapping" aria-label="Model mapping">
@@ -433,6 +455,8 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
   const [baseUrl, setBaseUrl] = useState(initial?.kind === 'anthropic-compatible' ? initial.baseUrl : '');
   const [apiKey, setApiKey] = useState('');
   const [authHeader, setAuthHeader] = useState<'authorization' | 'x-api-key'>(initial?.authHeader ?? 'authorization');
+  const [upstream, setUpstream] = useState<Upstream>(initial?.upstream ?? 'anthropic');
+  const [gatewayToken, setGatewayToken] = useState('');
   const [aliases, setAliases] = useState(aliasLines(initial?.models ?? {}));
   // Deferred tool loading: null = the kind's default, else the explicit choice.
   const [toolSearchSet, setToolSearchSet] = useState<boolean | null>(initial?.toolSearchExplicit ? initial.toolSearch ?? null : null);
@@ -459,6 +483,8 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
     setChoice(e?.kind ?? 'anthropic');
     setBaseUrl(e?.kind === 'anthropic-compatible' ? e.baseUrl : '');
     setAuthHeader(e?.authHeader ?? 'authorization');
+    setUpstream(e?.upstream ?? 'anthropic');
+    setGatewayToken('');
     setAliases(aliasLines(e?.models ?? {}));
     setToolSearchSet(e?.toolSearchExplicit ? e.toolSearch ?? null : null);
     setListMapping(null);
@@ -495,7 +521,9 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
   const appliesOk = isOverride || appliesMode === 'all' || (appliesTo?.length ?? 0) > 0;
   const canSave = !busy && (choice === 'anthropic'
     ? !!current
-    : appliesOk && (choice === 'gateway'
+    : appliesOk && (choice === 'cloudflare'
+      ? true
+      : choice === 'gateway'
       ? hasGateway
       : storedOpenRouter || ((!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim()))));
 
@@ -518,8 +546,13 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
         if (scope) body.workspaceId = scope;
         else if (appliesChanged) body.appliesTo = appliesTo;
         if (choice === 'anthropic-compatible') Object.assign(body, { baseUrl: baseUrl.trim(), authHeader });
+        if (choice === 'cloudflare') {
+          body.upstream = upstream;
+          // Blank keeps the saved token (the server never reads it back).
+          if (gatewayToken.trim()) body.gatewayToken = gatewayToken.trim();
+        }
         if (needsKey && apiKey.trim()) body.apiKey = apiKey.trim();
-        if (choice !== 'openrouter' && Object.keys(models).length > 0) body.models = models;
+        if (choice !== 'openrouter' && !(choice === 'cloudflare' && upstream === 'openrouter') && Object.keys(models).length > 0) body.models = models;
         // Sent only when it changes what is saved (the server keeps the saved
         // value for the same kind); only a non-default choice is stored.
         const savedSet = current?.kind === choice && current.toolSearchExplicit ? current.toolSearch ?? null : null;
@@ -532,6 +565,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
         if (!res.ok) throw new Error(await errorText(res));
       }
       setApiKey('');
+      setGatewayToken('');
       onClose();
       await onChanged();
     } catch (e) {
@@ -578,11 +612,32 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
           onToggle={(id, on) => setChosen((prev) => { const next = new Set(prev); if (on) next.add(id); else next.delete(id); return next; })} />
       )}
       <div className="space-y-2">
-        {radio('anthropic', 'Anthropic (default)', 'The team\'s Anthropic key or Claude seat.')}
+        {radio('anthropic', 'Anthropic (default)', 'Your Claude key or subscription.')}
         {radio('gateway', 'Use the team gateway', hasGateway ? 'The LiteLLM gateway in Team keys.' : 'Connect a LiteLLM gateway in Team keys first.', !hasGateway)}
         {radio('openrouter', 'OpenRouter')}
         {radio('anthropic-compatible', 'Anthropic-compatible URL', 'Any proxy that serves /v1/messages.')}
+        {radio('cloudflare', 'Cloudflare AI Gateway', 'The AI Gateway on the team\'s Cloudflare credential, with the provider key in Team keys.')}
       </div>
+      {choice === 'cloudflare' && (
+        <div className="space-y-2" data-testid="agent-endpoint-cf-fields">
+          <div className="flex flex-wrap gap-4">
+            {(['anthropic', 'openrouter'] as const).map((u) => (
+              <label key={u} className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="agent-endpoint-upstream" className="control-radio appearance-none" checked={upstream === u} disabled={busy}
+                  onChange={() => setUpstream(u)} />
+                <span>To {UPSTREAM_LABEL[u]}</span>
+              </label>
+            ))}
+          </div>
+          <label className="field-label" htmlFor="agent-endpoint-gateway-token">Gateway token (optional)</label>
+          <input id="agent-endpoint-gateway-token" type="password" autoComplete="off" spellCheck={false} value={gatewayToken}
+            onChange={(e) => setGatewayToken(e.target.value)} disabled={busy} className={INPUT}
+            placeholder={current?.kind === 'cloudflare' && current.gatewayTokenSet ? 'Saved token, leave blank to keep' : 'Only for an authenticated gateway'} />
+          <p className="text-text-muted">
+            A token limited to AI Gateway Run. It goes to runners, so never use the team&apos;s Cloudflare token here.
+          </p>
+        </div>
+      )}
       {choice === 'anthropic-compatible' && (
         <div className="space-y-2">
           <label className="field-label" htmlFor="agent-endpoint-url">Base URL</label>

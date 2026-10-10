@@ -163,7 +163,7 @@ function ChainNode({
 export default function PlanChainView({ currentTaskId, tasks, roleMap, onlineRunners = 0 }: PlanChainViewProps) {
   return (
     <div className="mb-6">
-      <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-3">
+      <div className="section-label pb-2 border-b border-border-default mb-3">
         Execution Plan · {tasks.length} phase{tasks.length !== 1 ? 's' : ''}
       </div>
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

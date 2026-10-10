@@ -1,18 +1,22 @@
 'use client';
 
 /**
- * Health › Runners' diagnostic: the shared `SlotLanes` chart over a fleet
- * snapshot with history. Bars carry the task's short name and the same state
- * textures as the TaskStrip cells (`state-cell`); the time every slot sat idle
- * while work waited is tinted flat behind them, and said in words underneath.
+ * Health › Runners' timeline: the shared `SlotLanes` chart over a fleet
+ * snapshot with history. Bars are plain fills (running, waiting, done, a red
+ * outline with ✕ for a failure) named by the run in words; no textures, since
+ * text drawn on a hatch can't be read. A tap selects a run (and lights its
+ * mission's other runs) and opens `RunDetail` under the chart: what it was,
+ * its mission, when, how it ended, and explicit links. Nothing navigates on a
+ * tap. The time every slot sat idle while work waited is tinted flat behind
+ * the bars, and said in words underneath.
  */
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FleetSnapshot, LaneBar } from '@buildd/shared';
 import { idleStretchSentence, type IdleStretch } from '@/lib/idle-while-queued';
 import { displayTaskTitle } from '@/lib/task-title';
-import { STATES, type StateKey } from '@/components/ui/states';
-import SlotLanes, { SHORT_FRACTION, type SlotLane, type SlotLaneBar } from './SlotLanes';
+import { readableRunName } from '@/lib/run-name';
+import SlotLanes, { SHORT_FRACTION, barCard, type SlotLane, type SlotLaneBar } from './SlotLanes';
 
 /** A mission named in the caption when one of its bars is selected. */
 export interface LaneMission {
@@ -20,18 +24,6 @@ export interface LaneMission {
   /** Deliverables landed, the same count the Missions list shows. */
   landed: number;
   total: number;
-}
-
-const CELL: Record<LaneBar['state'], StateKey> = {
-  running: 'running',
-  waiting: 'waiting',
-  done: 'landed',
-  failed: 'failed',
-};
-
-function pick(k: StateKey) {
-  const { tone, pattern, frame } = STATES[k];
-  return { tone, pattern, frame };
 }
 
 const TONE: Record<LaneBar['state'], SlotLaneBar['tone']> = {
@@ -42,15 +34,15 @@ const TONE: Record<LaneBar['state'], SlotLaneBar['tone']> = {
 };
 
 const STATE_WORD: Record<LaneBar['state'], string> = {
-  running: 'running',
-  waiting: 'needs input',
-  done: 'done',
-  failed: 'failed',
+  running: 'Working',
+  waiting: 'Needs input',
+  done: 'Done',
+  failed: 'Failed',
 };
 
-/** The hover card's facts line: "done · PR #12". */
-export function barDetails(b: Pick<LaneBar, 'state' | 'prNumber'>): string[] {
-  return [[STATE_WORD[b.state], b.prNumber ? `PR #${b.prNumber}` : null].filter(Boolean).join(' · ')];
+/** How the run stands or ended, in words: the stated reason, else the state. */
+export function runOutcome(b: Pick<LaneBar, 'state' | 'endReason'>): string {
+  return b.endReason ?? STATE_WORD[b.state];
 }
 
 export function toBar(b: LaneBar): SlotLaneBar {
@@ -59,12 +51,10 @@ export function toBar(b: LaneBar): SlotLaneBar {
     start: b.start,
     end: b.end,
     tone: TONE[b.state],
-    cell: { state: CELL[b.state], ...pick(CELL[b.state]) },
-    label: b.label,
+    label: readableRunName({ label: b.label, title: b.title ?? null }),
     endMark: b.state === 'failed' ? 'fail' : b.state === 'done' ? 'ok' : null,
-    href: b.href ?? undefined,
     title: b.title ?? b.label,
-    details: barDetails(b),
+    details: [runOutcome(b)],
     ...(b.missionId ? { focusKey: b.missionId } : {}),
   };
 }
@@ -101,6 +91,7 @@ function slotBars(bars: readonly LaneBar[], shortMs: number): SlotLaneBar[] {
       endMark: null,
       title: run.map(b => b.title ?? b.label).join('\n'),
       details: [`${run.length} short runs · all done`],
+      shortIds: run.map(b => b.id),
       ...(only ? { focusKey: only } : {}),
     });
     i = j + 1;
@@ -135,23 +126,6 @@ export function idleSlotCount(fleet: FleetSnapshot): number {
   }, 0);
 }
 
-/**
- * The chart's title line. With a bar selected it names what the bar belongs
- * to: its mission and how much of it has landed, or, for a standalone task,
- * the task. The merged count reads "merged" because the owner's caption does;
- * it is the Missions list's landed count.
- */
-export function laneCaption(
-  bar: Pick<SlotLaneBar, 'id' | 'focusKey' | 'title' | 'label' | 'href'> | null,
-  missions: Readonly<Record<string, LaneMission>>,
-): { text: string; href: string | null } {
-  if (!bar) return { text: 'Slots over the last hours', href: null };
-  const m = bar.focusKey ? missions[bar.focusKey] : undefined;
-  if (m && bar.focusKey) return { text: `${m.title} · ${m.landed} of ${m.total} merged`, href: `/app/missions/${bar.focusKey}` };
-  const title = (bar.title ?? bar.label).split('\n')[0];
-  return { text: displayTaskTitle(title), href: bar.href ?? null };
-}
-
 /** At most three sentences, longest stretch first. */
 export function idleSentences(stretches: readonly IdleStretch[], max = 3): string[] {
   return [...stretches]
@@ -160,28 +134,89 @@ export function idleSentences(stretches: readonly IdleStretch[], max = 3): strin
     .map(idleStretchSentence);
 }
 
+const runsOf = (fleet: FleetSnapshot) => new Map(allRunners(fleet).flatMap(r => r.slots.flatMap(sl => sl.lane.bars.map(b => [b.id, b] as const))));
+
+/** The selected run, under the chart: what it was, its mission, when, how it ended, and links. */
+export function RunDetail({ run, missions, now, clock, shortRuns }: {
+  run: LaneBar;
+  missions: Readonly<Record<string, LaneMission>>;
+  now: number;
+  clock?: (at: number) => string;
+  /** Set when the tap was on a folded "N short runs" tick: the runs inside it. */
+  shortRuns?: readonly LaneBar[];
+}) {
+  const name = readableRunName({ label: run.label, title: run.title ?? null });
+  const full = run.title ? displayTaskTitle(run.title) : null;
+  const mission = run.missionId ? missions[run.missionId] : undefined;
+  const when = barCard({ label: name, title: undefined, start: run.start, end: run.end }, { now, clock }).when;
+  return (
+    <div data-testid="runner-lane-detail" aria-live="polite" className="border-b border-border-default pb-3 text-body">
+      {shortRuns ? (
+        <>
+          <p className="font-semibold text-text-primary">{shortRuns.length} short runs, all done</p>
+          <ul className="mt-1 space-y-0.5 text-meta text-text-secondary">
+            {shortRuns.map(r => (
+              <li key={r.id}>
+                {r.taskId ? <Link href={`/app/tasks/${r.taskId}`} className="hover:underline">{readableRunName({ label: r.label, title: r.title ?? null })}</Link> : readableRunName({ label: r.label, title: r.title ?? null })}
+                <span className="text-text-muted"> · {runOutcome(r)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <>
+          <p className="font-semibold text-text-primary">{name}</p>
+          {full && full !== name && <p className="text-meta text-text-secondary">{full}</p>}
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
+            <dt className="text-text-muted">Mission</dt>
+            <dd className="min-w-0 text-text-secondary">
+              {run.missionId && mission
+                ? <Link href={`/app/missions/${run.missionId}`} className="hover:underline">{mission.title} · {mission.landed} of {mission.total} merged</Link>
+                : run.missionId ? <Link href={`/app/missions/${run.missionId}`} className="hover:underline">Open mission</Link> : 'No mission'}
+            </dd>
+            <dt className="text-text-muted">When</dt>
+            <dd className="tabular-nums text-text-secondary">{when}</dd>
+            <dt className="text-text-muted">Outcome</dt>
+            <dd className="text-text-primary">{runOutcome(run)}</dd>
+          </dl>
+          {run.taskId && <Link href={`/app/tasks/${run.taskId}`} className="mt-2 inline-block text-meta font-medium text-text-primary hover:underline">Open task →</Link>}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
   fleet: FleetSnapshot;
   idle: readonly IdleStretch[];
   now: number;
   timeZone?: string | null;
-  /** The missions of the bars in the window, for the caption. */
+  /** The missions of the bars in the window, for the detail panel. */
   missions?: Readonly<Record<string, LaneMission>>;
 }) {
   const fmt = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', ...(timeZone ? { timeZone } : {}) });
+  const clock = (at: number) => fmt.format(at);
   const lines = idleSentences(idle);
   const [selected, setSelected] = useState<SlotLaneBar | null>(null);
-  const caption = laneCaption(selected, missions);
   const axis = { from: fleet.window.from, to: now + Math.max(60_000, (now - fleet.window.from) * 0.04) };
   const hidden = idleSlotCount(fleet);
+  const runs = runsOf(fleet);
+  const short = selected?.id.startsWith('short:') ? (selected.shortIds ?? []).map(id => runs.get(id)).filter((r): r is LaneBar => !!r) : null;
+  const run = selected ? (short ? short[0] : runs.get(selected.id)) : undefined;
+  // The panel sits between the hint and the chart, the part of it already on
+  // screen when the timeline opens; a selection further down brings it into view.
+  const detailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected) detailRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [selected]);
   return (
     <div data-testid="runner-lanes">
-      <h3 data-testid="runner-lanes-caption" aria-live="polite" className="mb-1 text-body font-semibold text-text-primary">
-        {caption.href ? <Link href={caption.href} className="text-inherit hover:underline">{caption.text} →</Link> : caption.text}
-      </h3>
       <p data-testid="runner-lanes-hint" className="mb-3 text-meta text-text-muted">
-        {selected?.href ? 'Tap the highlighted run again to open it.' : selected ? 'Tap empty space to clear.' : 'Tap a run to highlight it.'}
+        {selected ? 'Tap empty space to clear.' : 'Tap a run to see what it was and how it ended.'}
       </p>
+      <div ref={detailRef} className="mb-3">
+        {run && <RunDetail run={run} missions={missions} now={now} clock={clock} {...(short ? { shortRuns: short } : {})} />}
+      </div>
       <div className="card overflow-hidden">
         <SlotLanes
           testId="runner-lanes-chart"
@@ -190,12 +225,11 @@ export function RunnerLanes({ fleet, idle, now, timeZone, missions = {} }: {
           to={axis.to}
           now={now}
           nowLabel="now"
-          hoverCard
           bare
           selectable
           onSelect={setSelected}
           shade={idle.map(s => ({ from: s.from, to: s.to }))}
-          tickLabel={(at) => fmt.format(at)}
+          tickLabel={clock}
         />
       </div>
       {(lines.length > 0 || hidden > 0) && (

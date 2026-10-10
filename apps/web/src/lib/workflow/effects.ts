@@ -109,17 +109,21 @@ WITH due AS (
   WHERE ((status = 'pending' AND not_before <= now())
      OR (status = 'delivering' AND lease_until < now()))
     ${deliveryId ? sql`AND delivery_id = ${deliveryId}::uuid` : sql``}
-  ORDER BY not_before
+  ORDER BY not_before, id
   LIMIT ${limit}::int
   FOR UPDATE SKIP LOCKED
-)
+),
+claimed AS (
 UPDATE workflow_effects e
 SET status = 'delivering', attempt_count = e.attempt_count + 1,
     lease_until = now() + make_interval(secs => ${leaseMs}::int / 1000.0), updated_at = now()
 FROM due
 WHERE e.id = due.id
-RETURNING e.id, e.delivery_id, e.transition_id, e.kind, e.dedupe_key, e.payload, e.attempt_count,
-  ${effectSnapshotSql()}`;
+RETURNING e.id, e.delivery_id, e.transition_id, e.kind, e.dedupe_key, e.payload, e.attempt_count, e.not_before,
+  ${effectSnapshotSql()}
+)
+-- RETURNING order is unspecified: run the batch in the order it was claimed.
+SELECT * FROM claimed ORDER BY not_before, id`;
 }
 
 /** What a runner re-checks before acting: the delivery, who decides for it, and the queuing transition. */

@@ -89,15 +89,35 @@ workspace. Re-running switches any such key entry to OAuth and says which
 folders it changed; `--status --global` flags one it finds. Without a presence
 token (an older login) only the key's team is covered, and install says so.
 
-With `--oauth` (opt-in) no key is written for those folders: each one points
-at its workspace's OAuth MCP endpoint, `<server>/api/mcp-oauth/<workspaceId>`,
-and Claude Code signs you in in the browser the first time the folder uses
-buildd (`/mcp` shows the state). You act as yourself, with your role in that
-workspace's team, so folders from different teams each sign in to their own.
+With `--oauth` (opt-in) no key is written for those folders. There are two
+kinds of connection:
+
+- **As you** (`--oauth`): what the connection does is done as you, with your
+  role in each workspace's team. Use it on your own machine.
+- **As your agent** (`--as-agent`): the connection acts as your agent, not as
+  you. Use it on a shared or remote machine.
+
+When the server offers one connection across workspaces, every folder points
+at `<server>/api/mcp`. Claude Code signs you in in the browser the first time
+(`/mcp` shows the state) and you pick the workspaces it reaches on the consent
+page. For an as-you connection the entry pins Claude Code's requested scopes
+(`"oauth": { "scopes": "buildd:read buildd:write buildd:act-as-person" }`);
+the server never advertises `buildd:act-as-person`, so only an entry that names
+it asks to act as you. An as-your-agent entry pins nothing. Install checks for
+the one connection by asking `<server>/api/mcp` without a key: an OAuth
+challenge naming that resource's metadata means yes. On a server without it,
+each folder points at its own workspace's endpoint,
+`<server>/api/mcp-oauth/<workspaceId>`, and who it acts as is decided when you
+sign in.
+
 Re-running replaces a key entry the installer wrote; a folder's own `.mcp.json`
 is never touched. A `--here --oauth` folder that is not a workspace yet keeps
-the key until it is. `buildd install --global --status` lists every buildd
-entry and whether it uses the key or OAuth.
+the key until it is, unless the server offers the one connection, which needs
+no workspace. `buildd install --global --status` lists every buildd entry:
+key or OAuth, and for OAuth "as you", "as your agent", or "unknown until
+signed in" (a per-workspace entry, decided at sign-in). It reads only the
+entries, never the network. Runner agents are unaffected: they keep using
+their per-task tokens.
 
 ## Credential
 

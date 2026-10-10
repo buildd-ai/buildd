@@ -209,15 +209,18 @@ describe('HealthClient — pages', () => {
     expect(html).not.toContain('aria-label="Window"');
   });
 
-  it('Runners puts the lanes chart first and keeps the slot history behind a disclosure', () => {
+  it('Runners leads with what is running in words; the timeline and the slot history are behind disclosures', () => {
     const fleet = {
       runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
       live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
     };
     const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
     const at = (id: string) => html.indexOf(`data-testid="${id}"`);
-    expect(at('health-section-lanes')).toBeGreaterThan(-1);
+    expect(at('health-section-running-now')).toBeGreaterThan(-1);
+    expect(at('health-section-running-now')).toBeLessThan(at('health-section-lanes'));
     expect(at('health-section-lanes')).toBeLessThan(at('health-section-slot-history'));
+    // The timeline is folded: its chart mounts only when opened.
+    expect(has(html, 'runner-lanes-chart')).toBe(false);
     expect(at('health-section-slot-history')).toBeLessThan(at('health-section-runners'));
     // Collapsed by default: the history chart mounts only when opened.
     expect(has(html, 'health-section-occupancy')).toBe(false);

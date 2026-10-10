@@ -15,6 +15,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
@@ -47,6 +48,7 @@ import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
+import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -69,6 +71,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...routingAnalyticsSubscribers,
   // task.left_mission: the surface audit lets go of a task that left its mission.
   ...surfaceAuditSubscribers,
+  // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
+  ...failurePatternSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
@@ -146,3 +150,11 @@ export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepa
 export const ESCALATION_GATE_DEPS = escalationGateDeps;
 /** What a page passes: stored verdicts and rules, the rest looked at after the response. */
 export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
+
+/**
+ * The Failure Pattern Sentinel's slots for core pages (lib/failure-incident-escalation.ts):
+ * Home's Needs You rows for incidents the escalation gate gave to the owner, and the
+ * stored verdict the incident page shows. Both read the ledger; neither calls a model.
+ */
+export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
+export const INCIDENT_VERDICTS = loadIncidentVerdicts;

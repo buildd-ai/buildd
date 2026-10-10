@@ -54,7 +54,7 @@ export async function GET(
   // Verify workspace access
   let teamId: string;
   if (auth.type === 'api') {
-    const ok = await verifyAccountWorkspaceAccess(auth.account.id, workspaceId);
+    const ok = await verifyAccountWorkspaceAccess(auth.account, workspaceId);
     if (!ok) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     teamId = auth.account.teamId;
   } else {
@@ -125,7 +125,7 @@ export async function PATCH(
   // Verify workspace access
   let teamId: string;
   if (auth.type === 'api') {
-    const ok = await verifyAccountWorkspaceAccess(auth.account.id, workspaceId);
+    const ok = await verifyAccountWorkspaceAccess(auth.account, workspaceId);
     if (!ok) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     teamId = auth.account.teamId;
   } else {

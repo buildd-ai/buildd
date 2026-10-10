@@ -66,6 +66,7 @@ export function tokenWorkspaceAllowed(workspaceIds: readonly string[] | null | u
 /** Exhaustive action registry; adding an MCP action requires choosing its capability. */
 export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   spec_compare: 'tasks:read', list_discrepancies: 'tasks:read', get_discrepancy: 'tasks:read',
+  list_workspaces: 'tasks:read',
   list_tasks: 'tasks:read', get_task: 'tasks:read', get_task_messages: 'tasks:read',
   create_task: 'tasks:write', update_task: 'tasks:write', correct_task_result: 'tasks:admin', approve_plan: 'tasks:admin', reject_plan: 'tasks:admin',
   claim_task: 'workers:write', update_progress: 'workers:write', receive_messages: 'workers:write', complete_task: 'workers:write', get_page_source: 'workers:write', deploy: 'workers:write',
@@ -76,7 +77,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   list_artifacts: 'tasks:read', get_artifact: 'tasks:read', list_artifact_templates: 'tasks:read',
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',
-  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
+  explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', list_incidents: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', list_runners: 'analytics:read', list_connectors: 'analytics:read',
   resolve_capability: 'analytics:read',
   list_releases: 'releases', get_release: 'releases', release_status: 'releases', trigger_release: 'releases',

@@ -244,14 +244,17 @@ describe('listMcpTools — group tools', () => {
   // Budget: 6k tokens (docs/specs/mcp-action-contracts.md). Measured ~4.8k for
   // admin once rare actions moved to More: lines (2026-10-08); the ceiling sits
   // ~300 above that so one more action summary does not turn a parallel PR red.
-  it('keeps the whole groups surface under 5.1k tokens', () => {
+  // Raised from 5.1k / 4k when the listed actions' required params became
+  // declared properties (task 6d3c3355): a schema-constrained model sends only
+  // declared fields, so an undeclared params object reached buildd as {}.
+  it('keeps the whole groups surface under 5.6k tokens', () => {
     const all = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5100);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(5600);
   });
 
-  it('keeps a runner worker session (task token) under 4k tokens', () => {
+  it('keeps a runner worker session (task token) under 4.5k tokens', () => {
     const all = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', principal: 'task_token' });
-    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4000);
+    expect(all.reduce((s, t) => s + estTokens(t), 0)).toBeLessThan(4500);
   });
 
   it('names the rare actions on one More: line per group, and keeps them callable', () => {
@@ -364,7 +367,7 @@ describe('routeGroupToolCall', () => {
   it('every action is dispatched by its group and refused by every other', () => {
     for (const a of allActions) {
       for (const g of MCP_TOOL_GROUPS) {
-        const r = routeGroupToolCall(g, { action: a }, 'admin');
+        const r = routeGroupToolCall(g, { action: a, params: { x: 1 } }, 'admin');
         expect(r.kind, `${g} ${a}`).toBe(mcpGroupOf(a) === g ? 'dispatch' : 'reply');
       }
     }
@@ -499,5 +502,25 @@ describe('groups scoped by who is behind the session', () => {
     const a = tools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy', principal: 'task_token' });
     const b = tools({ accountLevel: 'worker', isSensitive: false, surface: 'legacy' });
     expect(a).toEqual(b);
+  });
+});
+
+describe('empty params (task 6d3c3355)', () => {
+  it('a call whose params arrive empty is refused, naming the fields the action needs', () => {
+    const r = routeGroupToolCall('work', { action: 'create_pr', params: {} }, 'admin');
+    expect(r.kind).toBe('reply');
+    if (r.kind !== 'reply') return;
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('params arrived empty');
+    for (const f of ['title', 'head', 'lede']) expect(r.text).toContain(f);
+  });
+
+  it('an action with no required params still dispatches with empty params', () => {
+    expect(routeGroupToolCall('work', { action: 'update_progress', params: {} }, 'admin')).toEqual({ kind: 'dispatch', action: 'update_progress', params: {} });
+  });
+
+  it('flattened fields beside action still count as params', () => {
+    const r = routeGroupToolCall('work', { action: 'post_note', type: 'update', title: 'x' }, 'admin');
+    expect(r).toEqual({ kind: 'dispatch', action: 'post_note', params: { type: 'update', title: 'x' } });
   });
 });

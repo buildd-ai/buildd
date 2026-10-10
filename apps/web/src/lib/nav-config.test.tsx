@@ -101,6 +101,11 @@ describe('mobilePageTitle', () => {
     expect(mobileBackHref('/app/home')).toBeNull();
   });
 
+  it('titles the workspace Memory page and links back to the workspace', () => {
+    expect(mobilePageTitle('/app/workspaces/ws-1/memory')).toBe('Memory');
+    expect(mobileBackHref('/app/workspaces/ws-1/memory')).toBe('/app/workspaces/ws-1');
+  });
+
   it('returns null on detail pages so they render their own headers', () => {
     expect(mobilePageTitle('/app/missions/abc-123')).toBeNull();
     expect(mobilePageTitle('/app/initiatives/abc-123')).toBeNull();
