@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { GitConfigForm } from './GitConfigForm';
 
-const render = (initialConfig: Record<string, unknown> | null) =>
+const render = (initialConfig: Record<string, unknown> | null, canEdit = true) =>
   renderToStaticMarkup(
-    <GitConfigForm workspaceId="ws-1" workspaceName="ws" initialConfig={initialConfig as never} />,
+    <GitConfigForm workspaceId="ws-1" workspaceName="ws" initialConfig={initialConfig as never} canEdit={canEdit} />,
   );
 
 const base = { defaultBranch: 'main', branchingStrategy: 'feature', commitStyle: 'freeform', requiresPR: true, autoCreatePR: true, useClaudeMd: true };
@@ -36,5 +36,17 @@ describe('GitConfigForm merge behaviour', () => {
   it('shows an agent-review policy', () => {
     const html = render({ ...base, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } });
     expect(html).toMatch(/reviewer agent/i);
+  });
+});
+
+describe('GitConfigForm without settings permission', () => {
+  it('shows every setting as text, with no fields and no Save', () => {
+    const html = render({ ...base, defaultBranch: 'dev', commitStyle: 'conventional' }, false);
+    expect(html).toContain('data-testid="git-config-read-only"');
+    expect(html).not.toMatch(/<input|<select|<textarea|<button|role="radio"|role="combobox"/);
+    expect(html).toContain('Conventional Commits');
+    expect(html).toMatch(/>dev</);
+    // The merging line still links to the merge policy.
+    expect(html).toContain('data-testid="git-config-merge-policy"');
   });
 });

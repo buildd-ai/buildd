@@ -673,7 +673,11 @@ function nameCriterion(c: { label?: string; name?: string; type?: string }): str
 export function deriveMissionStateView(input: MissionStateInput): MissionStateView {
   const resolved = resolve(input);
 
-  const chip = getMissionStateChip(resolved.displayState);
+  // A self-resolving wait resumes by itself: say so, rather than the generic
+  // AUTO every `active` state shares. Same tone as that state.
+  const chip = resolved.waitingOn?.kind === 'self_resolving_wait'
+    ? { ...getMissionStateChip(resolved.displayState), label: /retry/i.test(resolved.waitingOn.reason) ? 'WAITING TO RETRY' : 'WAITING' }
+    : getMissionStateChip(resolved.displayState);
   const criteriaBlockingReason =
     resolved.waitingOn?.kind === 'criterion_failing' || resolved.waitingOn?.kind === 'criterion_unverified'
       ? resolved.waitingOn.label

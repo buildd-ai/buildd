@@ -214,12 +214,12 @@ describe('buildConnectorExpiryMessage', () => {
     expect(msg).toContain('is no longer usable');
   });
 
-  it('points the operator at /app/settings/connectors, where reconnect lives', () => {
+  it('points the operator at /app/settings/connections, where reconnect lives', () => {
     const msg = buildConnectorExpiryMessage(
       { teamId: 'team-1', connectorName: 'Acme', tokenExpiresAt: null },
       NOW,
     );
-    expect(msg).toMatch(/Fix: https?:\/\/[^\s]*\/app\/settings\/connectors$/);
+    expect(msg).toMatch(/Fix: https?:\/\/[^\s]*\/app\/settings\/connections$/);
   });
 });
 
@@ -241,6 +241,6 @@ describe('notifyConnectorExpiry', () => {
     expect(event).toBe('connectorBlocked');
     expect(payload.title).toBe('[buildd] Connection needs reconnecting');
     expect(payload.message).toContain('invalid_grant');
-    expect(payload.url).toContain('/app/settings/connectors');
+    expect(payload.url).toContain('/app/settings/connections');
   });
 });

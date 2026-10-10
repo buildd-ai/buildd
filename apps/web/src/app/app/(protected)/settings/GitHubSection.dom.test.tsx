@@ -6,7 +6,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/github?github=unavailable' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/integrations?github=unavailable' });
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: GitHubSection } = await import('./GitHubSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -65,7 +66,7 @@ describe('GitHubSection: Disconnect only where the API allows it', () => {
   });
   const buttons = () => [...container.querySelectorAll('button')].map((b) => b.textContent);
 
-  it('member: Sync, no Disconnect, and says who can', async () => {
+  it('member: Connect org and Sync, which any member may use; no Disconnect and no who-can line', async () => {
     stub({ configured: true, installations: [inst('i1', 'harborline')] });
     act(() => root.render(<GitHubSection disconnectableIds={[]} />));
     await flush();
@@ -73,7 +74,9 @@ describe('GitHubSection: Disconnect only where the API allows it', () => {
     // State words are TonePills, not the legacy outlined chip.
     expect(container.querySelector('.status-pill')).toBeNull();
     expect(container.querySelector('[data-tone="q"]')!.textContent).toBe('Organization');
-    expect(container.querySelector('[data-testid="github-read-only-i1"]')!.textContent).toBe('Admins can disconnect this.');
+    expect(describeControls(container)).toEqual(['a "Connect org"', 'button "Sync"']);
+    expect(container.querySelector('[data-testid="github-read-only-i1"]')).toBeNull();
+    expect(container.textContent).not.toMatch(/Admins can|Only a team owner|can change this|can disconnect this/);
   });
 
   it('admin: Disconnect on the installations they manage, not the others', async () => {
@@ -81,6 +84,6 @@ describe('GitHubSection: Disconnect only where the API allows it', () => {
     act(() => root.render(<GitHubSection disconnectableIds={['i1']} />));
     await flush();
     expect(buttons()).toEqual(['Sync', 'Disconnect', 'Sync']);
-    expect(container.querySelector('[data-testid="github-read-only-i2"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('Admins can');
   });
 });

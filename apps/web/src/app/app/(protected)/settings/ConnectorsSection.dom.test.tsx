@@ -7,13 +7,14 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/connectors' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/connections' });
 
 import { describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 const { default: ConnectorsSection } = await import('./ConnectorsSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -69,12 +70,29 @@ describe('Workspace access: toggles only where the API allows them', () => {
   const two = [{ id: 'ws1', name: 'billing-web', teamId: 't1' }, { id: 'ws2', name: 'docs', teamId: 't2' }];
   const buttons = (el: HTMLElement) => [...el.querySelectorAll('button')].map((b) => b.textContent);
 
-  it('member everywhere: no toggles, no Reconnect, and says who can', async () => {
+  it('member everywhere: each workspace as text, with no control and no who-can line', async () => {
     stubFetch([connector]);
     const { el, unmount } = await mount({ workspaces: two, teams: [{ id: 't1', name: 'A' }], currentTeamId: 't1', manageableTeamIds: [] });
     expect(buttons(el)).toEqual([]);
+    expect(describeControls(el)).toEqual([]);
     expect(el.textContent).toContain('billing-web');
-    expect(el.querySelector('[data-testid="workspace-access-read-only"]')!.textContent).toBe('Admins can change this.');
+    expect(el.querySelector('[data-testid="workspace-access-read-only"]')).toBeNull();
+    expect(el.textContent).not.toMatch(/Admins can|Only a team owner|can change this/);
+    await unmount();
+  });
+
+  it('member, one workspace: the state reads Enabled or Disabled as text', async () => {
+    stubFetch([connector]);
+    const { el, unmount } = await mount({ workspaces: [two[0]], teams: [{ id: 't1', name: 'A' }], currentTeamId: 't1', manageableTeamIds: [] });
+    expect(el.textContent).toContain('Disabled');
+    expect(describeControls(el)).toEqual([]);
+    await unmount();
+  });
+
+  it('member of several teams, none with connectors: no pointer to an Add they lack', async () => {
+    stubFetch([]);
+    const { el, unmount } = await mount({ workspaces, teams: [{ id: 't1', name: 'A' }, { id: 't2', name: 'B' }], currentTeamId: 't1', manageableTeamIds: [] });
+    expect(el.textContent).not.toContain('Add a connector above');
     await unmount();
   });
 

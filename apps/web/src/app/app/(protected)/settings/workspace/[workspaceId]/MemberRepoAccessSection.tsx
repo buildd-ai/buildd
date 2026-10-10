@@ -61,19 +61,22 @@ export default function MemberRepoAccessSection({ workspaceId, mode, repoFullNam
               ? `Members must have read access to ${repoFullName ?? 'the linked repository'} on GitHub to see code, create tasks or chat about this workspace. API keys and runners are not affected.`
               : 'Off: every team member can see everything Buildd can see in this repository.'}
           </p>
-          {!repoFullName && !on && (
+          {canManage && !repoFullName && !on && (
             <p className="text-xs text-text-muted">Link a GitHub repository to this workspace to turn this on.</p>
           )}
         </div>
-        <Switch
-          labelledBy={switchId}
-          checked={on}
-          onChange={toggle}
-          disabled={!canManage || saving || (!on && !repoFullName)}
-          className={`mt-0.5 ${SWITCH_HIT_AREA}`}
-        />
+        {canManage ? (
+          <Switch
+            labelledBy={switchId}
+            checked={on}
+            onChange={toggle}
+            disabled={saving || (!on && !repoFullName)}
+            className={`mt-0.5 ${SWITCH_HIT_AREA}`}
+          />
+        ) : (
+          <span data-testid="member-repo-access-value" className="text-sm text-text-primary shrink-0">{on ? 'On' : 'Off'}</span>
+        )}
       </div>
-      {!canManage && <p className="text-xs text-text-muted">Only workspace admins can change this.</p>}
       {error && <div className="notice notice-err">{error}</div>}
       {on && viewer && (
         <MemberRepoAccessNotice result={viewer} returnTo={`/app/settings/workspace/${workspaceId}`} />

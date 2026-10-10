@@ -13,6 +13,7 @@ import {
   effectIsCurrent,
   failEffectSql,
   insertFollowupEffectSql,
+  parkEffectSql,
   renewEffectLeaseSql,
   runEffects,
   EFFECT_MAX_ATTEMPTS,
@@ -122,6 +123,18 @@ describe('runEffects', () => {
     // 67d34094: the dead effect is handed to the escalation, not only reported.
     expect(escalated).toEqual(s.dead);
     expect(d.seen.find((q) => q.tag === 'fail_effect')!.params[1]).toBe('no handler for merge_call');
+  });
+
+  test('a parked effect goes back to pending with its attempt handed back: no backoff, no ack, never dead', async () => {
+    const x = exec([claimed({ kind: 'refresh_branch', attempt_count: EFFECT_MAX_ATTEMPTS })]);
+    const s = await runEffects({ exec: x.exec, handlers: { refresh_branch: async () => ({ outcome: 'parked:lane_busy:#7', park: { delayMs: 600_000 } }) } });
+    expect(s).toMatchObject({ claimed: 1, done: 0, skipped: 1, failed: 0, dead: [] });
+    expect(x.seen.map((q) => q.tag)).not.toContain('ack_effect');
+    expect(x.seen.map((q) => q.tag)).not.toContain('fail_effect');
+    expect(x.seen.find((q) => q.tag === 'park_effect')!.params).toEqual(['parked:lane_busy:#7', 600_000, 'e1', EFFECT_MAX_ATTEMPTS]);
+    const park = render(parkEffectSql('e1', 3, 'parked', 1000));
+    expect(park.sql).toContain('attempt_count = GREATEST(attempt_count - 1, 0)');
+    expect(park.sql).toContain("WHERE id = $3::uuid AND status = 'delivering' AND attempt_count = $4::int");
   });
 
   // 625449c7: a batch shares one claim lease; each row is renewed, fenced to its attempt, before it runs.

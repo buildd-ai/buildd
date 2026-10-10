@@ -613,6 +613,27 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect((await res.json()).error).toMatch(/surfaceOrdering/);
   });
 
+  // The landing lane is a workspace opt-in (knowledge-base: buildd/design/landing-lane.md).
+  it('accepts gitConfig.landingLane off/shadow/enforce and null to clear', async () => {
+    for (const value of ['off', 'shadow', 'enforce', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { landingLane: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, landingLane: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.landingLane value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { landingLane: 'on' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/landingLane/);
+  });
+
   it('accepts gitConfig.semanticRefresh off/shadow/enforce and null to clear', async () => {
     for (const value of ['off', 'shadow', 'enforce', null]) {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
@@ -773,6 +794,16 @@ describe('PATCH /api/workspaces/[id]', () => {
       mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
       res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { overlapHotspots: value } } }), { params: mockParams });
       expect(res.status).toBe(400);
+    }
+  });
+
+  it('validates workspace warm handover and allows clearing to team policy', async () => {
+    for (const value of ['off', 'repo', 'deps', null, 'unknown', true]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { warmHandover: value } } }), { params: mockParams });
+      expect(res.status).toBe(value === 'unknown' || value === true ? 400 : 200);
+      if (res.status === 200) expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, warmHandover: value });
     }
   });
 

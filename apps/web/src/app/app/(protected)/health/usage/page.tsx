@@ -70,10 +70,7 @@ export default async function UsageDrilldownPage({
     );
   }
 
-  const [loaded, hostedRunner] = await Promise.all([
-    loadUsageView({ userId: user.id, teamIds, searchParams: { workspace: wsFilter, window: rawWindow }, includeInternals: false }),
-    loadHostedRunner(user.id),
-  ]);
+  const loaded = await loadUsageView({ userId: user.id, teamIds, searchParams: { workspace: wsFilter, window: rawWindow }, includeInternals: false });
   if (loaded.kind === 'no-workspaces') {
     return (
       <div className="max-w-2xl mx-auto p-6">
@@ -83,5 +80,7 @@ export default async function UsageDrilldownPage({
     );
   }
 
-  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} hostedRunner={hostedRunner} roleUsage={loaded.roleUsage} monthly={loaded.monthly} />;
+  // The team's hosted-runner month is team-wide spend: read only for the team view.
+  const hostedRunner = loaded.scope === 'team' ? loadHostedRunner(user.id) : null;
+  return <UsageClient view={loaded.view} wsFilter={loaded.wsFilter} hostedRunner={await hostedRunner} roleUsage={loaded.roleUsage} monthly={loaded.monthly} scope={loaded.scope} />;
 }

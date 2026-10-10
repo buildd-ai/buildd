@@ -386,7 +386,46 @@ const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  * message if missing or malformed — specifically calling out 8-character UI
  * prefixes, which are the most common mistake.
  */
-const GET_TASK_INCLUDES: readonly string[] = ['workers', 'artifacts', 'scheduling', 'dispatch'];
+const GET_TASK_INCLUDES: readonly string[] = ['workers', 'artifacts', 'scheduling', 'dispatch', 'milestones'];
+
+/** Newest milestones shown per worker by get_task include:["milestones"]. */
+export const GET_TASK_MILESTONES_SHOWN = 25;
+const MILESTONE_LABEL_MAX = 200;
+/** The merge-transparency record: always shown, whatever the cap. */
+const PINNED_MILESTONE = /^(Pre-merge|Merge):/;
+
+function milestoneText(m: Record<string, unknown>): string {
+  const label = typeof m.label === 'string' ? m.label : '';
+  if (label) return label;
+  if (typeof m.event === 'string') return m.event;
+  return [m.tool, m.path ?? m.cmd].filter(v => typeof v === 'string' && v).join(' ');
+}
+
+/**
+ * get_task include:["milestones"]: a worker's milestones, one line each,
+ * oldest first: `<ISO time> <type> <label>`. Keeps the newest `cap` and says
+ * how many it left out; `Pre-merge:`/`Merge:` lines are always kept, since
+ * they record what the runner's merge drivers (and mergiraf) did.
+ */
+export function formatWorkerMilestones(milestones: unknown, cap = GET_TASK_MILESTONES_SHOWN): string[] {
+  const rows = (Array.isArray(milestones) ? milestones : [])
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object' && typeof (m as { type?: unknown }).type === 'string')
+    .map((m, i) => ({ m, i, ts: typeof m.ts === 'number' ? m.ts : 0 }))
+    .sort((a, b) => a.ts - b.ts || a.i - b.i);
+  if (rows.length === 0) return ['  Milestones: none recorded'];
+  const keepFrom = Math.max(0, rows.length - cap);
+  const shown = rows.filter((r, idx) => idx >= keepFrom || PINNED_MILESTONE.test(milestoneText(r.m)));
+  const omitted = rows.length - shown.length;
+  const lines = [`  Milestones (${rows.length}):`];
+  if (omitted > 0) lines.push(`  (${omitted} earlier omitted)`);
+  for (const { m, ts } of shown) {
+    const text = milestoneText(m).replace(/\s+/g, ' ').trim();
+    const cut = text.length > MILESTONE_LABEL_MAX ? `${text.slice(0, MILESTONE_LABEL_MAX - 1)}…` : text;
+    const when = ts > 0 ? new Date(ts).toISOString() : 'unknown-time';
+    lines.push(`  - ${when} ${m.type}${cut ? ` ${cut}` : ''}`);
+  }
+  return lines;
+}
 
 /** get_task include:["dispatch"]: one line per outbox intent, oldest first. */
 export function formatDispatchTrail(trail: unknown): string[] {
@@ -897,7 +936,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
     list_workspaces: '{ offset?, limit? (default 20, max 50) } — the workspaces this connection can act in, grouped by team: id, name, repo, the level you act at there and your access (read or read-write). On an account-level connection it lists exactly the workspaces you granted it that you are still a member of, nothing else. Name one of them (id, owner/repo or name) on any other action. Read-only; nextOffset pages.',
     list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling"|"dispatch"|"milestones", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource; "dispatch" adds the task\'s dispatch outbox trail, one line per wake: cause, status, transport, handed-off time, delivered via, attempts, last error; "milestones" adds each shown worker\'s milestones, one line each (ISO time, type, label), the newest 25 plus every `Pre-merge:`/`Merge:` line, which record what the runner\'s merge drivers and mergiraf did), fullDescription?, all? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts: by default the newest 3 workers, 10 artifacts and 5 loop iterations, each cut saying how many it left out; all:true returns every one (and full worker errors). Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped. From your own Claude Code session the claim runs on your seat, so the account\'s Claude session wall and the team\'s recorded provider rate-limit walls are skipped too; a runner that names a task is still held by them, and tenant work is still held by its tenant budget. A held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason (a budget_exhausted refusal names the wall that held it and when it lifts), plus the specific gate that excluded taskId when one was given.',
     receive_messages: '{ workerId? } — collect the messages sent to you: human steering (send_agent_message / the task page), replies to your post_note questions, mission guidance and worker→worker messages. Each is returned once and acknowledged as read. On a runner-managed worker the runner already delivers these into your session at the next turn boundary, so this returns nothing there; in an interactive or local-plugin session call it when a hook says messages are waiting. workerId auto-resolved from context if omitted.',
     update_progress: '{ workerId?, progress? (legacy self-report; never displayed), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, costBasis? ("real"|"virtual"|"unknown"), lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats. costBasis says how that usage was charged: "real" (per token, e.g. an API key) or "virtual" (a subscription plan, valued at list price); omit it when you do not know and it records as unknown.',
@@ -921,8 +960,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
-    get_artifact: '{ artifactId (required) } — fetch full artifact content by ID; file artifacts include a short-lived presigned download URL',
-    update_artifact: '{ artifactId (required), title?, content?, metadata? }',
+    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body) } — fetch full artifact content by ID, with its current revision and sha256; file artifacts include a short-lived presigned download URL',
+    update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
@@ -2566,6 +2605,7 @@ export async function handleBuilddAction(
             wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
             wlines.push(`  Action URL: ${actionUrl}`);
           }
+          if (includes.includes('milestones')) wlines.push(...formatWorkerMilestones(w.milestones));
           lines.push(wlines.join('\n'));
         }
         if (omittedWorkers > 0) lines.push(`(${omittedWorkers} older worker${omittedWorkers === 1 ? '' : 's'} omitted — pass all:true for every one.)`);
@@ -4842,7 +4882,8 @@ export async function handleBuilddAction(
     case 'get_artifact': {
       if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
-      const data = await api(`/api/artifacts/${params.artifactId}`);
+      const revisionQuery = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
+      const data = await api(`/api/artifacts/${params.artifactId}${revisionQuery}`);
       const art = data.artifact;
 
       const meta = [
@@ -4852,6 +4893,7 @@ export async function handleBuilddAction(
         art.key && `**Key:** ${art.key}`,
         `**Created:** ${art.createdAt}`,
         `**Updated:** ${art.updatedAt}`,
+        art.revision && `**Revision:** ${art.revision.revision} of ${art.currentRevision}${art.revision.contentHash ? ` (sha256 ${art.revision.contentHash})` : ''}`,
         art.shareUrl && `**Share URL:** ${art.shareUrl}`,
         art.downloadUrl && `**Download URL (presigned, expires in 1 hour — fetch it directly, no credentials needed):** ${art.downloadUrl}`,
         art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
@@ -4869,6 +4911,7 @@ export async function handleBuilddAction(
       if (params.title !== undefined) updateBody.title = params.title;
       if (params.content !== undefined) updateBody.content = params.content;
       if (params.metadata !== undefined) updateBody.metadata = params.metadata;
+      if (params.expectedRevision !== undefined) updateBody.expectedRevision = params.expectedRevision;
 
       if (Object.keys(updateBody).length === 0) {
         throw new Error('At least one field (title, content, metadata) must be provided');
@@ -4880,7 +4923,7 @@ export async function handleBuilddAction(
       });
 
       const updatedArt = updated.artifact;
-      return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+      return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nRevision: ${updatedArt.currentRevision ?? 'n/a'}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
     }
 
     case 'list_artifact_templates': {

@@ -43,6 +43,8 @@ interface Props {
   hostedRunner?: HostedRunnerProps | null;
   roleUsage?: RoleUsageData | null;
   monthly?: MonthlyBudgetForecast | null;
+  /** 'mine': only tasks the viewer started (no view_team_usage); says so under the header. */
+  scope?: 'team' | 'mine';
 }
 
 /**
@@ -51,7 +53,7 @@ interface Props {
  * TASK-KEYED throughout, which is what the header denominator claims and what
  * every section below honours.
  */
-export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null }: Props) {
+export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null, scope = 'team' }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -86,6 +88,10 @@ export function UsageClient({ view, hostedRunner = null, roleUsage = null, month
             </span>
           )}
         </div>
+
+        {scope === 'mine' && (
+          <p data-testid="usage-scope-mine" className="mt-2 text-[11px] text-text-muted">Tasks you started.</p>
+        )}
 
         {view.clampNotice && (
           <p data-testid="usage-clamp-notice" className="mt-2 text-[11px] text-warning">

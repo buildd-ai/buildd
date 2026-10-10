@@ -52,7 +52,7 @@ on:
         required: false
         default: ""
       theme:
-        description: "'light' or 'dark'. Empty = app default (dark)."
+        description: "'light' or 'dark': emulates prefers-color-scheme (and seeds buildd's own theme key); recorded per capture as theme. Empty = app default."
         type: string
         required: false
         default: ""

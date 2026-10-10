@@ -44,13 +44,17 @@ export default function CiRetrySection({ workspaceId, initial, canEdit }: { work
           <h3 className="text-sm font-medium text-text-primary">Fix until CI passes</h3>
           <p className="text-xs text-text-secondary mt-0.5">Task PRs get up to 3 fix rounds when checks fail.</p>
         </div>
-        <Switch
-          checked={on}
-          onChange={toggle}
-          disabled={!canEdit || saving}
-          label="Fix until CI passes"
-          className={SWITCH_HIT_AREA}
-        />
+        {canEdit ? (
+          <Switch
+            checked={on}
+            onChange={toggle}
+            disabled={saving}
+            label="Fix until CI passes"
+            className={SWITCH_HIT_AREA}
+          />
+        ) : (
+          <span data-testid="ci-retry-value" className="text-sm text-text-primary shrink-0">{on ? 'On' : 'Off'}</span>
+        )}
       </div>
       {error && <p className="text-status-error text-sm mt-2" role="alert">{error}</p>}
     </div>

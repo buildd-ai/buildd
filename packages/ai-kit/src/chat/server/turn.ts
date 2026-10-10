@@ -53,6 +53,7 @@ import { approvalRequestsIn, previewMatches, reconcileApprovals, type ApprovalRe
 import type { ChatStore, StoredMessage } from './store';
 import { DEFAULT_MAX_STEERS_PER_TURN, MAX_STEER_TEXT, steerInstruction, type SteerQueue } from './steering';
 import { handoffOf } from './handoff';
+import { DEFAULT_HISTORY_CHARS, fitHistoryToBudget } from './history-budget';
 import type { ReadyTurnModel, TurnModel } from './model';
 import { titleConversation, type TitleLimits, type TitleResult, type TitleRuleContext } from './title';
 
@@ -67,8 +68,14 @@ export const DEFAULT_TURN_LIMITS = {
   historyLimit: 40,
   /** Stored messages loaded for the Allow taint check; hitting it counts as tainted. */
   storedLimit: 500,
-  /** Longest user message accepted. */
-  maxUserText: 8_000,
+  /**
+   * Longest user message accepted, in characters. A long paste is not refused:
+   * the composer shows it as an attachment past 8,000 (presentation only), and
+   * `historyChars` keeps the model's view of the conversation bounded.
+   */
+  maxUserText: 200_000,
+  /** Characters of history text sent to the model per turn (history-budget.ts). Stored history is never trimmed. */
+  historyChars: DEFAULT_HISTORY_CHARS,
   /**
    * Output tokens per model step (`maxOutputTokens`). Without a cap OpenRouter
    * reserves the model's whole output window (often 100k+ tokens) against the
@@ -268,13 +275,21 @@ export function unavailable(reason: ChatUnavailableReason, status: number, messa
   return Response.json({ error: reason, message: message ?? UNAVAILABLE_MESSAGES[reason], ...extra }, { status });
 }
 
-function badRequest(error: string, status = 400): Response {
-  return Response.json({ error }, { status });
+function badRequest(error: string, status = 400, extra: Record<string, unknown> = {}): Response {
+  return Response.json({ error, ...extra }, { status });
 }
 
-function userText(message: ChatMessage, max: number): string | null {
+/** The user message's text, or why it is refused: empty, or over `max` characters. */
+export function userTextOf(message: ChatMessage, max: number): { ok: true; text: string } | { ok: false; code: 'message_empty' | 'message_too_long'; error: string; chars: number } {
   const text = message.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? '')).join('\n').trim();
-  return text && text.length <= max ? text : null;
+  if (!text) return { ok: false, code: 'message_empty', error: 'a message needs some text', chars: 0 };
+  if (text.length > max) {
+    return {
+      ok: false, code: 'message_too_long', chars: text.length,
+      error: `this message is ${text.length.toLocaleString('en-US')} characters; the limit is ${max.toLocaleString('en-US')}`,
+    };
+  }
+  return { ok: true, text };
 }
 
 /** Stored rows → the UI messages the model reads. Event rows become short assistant notes. */
@@ -387,8 +402,9 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     if (!message || (message.role !== 'user' && message.role !== 'assistant') || !Array.isArray(message.parts) || typeof message.id !== 'string') {
       return badRequest('message with id, role and parts is required');
     }
-    const text = message.role === 'user' ? userText(message, limits.maxUserText) : null;
-    if (message.role === 'user' && !text) return badRequest(`a text message of 1–${limits.maxUserText} characters is required`);
+    const checked = message.role === 'user' ? userTextOf(message, limits.maxUserText) : null;
+    if (checked && !checked.ok) return badRequest(checked.error, 400, { code: checked.code, limit: limits.maxUserText, chars: checked.chars });
+    const text = checked?.ok ? checked.text : null;
 
     const { userId, conversationId } = args;
     const stored = await opts.store.loadMessages(conversationId, { limit: limits.storedLimit });
@@ -625,7 +641,8 @@ export function createChatTurn<G extends string = string, X = unknown>(opts: Cha
     };
 
     const startedAt = clock();
-    const modelMessages = await ai.convertToModelMessages(uiMessages, { tools, ignoreIncompleteToolCalls: true });
+    // Only the model's view is trimmed; uiMessages (and the stored history) stay whole.
+    const modelMessages = await ai.convertToModelMessages(fitHistoryToBudget(uiMessages, limits.historyChars), { tools, ignoreIncompleteToolCalls: true });
     let streamError = false;
     const result = ai.streamText({
       model: resolved.model as LanguageModel,

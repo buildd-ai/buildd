@@ -227,6 +227,7 @@ export interface BillingRedirectResponse {
 }
 
 export interface Team {
+  warmHandover?: import('./warm-handover').WarmHandover;
   id: string;
   name: string;
   slug: string;
@@ -2617,6 +2618,19 @@ export interface VisualReviewResolvedElsewhere {
   resolvedBy: string;
 }
 
+/**
+ * A failed audit whose obligation a later audit met: every route the failed
+ * one was sent to check has a passing phone and desktop shot from an audit
+ * that completed after it started, and nothing in the review is unresolved.
+ * The failed task stays failed (its attempt is history); it just no longer
+ * reads as the mission's failure.
+ */
+export interface VisualReviewReplacedAudit {
+  auditTaskId: string;
+  /** The completed audits whose shots cover it. */
+  replacedBy: string[];
+}
+
 /** One audit screenshot, as every surface renders it. */
 export interface VisualReviewShot {
   /** The artifact id. */
@@ -2843,6 +2857,8 @@ export interface VisualReviewModel {
   captureGaps?: VisualReviewCaptureGap[];
   /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
   resolvedElsewhere?: VisualReviewResolvedElsewhere[];
+  /** Failed audits a later completed audit replaced. Still in `audits`, never the phase. */
+  replacedAudits?: VisualReviewReplacedAudit[];
   generatedAt: string;
 }
 

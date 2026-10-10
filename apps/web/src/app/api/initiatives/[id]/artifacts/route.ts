@@ -10,6 +10,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
+import { upsertedContent } from '@/lib/artifact-upsert-content';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
@@ -155,7 +156,8 @@ export async function POST(
         .update(artifacts)
         .set({
           title,
-          content: content || null,
+          content: upsertedContent(existing.content, content),
+          contentAuthor: apiAccount ? `account:${apiAccount.id}` : `user:${user!.id}`,
           metadata: artifactMetadata,
           type,
           initiativeId: id,
@@ -171,7 +173,7 @@ export async function POST(
       // Notify if this artifact is meant for review, the task opted in, and content or title changed.
       if (taskId && initiative!.workspaceId) {
         const shouldNotify = await shouldNotifyOnArtifact(updated, taskId);
-        if (shouldNotify && (existing.content !== (content || null) || existing.title !== title)) {
+        if (shouldNotify && (existing.content !== upsertedContent(existing.content, content) || existing.title !== title)) {
           await notifyArtifactReady(updated, taskId, initiative!.workspaceId);
         }
       }
@@ -191,6 +193,7 @@ export async function POST(
       type,
       title,
       content: content || null,
+      contentAuthor: apiAccount ? `account:${apiAccount.id}` : `user:${user!.id}`,
       shareToken: null,
       visibility: 'private',
       metadata: artifactMetadata,

@@ -36,3 +36,18 @@ export function resolveViewport(raw: string | undefined): BrowserContextOptions 
 function phone(width: number, height: number): BrowserContextOptions {
   return { viewport: { width, height }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 }
+
+export type QaTheme = 'light' | 'dark';
+
+/**
+ * Resolve QA_THEME. Unset is null: no emulation, the app's own default, and
+ * no theme recorded on the capture. A malformed value throws for the same
+ * reason as QA_VIEWPORT: a typo must not produce default-theme shots
+ * labelled as the other theme.
+ */
+export function resolveTheme(raw: string | undefined): QaTheme | null {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'light' || value === 'dark') return value;
+  throw new Error(`QA_THEME must be "light" or "dark", got "${raw}"`);
+}

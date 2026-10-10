@@ -1,67 +1,131 @@
 import { eq } from 'drizzle-orm';
-import { notFound } from 'next/navigation';
+import Link from 'next/link';
 import { db } from '@buildd/core/db';
-import { teams } from '@buildd/core/db/schema';
+import { teamMembers, teams } from '@buildd/core/db/schema';
 import { isBillingEnforced } from '@buildd/core/entitlements';
+import { effectiveKeyPolicy } from '@buildd/core/inference-key-policy';
 import Chip from '@/components/ui/Chip';
+import Section from '@/components/ui/Section';
 import { roleHas } from '@/lib/permission-registry';
 import { BILLING_TEAM_COLUMNS } from '@/lib/billing/team-billing-access';
 import { teamSeatUsage } from '@/lib/billing/seats';
+import { settingsReadOnly } from '@/lib/settings-nav';
+import { DEFAULT_CHAT_DAILY_BUDGET_USD, DEFAULT_CHAT_USER_SHARE } from '@/lib/chat/limits';
+import { loadSpendSummary, type SpendSummary } from '@/lib/spend-summary';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { billingView, PLAN_FEATURES, PLAN_LABELS } from './billing-view';
 import { ManageBillingButton, SeatsForm, UpgradeButton } from './BillingActions';
+import CapsForm from './CapsForm';
+import { timeZoneLabel } from './timezone-label';
+import { MySpend, PeopleSpend } from './SpendTables';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Billing: the team's plan, upgrade buttons, seats and the
- * Stripe portal. Does not exist while BILLING_ENFORCED is off (404, and the nav
- * omits it). Every change goes through Stripe; the plan shown here moves when
- * the webhook lands, not when a button is pressed.
+ * Settings → Team → Billing and budgets: the team's plan, seats and the Stripe
+ * portal, then your spend (Interactive vs Agent runs), everyone's for admins,
+ * and the daily caps on interactive spend. Runner spend limits sit on each
+ * runner token.
+ *
+ * While BILLING_ENFORCED is off the plan half is absent and the page is
+ * Budgets (settingsNavFor names it the same way). Every plan change goes
+ * through Stripe; the plan shown here moves when the webhook lands, not when
+ * a button is pressed.
  */
 export default async function BillingSettingsPage({
   searchParams,
 }: {
   searchParams: Promise<{ checkout?: string }>;
 }) {
-  if (!isBillingEnforced()) notFound();
-
-  const { user, currentTeam } = await loadSettingsContext();
+  const billing = isBillingEnforced();
+  const title = billing ? 'Billing and budgets' : 'Budgets';
+  const { user, currentTeam, perms } = await loadSettingsContext();
   const { checkout } = await searchParams;
 
   if (!currentTeam) {
     return (
-      <SettingsPage title="Billing">
+      <SettingsPage title={title}>
         <p className="text-sm text-text-secondary">Join or create a team first.</p>
       </SettingsPage>
     );
   }
 
-  const [teamRow, usage] = await Promise.all([
-    db.query.teams.findFirst({ where: eq(teams.id, currentTeam.id), columns: BILLING_TEAM_COLUMNS }).catch(() => null),
-    teamSeatUsage(currentTeam.id).catch(() => ({ members: 0, pending: 0 })),
+  const [teamRow, members, usage] = await Promise.all([
+    db.query.teams.findFirst({
+      where: eq(teams.id, currentTeam.id),
+      columns: { ...BILLING_TEAM_COLUMNS, timezone: true, inferenceKeyPolicy: true, credentialPolicy: true },
+    }).catch(() => null),
+    db.query.teamMembers.findMany({
+      where: eq(teamMembers.teamId, currentTeam.id),
+      with: { user: { columns: { id: true, name: true, email: true } } },
+    }).catch(() => [] as Array<{ userId: string; user: { name: string | null; email: string | null } | null }>),
+    billing ? teamSeatUsage(currentTeam.id).catch(() => ({ members: 0, pending: 0 })) : null,
   ]);
-  if (!teamRow) {
-    return (
-      <SettingsPage title="Billing">
-        <p className="text-sm text-text-secondary">Could not load billing.</p>
-      </SettingsPage>
-    );
-  }
+  const keyPolicy = effectiveKeyPolicy(teamRow) ?? 'team';
+  const timeZone = teamRow?.timezone || 'UTC';
+  const spend: SpendSummary | null = await loadSpendSummary({
+    teamId: currentTeam.id,
+    userId: user.id,
+    timeZone,
+    now: new Date(),
+    members: members.map((m) => ({ userId: m.userId, name: m.user?.name ?? null, email: m.user?.email ?? null })),
+  }).catch(() => null);
 
-  const view = billingView(teamRow, usage);
   // manage_billing is locked to owner/admin; a personal team's user is its owner.
-  const canManage = roleHas(currentTeam.role, 'manage_billing', null) || currentTeam.slug === `personal-${user.id}`;
+  const canManageBilling = roleHas(currentTeam.role, 'manage_billing', null) || currentTeam.slug === `personal-${user.id}`;
 
   return (
-    <SettingsPage title="Billing">
-      {checkout === 'success' && (
+    <SettingsPage title={title} readOnly={settingsReadOnly('billing', perms) && !canManageBilling}>
+      {billing && checkout === 'success' && (
         <p className="notice notice-ok text-sm" data-testid="billing-checkout-success">
           Payment received. Your plan updates here in a moment.
         </p>
       )}
 
+      {billing && (teamRow && usage
+        ? <PlanSections view={billingView(teamRow, usage)} teamId={currentTeam.id} canManage={canManageBilling} />
+        : <p className="text-sm text-text-secondary">Could not load billing.</p>)}
+
+      <Section
+        title="Your spend"
+        action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}
+      >
+        {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
+        <p className="mt-2 text-xs text-text-secondary">
+          Spend in detail is in{' '}
+          <Link href="/app/health/usage" className="underline hover:text-text-primary" data-testid="budgets-usage-link">Health › Usage</Link>.
+        </p>
+      </Section>
+
+      {/* Kept here pending an owner decision on whether it moves to Health › Usage. */}
+      {perms.view_team_usage && spend && spend.people.length > 1 && (
+        <Section title="By person this month">
+          <PeopleSpend people={spend.people} unattributed={spend.unattributedAgent} />
+        </Section>
+      )}
+
+      <Section title="Interactive caps">
+        <CapsForm
+          teamId={currentTeam.id}
+          canManage={perms.manage_team_settings}
+          keyPolicy={keyPolicy}
+          defaultTeamUsd={DEFAULT_CHAT_DAILY_BUDGET_USD}
+          defaultUserShare={DEFAULT_CHAT_USER_SHARE}
+        />
+      </Section>
+    </SettingsPage>
+  );
+}
+
+/** The plan, seats and upgrades. Rendered only while billing is enforced. */
+function PlanSections({ view, teamId, canManage }: {
+  view: ReturnType<typeof billingView>;
+  teamId: string;
+  canManage: boolean;
+}) {
+  return (
+    <>
       <section aria-labelledby="billing-plan-h" data-testid="billing-current-plan">
         <h2 id="billing-plan-h" className="section-label mb-3">Current plan</h2>
         <div className="border border-border-default bg-card p-4 space-y-3">
@@ -76,7 +140,7 @@ export default async function BillingSettingsPage({
           )}
           {canManage && view.hasCustomer && (
             <div className="pt-1">
-              <ManageBillingButton teamId={currentTeam.id} primary={view.upgrades.length === 0} />
+              <ManageBillingButton teamId={teamId} primary={view.upgrades.length === 0} />
             </div>
           )}
         </div>
@@ -85,7 +149,7 @@ export default async function BillingSettingsPage({
       {canManage && view.plan === 'team' && view.subscribed && view.paidSeats !== null && (
         <section aria-labelledby="billing-seats-h">
           <h2 id="billing-seats-h" className="section-label mb-3">Members</h2>
-          <SeatsForm teamId={currentTeam.id} paidSeats={view.paidSeats} used={view.used} />
+          <SeatsForm teamId={teamId} paidSeats={view.paidSeats} used={view.used} />
         </section>
       )}
 
@@ -102,16 +166,13 @@ export default async function BillingSettingsPage({
                 {canManage && (
                   plan === 'pro' && view.proBlocked
                     ? <p className="text-meta text-text-muted">For one person. This team has more.</p>
-                    : <UpgradeButton teamId={currentTeam.id} plan={plan} seats={plan === 'team' ? view.used : undefined} primary={plan === 'team'} />
+                    : <UpgradeButton teamId={teamId} plan={plan} seats={plan === 'team' ? view.used : undefined} primary={plan === 'team'} />
                 )}
               </li>
             ))}
           </ul>
-          {!canManage && (
-            <p className="text-meta text-text-muted mt-3">Only team owners and admins can change the plan.</p>
-          )}
         </section>
       )}
-    </SettingsPage>
+    </>
   );
 }

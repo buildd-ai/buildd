@@ -39,37 +39,30 @@ async function mount(canManage: boolean) {
 const checkboxes = () => [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
 
 describe('NotificationsSection: member vs admin', () => {
-  it('one Channels list with the personal row between the team rows; events titled Team alerts, unboxed', async () => {
-    globalThis.fetch = mock(async () => new Response(JSON.stringify(STATE), { status: 200 })) as unknown as typeof fetch;
-    host = document.createElement('div');
-    document.body.append(host);
-    root = createRoot(host);
-    await act(async () => {
-      root.render(<NotificationsSection workspaces={[{ id: 'w1', name: 'billing-web', teamId: 't1' }]} currentTeamId="t1" personal={<li data-testid="mine">mine</li>} />);
-    });
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  it("one Channels list of the team's channels; events titled Team alerts, unboxed", async () => {
+    await mount(true);
     const rows = [...host.querySelectorAll('[data-testid="notification-channels"] > li')].map((li) => li.getAttribute('data-testid'));
-    expect(rows).toEqual(['channel-pushover-team', 'mine', 'channel-webhook']);
+    expect(rows).toEqual(['channel-pushover-team', 'channel-webhook']);
     const headings = [...host.querySelectorAll('h2')].map((h) => h.textContent);
     expect(headings).toEqual(['Channels', 'Team alerts']);
     expect(host.querySelector('.inset-panel, .card')).toBeNull();
   });
 
-
-  it('member: channel status and event choices, read-only, no inputs or buttons', async () => {
+  it('member: channel status and event choices as words, with no form controls at all', async () => {
     await mount(false);
-    expect(host.querySelector('[data-testid="notifications-read-only"]')!.textContent).toBe('Admins can change this.');
+    // The page says once who manages it (SettingsPage readOnly); nothing per section.
+    expect(host.textContent).not.toContain('Admins can change');
     // One state vocabulary across every channel row.
     expect(host.querySelector('[data-testid="channel-pushover-team"]')!.textContent).toContain('Connected');
     expect(host.querySelector('[data-testid="channel-webhook"]')!.textContent).toContain('Not connected');
     expect(host.textContent).not.toContain('Configured');
-    expect(host.querySelectorAll('input[type="password"], input[type="url"], button').length).toBe(0);
-    expect(checkboxes().map((c) => [c.checked, c.disabled])).toEqual([[false, true], [true, true], [true, true], [true, true]]);
+    expect(host.querySelectorAll('input, button, select, textarea, [role="switch"]').length).toBe(0);
+    const events = [...host.querySelectorAll('[data-testid="notification-events"] [data-testid="event-state"]')].map((e) => e.textContent);
+    expect(events).toEqual(['Off', 'On', 'On', 'On']);
   });
 
   it('admin: channel inputs, Save channel and live event toggles', async () => {
     await mount(true);
-    expect(host.querySelector('[data-testid="notifications-read-only"]')).toBeNull();
     // Inputs open under the row on Replace / Set up, not all at once.
     expect(host.querySelectorAll('input[type="password"]').length).toBe(0);
     const replace = [...host.querySelectorAll('[data-testid="channel-pushover-team"] button')].find((b) => b.textContent === 'Replace') as HTMLButtonElement;

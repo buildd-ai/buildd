@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ChatTierPolicySection } = await import('./ChatTierPolicySection');
+const { describeControls } = await import('../_lib/form-controls');
 
 let team: Record<string, unknown>;
 let chatMax: string | null;
@@ -59,9 +60,26 @@ describe('ChatTierPolicySection', () => {
     expect(opt.getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('non-admins cannot edit or resolve the reset', async () => {
+  it('a member reads the starting tier and the reset as text, with no control', async () => {
     team.chatCapNewSessionTier = true;
     await mount(false);
     expect(q('legacy-reset-off')).toBeNull();
+    expect(q('chat-default-tier-value')!.textContent).toBe('premium');
+    expect(q('legacy-reset-notice')!.textContent).toContain('reset to it');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change this/);
+  });
+
+  it('a member sees a blocked starting tier without being told to change it', async () => {
+    chatMax = 'standard';
+    await mount(false);
+    expect(q('starting-tier-blocked')!.textContent).toBe('premium is above the Chat maximum (standard), so new chats start at standard.');
+    expect(describeControls(host)).toEqual([]);
+  });
+
+  it('a member with no starting tier set reads auto', async () => {
+    team.chatDefaultTier = null;
+    await mount(false);
+    expect(q('chat-default-tier-value')!.textContent).toBe('auto');
   });
 });

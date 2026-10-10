@@ -47,6 +47,7 @@ import { chatReadRoutes } from './in-process-api';
 import { loadDocked, renderDocked } from './docked';
 import { buildPreview } from './previews';
 import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON, answerText } from '@builddai/ai-kit/chat/contract';
+import { fitHistoryToBudget, userTextOf } from '@builddai/ai-kit/chat/server';
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
@@ -60,7 +61,7 @@ import { loadTierCeiling } from '@buildd/core/model-tier-ceiling-store';
 import { enforceModelCeiling } from '@buildd/core/model-tier-ceiling';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
 import type { CatalogEntry } from '@buildd/core/model-catalog';
-import { enforceTierCeiling, tierWithin, type TierCeiling } from '@buildd/shared';
+import { CHAT_MAX_MESSAGE_CHARS, enforceTierCeiling, tierWithin, type TierCeiling } from '@buildd/shared';
 import {
   DEFAULT_TURN_TIMING, TURN_STOPPED_NOTE, USAGE_SETTLE_MS, settleWithin, withDeadlineWatchdog, withStoppedNote, wrapUpStep,
   type TurnTiming,
@@ -77,7 +78,13 @@ import {
 
 export const MAX_STEPS = 8;
 export { TURN_BUDGET_MS } from './turn-deadline';
-export const MAX_USER_TEXT = 8_000;
+/** Longest user message accepted (characters); CHAT_MAX_MESSAGE_CHARS overrides the shared default. */
+export const MAX_USER_TEXT = maxUserTextFromEnv(process.env.CHAT_MAX_MESSAGE_CHARS);
+
+export function maxUserTextFromEnv(raw: string | undefined): number {
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : CHAT_MAX_MESSAGE_CHARS;
+}
 
 export interface TurnUser {
   id: string;
@@ -213,11 +220,7 @@ function userTurnUsageRouted(route: Pick<TurnRoute, 'usage' | 'routing'>, routed
   return { ...(usage ?? { inputTokens: 0, outputTokens: 0, costUsd: null }), routedWorkspaceId };
 }
 
-function userText(message: ChatTurnRequest['message']): string | null {
-  const texts = message.parts.filter(p => p.type === 'text').map(p => String((p as { text?: unknown }).text ?? ''));
-  const text = texts.join('\n').trim();
-  return text && text.length <= MAX_USER_TEXT ? text : null;
-}
+
 
 /** A new mission's draft: its own full card, never a row beside other writes. */
 function isMissionDraft(tool: string, input: unknown): boolean {
@@ -250,10 +253,12 @@ export async function runChatTurn(args: {
     return Response.json({ error: 'message with role and parts is required' }, { status: 400 });
   }
 
-  const text = message.role === 'user' ? userText(message) : null;
-  if (message.role === 'user' && !text) {
-    return Response.json({ error: `a text message of 1–${MAX_USER_TEXT} characters is required` }, { status: 400 });
+  // Refused before any spend: no limits row, no routing call, no model call.
+  const checked = message.role === 'user' ? userTextOf(message as Parameters<typeof userTextOf>[0], MAX_USER_TEXT) : null;
+  if (checked && !checked.ok) {
+    return Response.json({ error: checked.error, code: checked.code, limit: MAX_USER_TEXT, chars: checked.chars }, { status: 400 });
   }
+  const text = checked?.ok ? checked.text : null;
   // Limits (budget, then atomic admission), history and the routing call's
   // policy + key lookup run in parallel: the lookup spends nothing, and doing it
   // here leaves routing's whole deadline to the provider. The routing call
@@ -530,7 +535,8 @@ export async function runChatTurn(args: {
   const result = (deps.streamTextImpl ?? streamText)({
     model: resolved.model as LanguageModel,
     instructions,
-    messages: await convertToModelMessages(uiMessages, { tools, ignoreIncompleteToolCalls: true }),
+    // Only the model's view is bounded; uiMessages and the stored rows stay whole.
+    messages: await convertToModelMessages(fitHistoryToBudget(uiMessages), { tools, ignoreIncompleteToolCalls: true }),
     tools,
     // Only this turn's groups are sent to the model; every tool stays defined,
     // so an approved call from an earlier turn still executes.

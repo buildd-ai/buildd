@@ -422,3 +422,55 @@ export function withKeyStatus(
     return k === undefined ? r : { ...r, key: k ? 'set' : 'missing' };
   });
 }
+
+// ── Where the pick will run ─────────────────────────────────────────────────
+
+/** What the chosen model will be used for. Omitted = no check. */
+export type PickerTarget = 'chat' | 'claude-code' | 'cloud' | 'codex';
+
+/** Resolve a picker's `target`, which may vary by route (a coding cell mixes Claude and Codex runners). */
+export function targetOf(target: PickerTarget | ((routeId: string) => PickerTarget | undefined) | undefined, routeId: string): PickerTarget | undefined {
+  return typeof target === 'function' ? target(routeId) : target;
+}
+
+/** What a tier cell's pick will run: chat is chat; coding is Codex on the Codex runner, Claude Code otherwise. */
+export function cellTarget(surface: 'agent' | 'chat'): (routeId: string) => PickerTarget {
+  return (routeId) => (surface === 'chat' ? 'chat' : routeId === 'runner:codex' ? 'codex' : 'claude-code');
+}
+
+const OPENAI_ROUTES = new Set(['openai', 'openai-codex', 'runner:codex']);
+const needsAnthropicWire = (t: PickerTarget) => t === 'claude-code' || t === 'cloud';
+
+const TARGET_WORD: Record<PickerTarget, string> = {
+  chat: 'chat', 'claude-code': 'Claude Code', cloud: 'cloud coding', codex: 'Codex',
+};
+
+/**
+ * Why a route can't serve `target`, or null. An OpenAI API key or Codex seat
+ * speaks the OpenAI wire; Claude Code and cloud coding need an
+ * Anthropic-compatible one (Anthropic, OpenRouter, a gateway), and an OpenAI
+ * key does not serve chat from a Codex seat either.
+ */
+export function routeUnsupported(route: Pick<PickerRouteSpec, 'id' | 'catalog'>, target: PickerTarget | undefined): string | null {
+  if (!target) return null;
+  const openai = OPENAI_ROUTES.has(route.id) || route.catalog === 'openai';
+  if (openai && needsAnthropicWire(target)) {
+    return `${route.id === 'openai-codex' || route.id === 'runner:codex' ? 'A Codex seat' : 'An OpenAI key'} can't run ${TARGET_WORD[target]}: it needs an Anthropic-compatible route. Use Anthropic or OpenRouter.`;
+  }
+  if (route.id === 'openai-codex' && target === 'chat') return "A Codex seat signs in Codex only; it can't serve chat. Use an OpenAI API key.";
+  if (!openai && target === 'codex' && route.id !== 'openrouter') return `${route.id} models don't run in Codex. Use an OpenAI key or Codex seat.`;
+  return null;
+}
+
+/**
+ * A row's warning for `target`: the route can't serve it, or the model itself is
+ * OpenAI's on a route that carries it to Claude Code / cloud (e.g. via OpenRouter).
+ */
+export function rowWarning(row: Pick<PickerRow, 'route' | 'vendor'>, route: Pick<PickerRouteSpec, 'id' | 'catalog'>, target: PickerTarget | undefined): string | null {
+  const r = routeUnsupported(route, target);
+  if (r) return r;
+  if (target && needsAnthropicWire(target) && row.vendor === 'openai') {
+    return `OpenAI models don't run in ${TARGET_WORD[target]} reliably: the tool protocol differs. Pick a Claude model, or use Codex.`;
+  }
+  return null;
+}

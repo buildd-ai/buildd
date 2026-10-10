@@ -249,10 +249,45 @@
       "breakpoints": true
     },
     {
+      "idx": 286,
+      "version": "7",
+      "when": 1791630254259,
+      "tag": "0286_wild_winter_soldier",
+      "breakpoints": true
+    },
+    {
       "idx": 287,
       "version": "7",
-      "when": 1791641972147,
-      "tag": "0287_perfect_red_hulk",
+      "when": 1791649905550,
+      "tag": "0287_special_darkhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 288,
+      "version": "7",
+      "when": 1791651678452,
+      "tag": "0288_cooing_agent_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1791651679082,
+      "tag": "0289_artifact_revisions_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1791656376294,
+      "tag": "0290_fat_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 291,
+      "version": "7",
+      "when": 1791659192128,
+      "tag": "0291_absurd_moon_knight",
       "breakpoints": true
     }
   ]

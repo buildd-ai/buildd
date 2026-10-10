@@ -11,7 +11,7 @@ import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isWarmHandover, isRunnerSize, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
@@ -405,6 +405,10 @@ export async function PATCH(
       // Cloud-runner container class: exact values only. The derived marker is
       // buildd's to write; an admin may only clear it (null), which lets the
       // next dispatch derive the size afresh.
+      if ('warmHandover' in gitConfig) {
+        const value = (gitConfig as Record<string, unknown>).warmHandover;
+        if (value !== null && !isWarmHandover(value)) return NextResponse.json({ error: "gitConfig.warmHandover must be 'off', 'repo', 'deps' or null" }, { status: 400 });
+      }
       if ('runnerSize' in gitConfig) {
         const value = (gitConfig as Record<string, unknown>).runnerSize;
         if (value !== null && !isRunnerSize(value)) {
@@ -463,6 +467,15 @@ export async function PATCH(
           if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
             return NextResponse.json(
               { error: "gitConfig.surfaceOrdering must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
+        if ('landingLane' in gc) {
+          const mode = gc.landingLane;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.landingLane must be 'off', 'shadow', 'enforce' or null" },
               { status: 400 },
             );
           }
