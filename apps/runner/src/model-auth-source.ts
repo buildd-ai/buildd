@@ -43,7 +43,7 @@ export interface ModelAuthSourceInput {
   isCodexTask: boolean;
   /** The claim's runnerLocalAllowed (false: the claim carries the requester's own key). */
   runnerLocalAllowed: boolean;
-  /** The team's agent model endpoint was delivered (or withheld for this runner). */
+  /** The team's agent model endpoint was delivered. A withheld one (modelEndpointIgnored) is not selected. */
   teamEndpointSelected: boolean;
   /** This runner's own LLM_PROVIDER is a paid route (openrouter or a base URL). */
   runnerProviderSelected: boolean;

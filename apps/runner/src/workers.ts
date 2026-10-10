@@ -3741,7 +3741,7 @@ export class WorkerManager {
       const authSource = decideModelAuthSource(process.env, {
         isCodexTask,
         runnerLocalAllowed,
-        teamEndpointSelected: !!worker.modelEndpoint || !!worker.modelEndpointIgnored,
+        teamEndpointSelected: !!worker.modelEndpoint,
         runnerProviderSelected: !!(this.config.llmProvider?.provider === 'openrouter' || this.config.llmProvider?.baseUrl),
         cloud: !!cloudCostBasis(process.env),
       });
@@ -3763,7 +3763,7 @@ export class WorkerManager {
         llmProvider: this.config.llmProvider,
         serverApiKey: authSource.dropServerCredentials ? undefined : worker.serverApiKey,
         serverOauthToken: authSource.dropServerCredentials ? undefined : worker.serverOauthToken,
-        tenantOauthToken,
+        tenantOauthToken: authSource.dropServerCredentials ? undefined : tenantOauthToken,
         isCodexTask,
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,

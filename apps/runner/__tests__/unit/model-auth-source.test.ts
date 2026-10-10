@@ -92,3 +92,11 @@ describe('with applyModelEnv', () => {
     expect(m.env.ANTHROPIC_API_KEY).toBe('sk-team-0123456789');
   });
 });
+
+describe('withheld team endpoint is not a selected paid route', () => {
+  test('teamEndpointSelected=false (endpoint ignored for this runner) stays runner-managed and drops server credentials', () => {
+    const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner' };
+    const d = decideModelAuthSource(env, { ...base, teamEndpointSelected: false, probe: probe(homeWithLogin(), env) });
+    expect(d).toMatchObject({ label: 'runner-managed', dropServerCredentials: true });
+  });
+});
