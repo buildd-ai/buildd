@@ -111,6 +111,7 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/chat') return 'Chat';
   if (pathname === '/app/missions') return 'Missions';
+  if (pathname === '/app/missions/plan') return 'Plan';
   if (pathname === '/app/releases') return 'Releases';
   if (pathname === '/app/initiatives') return 'Initiatives';
   if (pathname === '/app/workspaces') return 'Workspaces';

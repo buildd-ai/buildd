@@ -33,7 +33,7 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
   const shell = (children: React.ReactNode) => (
     <div className="px-4 sm:px-7 md:px-10 pt-6 md:pt-8 pb-10 max-w-[1180px]">
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 data-testid="plan-headline" className="sr-only md:not-sr-only text-heading font-semibold text-text-primary">Plan</h1>
+        <h1 data-testid="plan-headline" className="text-heading font-semibold text-text-primary">Plan</h1>
         {back}
       </div>
       {children}
@@ -43,7 +43,9 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
   if (!(await taskEstimatesEnabled(activeTeamId))) {
     return shell(
       <p data-testid="plan-off" className="text-body text-text-secondary">
-        Plan needs task estimates, which are off for this team. Turn them on in team settings and finish dates will show here.
+        Plan needs task estimates, which are off for this team. Turn them on in{' '}
+        <Link href="/app/settings/team" data-testid="plan-off-cta" className="underline hover:text-text-primary">team settings</Link>{' '}
+        and finish dates will show here.
       </p>,
     );
   }
