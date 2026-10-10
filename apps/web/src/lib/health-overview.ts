@@ -43,6 +43,7 @@ export interface OverviewStatusRow {
 }
 
 const RUNNERS_HREF = '/app/health/runners';
+const BUDGETS_HREF = '/app/settings/billing';
 
 export function attentionCount(a: OverviewAttention): number {
   return (a.noRunners ? 1 : 0) + a.offlineRunners + a.unsandboxedRunners + a.brokenCredentials
@@ -103,9 +104,9 @@ export function overviewStatusRows(s: OverviewState): OverviewStatusRow[] {
           label: 'Budget',
           value: `${usd(budget.monthly.spentUsd)} of ${usd(budget.monthly.budgetUsd)} this month`,
           tone: budget.monthly.pctUsed >= 90 ? 'error' : budget.monthly.pctUsed >= 70 ? 'warning' : 'ok',
-          href: '/app/health/usage',
+          href: BUDGETS_HREF,
         }
-      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: '/app/health/usage' };
+      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: BUDGETS_HREF };
 
   return [runnerRow, credentialRow, budgetRow];
 }

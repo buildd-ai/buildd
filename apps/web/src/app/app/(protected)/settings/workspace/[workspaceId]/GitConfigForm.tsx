@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
-import { CriteriaGraderControl, criteriaGraderLabel, normalizeCriteriaGrader, type CriteriaGraderValue } from './CriteriaGraderControl';
 import { ReadOnlyFacts, type Fact } from './ReadOnlyFacts';
 
 interface GitConfig {
@@ -36,7 +35,6 @@ interface GitConfig {
     defaultBackend?: 'claude' | 'codex';
     mergePolicy?: { tier?: 'auto-threshold' | 'agent-review' | 'human' } | null;
     defaultRunnerPreference?: 'any' | 'user' | 'service' | 'action';
-    criteriaGrader?: 'auto' | 'api' | 'runner';
 }
 
 function describeMergeTier(tier: 'auto-threshold' | 'agent-review' | 'human' | undefined): string {
@@ -143,9 +141,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
     const [defaultBackend, setDefaultBackend] = useState<'default' | 'claude' | 'codex'>(
         initialConfig?.defaultBackend || 'default'
     );
-    const [criteriaGrader, setCriteriaGrader] = useState<CriteriaGraderValue>(
-        normalizeCriteriaGrader(initialConfig?.criteriaGrader)
-    );
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -187,7 +182,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                     effort: effort === 'none' ? undefined : effort,
                     defaultRunnerPreference: defaultRunnerPreference !== 'any' ? defaultRunnerPreference : undefined,
                     defaultBackend: defaultBackend === 'default' ? undefined : defaultBackend,
-                    criteriaGrader,
                 }),
             });
 
@@ -297,10 +291,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                     { label: 'Runner type', value: optionLabel(RUNNER_OPTIONS, defaultRunnerPreference) },
                     { label: 'Default agent backend', value: optionLabel(BACKEND_OPTIONS, defaultBackend) },
                 ],
-            },
-            {
-                title: 'Advanced',
-                facts: [{ label: 'Criteria grading', value: criteriaGraderLabel(criteriaGrader) }],
             },
         ];
         return (
@@ -724,12 +714,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                         </p>
                     </div>
                 </div>
-            </div>
-
-            {/* Advanced Section */}
-            <div className="py-4 first:pt-0">
-                <h3 className="text-sm font-medium text-text-primary mb-3">Advanced</h3>
-                <CriteriaGraderControl value={criteriaGrader} onChange={setCriteriaGrader} />
             </div>
 
             </div>
