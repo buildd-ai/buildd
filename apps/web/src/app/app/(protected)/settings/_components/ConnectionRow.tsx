@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import { TonePill } from '@/components/ui/StatePill';
 import type { StateTone } from '@/components/ui/states';
 
@@ -11,6 +11,13 @@ const CHIP_TONE: Record<ChipTone, StateTone> = { ok: 'ok', warn: 'dec', err: 'ba
 export function StatusChip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
   return <TonePill tone={CHIP_TONE[tone]}>{children}</TonePill>;
 }
+
+/**
+ * Inside a provider row (Settings → Models) a connection has no row of its own:
+ * the provider's row is the one row, and the connection's controls are its
+ * opened detail. Under this context ConnectionRow draws only its children.
+ */
+export const EmbeddedConnectionContext = createContext(false);
 
 /**
  * One connection on Settings → Runners: name, status chip and one line of
@@ -37,6 +44,10 @@ export default function ConnectionRow({
   id?: string;
   readOnly?: boolean;
 }) {
+  const embedded = useContext(EmbeddedConnectionContext);
+  if (embedded) {
+    return <div id={id} data-testid={testId} data-embedded="true" className="space-y-3">{children}</div>;
+  }
   const heading = (
     <span className="min-w-0 flex-1">
       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
