@@ -18,6 +18,13 @@ const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev';
 // long against an hourly watch cadence.
 const SHA_GRACE_MINUTES = 5;
 
+// The execution control plane Worker deploys after the web app's Production
+// deployment succeeds (.github/workflows/deploy-control-plane.yml: install,
+// tests, deploy, verify), so it trails web by minutes. Past this, a Worker on
+// another commit means that deploy did not land. Fifteen minutes always leaves
+// at least one probe of the hourly watch inside its window.
+export const CONTROL_PLANE_GRACE_MINUTES = 15;
+
 export interface WatchedRelease {
   id: string;
   workspaceId: string;
@@ -139,7 +146,13 @@ Investigate the failure and restore the service to a healthy state.`;
 // verificationUrl — that is the origin actual traffic hits, as opposed to
 // releases.deployUrl (a specific past Vercel deployment's own host, which
 // would trivially "match" regardless of what's live in production).
-async function fetchDeployedSha(verificationUrl: string): Promise<string | null> {
+interface DeployedIdentity {
+  sha: string | null;
+  // The execution control plane Worker, when the deployment reports one.
+  controlPlane: { commit: string | null; lockstep: boolean | null } | null;
+}
+
+async function fetchDeployedIdentity(verificationUrl: string): Promise<DeployedIdentity | null> {
   try {
     const origin = new URL(verificationUrl).origin;
     const res = await fetch(new URL('/api/deploy-identity', origin).toString(), {
@@ -147,10 +160,20 @@ async function fetchDeployedSha(verificationUrl: string): Promise<string | null>
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return typeof data?.sha === 'string' ? data.sha : null;
+    const cp = data?.controlPlane;
+    return {
+      sha: typeof data?.sha === 'string' ? data.sha : null,
+      controlPlane: cp && typeof cp === 'object'
+        ? { commit: typeof cp.commit === 'string' ? cp.commit : null, lockstep: typeof cp.lockstep === 'boolean' ? cp.lockstep : null }
+        : null,
+    };
   } catch {
     return null;
   }
+}
+
+async function fetchDeployedSha(verificationUrl: string): Promise<string | null> {
+  return (await fetchDeployedIdentity(verificationUrl))?.sha ?? null;
 }
 
 // A deployed sha that differs from a release's own headSha is not
@@ -219,13 +242,31 @@ export async function probeAndDegrade(
   // pass (we haven't checked anything) and not a fail (nothing to compare).
   if (!release.headSha) return 'unverified';
 
-  const deployedSha = await fetchDeployedSha(verificationUrl);
+  const identity = await fetchDeployedIdentity(verificationUrl);
+  const deployedSha = identity?.sha ?? null;
   // Identity endpoint unreachable or malformed: the status probe above
   // already passed, so don't fail the release over a second endpoint's
   // hiccup — just report that sha verification didn't happen this tick.
   if (!deployedSha) return 'unverified';
 
-  if (deployedSha === release.headSha) return 'ok';
+  if (deployedSha === release.headSha) {
+    // The web app runs the release. The execution control plane Worker
+    // (claims, worker updates, webhooks, Dispatch callbacks) must run it too;
+    // a failed Worker deploy leaves it on the previous commit, and this is
+    // where that gets noticed. Only a definite mismatch counts: a Worker that
+    // does not answer, or a deployment without one, is no signal here.
+    if (identity?.controlPlane?.lockstep === false) {
+      const sinceHealthy = release.healthyAt ? Date.now() - release.healthyAt.getTime() : 0;
+      if (sinceHealthy <= CONTROL_PLANE_GRACE_MINUTES * 60_000) return 'unverified';
+      await degradeRelease(
+        release,
+        db,
+        `control plane Worker runs ${identity.controlPlane.commit ?? 'an unknown commit'}, not release head sha ${release.headSha}: the Worker deploy (deploy-control-plane.yml) did not land`,
+      );
+      return 'degraded';
+    }
+    return 'ok';
+  }
 
   const withinGraceWindow =
     release.healthyAt != null &&
