@@ -33,7 +33,7 @@ export interface DeliveryPillState {
 }
 
 export function HeaderStatusPill({ status, merged, delivery = null }: { status: string; merged: boolean; delivery?: DeliveryPillState | null }) {
-  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold uppercase tracking-[1.2px] border flex-wrap';
+  const base = 'inline-flex items-center gap-2 px-2.5 min-h-8 font-mono text-[11px] font-semibold border flex-wrap';
   const dot = (extra = '') => <span className={`w-[7px] h-[7px] flex-shrink-0 bg-current ${extra}`} aria-hidden="true" />;
 
   if (delivery && !merged) {
@@ -78,7 +78,7 @@ export function FactSheet({ rows, testId = 'task-fact-sheet' }: { rows: FactRow[
     <dl data-testid={testId} className="bg-card border-2 border-border-strong px-5 py-1">
       {rows.map(r => (
         <div key={r.key} data-testid={`task-fact-${r.key}`} className="grid grid-cols-[96px_minmax(0,1fr)] gap-3 py-3.5 border-b border-border-default last:border-b-0">
-          <dt className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted pt-0.5">{r.label}</dt>
+          <dt className="font-mono text-meta text-text-muted pt-0.5">{r.label}</dt>
           <dd className="min-w-0 font-mono text-[13px] text-text-primary [overflow-wrap:anywhere]">{r.value}</dd>
         </div>
       ))}
@@ -92,7 +92,7 @@ export function SideDescription({ children, preview }: { children: ReactNode; pr
     <details data-testid="task-side-description" className="group border-b border-border-default">
       <summary className="flex items-center gap-3 min-h-12 cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden">
         <span className="text-text-muted group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
-        <span className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted shrink-0">Description</span>
+        <span className="font-mono text-meta text-text-muted shrink-0">Description</span>
         <span className="flex-1 min-w-0 truncate text-[13px] text-text-secondary group-open:hidden">{preview}</span>
       </summary>
       <div className="pb-4">{children}</div>

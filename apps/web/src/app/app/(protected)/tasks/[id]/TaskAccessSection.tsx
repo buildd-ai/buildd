@@ -22,7 +22,7 @@ export default function TaskAccessSection({ items }: { items: AccessItem[] }) {
         count={items.length}
         summary={
           <span className="flex items-center gap-3">
-            <span className="text-eyebrow font-bold uppercase tracking-[2px] text-text-muted">Access</span>
+            <span className="text-eyebrow font-bold text-text-muted">Access</span>
             {refused > 0 && (
               <Chip tone="error" data-testid="task-access-refused">{refused} refused</Chip>
             )}
