@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { settingsBackHref, settingsItemFor } from './settings-nav';
+import { settingsBackHref, settingsItemAs, settingsItemFor } from './settings-nav';
 
 export interface NavItem {
   label: string;
@@ -109,7 +109,7 @@ const WORKSPACE_MEMORY_PATH = /^\/app\/workspaces\/([^/]+)\/memory$/;
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
  */
-export function mobilePageTitle(pathname: string): string | null {
+export function mobilePageTitle(pathname: string, opts: { billing?: boolean } = {}): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/chat') return 'Chat';
   if (pathname === '/app/missions') return 'Missions';
@@ -127,7 +127,7 @@ export function mobilePageTitle(pathname: string): string | null {
   // Each settings section is a full page on a phone (list → detail); the
   // header names it and carries the back arrow (mobileBackHref).
   const section = settingsItemFor(pathname);
-  if (section) return section.label;
+  if (section) return settingsItemAs(section, { billing: opts.billing ?? false }).label;
   return null;
 }
 

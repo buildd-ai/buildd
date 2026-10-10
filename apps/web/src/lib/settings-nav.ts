@@ -173,10 +173,12 @@ const BUDGETS_ONLY: Pick<SettingsNavItem, 'label' | 'description'> = {
  */
 export function settingsNavFor(opts: { billing: boolean }): SettingsNavGroup[] {
   if (opts.billing) return SETTINGS_NAV;
-  return SETTINGS_NAV.map((g) => ({
-    ...g,
-    items: g.items.map((i) => (i.id === 'billing' ? { ...i, ...BUDGETS_ONLY } : i)),
-  }));
+  return SETTINGS_NAV.map((g) => ({ ...g, items: g.items.map((i) => settingsItemAs(i, opts)) }));
+}
+
+/** One item as a viewer sees it (settingsNavFor): the billing page is Budgets while billing is off. */
+export function settingsItemAs(item: SettingsNavItem, opts: { billing: boolean }): SettingsNavItem {
+  return item.id === 'billing' && !opts.billing ? { ...item, ...BUDGETS_ONLY } : item;
 }
 
 /**
