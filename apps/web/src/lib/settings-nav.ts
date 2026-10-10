@@ -121,8 +121,8 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         id: 'models',
         label: 'Models',
         href: '/app/settings/models',
-        description: 'Team and workspace keys, which model backs each tier, and AI features.',
-        manage: ['manage_inference_providers', 'manage_team_credentials', 'manage_team_model_keys', 'manage_model_tiers', 'manage_team_settings', 'manage_chat_retro'],
+        description: 'Team and workspace keys, and which model backs each tier.',
+        manage: ['manage_inference_providers', 'manage_team_credentials', 'manage_team_model_keys', 'manage_model_tiers', 'manage_team_settings'],
       },
       {
         id: 'workspaces',

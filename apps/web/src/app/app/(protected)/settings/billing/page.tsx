@@ -1,5 +1,4 @@
 import { eq } from 'drizzle-orm';
-import Link from 'next/link';
 import { db } from '@buildd/core/db';
 import { teamMembers, teams } from '@buildd/core/db/schema';
 import { isBillingEnforced } from '@buildd/core/entitlements';
@@ -12,6 +11,8 @@ import { teamSeatUsage } from '@/lib/billing/seats';
 import { settingsReadOnly } from '@/lib/settings-nav';
 import { DEFAULT_CHAT_DAILY_BUDGET_USD, DEFAULT_CHAT_USER_SHARE } from '@/lib/chat/limits';
 import { loadSpendSummary, type SpendSummary } from '@/lib/spend-summary';
+import { loadHostedRunnerMonth } from '@/lib/hosted-runner-usage-store';
+import { HostedRunnerUsageSection } from '@/components/hosted-runner/HostedRunnerUsageSection';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { billingView, PLAN_FEATURES, PLAN_LABELS } from './billing-view';
@@ -64,13 +65,17 @@ export default async function BillingSettingsPage({
   ]);
   const keyPolicy = effectiveKeyPolicy(teamRow) ?? 'team';
   const timeZone = teamRow?.timezone || 'UTC';
-  const spend: SpendSummary | null = await loadSpendSummary({
-    teamId: currentTeam.id,
-    userId: user.id,
-    timeZone,
-    now: new Date(),
-    members: members.map((m) => ({ userId: m.userId, name: m.user?.name ?? null, email: m.user?.email ?? null })),
-  }).catch(() => null);
+  const [spend, hostedRunner] = await Promise.all([
+    loadSpendSummary({
+      teamId: currentTeam.id,
+      userId: user.id,
+      timeZone,
+      now: new Date(),
+      members: members.map((m) => ({ userId: m.userId, name: m.user?.name ?? null, email: m.user?.email ?? null })),
+    }).catch((): SpendSummary | null => null),
+    // Team-wide spend: only for people who see everyone's.
+    perms.view_team_usage ? loadHostedRunnerMonth(currentTeam.id) : null,
+  ]);
 
   // manage_billing is locked to owner/admin; a personal team's user is its owner.
   const canManageBilling = roleHas(currentTeam.role, 'manage_billing', null) || currentTeam.slug === `personal-${user.id}`;
@@ -92,18 +97,15 @@ export default async function BillingSettingsPage({
         action={<span className="text-xs text-text-muted">{timeZoneLabel(timeZone)}</span>}
       >
         {spend ? <MySpend me={spend.me} /> : <p className="text-sm text-text-secondary">Could not load spend.</p>}
-        <p className="mt-2 text-xs text-text-secondary">
-          Spend in detail is in{' '}
-          <Link href="/app/health/usage" className="underline hover:text-text-primary" data-testid="budgets-usage-link">Health › Usage</Link>.
-        </p>
       </Section>
 
-      {/* Kept here pending an owner decision on whether it moves to Health › Usage. */}
       {perms.view_team_usage && spend && spend.people.length > 1 && (
         <Section title="By person this month">
           <PeopleSpend people={spend.people} unattributed={spend.unattributedAgent} />
         </Section>
       )}
+
+      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
 
       <Section title="Interactive caps">
         <CapsForm

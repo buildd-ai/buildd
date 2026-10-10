@@ -35,6 +35,6 @@ describe("a member's Health", () => {
 
   it('keeps the Operator page (dispatch, gates, experiments) behind the platform-operator check', () => {
     const op = read('operator/page.tsx');
-    expect(op).toMatch(/if \(!isPlatformOperator\(user\)\) notFound\(\);/);
+    expect(op).toMatch(/const user = await requirePlatformOperator\(\);/);
   });
 });
