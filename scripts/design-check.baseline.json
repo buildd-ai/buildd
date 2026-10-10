@@ -67,7 +67,7 @@
     "apps/web/src/app/app/(protected)/settings/_components/ConnectionRow.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/_components/SettingsSubNav.tsx": 2,
     "apps/web/src/app/app/(protected)/settings/runners/FleetOverview.tsx": 2,
-    "apps/web/src/app/app/(protected)/settings/storage/BackendForm.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/integrations/BackendForm.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/ReadinessCard.tsx": 3,
     "apps/web/src/app/app/(protected)/settings/workspace/[workspaceId]/WorkspaceHealthCard.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 24,
@@ -220,13 +220,13 @@
   },
   "handRolledSheets": {
     "apps/web/src/app/app/(protected)/initiatives/[id]/AssignMissionModal.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/connectors/ConnectionsClient.tsx": 2,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 1,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 2,
     "apps/web/src/components/FlightDetailSheet.tsx": 1,
     "apps/web/src/components/chat/ChatCanvas.tsx": 1
   },
   "localStatusBadges": {
-    "apps/web/src/app/app/(protected)/settings/connectors/ConnectionsClient.tsx": 1
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 1
   },
   "framedBoxes": {
     "apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx": 1,
@@ -249,8 +249,8 @@
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 3,
     "apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx": 9,
-    "apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx": 11,
-    "apps/web/src/app/app/(protected)/settings/connectors/ConnectionsClient.tsx": 3,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 11,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 3,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/OperatorAccessSection.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx": 1,
     "apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/TeamRoleEditor.tsx": 7,
@@ -513,8 +513,8 @@
     "apps/web/src/app/app/(protected)/missions/[id]/MissionSettings.tsx": 7,
     "apps/web/src/app/app/(protected)/missions/[id]/RaiseBudgetButton.tsx": 2,
     "apps/web/src/app/app/(protected)/missions/[id]/ScheduleWizard.tsx": 1,
-    "apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx": 6,
-    "apps/web/src/app/app/(protected)/settings/connectors/ConnectionsClient.tsx": 2,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx": 6,
+    "apps/web/src/app/app/(protected)/settings/connections/connectors/ConnectionsClient.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 1,
     "apps/web/src/app/app/(protected)/tasks/[id]/DeleteTaskButton.tsx": 2,
     "apps/web/src/app/app/(protected)/tasks/[id]/EditTaskModal.tsx": 1,

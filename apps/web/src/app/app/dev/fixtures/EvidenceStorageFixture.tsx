@@ -10,8 +10,8 @@
  * set") with the add form open.
  */
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
-import StorageSection from '../../(protected)/settings/storage/StorageSection';
-import type { StorageBackend } from '../../(protected)/settings/storage/_lib/storage-form';
+import StorageSection from '../../(protected)/settings/integrations/StorageSection';
+import type { StorageBackend } from '../../(protected)/settings/integrations/_lib/storage-form';
 
 const TEAM: StorageBackend = {
   id: 'fixture-team-default',

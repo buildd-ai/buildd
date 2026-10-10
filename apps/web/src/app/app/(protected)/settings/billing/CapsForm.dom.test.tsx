@@ -4,7 +4,7 @@
  * per-person cap is optional (default none). Fixtures are illustrative.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/budgets', width: 1280, height: 800 });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/billing', width: 1280, height: 800 });
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 

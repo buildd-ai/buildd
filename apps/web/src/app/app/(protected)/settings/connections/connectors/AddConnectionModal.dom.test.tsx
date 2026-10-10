@@ -5,7 +5,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/connectors' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/connections' });
 
 import { describe, expect, it } from 'bun:test';
 // react-dom probes event support when it loads, so it must load after happy-dom.
