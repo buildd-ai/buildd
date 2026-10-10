@@ -62,6 +62,12 @@ describe('classifyCliArgs', () => {
     }
   });
 
+  test('usage names both kinds of OAuth connection in plain words', () => {
+    expect(RUNNER_USAGE).toContain('--as-agent');
+    expect(RUNNER_USAGE).toContain('acts as you');
+    expect(RUNNER_USAGE).toContain('acts as your agent');
+  });
+
   test('usage exit code is the sysexits usage code', () => {
     expect(EXIT_CLI_USAGE).toBe(64);
   });

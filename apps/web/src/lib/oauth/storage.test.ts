@@ -19,8 +19,12 @@ let selects = 0;
 let returningRows: any[] = [];
 let membershipRow: any = null;
 let workspaceRow: any = null;
+let inserts: Array<{ table: unknown; values: any }> = [];
 
 const fakeDb = {
+  insert: (table: unknown) => ({
+    values: async (values: unknown) => { inserts.push({ table, values }); },
+  }),
   select: () => {
     selects++;
     return { from: () => ({ where: () => ({ limit: async () => [] }) }) };
@@ -47,6 +51,8 @@ mock.module('@buildd/core/db', () => ({ db: fakeDb }));
 import {
   consumeAuthCode,
   consumeRefreshToken,
+  createRefreshToken,
+  hashRefreshToken,
   userHasWorkspaceMembership,
   revokeRefreshTokensForUserWorkspace,
 } from './storage';
@@ -63,7 +69,12 @@ beforeEach(() => {
   returningRows = [];
   membershipRow = null;
   workspaceRow = null;
+  inserts = [];
 });
+
+import { REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS, REFRESH_TOKEN_TTL_SECONDS } from './config';
+const DAY = 24 * 60 * 60 * 1000;
+
 
 describe('consumeAuthCode — single use', () => {
   const args = { code: 'code-1', clientId: 'c_1', redirectUri: 'https://x.example/cb', codeVerifier: VERIFIER };
@@ -105,27 +116,111 @@ describe('consumeAuthCode — single use', () => {
   });
 });
 
-describe('consumeRefreshToken — single use', () => {
-  const row = { userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp', clientId: 'c_1', expiresAt: new Date(Date.now() + 60_000) };
+describe('createRefreshToken — stored as a hash, in a family', () => {
+  it('stores the SHA-256 of the token, never the token', async () => {
+    const token = await createRefreshToken({ clientId: 'c_1', userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp' });
+    expect(inserts).toHaveLength(1);
+    const v = inserts[0].values;
+    expect(v.tokenHash).toBe(createHash('sha256').update(token).digest('hex'));
+    expect(v.tokenHash).toBe(hashRefreshToken(token));
+    expect(JSON.stringify(v)).not.toContain(token);
+  });
 
-  it('revokes with one conditional UPDATE on revoked_at IS NULL, not a read first', async () => {
+  it('a sign-in starts a new family issued now', async () => {
+    const before = Date.now();
+    await createRefreshToken({ clientId: 'c_1', userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp' });
+    await createRefreshToken({ clientId: 'c_1', userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp' });
+    const [a, b] = inserts.map((i) => i.values);
+    expect(typeof a.familyId).toBe('string');
+    expect(a.familyId).not.toBe(b.familyId);
+    expect(a.familyIssuedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(a.createdAt.getTime()).toBe(a.familyIssuedAt.getTime());
+  });
+
+  it('a rotated token keeps its family and sign-in time, and expires no later than the absolute cap', async () => {
+    const issuedAt = new Date(Date.now() - 80 * DAY);
+    await createRefreshToken({
+      clientId: 'c_1', userId: 'u-1', grantId: 'g-1', scope: 'mcp',
+      family: { familyId: 'fam-1', familyIssuedAt: issuedAt },
+    });
+    const v = inserts[0].values;
+    expect(v.familyId).toBe('fam-1');
+    expect(v.familyIssuedAt).toEqual(issuedAt);
+    expect(v.expiresAt.getTime()).toBe(issuedAt.getTime() + REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS * 1000);
+  });
+
+  it('expiry is the sooner of the sliding per-token TTL and the family cap', async () => {
+    const issuedAt = new Date(Date.now() - DAY);
+    const before = Date.now();
+    await createRefreshToken({
+      clientId: 'c_1', userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp',
+      family: { familyId: 'fam-1', familyIssuedAt: issuedAt },
+    });
+    const after = Date.now();
+    const exp = inserts[0].values.expiresAt.getTime();
+    const cap = issuedAt.getTime() + REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS * 1000;
+    expect(exp).toBeGreaterThanOrEqual(Math.min(cap, before + REFRESH_TOKEN_TTL_SECONDS * 1000));
+    expect(exp).toBeLessThanOrEqual(Math.min(cap, after + REFRESH_TOKEN_TTL_SECONDS * 1000));
+  });
+});
+
+describe('consumeRefreshToken — single use, family rotation', () => {
+  const familyIssuedAt = new Date(Date.now() - DAY);
+  const row = {
+    userId: 'u-1', workspaceId: 'ws-1', grantId: null, scope: 'mcp', clientId: 'c_1',
+    expiresAt: new Date(Date.now() + 60_000), familyId: 'fam-1', familyIssuedAt,
+  };
+
+  it('spends the token with one conditional UPDATE keyed on hash + client + not revoked, not a read first', async () => {
     returningRows = [row];
     const result = await consumeRefreshToken({ token: 't-1', clientId: 'c_1' });
-    expect(result).toEqual({ userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp' });
+    expect(result).toEqual({
+      userId: 'u-1', workspaceId: 'ws-1', scope: 'mcp',
+      family: { familyId: 'fam-1', familyIssuedAt },
+    });
     expect(selects).toBe(0);
     expect(updates).toHaveLength(1);
     expect(updates[0].set?.revokedAt).toBeInstanceOf(Date);
-    expect(sqlOf(updates[0].where)).toContain('"revoked_at" is null');
+    const q = dialect.sqlToQuery(updates[0].where);
+    expect(q.sql).toContain('"revoked_at" is null');
+    expect(q.sql).toContain('"token" = ');
+    expect(q.sql).toContain('"client_id" = ');
+    expect(q.params).toContain(hashRefreshToken('t-1'));
+    expect(q.params).not.toContain('t-1');
+    expect(q.params).toContain('c_1');
   });
 
-  it('a token the UPDATE did not claim is invalid_grant', async () => {
+  it('a token that was not spent (already rotated, unknown or another client) is invalid_grant and revokes only its own family', async () => {
     returningRows = [];
     expect(await consumeRefreshToken({ token: 't-1', clientId: 'c_1' })).toEqual({ error: 'invalid_grant' });
+    expect(updates).toHaveLength(2);
+    expect(updates[1].set?.revokedAt).toBeInstanceOf(Date);
+    const q = dialect.sqlToQuery(updates[1].where);
+    // Every live token of the family the presented, already-revoked token
+    // belongs to, for the same client only.
+    expect(q.sql).toContain('"family_id" in (select');
+    expect(q.sql).toContain('revoked_at is not null');
+    expect(q.sql).toContain('client_id = ');
+    expect(q.sql).toContain('"revoked_at" is null');
+    expect(q.params).toContain(hashRefreshToken('t-1'));
+    expect(q.params).toContain('c_1');
   });
 
-  it('rejects an expired or wrong-client token', async () => {
+  it('rejects an expired token', async () => {
     returningRows = [{ ...row, expiresAt: new Date(Date.now() - 1000) }];
     expect(await consumeRefreshToken({ token: 't-1', clientId: 'c_1' })).toEqual({ error: 'invalid_grant' });
+  });
+
+  it('rejects a family past its absolute lifetime even when the token itself has not expired', async () => {
+    returningRows = [{
+      ...row,
+      familyIssuedAt: new Date(Date.now() - REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS * 1000 - 1000),
+      expiresAt: new Date(Date.now() + DAY),
+    }];
+    expect(await consumeRefreshToken({ token: 't-1', clientId: 'c_1' })).toEqual({ error: 'invalid_grant' });
+  });
+
+  it('still refuses a returned row for another client (defence in depth)', async () => {
     returningRows = [{ ...row, clientId: 'c_other' }];
     expect(await consumeRefreshToken({ token: 't-1', clientId: 'c_1' })).toEqual({ error: 'invalid_grant' });
   });

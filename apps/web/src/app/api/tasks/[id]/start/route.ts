@@ -34,6 +34,7 @@ export async function POST(
   // Dual auth: API key or session
   let authType: 'api' | 'session';
   let accountId: string | null = null;
+  let sessionAccount: NonNullable<Awaited<ReturnType<typeof authenticateApiKey>>> | null = null;
   let userId: string | null = null;
 
   const authHeader = req.headers.get('authorization');
@@ -46,6 +47,7 @@ export async function POST(
     }
     authType = 'api';
     accountId = account.id;
+    sessionAccount = account;
   } else {
     const user = await getCurrentUser();
     if (!user) {
@@ -78,7 +80,7 @@ export async function POST(
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }
     } else {
-      const hasAccess = await verifyAccountWorkspaceAccess(accountId!, task.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(sessionAccount ?? accountId!, task.workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Task not found' }, { status: 404 });
       }

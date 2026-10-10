@@ -186,7 +186,7 @@ export async function GET(
                 where: eq(workspaces.id, id),
                 columns: { teamId: true },
             });
-            if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount.id, id)))) {
+            if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount, id)))) {
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
         } else if (process.env.NODE_ENV !== 'development') {

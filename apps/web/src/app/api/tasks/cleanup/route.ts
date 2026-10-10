@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { isGrantSession } from '@/lib/grant-scope';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, workspaces, accounts } from '@buildd/core/db/schema';
@@ -151,6 +152,13 @@ export async function POST(req: NextRequest) {
       { error: 'Unauthorized - requires session auth or admin-level API token' },
       { status: 401 }
     );
+  }
+
+  // A grant session is one person's consent for named workspaces, acting as
+  // the team's SHARED session account: an account-wide stale-worker sweep would
+  // reach every member's workers in every workspace, so it is refused.
+  if (apiAccount && isGrantSession(apiAccount)) {
+    return NextResponse.json({ error: 'Not available to a workspace-granted MCP connection' }, { status: 403 });
   }
 
   // An admin key acts as its account; otherwise the session user acts.

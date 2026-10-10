@@ -24,6 +24,12 @@ describe('requestingPerson', () => {
     expect(requestingPerson({ id: 'u-1' }, { sessionUserId: null })).toBeNull();
   });
 
+  it('an OAuth session on an agent grant is never a person, even if a session user is attached', () => {
+    expect(requestingPerson(null, { actsAs: 'agent', oauthUserId: 'u-3' })).toBeNull();
+    expect(requestingPerson(null, { actsAs: 'agent', sessionUserId: 'u-3' })).toBeNull();
+    expect(requestingPerson(null, { actsAs: 'person', sessionUserId: 'u-3' })).toBe('u-3');
+  });
+
   it('no caller is no person', () => {
     expect(requestingPerson(null, null)).toBeNull();
     expect(requestingPerson({ id: '' }, undefined)).toBeNull();
