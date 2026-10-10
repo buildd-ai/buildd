@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { activePromptFingerprints, promptFallbackCounts } from '@buildd/core/prompts';
-import { getDeployIdentity } from '@/lib/deploy-identity';
+import { getControlPlaneIdentity, getDeployIdentity } from '@/lib/deploy-identity';
 
 /**
  * GET /api/deploy-identity
@@ -20,10 +20,19 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
  * row version, content hash; never text), read from the in-process snapshot,
  * not the database. An id absent from `active` runs its public default.
  * `fallbacks` counts this instance's resolves that used a public default.
+ *
+ * `controlPlane` is the execution control plane Worker's commit and mode (it
+ * serves claims, worker updates, webhooks and Dispatch callbacks), `null` when
+ * it does not answer within a short timeout. `lockstep` is whether it runs the
+ * web app's commit; `null` when either side is unknown.
  */
 export async function GET() {
+  const identity = getDeployIdentity();
+  const controlPlane = await getControlPlaneIdentity();
+  const lockstep = identity.sha && controlPlane?.commit ? controlPlane.commit === identity.sha : null;
   return NextResponse.json({
-    ...getDeployIdentity(),
+    ...identity,
+    controlPlane: controlPlane ? { ...controlPlane, lockstep } : null,
     prompts: { active: activePromptFingerprints(), fallbacks: promptFallbackCounts() },
   });
 }
