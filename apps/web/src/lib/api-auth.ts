@@ -7,6 +7,7 @@ import { TTLCache } from './cache';
 import * as tokensModule from './oauth/tokens';
 import { levelForTeamRole } from './oauth/session-level';
 import { findTeamSessionAccount } from './oauth/session-account';
+import { grantPrincipal, grantTokenScopes, grantedWorkspace, resolveTokenGrant } from './mcp-grants';
 import { getCachedApiKey, setCachedApiKey, invalidateCachedApiKey } from './redis';
 import { isTaskToken } from './task-token';
 import { isPresenceToken } from './presence-token';
@@ -76,48 +77,78 @@ const oauthAccountCache = new TTLCache<CachedAccount>({
 });
 
 /**
- * OAuth JWT path — verify the token, confirm the caller is still a member of
- * the token's workspace team, and act at the level of their team role.
+ * OAuth JWT path — verify the token, resolve what it grants against CURRENT
+ * team membership, and act at the level of the caller's team role.
+ *
+ * Two token shapes (lib/mcp-grants.ts):
+ *  - legacy `workspace_id` claim: an implicit single-workspace 'person' grant;
+ *    behaviour unchanged from before grants existed.
+ *  - `grant_id` claim: the grant's workspaces ∩ the user's current
+ *    memberships, resolved on every request (never cached, see resolveApiKey),
+ *    so a revoked grant or a removed membership stops authenticating on the
+ *    next call. The session is confined to those workspaces (`workspaceIds`).
+ *    A grant reaching workspaces in more than one team has no single team
+ *    account to act as, so with no bound workspace it does not authenticate.
+ *    A request that names one (GRANT_WORKSPACE_HEADER: the canonical /api/mcp
+ *    transport sends it on every self-call) acts in that workspace's team and
+ *    is confined to that one workspace; a workspace outside the grant is no
+ *    session at all. The header can only narrow a grant, never widen it, and
+ *    is ignored for every other kind of credential.
+ *    A read-only grant is a scoped session (grantTokenScopes): read routes
+ *    and read actions only.
  *
  * Account resolution: the `accounts` table has no column linking an account
  * to an individual user (no userId/ownerId/createdBy), so a session resolves
  * to one of its team's `type='user'` accounts, picked deterministically
  * (lib/oauth/session-account.ts). The level, which gates actions, comes from
  * the caller's own membership row; the person, which gates acting as a
- * claimed worker, is sessionUserId (lib/worker-owner.ts).
+ * claimed worker and every person-only action, is sessionUserId
+ * (lib/worker-owner.ts, lib/request-person.ts). An 'agent' grant carries no
+ * sessionUserId: it is attributed to the user (`oauthUserId`) but is never a
+ * person.
  */
-async function authenticateOauthJwt(jwt: string) {
+async function authenticateOauthJwt(jwt: string, boundWorkspaceId: string | null = null) {
   const claims = await tokensModule.verifyAccessTokenAnyAudience(jwt);
   if (!claims) return null;
 
-  const userId = claims.sub;
+  const grant = await resolveTokenGrant(claims);
+  if (!grant || grant.workspaces.length === 0) return null;
 
-  // The JWT is scoped to a specific workspace. Use that workspace's team
-  // rather than the user's first team membership, which is wrong for
-  // multi-team users (the first membership may not match the requested workspace).
-  const workspace = await db.query.workspaces.findFirst({
-    where: eq(workspaces.id, claims.workspace_id),
-    columns: { teamId: true },
-  });
-  if (!workspace) return null;
+  // A bound workspace applies to a grant token only; a legacy token keeps its
+  // historical reach and ignores it.
+  const bound = grant.grantId && boundWorkspaceId ? grantedWorkspace(grant, boundWorkspaceId) : null;
+  if (grant.grantId && boundWorkspaceId && !bound) return null;
 
-  // The caller must still be a member of the workspace's team; their role
-  // there sets the session level.
-  const membership = await db.query.teamMembers.findFirst({
-    where: and(eq(teamMembers.teamId, workspace.teamId), eq(teamMembers.userId, userId)),
-    columns: { teamId: true, role: true },
-  });
-  if (!membership) return null;
+  const teamIds = new Set(grant.workspaces.map((w) => w.teamId));
+  if (!bound && teamIds.size !== 1) return null;
+  const { teamId, role } = bound ?? grant.workspaces[0];
 
   // Deterministic: the same token must act as the same account on every
   // request, or a session is refused on the workers it claimed.
-  const account = await findTeamSessionAccount(workspace.teamId);
+  const account = await findTeamSessionAccount(teamId);
   if (!account) return null;
 
-  // sessionUserId: the person behind this session. The account is shared by
-  // the whole team, so this is the only per-person identity a request carries
-  // (used to scope interactive-worker liveness and to attribute force claims).
-  return { ...account, scopes: null, workspaceIds: null, expiresAt: null, level: levelForTeamRole(membership.role), sessionUserId: userId as string };
+  const principal = grantPrincipal(grant);
+  return {
+    ...account,
+    // A read-only grant reads only; legacy tokens and write grants keep the
+    // user's role-level permissions.
+    scopes: grant.grantId ? grantTokenScopes(grant.scopes) : null,
+    // Legacy tokens keep their historical team-wide reach; a grant token is
+    // confined to exactly the workspaces it currently reaches, or to the one
+    // workspace the request is bound to.
+    workspaceIds: bound ? [bound.workspaceId] : grant.grantId ? grant.workspaces.map((w) => w.workspaceId) : null,
+    expiresAt: null,
+    level: levelForTeamRole(role),
+    // The person behind this session; absent on an 'agent' grant. The account
+    // is shared by the whole team, so this is the only per-person identity a
+    // request carries.
+    ...(principal.sessionUserId ? { sessionUserId: principal.sessionUserId } : {}),
+    oauthUserId: principal.oauthUserId,
+    actsAs: principal.actsAs,
+    oauthGrantId: grant.grantId,
+    grantScopes: grant.scopes,
+  };
 }
 
 /**
@@ -146,7 +177,7 @@ function isCurrentShape(account: CachedAccount): boolean {
  * Uses an in-memory TTL cache to avoid hitting the DB on every request.
  * Cache is invalidated on key regeneration and account deletion.
  */
-async function resolveApiKey(apiKey: string | null) {
+async function resolveApiKey(apiKey: string | null, boundWorkspaceId: string | null = null) {
   if (!apiKey) return null;
 
   // A per-task token is never an account key. Only the routes that opt in
@@ -160,6 +191,11 @@ async function resolveApiKey(apiKey: string | null) {
   if (tokensModule.looksLikeJwt(apiKey)) {
     const hashed = hashApiKey(apiKey);
     if (negativeCache.get(hashed)) return null;
+
+    // A grant token is resolved on every request, never from a cache, so a
+    // revoked grant or a removed membership takes effect on the next call.
+    if (tokensModule.looksLikeGrantToken(apiKey)) return authenticateOauthJwt(apiKey, boundWorkspaceId);
+
     const cached = oauthAccountCache.get(hashed);
     if (cached) return cached;
 
@@ -253,9 +289,33 @@ export function clearAccountCache(): void {
   negativeCache.clear();
 }
 
+/**
+ * Names the one workspace a grant-token request acts in (see
+ * authenticateOauthJwt). Read only from a real Request; meaningless for any
+ * credential but a grant token.
+ */
+export const GRANT_WORKSPACE_HEADER = 'x-buildd-workspace';
+
+function boundWorkspaceOf(request: { url: string; method: string } | undefined): string | null {
+  const headers = (request as { headers?: unknown } | undefined)?.headers;
+  if (!headers || typeof (headers as Headers).get !== 'function') return null;
+  const v = (headers as Headers).get(GRANT_WORKSPACE_HEADER);
+  return v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v.trim()) ? v.trim().toLowerCase() : v ? 'invalid' : null;
+}
+
+/**
+ * The session a grant token acts as in one named workspace: that workspace's
+ * team account, at the user's role there, confined to that workspace. Null
+ * when the token is not a grant token or the workspace is outside the grant.
+ */
+export async function authenticateGrantSession(jwt: string, workspaceId: string) {
+  if (!tokensModule.looksLikeGrantToken(jwt)) return null;
+  return authenticateOauthJwt(jwt, workspaceId);
+}
+
 /** Capability and expiry checks also apply to cached accounts. */
 export async function authenticateApiKey(apiKey: string | null, request?: { url: string; method: string }) {
-  const account = await resolveApiKey(apiKey);
+  const account = await resolveApiKey(apiKey, boundWorkspaceOf(request));
   if (!account) return null;
   if (account.expiresAt && new Date(account.expiresAt).getTime() <= Date.now()) return null;
   if (account.scopes != null && !request) return null;

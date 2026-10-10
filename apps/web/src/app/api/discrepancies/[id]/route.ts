@@ -34,7 +34,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!access) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
   } else if (apiAccount) {
     if (!taskScopeAllowsWorkspace(apiAccount, row.workspaceId)) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
-    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, row.workspaceId);
+    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, row.workspaceId);
     if (!hasAccess) return NextResponse.json({ error: 'Discrepancy not found' }, { status: 404 });
   }
 

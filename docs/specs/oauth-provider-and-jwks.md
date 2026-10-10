@@ -202,13 +202,18 @@ system.
   other checks run, so the code is single-use even under concurrent exchanges
   (neon-http has no interactive transactions). `AUTH_CODE_TTL_SECONDS` is 600.
 - `consumeRefreshToken()` MUST revoke the presented token the same way
-  (`WHERE revoked_at IS NULL RETURNING`) before the caller mints a
-  replacement, so refresh tokens rotate on every use and mint at most once.
+  (`WHERE token = <sha256> AND client_id = <client> AND revoked_at IS NULL RETURNING`)
+  before the caller mints a replacement, so refresh tokens rotate on every use
+  and mint at most once. Tokens are stored hashed and rotate as one family per
+  sign-in; reuse handling and the absolute lifetime are specified in
+  `auth-oauth-boundaries.md` ("Refresh tokens: hashed, one family per
+  sign-in").
 - Both grants MUST confirm the user still has a `team_members` row on the
   workspace's team (`userHasWorkspaceMembership()`); a refresh that fails this
   returns `invalid_grant` and revokes the user's remaining refresh tokens for
   that workspace (`revokeRefreshTokensForUserWorkspace()`).
-  `REFRESH_TOKEN_TTL_SECONDS` is 90 days and bounds the absolute chain length.
+  `REFRESH_TOKEN_TTL_SECONDS` (sliding) and
+  `REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS` (from sign-in) are both 90 days.
 - Every issued access token MUST carry `sub` (userId), `client_id`, `scope`,
   `workspace_id`, `iss = getIssuer()`, and
   `aud = getResourceUrl(workspaceId)`, and expire after

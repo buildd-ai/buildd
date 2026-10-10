@@ -37,8 +37,8 @@ async function resolveAuth(
   const account: TaskScopedAccount | null = requireAdmin ? await authenticateApiKey(apiKey, req) : await authenticateTaskScopedCaller(apiKey, req);
   if (account) {
     if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return null;
-    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account.id, workspaceId);
-    if (hasAccess) return { kind: 'account' as const, accountId: account.id, teamId: account.teamId as string, level: account.level as string | null };
+    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account, workspaceId);
+    if (hasAccess) return { kind: 'account' as const, accountId: account.id, teamId: account.teamId as string, level: account.level as string | null, account };
   }
 
   return null;
@@ -76,7 +76,7 @@ async function resolveDelegationWrite(
     }
     const reaches = auth.kind === 'user'
       ? !!(await verifyWorkspaceAccess(auth.userId, target))
-      : await verifyAccountWorkspaceAccess(auth.accountId, target);
+      : await verifyAccountWorkspaceAccess(auth.account, target);
     if (!reaches) return { ok: false, status: 403, error: `you cannot grant access to workspace ${target}: you do not reach it yourself` };
   }
   return {
