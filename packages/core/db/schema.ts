@@ -609,6 +609,12 @@ export interface WorkspaceGitConfig {
   // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
   // fails closed when intent state cannot be verified.
   surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Landing lane (knowledge-base: buildd/design/landing-lane.md): at most one
+  // behind-refresh in flight per repo + base. Off by default (absent/'off':
+  // no lane reads). 'shadow' takes and releases the lane but never makes a
+  // refresh wait, recording when it would have; 'enforce' parks a refresh
+  // while another delivery on the same base holds the lane.
+  landingLane?: 'off' | 'shadow' | 'enforce' | null;
   // Semantic check before a clean base refresh (conflict-aware-orchestration.md
   // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
   // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
@@ -5304,6 +5310,23 @@ export const workflowEffects = pgTable('workflow_effects', {
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
+// whose delivery is the one behind-refresh in flight there. A row whose
+// delivery left the refresh window, or whose lease ran out, holds nothing;
+// the next acquire takes it over by compare-and-set.
+export const landingLanes = pgTable('landing_lanes', {
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  headSha: text('head_sha').notNull(),
+  grantedAt: timestamp('granted_at', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.repoFullName, t.baseRef] }),
+  deliveryIdx: index('landing_lanes_delivery_idx').on(t.deliveryId),
+}));
 
 // §5.7 — one retry ledger per family; the only source for "attempt N of M".
 // Allocation is consumption: the row is inserted by the dispatching statement.
