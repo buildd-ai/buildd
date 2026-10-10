@@ -103,6 +103,9 @@ export function healthItemFor(pathname: string): HealthNavItem | null {
   return null;
 }
 
+/** `/app/workspaces/:id/memory` — a workspace sub-page that needs a phone title and a way back. */
+const WORKSPACE_MEMORY_PATH = /^\/app\/workspaces\/([^/]+)\/memory$/;
+
 /**
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
@@ -122,6 +125,7 @@ export function mobilePageTitle(pathname: string): string | null {
   const healthItem = healthItemFor(pathname);
   if (healthItem) return healthItem.id === 'overview' ? 'Health' : healthItem.label;
   if (pathname === '/app/artifacts') return 'Artifacts';
+  if (WORKSPACE_MEMORY_PATH.test(pathname)) return 'Memory';
   if (pathname === '/app/settings') return 'Settings';
   // Each settings section is a full page on a phone (list → detail); the
   // header names it and carries the back arrow (mobileBackHref).
@@ -136,6 +140,8 @@ export function mobilePageTitle(pathname: string): string | null {
  * the phone has no sub-nav to get back to the list.
  */
 export function mobileBackHref(pathname: string): string | null {
+  const memory = WORKSPACE_MEMORY_PATH.exec(pathname);
+  if (memory) return `/app/workspaces/${memory[1]}`;
   return settingsBackHref(pathname);
 }
 
