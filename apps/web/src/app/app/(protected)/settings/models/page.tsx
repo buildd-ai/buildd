@@ -1,4 +1,3 @@
-import { hasTeamInferenceKey } from '@buildd/core/inference-keys';
 import Section from '@/components/ui/Section';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
@@ -10,7 +9,8 @@ import ModelTiersClient from './ModelTiersClient';
 import TierLimitSection from './TierLimitSection';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import ModelUpgradePolicySection from './ModelUpgradePolicySection';
-import ModelFeatures from '../ai/ModelFeatures';
+import { isPlatformOperator } from '@/lib/platform-operator';
+import DecisionFeatures from '../ai/DecisionFeatures';
 // Experiment: remove with apps/web/src/lib/chat-retro/ (see its REMOVAL.md).
 import ChatRetroSection from '@/lib/chat-retro/ChatRetroSection';
 
@@ -21,8 +21,10 @@ export const dynamic = 'force-dynamic';
  * you set it up. Keys (the team's, then one workspace's at a time; every way a
  * provider is connected: key, subscription and runner sign-in, in one row per
  * provider), Routing (gateway, decision model,
- * agent endpoint), Tiers (which model each tier runs, limits, upgrades) and
- * Features (where AI features run). Was /app/settings/providers and
+ * agent endpoint) and Tiers (which model each tier runs, limits, upgrades).
+ * Features (opt-in decision features, chat session retros) moved to the admin
+ * app; only the platform owner still sees it here. Goal grading has no control:
+ * Auto is the behaviour. Was /app/settings/providers and
  * /app/settings/ai; next.config redirects both here. Your own keys are
  * You › Keys (the old `?scope=mine` redirects there).
  *
@@ -31,7 +33,8 @@ export const dynamic = 'force-dynamic';
  * its API enforces; this only decides what renders.
  */
 export default async function ModelsSettingsPage() {
-  const { currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
+  const { user, currentTeam, currentTeamId, perms, permsByTeam, workspaces } = await loadSettingsContext();
+  const showOperatorFeatures = isPlatformOperator(user);
 
   if (!currentTeam) {
     return (
@@ -43,7 +46,6 @@ export default async function ModelsSettingsPage() {
 
   const teamId = currentTeam.id;
   const teamWorkspaces = workspaces.filter((w) => w.teamId === teamId);
-  const hasTeamKey = await hasTeamInferenceKey(teamId).catch(() => false);
 
   return (
     <SettingsPage title="Models" description={PROVIDERS_DESCRIPTION} wide readOnly={settingsReadOnly('models', perms)}>
@@ -67,13 +69,14 @@ export default async function ModelsSettingsPage() {
         <ModelUpgradePolicySection teamId={teamId} isAdmin={perms.manage_model_tiers} />
       </Section>
 
-      <Section title="Features" id="features" className="scroll-mt-20">
-        {/* Old /app/settings#inference-spending links. */}
-        <span id="inference-spending" aria-hidden="true" />
-        <ModelFeatures teamId={teamId} canManage={perms.manage_team_settings} hasTeamKey={hasTeamKey} />
-        {/* Its settings and lessons are admin-only reads: members have no values to see. */}
-        {perms.manage_chat_retro && <ChatRetroSection teamId={teamId} isAdmin />}
-      </Section>
+      {showOperatorFeatures && (
+        <Section title="Features" id="features" className="scroll-mt-20">
+          {/* Old /app/settings#inference-spending links. */}
+          <span id="inference-spending" aria-hidden="true" />
+          <DecisionFeatures teamId={teamId} canManage={perms.manage_team_settings} />
+          {perms.manage_chat_retro && <ChatRetroSection teamId={teamId} isAdmin />}
+        </Section>
+      )}
     </SettingsPage>
   );
 }

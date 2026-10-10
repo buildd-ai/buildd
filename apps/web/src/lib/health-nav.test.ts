@@ -23,6 +23,13 @@ describe('healthNavFor', () => {
     expect(healthNavFor(true).map(i => i.id)).toContain('operator');
   });
 
+  it('shows a team member only Overview and Runners: Failures, Usage and Insights moved to the admin app', () => {
+    expect(healthNavFor(false).map(i => i.id)).toEqual(['overview', 'runners']);
+    for (const id of ['failures', 'usage', 'insights'] as const) {
+      expect(healthNavFor(true).map(i => i.id)).toContain(id);
+    }
+  });
+
   it('keeps registry order, Overview first', () => {
     expect(healthNavFor(true).map(i => i.id)).toEqual(HEALTH_NAV.map(i => i.id));
     expect(HEALTH_NAV[0].href).toBe(HEALTH_INDEX_HREF);
