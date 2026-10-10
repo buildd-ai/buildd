@@ -33,6 +33,8 @@ import { GitConfigForm } from './GitConfigForm';
 import MemberRepoAccessSection from './MemberRepoAccessSection';
 import MergePolicyEditor from './MergePolicyEditor';
 import BranchStrategySection from './BranchStrategySection';
+import CopyReviewSection from './CopyReviewSection';
+import { copyReviewConfigOf } from '@buildd/shared';
 import CiRetrySection from './CiRetrySection';
 import ReleaseSection from './ReleaseSection';
 import SubjectPolicySection from './SubjectPolicySection';
@@ -244,6 +246,11 @@ export default async function WorkspaceSettingsPage({
           <CiRetrySection
             workspaceId={workspace.id}
             initial={gitConfig?.enforceGreenCI === true}
+            canEdit={canManageSettings}
+          />
+          <CopyReviewSection
+            workspaceId={workspace.id}
+            initial={copyReviewConfigOf(gitConfig)}
             canEdit={canManageSettings}
           />
           <ReleaseSection
