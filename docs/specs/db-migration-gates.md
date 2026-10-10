@@ -2,10 +2,10 @@
 title: DB Migration Operation-Class Gate
 status: active
 owner: builder
-last_verified: 2026-08-25
+last_verified: 2026-10-10
 summary: Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 domain: releases
-surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts]
+surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts, packages/core/db/migration-index.ts]
 related: [release-flow, scheduled-task-merge-policy]
 keywords: [expand, contract, classifymigrationsql, schema drift, drizzle, escalatetopaths]
 assertions:
@@ -21,6 +21,14 @@ assertions:
     type: symbol
     name: inspectPullRequestMigrations
     path: apps/web/src/lib/migration-inspector.ts
+  - id: find-index-collisions
+    type: symbol
+    name: findIndexCollisions
+    path: packages/core/db/migration-index.ts
+  - id: renumber-against-base
+    type: symbol
+    name: renumberAgainstBase
+    path: packages/core/db/migration-index.ts
   - id: evaluate-auto-merge-safety
     type: symbol
     name: evaluateAutoMergeSafety
@@ -60,6 +68,8 @@ assertions:
 - `packages/core/db/schema.ts` MUST NOT be treated as a standalone escalation path. It travels with its generated migration and is gated by the operation-class verdict on that migration.
 - A `schema.ts` change without a corresponding generated migration MUST classify as CONTRACT (schema drift without migration).
 - A CONTRACT verdict whose only CONTRACT statements move data (`INSERT/UPDATE/DELETE/MERGE`) MUST carry `kind: 'data'`. Any destructive statement in the same file or PR MUST win over it, whatever the order, so a backfill cannot hide a `DROP`.
+- CI MUST fail a PR that adds a migration numbered at or below its base branch's newest (`bun run migrations:index-check`), naming the colliding file and the next free index. drizzle-kit takes the next index from the local journal, so parallel branches mint the same number; no claim-time reservation can change that without hand-editing journals, so the index is checked against the base and repaired by regeneration instead.
+- The renumber MUST regenerate, not rename: `bun run migrations:renumber` resets the drizzle dir to the base's exact state and re-runs `drizzle-kit generate`. The migration-collision retry brief runs it (with `--min-index` past an open PR's slot that is not on the base yet).
 - A data-only migration whose number collides with another open PR MUST report the collision first (a mechanical renumber); the data verdict applies again on the renumbered head.
 - **Data-migration policy** (`mergePolicy.dataMigrations`): `'person'` (default) keeps a data migration a person's decision. `'agent-review'`, under tier `agent-review` only, lets the reviewer agent decide it: the reviewer pre-check, auto-merge and the escalation gate MUST NOT force a person for `kind: 'data'`, and the reviewer prompt asks the reviewer to judge the data change. A risk class the policy preset maps to `human` still applies. Destructive DDL, rewritten migrations, mixed PRs and uninspectable migrations are unaffected.
 
@@ -99,6 +109,7 @@ Neon PITR is enabled. Recovery path for an EXPAND migration that causes data pro
 | `MigrationSafety` type | `apps/web/src/lib/migration-safety.ts` |
 | `inspectPullRequestMigrations` | `apps/web/src/lib/migration-inspector.ts` |
 | `evaluateAutoMergeSafety` | `apps/web/src/lib/auto-merge.ts` |
+| `findIndexCollisions` / `renumberAgainstBase` | `packages/core/db/migration-index.ts` |
 
 **Out of scope**
 
