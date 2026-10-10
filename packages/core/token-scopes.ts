@@ -76,6 +76,7 @@ export const ACTION_TOKEN_SCOPE: Record<BuilddAction, TokenScope> = {
   merge_pr: 'tasks:write', close_pr: 'tasks:write', update_pr: 'tasks:write', request_pr_review: 'tasks:write',
   list_artifacts: 'tasks:read', get_artifact: 'tasks:read', list_artifact_templates: 'tasks:read',
   create_artifact: 'tasks:write', upload_artifact: 'tasks:write', update_artifact: 'tasks:write',
+  manage_specs: 'tasks:write',
   list_schedules: 'tasks:read', trace_schedule: 'tasks:read', create_schedule: 'schedules:write', update_schedule: 'schedules:write', pause_schedules: 'schedules:write', delete_schedule: 'schedules:write',
   explain: 'analytics:read', get_error_traces: 'analytics:read', get_failure_analytics: 'analytics:read', list_incidents: 'analytics:read', dispatch_health: 'analytics:read', read_evidence: 'analytics:read',
   get_budget_forecast: 'analytics:read', get_usage_stats: 'analytics:read', get_manifest_coverage: 'analytics:read', get_path_claim_stats: 'analytics:read', get_decision_stats: 'analytics:read', list_runners: 'analytics:read', list_connectors: 'analytics:read',
@@ -92,6 +93,7 @@ export function requiredScopeForAction(action: string, params: Record<string, un
   if (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && ['list', 'get', 'get_criteria_state'].includes(String(params.action))) return 'tasks:read';
   // Readiness is a read-only GET of /api/workspaces/[id]/readiness, which the route policy maps to tasks:read.
   if (action === 'manage_workspaces' && params.action === 'readiness') return 'tasks:read';
+  if (action === 'manage_specs' && ['list', 'get'].includes(String(params.action))) return 'tasks:read';
   if (action === 'manage_experiments' && ['list', 'get', 'readout'].includes(String(params.action))) return 'analytics:read';
   return Object.hasOwn(ACTION_TOKEN_SCOPE, action) ? ACTION_TOKEN_SCOPE[action as BuilddAction] : null;
 }
