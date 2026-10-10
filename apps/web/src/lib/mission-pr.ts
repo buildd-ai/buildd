@@ -439,7 +439,9 @@ export type OpenMissionPrResult =
  * Idempotent: an existing mission-PR worker with a PR short-circuits, and an
  * integration branch with no commits ahead of trunk returns `no_commits`
  * instead of asking GitHub to open an empty PR (which it refuses anyway, with a
- * 422 that reads like a bug).
+ * 422 that reads like a bug). So does a mission none of whose tasks landed a PR
+ * on the branch, and a branch whose commits ahead change no files — GitHub
+ * happily opens those, empty.
  */
 export async function openMissionIntegrationPr(
   missionId: string,
@@ -552,6 +554,18 @@ export async function openMissionIntegrationPr(
     return { ok: false, reason: 'no_commits', detail };
   };
 
+  // No deliverable task merged a PR into the integration branch: the mission's
+  // work was artifact-only, research, coordination, or all cancelled. Commits
+  // ahead are not evidence otherwise — a mission-branch refresh merges trunk in
+  // and leaves the branch "ahead" by a merge commit that changes nothing, and
+  // asking GitHub first is how a research mission opened an empty mission PR,
+  // its bookkeeping owner, and a reviewer. The reconciliation sweep and the
+  // completion gate already read this count the same way; this keeps the
+  // event-driven callers (task terminal, criteria evaluation) in line.
+  if (work.landedOnIntegrationCount === 0) {
+    return nothingToShip(`no deliverable task landed a PR on ${branch}`);
+  }
+
   // Nothing to ship is not an error, and it is not a PR either.
   try {
     const cmp = await githubApi(
@@ -560,6 +574,11 @@ export async function openMissionIntegrationPr(
     );
     if (typeof cmp?.ahead_by === 'number' && cmp.ahead_by === 0) {
       return nothingToShip(`${branch} is not ahead of ${base}`);
+    }
+    // Ahead only by commits whose net change is empty (refresh merges, work
+    // that reached trunk another way): the effective diff is what a PR carries.
+    if (Array.isArray(cmp?.files) && cmp.files.length === 0) {
+      return nothingToShip(`${branch} is ahead of ${base} but changes no files`);
     }
   } catch (err) {
     // A 404 here means GitHub has no such head branch — it was deleted on merge
