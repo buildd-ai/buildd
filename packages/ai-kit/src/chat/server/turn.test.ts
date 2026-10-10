@@ -227,9 +227,19 @@ describe('refused before any spend', () => {
 });
 
 describe('long messages', () => {
+  it('a message estimated over the model budget is refused before any spend', async () => {
+    const model = mockModel(textStream('x'));
+    const { send } = harness({ model });
+    const { res, text } = await send(userMsg('仕'.repeat(150_000)));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(text)).toMatchObject({ code: 'message_too_long_for_model', tokens: 150_000, limitTokens: 100_000 });
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(saved()).toHaveLength(0);
+  });
+
   for (const n of [8_001, 32_000, 100_000, 200_000]) {
     it(`accepts ${n.toLocaleString('en-US')} characters and stores them byte for byte`, async () => {
-      const text = '𝔘ñ✓'.repeat(Math.ceil(n / 4)).slice(0, n);
+      const text = 'Spec line 𝔘 ñ ✓ with ordinary words around it. '.repeat(Math.ceil(n / 46)).slice(0, n);
       const { send } = harness({ model: mockModel(textStream('ok')) });
       const { res } = await send(userMsg(text));
       expect(res.status).toBe(200);
@@ -240,7 +250,7 @@ describe('long messages', () => {
 
   it('sends the model a bounded history but keeps every stored message whole', async () => {
     const model = mockModel(textStream('ok'));
-    const { send } = harness({ model, limits: { historyChars: 250_000 } });
+    const { send } = harness({ model, limits: { historyTokens: 60_000 } });
     const first = 'a'.repeat(200_000);
     await send(userMsg(first));
     const second = await send({ ...userMsg('b'.repeat(200_000)), id: 'client-2' });
