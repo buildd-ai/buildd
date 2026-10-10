@@ -936,6 +936,86 @@ describe('openMissionIntegrationPr — owner state', () => {
   });
 });
 
+describe('openMissionIntegrationPr — nothing delivered to the branch', () => {
+  // The regression: a research-only mission whose sole task completed with an
+  // artifact and no PR. A mission-branch refresh had merged trunk into the
+  // integration branch, so GitHub reported it one commit ahead — a merge commit
+  // with zero changed files — and the opener, fired on task completion, opened
+  // an empty mission PR, created its bookkeeping owner, and summoned a reviewer.
+
+  it('does not open a PR when no deliverable task landed on the integration branch', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()]; // completed, artifact only, no PR
+    githubResponses['/compare/'] = { ahead_by: 1, files: [] };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls?state=closed'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID, { assumeCompletedTaskIds: ['t-1'] });
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(githubCalls.some(c => c.path.includes('/compare/'))).toBe(false);
+    // No synthetic owner task/worker, no "PR opened" note.
+    expect(inserts).toEqual([]);
+  });
+
+  it('does not open a PR when nothing landed even if the branch has real-looking commits ahead', async () => {
+    // Commits ahead are not proof of deliverable content.
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()];
+    githubResponses['/compare/'] = { ahead_by: 3, files: [{ filename: 'x.ts' }] };
+    githubResponses['/pulls?state=closed'] = [];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(inserts).toEqual([]);
+  });
+
+  it('still adopts a mission PR a human opened and merged, even with nothing landed through buildd', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker()];
+    githubResponses['/pulls?state=closed'] = [
+      { number: 74, html_url: 'pr-74', merged_at: '2026-09-27T10:00:00Z', base: { ref: 'dev' } },
+    ];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 74, prUrl: 'pr-74', created: false, merged: true });
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+  });
+
+  it('does not open a PR when the branch is ahead only by commits that change no files', async () => {
+    // Landed work whose content already reached trunk another way, plus a
+    // refresh merge: commits ahead, empty tree diff. Nothing to review.
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2, files: [] };
+    githubResponses['/pulls?state=closed'] = [];
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+    expect(inserts).toEqual([]);
+  });
+
+  it('opens the PR for landed work with a real diff', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2, files: [{ filename: 'docs/specs/foo.md' }] };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls?state=closed'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 9, prUrl: 'pr-9', created: true });
+  });
+});
+
 describe('openMissionIntegrationPr — recovery', () => {
   function landedWork() {
     taskRowsForMission = [workTask('t-1', 'completed')];
