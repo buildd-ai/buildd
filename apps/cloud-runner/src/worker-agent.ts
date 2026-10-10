@@ -162,6 +162,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         WARM_REPOS: warmReposEnabled(env) ? '1' : undefined,
         RESUMABLE_RUNS: resumableRunsEnabled(env) ? '1' : undefined,
         resumableRuns: resumableRunsEnabled(env),
+        reuseEnabled: env.CONTAINER_REUSE === '1',
         agentVersion: env.CF_VERSION_METADATA?.id,
         inactivityTimeoutMs: resolveInactivityTimeoutMs(env),
         startTimeoutMs: resolveStartTimeoutMs(env),
@@ -246,7 +247,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
     }
 
     const live = this.state.status === 'starting' || this.state.status === 'running';
-    if (req.resumeWorkerId || !req.workspaceId || !containerReuseEnabled(this.env) || live || this.supervisor.hasLiveRun) {
+    if (req.resumeWorkerId || !req.workspaceId || !containerReuseEnabled(this.env, req.warmHandover) || live || this.supervisor.hasLiveRun) {
       return this.supervisor.dispatch(req);
     }
     if (this.routing || this.state.routePending) return { accepted: false, reason: 'already_live', attempt: this.state.attempt, status: this.state.status };
