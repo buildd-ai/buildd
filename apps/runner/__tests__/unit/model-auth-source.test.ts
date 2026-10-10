@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyModelEnv } from '../../src/agent-model-env';
 import { applyHostSeatPolicy } from '../../src/host-seat';
-import { decideModelAuthSource, stripInheritedApiKeys, NO_CODING_AUTH_MESSAGE, modelAuthSourceMode } from '../../src/model-auth-source';
+import { resolveModelAuthSource, decideModelAuthSource, stripInheritedApiKeys, NO_CODING_AUTH_MESSAGE, modelAuthSourceMode } from '../../src/model-auth-source';
 import { isAuthError } from '../../src/claim-breaker';
 
 const base = { isCodexTask: false, runnerLocalAllowed: true, teamEndpointSelected: false, runnerProviderSelected: false };
@@ -98,5 +98,40 @@ describe('withheld team endpoint is not a selected paid route', () => {
     const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner' };
     const d = decideModelAuthSource(env, { ...base, teamEndpointSelected: false, probe: probe(homeWithLogin(), env) });
     expect(d).toMatchObject({ label: 'runner-managed', dropServerCredentials: true });
+  });
+});
+
+describe('resolveModelAuthSource (launch glue)', () => {
+  const env = { BUILDD_MODEL_AUTH_SOURCE: 'runner' };
+  const creds = {
+    serverApiKey: 'sk-team-0123456789', serverOauthToken: 'srv-tok', tenantOauthToken: 'ten-tok',
+    claudeAccessToken: 'acc-tok', claudeCredentialId: 'cred-1',
+  };
+  const claim = { isCodexTask: false, runnerLocalAllowed: true, credentials: creds };
+
+  test('withheld endpoint (modelEndpoint absent) is runner-managed; no server or tenant credential survives', () => {
+    const r = resolveModelAuthSource(env, { ...claim, modelEndpoint: undefined, probe: probe(homeWithLogin(), env) });
+    expect(r.decision.label).toBe('runner-managed');
+    expect(r.credentials).toEqual({});
+    expect(r.serverSeatDelivered).toBe(false);
+    const m = applyModelEnv({}, { isCodexTask: false, ...r.credentials });
+    expect(m.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(m.injected).toEqual([]);
+  });
+
+  test('a delivered team endpoint is a selected route: credentials untouched', () => {
+    const r = resolveModelAuthSource(env, { ...claim, modelEndpoint: { kind: 'x' }, probe: probe(emptyHome(), env) });
+    expect(r.decision.label).toBe('api-provider');
+    expect(r.credentials).toEqual(creds);
+  });
+
+  test('blocked decision throws NO_CODING_AUTH_MESSAGE', () => {
+    expect(() => resolveModelAuthSource(env, { ...claim, probe: probe(emptyHome(), env) })).toThrow(NO_CODING_AUTH_MESSAGE);
+  });
+
+  test('auto mode passes credentials through', () => {
+    const r = resolveModelAuthSource({}, claim);
+    expect(r.credentials).toEqual(creds);
+    expect(r.serverSeatDelivered).toBe(true);
   });
 });

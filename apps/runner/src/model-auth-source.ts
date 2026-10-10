@@ -98,3 +98,58 @@ export function stripInheritedApiKeys(env: Record<string, string>): void {
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
 }
+
+export interface ClaimCredentials {
+  serverApiKey?: string;
+  serverOauthToken?: string;
+  tenantOauthToken?: string;
+  claudeAccessToken?: string | null;
+  claudeCredentialId?: string | null;
+}
+
+export interface ModelAuthSourceClaim {
+  isCodexTask: boolean;
+  runnerLocalAllowed: boolean;
+  /** The claim's team agent model endpoint, if one was delivered. A withheld one (modelEndpointIgnored) is absent. */
+  modelEndpoint?: unknown;
+  llmProvider?: { provider?: string; baseUrl?: string } | null;
+  cloud?: boolean;
+  credentials: ClaimCredentials;
+  probe?: HostSeatProbe;
+}
+
+export interface ResolvedModelAuthSource {
+  decision: ModelAuthSourceDecision;
+  /** The credentials the rest of the launch may consume: empty when server credentials are dropped. */
+  credentials: ClaimCredentials;
+  /** Whether a server-delivered Claude seat is present in `credentials`. */
+  serverSeatDelivered: boolean;
+}
+
+/**
+ * The launch-boundary glue: derives the selected-route inputs from the claim,
+ * decides, throws NO_CODING_AUTH_MESSAGE when blocked (before any spawn), and
+ * returns the only credentials later code may use. Callers must read claim
+ * credentials from `credentials`, never from the claim directly.
+ */
+export function resolveModelAuthSource(
+  env: Record<string, string | undefined>,
+  claim: ModelAuthSourceClaim,
+): ResolvedModelAuthSource {
+  const decision = decideModelAuthSource(env, {
+    isCodexTask: claim.isCodexTask,
+    runnerLocalAllowed: claim.runnerLocalAllowed,
+    teamEndpointSelected: !!claim.modelEndpoint,
+    runnerProviderSelected: !!(claim.llmProvider?.provider === 'openrouter' || claim.llmProvider?.baseUrl),
+    cloud: claim.cloud,
+    probe: claim.probe,
+  });
+  if (decision.blocked) throw new Error(NO_CODING_AUTH_MESSAGE);
+  const credentials: ClaimCredentials = decision.dropServerCredentials ? {} : { ...claim.credentials };
+  const c = credentials;
+  return {
+    decision,
+    credentials,
+    serverSeatDelivered: !!(c.serverOauthToken || c.claudeAccessToken || c.claudeCredentialId),
+  };
+}
