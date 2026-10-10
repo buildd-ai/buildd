@@ -266,12 +266,13 @@ async function readBounded(res: Response, maxBytes: number): Promise<string | nu
  * refusal). Never throws, and nothing of the reply but parsed ids comes back.
  */
 export async function listAgentEndpointModels(
-  route: { baseUrl: string; apiKey: string; authHeader: 'authorization' | 'x-api-key' },
+  route: { baseUrl: string; apiKey: string; authHeader: 'authorization' | 'x-api-key'; headers?: Record<string, string> },
   opts: { fetcher?: Fetcher; lookup?: LookupAll; timeoutMs?: number } = {},
 ): Promise<string[] | null> {
   const headers: Record<string, string> = { accept: 'application/json', 'anthropic-version': '2023-06-01' };
   if (route.authHeader === 'x-api-key') headers['x-api-key'] = route.apiKey;
   else headers.authorization = `Bearer ${route.apiKey}`;
+  for (const [k, v] of Object.entries(route.headers ?? {})) headers[k.toLowerCase()] = v;
   try {
     const res = await fetchPublicNoRedirect(`${route.baseUrl}/v1/models`, {
       method: 'GET',

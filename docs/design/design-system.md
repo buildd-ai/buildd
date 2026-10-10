@@ -583,6 +583,28 @@ notification text) follows the same rules as a PR lede:
    disabled. Jobs run on Claude." The rules are data in
    `packages/core/copy-rules.ts`; **`bun run copy:check`** (CI, a ratchet like
    the design drift check below; `--list` prints every hit) fails on new ones.
+8. **Say what it does, never what it doesn't** (`not-this-its-that`). This
+   card, from Settings → Models, is the pattern to avoid:
+
+   > Serves Claude runs
+   > Not chat: A subscription seat signs in a runner; buildd's server never spends a seat.
+   > Not codex runs: A Claude subscription signs in Claude Code; the Codex CLI cannot use it.
+
+   It now reads: **Claude · Working · Subscription …bAAA**. If a limit
+   matters, show it where someone acts and it blocks them, as a fact with
+   the way out ("Add a Codex key"), never as a list of negations on a card.
+   "X, not Y" contrasts count too.
+9. **No internal words** (`internal-jargon`): wire, CLI, container, seat,
+   "Claude runs". Name what the reader sees: Claude agents, your runners.
+10. **A default, not a warning** (`warning-instead-of-default`). If the system
+    already behaves one way, show that option as chosen. No "No policy
+    chosen. Pick one to…".
+11. **Say it once** (`duplicate-explanation`). A sentence rendered twice in
+    one file, on a card and again in its disclosure, counts.
+12. **Change the flow before the words.** When a page needs explaining, it
+    mirrors the data model. Collapse it: one row per thing the reader knows
+    (Claude, not "Anthropic" plus "Claude subscription"), one input that
+    works out what was pasted, a control hidden until it can matter.
 
 ---
 
@@ -601,8 +623,9 @@ notification text) follows the same rules as a PR lede:
 
 **`bun run design:check`** runs in CI (after `specs:check`) to stop new design debt landing.
 It is a **ratchet**: `scripts/design-check.baseline.json` records per-file counts for each rule,
-and the check fails only when a rule's total goes UP, so existing debt does not block CI.
-It flags five categories in `apps/web/src/`:
+and the check fails when a rule goes UP, so existing debt does not block CI. The first five rules
+compare the rule total (a violation may move between files); the last four are **per-file**: any
+file above its baseline count, or absent from the baseline, fails. It flags nine categories in `apps/web/src/`:
 
 1. **Arbitrary font sizes** (`text-[<n>px]`): use a type-scale role (§3).
 2. **Raw hex colors** in `className` / `style`: use a design token (§2).
@@ -611,15 +634,21 @@ It flags five categories in `apps/web/src/`:
    Avatars and dots are not flagged.
 4. **Hand-rolled `fixed inset-0` sheets**: use `Sheet` or `BottomSheet` (§4).
 5. **Local `StatusBadge` definitions**: use `StatePill` / `StatusPill` for a state, `Chip` for any other tag.
+6. **Hand-rolled framed boxes** (`border` + `rounded*` + `p-*` on one line): use `Card` / `.card` (§4) or a hairline row.
+7. **Uppercase / tracked labels** (`uppercase`, `tracking-[…]`): labels are sentence case (§1.1); use `Eyebrow` or `text-meta`.
+8. **Accent fills and accent selected states** (`bg-accent`, `bg-primary`, with or without alpha, or an accent
+   border/text/ring on a line that carries an active/selected condition): orange belongs to `PrimaryAction` and the
+   needs-you / live components (`NeedsYou*`, `NeedsInput*`, `DecisionCard`, `FlightStrip`); selected is ink (`Segmented`).
+9. **Tinted state boxes** (`bg-status-*/N`): use `Notice` for a block, `StatePill` for a state word.
 
 On failure it prints every violation in the files whose count rose, with file:line and the
-section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3.
+section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3 and 6–9. Rules 6–9 are line heuristics: a class list split across lines is not seen.
 
 The check fails closed: an unreadable file or unparseable baseline is an error, and in CI a
 missing baseline is an error rather than a fresh baseline.
 
 **Updating the baseline.** After paying debt down, run `bun run design:check --update` and commit
-the baseline — it lowers counts to today's and never raises them. To deliberately accept new debt
+the baseline — it writes today's counts for every file that still has violations (renamed or new files keep their entries) and refuses if any rule would fail the gate. To deliberately accept new debt
 (e.g. reverting a large feature), add `--allow-increase`; reviewers will see the baseline grow.
 
 ## Non-goals

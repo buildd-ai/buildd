@@ -22,17 +22,18 @@ describe('overviewHeadline', () => {
   });
 
   it('counts one thing per item, each failure group once', () => {
-    expect(overviewHeadline({ ...CALM, failureGroups: 1 })).toMatchObject({ tone: 'attention', count: 1, text: '1 thing needs you.' });
+    expect(overviewHeadline({ ...CALM, failureGroups: 1 })).toMatchObject({ tone: 'attention', count: 1, text: '1 failure cause.' });
     expect(overviewHeadline({ ...CALM, failureGroups: 3, brokenCredentials: 1, noRunners: true }))
-      .toMatchObject({ count: 5, text: '5 things need you.' });
+      .toMatchObject({ count: 5, text: 'No runners connected · 1 broken credential · 3 failure causes.' });
   });
 });
 
 describe('overviewStatusRows', () => {
   const byKey = (s: OverviewState) => Object.fromEntries(overviewStatusRows(s).map(r => [r.key, r]));
 
-  it('every row links to Runners & capacity', () => {
-    for (const r of overviewStatusRows(STATE)) expect(r.href).toBe('/app/health/runners');
+  it('budget links to Usage while capacity links to Runners', () => {
+    expect(byKey(STATE).budget.href).toBe('/app/health/usage');
+    expect(byKey(STATE).runners.href).toBe('/app/health/runners');
   });
 
   it('runners: online count and agents running, tone by how many are up', () => {

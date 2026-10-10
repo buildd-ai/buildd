@@ -27,7 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
@@ -42,6 +42,7 @@ import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
@@ -263,8 +264,8 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       : migrationCollision
       ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prRefs ?? null)
       : semanticConflict
-        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
-        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict, prRefs ?? null)
+        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, prRefs ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -331,16 +332,40 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
   };
 }
 
+/**
+ * The PR's head when it is not this worker's own branch (the retry is bound to
+ * an existing PR, typically a mission integration PR). `create_pr` refuses a
+ * second PR for that lineage with a 409, so briefs must name the real head.
+ */
+function boundHeadRef(worker: ConflictRetryInput['worker'], prRefs: ConflictRetryInput['prRefs']): string | null {
+  return prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
+}
+
+function boundLineageNote(
+  worker: ConflictRetryInput['worker'],
+  prRefs: ConflictRetryInput['prRefs'],
+  fixWhat: string,
+): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  if (!boundHead) return '';
+  return `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. ${fixWhat} on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`;
+}
+
 function buildConflictDescription(
   task: ConflictRetryInput['originalTask'],
   worker: ConflictRetryInput['worker'],
   repoFullName: string,
   iteration: number,
   maxIterations: number,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push the resolved merge to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} will auto-update.`
+    : `Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.
+  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.${boundLineageNote(worker, prRefs, 'Resolve the conflicts')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -354,7 +379,7 @@ function buildConflictDescription(
    \`\`\`
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
 4. Run the test suite and verify correctness before pushing.
-5. Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.
+5. ${pushStep}
 
 PR: ${prUrl}
 
@@ -372,7 +397,12 @@ function buildSemanticConflictDescription(
   iteration: number,
   maxIterations: number,
   assessment: SemanticAssessment,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} updates, and CI plus normal review decide the merge on the new head.`
+    : `Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
   const base = assessment.baseRef ?? "the PR's base branch";
   const evidence = (assessment.evidence ?? [])
@@ -383,7 +413,7 @@ function buildSemanticConflictDescription(
 
 ${evidence}
 
-A clean git merge does not mean the two changes agree. This is a semantic conflict review.
+A clean git merge does not mean the two changes agree. This is a semantic conflict review.${boundLineageNote(worker, prRefs, 'Reconcile the symbols')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -397,7 +427,7 @@ A clean git merge does not mean the two changes agree. This is a semantic confli
    \`\`\`
 3. Read each symbol above as it now stands and reconcile both intents on the merits. If they already agree, say so in your summary and change nothing else.
 4. Run the tests that cover those symbols before pushing.
-5. Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.
+5. ${pushStep}
 
 PR: ${prUrl}
 
@@ -437,10 +467,8 @@ function buildMigrationCollisionDescription(
   // The PR's head is not this worker's branch: the retry is bound to an
   // existing PR (typically a mission integration PR). create_pr rejects a new
   // PR from the worker branch as duplicate lineage, so name the real target.
-  const boundHead = prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
-  const lineageNote = boundHead
-    ? `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. Fix the migration on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`
-    : '';
+  const boundHead = boundHeadRef(worker, prRefs);
+  const lineageNote = boundLineageNote(worker, prRefs, 'Fix the migration');
   const pushStep = boundHead
     ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force), then request re-review so the collision flag clears.`
     : `Push to the existing branch, then request re-review so the collision flag clears.`;
@@ -730,6 +758,45 @@ async function kernelConflictRetry(
   return out;
 }
 
+/** Reconcile inferred inverse waits on the canonical queued repair before waking it. */
+async function reconcilePendingRepairEdges(
+  row: Pick<typeof tasks.$inferSelect, 'id' | 'status' | 'taskClass' | 'conflictRetryPrNumber' | 'dependsOn' | 'pathDeclaration'>,
+  workspaceId: string,
+  subjectTaskId: string,
+) {
+  if (row.status !== 'pending' || row.taskClass !== 'attempt' || row.conflictRetryPrNumber == null) return;
+  const deps = row.dependsOn ?? [];
+  if (!deps.length) return;
+  const decl = row.pathDeclaration;
+  // Tagged rows preserve every caller edge. The legacy conflict dispatcher
+  // copied no caller edges, so untagged pre-v2 attempts have only inferred ones.
+  const inferred = new Set(decl?.inferredDependsOn ?? (decl?.overlapPolicy == null ? deps : []));
+  if (!inferred.size) return;
+  const subject = await db.query.tasks.findFirst({ where: eq(tasks.id, subjectTaskId), columns: { pathManifest: true } });
+  if (!subject) return;
+  const candidates = await db.query.tasks.findMany({
+    where: and(eq(tasks.workspaceId, workspaceId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+    columns: { id: true, status: true, pathManifest: true, dependsOn: true },
+  });
+  const graph = new Map(candidates.map(t => [t.id, t.dependsOn]));
+  const remove = new Set(candidates.filter(t => inferred.has(t.id) && (
+    isDownstreamOf(t.id, subjectTaskId, graph) || (t.status === 'pending' &&
+      findBlockingPr(t.pathManifest ?? [], [{ pathManifest: subject.pathManifest, prNumber: row.conflictRetryPrNumber }]))
+  )).map(t => t.id));
+  if (!remove.size) return;
+  await db.update(tasks).set({
+    dependsOn: deps.filter(id => !remove.has(id)),
+    ...(decl ? { pathDeclaration: { ...decl,
+      ...(decl.inferredDependsOn ? { inferredDependsOn: decl.inferredDependsOn.filter(id => !remove.has(id)) } : {}),
+      ...(decl.softOverlaps ? { softOverlaps: decl.softOverlaps.filter(e => !remove.has(e.taskId)) } : {}),
+    } } : {}),
+  }).where(and(eq(tasks.id, row.id), eq(tasks.status, 'pending'),
+    // A concurrent claim, declaration or dependency edit wins over this read.
+    sql`${tasks.dependsOn} = ${JSON.stringify(deps)}::jsonb`,
+    sql`${tasks.pathDeclaration} IS NOT DISTINCT FROM ${decl ? JSON.stringify(decl) : null}::jsonb`,
+  ));
+}
+
 // ── S37: an existing conflict fix is recovered, not duplicated ──────────────
 
 export {
@@ -823,11 +890,12 @@ export async function dispatchConflictRetry(
       ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
+    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true, taskClass: true, dependsOn: true, pathDeclaration: true },
   });
   if (liveRetry) {
     // S37: an existing remediation is the canonical one. A stalled one is
     // re-dispatched or repaired, never shadowed by a second fix task.
+    await reconcilePendingRepairEdges(liveRetry, workspaceId, taskId);
     const recovery = await recoverStalledConflictFix(liveRetry);
     console.log(
       `[conflict-retry] PR #${prNumber} already has live fix attempt ${liveRetry.id} — not filing another` +
@@ -1143,7 +1211,7 @@ export async function dispatchConflictRetry(
         eq(tasks.workspaceId, workspaceId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
       ),
-      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true, status: true },
     });
     const dependsOnById = new Map<string, readonly string[] | null | undefined>(
       inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
@@ -1163,7 +1231,15 @@ export async function dispatchConflictRetry(
           // exists to unblock — an edge (hard or soft) repair→t would make the
           // repair wait on something that is itself waiting on the repair's own
           // subject, a structural deadlock rather than real serialization.
-          return isDownstreamOf(t.id, taskId, dependsOnById);
+          if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
+          // Pending work with no stored edge can still wait on this PR through
+          // the claim route's open-PR backstop. Reuse that exact predicate before
+          // storing either a hard edge or soft evidence in the reverse direction.
+          // Already-admitted work can finish without this PR landing, so keep its
+          // genuine migration / serialized-surface ordering.
+          return t.status === 'pending' && !!findBlockingPr(t.pathManifest ?? [], [
+            { pathManifest: task.pathManifest as string[] | null, prNumber },
+          ]);
         },
         isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, gitConfig, kind),
       },
@@ -1240,6 +1316,10 @@ export async function dispatchConflictRetry(
   if (installationId) {
     schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
   }
+
+  // Bounded, deferred — a new conflict-retry child is exactly what the
+  // retry-fork / lineage rules watch for.
+  scheduleFailurePatternSentinel(workspaceId);
 
   return { dispatched: true, taskId: newTask.id };
 }

@@ -7,16 +7,18 @@ import {
   MINE_NEEDS_PERSON,
   POLICY_BLOCKS_MINE,
   POLICY_OPTIONS,
-  POLICY_UNSET,
   cardView,
   coverageText,
   coverageView,
-  explainAs,
-  explainLine,
-  explainUrl,
+  detectPaste,
+  effectivePolicy,
+  groupProviders,
+  maskedValue,
+  rowState,
   policySentence,
   servesLine,
   surfaceList,
+  usedFor,
   writePermissionsFor,
 } from './providers-view';
 
@@ -91,7 +93,9 @@ describe('servesLine', () => {
   it('follows the surfaces the API returns, not a copy of them', () => {
     const p = { surfaces: { chat: { ok: false as const, reason: 'nope' }, 'agent-claude': { ok: true as const, via: 'x' }, 'agent-codex': { ok: true as const, via: 'x' }, 'cloud-egress': { ok: true as const, via: 'x' } } };
     expect(servesLine(p).serves).toEqual(['agent-claude', 'agent-codex', 'cloud-egress']);
-    expect(surfaceList(['cloud-egress', 'chat'])).toBe('Chat · cloud runs');
+    expect(surfaceList(['cloud-egress', 'chat'])).toBe('chat and cloud agents');
+    expect(usedFor(['chat', 'agent-claude', 'cloud-egress'])).toBe('Used for chat, Claude agents and cloud agents.');
+    expect(usedFor([])).toBe('Not used by anything.');
   });
 });
 
@@ -157,40 +161,54 @@ describe('cardView', () => {
 
 describe('policy copy', () => {
   it('offers the three policies in plain words', () => {
-    expect(POLICY_OPTIONS.map((o) => o.label)).toEqual(['Team key only', "Your key first, then the team's", 'Your key only (no team key)']);
+    expect(POLICY_OPTIONS.map((o) => o.label)).toEqual(['Team key', "Mine, then the team's", 'Mine only']);
+    expect(POLICY_OPTIONS.map((o) => o.hint)).toEqual(["Everyone uses the team's key.", "Uses your key when you've added one.", 'You need your own key to start work.']);
   });
-  it('says an unset policy leaves agents on team keys', () => {
-    expect(policySentence({ credentialPolicy: null })).toBe(POLICY_UNSET);
-    expect(POLICY_UNSET).toContain('agents use team keys');
-    expect(policySentence({ credentialPolicy: 'personal_first' })).toBe("Agent runs and chat: your key first, then the team's.");
+  it('an unset policy is Team key, not a prompt to pick one', () => {
+    expect(effectivePolicy({ credentialPolicy: null })).toBe('team');
+    expect(policySentence({ credentialPolicy: null })).toBe("Team key. Everyone uses the team's key.");
+    expect(policySentence({ credentialPolicy: 'personal_first' })).toBe("Mine, then the team's. Uses your key when you've added one.");
   });
   it('never uses an em dash', () => {
     for (const o of POLICY_OPTIONS) expect(`${o.label}${o.hint}`).not.toContain('—');
   });
 });
 
-describe('explain', () => {
-  const label = (id: string) => ({ anthropic: 'Anthropic' } as Record<string, string>)[id] ?? id;
-  it('names the provider, shape and whose key, never a value', () => {
-    expect(explainLine({
-      surface: 'agent-claude',
-      result: { resolved: true, provider: 'anthropic', shape: 'api_key', scope: 'team', source: { scope: 'team', secretId: 's', purpose: 'anthropic_api_key', label: null, legacy: true } },
-    }, label)).toBe('Claude runs use Anthropic: API key, team key.');
-    expect(explainLine({
-      surface: 'chat',
-      result: { resolved: true, provider: 'anthropic', shape: 'api_key', scope: 'personal', source: { scope: 'personal', secretId: 's', purpose: 'inference_key', label: 'anthropic', legacy: false } },
-    }, label)).toBe('Chat uses Anthropic: API key, your key.');
+describe('rows', () => {
+  it('groups Claude and OpenAI, in registry order', () => {
+    const res = fixtureResponse({});
+    expect(groupProviders(res.providers).map((g) => [g.id, g.label, g.members.map((m) => m.id)])).toEqual([
+      ['claude', 'Claude', ['anthropic', 'claude-subscription']],
+      ['openai', 'OpenAI', ['openai', 'codex-subscription']],
+      ['openrouter', 'OpenRouter', ['openrouter']],
+      ['litellm', 'LiteLLM gateway', ['litellm']],
+      ['custom-endpoint', 'Custom endpoint', ['custom-endpoint']],
+    ]);
   });
-  it('passes the resolver reason through when nothing resolves', () => {
-    expect(explainLine({ surface: 'agent-codex', result: { resolved: false, reason: 'No Codex credential is set.' } }, label))
-      .toBe('Codex runs: No Codex credential is set.');
+
+  it('reads the pasted format: Claude key, Claude setup token, OpenAI key', () => {
+    expect(detectPaste('claude', ' sk-ant-api03-x ')).toEqual({ provider: 'anthropic', shape: 'api_key' });
+    expect(detectPaste('claude', 'sk-ant-oat01-x')).toEqual({ provider: 'claude-subscription', shape: 'setup_token' });
+    expect(detectPaste('openai', 'sk-proj-x')).toEqual({ provider: 'openai', shape: 'api_key' });
+    expect('error' in detectPaste('claude', 'sk-proj-x')).toBe(true);
+    expect('error' in detectPaste('openai', 'nope')).toBe(true);
   });
-  it('explains as you on Mine, as team work elsewhere', () => {
-    expect(explainAs('mine', true)).toBe('self');
-    expect(explainAs('mine', false)).toBe('team');
-    expect(explainAs('team', true)).toBe('team');
-    expect(explainUrl({ teamId: 't', provider: 'openai', surface: 'chat', workspaceId: 'w', as: 'team' }))
-      .toBe('/api/providers/explain?teamId=t&provider=openai&surface=chat&as=team&workspaceId=w');
+
+  it('one status word per row', () => {
+    const r = (o: Record<string, unknown>) => ({ health: 'unknown', lastVerificationError: null, ...o }) as never;
+    expect(rowState([r({ health: 'healthy' })], [], null).word).toBe('Working');
+    expect(rowState([r({ health: 'revoked' })], [], null).word).toBe('Needs attention');
+    expect(rowState([r({ lastVerificationError: 'bad' })], [], null).word).toBe('Needs attention');
+    expect(rowState([], [r({})], null).word).toBe('Team key');
+    expect(rowState([], [], 'team only').word).toBe('Not available');
+    expect(rowState([], [], null).word).toBe('Not set');
+  });
+
+  it('masks a key by its last four, and names a subscription', () => {
+    expect(maskedValue({ shape: 'api_key', last4: 'a1b2' })).toBe('…a1b2');
+    expect(maskedValue({ shape: 'setup_token', last4: 'bAAA' })).toBe('Subscription …bAAA');
+    expect(maskedValue({ shape: 'oauth_managed', last4: null })).toBe('Subscription');
+    expect(maskedValue({ shape: 'gateway', last4: 'zz' })).toBe('Configured');
   });
 });
 

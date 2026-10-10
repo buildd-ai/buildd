@@ -199,6 +199,38 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     expect(out).toContain('Its mission is held');
   });
 
+  // Task e7e8740a: a budget refusal says which wall held it and when it lifts.
+  it('prints the budget wall summary on a budget_exhausted refusal', async () => {
+    mockApi.mockResolvedValueOnce({
+      workers: [],
+      budgetResetsAt: '2099-01-01T20:00:00.000Z',
+      diagnostics: {
+        reason: 'budget_exhausted',
+        budgetBlock: {
+          walls: [{ kind: 'account_seat', backend: 'claude', resetsAt: '2099-01-01T20:00:00.000Z' }],
+          summary: "The account's Claude session limit is reached. It lifts at Jan 1, 20:00 UTC.",
+        },
+      },
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', {}, interactive())).content[0].text;
+    expect(out).toStartWith('Nothing claimed: budget_exhausted');
+    expect(out).toContain("The account's Claude session limit is reached. It lifts at Jan 1, 20:00 UTC.");
+  });
+
+  it('turns an account-limit 429 into a sentence instead of a raw API error', async () => {
+    mockApi.mockRejectedValueOnce(new Error('API error: 429 - ' + JSON.stringify({
+      error: 'Max concurrent workers limit reached', code: 'max_concurrent_workers', limit: 2, current: 2,
+      detail: 'All 2 runner slots on this account are busy. A slot frees when a running task finishes.',
+    })));
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID }, interactive())).content[0].text;
+    expect(out).toBe('Nothing claimed: max_concurrent_workers. All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
+  });
+
+  it('still throws an API error that is not an account limit', async () => {
+    mockApi.mockRejectedValueOnce(new Error('API error: 500 - {"error":"boom"}'));
+    await expect(handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', {}, interactive())).rejects.toThrow(/500/);
+  });
+
   it('says the server gave no reason rather than guessing when diagnostics are absent', async () => {
     mockApi.mockResolvedValueOnce({ workers: [] });
     const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', {}, interactive());

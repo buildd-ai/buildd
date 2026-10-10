@@ -87,6 +87,18 @@ describe('evaluateSoftOverlaps', () => {
     expect(ser[0]).toMatchObject({ kind: 'deterministic', overlapKind: 'hard_surface' });
   });
 
+  it('a converted repair edge cannot hold behind pending work blocked by its subject PR', () => {
+    const paths = ['packages/core/drizzle'];
+    const repair = task([{ taskId: 'h1', paths: [], kind: 'legacy_inferred' }], paths);
+    const opts = { isHardSurface: none, repairSubjectPrs: [{ pathManifest: paths, prNumber: 42 }] };
+    const pending = new Map([['h1', holder({ status: 'pending', workerStatus: null, pathManifest: ['packages/core/drizzle/0400_x.sql'] })]]);
+    expect(evaluateSoftOverlaps(repair, pending, opts)).toEqual([]);
+    // The same migration holder remains a real mutex once it has started,
+    // and a normal task is never exempted from pending migration ordering.
+    expect(evaluateSoftOverlaps(repair, new Map([['h1', holder({ pathManifest: paths })]]), opts)[0]).toMatchObject({ kind: 'deterministic' });
+    expect(evaluateSoftOverlaps(repair, pending, { isHardSurface: none })[0]).toMatchObject({ kind: 'deterministic' });
+  });
+
   it('an unreadable holder set fails closed: every soft entry holds as unknown state', () => {
     const v = evaluateSoftOverlaps(task([{ taskId: 'h1' }]), null, { isHardSurface: none });
     expect(v).toEqual([{ kind: 'deterministic', holderTaskId: 'h1', paths: [], overlapKind: 'state_unresolved', holderTitle: null }]);

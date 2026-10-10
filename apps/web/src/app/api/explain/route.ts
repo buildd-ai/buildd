@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { constrainToGranted } from '@/lib/grant-scope';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
     let teamWsIds: string[];
     if (account) {
       teamIds = [account.teamId];
-      teamWsIds = (await getTeamWorkspaceIds(account.teamId)).filter(id => taskScopeAllowsWorkspace(account, id));
+      teamWsIds = constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)).filter(id => taskScopeAllowsWorkspace(account, id));
     } else {
       const sessionTeamIds = await resolveSessionTeamIds(sessionUser!.id, searchParams.get('teamId'));
       if (!sessionTeamIds) {
@@ -108,7 +109,7 @@ export async function GET(req: NextRequest) {
     // workspace admits only linked accounts. Sessions were scoped by team
     // membership above, the rule GET /api/tasks/[id] applies to them.
     const reaches = async (wsId: string) =>
-      !account || (taskScopeAllowsWorkspace(account, wsId) && verifyAccountWorkspaceAccess(account.id, wsId));
+      !account || (taskScopeAllowsWorkspace(account, wsId) && verifyAccountWorkspaceAccess(account, wsId));
     const actor: EvidenceActor = account ? { accountId: account.id } : { userId: sessionUser!.id };
 
     // ── PR ──────────────────────────────────────────────────────────────────

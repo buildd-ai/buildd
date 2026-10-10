@@ -10,7 +10,7 @@
  */
 import { db } from '@buildd/core/db';
 import { secrets, teams, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import { decrypt } from '@buildd/core/secrets';
 import { policyColumns } from '@buildd/core/inference-key-policy';
 import {
@@ -96,6 +96,7 @@ const ENDPOINT_KIND_PROVIDER: Record<string, ProviderId> = {
   gateway: 'litellm',
   openrouter: 'openrouter',
   'anthropic-compatible': 'custom-endpoint',
+  cloudflare: 'custom-endpoint',
 };
 
 const REFRESH_FAMILIES = new Set(['claude_credential', 'codex_credential']);
@@ -252,6 +253,23 @@ export async function loadPolicySummary(teamId: string): Promise<ProviderPolicyS
     chat: { policy: chat.policy, source: chat.source },
     agent: { policy: agent.policy, enforced: agent.enforced, source: agent.source },
   };
+}
+
+/**
+ * How many personal model keys anyone in the team has stored: decides whether
+ * Settings shows "Who pays". A count only; never whose.
+ */
+export async function countPersonalKeys(teamId: string): Promise<number> {
+  try {
+    const rows = await db.query.secrets.findMany({
+      where: and(eq(secrets.teamId, teamId), inArray(secrets.purpose, modelCredentialPurposes() as never[]), isNotNull(secrets.userId)),
+      columns: { id: true, teamId: true, userId: true },
+    });
+    return rows.filter((r) => r.teamId === teamId && r.userId !== null).length;
+  } catch (error) {
+    console.warn('[providers] personal key count failed:', error);
+    return 0;
+  }
 }
 
 /**

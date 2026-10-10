@@ -25,7 +25,7 @@ export function OverviewStatusRows({ rows }: { rows: OverviewStatusRow[] }) {
   return (
     <section data-testid="health-overview-status" className="mb-6" aria-labelledby="health-overview-status-h">
       <h2 id="health-overview-status-h" className="section-label mb-3">At a glance</h2>
-      <ul className="card divide-y divide-border-default">
+      <ul className="border-y border-border-default divide-y divide-border-default">
         {rows.map(row => (
           <li key={row.key}>
             <Link

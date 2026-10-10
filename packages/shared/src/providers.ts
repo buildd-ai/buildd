@@ -100,6 +100,8 @@ export interface ListProvidersResponse {
     canSetMine: boolean;
   };
   policy: ProviderPolicySummary;
+  /** Personal model keys stored by anyone in the team (a count, never whose). */
+  personalKeyCount?: number;
   providers: ProviderListing[];
 }
 

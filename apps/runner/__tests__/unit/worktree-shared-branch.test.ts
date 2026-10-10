@@ -60,6 +60,8 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   if (cmd.includes('rev-list --count')) {
     // Stale-branch guard probe (HEAD..origin/<default>) — always fresh here.
     if (cmd.includes('HEAD..origin/')) return '0';
+    // Fresh task branches are not on origin (implicit-resume probe finds nothing).
+    if (/\.\.origin\/buildd\/task-/.test(cmd)) fail('unknown revision', 128);
     return '5'; // fetchBranch probe: candidate exists, not diverged
   }
 

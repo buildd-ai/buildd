@@ -126,3 +126,21 @@ describe('MergePolicyEditor — editable only with manage_workspace_settings', (
     expect(html).not.toContain('merge-policy-read-only');
   });
 });
+
+describe('MergePolicyEditor — data migrations', () => {
+  it('agent-review: shows who decides data migrations, a person by default', () => {
+    const html = render({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } });
+    expect(html).toContain('Data migrations');
+    expect(html).toContain('A person decides');
+  });
+
+  it('agent-review with the setting on shows the reviewer agent decides', () => {
+    const html = render({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'agent-review' });
+    expect(html).toContain('Reviewer agent decides');
+  });
+
+  it('other tiers have no data-migration control (there is no reviewer to decide)', () => {
+    expect(render({ tier: 'auto-threshold', threshold: { maxLines: 800 } })).not.toContain('Data migrations');
+    expect(render({ tier: 'human' })).not.toContain('Data migrations');
+  });
+});

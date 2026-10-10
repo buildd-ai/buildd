@@ -41,6 +41,13 @@ describe('SETTINGS_NAV', () => {
     }
   });
 
+  it('lists Connected apps with the personal sections, apart from the MCP connectors agents call out to', () => {
+    const you = SETTINGS_NAV[0].items.map((i) => i.id);
+    expect(you).toContain('connections');
+    expect(settingsItemFor('/app/settings/connections')?.id).toBe('connections');
+    expect(settingsItemFor('/app/settings/connectors')?.id).toBe('connectors');
+  });
+
   it('lists Storage under Integrations, linked to its own page', () => {
     const integrations = SETTINGS_NAV.find((g) => g.label === 'Integrations')!.items;
     const storage = integrations.find((i) => i.id === 'storage');
@@ -68,7 +75,7 @@ describe('settingsNavFor', () => {
 
   it('lists Billing after Budgets while billing is on', () => {
     const you = settingsNavFor({ billing: true })[0].items.map((i) => i.id);
-    expect(you).toEqual(['account', 'team', 'roles', 'budgets', 'billing']);
+    expect(you).toEqual(['account', 'team', 'roles', 'connections', 'budgets', 'billing']);
   });
 });
 
