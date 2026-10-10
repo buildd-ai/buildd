@@ -13,6 +13,8 @@ import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 import { getArtifactRevision, writeArtifactBody } from '@/lib/artifact-revisions';
+import { recordArtifactRead } from '@/lib/artifact-reads';
+import { ArtifactReadError, parseReadSelector, readArtifactBody, returnedChars, type ArtifactReadSelector } from '@buildd/core/artifact-read';
 
 // PATCH metadata semantics and the in-SQL merge: lib/artifact-metadata-merge.ts.
 
@@ -112,6 +114,41 @@ export async function GET(
     ? { content: revision.content, storageKey: revision.storageKey }
     : { content: artifact.content, storageKey: artifact.storageKey };
 
+  // ?view= returns a bounded part of the body instead of all of it
+  // (packages/core/artifact-read.ts): outline, section, range, grep, meta,
+  // full, or auto (whole when short, outline when long).
+  let selector: ArtifactReadSelector | null;
+  try {
+    selector = parseReadSelector(req.nextUrl.searchParams, body.content ?? '');
+  } catch (err) {
+    if (err instanceof ArtifactReadError) return NextResponse.json({ error: err.message }, { status: 400 });
+    throw err;
+  }
+  let read: ReturnType<typeof readArtifactBody> | null = null;
+  if (selector) {
+    try {
+      read = readArtifactBody(body.content ?? '', selector);
+    } catch (err) {
+      if (err instanceof ArtifactReadError) return NextResponse.json({ error: err.message }, { status: 400 });
+      throw err;
+    }
+  }
+  if (body.content !== null) {
+    const { view: _view, ...rest } = (selector ?? { view: 'full' }) as ArtifactReadSelector & Record<string, unknown>;
+    recordArtifactRead({
+      artifactId: artifact.id,
+      revision: revisionNumber,
+      workspaceId: artifact.workspaceId ?? artifact.worker?.workspaceId ?? null,
+      accountId: account?.id ?? null,
+      userId: sessionUser?.id ?? null,
+      taskId: account?.taskScope?.taskId ?? null,
+      view: read?.view ?? 'full',
+      selector: Object.keys(rest).length ? rest : null,
+      returnedChars: read ? returnedChars(read) : body.content.length,
+      totalChars: body.content.length,
+    });
+  }
+
   // A token only addresses a live share while the artifact is public.
   const shareUrl = artifact.shareToken && artifact.visibility === 'public'
     ? `${appBaseUrl()}/share/${artifact.shareToken}`
@@ -135,6 +172,9 @@ export async function GET(
     artifact: {
       ...artifactData,
       ...body,
+      // A bounded read returns its part in `read`, never the whole body beside it.
+      ...(read ? { content: null, read } : {}),
+      sizeChars: body.content?.length ?? null,
       shareUrl,
       downloadUrl,
       // `revision` is the body returned; `currentRevision` the latest. Pass

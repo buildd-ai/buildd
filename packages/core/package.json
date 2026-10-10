@@ -12,6 +12,7 @@
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
     "./artifact-redaction": "./artifact-redaction.ts",
+    "./artifact-read": "./artifact-read.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",
