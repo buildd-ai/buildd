@@ -11,6 +11,7 @@ import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
+import { upsertedContent } from '@/lib/artifact-upsert-content';
 
 
 /**
@@ -113,7 +114,7 @@ export async function POST(
         .update(artifacts)
         .set({
           title,
-          content: content || null,
+          content: upsertedContent(existing.content, content),
           metadata: artifactMetadata,
           type,
           missionId: id,
@@ -130,7 +131,7 @@ export async function POST(
       // Notify if this artifact is meant for review, the task opted in, and content or title changed.
       if (taskId && mission.workspaceId) {
         const shouldNotify = await shouldNotifyOnArtifact(updated, taskId);
-        if (shouldNotify && (existing.content !== (content || null) || existing.title !== title)) {
+        if (shouldNotify && (existing.content !== upsertedContent(existing.content, content) || existing.title !== title)) {
           await notifyArtifactReady(updated, taskId, mission.workspaceId);
         }
       }
