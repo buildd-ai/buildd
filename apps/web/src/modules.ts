@@ -15,6 +15,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
@@ -152,3 +153,11 @@ export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepa
 export const ESCALATION_GATE_DEPS = escalationGateDeps;
 /** What a page passes: stored verdicts and rules, the rest looked at after the response. */
 export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
+
+/**
+ * The Failure Pattern Sentinel's slots for core pages (lib/failure-incident-escalation.ts):
+ * Home's Needs You rows for incidents the escalation gate gave to the owner, and the
+ * stored verdict the incident page shows. Both read the ledger; neither calls a model.
+ */
+export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
+export const INCIDENT_VERDICTS = loadIncidentVerdicts;
