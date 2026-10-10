@@ -112,7 +112,10 @@ describe('one editor per concern', () => {
 
   it('keeps model config on one page: Models holds keys, sign-ins, tiers and features', () => {
     const models = readFileSync(resolve(PROTECTED, 'settings/models/page.tsx'), 'utf8');
-    for (const part of ['ModelProvidersClient', 'AgentBackendsSection', 'ModelTiersClient', 'ModelFeatures']) {
+    // The sign-ins render inside the provider rows (ModelProvidersClient), not as their own section.
+    const providers = readFileSync(resolve(PROTECTED, 'settings/providers/ModelProvidersClient.tsx'), 'utf8');
+    expect(providers).toContain('AgentBackendsSection');
+    for (const part of ['ModelProvidersClient', 'ModelTiersClient', 'ModelFeatures']) {
       expect(`${part}: ${models.includes(part)}`).toBe(`${part}: true`);
     }
     const runners = readFileSync(resolve(PROTECTED, 'settings/runners/page.tsx'), 'utf8');
