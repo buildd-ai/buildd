@@ -12,9 +12,9 @@ function Tile({ testId, value, unit, label }: { testId?: string; value: React.Re
     <div data-testid={testId} className="px-3 py-2.5 md:px-4 md:py-3 border-r border-b md:border-b-0 border-border-default last:border-r-0 min-w-0">
       <div className="font-mono text-[20px] md:text-[24px] font-semibold tracking-[-0.5px] leading-tight tabular-nums truncate">
         {value}
-        {unit && <small className="ml-1 text-[12px] font-normal tracking-normal text-text-muted">{unit}</small>}
+        {unit && <small className="ml-1 text-[12px] font-normal text-text-muted">{unit}</small>}
       </div>
-      <div className="mt-1 font-mono text-[11px] md:text-[10px] uppercase tracking-[1.8px] text-text-muted truncate">{label}</div>
+      <div className="mt-1 font-mono text-meta text-text-muted truncate">{label}</div>
     </div>
   );
 }
