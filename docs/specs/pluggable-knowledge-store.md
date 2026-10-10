@@ -3,7 +3,7 @@ title: Pluggable Knowledge Store
 status: draft
 owner: max
 last_verified: 2026-10-10
-summary: The knowledge store MUST separate a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default and hosted backend until measured triggers fire, and never export sensitive-workspace content to an external index.
+summary: The knowledge store MUST split a buildd-owned ranking pipeline from a swappable index backend, keep pgvector the default until measured triggers fire, and never export sensitive-workspace content.
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/types.ts, packages/core/mcp-tools.ts, packages/core/eval/retrieval-baseline.json]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, byo-evidence-storage]
