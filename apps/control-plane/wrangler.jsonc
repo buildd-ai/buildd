@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "buildd-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  // nodejs_compat_populate_process_env: the shared handlers read config from
+  // process.env (packages/core/config.ts), exactly as on Vercel.
+  "compatibility_flags": ["nodejs_compat", "nodejs_compat_populate_process_env"],
+  "observability": { "enabled": true },
+  "workers_dev": false,
+  // Paid plan: the execution handlers are I/O-bound, but a claim can do a lot of
+  // work; give the default CPU budget headroom.
+  "limits": { "cpu_ms": 60000 },
+  // The execution routes on buildd.dev (the zone's record must be proxied for
+  // routes to fire). Unserved paths and EXECUTION_MODE != own pass through to
+  // the web app. Plus a hostname of its own for health and direct probes.
+  "routes": [
+    { "pattern": "buildd.dev/api/workers/*", "zone_name": "buildd.dev" },
+    { "pattern": "buildd.dev/api/github/webhook", "zone_name": "buildd.dev" },
+    { "pattern": "buildd.dev/api/dispatch/v1/*", "zone_name": "buildd.dev" },
+    { "pattern": "control-plane.buildd.dev", "custom_domain": true }
+  ],
+  "vars": {
+    // shadow: pass everything through to the web app. own: serve the execution routes here.
+    "EXECUTION_MODE": "shadow",
+    "CONTROL_PLANE_HOST": "control-plane.buildd.dev",
+    "NODE_ENV": "production",
+    "VERCEL_ENV": "production",
+    "NEXT_PUBLIC_APP_URL": "https://buildd.dev"
+  },
+  // The handlers are apps/web's own; `next/server` resolves to a shim and `@/`
+  // to apps/web/src (tsconfig.json paths, which wrangler's bundler honors).
+  // CommonJS globals a few bundled libraries read at load (typescript, via
+  // the reviewer's copy review). Workers define neither.
+  "define": { "__filename": "\"/worker.js\"", "__dirname": "\"/\"" },
+  "alias": {
+    "next/server": "./src/next-server-shim.ts",
+    "dotenv": "./src/dotenv-shim.ts",
+    "server-only": "./src/empty-shim.ts",
+    "@ast-grep/napi": "./src/ast-grep-shim.ts"
+  }
+}
