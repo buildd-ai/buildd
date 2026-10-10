@@ -7,7 +7,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the DOM globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/connectors' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/connections' });
 
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 
@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ConnectionsClient } = await import('./ConnectionsClient');
-const { describeControls } = await import('../_lib/form-controls');
+const { describeControls } = await import('../../_lib/form-controls');
 
 let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;

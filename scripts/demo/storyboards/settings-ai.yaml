@@ -20,7 +20,7 @@ steps:
     waitFor: key-policy
     fullPage: true
   - id: budgets
-    goto: /app/settings/budgets
+    goto: /app/settings/billing
     viewports: [desktop, phone]
     waitFor: caps
     fullPage: true

@@ -22,6 +22,7 @@ export default function MobilePageHeader({
   userInitial = 'U',
   workspaces = [],
   banners,
+  billing = false,
 }: {
   teams?: HeaderTeam[];
   currentTeamId?: string | null;
@@ -33,11 +34,13 @@ export default function MobilePageHeader({
    * sat under the fixed header, invisible.
    */
   banners?: ReactNode;
+  /** BILLING_ENFORCED, read by the server layout: names the billing page (settingsItemAs). */
+  billing?: boolean;
 }) {
   const pathname = usePathname();
   const phoneHome = pathname === '/app/home';
   const chatRoute = pathname === '/app/chat';
-  const title = mobilePageTitle(pathname);
+  const title = mobilePageTitle(pathname, { billing });
   const backHref = mobileBackHref(pathname);
   const currentTeam = teams.find(t => t.id === currentTeamId) ?? teams[0] ?? null;
   const bannersRef = useRef<HTMLDivElement>(null);
@@ -70,7 +73,7 @@ export default function MobilePageHeader({
       {backHref && (
         <Link
           href={backHref}
-          aria-label={`Back to ${mobilePageTitle(backHref) ?? 'the previous page'}`}
+          aria-label={`Back to ${mobilePageTitle(backHref, { billing }) ?? 'the previous page'}`}
           className="-ml-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary"
         >
           <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">

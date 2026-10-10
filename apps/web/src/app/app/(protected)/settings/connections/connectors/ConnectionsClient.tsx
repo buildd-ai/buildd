@@ -363,7 +363,7 @@ export default function ConnectionsClient({
     <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>
       <div className={`flex items-center justify-between ${embedded ? 'mb-3 min-h-8' : 'mb-6'}`}>
         {embedded
-          ? <h2 className="section-label">Your connectors</h2>
+          ? <h2 className="section-label">Team connectors</h2>
           : <h1 className="text-xl font-semibold text-text-primary font-sans">Connections</h1>}
         {canManage && (
           <button

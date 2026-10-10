@@ -98,7 +98,7 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
 }
 
 /**
- * Settings → Storage: where the team's run evidence is written. One row per
+ * Settings → Integrations, evidence storage: where the team's run evidence is written. One row per
  * backend (team default first, then workspace ones), each with its status,
  * last error and last check, and the lifecycle rule to paste into the bucket.
  * With manage_evidence_backends (the API's `canManage`, team overrides
@@ -265,7 +265,7 @@ export default function StorageSection({ workspaces, fixture }: {
 
   return (
     <>
-      <SettingsSection title="Backends" bare action={addButton}>
+      <SettingsSection title="Evidence storage" bare action={addButton}>
         {/* Loading, an error and the no-backend default are one line each,
             unframed; the card holds only real backends (each one an object). */}
         {loading ? (
