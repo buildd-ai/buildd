@@ -1,10 +1,11 @@
-import { randomBytes, createHash } from 'crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { randomBytes, randomUUID, createHash } from 'crypto';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { oauthClients, oauthCodes, oauthRefreshTokens, teamMembers, workspaces } from '@buildd/core/db/schema';
 import {
   AUTH_CODE_BYTES,
   AUTH_CODE_TTL_SECONDS,
+  REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS,
   REFRESH_TOKEN_BYTES,
   REFRESH_TOKEN_TTL_SECONDS,
 } from './config';
@@ -69,10 +70,27 @@ export async function getClient(clientId: string) {
   return rows[0] ?? null;
 }
 
-export async function createAuthCode(args: {
+/**
+ * What a code or refresh token is bound to: one workspace (the legacy
+ * per-workspace connection) or one account-level grant (lib/mcp-grants.ts).
+ * Exactly one; the table CHECKs enforce the same.
+ */
+export type TokenBinding = { workspaceId: string; grantId?: never } | { grantId: string; workspaceId?: never };
+
+function bindingColumns(b: TokenBinding): { workspaceId: string | null; grantId: string | null } {
+  if (typeof b.grantId === 'string') return { workspaceId: null, grantId: b.grantId };
+  return { workspaceId: b.workspaceId ?? null, grantId: null };
+}
+
+function bindingFromRow(row: { workspaceId: string | null; grantId: string | null }): TokenBinding | null {
+  if (row.grantId && !row.workspaceId) return { grantId: row.grantId };
+  if (row.workspaceId && !row.grantId) return { workspaceId: row.workspaceId };
+  return null;
+}
+
+export async function createAuthCode(args: TokenBinding & {
   clientId: string;
   userId: string;
-  workspaceId: string;
   redirectUri: string;
   codeChallenge: string;
   codeChallengeMethod: string;
@@ -84,7 +102,7 @@ export async function createAuthCode(args: {
     code,
     clientId: args.clientId,
     userId: args.userId,
-    workspaceId: args.workspaceId,
+    ...bindingColumns(args),
     redirectUri: args.redirectUri,
     codeChallenge: args.codeChallenge,
     codeChallengeMethod: args.codeChallengeMethod,
@@ -94,9 +112,8 @@ export async function createAuthCode(args: {
   return code;
 }
 
-export type ConsumedAuthCode = {
+export type ConsumedAuthCode = TokenBinding & {
   userId: string;
-  workspaceId: string;
   scope: string | null;
 };
 
@@ -128,54 +145,113 @@ export async function consumeAuthCode(args: {
   const computed = createHash('sha256').update(args.codeVerifier).digest('base64url');
   if (computed !== row.codeChallenge) return { error: 'invalid_grant' };
 
-  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+  const binding = bindingFromRow(row);
+  if (!binding) return { error: 'invalid_grant' };
+  return { ...binding, userId: row.userId, scope: row.scope };
 }
 
-export async function createRefreshToken(args: {
+/**
+ * The stored form of a refresh token: SHA-256, lowercase hex. Rows are looked
+ * up by it, never by the token. Migration 0283 hashed the rows that existed
+ * before this with the same function (`encode(sha256(convert_to(token,
+ * 'UTF8')), 'hex')`), so those tokens still refresh.
+ */
+export function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * The sign-in a refresh token descends from. Set once at the
+ * authorization-code exchange and carried unchanged by every rotation.
+ */
+export type RefreshTokenFamily = { familyId: string; familyIssuedAt: Date };
+
+function familyEndsAt(family: RefreshTokenFamily): number {
+  return family.familyIssuedAt.getTime() + REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS * 1000;
+}
+
+/**
+ * Mint a refresh token. Without `family` this is a sign-in and starts a new
+ * family; a rotation passes the consumed token's family. Expiry is the sooner
+ * of the sliding per-token TTL and the family's absolute lifetime.
+ */
+export async function createRefreshToken(args: TokenBinding & {
   clientId: string;
   userId: string;
-  workspaceId: string;
   scope: string | null;
+  family?: RefreshTokenFamily;
 }): Promise<string> {
   const token = randomToken(REFRESH_TOKEN_BYTES);
-  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000);
+  const now = new Date();
+  const family = args.family ?? { familyId: randomUUID(), familyIssuedAt: now };
+  const expiresAt = new Date(Math.min(now.getTime() + REFRESH_TOKEN_TTL_SECONDS * 1000, familyEndsAt(family)));
   await db.insert(oauthRefreshTokens).values({
-    token,
+    tokenHash: hashRefreshToken(token),
     clientId: args.clientId,
     userId: args.userId,
-    workspaceId: args.workspaceId,
+    ...bindingColumns(args),
     scope: args.scope,
+    familyId: family.familyId,
+    familyIssuedAt: family.familyIssuedAt,
     expiresAt,
+    createdAt: now,
   });
   return token;
 }
 
-export type ConsumedRefreshToken = {
+export type ConsumedRefreshToken = TokenBinding & {
   userId: string;
-  workspaceId: string;
   scope: string | null;
+  family: RefreshTokenFamily;
 };
 
 /**
- * Rotate a refresh token. Single use: revoked by one conditional
- * UPDATE ... WHERE revoked_at IS NULL RETURNING, so a token can mint at most
- * one new pair even under concurrent refreshes. The caller mints the new one.
+ * Rotate a refresh token. The token is spent by one conditional
+ * UPDATE ... WHERE token = hash AND client_id = client AND revoked_at IS NULL
+ * RETURNING, so it mints at most one new pair even under concurrent refreshes,
+ * and a request naming another client spends nothing. The caller mints the
+ * new token in the same family.
+ *
+ * When nothing was spent and the hash names a token of this client that is
+ * already revoked (rotated earlier), every live token of its family is
+ * revoked by a second UPDATE, so the sign-in has to start over. Both
+ * statements are single atomic UPDATEs: neon-http has no interactive
+ * transactions.
  */
 export async function consumeRefreshToken(args: {
   token: string;
   clientId: string;
 }): Promise<ConsumedRefreshToken | { error: string }> {
+  const tokenHash = hashRefreshToken(args.token);
+  const now = new Date();
   const rows = await db
     .update(oauthRefreshTokens)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(oauthRefreshTokens.token, args.token), isNull(oauthRefreshTokens.revokedAt)))
+    .set({ revokedAt: now })
+    .where(and(
+      eq(oauthRefreshTokens.tokenHash, tokenHash),
+      eq(oauthRefreshTokens.clientId, args.clientId),
+      isNull(oauthRefreshTokens.revokedAt),
+    ))
     .returning();
   const row = rows[0];
-  if (!row) return { error: 'invalid_grant' };
-  if (row.expiresAt.getTime() < Date.now()) return { error: 'invalid_grant' };
+  if (!row) {
+    await db
+      .update(oauthRefreshTokens)
+      .set({ revokedAt: now })
+      .where(and(
+        sql`${oauthRefreshTokens.familyId} in (select family_id from oauth_refresh_tokens where token = ${tokenHash} and client_id = ${args.clientId} and revoked_at is not null)`,
+        isNull(oauthRefreshTokens.revokedAt),
+      ));
+    return { error: 'invalid_grant' };
+  }
   if (row.clientId !== args.clientId) return { error: 'invalid_grant' };
+  if (row.expiresAt.getTime() <= now.getTime()) return { error: 'invalid_grant' };
+  const family = { familyId: row.familyId, familyIssuedAt: row.familyIssuedAt };
+  if (familyEndsAt(family) <= now.getTime()) return { error: 'invalid_grant' };
 
-  return { userId: row.userId, workspaceId: row.workspaceId, scope: row.scope };
+  const binding = bindingFromRow(row);
+  if (!binding) return { error: 'invalid_grant' };
+  return { ...binding, userId: row.userId, scope: row.scope, family };
 }
 
 /** True when the user has a team_members row on the workspace's team. */

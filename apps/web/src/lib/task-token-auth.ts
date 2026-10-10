@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { assertGrantedWorkspace, isGrantSession, type GrantScopedAccount } from './grant-scope';
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
@@ -140,12 +141,22 @@ export function taskScopeAllowsTask(account: { taskScope?: TaskScope }, taskId: 
  * Callers still check `worker.accountId === account.id`; together that is
  * "its own worker".
  */
-export function taskScopeAllowsWorker(account: { taskScope?: TaskScope }, worker: { taskId: string | null }): boolean {
+export function taskScopeAllowsWorker(account: { taskScope?: TaskScope } & GrantScopedAccount, worker: { taskId: string | null; workspaceId?: string | null }): boolean {
+  // A grant session shares its team's session account with every other
+  // member's session, so "same account" proves nothing about the workspace:
+  // the worker must also be in one it was granted (lib/grant-scope.ts).
+  if (isGrantSession(account) && !assertGrantedWorkspace(account, worker.workspaceId, 'read')) return false;
   return taskScopeAllowsTask(account, worker.taskId);
 }
 
-/** True unless the caller is a task token and the workspace is not its task's. */
-export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope }, workspaceId: string | null | undefined): boolean {
+/**
+ * True unless the caller is a task token and the workspace is not its task's,
+ * or an account-level grant session and the workspace is not one it was
+ * granted (lib/grant-scope.ts). Every route that confines a narrowed caller to
+ * a workspace already asks this, so a grant session is confined there too.
+ */
+export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope } & GrantScopedAccount, workspaceId: string | null | undefined): boolean {
+  if (isGrantSession(account) && !assertGrantedWorkspace(account, workspaceId, 'read')) return false;
   if (!account.taskScope) return true;
   return !!workspaceId && workspaceId === account.taskScope.workspaceId;
 }
@@ -159,7 +170,7 @@ export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope }, wor
  * `taskScopeAllowsWorkspace`, so a delegation opens nothing else.
  */
 export function taskScopeAllowsDelegated(
-  account: { taskScope?: TaskScope },
+  account: { taskScope?: TaskScope } & GrantScopedAccount,
   workspaceId: string | null | undefined,
   capability: ScheduleDelegationCapability,
 ): boolean {

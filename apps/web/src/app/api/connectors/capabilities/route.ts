@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   } else if (apiAccount) {
     if (!taskScopeAllowsWorkspace(apiAccount, workspaceId)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId);
+    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, workspaceId);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
