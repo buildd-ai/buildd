@@ -132,7 +132,7 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
-import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from './stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers, resolveTasksOfReapedWorkers } from './stale-workers';
 import { INTERACTIVE_ABANDONED_ERROR } from './worker-exit-taxonomy';
 
 describe('cleanupStuckWaitingInput', () => {
@@ -3009,5 +3009,69 @@ describe('cleanupUnresumedAnswers', () => {
       expect(capturedWorkerUpdates.some(u => u.status === 'waiting_input')).toBe(false);
       expect(capturedAccountsSet).not.toBeNull();
     });
+  });
+});
+
+// The lost-claim release (lib/lost-claim.ts) resolves its tasks through the
+// reaper's own rules: requeued pending with the infra backoff and a wake keyed
+// to startAt, never charged as a code failure, and stalled truthfully at the cap.
+describe('resolveTasksOfReapedWorkers — lost claim response', () => {
+  const lost = { id: 'w-lost', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: null, branch: null, error: 'lost' };
+  let taskUpdateSet: any;
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksUpdate.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReset();
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    taskUpdateSet = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => { taskUpdateSet = vals; return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockWakeTask.mockClear();
+  });
+
+  it('requeues pending with backoff and wakes at startAt, without charging a code failure', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // no other live worker on the task
+      .mockResolvedValueOnce([{ id: 'w-lost', exitCause: 'never_started' }]); // failed workers
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned', category: 'feature',
+      context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValue({ parentTaskId: null });
+    const before = Date.now();
+    await resolveTasksOfReapedWorkers([lost], 'never_started');
+    expect(taskUpdateSet.status).toBe('pending');
+    expect(taskUpdateSet.context.infraRetryCount).toBe(1);
+    expect(taskUpdateSet.startAt.getTime()).toBeGreaterThanOrEqual(before + 4 * 60_000);
+    expect(mockWakeTask.mock.calls).toEqual([['task-1', 'task.requeued', { notBefore: taskUpdateSet.startAt }]]);
+  });
+
+  it('stops at the infra cap with a truthful infra_stalled failure, not a completion', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'w-lost', exitCause: 'never_started' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-1', workspaceId: 'ws-1', status: 'assigned', category: 'feature',
+      context: { infraRetryCount: 3 }, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValue({ parentTaskId: null });
+    await resolveTasksOfReapedWorkers([lost], 'never_started');
+    expect(taskUpdateSet.status).toBe('failed');
+    expect(taskUpdateSet.result.errorType).toBe('infra_stalled');
+    expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves a task alone that another live worker already holds', async () => {
+    mockWorkersFindMany.mockResolvedValueOnce([{ id: 'w-other' }]);
+    mockTasksFindFirst.mockResolvedValue({ parentTaskId: null });
+    await resolveTasksOfReapedWorkers([lost], 'never_started');
+    expect(taskUpdateSet).toBeNull();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });

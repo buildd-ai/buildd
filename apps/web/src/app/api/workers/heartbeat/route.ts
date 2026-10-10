@@ -6,6 +6,7 @@ import { WORKER_LEASE_TTL_MS, runnerFleetIdentity, storedHeartbeatEnvironment } 
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
+import { parseClaimHandoff, releaseUnacknowledgedClaims } from '@/lib/lost-claim';
 
 /**
  * POST /api/workers/heartbeat
@@ -64,6 +65,13 @@ export async function POST(req: NextRequest) {
       updating = undefined,
       updateAvailable = undefined,
       trackedBranch = undefined,
+      /**
+       * The claim → session-start acknowledgement (lib/lost-claim.ts): workers
+       * this runner received but has not started yet, and whether a claim
+       * request is still outstanding. Absent from older runners, whose
+       * unstarted rows are left to the 5-minute never-started reap.
+       */
+      claimHandoff = undefined,
     } = body;
     // Presence of the bundle is keyed on one field rather than requiring all
     // six, since `undefined` only ever appears here when the runner omitted
@@ -206,6 +214,28 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Release workers minted for this runner that it says it never received
+    // (lost claim response, restart between claim and start). A `--once` run
+    // exits on a failed claim and never heartbeats again, so it is not asked.
+    let claimsReleased = 0;
+    const handoff = parseClaimHandoff(claimHandoff);
+    if (handoff && !account.taskScope) {
+      try {
+        claimsReleased = await releaseUnacknowledgedClaims({
+          accountId: account.id,
+          runner: String(localUiUrl),
+          report: handoff,
+          heldWorkerIds: Array.isArray(activeWorkerIds)
+            ? activeWorkerIds.filter((id: unknown): id is string => typeof id === 'string')
+            : [],
+          now,
+        });
+      } catch (err) {
+        // Non-fatal: the never-started reap still catches the row later.
+        console.error('[heartbeat] lost-claim release failed:', err);
+      }
+    }
+
     // Include latest commit SHA for auto-update checks (best-effort).
     //
     // Resolved against the runner's OWN tracked branch. Answering with another
@@ -220,7 +250,7 @@ export async function POST(req: NextRequest) {
       // Non-fatal — version check is optional
     }
 
-    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed });
+    return NextResponse.json({ ok: true, viewerToken, pendingTaskCount: 0, latestCommit, leasesRenewed, claimsReleased });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to process heartbeat' }, { status: 500 });
