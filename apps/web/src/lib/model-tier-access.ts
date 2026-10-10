@@ -57,7 +57,7 @@ export async function resolveTeam(
 
   if (apiAccount) {
     if (opts.workspaceId) {
-      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, opts.workspaceId);
+      const hasAccess = await verifyAccountWorkspaceAccess(apiAccount, opts.workspaceId);
       if (!hasAccess) return fail(404, 'Workspace not found');
       const teamId = await getTeamIdForWorkspace(opts.workspaceId);
       return teamId ? { teamId } : fail(404, 'Workspace not found');

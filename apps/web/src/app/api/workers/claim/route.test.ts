@@ -789,6 +789,9 @@ describe('POST /api/workers/claim', () => {
     expect(data.error).toBe('Max concurrent workers limit reached');
     expect(data.limit).toBe(2);
     expect(data.current).toBe(2);
+    // Task e7e8740a: the refusal names its limit and what lifts it.
+    expect(data.code).toBe('max_concurrent_workers');
+    expect(data.detail).toBe('All 2 runner slots on this account are busy. A slot frees when a running task finishes.');
   });
 
   it('returns 429 when daily cost limit exceeded for API auth type', async () => {
@@ -813,6 +816,8 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(429);
     const data = await res.json();
     expect(data.error).toBe('Daily cost limit exceeded');
+    expect(data.code).toBe('daily_cost_limit');
+    expect(data.detail).toContain('$15.00 of its $10.00 daily limit');
   });
 
   it('returns 429 when max concurrent sessions reached for OAuth auth type', async () => {
@@ -836,6 +841,8 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(429);
     const data = await res.json();
     expect(data.error).toBe('Max concurrent sessions limit reached');
+    expect(data.code).toBe('max_concurrent_sessions');
+    expect(data.detail).toContain('limit of 2 concurrent sessions');
   });
 
   // Defense-in-depth for the 2026-05-25 misroute incident: even if the MCP-layer
@@ -1352,6 +1359,61 @@ describe('POST /api/workers/claim', () => {
       // at reset time instead of stalling on its hourly fallback.
       expect(data.diagnostics.reason).toBe('budget_exhausted');
       expect(data.budgetResetsAt).toBeTruthy();
+    });
+
+    // Task e7e8740a: a budget refusal names the wall that held it and when it lifts.
+    it('names the account seat wall and its reset on a budget_exhausted refusal', async () => {
+      const account = exhaustedOauthAccount();
+      mockAuthenticateApiKey.mockResolvedValue(account);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.diagnostics.budgetBlock.walls).toEqual([
+        { kind: 'account_seat', backend: 'claude', resetsAt: new Date(account.budgetResetsAt).toISOString() },
+      ]);
+      expect(data.diagnostics.budgetBlock.summary).toContain("The account's Claude session limit is reached. It lifts at");
+      expect(data.diagnostics.budgetBlock.summary).toContain('A claim from your own Claude Code session runs on your seat and can start now.');
+    });
+
+    it('names a recorded team rate limit as the wall', async () => {
+      const resetsAt = new Date(Date.now() + 90 * 60 * 1000);
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedOauthAccount(), budgetExhaustedAt: null, budgetResetsAt: null });
+      mockBackendPausesFindMany.mockResolvedValue([{ backend: 'claude', resetsAt, reason: 'rate_limit' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+      expect(data.diagnostics.budgetBlock.walls).toEqual([
+        { kind: 'provider_pause', backend: 'claude', resetsAt: resetsAt.toISOString() },
+      ]);
+      expect(data.diagnostics.budgetBlock.summary).toContain('A run hit the Claude rate limit for this team.');
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    it('tells a caller who named the task which wall deferred it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { ...codexRunner, taskId: 'task-1' },
+      }));
+      const data = await res.json();
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics.taskExclusion?.code).toBe('budget_paused');
+      expect(data.diagnostics.taskExclusion?.detail).toContain("The account's Claude session limit is reached");
     });
 
     // Reverse direction. Codex has its own pool, so a Codex rate-limit must not

@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -3327,7 +3327,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential' | 'cloudflare_gateway_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4377,10 +4377,16 @@ export const cronRuns = pgTable('cron_runs', {
 }));
 
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
-// Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
-// JWT carries the workspaceId the user picked during /authorize, and the
-// /api/mcp-oauth/[workspace] route rejects tokens whose claim doesn't match
-// the URL path. Refresh tokens rotate on use.
+// Implements OAuth 2.1 with PKCE. Two token shapes, told apart by which of
+// workspace_id / grant_id the code or refresh token carries (exactly one):
+//  - legacy: the JWT carries the one workspaceId picked during /authorize, and
+//    /api/mcp-oauth/[workspace] rejects tokens whose claim doesn't match the
+//    path. Acts as the person (an implicit single-workspace 'person' grant).
+//  - grant: the JWT carries a grant_id into mcp_oauth_grants. The workspaces it
+//    reaches are resolved server-side on every request as the grant's
+//    workspaces ∩ the user's CURRENT team memberships (apps/web/src/lib/mcp-grants.ts),
+//    never read from the token. docs/specs/auth-oauth-boundaries.md.
+// Refresh tokens rotate on use.
 
 export const oauthClients = pgTable('oauth_clients', {
   clientId: text('client_id').primaryKey(),
@@ -4395,7 +4401,9 @@ export const oauthCodes = pgTable('oauth_codes', {
   code: text('code').primaryKey(),
   clientId: text('client_id').notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Legacy single-workspace code. Exactly one of workspaceId / grantId is set.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }),
   redirectUri: text('redirect_uri').notNull(),
   codeChallenge: text('code_challenge').notNull(),
   codeChallengeMethod: text('code_challenge_method').notNull().default('S256'),
@@ -4405,13 +4413,27 @@ export const oauthCodes = pgTable('oauth_codes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   expiresIdx: index('oauth_codes_expires_at_idx').on(t.expiresAt),
+  oneBinding: check('oauth_codes_one_binding', sql`num_nonnulls(${t.workspaceId}, ${t.grantId}) = 1`),
 }));
 
 export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
-  token: text('token').primaryKey(),
+  // SHA-256 (hex) of the refresh token. The token itself is never stored; it
+  // is looked up by its hash (apps/web/src/lib/oauth/storage.ts). The column
+  // keeps its original name so existing rows were hashed in place.
+  tokenHash: text('token').primaryKey(),
+  // One family per sign-in: set at the authorization-code exchange and carried
+  // by every rotated token. Presenting an already-rotated token revokes the
+  // family. `familyIssuedAt` is the sign-in time; the family's absolute
+  // lifetime counts from it (REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS).
+  familyId: uuid('family_id').defaultRandom().notNull(),
+  familyIssuedAt: timestamp('family_issued_at', { withTimezone: true }).defaultNow().notNull(),
   clientId: text('client_id').notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Legacy single-workspace token. Exactly one of workspaceId / grantId is set.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // The grant this token refreshes. The grant's workspaces and acts-as kind
+  // live on the grant row, so a refresh can never widen or change them.
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }),
   scope: text('scope'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -4419,6 +4441,49 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 }, (t) => ({
   expiresIdx: index('oauth_refresh_tokens_expires_at_idx').on(t.expiresAt),
   userWorkspaceIdx: index('oauth_refresh_tokens_user_workspace_idx').on(t.userId, t.workspaceId),
+  grantIdx: index('oauth_refresh_tokens_grant_idx').on(t.grantId),
+  familyIdx: index('oauth_refresh_tokens_family_idx').on(t.familyId),
+  oneBinding: check('oauth_refresh_tokens_one_binding', sql`num_nonnulls(${t.workspaceId}, ${t.grantId}) = 1`),
+}));
+
+/** Who a grant's requests act as. 'person': the signed-in user (a `human:`
+ * principal, person-only actions allowed). 'agent': the user's agent
+ * (attributed to the user, never a person principal). Chosen at consent; the
+ * owner may later downgrade 'person' to 'agent' in Settings, never the reverse
+ * (that needs a fresh consent). A legacy workspace-claim token counts as 'person'. */
+export type McpGrantActsAs = 'person' | 'agent';
+export type McpGrantScope = 'read' | 'write';
+
+/**
+ * An account-level MCP OAuth grant: one user's consent for one client to reach
+ * a chosen set of workspaces. Tokens carry only the grant id; the workspaces
+ * are the child rows, intersected with the user's current team memberships on
+ * every request (apps/web/src/lib/mcp-grants.ts). New workspaces are never
+ * added implicitly.
+ */
+export const mcpOauthGrants = pgTable('mcp_oauth_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  clientId: text('client_id').references(() => oauthClients.clientId, { onDelete: 'cascade' }).notNull(),
+  actsAs: text('acts_as').notNull().$type<McpGrantActsAs>(),
+  scopes: jsonb('scopes').$type<McpGrantScope[]>().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx: index('mcp_oauth_grants_user_idx').on(t.userId),
+  actsAsValid: check('mcp_oauth_grants_acts_as_valid', sql`${t.actsAs} in ('person', 'agent')`),
+  scopesValid: check('mcp_oauth_grants_scopes_valid', sql`jsonb_typeof(${t.scopes}) = 'array' and jsonb_array_length(${t.scopes}) > 0 and ${t.scopes} <@ '["read","write"]'::jsonb`),
+}));
+
+export const mcpOauthGrantWorkspaces = pgTable('mcp_oauth_grant_workspaces', {
+  grantId: uuid('grant_id').references(() => mcpOauthGrants.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.grantId, t.workspaceId] }),
+  workspaceIdx: index('mcp_oauth_grant_workspaces_workspace_idx').on(t.workspaceId),
 }));
 
 // ── MCP Connectors ────────────────────────────────────────────────────────────
@@ -6300,3 +6365,59 @@ export const postSessionFindings = pgTable('post_session_findings', {
 
 export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
 export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;
+
+/**
+ * Failure Pattern Sentinel: one durable incident per systemic failure pattern.
+ *
+ * NOT a raw event table — the events stay in workers, worker_terminal_records
+ * and gate_events. A row here is keyed by the rule engine's stable pattern
+ * `signature` + `detector_version` (apps/web/src/lib/failure-pattern-sentinel.ts)
+ * and carries only bounded pointers back to those rows. Written by
+ * apps/web/src/lib/failure-incident-store.ts: insert is ON CONFLICT DO NOTHING
+ * on the unique key and every update is a compare-and-swap on `version`, so two
+ * sweeps racing on one pattern converge on one row (neon-http has no
+ * interactive transactions).
+ */
+export const failureIncidents = pgTable('failure_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // `<rule>|ws=<id>|<discriminators>` — identity of the pattern, never of one occurrence.
+  signature: text('signature').notNull(),
+  // Bump instead of reshaping a signature in place; a new version is a new incident.
+  detectorVersion: text('detector_version').notNull(),
+  rule: text('rule').notNull().$type<FailureIncidentRule>(),
+  reasonCode: text('reason_code').notNull(),
+  title: text('title').notNull(),
+  // Only ever raised on update; a reopen restarts from the rule's minimum.
+  severity: text('severity').notNull().$type<FailureIncidentSeverity>(),
+  status: text('status').notNull().default('open').$type<FailureIncidentStatus>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  occurrenceCount: integer('occurrence_count').notNull().default(0),
+  // Times it came back after `resolved`.
+  recurrenceCount: integer('recurrence_count').notNull().default(0),
+  affectedRefs: jsonb('affected_refs').$type<FailureIncidentAffectedRefs>().notNull().default({ taskIds: [], workerIds: [], prNumbers: [] }),
+  evidenceRefs: jsonb('evidence_refs').$type<FailureIncidentEvidenceRef[]>().notNull().default([]),
+  // Latest impact counters from the rule (a snapshot, overwritten per detection).
+  impact: jsonb('impact').$type<Record<string, number>>().notNull().default({}),
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  lastAlertSeverity: text('last_alert_severity').$type<FailureIncidentSeverity>(),
+  linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Optimistic-lock counter for the compare-and-swap update.
+  version: integer('version').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  signatureVersionIdx: uniqueIndex('failure_incidents_signature_version_idx').on(t.signature, t.detectorVersion),
+  workspaceStatusSeenIdx: index('failure_incidents_workspace_status_seen_idx').on(t.workspaceId, t.status, t.lastSeenAt),
+}));
+
+export const failureIncidentsRelations = relations(failureIncidents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [failureIncidents.workspaceId], references: [workspaces.id] }),
+  linkedFixTask: one(tasks, { fields: [failureIncidents.linkedFixTaskId], references: [tasks.id] }),
+}));
+
+export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
+export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;

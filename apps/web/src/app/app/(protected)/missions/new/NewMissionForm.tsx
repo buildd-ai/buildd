@@ -114,9 +114,9 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
     <div className="flex items-center gap-1.5 mt-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
       <span className="text-xs text-text-muted">
-        Not configured:{' '}
+        No credentials.{' '}
         <Link href="/app/settings/runners" className="underline hover:text-text-secondary">
-          add credentials in Settings, Runners
+          Add them in Settings, Runners
         </Link>
       </span>
     </div>

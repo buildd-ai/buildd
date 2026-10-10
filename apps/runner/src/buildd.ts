@@ -1,5 +1,5 @@
 import type { BuilddTask, LocalUIConfig } from './types';
-import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
+import { AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import { PERSONAL_CREDENTIAL_RUNNER_FEATURE } from '@buildd/core/providers';
@@ -176,6 +176,10 @@ export class BuilddClient {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
       // (workers.ts); without it the server keeps sending Anthropic credentials.
+      // AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE: it also applies
+      // modelEndpoint.headers as ANTHROPIC_CUSTOM_HEADERS (agent-model-env.ts),
+      // so it may be given an endpoint that needs them (an authenticated
+      // Cloudflare AI Gateway).
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
       // through /question-check when the claim carries a questionGate marker.
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
@@ -185,7 +189,7 @@ export class BuilddClient {
       // own key (credentialDecision.scope = personal) to the one worker it
       // came with: never in the per-team credCache, never reused
       // (workers.ts startFromClaim). Without it the server never sends one.
-      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE, PERSONAL_CREDENTIAL_RUNNER_FEATURE],
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE, PERSONAL_CREDENTIAL_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.

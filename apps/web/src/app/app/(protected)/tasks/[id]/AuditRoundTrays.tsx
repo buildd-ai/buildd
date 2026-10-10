@@ -66,10 +66,10 @@ export default function AuditRoundTrays({ visual, layout = 'dialog', columns = '
       {groups.map((g, i) => (
         <section key={g.round} data-testid="audit-round" data-round={g.round} className="flex flex-col gap-2">
           {multi && (
-            <h3 className="flex items-center gap-2 border-b border-border-default pb-1.5 font-mono text-[11px] font-semibold uppercase tracking-[1.4px] text-text-secondary">
+            <h3 className="flex items-center gap-2 border-b border-border-default pb-1.5 font-mono text-[11px] font-semibold text-text-secondary">
               {`Round ${g.round}`}
-              {i === 0 && g.round === visual.round && <span className="font-medium normal-case tracking-normal text-text-muted">this audit</span>}
-              {!g.deckModel && <span className="font-medium normal-case tracking-normal text-text-muted">re-shot in a later round</span>}
+              {i === 0 && g.round === visual.round && <span className="font-medium text-text-muted">this audit</span>}
+              {!g.deckModel && <span className="font-medium text-text-muted">re-shot in a later round</span>}
             </h3>
           )}
           <VisualReviewTray

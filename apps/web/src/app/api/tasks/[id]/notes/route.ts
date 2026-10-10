@@ -24,7 +24,7 @@ async function resolveTaskAccess(id: string, user: Awaited<ReturnType<typeof get
   if (!task) return null;
   const hasAccess = user
     ? await verifyWorkspaceAccess(user.id, task.workspaceId)
-    : await verifyAccountWorkspaceAccess(apiAccount!.id, task.workspaceId);
+    : await verifyAccountWorkspaceAccess(apiAccount!, task.workspaceId);
   if (!hasAccess) return null;
   return task;
 }

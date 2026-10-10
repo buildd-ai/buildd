@@ -225,7 +225,7 @@ export function shouldSerializeByManifest(
  * so an unconfigured workspace is still protected. A configured sequence
  * namespace is caught by the workspace's serialized surfaces too.
  */
-const MIGRATION_PATH_RE = /(^|\/)(drizzle|migrations?|prisma\/migrations)(\/|$)|\.sql$|(^|\/)db\/schema\.ts$|(^|\/)schema\.prisma$/i;
+export const MIGRATION_PATH_RE = /(^|\/)(drizzle|migrations?|prisma\/migrations)(\/|$)|\.sql$|(^|\/)db\/schema\.ts$|(^|\/)schema\.prisma$/i;
 
 export function isMigrationPath(path: string): boolean {
   return MIGRATION_PATH_RE.test(path);

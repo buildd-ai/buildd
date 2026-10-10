@@ -9,7 +9,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
-import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError, parseCopyReviewConfig } from '@buildd/shared';
+import type { CopyReviewConfig } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
 const VALID_STRATEGIES: ReleaseStrategy[] = ['workflow_dispatch', 'branch_merge', 'script'];
@@ -186,7 +187,7 @@ export async function GET(
                 where: eq(workspaces.id, id),
                 columns: { teamId: true },
             });
-            if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount.id, id)))) {
+            if (!ws || (ws.teamId !== apiAccount.teamId && !(await verifyAccountWorkspaceAccess(apiAccount, id)))) {
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
             }
         } else if (process.env.NODE_ENV !== 'development') {
@@ -546,8 +547,9 @@ export async function PATCH(
         const hasReleaseConfig = !!body && typeof body === 'object' && 'releaseConfig' in body;
         const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
         const hasPolicyConfig = !!body && typeof body === 'object' && 'policyConfig' in body;
-        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy or policyConfig' }, { status: 400 });
+        const hasCopyReview = !!body && typeof body === 'object' && 'copyReview' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy && !hasPolicyConfig && !hasCopyReview) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig, branchStrategy, policyConfig or copyReview' }, { status: 400 });
         }
 
         const removedField = findRemovedPathFieldInGitConfig(body);
@@ -599,6 +601,26 @@ export async function PATCH(
             } else {
                 gitConfig.branchStrategy = bs as BranchStrategy;
             }
+            await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig };
+        }
+
+        // copyReview: the workspace's copy review (lib/copy-review.ts). null turns it off.
+        if (hasCopyReview) {
+            const raw = (body as Record<string, unknown>).copyReview;
+            let copyReview: CopyReviewConfig | undefined;
+            if (raw !== null) {
+                const parsed = parseCopyReviewConfig(raw);
+                if (!parsed.ok) {
+                    return NextResponse.json({ error: parsed.error, field: parsed.field }, { status: 400 });
+                }
+                copyReview = parsed.config;
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { gitConfig: true },
+            });
+            const gitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig), copyReview } as WorkspaceGitConfig;
             await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
             responseBody = { ...responseBody, gitConfig };
         }
