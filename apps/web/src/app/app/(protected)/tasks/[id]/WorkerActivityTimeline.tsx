@@ -81,6 +81,8 @@ export function ageLabel(ms: number): string {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+const AXIS_LABEL_VISIBILITY = ['', 'hidden @md:inline', 'hidden @xs:inline', 'hidden @lg:inline'];
+
 export function ActivityTape({
   milestones,
   startMs,
@@ -96,7 +98,7 @@ export function ActivityTape({
   if (tape.ticks.length === 0 && tape.flags.length === 0) return null;
   const lastFlag = tape.flags[tape.flags.length - 1];
   return (
-    <div data-testid="worker-activity-tape" className="relative pt-12">
+    <div data-testid="worker-activity-tape" className="@container relative pt-12">
       {tape.flags.map((f, i) => {
         const isLast = f === lastFlag;
         const flip = f.pos > 0.6;
@@ -136,8 +138,10 @@ export function ActivityTape({
       </div>
       <div className="relative h-5 mt-1 font-mono text-[11px] text-text-muted tabular-nums">
         {tape.axis.map((a, i) => (
-          // At phone width the 75% label runs into the end label; it gives way there.
-          <span key={i} data-axis={i} className={i === 3 ? 'absolute hidden md:inline' : 'absolute'} style={{ left: `${i * 25}%` }}>{a}</span>
+          // Labels give way by the strip's own width (not the viewport's): the
+          // start label always stays; the 50% label needs room next to the end
+          // label, and the 25% and 75% ones need more still.
+          <span key={i} data-axis={i} className={`absolute ${AXIS_LABEL_VISIBILITY[i]}`} style={{ left: `${i * 25}%` }}>{a}</span>
         ))}
         {/* The right edge prints the time it stands for, so the axis visibly
             reaches ELAPSED instead of stopping at the last labelled quarter. */}
@@ -199,9 +203,11 @@ export default function WorkerActivityTimeline({
 
       {visibleEntries.length > 0 && (
         <details className="mt-5 group" data-testid="worker-activity-log" open>
-          <summary className="cursor-pointer select-none font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary min-h-11 md:min-h-0 flex items-center gap-2">
+          {/* A toggle inside the Activity section, not a second header: the
+              tape counts tool calls, this counts the milestones they built. */}
+          <summary className="cursor-pointer select-none font-mono text-meta text-text-muted hover:text-text-secondary min-h-11 md:min-h-0 flex items-center gap-2">
             <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
-            Log · {entries.length} {entries.length === 1 ? 'milestone' : 'milestones'}
+            {entries.length} {entries.length === 1 ? 'milestone' : 'milestones'}
           </summary>
           <div className="space-y-1.5 mt-3">
             {visibleEntries.map((entry, i) => (

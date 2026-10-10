@@ -55,7 +55,7 @@ export default async function RespondPage({
         <Link
           href={back.href}
           data-testid="respond-back-link"
-          className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted hover:text-text-primary"
+          className="section-label hover:text-text-primary"
         >
           ← {back.label}
         </Link>

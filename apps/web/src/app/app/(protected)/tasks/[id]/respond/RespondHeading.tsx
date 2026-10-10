@@ -7,7 +7,7 @@ export default function RespondHeading({ eyebrow, heading }: { eyebrow: readonly
   return (
     <div className="mt-3">
       {eyebrow.length > 0 && (
-        <p data-testid="respond-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted">{eyebrow.join(' · ')}</p>
+        <p data-testid="respond-eyebrow" className="font-mono text-[11px] text-text-muted">{eyebrow.join(' · ')}</p>
       )}
       <h1 className={`${eyebrow.length > 0 ? 'mt-1 ' : ''}text-[20px] font-semibold text-text-primary leading-snug`}>{heading}</h1>
     </div>

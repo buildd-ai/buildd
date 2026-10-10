@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.313.0",
+  "version": "0.314.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -45,6 +45,8 @@
     "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./coding-policy": "./coding-policy.ts",
+    "./coding-policy-store": "./coding-policy-store.ts",
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
     "./providers/manage": "./providers/manage.ts",
@@ -172,6 +174,7 @@
     "./task-area-readout": "./task-area-readout.ts",
     "./task-area-readout-source": "./task-area-readout-source.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./mission-verdicts": "./mission-verdicts.ts",
     "./task-label": "./task-label.ts",
     "./pr-shipped": "./pr-shipped.ts",
     "./pr-facts": "./pr-facts.ts",
