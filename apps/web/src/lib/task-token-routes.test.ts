@@ -27,6 +27,8 @@ const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Init
 const OPTED_IN = [
   // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
+  // Finalize an upload: its own worker's artifact only (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
+  'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/capabilities/route.ts',
