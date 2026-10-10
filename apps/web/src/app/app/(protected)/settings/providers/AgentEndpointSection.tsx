@@ -164,12 +164,7 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
       <div className="card p-4 space-y-3 text-xs">
         {endpoints === undefined && <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Loading…</p>}
         {endpoints !== undefined && routes.length === 0 && (
-          <div className="space-y-1">
-            <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
-            <p className="text-text-muted">
-              Agent runs use the team&apos;s Anthropic key or Claude seat. An endpoint routes them through a proxy.
-            </p>
-          </div>
+          <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
         )}
         {team && (
           <TeamRoute endpoint={team} teamId={teamId} canManage={idle} workspaces={workspaces} copies={copies}
@@ -191,13 +186,9 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces, re
         )}
         {routes.length > 0 && (
           <p className="text-text-muted" data-testid="agent-endpoint-metered">
-            Endpoint runs are metered on its key, not a Claude seat. The per-run dollar cap applies.
+            Billed to the endpoint&apos;s key. The per-task dollar cap applies.
           </p>
         )}
-        <p className="text-text-muted">
-          A workspace&apos;s own Anthropic key or seat overrides a team endpoint. So does a runner&apos;s own
-          <span className="font-mono"> LLM_PROVIDER</span> keeps using it.
-        </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
         {canManage && endpoints !== undefined && editing !== null && (
           <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} teamOpenRouterLast4={teamOpenRouterLast4} initialScope={editing}
@@ -621,7 +612,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, teamOpenRouterLast4
           onToggle={(id, on) => setChosen((prev) => { const next = new Set(prev); if (on) next.add(id); else next.delete(id); return next; })} />
       )}
       <div className="space-y-2">
-        {radio('anthropic', 'Anthropic (default)', 'The team\'s Anthropic key or Claude seat.')}
+        {radio('anthropic', 'Anthropic (default)', 'Your Claude key or subscription.')}
         {radio('gateway', 'Use the team gateway', hasGateway ? 'The LiteLLM gateway in Team keys.' : 'Connect a LiteLLM gateway in Team keys first.', !hasGateway)}
         {radio('openrouter', 'OpenRouter')}
         {radio('anthropic-compatible', 'Anthropic-compatible URL', 'Any proxy that serves /v1/messages.')}
