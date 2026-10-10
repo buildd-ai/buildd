@@ -165,8 +165,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
           <p className="text-status-error break-words">Last check failed: {gateway.lastVerificationError}</p>
         )}
         <p className="text-text-muted">
-          For providers with no key here: chat, goal grading, decisions and agent runs call
-          <span className="font-mono"> provider/model</span> on your proxy.
+          Used for any model with no key above.
         </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
         {canManage && editing && (
@@ -248,8 +247,7 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
       <div className="card p-4 space-y-2 text-xs">
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
         <p className="text-text-muted">
-          Labels tasks by category. Needs a model that returns token logprobs. Another model&apos;s picks are
-          recorded, not applied, until it has been evaluated.
+          Labels tasks by category. Needs a model that returns token logprobs. Other models only record their picks until evaluated.
         </p>
         {canManage && value !== undefined && (
           <div className="pt-1 space-y-2">
