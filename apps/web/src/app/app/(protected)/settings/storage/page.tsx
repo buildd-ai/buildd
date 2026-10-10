@@ -18,7 +18,7 @@ export default async function StorageSettingsPage() {
   return (
     <SettingsPage
       title="Storage"
-      description="Command output, test reports, CI logs and transcripts from agent runs."
+      description="Command output, test reports, CI logs and transcripts from agents."
     >
       <StorageSection workspaces={teamWorkspaces} />
     </SettingsPage>
