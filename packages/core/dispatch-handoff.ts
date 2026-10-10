@@ -474,21 +474,61 @@ export async function selectForRepublish(ids: readonly string[]): Promise<Republ
  */
 export function fallBackToInAppSql(ids: readonly string[]): SQL {
   const input = ids.filter(isUuid);
+  // task_dispatch_outbox_pending_dedupe_idx is unique on (task_id, dedupe_key)
+  // WHERE status = 'pending'. A handed-off row whose task has since queued a
+  // fresh pending intent with the same key would violate it on the flip, and
+  // one such row used to fail the whole batch. Those are closed by
+  // mergeIntoPendingSql first; here a row is flipped only if no pending twin
+  // exists, and only the first of several handed-off twins in the same batch
+  // (the rest stay handed_off and are merged by the next run).
   return sql`-- dispatch_handoff:fall_back
-WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id)
+WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id),
+cand AS (
+  SELECT o.id,
+    row_number() OVER (PARTITION BY o.task_id, o.dedupe_key ORDER BY o.created_at, o.id) AS rn
+  FROM task_dispatch_outbox o JOIN ids ON o.id = ids.id
+  WHERE o.status = 'handed_off'
+    AND NOT EXISTS (
+      SELECT 1 FROM task_dispatch_outbox p
+      WHERE p.task_id = o.task_id AND p.dedupe_key = o.dedupe_key AND p.status = 'pending')
+)
 UPDATE task_dispatch_outbox o
 SET status = 'pending', transport = 'in_app', handed_off_at = NULL,
     metadata = CASE WHEN jsonb_typeof(o.metadata) = 'object' THEN o.metadata ELSE '{}'::jsonb END
       || jsonb_build_object(${DISPATCH_FALLBACK_KEY}::text, now()),
     updated_at = now()
-FROM ids
+FROM cand
+WHERE o.id = cand.id AND cand.rn = 1 AND o.status = 'handed_off'
+RETURNING o.id`;
+}
+
+/**
+ * Close handed-off rows that already have a pending twin (same task and
+ * dedupe key) as `delivered` via `merged_into_pending`: the pending row will
+ * wake the task, which is exactly what coalescing means. Only from
+ * `handed_off`, like the flip.
+ */
+export function mergeIntoPendingSql(ids: readonly string[]): SQL {
+  const input = ids.filter(isUuid);
+  return sql`-- dispatch_handoff:fall_back_merge
+WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id)
+UPDATE task_dispatch_outbox o
+SET status = 'delivered', delivered_at = now(), delivered_via = 'merged_into_pending',
+    merged_into = twin.id, updated_at = now()
+FROM ids, LATERAL (
+  SELECT p.id FROM task_dispatch_outbox p
+  WHERE p.task_id = o.task_id AND p.dedupe_key = o.dedupe_key AND p.status = 'pending'
+  LIMIT 1
+) twin
 WHERE o.id = ids.id AND o.status = 'handed_off'
 RETURNING o.id`;
 }
 
+/** Rows taken out of Dispatch custody: flipped to the in-app drain or merged into a pending twin. */
 export async function fallBackToInApp(ids: readonly string[]): Promise<number> {
   if (ids.filter(isUuid).length === 0) return 0;
-  return rowsOf(await db.execute(fallBackToInAppSql(ids))).length;
+  const merged = rowsOf(await db.execute(mergeIntoPendingSql(ids))).length;
+  return merged + rowsOf(await db.execute(fallBackToInAppSql(ids))).length;
 }
 
 /**
