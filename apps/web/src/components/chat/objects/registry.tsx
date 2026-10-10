@@ -7,6 +7,7 @@
  */
 import { useState, type ComponentType } from 'react';
 import type { BuilddObjectRef } from '../chat-contract';
+import type { ResultGroup } from '../feed-model';
 import { MissionCard, MissionPane } from './MissionObject';
 import { PrPane, PrRow } from './PrObject';
 import { QuestionCard } from './QuestionObject';
@@ -129,6 +130,35 @@ export function MoreObjects({ refs }: { refs: readonly BuilddObjectRef[] }) {
       </button>
       {open && <ObjectsSegment refs={refs} />}
     </div>
+  );
+}
+
+/**
+ * One group of a turn's results (feed-model.ts `turnLayout`): what one write
+ * made, or what the answer cites. A quiet rule and one short line say what
+ * the cards are and why they are here, so a card never reads as a caption for
+ * whatever prose happens to sit above it. A list with nothing cited is just
+ * its folded row, which names itself.
+ */
+export function ResultGroupView({ group }: { group: ResultGroup }) {
+  if (group.kind === 'referenced' && group.refs.length === 0) return <MoreObjects refs={group.more} />;
+  const label = group.kind === 'created' ? group.label : 'Referenced';
+  const what = moreLabel(group.refs);
+  return (
+    <section
+      data-testid="feed-group"
+      data-group={group.kind}
+      data-call-id={group.kind === 'created' ? group.callId : undefined}
+      aria-label={`${label}: ${what}`}
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2.5 border-l-2 border-[var(--chat-rule)] pl-3"
+    >
+      <p data-testid="feed-group-label" className="font-mono text-[11px] tracking-[.08em] text-[var(--chat-muted)]">
+        <span className="font-semibold uppercase text-[var(--chat-text)]">{label}</span>
+        <span>{` · ${what}`}</span>
+      </p>
+      <ObjectsSegment refs={group.refs} />
+      {group.kind === 'referenced' && group.more.length > 0 && <MoreObjects refs={group.more} />}
+    </section>
   );
 }
 

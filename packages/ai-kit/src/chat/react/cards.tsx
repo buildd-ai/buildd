@@ -59,6 +59,13 @@ export interface ThinkingPanelProps {
   open?: boolean;
   /** Settled only: the person folded or unfolded it (0.13.0). */
   onToggle?(open: boolean): void;
+  /**
+   * Keep the live line while the answer is written (0.22.0): it reads
+   * "Writing the answer" instead of going, and the pinned step goes instead.
+   * The line's slot stays filled from the first step to the folded line, so
+   * nothing under it moves when the turn lands (`ChatThread compose="turn"`).
+   */
+  holdLine?: boolean;
   className?: string;
 }
 
@@ -116,7 +123,7 @@ function useLiveSeconds(key: string | null): number {
 
 export function ThinkingPanel({
   steps, streaming, name = 'Working', renderPinned, slowAfterMs = 20_000,
-  summary: settledSummary, open, onToggle, className,
+  summary: settledSummary, open, onToggle, holdLine = false, className,
 }: ThinkingPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
@@ -125,7 +132,7 @@ export function ThinkingPanel({
   // Before the first step: the square alone. Writing the answer: no live line.
   const squareOnly = streaming && (steps.length === 0 || tail === THINKING_TAIL.reading);
   const writing = tail === THINKING_TAIL.writing;
-  const lineStep = live && !squareOnly && !writing ? live : null;
+  const lineStep = live && !squareOnly && (!writing || holdLine) ? live : null;
   const seconds = useLiveSeconds(lineStep?.state === 'active' ? `${lineStep.id}:${tail ?? ''}` : null);
 
   if (!streaming) {
@@ -146,7 +153,7 @@ export function ThinkingPanel({
   }
 
   const done = steps.filter(s => s.id !== THINKING_TAIL_ID);
-  const pinned = expanded ? null : pinnedStep(steps);
+  const pinned = expanded || (writing && holdLine) ? null : pinnedStep(steps);
   const pinnedNode = pinned ? renderPinned?.(pinned) : undefined;
   const slow = lineStep?.state === 'active' && seconds * 1000 >= slowAfterMs;
   const canExpand = done.length > 0 && (lineStep != null || expanded);
