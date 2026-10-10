@@ -5614,6 +5614,26 @@ export const deploymentAuditEvents = pgTable('deployment_audit_events', {
 export type DeploymentAuditEvent = typeof deploymentAuditEvents.$inferSelect;
 export type NewDeploymentAuditEvent = typeof deploymentAuditEvents.$inferInsert;
 
+// Append-only: every write made through the platform-owner API (/api/admin/*),
+// with the value before and after. See apps/web/src/lib/admin/audit.ts.
+export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  // The platform-owner key's account. Kept as a plain id: the row outlives the key.
+  actorAccountId: uuid('actor_account_id'),
+  // e.g. 'experiment.update', 'team.experiment_flags.update'
+  action: text('action').notNull(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetId: text('target_id').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  before: jsonb('before').$type<Record<string, unknown>>(),
+  after: jsonb('after').$type<Record<string, unknown>>(),
+}, (t) => ({
+  targetOccurredIdx: index('platform_admin_audit_events_target_occurred_idx').on(t.targetType, t.targetId, t.occurredAt),
+}));
+
+export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
+
 /**
  * One row per worker session end, on every path — completed, failed, the
  * output-requirement gate refusing a completion, and a runner process death
