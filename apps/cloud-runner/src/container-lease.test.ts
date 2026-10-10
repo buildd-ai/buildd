@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+  containerReuseEnabled,
   DEFAULT_REUSE_SLOTS,
   DEFAULT_REUSE_WINDOW_MS,
   MAX_INSTANCES,
@@ -273,6 +274,7 @@ function leaseHarness(opts: {
   resetMs?: number;
   runner?: (taskId: string, now: number) => { toClaimMs: number; lines: string[] };
   warmRepos?: boolean;
+  reuseEnabled?: boolean;
   /** `buildd-once --upload-warm`: its exit (held until resolved when given) and lines. */
   upload?: { exit?: Promise<number>; lines?: string[] };
 } = {}) {
@@ -326,6 +328,7 @@ function leaseHarness(opts: {
       inactivityTimeoutMs: 1_800_000,
       startTimeoutMs: 1_000,
       lease: KEY,
+      reuseEnabled: opts.reuseEnabled ?? true,
       reuseWindowMs: WINDOW,
       ...(opts.warmRepos ? { WARM_REPOS: '1' } : {}),
     },
@@ -353,8 +356,8 @@ function leaseHarness(opts: {
       if (!pred()) throw new Error('condition never held');
     },
     /** Dispatch `taskId`, let it reach `running`, exit it with `code`, and wait for the cleanup. */
-    async runTask(taskId: string, code: number) {
-      const r = sup.dispatchLeased({ taskId, workspaceId: WS });
+    async runTask(taskId: string, code: number, warmHandover: 'off' | 'repo' | 'deps' = 'repo') {
+      const r = sup.dispatchLeased({ taskId, workspaceId: WS, warmHandover });
       expect(r.accepted).toBe(true);
       await this.until(() => state.status === 'running');
       clock += 30_000;
@@ -459,9 +462,9 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
     expect(h.state.outcome).toBe('parked');
     expect(h.running).toBe(false);
     expect(h.state.warm).toBeUndefined();
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
     // Another task's resume can never land here.
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, resumeWorkerId: 'w-1' })).toMatchObject({ accepted: false, reason: 'not_parked' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS, resumeWorkerId: 'w-1' })).toMatchObject({ accepted: false, reason: 'not_parked' });
   });
 
   test('a crashed run does not keep its container', async () => {
@@ -474,10 +477,10 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
 
   test('one task at a time: a second task while one is live is refused, a duplicate is already_live', async () => {
     const h = leaseHarness();
-    h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS });
+    h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_A, workspaceId: WS });
     await h.until(() => h.state.status === 'running');
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
-    expect(h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'already_live' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_A, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'already_live' });
     h.exits[0]!.resolve(0);
     await h.until(() => h.state.status === 'exited');
     await h.settle();
@@ -486,16 +489,16 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
   test('another workspace never gets the lease', async () => {
     const h = leaseHarness();
     await h.runTask(TASK_A, 0);
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: 'ws-other' })).toMatchObject({ accepted: false, reason: 'busy' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: 'ws-other' })).toMatchObject({ accepted: false, reason: 'busy' });
     expect(h.state.taskId).toBe(TASK_A);
   });
 
   test('warmOnly takes a warm lease and refuses a cold one', async () => {
     const h = leaseHarness();
-    expect(h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: false, reason: 'not_warm' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_A, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: false, reason: 'not_warm' });
     expect(h.state.taskId).toBeNull();
     await h.runTask(TASK_A, 0);
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: true, reused: true });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: true, reused: true });
     await h.until(() => h.state.status === 'running');
     h.exits.at(-1)!.resolve(0);
     await h.until(() => h.state.status === 'exited');
@@ -505,7 +508,7 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
   test('a task agent (no lease) takes no leased dispatch', async () => {
     const h = leaseHarness();
     (h.sup as unknown as { d: SupervisorDeps }).d.config.lease = undefined;
-    expect(h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_A, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
   });
 });
 
@@ -548,7 +551,7 @@ describe('supervisor: the container is free the moment its run ends', () => {
     expect(h.state.warmUploadSince).toBeDefined();
     expect(h.running).toBe(true);
     // Busy while uploading: never handed out, never destroyed under the upload.
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
     const up = h.execs.find(e => e.cmd[1] === '--upload-warm')!;
     expect(up.cmd).toEqual(['buildd-once', '--upload-warm']);
     expect(up.env?.BUILDD_API_KEY).toBeUndefined();
@@ -571,13 +574,13 @@ describe('supervisor: the container is free the moment its run ends', () => {
 
   test('in its tail (run_end printed, runner not yet exited) the lease answers `tail`, then goes warm', async () => {
     const h = leaseHarness({ runner: () => ({ toClaimMs: 1_000, lines: [`BUILDD_PHASE=run_end ${Date.now()}`] }) });
-    h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS });
+    h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_A, workspaceId: WS });
     await h.until(() => h.state.timings?.runnerPhases?.run_end !== undefined);
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: false, reason: 'tail' });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: false, reason: 'tail' });
     h.exits[0]!.resolve(0);
     await h.until(() => h.state.status === 'exited');
     await h.settle();
-    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: true, reused: true });
+    expect(h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: true, reused: true });
     await h.until(() => h.state.status === 'running');
     h.exits.at(-1)!.resolve(0);
     await h.until(() => h.state.status === 'exited');
@@ -587,7 +590,7 @@ describe('supervisor: the container is free the moment its run ends', () => {
   test('the wait for a lease in its tail is on the report, and counted in prep', async () => {
     const h = leaseHarness({ runner: () => ({ toClaimMs: 10_000, lines: [] }) });
     await h.runTask(TASK_A, 0);
-    const r = h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, leaseWaitMs: 6_000 });
+    const r = h.sup.dispatchLeased({ warmHandover: 'repo', taskId: TASK_B, workspaceId: WS, leaseWaitMs: 6_000 });
     expect(r.accepted).toBe(true);
     await h.until(() => h.state.status === 'running');
     h.exits.at(-1)!.resolve(0);
@@ -685,4 +688,51 @@ describe('run report: reusedContainer', () => {
       .toEqual({ fromTaskId: TASK_A, idleMs: 5, fallback: 'reset_failed', resetMs: null });
     expect(assembleRunReport({ ...base, reusedContainer: { fromTaskId: 'bldt_secret', idleMs: 5, baselinePrepMs: null } }).reusedContainer).toBeNull();
   });
+});
+
+
+describe('dependency handover trust', () => {
+  test('off never leaves a warm container', async () => {
+    const h = leaseHarness();
+    await h.runTask(TASK_A, 0, 'off');
+    expect(h.state.warm).toBeUndefined();
+    expect(h.running).toBe(false);
+    expect(h.state.report?.handover.mode).toBe('off');
+  });
+
+  test('only the runner baseline before session is passed from DO to reset', async () => {
+    const digest = 'a'.repeat(64);
+    const h = leaseHarness({ runner: () => ({ toClaimMs: 1, lines: [
+      `BUILDD_DEPS_MANIFEST=${digest}`,
+      'BUILDD_PHASE=session_start 1000001',
+      `BUILDD_DEPS_MANIFEST=${'b'.repeat(64)}`,
+    ] }) });
+    await h.runTask(TASK_A, 0, 'deps');
+    expect(h.state.warm?.depsDigest).toBe(digest);
+    await h.runTask(TASK_B, 0, 'deps');
+    const reset = h.execs.find(e => e.cmd[1] === '--reset-container')!;
+    expect(reset.env?.BUILDD_DEPS_EXPECTED_DIGEST).toBe(digest);
+    expect(reset.env?.BUILDD_WARM_HANDOVER).toBe('deps');
+    const run = h.execs.filter(e => e.cmd[1] === '--task').at(-1)!;
+    expect(run.env?.BUILDD_DEPS_EXPECTED_DIGEST).toBeUndefined();
+  });
+});
+
+
+test('platform kill switch is above every opt-in policy', () => {
+  for (const mode of ['off', 'repo', 'deps']) {
+    expect(containerReuseEnabled({}, mode)).toBe(false);
+  }
+  expect(containerReuseEnabled({ CONTAINER_REUSE: '1' })).toBe(false);
+  expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'off')).toBe(false);
+  expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'repo')).toBe(true);
+  expect(containerReuseEnabled({ CONTAINER_REUSE: '1' }, 'deps')).toBe(true);
+});
+
+
+test('switching platform reuse off disables an existing lease', async () => {
+  const h = leaseHarness({ reuseEnabled: false });
+  await h.runTask(TASK_A, 0, 'deps');
+  expect(h.state.warm).toBeUndefined();
+  expect(h.state.report?.handover.mode).toBe('off');
 });

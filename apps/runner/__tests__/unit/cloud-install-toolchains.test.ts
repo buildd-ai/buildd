@@ -203,3 +203,11 @@ describe('setupWorktree deferInstall', () => {
     expect(fileCalls).toEqual([]);
   });
 });
+
+ test('verified handover never retries a frozen install unfrozen', async () => {
+  treeFiles.add('pnpm-lock.yaml');
+  failures['pnpm install --frozen-lockfile'] = 'ERR_PNPM_OUTDATED_LOCKFILE';
+  const result = await quiet(() => installWorkspaceDeps(WT, 'worker-1', undefined, { allToolchains: true, frozenOnly: true }));
+  expect(result.status).toBe('failed');
+  expect(invocations()).toEqual(['pnpm install --frozen-lockfile']);
+ });

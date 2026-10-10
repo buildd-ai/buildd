@@ -160,8 +160,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
+function session(opts: { depsFallback?: boolean; deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.depsFallback ? { depsFallback: true } : {}),
     ...(opts.deferUpload ? { deferUpload: true } : {}),
     ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
@@ -366,6 +367,17 @@ describe('restore before clone', () => {
     expect(readFileSync(join(cacheDir, 'kept@1.0.0', 'index.js'), 'utf-8')).toBe('kept\n');
     expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
     expect(logs.some(m => m.includes('reused container'))).toBe(true);
+  });
+
+  test('dependency fallback restores the normal cache after a verified git seed', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    const cacheDir = join(dir, 'fallback-cache');
+    const next = session({ cacheDir, reusedContainer: true, depsFallback: true });
+    next.cloneHooks().afterSeed!(seedClone);
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf8')).toBe('module.exports = 1;\n');
+    expect(store.calls.some(c => c.startsWith('PIPE ') && c.endsWith('/cache'))).toBe(true);
   });
 
   test('a reused container with no cache on disk restores the cache as usual', async () => {
