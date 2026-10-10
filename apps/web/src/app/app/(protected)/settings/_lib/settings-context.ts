@@ -110,6 +110,8 @@ export const RUNNER_ACCOUNT_COLUMNS = {
   // The host-runner toggle: its state, and which team decides it.
   hostRunner: true,
   teamId: true,
+  // Who minted it: they may delete it without manage_team_keys.
+  createdByUserId: true,
 } as const;
 
 /** A runner account (token) as the Runners section receives it. */
@@ -128,6 +130,7 @@ export interface RunnerAccountDto {
   createdAt: Date | string | null;
   hostRunner: boolean;
   teamId: string;
+  createdByUserId: string | null;
   team: { name: string } | null;
   accountWorkspaces: { workspaceId: string }[];
 }
@@ -160,6 +163,7 @@ export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccou
     createdAt: a.createdAt ?? null,
     hostRunner: a.hostRunner === true,
     teamId: a.teamId,
+    createdByUserId: a.createdByUserId ?? null,
     team: a.team ? { name: a.team.name } : null,
     accountWorkspaces: (a.accountWorkspaces ?? []).map((w: { workspaceId: string }) => ({ workspaceId: w.workspaceId })),
   }));

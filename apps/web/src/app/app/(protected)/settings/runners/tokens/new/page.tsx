@@ -104,15 +104,16 @@ export default function NewRunnerTokenPage() {
             <div><label htmlFor="name" className="block text-sm mb-2">Token name</label><input id="name" name="name" required placeholder="release-ci" className={inputClass} /></div>
             {/* Radio rows: the chosen one is marked in ink, never orange. */}
             <fieldset><legend className="section-label mb-2">Preset</legend><div className="border-y border-border-default divide-y divide-border-default">
-              {(Object.keys(TOKEN_PRESETS) as Preset[]).map(key => <label key={key} data-selected={preset === key ? 'true' : 'false'} className={`flex min-h-11 gap-3 py-3 pl-3 border-l-2 cursor-pointer ${preset === key ? 'border-l-text-primary' : 'border-l-transparent'} ${key === 'admin' && !canAdmin ? 'opacity-50' : ''}`}>
-                <input type="radio" name="preset" className="mt-0.5 accent-[var(--text-primary)]" checked={preset === key} disabled={key === 'admin' && !canAdmin} onChange={() => choosePreset(key)} />
+              {/* Only what this person may mint: the admin preset and scopes need manage_team_keys. */}
+              {(Object.keys(TOKEN_PRESETS) as Preset[]).filter(key => key !== 'admin' || canAdmin).map(key => <label key={key} data-selected={preset === key ? 'true' : 'false'} className={`flex min-h-11 gap-3 py-3 pl-3 border-l-2 cursor-pointer ${preset === key ? 'border-l-text-primary' : 'border-l-transparent'}`}>
+                <input type="radio" name="preset" className="mt-0.5 accent-[var(--text-primary)]" checked={preset === key} onChange={() => choosePreset(key)} />
                 <span className="min-w-0"><span className={`block text-sm ${preset === key ? 'font-semibold text-text-primary' : 'font-medium text-text-primary'}`}>{TOKEN_PRESETS[key].label}</span>
                 <span className="block mt-0.5 text-xs text-text-secondary">{TOKEN_PRESETS[key].description}</span></span>
               </label>)}
             </div></fieldset>
             <details><summary className="min-h-11 flex items-center cursor-pointer text-sm">Adjust scopes</summary><div className="divide-y divide-border-default">
-              {TOKEN_SCOPE_DEFINITIONS.map(def => <label key={def.scope} className="flex gap-3 py-3 text-sm cursor-pointer">
-                <input type="checkbox" className="mt-1" checked={scopes.includes(def.scope)} disabled={(def.scope.endsWith(':admin') || ['admin','secrets','releases','schedules:write'].includes(def.scope)) && !canAdmin} onChange={e => setScopes(current => e.target.checked ? [...current, def.scope] : current.filter(scope => scope !== def.scope))} />
+              {TOKEN_SCOPE_DEFINITIONS.filter(def => canAdmin || !(def.scope.endsWith(':admin') || ['admin','secrets','releases','schedules:write'].includes(def.scope))).map(def => <label key={def.scope} className="flex gap-3 py-3 text-sm cursor-pointer">
+                <input type="checkbox" className="mt-1" checked={scopes.includes(def.scope)} onChange={e => setScopes(current => e.target.checked ? [...current, def.scope] : current.filter(scope => scope !== def.scope))} />
                 <span><span className="block">{def.label} <code className="text-xs text-text-muted">{def.scope}</code></span><span className="block text-xs text-text-secondary mt-1">{def.description}</span></span>
               </label>)}
             </div></details>

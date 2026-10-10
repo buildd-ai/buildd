@@ -471,6 +471,15 @@ export async function PATCH(
             );
           }
         }
+        if ('landingLane' in gc) {
+          const mode = gc.landingLane;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.landingLane must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
         if ('semanticRefresh' in gc) {
           const mode = gc.semanticRefresh;
           if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {

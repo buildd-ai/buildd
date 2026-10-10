@@ -12,6 +12,9 @@ const mockTasksFindFirst = mock(async () => null as any);
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
 // What the PATCH handed to UPDATE ... SET.
 let lastSet: Record<string, unknown> | null = null;
+// A compare-and-swap that matched no row, and what the follow-up SELECT sees.
+let updateReturnsNothing = false;
+let selectRows: Record<string, unknown>[] = [];
 const mockTriggerEvent = mock(async (..._args: unknown[]) => {});
 
 mock.module('@/lib/pusher', () => ({
@@ -55,10 +58,12 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({
       set: mock((fields: Record<string, unknown>) => (lastSet = fields, {
         where: mock(() => ({
-          returning: mock(() => [updatedRow]),
+          returning: mock(() => (updateReturnsNothing ? [] : [updatedRow])),
         })),
       })),
     }),
+    // lib/artifact-revisions.ts reads: a revision row, or the current revision.
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows }) }) }),
   },
 }));
 
@@ -717,5 +722,66 @@ describe('GET /api/artifacts/[artifactId] — file artifact download URL', () =>
     mockArtifactsFindFirst.mockResolvedValue({ ...fileRow, storageKey: null });
     const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
     expect((await res.json()).artifact.downloadUrl).toBeNull();
+  });
+});
+
+describe('artifact revisions on /api/artifacts/[artifactId]', () => {
+  const ownArtifact = { id: ARTIFACT_ID, workspaceId: 'ws-1', worker: { accountId: 'account-1' }, currentRevision: 3, content: 'v3', storageKey: null };
+  beforeEach(() => {
+    updateReturnsNothing = false;
+    selectRows = [];
+    lastSet = null;
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue(ownArtifact);
+  });
+
+  it('a content write under a stale expectedRevision is a 409 naming the current revision, and nothing else is written', async () => {
+    updateReturnsNothing = true;
+    selectRows = [{ currentRevision: 4 }];
+    const res = await PATCH(createMockPatchRequest({ content: 'mine', title: 't', expectedRevision: 3 }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'revision_conflict', currentRevision: 4 });
+  });
+
+  it('a content write records the writing account as the revision author', async () => {
+    updatedRow = { id: ARTIFACT_ID, currentRevision: 4 };
+    const res = await PATCH(createMockPatchRequest({ content: 'next', expectedRevision: 3 }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(lastSet).toMatchObject({ content: 'next', contentAuthor: 'account:account-1' });
+  });
+
+  it('expectedRevision without content, or not an integer, is refused', async () => {
+    expect((await PATCH(createMockPatchRequest({ title: 'x', expectedRevision: 3 }, 'bld_test'), { params: mockParams })).status).toBe(400);
+    expect((await PATCH(createMockPatchRequest({ content: 'x', expectedRevision: '3' }, 'bld_test'), { params: mockParams })).status).toBe(400);
+  });
+
+  it('GET ?revision=N returns that revision\'s body and hash, not the current one', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    selectRows = [{ revision: 2, content: 'v2', storageKey: null, contentHash: 'h2', sizeBytes: 2, author: null, createdAt: new Date(0) }];
+    const req = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=2`, { headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const { artifact } = await res.json();
+    expect(artifact.content).toBe('v2');
+    expect(artifact.currentRevision).toBe(3);
+    expect(artifact.revision).toMatchObject({ revision: 2, contentHash: 'h2' });
+  });
+
+  it('GET ?revision=1 of a body from before revisions existed returns that body', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindFirst.mockResolvedValue({ ...ownArtifact, currentRevision: 0, content: 'legacy body' });
+    selectRows = [];
+    const req = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=1`, { headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.content).toBe('legacy body');
+  });
+
+  it('GET of a revision that does not exist is a 404, and a malformed one a 400', async () => {
+    selectRows = [];
+    const missing = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=9`, { headers: { authorization: 'Bearer bld_test' } });
+    expect((await GET(missing, { params: mockParams })).status).toBe(404);
+    const bad = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=0`, { headers: { authorization: 'Bearer bld_test' } });
+    expect((await GET(bad, { params: mockParams })).status).toBe(400);
   });
 });

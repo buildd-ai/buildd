@@ -109,7 +109,8 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                 {copied ? 'Copied' : action.label}
             </button>
         );
-    } else if (action.kind === 'link_repo') {
+    } else if (action.kind === 'link_repo' && canCheck) {
+        // Linking a repository is a settings write, like Check connection.
         primary = (
             <Link href={`/app/workspaces/${workspaceId}`} className={`${BUTTON} btn-primary inline-flex items-center`}>
                 {action.label}
@@ -134,9 +135,6 @@ export function RepoAccessCard({ workspaceId, initialView, canCheck }: Props) {
                         {r.adminInstructions}
                     </pre>
                 </div>
-            )}
-            {action.kind === 'check_connection' && !canCheck && (
-                <p className="text-xs text-text-muted mt-2">A workspace admin can fix this with Check connection on this page.</p>
             )}
             {action.kind === 'operator' && (
                 <p className="text-xs text-text-muted mt-2">{action.label}.</p>

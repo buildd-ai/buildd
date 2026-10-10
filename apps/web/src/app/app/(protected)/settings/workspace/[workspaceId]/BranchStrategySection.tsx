@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { BranchStrategy } from '@buildd/core/db/schema';
 import Segmented from '@/components/ui/Segmented';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 interface Props {
   workspaceId: string;
@@ -15,6 +16,8 @@ interface Props {
   effectiveBranchStrategy: BranchStrategy;
   /** The workspace's actual default branch, so the copy names the real target instead of a hardcoded 'dev'. */
   defaultBranch: string;
+  /** Holds manage_workspace_settings. False: the strategy as text, no controls. */
+  canEdit: boolean;
 }
 
 const OPTIONS: Array<{ value: BranchStrategy; label: string; describe: (defaultBranch: string) => string }> = [
@@ -32,7 +35,7 @@ const OPTIONS: Array<{ value: BranchStrategy; label: string; describe: (defaultB
   },
 ];
 
-export default function BranchStrategySection({ workspaceId, effectiveBranchStrategy, defaultBranch }: Props) {
+export default function BranchStrategySection({ workspaceId, effectiveBranchStrategy, defaultBranch, canEdit }: Props) {
   const [strategy, setStrategy] = useState<BranchStrategy>(effectiveBranchStrategy);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -63,15 +66,35 @@ export default function BranchStrategySection({ workspaceId, effectiveBranchStra
 
   const chosen = OPTIONS.find((o) => o.value === strategy) ?? OPTIONS[0];
 
+  const header = (
+    <div>
+      <h3 className="text-sm font-medium text-text-primary">Branch strategy</h3>
+      <p className="text-xs text-text-secondary mt-0.5">
+        How a new mission&apos;s task PRs reach <code className="font-mono">{defaultBranch}</code>. Applies to new
+        missions only. Existing missions keep their strategy.
+      </p>
+    </div>
+  );
+
+  if (!canEdit) {
+    return (
+      <div className="py-4 first:pt-0 last:pb-0 space-y-3">
+        {header}
+        <ReadOnlyFacts
+          facts={[{
+            label: 'Branch strategy',
+            value: chosen.label,
+            testId: 'branch-strategy-value',
+            note: <span data-testid="branch-strategy-description">{chosen.describe(defaultBranch)}</span>,
+          }]}
+        />
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={handleSave} className="py-4 first:pt-0 last:pb-0 space-y-3">
-      <div>
-        <h3 className="text-sm font-medium text-text-primary">Branch strategy</h3>
-        <p className="text-xs text-text-secondary mt-0.5">
-          How a new mission&apos;s task PRs reach <code className="font-mono">{defaultBranch}</code>. Applies to new
-          missions only. Existing missions keep their strategy.
-        </p>
-      </div>
+      {header}
       <Segmented<BranchStrategy>
         label="Branch strategy"
         items={OPTIONS.map((o) => ({ value: o.value, label: o.label }))}

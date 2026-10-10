@@ -11,6 +11,8 @@ interface Props {
   explicit: RunnerSize | null;
   /** Resolved server-side (lib/runner-size-store.ts), the same rule the cloud dispatcher is answered with. */
   effective: RunnerSize;
+  /** Holds manage_workspace_settings. False: the value above as text, no picker. */
+  canEdit: boolean;
   source: RunnerSizeSource;
   reason: RunnerSizeReason | null;
   /** "This month: 9.1 h on the runner, counted as 18.2 h"; null when it has not run there this month. */
@@ -38,7 +40,7 @@ export function describeRunnerSizeSource(source: RunnerSizeSource, reason: Runne
  * The cloud container size this workspace's tasks get (gitConfig.runnerSize).
  * Saved through PATCH /api/workspaces/[id].
  */
-export default function RunnerSizeSection({ workspaceId, explicit, effective, source, reason, monthLine = null }: Props) {
+export default function RunnerSizeSection({ workspaceId, explicit, effective, source, reason, monthLine = null, canEdit }: Props) {
   const [value, setValue] = useState<Choice>(explicit ?? 'auto');
   const [shown, setShown] = useState({ effective, source, reason });
   const [saving, setSaving] = useState(false);
@@ -76,14 +78,16 @@ export default function RunnerSizeSection({ workspaceId, explicit, effective, so
         </p>
         {monthLine && <p data-testid="workspace-runner-month" className="text-meta text-text-secondary tabular-nums mt-0.5">{monthLine}</p>}
       </div>
-      <Select<Choice>
-        value={value}
-        options={OPTIONS}
-        disabled={saving}
-        onChange={save}
-        aria-labelledby="workspace-runner-size-label"
-        testId="workspace-runner-size-select"
-      />
+      {canEdit && (
+        <Select<Choice>
+          value={value}
+          options={OPTIONS}
+          disabled={saving}
+          onChange={save}
+          aria-labelledby="workspace-runner-size-label"
+          testId="workspace-runner-size-select"
+        />
+      )}
       <p className="text-xs text-text-muted">
         Large: 4× CPU, 2× memory and disk, and counts double toward fair use. Automatic switches to Large after a run nearly runs out of memory or disk.
       </p>

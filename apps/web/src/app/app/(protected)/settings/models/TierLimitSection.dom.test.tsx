@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: TierLimitSection } = await import('./TierLimitSection');
+const { formControls } = await import('../_lib/form-controls');
 
 type Eff = { max: string | null; binding: unknown; layers: { source: string; tier: string }[]; identified: boolean; overCapAuto: string; explanation: string };
 const eff = (layers: { source: string; tier: string }[]): Eff => {
@@ -119,6 +120,22 @@ describe('TierLimitSection', () => {
     expect(q('team-limit-readonly')).not.toBeNull();
   });
 
+  it('a member reads the team maximum as text; their own maximum is the only control', async () => {
+    state.canManage = false;
+    state.team = { all: 'premium', chat: 'standard' };
+    await mount(false);
+    expect(q('team-limit-readonly')!.textContent).toBe('Team maximum: Premium. Chat only: Standard.');
+    expect(formControls(host).map((el) => el.getAttribute('data-testid'))).toEqual(['self-all']);
+    expect(text()).not.toMatch(/Admins can change|Only a team owner|can change this|set by a team admin/);
+  });
+
+  it('a member of a team with no maximum is told so', async () => {
+    state.canManage = false;
+    state.team = {};
+    await mount(false);
+    expect(q('team-limit-readonly')!.textContent).toBe('Your team has not set a maximum.');
+  });
+
   it('an admin sets the team maximum; the read model is refetched after', async () => {
     await mount(true);
     const before = reads;
@@ -154,6 +171,26 @@ describe('TierLimitSection', () => {
     await mount(true);
     expect(q('workspace-limits')!.textContent).toContain('api');
     expect(q('member-limits')!.textContent).toContain('Sam');
+  });
+
+  it('names each card once: the title labels its select, no repeated row label', async () => {
+    await mount(true);
+    for (const [card, title, select] of [['my-limit', 'My maximum', 'self-all'], ['team-limit', 'Team maximum', 'team-all']]) {
+      const c = q(card)!;
+      expect(c.textContent!.split(title).length - 1).toBe(1);
+      const labelId = q(select)!.getAttribute('aria-labelledby')!;
+      expect(document.getElementById(labelId)!.textContent).toBe(title);
+    }
+  });
+
+  it('stacks label above select at narrow widths', async () => {
+    await mount(true);
+    await act(async () => { q('team-advanced')!.click(); });
+    for (const id of ['team-chat', 'over-cap-auto', 'ws-w1-all']) {
+      const row = q(id)!.closest('[data-limit-row]') as HTMLElement;
+      expect(row.className).toContain('flex-col');
+      expect(row.className).toContain('sm:flex-row');
+    }
   });
 
   it('does not offer OAuth or subscription controls', async () => {

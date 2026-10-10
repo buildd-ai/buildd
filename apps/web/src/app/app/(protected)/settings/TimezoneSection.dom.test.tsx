@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: TimezoneSection } = await import('./TimezoneSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -40,9 +41,10 @@ describe('TimezoneSection', () => {
     expect(host.querySelector('.card')).toBeNull();
   });
 
-  it('a member reads the zone and is told who can change it', async () => {
+  it('a member reads the zone as text, with no control and no per-section admin line', async () => {
     await mount('member');
-    expect(host.textContent).toContain('Europe/Lisbon');
-    expect(host.querySelector('[data-testid="timezone-read-only"]')!.textContent).toBe('Admins can change this.');
+    expect(host.querySelector('[data-testid="timezone-value"]')!.textContent).toBe('Europe/Lisbon');
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toContain('Admins can change');
   });
 });

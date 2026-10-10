@@ -609,6 +609,12 @@ export interface WorkspaceGitConfig {
   // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
   // fails closed when intent state cannot be verified.
   surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Landing lane (knowledge-base: buildd/design/landing-lane.md): at most one
+  // behind-refresh in flight per repo + base. Off by default (absent/'off':
+  // no lane reads). 'shadow' takes and releases the lane but never makes a
+  // refresh wait, recording when it would have; 'enforce' parks a refresh
+  // while another delivery on the same base holds the lane.
+  landingLane?: 'off' | 'shadow' | 'enforce' | null;
   // Semantic check before a clean base refresh (conflict-aware-orchestration.md
   // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
   // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
@@ -2558,6 +2564,14 @@ export const artifacts = pgTable('artifacts', {
   // explicit Share action, which also (re)generates the shareToken.
   visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
   metadata: jsonb('metadata').default({}).$type<Record<string, unknown>>(),
+  // The revision `content` / `storageKey` currently hold (artifact_revisions.revision).
+  // Maintained by the artifacts_record_revision trigger, never by app code; a
+  // writer passes it back as a compare-and-swap guard. 0 = a body written before
+  // revisions existed, snapshotted as revision 1 on its first change.
+  currentRevision: integer('current_revision').notNull().default(0),
+  // Who is writing this body ("user:<id>" / "account:<id>"), copied onto the
+  // revision the trigger records. Optional: an unset author records the worker.
+  contentAuthor: text('content_author'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -2567,6 +2581,34 @@ export const artifacts = pgTable('artifacts', {
   workspaceKeyIdx: uniqueIndex('artifacts_workspace_key_idx').on(t.workspaceId, t.key),
   missionIdx: index('artifacts_mission_idx').on(t.missionId),
   initiativeIdx: index('artifacts_initiative_idx').on(t.initiativeId),
+}));
+
+/**
+ * Immutable history of an artifact's body. Every write that changes
+ * `artifacts.content` or `artifacts.storage_key` appends one row, recorded by
+ * the artifacts_record_revision trigger (migration *_artifact_revisions_trigger)
+ * in the same statement
+ * as the write, so no write path can skip it. Rows are never updated: the
+ * artifact_revisions_immutable trigger refuses any change except filling a hash
+ * that was NULL (a file body, hashed once its bytes are verified).
+ */
+export const artifactRevisions = pgTable('artifact_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'cascade' }).notNull(),
+  revision: integer('revision').notNull(),
+  content: text('content'),
+  storageKey: text('storage_key'),
+  // sha256 hex of the UTF-8 content; NULL for a file body until verified.
+  contentHash: text('content_hash'),
+  sizeBytes: integer('size_bytes'),
+  // The artifact's worker when this body was written, not necessarily its author.
+  workerId: uuid('worker_id'),
+  // The writer, when the write named one (artifacts.content_author); 'legacy'
+  // for a body snapshotted from before revisions existed.
+  author: text('author'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  artifactRevisionIdx: uniqueIndex('artifact_revisions_artifact_revision_idx').on(t.artifactId, t.revision),
 }));
 
 /**
@@ -5268,6 +5310,23 @@ export const workflowEffects = pgTable('workflow_effects', {
 }));
 
 export type WorkflowEffectRow = typeof workflowEffects.$inferSelect;
+
+// The landing lane (lib/workflow/landing-lane.ts): one row per repo + base
+// whose delivery is the one behind-refresh in flight there. A row whose
+// delivery left the refresh window, or whose lease ran out, holds nothing;
+// the next acquire takes it over by compare-and-set.
+export const landingLanes = pgTable('landing_lanes', {
+  repoFullName: text('repo_full_name').notNull(),
+  baseRef: text('base_ref').notNull(),
+  deliveryId: uuid('delivery_id').references(() => workflowDeliveries.id, { onDelete: 'cascade' }).notNull(),
+  headSha: text('head_sha').notNull(),
+  grantedAt: timestamp('granted_at', { withTimezone: true }).defaultNow().notNull(),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.repoFullName, t.baseRef] }),
+  deliveryIdx: index('landing_lanes_delivery_idx').on(t.deliveryId),
+}));
 
 // §5.7 — one retry ledger per family; the only source for "attempt N of M".
 // Allocation is consumption: the row is inserted by the dispatching statement.

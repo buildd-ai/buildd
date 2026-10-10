@@ -38,6 +38,13 @@ export interface VisualQaConfig {
   signInPaths?: string[];
   /** The project's own preview-only auth bypass env var name. */
   previewAuthBypassEnv?: string;
+  /**
+   * A repo path to the workspace's design rules. When set, the surface audit
+   * checks every shot against it. Off when absent.
+   */
+  designRules?: string;
+  /** An artifact id or http(s) URL of an approved design reference that findings compare against. Off when absent. */
+  reference?: string;
 }
 
 export interface ResolvedVisualQaConfig {
@@ -46,6 +53,8 @@ export interface ResolvedVisualQaConfig {
   previewWaitSeconds: number;
   signInPaths: string[];
   previewAuthBypassEnv: string;
+  designRules: string | null;
+  reference: string | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -70,7 +79,26 @@ export function resolveVisualQaConfig(raw: unknown): ResolvedVisualQaConfig {
     previewAuthBypassEnv: typeof c.previewAuthBypassEnv === 'string' && /^[A-Z_][A-Z0-9_]*$/.test(c.previewAuthBypassEnv)
       ? c.previewAuthBypassEnv
       : DEFAULT_PREVIEW_AUTH_BYPASS_ENV,
+    designRules: repoPath(c.designRules),
+    reference: designReference(c.reference),
   };
+}
+
+/** A path inside the repo, `./` dropped. Absolute or `..` paths are null: the auditor reads it from its checkout. */
+function repoPath(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const p = v.trim().replace(/^(\.\/)+/, '');
+  if (!p || p.length > 300 || p.startsWith('/') || p.split('/').includes('..')) return null;
+  return p;
+}
+
+/** An http(s) URL, or an artifact id or key (no spaces, no scheme). */
+function designReference(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const r = v.trim();
+  if (!r || r.length > 500) return null;
+  if (/^https?:\/\/\S+$/i.test(r)) return r;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(r) ? r : null;
 }
 
 // ---------------------------------------------------------------------------

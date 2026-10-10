@@ -118,8 +118,9 @@ committing step MUST NOT run against a preview.
 
 - A state shot is uploaded with `metadata.qa.state = "<key>"`. Shots are keyed
   `route @ viewport @ state`.
-- Required coverage stays route × viewport at the base state: a state shot never satisfies
-  a required cell and never makes one missing. Every other rule (non-empty finding, upload,
+- Required coverage stays route × viewport, plus route × theme (light and dark, at either
+  viewport), at the base state: a state shot never satisfies a required cell and never
+  makes one missing. Every other rule (non-empty finding, upload,
   an `issue` links a `[surface fix]` task) applies to state shots as to base ones.
 - The review UI shows the state next to the route (`/app/tasks/:id · force-start-dialog`),
   and a state shot is its own cell, never replacing the base shot.
@@ -170,7 +171,8 @@ committing step MUST NOT run against a preview.
   page (`/app/teams/[id]`) with an owner, an admin and a member, seen as each: role selects,
   Remove, Transfer ownership, the last-owner Leave gate and admin-vs-member gating. No DB; it
   never writes.
-  `/app/health/insights?state=sample|empty|not-admin` covers the chart.
+  `/app/health/insights?state=sample|empty|not-admin` covers the chart (platform owner only:
+  anyone else gets a 404, so capture it signed in as an operator).
   `/app/health/runners?state=sample` draws the slots-busy chart from a synthetic fleet (every
   window), without worker rows.
   `/app/health/insights/tasks?state=sample|large` (optionally `&band=<key>`) renders a

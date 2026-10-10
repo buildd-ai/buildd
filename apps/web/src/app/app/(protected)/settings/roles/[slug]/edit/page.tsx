@@ -71,6 +71,8 @@ export default async function TeamRoleSettingsPage({
       db.query.workspaces.findMany({ where: inArray(workspaces.id, wsIds), columns: { id: true, name: true } }),
       delegateRows(),
     ]);
+    // Read-only is the role's own page: its values, with no controls.
+    if (!canEdit) redirect(`/app/settings/roles/${encodeURIComponent(slug)}`);
     return (
       <TeamRoleEditor
         role={JSON.parse(JSON.stringify(wsRole))}
@@ -154,13 +156,15 @@ export default async function TeamRoleSettingsPage({
   }
 
   // The roles routes take manage_agent_roles in the role's team, with that
-  // team's overrides (a personal team counts as owned). Without it the editor
-  // is read-only. A failed overrides read holds nothing.
+  // team's overrides (a personal team counts as owned). Without it the
+  // viewer goes to the role's page, which shows the same values read-only. A failed overrides read holds nothing.
   const [viewerRole, permissionOverrides] = await Promise.all([
     getUserTeamRole(user.id, teamRole.teamId).catch(() => null),
     getTeamPermissionOverrides(teamRole.teamId).catch(() => null),
   ]);
   const canEdit = !!permissionOverrides && roleHas(viewerRole, 'manage_agent_roles', permissionOverrides);
+  // Read-only is the role's own page: its values, with no controls.
+  if (!canEdit) redirect(`/app/settings/roles/${encodeURIComponent(slug)}`);
 
   // Get all workspace overrides for this role
   const overrides = wsIds.length > 0

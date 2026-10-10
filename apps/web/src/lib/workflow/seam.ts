@@ -21,6 +21,7 @@ import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
 import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
+import { settleLanes } from './landing-lane';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
 import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
@@ -86,6 +87,14 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
         : s;
       if (s.claimed === 0) break;
     }
+    // The landing lane: a delivery that just left the refresh window frees its lane, and the
+    // oldest refresh parked behind it is made due and drained here, by this same drain.
+    // Isolated: the lane row expires on its own, so a failed release costs the lease, not the drain.
+    const woken = await settleLanes(deps.exec ?? seamExec, deliveryId).catch((err) => {
+      console.error(`[workflow] landing lane release for delivery ${deliveryId} failed:`, err);
+      return [] as string[];
+    });
+    for (const waiter of woken) if (waiter !== deliveryId) await drainDelivery(waiter, deps);
     return total;
   } catch (err) {
     // The effect rows are durable; the cron drain picks up whatever this missed.

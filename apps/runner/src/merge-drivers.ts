@@ -76,13 +76,50 @@ function driverCommand(index: number, strategy: 'ours' | 'theirs'): string {
   return `sh -c '${keep}echo ${index} >> "$(git rev-parse --git-dir)/${PENDING_FILE}"' buildd-derived %A %B`;
 }
 
+/**
+ * Per-worktree record of every file the mergiraf driver handled, in every
+ * merge in the clone: the runner's pre-merge AND the agent's own merge, rebase,
+ * pull or cherry-pick. One line per file: `<status>\t<repo-relative path>`.
+ *  - `clean`:    a plain line merge would not have conflicted (mergiraf did no real work)
+ *  - `resolved`: a line merge would have conflicted and mergiraf merged it (unreviewed code)
+ *  - `conflict`: mergiraf could not merge it; git leaves it conflicted
+ */
+export const MERGIRAF_LEDGER = 'buildd-mergiraf-log';
+
+/** A mergiraf path we can put in a driver command without quoting it. */
+const SHELL_SAFE_PATH = /^\/[A-Za-z0-9._/+-]+$/;
+
+/**
+ * The mergiraf driver, wrapped so each file lands in the ledger. `git
+ * merge-file -p` (stdout only, nothing written) first says whether a line
+ * merge would have conflicted; mergiraf then runs with exactly its usual
+ * arguments and its exit code is git's. No `%` in the script itself: git
+ * expands `%` placeholders in driver commands.
+ */
+function mergirafDriverCommand(mergiraf: string): string {
+  const script = [
+    'm="$1"; shift',
+    'p=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && p="$a"; prev="$a"; done',
+    'cls=resolved; git merge-file -q -p "$4" "$3" "$5" >/dev/null 2>&1 && cls=clean',
+    '"$m" "$@"; rc=$?',
+    '[ "$rc" -ne 0 ] && cls=conflict',
+    't=$(printf "\\t"); echo "$cls$t$p" >> "$(git rev-parse --git-dir)/' + MERGIRAF_LEDGER + '"',
+    'exit "$rc"',
+  ].join('; ');
+  return `sh -c '${script}' buildd-mergiraf ${mergiraf} merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L`;
+}
+
 export function planMergeDrivers(rules: NormalizedDerivedFileRule[], opts: MergeDriverOptions): MergeDriverPlan {
   const config: Array<[string, string]> = [];
   const attributes: string[] = [];
-  const mergiraf = opts.mergiraf && opts.mergirafPath ? opts.mergirafPath : null;
+  const candidate = opts.mergiraf && opts.mergirafPath ? opts.mergirafPath : null;
+  const mergiraf = candidate && SHELL_SAFE_PATH.test(candidate) ? candidate : null;
+  if (candidate && !mergiraf) {
+    console.log(`[merge-drivers] mergiraf path ${JSON.stringify(candidate)} is not shell-safe — not registering it`);
+  }
   if (mergiraf) {
     config.push(['merge.mergiraf.name', 'mergiraf (structural merge)']);
-    config.push(['merge.mergiraf.driver', `${mergiraf} merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L`]);
+    config.push(['merge.mergiraf.driver', mergirafDriverCommand(mergiraf)]);
     for (const p of MERGIRAF_PATTERNS) attributes.push(`${p} merge=mergiraf`);
   }
   // Derived rules last: in gitattributes the later matching line wins, so a
@@ -219,25 +256,37 @@ function removeMergeTempFiles(worktreePath: string): void {
   }
 }
 
+export interface MergirafLedgerEntry {
+  status: 'clean' | 'resolved' | 'conflict';
+  path: string;
+}
+
 /**
- * The paths mergiraf says it solved. It prints one line per file to stderr
- * ("INFO Mergiraf: Solved N conflict(s). Review with: mergiraf review
- * <basename>_<id>"), naming only the basename, so map each back to the files
- * this merge changed. Every same-named match counts: over-reporting only sends
- * a merge to an agent.
+ * Ledger entries from line `fromLine` on, and the line count to read from
+ * next time. A missing ledger is empty. Malformed lines are skipped.
  */
-function mergirafResolvedPaths(worktreePath: string, before: string, stderr: string): string[] {
-  const names = [...stderr.matchAll(/mergiraf review (\S+)_[A-Za-z0-9]+\s*$/gm)].map(m => m[1]);
-  if (names.length === 0) return [];
-  const changed = tryGit(worktreePath, ['diff', '--name-only', before]);
-  const paths = changed.ok ? changed.out.split('\n').filter(Boolean) : [];
-  const out = new Set<string>();
-  for (const name of names) {
-    const hits = paths.filter(p => p === name || p.endsWith(`/${name}`));
-    // Not found among the changes: still record it, by name.
-    for (const hit of hits.length ? hits : [name]) out.add(hit);
+export function readMergirafLedger(worktreePath: string, fromLine: number): { entries: MergirafLedgerEntry[]; offset: number } {
+  let text = '';
+  try {
+    const file = join(gitPath(worktreePath, '--git-dir'), MERGIRAF_LEDGER);
+    if (existsSync(file)) text = readFileSync(file, 'utf-8');
+  } catch {
+    return { entries: [], offset: fromLine };
   }
-  return [...out].sort();
+  const lines = text.split('\n').filter(Boolean);
+  const entries: MergirafLedgerEntry[] = [];
+  for (const line of lines.slice(Math.max(0, fromLine))) {
+    const tab = line.indexOf('\t');
+    const status = line.slice(0, tab);
+    const path = line.slice(tab + 1);
+    if (tab > 0 && path && (status === 'clean' || status === 'resolved' || status === 'conflict')) entries.push({ status, path });
+  }
+  return { entries, offset: lines.length };
+}
+
+/** Sorted unique paths of one status. */
+function ledgerPaths(entries: MergirafLedgerEntry[], status: MergirafLedgerEntry['status']): string[] {
+  return [...new Set(entries.filter(e => e.status === status).map(e => e.path))].sort();
 }
 
 const IMPORT_LINE = /^import\s[^;]*;?\s*$/;
@@ -298,6 +347,8 @@ export function mergeBaseWithDerivedFiles(
   if (!before.ok) return { ...result, error: before.out };
   // A leftover pending list from an unrelated earlier merge must not trigger commands now.
   takePendingCommands(worktreePath, rules);
+  // Only this merge's ledger entries count.
+  const ledgerStart = readMergirafLedger(worktreePath, 0).offset;
 
   const timeoutMs = opts.timeoutMs ?? MERGE_TIMEOUT_MS;
   const run = spawnSync('git', ['merge', '--no-edit', '--no-ff', baseRef], {
@@ -312,7 +363,7 @@ export function mergeBaseWithDerivedFiles(
   };
   const unmerged = tryGit(worktreePath, ['diff', '--name-only', '--diff-filter=U']);
   const conflicted = timedOut || !unmerged.ok ? [] : unmerged.out.split('\n').filter(Boolean);
-  const structurallyResolved = timedOut ? [] : mergirafResolvedPaths(worktreePath, before.out, run.stderr ?? '');
+  const structurallyResolved = timedOut ? [] : ledgerPaths(readMergirafLedger(worktreePath, ledgerStart).entries, 'resolved');
 
   const abort = (error: string): DerivedMergeResult => {
     tryGit(worktreePath, ['merge', '--abort']);
@@ -487,7 +538,15 @@ export function planPreMerge(
       ? { ref: `origin/${refreshTrunk}`, kind: 'mission_refresh', mayFinishWithoutAgent: false }
       : null;
   }
-  if (!isConflictRetryContext(context) || !prBaseRef) return null;
+  if (!isConflictRetryContext(context)) return null;
+  // The server states the PR's real base when it creates the retry: the one
+  // source of truth when present. Anything not a plain branch, or naming the
+  // branch itself, is ignored and the runner-side rule below applies.
+  const prBase = context.prBase;
+  if (typeof prBase === 'string' && BRANCH_NAME.test(prBase) && prBase !== context.resumeBranch) {
+    return { ref: `origin/${prBase}`, kind: 'retry', mayFinishWithoutAgent: true };
+  }
+  if (!prBaseRef) return null;
   if (prBaseRef === `origin/${context.resumeBranch}`) {
     return BRANCH_NAME.test(trunk) ? { ref: `origin/${trunk}`, kind: 'mission_pr_retry', mayFinishWithoutAgent: true } : null;
   }
@@ -552,4 +611,76 @@ export function formatDerivedFilesGuidance(rules: NormalizedDerivedFileRule[]): 
   const lines = rules.map(r => `- \`${r.glob}\` → \`${r.regenerate}\``);
   return `\n\n## Derived files\nIn this checkout these files never conflict: a merge or rebase keeps one side whole. ` +
     `After any merge or rebase that touched one, run its command from the repo root and commit the result:\n${lines.join('\n')}`;
+}
+
+// ── The agent's own merges ───────────────────────────────────────────────────
+
+const MERGE_COMMAND = /\bgit\b(?:\s+-C\s+\S+)?(?:\s+-c\s+\S+)*\s+(?:merge(?!-)|rebase|pull|cherry-pick|am|revert|stash\s+(?:pop|apply))\b/;
+
+/** A Bash command that can run merge drivers (merge, rebase, pull, cherry-pick, am, revert, stash pop/apply). */
+export function looksLikeMergeCommand(command: string): boolean {
+  return MERGE_COMMAND.test(command);
+}
+
+const MILESTONE_FILES = 10;
+
+function fileList(paths: string[]): string {
+  const shown = paths.slice(0, MILESTONE_FILES).join(', ');
+  return paths.length > MILESTONE_FILES ? `${shown} +${paths.length - MILESTONE_FILES} more` : shown;
+}
+
+/**
+ * Milestones (synced to the server) for merges the agent ran itself:
+ * `Merge: mergiraf resolved N file(s): …` and `Merge: mergiraf left N file(s)
+ * conflicted: …`. `clean` entries are not mergiraf's work and say nothing.
+ */
+export function formatAgentMergeMilestones(entries: MergirafLedgerEntry[]): string[] {
+  const out: string[] = [];
+  const resolved = ledgerPaths(entries, 'resolved');
+  const conflict = ledgerPaths(entries, 'conflict');
+  if (resolved.length) out.push(`Merge: mergiraf resolved ${resolved.length} file(s): ${fileList(resolved)}`);
+  if (conflict.length) out.push(`Merge: mergiraf left ${conflict.length} file(s) conflicted: ${fileList(conflict)}`);
+  return out;
+}
+
+/** What the agent is told right after its merge, or null when mergiraf resolved nothing. */
+export function formatAgentMergeContext(resolved: string[]): string | null {
+  if (resolved.length === 0) return null;
+  return `mergiraf (structural merge) just resolved conflicts in ${resolved.length} file(s) that a line merge could not: ` +
+    `${resolved.map(f => `\`${f}\``).join(', ')}. Nobody has reviewed those resolutions. Before committing or pushing, ` +
+    `review each one against both sides (\`git diff HEAD -- <file>\` during the merge, or \`git log -p -1 --cc -- <file>\` after it) ` +
+    `for lost or duplicated changes, and run the tests that cover those files.`;
+}
+
+/**
+ * Report what mergiraf did in merges the agent ran since the last report:
+ * records each milestone, advances the worker's offset, and returns the text
+ * to hand the agent (null when there is nothing for it to review). A worker
+ * with no registered drivers (offset undefined) or no worktree reports nothing.
+ */
+export function reportAgentMerges(
+  worker: { worktreePath?: string; mergirafLedgerOffset?: number },
+  addMilestone: (label: string) => void,
+): string | null {
+  if (!worker.worktreePath || worker.mergirafLedgerOffset === undefined) return null;
+  const report = collectAgentMergeReport(worker.worktreePath, worker.mergirafLedgerOffset);
+  worker.mergirafLedgerOffset = report.offset;
+  for (const label of report.milestones) addMilestone(label);
+  return report.context;
+}
+
+/**
+ * New ledger entries since `offset`: the milestones to record and the context
+ * to hand the agent. Read again with the returned offset.
+ */
+export function collectAgentMergeReport(
+  worktreePath: string,
+  offset: number,
+): { offset: number; milestones: string[]; context: string | null } {
+  const { entries, offset: next } = readMergirafLedger(worktreePath, offset);
+  return {
+    offset: next,
+    milestones: formatAgentMergeMilestones(entries),
+    context: formatAgentMergeContext(ledgerPaths(entries, 'resolved')),
+  };
 }
