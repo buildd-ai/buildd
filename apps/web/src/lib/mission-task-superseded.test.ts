@@ -58,6 +58,11 @@ mock.module('drizzle-orm', () => ({
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 
+// The audit route reads the one visual review model (visual-review-model.ts owns the rule).
+let visualModel: any = null;
+const mockLoadVisualReview = mock(async (_m: any) => visualModel);
+mock.module('@/lib/visual-review-load', () => ({ loadVisualReview: mockLoadVisualReview }));
+
 import { computeSupersededFailedTasks } from './mission-task-superseded';
 
 describe('computeSupersededFailedTasks', () => {
@@ -159,5 +164,33 @@ describe('computeSupersededFailedTasks', () => {
       { id: 't-1', title: 'Unrelated failure', subjectPrNumber: null, createdAt: new Date() },
     ]);
     expect(result.has('t-1')).toBe(false);
+  });
+
+  describe('a failed visual audit a later completed audit replaced', () => {
+    const failedAudit = { id: 'a-1', title: '[surface audit] round 2: M', subjectPrNumber: null, createdAt: new Date(), roleSlug: 'visual-auditor' };
+
+    beforeEach(() => { visualModel = null; mockLoadVisualReview.mockClear(); });
+
+    it('is superseded when the model records the replacement, naming the replacing audit', async () => {
+      visualModel = { replacedAudits: [{ auditTaskId: 'a-1', replacedBy: ['a-2'] }] };
+      const result = await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit]);
+      expect(result.get('a-1')).toEqual({ taskId: 'a-1', prNumber: null, supersedingTaskId: 'a-2', replacedByAudit: true });
+    });
+
+    it('is not superseded without a recorded replacement, or when the model cannot be read', async () => {
+      visualModel = { replacedAudits: [] };
+      expect((await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit])).has('a-1')).toBe(false);
+      mockLoadVisualReview.mockImplementationOnce(async () => { throw new Error('db down'); });
+      expect((await computeSupersededFailedTasks('m-1', 'ws-1', [failedAudit])).has('a-1')).toBe(false);
+    });
+
+    it('never applies to a non-audit task, and skips the model read when no audit failed', async () => {
+      visualModel = { replacedAudits: [{ auditTaskId: 't-1', replacedBy: ['a-2'] }] };
+      const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
+        { id: 't-1', title: 'Build it', subjectPrNumber: null, createdAt: new Date(), roleSlug: 'builder' },
+      ]);
+      expect(result.has('t-1')).toBe(false);
+      expect(mockLoadVisualReview).not.toHaveBeenCalled();
+    });
   });
 });

@@ -91,7 +91,7 @@ export interface StateBecauseExtras {
    * (not gated on `view.kind`), since these tasks never drive `failing` and
    * would otherwise be invisible to `because[]`.
    */
-  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number; supersedingTaskId?: string | null }>;
+  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number | null; supersedingTaskId?: string | null; replacedByAudit?: true }>;
 }
 
 /**
@@ -124,6 +124,16 @@ export function buildStateBecause(
   }
 
   for (const t of extra.supersededTasks ?? []) {
+    if (t.replacedByAudit || t.prNumber == null) {
+      links.push(
+        link(
+          `Visual audit "${t.title ?? t.id}" failed, but a later audit${t.supersedingTaskId ? ` ("${t.supersedingTaskId}")` : ''} completed with passing phone and desktop screenshots of the same routes, so it does not count as a mission failure.`,
+          'artifacts.metadata.qa (replacedAudits)',
+          { ...base, taskId: t.id },
+        ),
+      );
+      continue;
+    }
     links.push(
       link(
         t.supersedingTaskId

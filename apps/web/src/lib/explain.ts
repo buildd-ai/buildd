@@ -447,6 +447,7 @@ async function viewForMission(missionId: string): Promise<{
       title: t.title,
       subjectPrNumber: t.subjectPrNumber,
       createdAt: t.createdAt,
+      roleSlug: t.roleSlug,
     })),
   );
 
@@ -614,6 +615,7 @@ async function viewForMission(missionId: string): Promise<{
         title: task.title,
         prNumber: superseded.prNumber,
         supersedingTaskId: superseded.supersedingTaskId,
+        ...(superseded.replacedByAudit ? { replacedByAudit: true as const } : {}),
       })),
     },
   };
