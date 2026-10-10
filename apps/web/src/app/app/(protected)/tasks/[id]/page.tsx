@@ -17,6 +17,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
@@ -1434,6 +1435,7 @@ export default async function TaskDetailPage({
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
               entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
+              credentialBlock={task.status === 'pending' ? parseCredentialBlock((task.context as Record<string, unknown> | null)?.[CREDENTIAL_BLOCK_CONTEXT_KEY]) : null}
               runnerPicker
             />
           </div>
