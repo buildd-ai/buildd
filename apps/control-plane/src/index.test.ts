@@ -70,3 +70,31 @@ describe('the committed config', () => {
     expect(executionMode('shadow')).toBe('shadow');
   });
 });
+
+describe('outbound fetch', () => {
+  it('adds a User-Agent when a request has none (GitHub refuses requests without one), and keeps one it has', async () => {
+    const { withDefaultUserAgent, CONTROL_PLANE_USER_AGENT } = await import('./outbound-fetch');
+    const seen: Array<string | null> = [];
+    const base = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('user-agent'));
+      return new Response('ok');
+    }) as typeof fetch;
+    const f = withDefaultUserAgent(base);
+    await f('https://api.github.com/repos/o/r/pulls/1/files', { headers: { Authorization: 'Bearer t' } });
+    await f(new Request('https://api.github.com/zen'));
+    await f('https://x.example', { headers: { 'User-Agent': 'mine' } });
+    expect(seen).toEqual([CONTROL_PLANE_USER_AGENT, CONTROL_PLANE_USER_AGENT, 'mine']);
+  });
+});
+
+describe('pusher shim', () => {
+  it('signs a trigger the way the Pusher REST API documents (body_md5 + HMAC-SHA256 over the sorted query)', async () => {
+    const { signedEventsUrl } = await import('./pusher-shim');
+    // The worked example from Pusher's REST API auth reference.
+    const body = '{"name":"foo","channels":["project-3"],"data":"{\\"some\\":\\"data\\"}"}';
+    const url = new URL(signedEventsUrl({ appId: '3', key: '278d425bdf160c739803', secret: '7ad3773142a6692b25b8', cluster: 'mt1' }, body, 1353088179));
+    expect(url.origin + url.pathname).toBe('https://api-mt1.pusher.com/apps/3/events');
+    expect(url.searchParams.get('body_md5')).toBe('ec365a775a4cd0599faeb73354201b6f');
+    expect(url.searchParams.get('auth_signature')).toBe('da454824c97ba181a32ccc17a72625ba02771f50b50e1e7430e47a1f3f457e6c');
+  });
+});

@@ -37,6 +37,8 @@
     "next/server": "./src/next-server-shim.ts",
     "dotenv": "./src/dotenv-shim.ts",
     "server-only": "./src/empty-shim.ts",
-    "@ast-grep/napi": "./src/ast-grep-shim.ts"
+    "@ast-grep/napi": "./src/ast-grep-shim.ts",
+    // node-fetch/http do not run on Workers; same REST call over fetch.
+    "pusher": "./src/pusher-shim.ts"
   }
 }

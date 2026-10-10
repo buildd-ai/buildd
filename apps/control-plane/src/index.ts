@@ -7,6 +7,9 @@
  */
 import { NextRequest } from './next-server-shim';
 import { runInRequest } from './request-context';
+import { installOutboundFetch } from './outbound-fetch';
+
+installOutboundFetch();
 
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>;
 type Route = { method: string; pattern: URLPattern; load: () => Promise<Record<string, unknown>> };
@@ -61,7 +64,35 @@ export default {
     // The Worker's own hostname has no origin behind it.
     const ownHost = !!env.CONTROL_PLANE_HOST && url.hostname === env.CONTROL_PLANE_HOST;
     if (url.pathname === '/__control-plane/health') {
-      return Response.json({ ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE) });
+      const health: Record<string, unknown> = { ok: true, service: 'control-plane', mode: executionMode(env.EXECUTION_MODE) };
+      // ?deep=1: an unauthenticated GitHub API call through the outbound
+      // fetch, the dependency the 2026-10-10 cutover lost (no User-Agent).
+      if (url.searchParams.get('deep') === '1') {
+        const gh = await fetch('https://api.github.com/zen').catch((e: Error) => ({ status: 0, statusText: e.message }) as Response);
+        health.github = gh.status;
+        // And as the GitHub App, with the real key: the JWT the installation
+        // tokens are minted from.
+        const app = await import('@/lib/github')
+          .then(async ({ generateAppJWT }) => fetch('https://api.github.com/app', { headers: { Authorization: `Bearer ${await generateAppJWT()}`, Accept: 'application/vnd.github+json' } }))
+          .catch((e: Error) => ({ status: 0, statusText: e.message }) as Response);
+        health.githubApp = app.status;
+        if (app.status !== 200) health.githubAppError = String(app.statusText || '').slice(0, 200);
+        // Realtime: the dashboard learns of claims and progress through Pusher.
+        health.pusher = await import('@/lib/pusher')
+          .then(({ triggerEventChecked }) => triggerEventChecked('control-plane-health', 'ping', { at: Date.now() }))
+          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+        // Object storage (run evidence, uploads): a HEAD of a key that cannot
+        // exist must answer "not there", not throw.
+        health.storage = await import('@/lib/storage')
+          .then(async ({ isStorageConfigured, objectExists }) => (isStorageConfigured() ? ((await objectExists('control-plane-health/none')) ? 'unexpected' : 'ok') : 'unconfigured'))
+          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+        // Cache (API-key lookups): a miss must answer null, not throw.
+        health.redis = await import('@/lib/redis')
+          .then(async ({ isRedisConfigured, getCachedApiKey }) => (isRedisConfigured() ? ((await getCachedApiKey('control-plane-health')) === null ? 'ok' : 'unexpected') : 'unconfigured'))
+          .catch((e: Error) => `error: ${e.message}`.slice(0, 200));
+        health.ok = gh.status === 200 && app.status === 200 && health.pusher === 'sent' && health.storage === 'ok' && health.redis === 'ok';
+      }
+      return Response.json(health, { status: health.ok ? 200 : 503 });
     }
     const hit = matchRoute(request.method, url.pathname);
     if (!hit || (!ownHost && executionMode(env.EXECUTION_MODE) !== 'own')) {
