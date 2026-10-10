@@ -60,6 +60,8 @@ mock.module('@/lib/admin/data', () => ({
   loadInsights: async (opts: any) => { insightCalls.push(opts); return { series: { buckets: [] }, usage: { rows: [] }, truncated: false }; },
   loadInsightsBand: async (opts: any) => { insightCalls.push(opts); return opts.filter.band === 'none' ? null : { label: 'Released', tasks: [{ id: 't1', title: 'Task 1', status: 'completed' }] }; },
   loadAgentAccess: async (opts: any) => { insightCalls.push(opts); return { windowHours: opts.windowHours, granted: 3, refusals: [] }; },
+  listTeamsWithWorkspaces: async () => [{ id: TEAM, name: 'Team A', workspaces: [{ id: WS, name: 'repo-a' }] }],
+  loadExperimentReadout: async (row: any) => ({ policyVersion: row.policyVersion, readout: { verdict: 'insufficient_n', arms: [] }, health: [] }),
 }));
 const insightCalls: any[] = [];
 
@@ -78,6 +80,8 @@ const routes = {
   insights: await import('./insights/route'),
   insightsTasks: await import('./insights/tasks/route'),
   agentAccess: await import('./agent-access/route'),
+  teams: await import('./teams/route'),
+  readout: await import('./experiments/[id]/readout/route'),
 };
 
 const req = (path: string, method = 'GET', body?: unknown) => new NextRequest(`http://localhost:3000/api/admin/${path}`, {
@@ -104,6 +108,8 @@ const calls: Call[] = [
   { name: 'GET insights', call: () => routes.insights.GET(req('insights')) },
   { name: 'GET insights/tasks', call: () => routes.insightsTasks.GET(req('insights/tasks?band=released&from=1760000000000&to=1760604800000&at=1760300000000')) },
   { name: 'GET agent-access', call: () => routes.agentAccess.GET(req('agent-access')) },
+  { name: 'GET teams', call: () => routes.teams.GET(req('teams')) },
+  { name: 'GET experiments/[id]/readout', call: () => routes.readout.GET(req(`experiments/${EXP}/readout`), idCtx(EXP)) },
 ];
 
 beforeEach(() => {
@@ -265,5 +271,23 @@ describe('GET agent-access', () => {
   it('passes the window in hours', async () => {
     const body = await (await routes.agentAccess.GET(req('agent-access?window=7d'))).json();
     expect(body.report.windowHours).toBe(168);
+  });
+});
+
+describe('names and readouts for the admin app', () => {
+  it('lists every team with its workspaces by name', async () => {
+    const res = await routes.teams.GET(req('teams'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ teams: [{ id: TEAM, name: 'Team A', workspaces: [{ id: WS, name: 'repo-a' }] }] });
+  });
+
+  it('reads one experiment\'s readout, and 404s an unknown id', async () => {
+    const res = await routes.readout.GET(req(`experiments/${EXP}/readout`), idCtx(EXP));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.experiment.id).toBe(EXP);
+    expect(body.readout.verdict).toBe('insufficient_n');
+    const missing = await routes.readout.GET(req('experiments/44444444-4444-4444-8444-444444444444/readout'), idCtx('44444444-4444-4444-8444-444444444444'));
+    expect(missing.status).toBe(404);
   });
 });
