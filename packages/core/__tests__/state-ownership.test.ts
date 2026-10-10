@@ -68,6 +68,9 @@ describe('the kernel half stays enforced', () => {
   it('workflow-write-sites.test.ts exists, runs on every diff, and keeps an empty allowlist', () => {
     const guard = readFileSync(join(repo, 'packages/core/__tests__/workflow-write-sites.test.ts'), 'utf8');
     expect(guard).toContain('const ALLOWED = new Set<string>();');
+    // The delivery and effect tables are among the ones it guards.
+    const kernelTables = guard.match(/const TABLES = '([^']+)'/)?.[1].split('|') ?? [];
+    expect(kernelTables).toEqual(expect.arrayContaining(['workflow_deliveries', 'workflow_effects', 'workflow_transitions']));
     expect(readFileSync(join(repo, 'scripts/always-run-tests.txt'), 'utf8')).toContain('packages/core/__tests__/workflow-write-sites.test.ts');
   });
 });
