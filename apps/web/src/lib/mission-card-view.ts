@@ -63,6 +63,7 @@ import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { taskRowsStripOrder } from './mission-strip-order';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import { deriveCiRedChains } from './ci-red-chain';
+import { classifyMissionWait, type WaitClassifiableTask } from './heartbeat-prepass';
 import { continueOnRunnerBlockedReason, deriveLocalStrand, type LocalStrand } from './local-strand';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
@@ -106,6 +107,9 @@ export interface MissionCardTaskRow {
   scheduleId?: string | null;
   startAt?: DateLike;
   loopIteration?: number | null;
+  context?: Record<string, unknown> | null;
+  loopConfig?: WaitClassifiableTask['loopConfig'];
+  loopState?: WaitClassifiableTask['loopState'];
   workers?: MissionCardWorkerRow[] | null;
 }
 
@@ -459,6 +463,21 @@ export function cardLocalStrand(row: MissionCardRow, now: number): LocalStrand |
   });
 }
 
+const asDate = (d: DateLike): Date | null => (d ? new Date(d) : null);
+
+function toWaitClassifiable(t: MissionCardTaskRow): WaitClassifiableTask {
+  return {
+    status: t.status,
+    mode: t.mode ?? null,
+    taskClass: (t.taskClass as WaitClassifiableTask['taskClass'] | null | undefined) ?? 'work',
+    context: t.context ?? null,
+    startAt: asDate(t.startAt),
+    loopConfig: t.loopConfig ?? null,
+    loopState: t.loopState ?? null,
+    createdAt: asDate(t.createdAt),
+  };
+}
+
 /**
  * The card's `deriveMissionStateView` input, from the loaded row. A card has
  * no completion decision (`canCompleteMission`): the open-task, failed-task and
@@ -508,6 +527,10 @@ function deriveCardState(
         ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) } : {}),
       })),
     localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,
+    // The same classifier `explain` and the heartbeat run: when every open row
+    // is on a self-resolving wait (an infrastructure retry with a backoff, a
+    // budget pause) the mission is waiting, not awaiting verification.
+    wait: classifyMissionWait(tasks.map(toWaitClassifiable), new Date(s.now)),
     failedTasks: deliverables
       .filter(t => t.status === 'failed' && !s.replaced.has(t.id))
       // No `infra`: it only matters with a completion decision, which a card never has.
