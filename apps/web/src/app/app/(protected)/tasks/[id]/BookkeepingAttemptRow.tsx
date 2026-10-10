@@ -38,7 +38,7 @@ export default function BookkeepingAttemptRow({
         <span className="sr-only">Show attempt details</span>
       </summary>
       <div className="space-y-1 px-3 pb-3 pl-14 text-meta text-text-muted md:px-4 md:pl-[3.75rem] [overflow-wrap:anywhere]">
-        <p>This attempt was claimed but no session began. It is a bookkeeping record, not a task failure.</p>
+        <p>A runner claimed this attempt but no session began. Kept as a bookkeeping record.</p>
         {children}
       </div>
     </details>
