@@ -1,14 +1,12 @@
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
-import Link from 'next/link';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { missions } from '@buildd/core/db/schema';
 import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { loadMissionPlan } from '@/lib/mission-plan-source';
-import { planAxis, planLede, planMissions } from '@/lib/mission-plan';
-import MissionPlanChart from './MissionPlanChart';
+import { PlanError, PlanOff, PlanReady, PlanShell } from './MissionPlanView';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,27 +25,8 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
   const cookieStore = await cookies();
   const activeTeamId = (await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value)) ?? teamIds[0];
 
-  const back = (
-    <Link href="/app/missions" className="text-meta text-text-muted hover:text-text-secondary">‹ Missions</Link>
-  );
-  const shell = (children: React.ReactNode) => (
-    <div className="px-4 sm:px-7 md:px-10 pt-6 md:pt-8 pb-10 max-w-[1180px]">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 data-testid="plan-headline" className="text-heading font-semibold text-text-primary">Plan</h1>
-        {back}
-      </div>
-      {children}
-    </div>
-  );
-
   if (!(await taskEstimatesEnabled(activeTeamId))) {
-    return shell(
-      <p data-testid="plan-off" className="text-body text-text-secondary">
-        Plan needs task estimates, which are off for this team. Turn them on in{' '}
-        <Link href="/app/settings/team" data-testid="plan-off-cta" className="underline hover:text-text-primary">team settings</Link>{' '}
-        and finish dates will show here.
-      </p>,
-    );
+    return <PlanShell><PlanOff /></PlanShell>;
   }
 
   const missionsWhere = wsFilter
@@ -55,20 +34,12 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
     : eq(missions.teamId, activeTeamId);
 
   const now = Date.now();
-  const { inputs, plans } = await loadMissionPlan(missionsWhere, now);
-  const rows = planMissions(inputs, now, plans);
-  const lede = planLede(rows, plans, now);
-  const cuts = [...plans.values()].flatMap(p => (p.mode === 'cuts' ? p.cuts : [])).filter(c => c >= now);
-  const axis = planAxis(rows, cuts, now);
-  const visibleCuts = cuts.filter(c => c <= axis.to);
-
-  return shell(
-    <>
-      <p data-testid="plan-lede" className="font-voice text-[22px] leading-snug text-text-primary max-w-prose">{lede.headline}</p>
-      {lede.detail && <p data-testid="plan-detail" className="mt-1 text-body text-text-secondary max-w-prose">{lede.detail}</p>}
-      <div className="mt-6">
-        {rows.length === 0 ? null : <MissionPlanChart rows={rows} axis={axis} cuts={visibleCuts} now={now} />}
-      </div>
-    </>,
-  );
+  let loaded: Awaited<ReturnType<typeof loadMissionPlan>>;
+  try {
+    loaded = await loadMissionPlan(missionsWhere, now);
+  } catch (err) {
+    console.error('[plan] load failed', err);
+    return <PlanShell><PlanError /></PlanShell>;
+  }
+  return <PlanShell><PlanReady inputs={loaded.inputs} plans={loaded.plans} now={now} /></PlanShell>;
 }
