@@ -9,6 +9,7 @@
  */
 import { db } from '../db';
 import { sql } from 'drizzle-orm';
+import { redactArtifactText } from '../artifact-redaction';
 
 const values = [
   { label: 'CUE_SECRET', value: process.env.INCIDENT_CUE_SECRET },
@@ -52,11 +53,8 @@ for (const { label, value } of values) {
     WHERE result::text LIKE ${`%${value}%`}
   `);
 
-  await db.execute(sql`
-    UPDATE artifacts
-    SET content = replace(content, ${value}, ${replacement})
-    WHERE content LIKE ${`%${value}%`}
-  `);
+  // Bodies and their history (artifact revisions keep every earlier body).
+  await redactArtifactText(value, replacement);
 }
 
 console.log(`Scrubbed ${values.length} rotated incident secret value(s).`);

@@ -917,8 +917,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
-    get_artifact: '{ artifactId (required) } — fetch full artifact content by ID; file artifacts include a short-lived presigned download URL',
-    update_artifact: '{ artifactId (required), title?, content?, metadata? }',
+    get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body) } — fetch full artifact content by ID, with its current revision and sha256; file artifacts include a short-lived presigned download URL',
+    update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. [admin]',
@@ -4837,7 +4837,8 @@ export async function handleBuilddAction(
     case 'get_artifact': {
       if (!params.artifactId) throw new Error(`artifactId is required${params.id ? ' (you passed "id" — the field for this action is artifactId)' : ''}`);
 
-      const data = await api(`/api/artifacts/${params.artifactId}`);
+      const revisionQuery = params.revision !== undefined ? `?revision=${encodeURIComponent(String(params.revision))}` : '';
+      const data = await api(`/api/artifacts/${params.artifactId}${revisionQuery}`);
       const art = data.artifact;
 
       const meta = [
@@ -4847,6 +4848,7 @@ export async function handleBuilddAction(
         art.key && `**Key:** ${art.key}`,
         `**Created:** ${art.createdAt}`,
         `**Updated:** ${art.updatedAt}`,
+        art.revision && `**Revision:** ${art.revision.revision} of ${art.currentRevision}${art.revision.contentHash ? ` (sha256 ${art.revision.contentHash})` : ''}`,
         art.shareUrl && `**Share URL:** ${art.shareUrl}`,
         art.downloadUrl && `**Download URL (presigned, expires in 1 hour — fetch it directly, no credentials needed):** ${art.downloadUrl}`,
         art.metadata && Object.keys(art.metadata).length > 0 && `**Metadata:** ${JSON.stringify(art.metadata)}`,
@@ -4864,6 +4866,7 @@ export async function handleBuilddAction(
       if (params.title !== undefined) updateBody.title = params.title;
       if (params.content !== undefined) updateBody.content = params.content;
       if (params.metadata !== undefined) updateBody.metadata = params.metadata;
+      if (params.expectedRevision !== undefined) updateBody.expectedRevision = params.expectedRevision;
 
       if (Object.keys(updateBody).length === 0) {
         throw new Error('At least one field (title, content, metadata) must be provided');
@@ -4875,7 +4878,7 @@ export async function handleBuilddAction(
       });
 
       const updatedArt = updated.artifact;
-      return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+      return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nRevision: ${updatedArt.currentRevision ?? 'n/a'}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
     }
 
     case 'list_artifact_templates': {
