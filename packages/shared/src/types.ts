@@ -1757,6 +1757,14 @@ export interface ClaimDiagnostics {
      */
     no_personal_credential?: number;
     /**
+     * The Coding provider policy (team / workspace / requester) does not allow
+     * this task's backend or the payment source its run would use. Held, not
+     * failed, and never redirected to another provider. The gate event's detail
+     * is the structured `provider_not_allowed` / `payment_source_not_allowed` /
+     * `no_model_credential` error. See packages/core/coding-policy.ts.
+     */
+    provider_not_allowed?: number;
+    /**
      * The task's tier or model is above the effective model-tier ceiling for
      * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
      * Held, not failed: it runs when the ceiling is raised or the task is

@@ -45,6 +45,8 @@
     "./model-tier-adoption-report": "./model-tier-adoption-report.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./coding-policy": "./coding-policy.ts",
+    "./coding-policy-store": "./coding-policy-store.ts",
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
     "./providers/manage": "./providers/manage.ts",
