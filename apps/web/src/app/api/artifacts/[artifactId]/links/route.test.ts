@@ -3,7 +3,15 @@ import { NextRequest } from 'next/server';
 
 let caller: unknown = { kind: 'user', userId: 'u1' };
 const calls: unknown[][] = [];
-mock.module('@/lib/artifact-link-caller', () => ({ linkCaller: async () => caller }));
+const callerArgs: unknown[][] = [];
+const scopedAccount = { id: 'acc-1', teamId: 't1', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: 0 } };
+mock.module('@/lib/task-token-auth', () => ({
+  authenticateTaskScopedCaller: async (bearer: string | null) => (bearer === 'bldt_x' ? scopedAccount : null),
+}));
+mock.module('@/lib/artifact-link-caller', () => ({
+  bearerOf: (r: NextRequest) => r.headers.get('authorization')?.replace('Bearer ', '') || null,
+  linkCaller: async (...a: unknown[]) => { callerArgs.push(a); return caller; },
+}));
 mock.module('@/lib/artifact-links', () => ({
   linkArtifact: async (...a: unknown[]) => { calls.push(['link', ...a]); return { ok: true, link: { id: 'l1' } }; },
   linksOfArtifact: async (...a: unknown[]) => { calls.push(['list', ...a]); return { ok: false, status: 404, error: 'Artifact not found' }; },
@@ -36,5 +44,12 @@ describe('/api/artifacts/[artifactId]/links', () => {
     expect(calls.length).toBe(n);
     expect((await DELETE(req('DELETE', undefined, '?linkId=x'), { params })).status).toBe(200);
     expect(calls.at(-1)).toEqual(['unlink', caller, ID, 'x']);
+  });
+
+  it('hands a per-task token\'s scope to the link checks', async () => {
+    callerArgs.length = 0;
+    const r = new NextRequest(`http://localhost/api/artifacts/${ID}/links`, { headers: { authorization: 'Bearer bldt_x' } });
+    await GET(r, { params });
+    expect(callerArgs[0]).toEqual([scopedAccount, scopedAccount.taskScope]);
   });
 });

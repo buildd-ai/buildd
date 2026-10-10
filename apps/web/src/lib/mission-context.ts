@@ -596,8 +596,9 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   });
 
   // Referenced artifacts: the mission's links (artifact_links, owned by Living
-  // Specs) plus the legacy contextArtifactIds column, which is no longer
-  // written. Both go through the team-scoped read.
+  // Specs). contextArtifactIds is dual-written into links at create, so the
+  // column only adds what predates links; an unlink removes the id from both.
+  // Both go through the team-scoped read.
   const linked = await artifactsLinkedTo('mission', mission.id, { relations: ['context', 'requirement', 'normative_reference', 'design_reference'] });
   const referencedIds = [...new Set([...(mission.contextArtifactIds ?? []), ...(Array.isArray(linked) ? linked.map(l => l.artifactId) : [])])];
   let referencedArtifacts: typeof priorArtifacts = [];

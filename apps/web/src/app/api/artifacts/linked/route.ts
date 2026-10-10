@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ARTIFACT_LINK_RELATIONS, ARTIFACT_LINK_SUBJECTS, type ArtifactLinkRelation, type ArtifactLinkSubject } from '@buildd/core/db/schema';
 import { isUuid } from '@/lib/uuid';
 import { artifactsLinkedTo } from '@/lib/artifact-links';
-import { linkCaller } from '@/lib/artifact-link-caller';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { bearerOf, linkCaller } from '@/lib/artifact-link-caller';
 
 /**
  * GET /api/artifacts/linked?subjectKind=&subjectId=[&relation=a,b]: what is
@@ -10,7 +11,9 @@ import { linkCaller } from '@/lib/artifact-link-caller';
  * hash). Never the bodies: read one with GET /api/artifacts/[id].
  */
 export async function GET(req: NextRequest) {
-  const caller = await linkCaller(req);
+  // A per-task token is confined to its own workspace (enforced in lib/artifact-links.ts).
+  const account = await authenticateTaskScopedCaller(bearerOf(req), req);
+  const caller = await linkCaller(account, account?.taskScope ?? null);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const sp = req.nextUrl.searchParams;
   const kind = sp.get('subjectKind') as ArtifactLinkSubject | null;

@@ -476,6 +476,23 @@ export async function POST(req: NextRequest) {
     }
     }
 
+    // contextArtifactIds dual-write: the column keeps them for older readers, and
+    // each id also becomes a `context` link (artifact_links, owned by Living
+    // Specs), which mission context reads. Best-effort: a link that fails is
+    // logged and the column still carries the id.
+    if (contextArtifacts.ids.length) {
+      try {
+        const { linkContextArtifacts } = await import('@/lib/artifact-links');
+        const { failed } = await linkContextArtifacts(
+          apiAccount ? { kind: 'account', account: apiAccount } : { kind: 'user', userId: user!.id },
+          'mission', mission.id, contextArtifacts.ids,
+        );
+        if (failed.length) console.warn('[missions/post] context links not written:', failed);
+      } catch (err) {
+        console.warn('[missions/post] context links not written:', err);
+      }
+    }
+
     // A mission-branch mission must never exist in the enabled-but-inert state: generate the
     // working branch name and ensure the ref on the remote in this same operation, rather than
     // waiting for the organizer's first pass (see the two-manual-PATCH workaround this replaces).

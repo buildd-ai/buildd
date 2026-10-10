@@ -27,7 +27,10 @@ const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Init
 const OPTED_IN = [
   // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
+  // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.
+  'apps/web/src/app/api/artifacts/[artifactId]/links/route.ts',
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
+  'apps/web/src/app/api/artifacts/linked/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/capabilities/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',

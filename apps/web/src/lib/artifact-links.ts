@@ -25,9 +25,20 @@ const LINKABLE: ReadonlySet<ArtifactLinkSubject> = new Set(['conversation', 'mes
 
 export type LinkCaller =
   | { kind: 'user'; userId: string }
-  | { kind: 'account'; account: Extract<WorkspaceAccessCaller, { account: unknown }>['account'] };
+  | {
+    kind: 'account';
+    account: Extract<WorkspaceAccessCaller, { account: unknown }>['account'];
+    /** A per-task token's confinement: only this workspace's artifacts and subjects. */
+    taskScope?: { workspaceId: string } | null;
+  };
 
 const accessCaller = (c: LinkCaller): WorkspaceAccessCaller => (c.kind === 'user' ? { userId: c.userId } : { account: c.account });
+
+/** Workspace access, confined to its own workspace for a per-task token. */
+async function canAccessWorkspace(caller: LinkCaller, workspaceId: string): Promise<boolean> {
+  if (caller.kind === 'account' && caller.taskScope && caller.taskScope.workspaceId !== workspaceId) return false;
+  return (await resolveWorkspaceAccess(workspaceId, accessCaller(caller))).ok;
+}
 const actorOf = (c: LinkCaller) => (c.kind === 'user' ? `user:${c.userId}` : `account:${c.account.id}`);
 
 export type LinkError = { ok: false; status: 400 | 403 | 404 | 409; error: string };
@@ -70,7 +81,8 @@ async function loadSubject(kind: ArtifactLinkSubject, id: string): Promise<Subje
 /** Whether the caller may see the subject. Chat subjects are their creator's only. */
 async function canReachSubject(caller: LinkCaller, s: Subject): Promise<boolean> {
   if (s.ownerUserId !== undefined) return caller.kind === 'user' && caller.userId === s.ownerUserId;
-  if (s.workspaceId) return (await resolveWorkspaceAccess(s.workspaceId, accessCaller(caller))).ok;
+  if (s.workspaceId) return canAccessWorkspace(caller, s.workspaceId);
+  if (caller.kind === 'account' && caller.taskScope) return false;
   return caller.kind === 'user' ? (await getUserTeamIds(caller.userId)).includes(s.teamId) : caller.account.teamId === s.teamId;
 }
 
@@ -91,7 +103,7 @@ async function loadArtifact(id: string): Promise<ArtifactRow | null> {
 }
 
 async function canReadArtifact(caller: LinkCaller, a: ArtifactRow): Promise<boolean> {
-  return !!a.workspaceId && (await resolveWorkspaceAccess(a.workspaceId, accessCaller(caller))).ok;
+  return !!a.workspaceId && canAccessWorkspace(caller, a.workspaceId);
 }
 
 async function revisionExists(a: ArtifactRow, revision: number): Promise<boolean> {
@@ -141,7 +153,30 @@ export async function unlinkArtifact(caller: LinkCaller, artifactId: string, lin
   const subject = link ? await loadSubject(link.subjectKind, link.subjectId) : null;
   if (!link || !a || !(await canReadArtifact(caller, a)) || !subject || !(await canReachSubject(caller, subject))) return fail(404, 'Link not found');
   await db.delete(artifactLinks).where(eq(artifactLinks.id, linkId));
+  // A mission's context links mirror the legacy contextArtifactIds column, which
+  // readers still union in: drop the id there too, or the unlink would not take.
+  if (link.subjectKind === 'mission' && link.relation === 'context') {
+    await db.update(missions)
+      .set({ contextArtifactIds: sql`coalesce(${missions.contextArtifactIds}, '[]'::jsonb) - ${artifactId}::text` })
+      .where(eq(missions.id, link.subjectId));
+  }
   return { ok: true };
+}
+
+/**
+ * The dual-write of a mission's `contextArtifactIds`: one `context` link per
+ * id, through the same checks as any link. The ids were already authorized by
+ * checkContextArtifactIds; an id that fails here is reported, not fatal, since
+ * the legacy column still carries it.
+ */
+export async function linkContextArtifacts(caller: LinkCaller, subjectKind: 'mission', subjectId: string, artifactIds: readonly string[]): Promise<{ linked: string[]; failed: Array<{ artifactId: string; error: string }> }> {
+  const linked: string[] = [];
+  const failed: Array<{ artifactId: string; error: string }> = [];
+  for (const artifactId of artifactIds) {
+    const r = await linkArtifact(caller, artifactId, { subjectKind, subjectId, relation: 'context' });
+    if (r.ok) linked.push(artifactId); else failed.push({ artifactId, error: r.error });
+  }
+  return { linked, failed };
 }
 
 /** The links of one artifact the caller can read, each with a subject the caller can reach. */
@@ -160,6 +195,8 @@ export async function linksOfArtifact(caller: LinkCaller, artifactId: string): P
 export interface LinkedArtifact {
   linkId: string; artifactId: string; relation: ArtifactLinkRelation; pinnedRevision: number | null;
   title: string | null; type: string; currentRevision: number; contentHash: string | null;
+  /** Bytes of the revision the link resolves to (a file's recorded size); null when unknown. */
+  sizeBytes: number | null;
 }
 
 /**
@@ -178,6 +215,12 @@ export async function artifactsLinkedTo(
       linkId: artifactLinks.id, artifactId: artifacts.id, relation: artifactLinks.relation, pinnedRevision: artifactLinks.artifactRevision,
       title: artifacts.title, type: artifacts.type, currentRevision: artifacts.currentRevision, workspaceId: artifacts.workspaceId,
       contentHash: artifactRevisions.contentHash,
+      sizeBytes: sql<number | null>`coalesce(
+        ${artifactRevisions.sizeBytes}::bigint,
+        octet_length(${artifactRevisions.content})::bigint,
+        octet_length(${artifacts.content})::bigint,
+        CASE WHEN ${artifacts.metadata}->>'sizeBytes' ~ '^[0-9]{1,15}$' THEN (${artifacts.metadata}->>'sizeBytes')::bigint END
+      )::float8`,
     })
     .from(artifactLinks)
     .innerJoin(artifacts, eq(artifacts.id, artifactLinks.artifactId))
@@ -194,7 +237,7 @@ export async function artifactsLinkedTo(
   const readable = new Map<string, boolean>();
   for (const r of rows) {
     if (opts.caller && r.workspaceId) {
-      if (!readable.has(r.workspaceId)) readable.set(r.workspaceId, (await resolveWorkspaceAccess(r.workspaceId, accessCaller(opts.caller))).ok);
+      if (!readable.has(r.workspaceId)) readable.set(r.workspaceId, await canAccessWorkspace(opts.caller, r.workspaceId));
       if (!readable.get(r.workspaceId)) continue;
     }
     const { workspaceId: _ws, ...rest } = r;

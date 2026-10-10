@@ -592,6 +592,9 @@ export const workerActions = [
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
+  // Typed links (Living Specs): attach an artifact to a task, mission or chat
+  // without copying it, and read what is linked. Same checks as the REST routes.
+  'link_artifact', 'list_artifact_links',
   // The visual auditor's own read: where its pages come from (sandbox or a
   // Vercel preview), resolved server-side with the workspace's GitHub App.
   'get_page_source',
@@ -957,6 +960,8 @@ export function buildParamsDescription(actions: readonly string[]): string {
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
+    link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
+    list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -4957,6 +4962,38 @@ export async function handleBuilddAction(
 
       const updatedArt = updated.artifact;
       return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nRevision: ${updatedArt.currentRevision ?? 'n/a'}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+    }
+
+    case 'link_artifact': {
+      if (!params.artifactId) throw new Error('artifactId is required');
+      if (params.unlink === true) {
+        if (!params.linkId) throw new Error('linkId is required with unlink: true (list_artifact_links shows it)');
+        await api(`/api/artifacts/${params.artifactId}/links?linkId=${encodeURIComponent(String(params.linkId))}`, { method: 'DELETE' });
+        return text(`Link ${params.linkId} removed.`);
+      }
+      for (const k of ['subjectKind', 'subjectId', 'relation'] as const) if (!params[k]) throw new Error(`${k} is required`);
+      const linked = await api(`/api/artifacts/${params.artifactId}/links`, {
+        method: 'POST',
+        body: JSON.stringify({ subjectKind: params.subjectKind, subjectId: params.subjectId, relation: params.relation, ...(params.revision !== undefined ? { revision: params.revision } : {}) }),
+      });
+      const l = linked.link;
+      return text(`Linked artifact ${l.artifactId} to ${l.subjectKind} ${l.subjectId} as ${l.relation}${l.artifactRevision ? `, pinned to revision ${l.artifactRevision}` : ' (follows the current body)'}.\nLink ID: ${l.id}`);
+    }
+
+    case 'list_artifact_links': {
+      if (params.artifactId) {
+        const data = await api(`/api/artifacts/${params.artifactId}/links`);
+        const links = (data.links ?? []) as Array<Record<string, any>>;
+        if (!links.length) return text('This artifact has no links you can see.');
+        return text(`${links.length} link(s):\n${links.map(l => `- ${l.relation} → ${l.subjectKind} ${l.subjectId}${l.artifactRevision ? ` (rev ${l.artifactRevision} pinned)` : ''}. link: ${l.id}`).join('\n')}`);
+      }
+      if (!params.subjectKind || !params.subjectId) throw new Error('Pass artifactId, or subjectKind + subjectId');
+      const qs = new URLSearchParams({ subjectKind: String(params.subjectKind), subjectId: String(params.subjectId) });
+      if (params.relation) qs.set('relation', String(params.relation));
+      const data = await api(`/api/artifacts/linked?${qs}`);
+      const arts = (data.artifacts ?? []) as Array<Record<string, any>>;
+      if (!arts.length) return text(`Nothing is linked to ${params.subjectKind} ${params.subjectId}.`);
+      return text(`${arts.length} linked artifact(s):\n${arts.map(a => `- ${a.title || '(untitled)'} — ${a.relation}, ${a.type}${a.sizeBytes != null ? `, ${a.sizeBytes} bytes` : ''}, ${a.pinnedRevision ? `rev ${a.pinnedRevision} pinned` : `rev ${a.currentRevision || 'current'}`}${a.contentHash ? `, sha256 ${a.contentHash}` : ''}. id: ${a.artifactId}, link: ${a.linkId}`).join('\n')}`);
     }
 
     case 'list_artifact_templates': {

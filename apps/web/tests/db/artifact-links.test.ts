@@ -11,7 +11,9 @@ import { assertDbConfigured, q, seedMission, seedTask, seedWorkspace } from './h
 
 const { db } = await import('@buildd/core/db');
 const { artifacts } = await import('@buildd/core/db/schema');
-const { linkArtifact, unlinkArtifact, linksOfArtifact, artifactsLinkedTo } = await import('../../src/lib/artifact-links');
+const { linkArtifact, unlinkArtifact, linksOfArtifact, artifactsLinkedTo, linkContextArtifacts } = await import('../../src/lib/artifact-links');
+const { buildMissionContext } = await import('../../src/lib/mission-context');
+const { attachArtifactReferences } = await import('../../src/app/api/workers/claim/context-injection');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 async function member(teamId: string) {
@@ -121,5 +123,92 @@ describe('unlink', () => {
   test('refuses an unknown subject kind and the kinds that do not exist yet', async () => {
     expect(await linkArtifact(A(), artifactId, { subjectKind: 'spec_revision', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 400 });
     expect(await linkArtifact(A(), artifactId, { subjectKind: 'nope', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 400 });
+  });
+});
+
+describe('contextArtifactIds is dual-written into links and read from them', () => {
+  async function missionWithColumn(ids: string[]) {
+    const id = await seedMission(teamA, wsA);
+    await q(sql`UPDATE missions SET context_artifact_ids = ${JSON.stringify(ids)}::jsonb WHERE id = ${id}::uuid`);
+    return id;
+  }
+  async function contextArtifactIdsOf(missionId: string) {
+    const [m] = await q<{ ids: string[] }>(sql`SELECT context_artifact_ids AS ids FROM missions WHERE id = ${missionId}::uuid`);
+    return m.ids;
+  }
+  const referenced = async (missionId: string) => (await buildMissionContext(missionId)).context.priorArtifacts.map((a: { artifactId: string }) => a.artifactId);
+
+  test('each id becomes a context link, and mission context reads it', async () => {
+    const [ref] = await db.insert(artifacts).values({ workspaceId: wsA, type: 'content', title: `ref ${rand()}`, content: 'reference body' }).returning();
+    const m = await missionWithColumn([ref.id]);
+    const r = await linkContextArtifacts(A(), 'mission', m, [ref.id]);
+    expect(r).toEqual({ linked: [ref.id], failed: [] });
+    const linked = await artifactsLinkedTo('mission', m, { relations: ['context'] });
+    expect(Array.isArray(linked) && linked.map((l) => l.artifactId)).toEqual([ref.id]);
+    expect(await referenced(m)).toContain(ref.id);
+  });
+
+  test('a mission from before links is still read from its column', async () => {
+    const [old] = await db.insert(artifacts).values({ workspaceId: wsA, type: 'content', title: `old ${rand()}`, content: 'old body' }).returning();
+    const m = await missionWithColumn([old.id]);
+    expect(await referenced(m)).toContain(old.id);
+  });
+
+  test('unlinking a context link removes the id from the column too, so it is gone from context', async () => {
+    const [ref] = await db.insert(artifacts).values({ workspaceId: wsA, type: 'content', title: `gone ${rand()}`, content: 'x' }).returning();
+    const m = await missionWithColumn([ref.id, artifactId]);
+    await linkContextArtifacts(A(), 'mission', m, [ref.id, artifactId]);
+    const [link] = await q<{ id: string }>(sql`SELECT id FROM artifact_links WHERE subject_id = ${m}::uuid AND artifact_id = ${ref.id}::uuid`);
+    expect(await unlinkArtifact(A(), ref.id, link.id)).toEqual({ ok: true });
+    expect(await contextArtifactIdsOf(m)).toEqual([artifactId]);
+    expect(await referenced(m)).not.toContain(ref.id);
+  });
+
+  test('an id another team owns is not linked, and says why', async () => {
+    const [foreign] = await db.insert(artifacts).values({ workspaceId: wsB, type: 'content', title: 'theirs', content: 'b' }).returning();
+    const m = await seedMission(teamA, wsA);
+    const r = await linkContextArtifacts(A(), 'mission', m, [foreign.id]);
+    expect(r.linked).toEqual([]);
+    expect(r.failed.map((f) => f.artifactId)).toEqual([foreign.id]);
+  });
+});
+
+describe('a per-task token reaches only its own workspace', () => {
+  test('a task-scoped account cannot link into, or read links of, another workspace of its own team', async () => {
+    // The minting account is team A's; the token is confined to a workspace other than wsA.
+    const { workspaceId: ws2 } = await seedWorkspace();
+    const account = { id: crypto.randomUUID(), teamId: teamA, level: 'admin' } as never;
+    const scoped = { kind: 'account' as const, account, taskScope: { workspaceId: ws2 } };
+    expect(await linksOfArtifact(scoped, artifactId)).toMatchObject({ ok: false, status: 404 });
+    expect(await linkArtifact(scoped, artifactId, { subjectKind: 'mission', subjectId: missionA, relation: 'context' })).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe('the claim-time reference manifest', () => {
+  test('lists the task\'s and its mission\'s links with size, revision and hash, never the body', async () => {
+    const body = `manifest body ${rand()}`;
+    const [ref] = await db.insert(artifacts).values({ workspaceId: wsA, type: 'content', title: `spec ${rand()}`, content: body }).returning();
+    const t = await seedTask(wsA, { missionId: missionA });
+    await linkArtifact(A(), ref.id, { subjectKind: 'task', subjectId: t, relation: 'normative_reference' });
+    await linkArtifact(A(), ref.id, { subjectKind: 'mission', subjectId: missionA, relation: 'context' });
+    const cw = { taskId: t, task: { id: t, context: {} } } as any;
+    await attachArtifactReferences([cw], [{ id: t, title: 'x', workspaceId: wsA, missionId: missionA } as any]);
+
+    const block: string = cw.resolvedContextProviders?.[0] ?? '';
+    expect(block).toContain('## Linked artifacts');
+    expect(block).toContain(ref.id);
+    expect(block).not.toContain(body);
+    const entries = cw.task.context.artifactManifest as Array<Record<string, unknown>>;
+    const pinned = entries.find((e) => e.artifactId === ref.id && e.relation === 'normative_reference');
+    const [rev] = await q<{ hash: string }>(sql`SELECT content_hash AS hash FROM artifact_revisions WHERE artifact_id = ${ref.id}::uuid AND revision = 1`);
+    expect(pinned).toMatchObject({ via: 'task', revision: 1, pinned: true, sizeBytes: Buffer.byteLength(body), contentHash: rev.hash });
+    expect(entries.find((e) => e.artifactId === ref.id && e.relation === 'context')).toMatchObject({ via: 'mission', pinned: false });
+  });
+
+  test('a task with no links gets no block', async () => {
+    const t = await seedTask(wsB);
+    const cw = { taskId: t, task: { id: t, context: {} } } as any;
+    await attachArtifactReferences([cw], [{ id: t, title: 'x', workspaceId: wsB } as any]);
+    expect(cw.resolvedContextProviders).toBeUndefined();
   });
 });
