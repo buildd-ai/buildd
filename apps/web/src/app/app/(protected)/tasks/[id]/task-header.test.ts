@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { taskHeading } from './task-header';
+import { headerLifecycleState, taskHeading } from './task-header';
 
 describe('taskHeading', () => {
   test('a conventional title becomes eyebrow parts + a readable subject', () => {
@@ -27,5 +27,32 @@ describe('taskHeading', () => {
     const h = taskHeading({ title: '[builder · after CI #1] feat(invoices): render invoices', label: null }, 'Builder');
     expect(h.heading).toBe('Render invoices');
     expect(h.eyebrow).toEqual(['feat', 'invoices', 'Builder', 'after CI #1']);
+  });
+});
+
+describe('taskHeading delegates to displayTaskTitle', () => {
+  test('a mission refresh title reads the same as on every other surface', () => {
+    expect(taskHeading({ title: 'chore(mission): merge dev into the Widget Polish integration branch', label: null }, null).heading)
+      .toBe('Refresh Widget Polish from dev');
+  });
+
+  test('a ship title behind a retry wrap', () => {
+    expect(taskHeading({ title: '[builder · after review #2] Ship mission: Widget Polish', label: null }, null).heading)
+      .toBe('Ship Widget Polish');
+  });
+});
+
+describe('headerLifecycleState', () => {
+  test('a stage reads as the step it sits on', () => {
+    expect(headerLifecycleState('working')).toBe('running');
+    expect(headerLifecycleState('review')).toBe('review');
+    expect(headerLifecycleState('repairing')).toBe('fixing');
+    expect(headerLifecycleState('approved')).toBe('landing');
+    expect(headerLifecycleState('merged')).toBe('landed');
+    expect(headerLifecycleState('closed')).toBe('not_landed');
+  });
+  test('no track without a delivery, or for superseded work', () => {
+    expect(headerLifecycleState(null)).toBeNull();
+    expect(headerLifecycleState('superseded')).toBeNull();
   });
 });

@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import {
+  DEFERRED_UPLOAD_FILE,
+  parseDeferredUpload,
   WARM_FETCH_REFRESH_BYTES,
   WARM_MAX_AGE_MS,
   WARM_BASE_REF,
@@ -158,8 +160,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
+function session(opts: { deferUpload?: boolean; cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void; reusedContainer?: boolean } = {}) {
   return new WarmRepoSession({
+    ...(opts.deferUpload ? { deferUpload: true } : {}),
     ...(opts.reusedContainer !== undefined ? { reusedContainer: opts.reusedContainer } : {}),
     ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
     ...(opts.maxBundleBytes !== undefined ? { maxBundleBytes: opts.maxBundleBytes } : {}),
@@ -376,6 +379,65 @@ describe('restore before clone', () => {
     expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
   });
 
+  test('deferCache: the clone is ready before the cache is; the cache restores in the background and the upload waits for the deps work', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    pushCommit('LATER.md', 'landed after the snapshot\n');
+    lines = [];
+
+    // A cache download held open until the test lets it go.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const base = store.transport();
+    const transport: SnapshotTransport = { ...base, pipeToAsync: async (p, c, a) => { await gate; return base.pipeTo(p, c, a); } };
+    const cacheDir = join(dir, 'bg-cache');
+    let deferred: Promise<void> | null = null;
+    let depsDone!: () => void;
+    const deps = new Promise<void>((r) => { depsDone = r; });
+    const s = new WarmRepoSession({
+      ...session({ cacheDir }).d, transport, deferCache: true,
+      onDeferredCache: (p) => { deferred = p; },
+      awaitDeps: () => deps,
+    });
+    const path = cloneThrough(s);
+
+    // Checked out and fetched, cache still downloading.
+    expect(git(path, 'rev-parse', 'origin/main')).toBe(git(seedClone, 'rev-parse', 'HEAD'));
+    expect(deferred).not.toBeNull();
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(false);
+    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'restore_cache_start', 'fetch_start', 'fetch_end']);
+
+    release();
+    await deferred;
+    expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+    expect(phaseNames().at(-1)).toBe('restore_cache_end');
+    expect(s.result).toMatchObject({ source: 'warm', restoredCacheBytes: dirSizeBytes(cacheDir) });
+
+    // The run end: the refresh does not measure the cache, let alone upload
+    // it, until the install behind the session has settled.
+    const callsBefore = store.calls.length;
+    let refreshed = false;
+    const refresh = s.refresh('completed').then(() => { refreshed = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(refreshed).toBe(false);
+    expect(store.calls.length).toBe(callsBefore);
+    depsDone();
+    await refresh;
+    expect(refreshed).toBe(true);
+  });
+
+  test('deferCache off (resume, host): the cache restore stays inline', async () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    await first.refresh('completed');
+    let called = false;
+    const cacheDir = join(dir, 'inline-cache');
+    cloneThrough(new WarmRepoSession({ ...session({ cacheDir }).d, onDeferredCache: () => { called = true; } }));
+    expect(called).toBe(false);
+    expect(existsSync(join(cacheDir, 'is-number@7.0.0'))).toBe(true);
+  });
+
   test('records the snapshot tip it restored (before the fetch) under WARM_BASE_REF, so a park bundle can be built against it', async () => {
     const first = session();
     cloneThrough(first, 'ws-seed');
@@ -460,6 +522,58 @@ describe('restore before clone', () => {
     cloneThrough(session());
     expect(store.calls).toEqual([]);
     expect(lines).toEqual([]);
+  });
+});
+
+describe('lease containers defer the upload to when the container is released', () => {
+  test('the run records the upload it is due and makes none; the release uploads it', async () => {
+    const run = session({ deferUpload: true });
+    const path = cloneThrough(run);
+    await run.refresh('failed');
+    expect(store.calls.filter(c => !c.startsWith('GET'))).toEqual([]);
+    expect(lines).toContain('BUILDD_WARM_UPLOAD=deferred');
+    expect(phaseNames()).not.toContain('warm_upload_start');
+    expect(JSON.parse(readFileSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE), 'utf-8'))).toEqual({ clonePath: path, decision: 'seed' });
+
+    lines = [];
+    // `buildd-once --upload-warm`: a fresh process, the same tmpDir.
+    expect(await session().uploadDeferred()).toBe(true);
+    expect(store.manifests).toHaveLength(1);
+    expect(store.manifests[0]!.defaultBranch).toBe('main');
+    expect(phaseNames()).toEqual(['warm_upload_start', 'warm_upload_end']);
+    expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    // Once only.
+    expect(await session().uploadDeferred()).toBe(false);
+    expect(store.manifests).toHaveLength(1);
+  });
+
+  test('nothing due: nothing recorded, no line', async () => {
+    const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
+    const run = session({ deferUpload: true });
+    cloneThrough(run);
+    lines = [];
+    await run.refresh('completed');
+    expect(lines.some(l => l.startsWith('BUILDD_WARM_UPLOAD='))).toBe(false);
+    expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    expect(await session().uploadDeferred()).toBe(false);
+    expect(store.manifests).toHaveLength(1);
+  });
+
+  test('a record that is not well formed is dropped, never acted on', async () => {
+    mkdirSync(join(dir, 'tmp'), { recursive: true });
+    for (const bad of ['{', '{"clonePath":"relative","decision":"seed"}', '{"clonePath":"/x","decision":"upload"}', '{"clonePath":"/x","decision":"refresh","reason":"other"}']) {
+      writeFileSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE), bad);
+      expect(await session().uploadDeferred()).toBe(false);
+      expect(existsSync(join(dir, 'tmp', DEFERRED_UPLOAD_FILE))).toBe(false);
+    }
+    expect(store.calls.filter(c => !c.startsWith('GET'))).toEqual([]);
+    expect(parseDeferredUpload({ clonePath: '/x', decision: 'refresh', reason: 'age' })).toEqual({ clonePath: '/x', decision: 'refresh', reason: 'age' });
+  });
+
+  test('a clone seeded from a reused container\'s kept packs reports no clone bytes', () => {
+    const s = session();
+    s.cloneHooks().afterSeed!(join(dir, 'seed'));
+    expect(metric('clone_bytes')).toBeUndefined();
   });
 });
 
@@ -554,7 +668,9 @@ describe('refresh rules', () => {
     // Create a seed with a larger cache
     const largeCacheDir = join(dir, 'large-cache');
     mkdirSync(join(largeCacheDir, 'big-pkg'), { recursive: true });
-    const largeSize = WARM_CACHE_GROWTH_BYTES * 10; // 640 MiB
+    // Below WARM_CACHE_GROWTH_BYTES / WARM_CACHE_GROWTH_PERCENT (256 MiB) the 25% rule is the
+    // binding threshold, so a small cache exercises it without heavy host I/O.
+    const largeSize = 8 * 1024 * 1024;
     writeFileSync(join(largeCacheDir, 'big-pkg', 'blob'), Buffer.alloc(largeSize));
 
     const seed = session({ cacheDir: largeCacheDir });

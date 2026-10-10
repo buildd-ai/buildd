@@ -145,6 +145,7 @@ export async function POST(req: NextRequest) {
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       maxConcurrentWorkers: maxConcurrentWorkers || 3,
       teamId,
+      createdByUserId: user.id,
     };
 
     const [account] = await db
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest) {
     // groupOauthAccountsBySeatId works immediately without waiting for re-auth.
     if (insertValues.authType === 'oauth' && account) {
       try {
-        const cred = await resolveClaudeCredential({ teamId });
+        const cred = await resolveClaudeCredential({ teamId, accountId: account.id });
         if (cred) {
           const seatId = extractJwtSub(cred.accessToken);
           if (seatId) {

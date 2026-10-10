@@ -41,7 +41,12 @@ import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
 import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
-import { FAILED_WORKER_STATUSES } from '@buildd/shared';
+import { FAILED_WORKER_STATUSES, type FleetSnapshot } from '@buildd/shared';
+import { loadRunnersFleet } from '@/lib/home-fleet';
+import type { LaneMission } from '@/components/fleet/runner-lanes';
+import { loadLaneMissions } from './lane-missions';
+import type { IdleStretch } from '@/lib/idle-while-queued';
+import { CLAUDE_CREDENTIAL_PURPOSES, isBackendHealthRow } from '@/lib/claude-credential-rows';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
@@ -70,6 +75,8 @@ export interface ScheduleRow {
   createdAt: string | null;
   taskTitle: string;
   missionTitle: string | null;
+  /** The mission that owns this schedule, where it is configured; null for a workspace schedule. */
+  missionId?: string | null;
   isHeartbeat: boolean;
 }
 
@@ -183,18 +190,19 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
+  | 'runnerLanes' | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
 export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>> = {
   // Problems: broken credentials, stranded backends, offline runners, failing schedules.
-  // failureGroups feeds the Overview's top failures (TopFailureGroups) and the
+  // failureGroups feeds the Overview's top failures (failureProblemLine) and the
   // status sentence's failure count; budgetForecast feeds the Budget row.
-  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast']),
+  // agentAccess: access problems count on Overview and are listed on Failures.
+  overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast', 'agentAccess']),
   // failureAnalytics stays for the headline rate (failed / finished).
-  failures: new Set(['failureAnalytics', 'failureGroups']),
-  runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules', 'agentAccess']),
+  failures: new Set(['failureAnalytics', 'failureGroups', 'agentAccess']),
+  runners: new Set(['runners', 'runnerLanes', 'budgetForecast', 'credentials']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -226,6 +234,8 @@ export interface HealthData {
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
   agentAccess: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history and its idle-while-queued stretches. */
+  runnerLanes: { fleet: FleetSnapshot; idle: IdleStretch[]; missions: Record<string, LaneMission> } | null;
   now: number;
 }
 
@@ -335,20 +345,21 @@ export async function loadHealth({
         .select()
         .from(taskSchedules)
         .where(inArray(taskSchedules.workspaceId, scopedWsIds));
-      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null })[];
+      if (schedules.length === 0) return [] as (typeof schedules[number] & { missionTitle: string | null; missionId: string | null })[];
 
       const linkedMissions = await db
-        .select({ scheduleId: missions.scheduleId, title: missions.title })
+        .select({ scheduleId: missions.scheduleId, title: missions.title, id: missions.id })
         .from(missions)
         .where(inArray(missions.scheduleId, schedules.map((s: any) => s.id as string)));
       const missionBySchedule = new Map(
         (linkedMissions as any[])
           .filter((m: any) => m.scheduleId)
-          .map((m: any) => [m.scheduleId as string, m.title as string] as const),
+          .map((m: any) => [m.scheduleId as string, { title: m.title as string, id: m.id as string }] as const),
       );
       return (schedules as any[]).map((s: any) => ({
         ...s,
-        missionTitle: missionBySchedule.get(s.id) ?? null,
+        missionTitle: missionBySchedule.get(s.id)?.title ?? null,
+        missionId: missionBySchedule.get(s.id)?.id ?? null,
         isHeartbeat: !!(s.taskTemplate?.context?.heartbeat),
       }));
     })().catch(() => [] as any[])
@@ -395,18 +406,22 @@ export async function loadHealth({
     // health as a STATE with its own freshness, which needs the healthy rows.
     need('credentials')
       ? (async (): Promise<CredentialHealthItem[]> => {
-      const credRows = await db.query.secrets.findMany({
+      // Claude credentials in every storage agent runs read (the Anthropic
+      // key's canonical `inference_key` row too), plus Codex. `inference_key`
+      // also holds other providers' and personal keys: isBackendHealthRow drops them.
+      const credRows = (await db.query.secrets.findMany({
         where: and(
           eq(secrets.teamId, activeTeamId),
           or(
-            eq(secrets.purpose, 'oauth_token'),
-            eq(secrets.purpose, 'anthropic_api_key'),
+            ...CLAUDE_CREDENTIAL_PURPOSES.map((p) => eq(secrets.purpose, p)),
             eq(secrets.purpose, 'codex_credential'),
           ),
         ),
         columns: {
           id: true,
           purpose: true,
+          label: true,
+          userId: true,
           healthStatus: true,
           consecutiveAuthFailures: true,
           lastFailureAt: true,
@@ -414,7 +429,7 @@ export async function loadHealth({
           lastSuccessAt: true,
           lastVerifiedAt: true,
         },
-      });
+      })).filter(isBackendHealthRow);
       return (credRows as any[]).map((r: any) => ({
         id: r.id,
         purpose: r.purpose,
@@ -612,6 +627,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       createdAt: s.createdAt ? s.createdAt.toISOString() : null,
       taskTitle: s.taskTemplate?.title ?? '',
       missionTitle: s.missionTitle,
+      missionId: s.missionId ?? null,
       isHeartbeat: !!s.isHeartbeat,
     }))
     .sort((a: ScheduleRow, b: ScheduleRow) => {
@@ -655,6 +671,12 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
 
   // Team experiments (model routing A/B). Admins-only rows are dropped for
   // members inside the loader; a failure hides the section, never the page.
+  const runnerLanes = need('runnerLanes')
+    ? await loadRunnersFleet({ teamId: activeTeamId, wsIds: scopedWsIds, now })
+      .then(async lanes => ({ ...lanes, missions: await loadLaneMissions(lanes.fleet, activeTeamId).catch(() => ({})) }))
+      .catch(() => null)
+    : null;
+
   const experiments = need('experiments') ? await loadHealthExperiments(activeTeamId, userId).catch(() => null) : null;
 
   return {
@@ -679,6 +701,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       dispatchHealth: dispatchHealth ?? null,
       failureGroups: failureGroups ?? null,
       agentAccess: agentAccess ?? null,
+      runnerLanes,
       now,
     },
   };

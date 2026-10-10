@@ -11,7 +11,7 @@
  *   layouts in one, so the footer row and the board open the same deck. A new
  *   `visual` prop (a server refresh after `mission:visual_review` or an audit
  *   shot's `worker:artifact`) replaces the model.
- * - `WithMissionVisualReview` is what MissionBoard, MissionLanes and
+ * - `WithMissionVisualReview` is what MissionBoard and
  *   MissionFeedLayout render through: inside a provider for the same mission
  *   it reads that one; alone (the chat's mission pane) it makes its own from
  *   the `visual` prop, so a host only passes `visual` (and, to force the
@@ -90,8 +90,10 @@ export function visualReviewPhaseActions({
     if (!auditTaskId) throw new Error('There is no audit task to act on.');
     return auditTaskId;
   };
+  // Turn off / Skip are the person choosing to stop the audit, running or not,
+  // so this is the explicit abort the task PATCH asks for on a live worker.
   const cancelAudit = (id: string) =>
-    send(fetchImpl, `/api/tasks/${enc(id)}`, json('PATCH', { status: 'cancelled' }), 'Could not cancel the audit. Try again.');
+    send(fetchImpl, `/api/tasks/${enc(id)}`, json('PATCH', { status: 'cancelled', abort: true }), 'Could not cancel the audit. Try again.');
   return {
     async onTurnOff() {
       await send(fetchImpl, `/api/missions/${enc(missionId)}`, json('PATCH', { autoSurfaceAudit: false }), 'Could not turn the audit off. Try again.');

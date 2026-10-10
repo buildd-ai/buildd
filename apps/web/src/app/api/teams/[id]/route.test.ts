@@ -237,6 +237,56 @@ describe('PATCH /api/teams/[id] — key policy', () => {
     for (const u of capturedUpdates) expect(u).not.toHaveProperty('chatDisabled');
   });
 
+  it('the legacy name never opts a team in: credentialPolicy stays unset when it was unset', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: null };
+    for (const legacy of ['team', 'team_or_own', 'own']) {
+      capturedUpdates.length = 0;
+      await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy });
+      expect(capturedUpdates[0]).not.toHaveProperty('credentialPolicy');
+    }
+    teamRow = saved;
+  });
+
+  it('the legacy name keeps credentialPolicy in step for a team that already opted in', async () => {
+    const saved = teamRow;
+    teamRow = { ...(saved ?? {}), credentialPolicy: 'team' };
+    const want = { team: 'team', team_or_own: 'personal_first', own: 'personal_only' } as const;
+    for (const [legacy, cp] of Object.entries(want)) {
+      capturedUpdates.length = 0;
+      await PATCH(patchReq({ inferenceKeyPolicy: legacy }), ctx);
+      expect(capturedUpdates[0]).toMatchObject({ inferenceKeyPolicy: legacy, credentialPolicy: cp });
+    }
+    teamRow = saved;
+  });
+
+  it('an admin sets the credential policy by its new name, writing both columns', async () => {
+    const want = { team: 'team', personal_first: 'team_or_own', personal_only: 'own' } as const;
+    for (const [cp, legacy] of Object.entries(want)) {
+      capturedUpdates.length = 0;
+      const res = await PATCH(patchReq({ credentialPolicy: cp }), ctx);
+      expect(res.status).toBe(200);
+      expect(capturedUpdates[0]).toMatchObject({ credentialPolicy: cp, inferenceKeyPolicy: legacy });
+    }
+  });
+
+  it('rejects an unknown credential policy, including a legacy value under the new name', async () => {
+    for (const bad of ['anyone', 'team_or_own']) {
+      const res = await PATCH(patchReq({ credentialPolicy: bad }), ctx);
+      expect(res.status).toBe(400);
+    }
+    expect(capturedUpdates).toHaveLength(0);
+  });
+
+  it('GET reads the credential policy column', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns).toMatchObject({ credentialPolicy: true });
+    principal = null;
+  });
+
   it('a member cannot change it', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await PATCH(patchReq({ inferenceKeyPolicy: 'own' }), ctx)).status).toBe(403);

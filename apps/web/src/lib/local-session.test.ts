@@ -518,6 +518,24 @@ describe('usage', () => {
     expect(w.effort).toMatchObject({ toolCalls: 7, subagents: 0, requests: 4, costUnknown: false });
   });
 
+  it('per-tool counts land where usage stats read a tool histogram; an older hook that sends none writes none', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    const withCounts = { workers: [{ ...usage(id).workers[0], toolCounts: { Bash: 4, mcp__buildd__buildd: 3 } }] };
+    await run({ event: 'touch', usage: withCounts }, ACCOUNT, later(30_000));
+    expect(usageWrites[0].toolCounts).toEqual({ Bash: 4, mcp__buildd__buildd: 3 });
+    await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(200_000));
+    expect(usageWrites[1].toolCounts).toBeNull();
+  });
+
+  it('carries the hook-reported cost basis to the write, and unknown when the hook sends none', async () => {
+    claimWorker(id);
+    await run({ event: 'bind', workerId: id });
+    await run({ event: 'touch', usage: { ...usage(id), costBasis: 'virtual' } }, ACCOUNT, later(30_000));
+    await run({ event: 'touch', usage: usage(id) }, ACCOUNT, later(90_000));
+    expect(usageWrites.map(u => u.costBasis)).toEqual(['virtual', 'unknown']);
+  });
+
   it('an unpriced model leaves the cost unknown, never written as a number', async () => {
     claimWorker(id);
     await run({ event: 'bind', workerId: id });
@@ -589,6 +607,32 @@ describe('contract', () => {
       expect(ev({ workers: Array.from({ length: 21 }, () => worker) }).ok).toBe(false);
       expect(ev({ workers: [{ ...worker, firstAt: 'yesterday' }] }).ok).toBe(false);
       expect(ev({ workers: [] }).ok).toBe(true);
+    });
+
+    it('accepts per-tool counts keyed by tool name, and refuses anything that is not a name and a count', () => {
+      const r = ev({ workers: [{ ...worker, toolCounts: { Bash: 2, mcp__buildd__buildd: 1, other: 1 } }] });
+      expect(r.ok && r.event.usage?.workers[0].toolCounts).toEqual({ Bash: 2, mcp__buildd__buildd: 1, other: 1 });
+      expect(ev({ workers: [{ ...worker, toolCounts: { 'rm -rf /': 1 } }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, toolCounts: { Bash: -1 } }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, toolCounts: { Bash: 'two' } }] }).ok).toBe(false);
+      expect(ev({ workers: [{ ...worker, toolCounts: ['Bash'] }] }).ok).toBe(false);
+      const many = Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`tool_${i}`, 1]));
+      expect(ev({ workers: [{ ...worker, toolCounts: many }] }).ok).toBe(false);
+      // An older hook sends none.
+      expect((ev({ workers: [worker] }) as any).event.usage.workers[0].toolCounts).toBeUndefined();
+    });
+
+    // docs/specs/real-and-virtual-cost.md: the hook reports a basis only when
+    // its environment settles one; `mixed` is a server-side result, never sent.
+    it('accepts a cost basis of real, virtual or unknown alongside usage, and nothing else', () => {
+      for (const costBasis of ['real', 'virtual', 'unknown']) {
+        const r = ev({ workers: [worker], costBasis });
+        expect(r.ok).toBe(true);
+        expect((r as any).event.usage.costBasis).toBe(costBasis);
+      }
+      expect(ev({ workers: [worker], costBasis: 'mixed' }).ok).toBe(false);
+      expect(ev({ workers: [worker], costBasis: 'oauth' }).ok).toBe(false);
+      expect((ev({ workers: [worker] }) as any).event.usage.costBasis).toBeUndefined();
     });
   });
 

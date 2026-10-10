@@ -72,7 +72,11 @@ import {
   type SiblingState,
 } from '@/lib/escalation-revalidation';
 import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
+import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
+import { resolveMergeMethod } from '@/lib/integration-refresh';
+import { isFailingCheckRun } from '@/lib/ci-verdict';
+import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -90,12 +94,23 @@ export type LandingDoor =
 
 export type LandingActor =
   | { kind: 'system' }
-  | { kind: 'agent'; workerId?: string | null }
+  | {
+      kind: 'agent';
+      workerId?: string | null;
+      /**
+       * A person's grant on this run's task (`context.landingOverride`, set by a
+       * person at create time and checked by the door): the size / freshness
+       * overrides it names, for the PRs it names. Never a verdict override.
+       */
+      grant?: { override: { size?: boolean; freshness?: boolean }; grantedBy: string; reason: string };
+    }
   | {
       kind: 'human';
       userId?: string | null;
       /** What this person is explicitly overriding. Red CI and deny paths are never overridable. */
       override?: { verdict?: boolean; size?: boolean; freshness?: boolean };
+      /** Why, in the person's words; recorded on the kernel's bypass. */
+      overrideReason?: string | null;
     };
 
 export type FixKind = 'ci_fix' | 're_review' | 'conflict' | 'renumber_migration';
@@ -133,7 +148,14 @@ export type HumanCause =
 export type LandingOutcome =
   | { kind: 'merged'; sha: string }
   | { kind: 'updating_branch'; newHeadSha: string }
-  | { kind: 'waiting_ci'; headSha: string }
+  | {
+      kind: 'waiting_ci';
+      headSha: string;
+      /** What the landing is actually waiting on (the refusing rail / check / review / kernel state). */
+      reason?: string;
+      /** No later event clears this wait on its own (an ESCALATED delivery): a person must act. */
+      needsPerson?: true;
+    }
   | { kind: 'needs_fix'; reason: string; fix: FixKind; taskId?: string }
   | { kind: 'needs_human'; reason: string; cause: HumanCause };
 
@@ -195,6 +217,13 @@ export interface LandPrDeps {
    * `needs_fix` with no `taskId` and a ledger row saying so.
    */
   dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string; /** Nothing was filed, and why. */ skipped?: string } | null>;
+  /**
+   * With no `dispatchFix` wired (every door today), red CI and a migration
+   * collision still get their fix: lib/pr-landing-fix-dispatch.ts hands them to
+   * the CI retry and the collision renumber that already decide those. These
+   * are its dependencies, for tests.
+   */
+  landingFix?: LandingFixDispatchDeps;
   /**
    * Sends a reviewer for a stale approval (the diff changed after the approve,
    * so carry-forward could not keep it). Used for the `re_review` fix of a
@@ -541,6 +570,22 @@ async function recordHandoff(input: LandPrInput, outcome: LandingOutcome, trace:
   }
 }
 
+/**
+ * The override T15 records in `bypass`: its kinds, the reason and, for an agent
+ * run, the person whose grant it acts under. Null when nothing is overridden.
+ */
+export function kernelOverrideFor(
+  actor: LandingActor,
+  override: { verdict?: boolean; size?: boolean; freshness?: boolean },
+): { reason: string; kinds: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null {
+  const kinds = (['verdict', 'freshness', 'size'] as const).filter((k) => override[k]);
+  if (kinds.length === 0) return null;
+  if (actor.kind === 'agent' && actor.grant) return { reason: actor.grant.reason, kinds, grantedBy: actor.grant.grantedBy };
+  if (actor.kind !== 'human') return null;
+  const fallback = kinds.includes('verdict') ? 'a person merged past the review verdict' : `a person merged past ${kinds.join(' and ')}`;
+  return { reason: actor.overrideReason?.trim() || fallback, kinds };
+}
+
 async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: LandingTrace): Promise<LandingOutcome> {
   const { workspaceId, installationId, repoFullName, prNumber, owner, actor, policy } = input;
   const act = input.mode === 'enforce';
@@ -548,7 +593,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   const escalate = deps.escalateConflictExhaustion ?? escalateConflictExhaustion;
   const findLiveRetry = deps.findLiveReviewerRetry ?? findLiveReviewerRetryTask;
   const callerOrigin = callerOriginFor(actor);
-  const override = actor.kind === 'human' ? (actor.override ?? {}) : {};
+  const override: { verdict?: boolean; size?: boolean; freshness?: boolean } =
+    actor.kind === 'human' ? (actor.override ?? {}) : actor.kind === 'agent' && actor.grant ? { size: actor.grant.override.size, freshness: actor.grant.override.freshness } : {};
   const ghPath = `/repos/${repoFullName}`;
 
   let headSha: string | null = input.eventHeadSha;
@@ -591,8 +637,8 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
 
   const human = (cause: HumanCause, reason: string, extra?: Record<string, unknown>) =>
     done({ kind: 'needs_human', cause, reason }, reason, { cause, ...extra });
-  const waiting = (reason: string, extra?: Record<string, unknown>) =>
-    done({ kind: 'waiting_ci', headSha: headSha ?? '' }, reason, extra);
+  const waiting = (reason: string, extra?: Record<string, unknown>, needsPerson = false) =>
+    done({ kind: 'waiting_ci', headSha: headSha ?? '', reason, ...(needsPerson ? { needsPerson: true as const } : {}) }, reason, extra);
 
   const bypass = (gate: string, reason: string, detail: Record<string, unknown>) => {
     if (!act) return;
@@ -608,6 +654,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       detail: { prNumber, headSha, repoFullName, ...detail },
     });
   };
+
+  // a90fc99b: what a door with no `dispatchFix` of its own files for red CI and a collision.
+  const defaultFix: NonNullable<LandPrDeps['dispatchFix']> = (fi) => dispatchLandingFix(fi, deps.landingFix);
 
   const needsFix = async (
     fix: Exclude<FixKind, 'conflict'>,
@@ -736,6 +785,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;
   const observed: { baseRef?: string | null; mergeableState?: string | null; checkRuns?: CheckRunState[] } = {};
+  let kernelViewPromise: ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView> | null = null;
+  const kernelStatus = () => (kernelViewPromise ??= (async () => {
+    const read = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
+    return read(workspaceId, repoFullName, prNumber).catch(() => null);
+  })());
   const runSafety = (bound: ModelApproveBound | undefined) =>
     evaluateAutoMergeSafety(installationId, repoFullName, prNumber, liveHead, effectivePolicy, {
       mission,
@@ -774,8 +828,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     switch (refusal) {
       case 'ci': {
-        const red = (observed.checkRuns ?? []).some((r) => r.conclusion === 'failure');
-        return red ? needsFix('ci_fix', reason) : waiting(reason);
+        // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
+        // unfinished run, or a non-passing commit status, is a wait.
+        const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
+        return red ? needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix) : waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
@@ -783,8 +839,22 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'deny_path':
         return human('deny_path', reason);
       case 'migration':
-        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason);
-        return /^could not /.test(reason) ? waiting(reason) : human('migration', reason);
+        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
+        if (/^could not /.test(reason)) return waiting(reason);
+        // Human authorization gates landing, not technical review. A repaired
+        // head can earn its review while the migration decision is outstanding.
+        // Use the existing reviewer dispatcher/dedupe; never file another repair.
+        if (act && policy.tier === 'agent-review' && !(await kernelStatus())) {
+          const status = await reviewStatus();
+          const stale = status?.verdict === 'approve' && status.reviewHeadSha && status.reviewHeadSha !== liveHead;
+          if (status?.state === 'not_requested' || stale) {
+            const send = deps.dispatchFix ?? reReviewVia(stale ? 'migration approval pending on a repaired head' : undefined, !stale);
+            await send({ kind: 're_review', workspaceId, installationId, repoFullName, prNumber,
+              headSha: liveHead, owner, reason: `technical review while human migration approval is pending: ${reason}`,
+            }).catch(err => console.warn('[pr-landing] technical review dispatch failed:', err));
+          }
+        }
+        return human('migration', reason);
       case 'size':
         return human('size_cap', reason);
       case 'conflict':
@@ -806,15 +876,27 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
-  const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
+  const kernelView = await kernelStatus();
   if (kernelView) {
     const { state, head } = kernelView.current;
     const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };
     if (head !== liveHead) return waiting(`the kernel has not observed head ${liveHead.slice(0, 7)} yet`, extra);
-    const overridable = override.verdict && (state === 'AWAITING_REVIEW' || state === 'CHANGES_REQUESTED' || state === 'ESCALATED');
+    // A verdict override lifts the review states; a freshness / size override lifts only a
+    // landing escalation (the spent treadmill, S15), never a review one (T15 enforces it too).
+    const overridable = (override.verdict && (state === 'AWAITING_REVIEW' || state === 'CHANGES_REQUESTED' || state === 'ESCALATED'))
+      || ((override.freshness || override.size) && state === 'ESCALATED' && kernelView.stateReason === 'landing_needs_human');
+    if (state === 'ESCALATED' && !overridable && kernelView.treadmill?.spent) {
+      // The spent behind-refresh treadmill (S15): the same page as legacy's refresh_exhausted, so
+      // the person is offered "Merge anyway" past freshness while the cycle sweep retries.
+      const t = kernelView.treadmill;
+      const next = t.cycle < t.maxCycles
+        ? `Next: landing opens a fresh refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m (cycle ${t.cycle} of ${t.maxCycles}); a person can merge it now with a freshness override`
+        : `Next: every refresh cycle is used (${t.maxCycles}), so a person lands it: merge it with a freshness override, or wait for a quiet base and retry`;
+      return human('refresh_exhausted', `the base kept moving after ${t.refreshes} refreshes. ${next}`, { ...extra, treadmillCycle: t.cycle });
+    }
     if (state !== 'APPROVED' && !overridable) {
-      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra);
+      // ESCALATED is terminal for the kernel: no event moves it back to APPROVED on its own.
+      return waiting(`the delivery is ${state ?? 'unknown'}; the kernel lands it only once APPROVED (T15)`, extra, state === 'ESCALATED');
     }
   }
 
@@ -938,19 +1020,19 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // conflict-resolution task IS the merge commit that catches a mission's
   // integration branch up with dev, and squashing it would drop that
   // ancestry — the same conflict would reappear on the next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : (input.mergeMethod ?? 'squash');
+  const mergeMethod = resolveMergeMethod(mergingTask?.context, input.mergeMethod);
   // Every rail above passed. A kernel-owned PR is merged by the kernel (T15 →
   // merge_call → T16 → verify_merge → PrMerged), which also owns the
   // post-merge work; any other PR merges here as before.
   const kernelLand = deps.landThroughKernel ?? (await import('@/lib/workflow/seam')).landThroughKernel;
+  const kernelOverride = kernelOverrideFor(actor, override);
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = await kernelLand({
       workspaceId, installationId, repoFullName, prNumber, headSha: liveHead,
       door: `land_pr:${input.door}`,
       actor: actor.kind === 'human' ? `human:${actor.userId ?? 'unknown'}` : actor.kind === 'agent' ? `agent:${actor.workerId ?? 'unknown'}` : `system:${input.door}`,
       mergeMethod,
-      ...(override.verdict ? { override: { reason: 'a person merged past the review verdict' } } : {}),
+      ...(kernelOverride ? { override: kernelOverride } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
     });
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
@@ -1186,13 +1268,19 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     // filed and none is owed. A later event or the sweep re-drives the PR.
     if (res.headChanged) return waiting(`the PR head moved before the refresh (${reason}); re-reading on the new head`, { refresh: 'head_changed' });
     if (res.refreshInFlight) return waiting(`another refresh of this PR is in flight (${reason})`, { refresh: 'in_flight' });
+    if (res.refreshQueued) {
+      return waiting(`a branch refresh is queued; landing re-reads on the new head (${reason})`, { refresh: 'queued' });
+    }
     if (res.refreshDeferred) {
-      return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
+      return waiting(`updating the branch failed (${refreshCause(res)}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
     }
     if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
     if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
+      return human('refresh_exhausted', `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
+    }
     if (res.refreshExhausted) {
-      return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
+      return human('refresh_failed', `updating the branch kept failing (${refreshCause(res)}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
     }
     if (res.semanticUnverified) {
       return human('semantic_unverified', `the PR and the base change the same files and their symbol overlap could not be verified (${reason})`);

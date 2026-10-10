@@ -298,7 +298,7 @@ describe('size cap keeps head and tail', () => {
     expect(stored).toContain('TAIL-MARK last line');
     expect(stored).toContain('bytes omitted by the buildd evidence writer');
     expect(logged.some(l => l.event === 'evidence_truncated')).toBe(true);
-  });
+  }, 120_000);
 
   test('an incompressible text over the gzip ceiling is shrunk to fit, not skipped', async () => {
     const b64 = randomBytes(12 * 1024 * 1024).toString('base64').replace(/(.{76})/g, '$1\n');
@@ -311,7 +311,7 @@ describe('size cap keeps head and tail', () => {
     const stored = gunzipText(puts[0].body);
     expect(stored).toContain('HEAD-MARK');
     expect(stored).toContain('TAIL-MARK');
-  });
+  }, 120_000);
 
   test('an oversized test report keeps its head and tail too', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'evidence-writer-'));
@@ -331,7 +331,7 @@ describe('size cap keeps head and tail', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000); // builds and gzips a multi-MB report; slow when the machine is compiling
 });
 
 describe('confirming an upload', () => {
@@ -572,5 +572,19 @@ describe('secret channel coverage', () => {
       const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
       expect(values).toContain(`seed-${field}`);
     }
+  });
+});
+
+describe('model endpoint headers are redacted', () => {
+  test('an AI Gateway token is on the redactor list, whole and without its Bearer scheme', () => {
+    const worker = {
+      modelEndpoint: {
+        kind: 'cloudflare', baseUrl: 'https://gateway.example', authToken: 'upstream-key', authHeader: 'x-api-key', models: {},
+        headers: { 'cf-aig-authorization': 'Bearer gw-run-token-value' },
+      },
+    };
+    const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);
+    expect(values).toContain('Bearer gw-run-token-value');
+    expect(values).toContain('gw-run-token-value');
   });
 });

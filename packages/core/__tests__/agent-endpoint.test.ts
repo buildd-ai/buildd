@@ -11,14 +11,21 @@ import {
   agentEndpointProbeModel,
   effectiveToolSearch,
   endpointAppliesTo,
+  isEndpointReference,
+  isOpenRouterReference,
   mapAgentModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
   serializeAgentEndpoint,
   validateAgentEndpointInput,
   verifyAgentEndpoint,
+  routeNeedsHeaders,
+  cloudflareAgentBaseUrl,
+  CLOUDFLARE_AI_GATEWAY_ROOT,
 } from '../agent-endpoint';
 import { openRouterModelId } from '../openrouter-id';
+import { jevGatewayBaseURL } from '../cloudflare-ai-gateway';
+import { CLOUDFLARE_AI_GATEWAY_ROOT as KIT_GATEWAY_ROOT } from '@builddai/ai-kit/models/routes';
 
 describe('agent endpoint blob', () => {
   it('purpose is agent_endpoint', () => {
@@ -49,6 +56,39 @@ describe('agent endpoint blob', () => {
   it('defaults authHeader to authorization and OpenRouter to its API root', () => {
     const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1' });
     expect(v.ok && v.blob).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or-1', authHeader: 'authorization' });
+  });
+
+  it('an OpenRouter endpoint without a key is a reference; with one it is legacy inline', () => {
+    for (const apiKey of [undefined, null, '']) {
+      const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey });
+      expect(v.ok && v.blob).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, authHeader: 'authorization' });
+      if (v.ok) {
+        expect(isOpenRouterReference(v.blob)).toBe(true);
+        expect(isEndpointReference(v.blob)).toBe(true);
+        expect(parseAgentEndpointBlob(serializeAgentEndpoint(v.blob))).toEqual(v.blob);
+      }
+    }
+    const inline = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1' });
+    expect(inline.ok && isOpenRouterReference(inline.blob)).toBe(false);
+    // A custom URL still needs its own key: there is nothing to reference.
+    expect(validateAgentEndpointInput({ kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com' }).ok).toBe(false);
+    // A key that is present but malformed is refused, not read as a reference.
+    expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'has space' }).ok).toBe(false);
+    expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 7 }).ok).toBe(false);
+  });
+
+  it('an OpenRouter reference routes the referenced key; an inline key wins over it', () => {
+    const ref = { kind: 'openrouter' as const, baseUrl: OPENROUTER_AGENT_BASE_URL, authHeader: 'authorization' as const };
+    expect(resolveEndpointFromBlob(ref, null)).toBeNull();
+    expect(resolveEndpointFromBlob(ref, null, 'sk-or-stored')).toMatchObject({ kind: 'openrouter', apiKey: 'sk-or-stored', openAiBaseUrl: `${OPENROUTER_AGENT_BASE_URL}/v1` });
+    expect(resolveEndpointFromBlob({ ...ref, apiKey: 'sk-or-inline' }, null, 'sk-or-stored')?.apiKey).toBe('sk-or-inline');
+  });
+
+  it('capabilities.legacyInlineKey round-trips and is not a routing flag', () => {
+    const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', capabilities: { legacyInlineKey: true } });
+    expect(v.ok && v.blob.capabilities).toEqual({ legacyInlineKey: true });
+    if (v.ok) expect(resolveEndpointFromBlob(v.blob, null)?.toolSearch).toBe(true);
+    expect(validateAgentEndpointInput({ kind: 'openrouter', capabilities: { legacyInlineKey: 'yes' } }).ok).toBe(false);
   });
 
   it('the gateway reference carries no key and no URL unless overridden', () => {
@@ -311,5 +351,75 @@ describe('verifyAgentEndpoint', () => {
     });
     expect(r).toEqual({ health: 'unknown', error: 'endpoint answered with a redirect (307), which is not followed', blocked: true });
     expect(urls).toEqual(['https://llm.example.com/v1/messages']);
+  });
+});
+
+describe('cloudflare endpoint', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const GW_TOKEN = 'cf-gateway-run-token-abcdefghijklmnop';
+  const ref = (o: Partial<{ gatewayId: string | null; upstreamKey: string | null }> = {}) =>
+    ({ accountId: ACCOUNT, gatewayId: 'buildd', upstreamKey: 'sk-ant-api03-example', ...o });
+
+  it('validates to a reference with no URL or key of its own', () => {
+    expect(validateAgentEndpointInput({ kind: 'cloudflare' })).toEqual({ ok: true, blob: { kind: 'cloudflare', upstream: 'anthropic' } });
+    expect(validateAgentEndpointInput({ kind: 'cloudflare', upstream: 'openrouter', gatewayToken: ` ${GW_TOKEN} ` }))
+      .toEqual({ ok: true, blob: { kind: 'cloudflare', upstream: 'openrouter', gatewayToken: GW_TOKEN } });
+    expect(validateAgentEndpointInput({ kind: 'cloudflare', baseUrl: 'https://x.example.com' }).ok).toBe(false);
+    expect(validateAgentEndpointInput({ kind: 'cloudflare', apiKey: 'k' }).ok).toBe(false);
+    expect(validateAgentEndpointInput({ kind: 'cloudflare', upstream: 'openai' }).ok).toBe(false);
+    expect(validateAgentEndpointInput({ kind: 'cloudflare', gatewayToken: 'short' }).ok).toBe(false);
+    expect(isEndpointReference({ kind: 'cloudflare', upstream: 'anthropic' })).toBe(true);
+  });
+
+  it("routes Anthropic through the gateway's anthropic path on the Anthropic key", () => {
+    const route = resolveEndpointFromBlob({ kind: 'cloudflare', upstream: 'anthropic' }, null, null, ref());
+    expect(route).toEqual({
+      kind: 'cloudflare', upstream: 'anthropic',
+      baseUrl: `https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/anthropic`,
+      apiKey: 'sk-ant-api03-example', authHeader: 'x-api-key', models: {}, toolSearch: true,
+    });
+    expect(routeNeedsHeaders(route!)).toBe(false);
+  });
+
+  it('sends the gateway token as cf-aig-authorization, and then offers no Codex route', () => {
+    const route = resolveEndpointFromBlob({ kind: 'cloudflare', upstream: 'openrouter', gatewayToken: GW_TOKEN }, null, null, ref({ upstreamKey: 'sk-or-v1-example' }));
+    expect(route?.baseUrl).toBe(`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/openrouter`);
+    expect(route?.authHeader).toBe('authorization');
+    expect(route?.headers).toEqual({ 'cf-aig-authorization': `Bearer ${GW_TOKEN}` });
+    expect(route?.openAiBaseUrl).toBeUndefined();
+    expect(routeNeedsHeaders(route!)).toBe(true);
+    const open = resolveEndpointFromBlob({ kind: 'cloudflare', upstream: 'openrouter' }, null, null, ref({ upstreamKey: 'sk-or-v1-example' }));
+    expect(open?.openAiBaseUrl).toBe(`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/openrouter/v1`);
+  });
+
+  it('routes nothing without a gateway, an upstream key, or a well-formed account', () => {
+    const blob = { kind: 'cloudflare' as const, upstream: 'anthropic' as const };
+    expect(resolveEndpointFromBlob(blob, null, null, null)).toBeNull();
+    expect(resolveEndpointFromBlob(blob, null, null, ref({ gatewayId: null }))).toBeNull();
+    expect(resolveEndpointFromBlob(blob, null, null, ref({ upstreamKey: null }))).toBeNull();
+    expect(cloudflareAgentBaseUrl({ accountId: 'nope', gatewayId: 'g' }, 'anthropic')).toBeNull();
+  });
+
+  it('names models the OpenRouter way only when the gateway forwards to OpenRouter', () => {
+    expect(mapAgentModel({ kind: 'cloudflare', upstream: 'anthropic' }, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+    expect(mapAgentModel({ kind: 'cloudflare', upstream: 'openrouter' }, 'claude-haiku-4-5-20251001')).toBe(openRouterModelId('anthropic', 'claude-haiku-4-5-20251001'));
+    expect(mapAgentModel({ kind: 'cloudflare', upstream: 'anthropic', models: { 'claude-x': 'alias' } }, 'claude-x')).toBe('alias');
+  });
+
+  it('builds the same gateway URL as the decision-call helper', () => {
+    expect(cloudflareAgentBaseUrl({ accountId: ACCOUNT, gatewayId: 'buildd' }, 'openrouter'))
+      .toBe(jevGatewayBaseURL({ apiToken: 'x'.repeat(24), accountId: ACCOUNT, gatewayId: 'buildd' }));
+    expect(CLOUDFLARE_AI_GATEWAY_ROOT).toBe(KIT_GATEWAY_ROOT);
+  });
+
+  it('verify sends the gateway header', async () => {
+    let seen: Headers | null = null;
+    const route = resolveEndpointFromBlob({ kind: 'cloudflare', upstream: 'anthropic', gatewayToken: GW_TOKEN }, null, null, ref())!;
+    await verifyAgentEndpoint(route, 'claude-haiku-4-5', {
+      fetcher: async (_u, init) => { seen = new Headers(init?.headers); return new Response('{}', { status: 200 }); },
+      lookup: async () => [{ address: '104.18.0.1', family: 4 }],
+    });
+    expect(seen!.get('cf-aig-authorization')).toBe(`Bearer ${GW_TOKEN}`);
+    expect(seen!.get('x-api-key')).toBe('sk-ant-api03-example');
   });
 });

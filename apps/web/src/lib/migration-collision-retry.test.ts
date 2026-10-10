@@ -39,6 +39,7 @@ describe('tryDispatchMigrationCollisionRetry', () => {
     const result = await tryDispatchMigrationCollisionRetry(BASE_PARAMS);
 
     expect(result.handled).toBe(true);
+    expect(result.taskId).toBe('new-task');
     expect(mockDispatchConflictRetry).toHaveBeenCalledTimes(1);
     const call = mockDispatchConflictRetry.mock.calls[0][0];
     expect(call.migrationCollision).toEqual(COLLISION);
@@ -57,12 +58,24 @@ describe('tryDispatchMigrationCollisionRetry', () => {
     expect(entry.kind).not.toBe('human_review_required');
   });
 
+  it('dispatches a slot taken on the base the same way, naming the base migration', async () => {
+    mockDispatchConflictRetry.mockResolvedValue({ dispatched: true, taskId: 'new-task' });
+    const onBase = { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' as const };
+
+    const result = await tryDispatchMigrationCollisionRetry({ ...BASE_PARAMS, collision: onBase });
+
+    expect(result.handled).toBe(true);
+    expect(mockDispatchConflictRetry.mock.calls[0][0].migrationCollision).toEqual(onBase);
+    expect(mockAppendPrActivity.mock.calls[0][0].entry.detail).toBe('0093_landed.sql on the base');
+  });
+
   it('treats an already in-flight retry as handled, without a duplicate dispatch signal', async () => {
     mockDispatchConflictRetry.mockResolvedValue({ dispatched: false, inFlightTaskId: 'existing-task' });
 
     const result = await tryDispatchMigrationCollisionRetry(BASE_PARAMS);
 
     expect(result.handled).toBe(true);
+    expect(result.taskId).toBe('existing-task');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
   });
 

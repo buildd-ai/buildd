@@ -1,13 +1,17 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import SettingsSection from './SettingsSection';
+import Section from '@/components/ui/Section';
+import Notice from '@/components/ui/Notice';
+import { TonePill } from '@/components/ui/StatePill';
 import { Select } from '@/components/ui/Select';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
 
 interface Workspace {
   id: string;
   name: string;
+  /** The workspace's team: turning a connector on or off there needs manage_connectors in it. */
+  teamId?: string;
 }
 
 interface Team {
@@ -37,10 +41,17 @@ export default function ConnectorsSection({
   workspaces,
   teams = [],
   currentTeamId = null,
+  manageableTeamIds,
 }: {
   workspaces: Workspace[];
   teams?: Team[];
   currentTeamId?: string | null;
+  /**
+   * Teams where the person holds `manage_connectors` (overrides applied). A
+   * workspace outside them shows whether a connector is on, read-only, and a
+   * connector of another team gets no Reconnect. Omitted = every team.
+   */
+  manageableTeamIds?: string[];
 }) {
   const [connectors, setConnectors] = useState<ConnectorWithWorkspaces[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,16 +152,22 @@ export default function ConnectorsSection({
     }
   }
 
+  const manages = (teamId: string | undefined) => !manageableTeamIds || (!!teamId && manageableTeamIds.includes(teamId));
+  const canReconnect = manages(selectedTeamId);
+  const anyEditable = workspaces.some((ws) => manages(ws.teamId));
+
   // Nothing to grant yet: the Add button above is the whole story. With several
   // teams the section stays, since its header holds the team switch.
   if (!loading && connectors.length === 0 && !message && teams.length <= 1) return null;
 
   return (
-    <SettingsSection
+    <Section
       title="Workspace access"
-      bare
       action={
         <div className="flex items-center gap-2 min-w-0">
+          {!anyEditable && !loading && connectors.length > 0 && (
+            <span data-testid="workspace-access-read-only" className="text-xs text-text-muted">Admins can change this.</span>
+          )}
           {teams.length > 1 && (
             <Select
               aria-label="Team"
@@ -165,41 +182,36 @@ export default function ConnectorsSection({
       }
     >
       {message && (
-        <div className={`notice mb-3 ${message.type === 'success' ? 'notice-ok' : 'notice-err'}`}>
+        <Notice tone={message.type === 'success' ? 'ok' : 'err'} className="mb-3">
           {message.text}
-        </div>
+        </Notice>
       )}
 
       {loading ? (
-        <div className="text-text-secondary text-sm">Loading…</div>
+        <p className="text-sm text-text-muted">Loading…</p>
       ) : connectors.length === 0 ? (
-        <div className="card p-4">
-          <p className="text-text-muted text-sm">Add a connector above, then choose its workspaces here.</p>
-        </div>
+        <p className="text-sm text-text-muted">Add a connector above, then choose its workspaces here.</p>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <ul className="divide-y divide-border-default">
           {connectors.map((connector) => (
-            <div key={connector.id} className="p-4">
+            <li key={connector.id} className="py-3">
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  {/* Auth mode and URL live in the connector's Details above. */}
+                  <div className="flex flex-wrap items-center gap-2">
                     <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
                     <span className="text-sm font-medium text-text-primary">{connector.name}</span>
-                    <span className="text-xs text-text-muted font-mono">{connector.authMode}</span>
                     {connector.shared && (
-                      <span className="status-pill status-pill-plain text-accent-text border-accent">
-                        Shared by {connector.ownerTeamName || 'another team'}
-                      </span>
+                      <TonePill tone="q">Shared by {connector.ownerTeamName || 'another team'}</TonePill>
                     )}
                   </div>
-                  <div className="text-xs text-text-muted font-mono truncate">{connector.url}</div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {/* Expired => dead/stale OAuth credential (spec §1b): a distinct
                       warning-toned Reconnect CTA, not the red transient-error banner
                       and not the green connected/enabled state. Grantees can't
                       reconnect a shared-in connector (owner holds the credential). */}
-                  {connector.status === 'expired' && !connector.shared && connector.authMode === 'oauth' && (
+                  {canReconnect && connector.status === 'expired' && !connector.shared && connector.authMode === 'oauth' && (
                     <button
                       onClick={() => handleReconnect(connector.id)}
                       disabled={reconnecting === connector.id}
@@ -208,7 +220,11 @@ export default function ConnectorsSection({
                       {reconnecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
                   )}
-                  {workspaces.length === 1 ? (
+                  {workspaces.length === 1 && !manages(workspaces[0].teamId) ? (
+                    <TonePill tone={connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'ok' : 'q'}>
+                      {connector.enabledWorkspaceIds.has(workspaces[0].id) ? 'Enabled' : 'Disabled'}
+                    </TonePill>
+                  ) : workspaces.length === 1 ? (
                     <button
                       onClick={() => toggleWorkspace(
                         connector.id,
@@ -229,6 +245,13 @@ export default function ConnectorsSection({
                   {workspaces.map(ws => {
                     const enabled = connector.enabledWorkspaceIds.has(ws.id);
                     const key = `${connector.id}:${ws.id}`;
+                    if (!manages(ws.teamId)) {
+                      return (
+                        <TonePill key={ws.id} tone={enabled ? 'ok' : 'q'}>
+                          {enabled ? '✓ ' : ''}{ws.name}
+                        </TonePill>
+                      );
+                    }
                     return (
                       <button
                         key={ws.id}
@@ -242,10 +265,10 @@ export default function ConnectorsSection({
                   })}
                 </div>
               )}
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
-    </SettingsSection>
+    </Section>
   );
 }

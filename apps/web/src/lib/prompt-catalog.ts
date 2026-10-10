@@ -15,7 +15,7 @@ import './endpoint-model-suggest';
 import './goal-criteria-quality-decision';
 import './goal-criteria-rubric';
 import './heartbeat-helpers';
-import './heartbeat-triage';
+import './merge-readiness-decision';
 import './mission-criteria-eval';
 import './mission-criteria-worker-eval';
 import './mission-prompts';

@@ -11,17 +11,16 @@
 export type SettingsSectionId =
   | 'account'
   | 'team'
+  | 'roles'
   | 'budgets'
   | 'billing'
+  | 'workspaces'
+  | 'models'
   | 'runners'
-  | 'providers'
   | 'github'
   | 'notifications'
   | 'connectors'
-  | 'storage'
-  | 'ai'
-  | 'models'
-  | 'workspaces';
+  | 'storage';
 
 export interface SettingsNavItem {
   id: SettingsSectionId;
@@ -44,24 +43,25 @@ export const SETTINGS_INDEX_HREF = '/app/settings';
 
 export const SETTINGS_NAV: SettingsNavGroup[] = [
   {
-    label: 'Account',
+    label: 'You and your team',
     items: [
       {
         id: 'account',
         label: 'Profile',
         href: '/app/settings/account',
-        description: 'Your sign-in, your teams, your standing rules for chat, and which key you use.',
+        description: 'Your sign-in, preferences, and standing rules for chat.',
       },
-    ],
-  },
-  {
-    label: 'Team',
-    items: [
       {
         id: 'team',
-        label: 'Members',
+        label: 'Team',
         href: '/app/settings/team',
         description: 'Who is on the team, what each person can change, and the team timezone.',
+      },
+      {
+        id: 'roles',
+        label: 'Roles',
+        href: '/app/settings/roles',
+        description: 'The agents on the team: what each one does, its model and its tools.',
       },
       {
         id: 'budgets',
@@ -79,20 +79,32 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
     ],
   },
   {
-    label: 'Connections',
+    label: 'Agents and workspaces',
     items: [
+      {
+        id: 'workspaces',
+        label: 'Workspaces',
+        href: '/app/settings/workspaces',
+        description: 'Each repo agents work in: delivery, merge policy and where its work runs.',
+        alsoMatches: ['/app/settings/workspace/'],
+      },
+      {
+        id: 'models',
+        label: 'Models',
+        href: '/app/settings/models',
+        description: 'Model keys and sign-ins, which model backs each tier, and AI features.',
+      },
       {
         id: 'runners',
         label: 'Runners',
         href: '/app/settings/runners',
-        description: 'The Claude or Codex sign-in your runners use, runner tokens, and Cloudflare.',
+        description: 'Runner tokens, the cloud runner and Cloudflare.',
       },
-      {
-        id: 'providers',
-        label: 'Model providers',
-        href: '/app/settings/providers',
-        description: 'OpenRouter, Anthropic or OpenAI keys for server-side AI.',
-      },
+    ],
+  },
+  {
+    label: 'Integrations',
+    items: [
       {
         id: 'github',
         label: 'GitHub and Vercel',
@@ -116,35 +128,6 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         label: 'Storage',
         href: '/app/settings/storage',
         description: 'The bucket where run evidence is kept: logs, test reports and transcripts.',
-      },
-    ],
-  },
-  {
-    label: 'AI',
-    items: [
-      {
-        id: 'ai',
-        label: 'AI features',
-        href: '/app/settings/ai',
-        description: 'Where server-side features run.',
-      },
-      {
-        id: 'models',
-        label: 'Model tiers',
-        href: '/app/settings/models',
-        description: 'Which model backs each tier.',
-      },
-    ],
-  },
-  {
-    label: 'Workspaces',
-    items: [
-      {
-        id: 'workspaces',
-        label: 'Workspaces',
-        href: '/app/settings/workspaces',
-        description: 'CI policy, merge policy and per-workspace config.',
-        alsoMatches: ['/app/settings/workspace/'],
       },
     ],
   },
@@ -188,10 +171,10 @@ export function settingsBackHref(pathname: string): string | null {
  * in the browser; `?section=` is resolved on the server.
  */
 export const LEGACY_SETTINGS_ANCHORS: Record<string, string> = {
-  'agent-backends': '/app/settings/runners',
+  'agent-backends': '/app/settings/models',
   'runner-tokens': '/app/settings/runners',
-  'inference-spending': '/app/settings/ai',
-  'provider-keys': '/app/settings/providers',
+  'inference-spending': '/app/settings/models',
+  'provider-keys': '/app/settings/models',
   connectors: '/app/settings/connectors',
   notifications: '/app/settings/notifications',
   github: '/app/settings/github',

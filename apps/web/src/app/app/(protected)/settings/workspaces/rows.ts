@@ -55,7 +55,7 @@ function differsFromDefault(id: string, gitConfig: WorkspaceGitConfig | null): W
   const out: WorkspaceDiffer[] = [];
   const gitWorkflow = BRANCH_LABEL[resolveBranchStrategy(gitConfig)];
   if (gitWorkflow !== WORKSPACE_DEFAULTS.gitWorkflow) {
-    out.push({ key: 'gitWorkflow', label: gitWorkflow, href: `/app/workspaces/${id}/config` });
+    out.push({ key: 'gitWorkflow', label: gitWorkflow, href: `/app/settings/workspace/${id}` });
   }
   const mergePolicy = TIER_LABEL[resolvePolicy({ gitConfig }).tier];
   if (mergePolicy !== WORKSPACE_DEFAULTS.mergePolicy) {
@@ -63,7 +63,7 @@ function differsFromDefault(id: string, gitConfig: WorkspaceGitConfig | null): W
   }
   // enforceGreenCI: a task's PR gets fix rounds until its checks pass (tasks route).
   if (gitConfig?.enforceGreenCI === true) {
-    out.push({ key: 'ciRetry', label: 'Fixes until CI passes', href: `/app/workspaces/${id}/config#ci-retry` });
+    out.push({ key: 'ciRetry', label: 'Fixes until CI passes', href: `/app/settings/workspace/${id}#ci-retry` });
   }
   return out;
 }
@@ -95,6 +95,9 @@ export function buildWorkspaceRows({
 }): { rows: WorkspaceRow[]; moveTeams: Array<{ id: string; name: string }> } {
   const adminTeams = teamsHolding(userId, teams, 'manage_workspace_settings', overrides);
   const adminIds = new Set(adminTeams.map((t) => t.id));
+  // Moving needs migrate_workspace in the source team and in at least one other.
+  const moveTeams = teamsHolding(userId, teams, 'migrate_workspace', overrides);
+  const moveIds = new Set(moveTeams.map((t) => t.id));
   const teamName = new Map(teams.map((t) => [t.id, t.name]));
 
   const rows = workspaces.map((ws): WorkspaceRow => {
@@ -108,18 +111,20 @@ export function buildWorkspaceRows({
       id: ws.id,
       name: ws.name,
       teamId: ws.teamId,
-      teamName: teamName.get(ws.teamId) ?? 'Unknown team',
+      // Null when the team can't be resolved: the list drops the heading rather
+      // than inventing a name.
+      teamName: teamName.get(ws.teamId)?.trim() || null,
       differs: differsFromDefault(ws.id, ws.gitConfig),
       runsOn: { executor, size: executor === 'cloud' ? resolveRunnerSize({ gitConfig: ws.gitConfig, reports: [] }).size : null },
       lastActivityAt: toIso(a?.lastTaskAt),
       openTasks: Number(a?.openTasks ?? 0),
       health: { stuckTasks: Number(a?.stuckTasks ?? 0), redPrs: Number(a?.redPrs ?? 0) },
       canEdit,
-      canMove: canEdit && adminTeams.length > 1,
+      canMove: moveIds.has(ws.teamId) && moveTeams.length > 1,
     };
   });
 
-  return { rows, moveTeams: adminTeams.map((t) => ({ id: t.id, name: t.name })) };
+  return { rows, moveTeams: moveTeams.map((t) => ({ id: t.id, name: t.name })) };
 }
 
 export { sortByActivity, isInactive, groupWorkspaceRows, INACTIVE_AFTER_DAYS, type WorkspaceGroup } from './list-groups';

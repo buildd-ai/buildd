@@ -43,6 +43,8 @@ export interface MigrationCollisionRetryResult {
    * exist — normal (human-escalating) handling of `migrationSafety`.
    */
   handled: boolean;
+  /** The renumber task now carrying it (the one just filed, or the one already in flight). */
+  taskId?: string;
 }
 
 export async function tryDispatchMigrationCollisionRetry(
@@ -75,12 +77,12 @@ export async function tryDispatchMigrationCollisionRetry(
       workspaceId,
       entry: {
         kind: 'migration_collision_fixing',
-        detail: `PR #${collision.otherPrNumber}`,
+        detail: collision.otherPrNumber == null ? `${collision.otherFile} on the base` : `PR #${collision.otherPrNumber}`,
       },
     }).catch(() => {
       // Best-effort — the dispatched task is the real state; the comment is UX only.
     });
   }
 
-  return { handled: true };
+  return { handled: true, taskId: result.taskId ?? result.inFlightTaskId };
 }

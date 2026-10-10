@@ -99,13 +99,21 @@ describe('agentRunMayActOnPr', () => {
   it('refuses another PR through its own worker', async () => {
     expect(await agentRunMayActOnPr(RUN, worker(), 7, noLookup)).toBe(false);
   });
+  const reach = (prNumbers: number[], grantedBy = 'human:user-1') => ({ context: { prReach: { prNumbers, grantedBy, grantedAt: 'x' } } });
+  it.each([
+    ['retry subject', { ciRetryPrNumber: 7 }],
+    ['PR link a person stamped when filing it', reach([7])],
+    ['PR link the filing task stamped', reach([7], 'task:task-0')],
+  ])('lets a run act on a PR its task records link: %s', async (_l, task) => {
+    expect(await agentRunMayActOnPr(RUN, worker({}, task), 7, noLookup)).toBe(true);
+  });
   it.each([
     ['title', { title: 'Resolve conflicts and land PR #7' }],
     ['description', { description: 'merge https://github.com/acme/widget/pull/7 once green' }],
     ['context', { context: { prNumber: 7 } }],
-    ['retry subject', { ciRetryPrNumber: 7 }],
-  ])('lets a run act on a PR its task names in its %s', async (_l, task) => {
-    expect(await agentRunMayActOnPr(RUN, worker({}, task), 7, noLookup)).toBe(true);
+    ['unstamped prReach', { context: { prReach: { prNumbers: [7] } } }],
+  ])('refuses a PR merely named in its task %s', async (_l, task) => {
+    expect(await agentRunMayActOnPr(RUN, worker({}, task), 7, noLookup)).toBe(false);
   });
   it('leaves teammates and people alone', async () => {
     expect(await agentRunMayActOnPr({ id: 'person-1', teamId: 'team-1' }, worker(), 7, noLookup)).toBe(true);
@@ -129,11 +137,12 @@ describe('agentRunMayActOnPr', () => {
     it('refuses when the PR belongs to no buildd task', async () => {
       expect(await agentRunMayActOnPr(RUN, orch({ roleSlug: 'organizer' }), 7, { missionOfPr: async () => null })).toBe(false);
     });
-    it('refuses an orchestration task with no mission unless it names the PR', async () => {
+    it('refuses an orchestration task with no mission unless its records link the PR', async () => {
       const lookup = mock(async () => 'mission-1');
       expect(await agentRunMayActOnPr(RUN, worker({}, { roleSlug: 'organizer' }), 7, { missionOfPr: lookup })).toBe(false);
       expect(lookup).not.toHaveBeenCalled();
-      expect(await agentRunMayActOnPr(RUN, worker({}, { roleSlug: 'organizer', title: 'land #7' }), 7, noLookup)).toBe(true);
+      expect(await agentRunMayActOnPr(RUN, worker({}, { roleSlug: 'organizer', title: 'land #7' }), 7, noLookup)).toBe(false);
+      expect(await agentRunMayActOnPr(RUN, worker({}, { roleSlug: 'organizer', ...reach([7]) }), 7, noLookup)).toBe(true);
     });
     it('does not let a builder use the mission rule', async () => {
       expect(await agentRunMayActOnPr(RUN, orch({ roleSlug: 'builder' }), 7, same)).toBe(false);
@@ -142,11 +151,14 @@ describe('agentRunMayActOnPr', () => {
 
   describe('per-task token', () => {
     const token = (taskId = 'task-1') => ({ ...RUN, taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
-    it('acts on a PR its own task names', async () => {
-      expect(await agentRunMayActOnPr(token(), worker({}, { title: 'land #7' }), 7, noLookup)).toBe(true);
+    it('acts on a PR its own task records link', async () => {
+      expect(await agentRunMayActOnPr(token(), worker({}, reach([7])), 7, noLookup)).toBe(true);
+    });
+    it('refuses a PR its own task only names in text', async () => {
+      expect(await agentRunMayActOnPr(token(), worker({}, { title: 'land #7' }), 7, noLookup)).toBe(false);
     });
     it('refuses through another task’s worker, even one its account claimed', async () => {
-      expect(await agentRunMayActOnPr(token('task-2'), worker({}, { title: 'land #7' }), 7, noLookup)).toBe(false);
+      expect(await agentRunMayActOnPr(token('task-2'), worker({}, reach([7])), 7, noLookup)).toBe(false);
     });
     it('refuses through a worker another account claimed', async () => {
       expect(await agentRunMayActOnPr(token(), worker({ accountId: 'runner-2' }), 42, noLookup)).toBe(false);

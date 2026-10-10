@@ -37,12 +37,12 @@ describe('one active-team resolver for the shell and Home', () => {
   });
 });
 
-describe('the headline counts the same set as the Needs-you stack', () => {
-  it('headline, stat strip and stack badge all read needsYouCount, built from the initiative-filtered list', () => {
-    expect(home).toContain('homeHeadline({ live, needsYou: needsYouCount');
-    expect(home).toContain('needsYou={needsYouCount}');
-    expect(home).toContain('count={needsYouCount}');
-    expect(home).toMatch(/const queueNeedsYou = needsYouItems\.filter/);
+describe('the headline counts the same set as the Needs-you list', () => {
+  it('one derived list, built from the initiative-filtered queue, feeds the headline and the cards', () => {
+    expect(home).toMatch(/deriveHomeNeedsYou\(\{ queue: filteredActionQueue/);
+    expect(home).toContain('items={attention}');
+    expect(home).not.toContain('homeHeadlineSentence(');
+    expect(home).not.toContain('needsYouCount');
     expect(home).not.toContain('waiting on you`');
   });
 });

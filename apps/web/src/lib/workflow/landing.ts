@@ -23,8 +23,9 @@ import { sql, type Column, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
-import { kernelDeliveryForPr } from './authority';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { kernelDeliveryForPr, kernelOnSql } from './authority';
+import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
 import type { DrainSummary } from './effects';
 
@@ -49,8 +50,8 @@ export interface LandingInput {
   /** `human:<user>`, `agent:<worker>` or `system:<door>`. */
   actor: string;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
-  /** A person merging past a review verdict; recorded in the transition's `bypass`. */
-  override?: { reason: string } | null;
+  /** A person (or an agent run under a person's task grant) merging past a rail; recorded in the transition's `bypass`. */
+  override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
   /** The delivery version the caller saw (human and agent callers, §7.2). */
   expectedVersion?: number;
 }
@@ -91,12 +92,32 @@ export interface KernelLanding {
 const NOT_LOADED: CurrentView = { state: null, version: 0, head: null, round: 0 };
 
 /** The delivery a person's merge would act on: its version, for the S20 check before any rail runs. */
-export async function kernelLandingView(workspaceId: string, repoFullName: string, prNumber: number, exec: Exec = dbExec): Promise<{ deliveryId: string; current: CurrentView } | null> {
+export interface KernelLandingTreadmill {
+  /** The current S15 cycle (1-based) and the cap. */
+  cycle: number;
+  maxCycles: number;
+  /** Behind refreshes dispatched in the current cycle. */
+  refreshes: number;
+  /** The current cycle's budget is spent: an ESCALATED(landing_needs_human) delivery escalated on the treadmill. */
+  spent: boolean;
+}
+
+export async function kernelLandingView(workspaceId: string, repoFullName: string, prNumber: number, exec: Exec = dbExec): Promise<{
+  deliveryId: string; current: CurrentView; stateReason?: string | null; treadmill?: KernelLandingTreadmill | null;
+} | null> {
   const deliveryId = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber, exec);
   if (!deliveryId) return null;
-  const d = (await loadView({ deliveryId }, exec)).delivery;
+  const view = await loadView({ deliveryId }, exec);
+  const d = view.delivery;
   if (!d) return null;
-  return { deliveryId, current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound } };
+  const t = treadmillCycle(view.attempts.filter((a) => a.family === 'conflict' && a.mode === 'mechanical'));
+  const spent = d.state === 'ESCALATED' && d.stateReason === 'landing_needs_human' && t.refreshes >= DEFAULT_MAX_BEHIND_REFRESHES;
+  return {
+    deliveryId,
+    current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound },
+    stateReason: d.stateReason,
+    treadmill: { cycle: t.cycle, maxCycles: MAX_TREADMILL_CYCLES, refreshes: t.refreshes, spent },
+  };
 }
 
 /**
@@ -109,7 +130,7 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
   return sql`NOT EXISTS (
     SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
     WHERE kd.workspace_id = ${workspaceIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel'
-      AND COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+      AND ${kernelOnSql(sql`kw.git_config`)}
   )`;
 }
 
@@ -118,13 +139,22 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
  * unattended source state) in workspaces whose landing mode is `enforce` and whose
  * kill switch is on. The landing sweep's floor for kernel PRs, which may have no
  * legacy reviewer row at all (composition or human approval).
+ *
+ * A delivery that came back to APPROVED on a transient merge answer (a rate
+ * limit or a 5xx, 9bfe0d23) waits out the `retryAt` GitHub gave it: calling
+ * again before its reset is another strike against the same limit.
  */
 export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec): Promise<Array<{ workspaceId: string; prNumber: number }>> {
   const rows = ((await exec(sql`-- workflow:approved_for_landing
 SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
 WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
   AND w.git_config->'landing'->>'mode' = 'enforce'
-  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  AND ${kernelOnSql(sql`w.git_config`)}
+  AND NOT EXISTS (
+    SELECT 1 FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_version = d.version AND t.command = 'MergeCallResult'
+      AND (t.evidence->>'retryAt')::timestamptz > now()
+  )
 ORDER BY d.updated_at
 LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
   return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
@@ -202,6 +232,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     };
   }
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.door}:landing`, repoFullName: p.repoFullName, prNumber: p.prNumber }, { exec, github: pinned });
+  // 24e1cfad: a retarget the webhook has not delivered is recorded before the merge is asked
+  // for; it drops an approval that reviewed the old diff, and the landing below is refused.
+  if (await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.door}:landing`, deliveryId, live }, pinned, exec)) await settle();
 
   const result = await applyCommand({
     type: 'LandingRequested',
@@ -220,7 +253,9 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
   if (result.result === 'stale' || result.result === 'rejected') {
     const message = result.result === 'stale'
       ? `This PR changed since you looked at it (${result.reason}); nothing was merged. Reload and try again.`
-      : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
+      : result.reason === 'pr_is_draft'
+        ? 'The PR is a draft; nothing was merged. It lands once it is marked ready for review.'
+        : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
     return { merged: false, outcome: result.result, reason: result.reason, message, mergeCommitSha: null, current: result.current, result };
   }
 

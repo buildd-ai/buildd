@@ -1,9 +1,12 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureRepoAccessForPr, refuseForRepoAccess } from '@/lib/github-repo-access-gate';
+import { isIntegrationPermissionError, missingPermissions as missingRepoPermissions } from '@/lib/github-repo-access';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { integrationRefreshOf, resolveMergeMethod } from '@/lib/integration-refresh';
 import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubGraphQL, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
@@ -19,7 +22,7 @@ import { describeProseFindings, scanPrProse } from '@buildd/core/no-prod-data-pr
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
-import { needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
+import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
 import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
@@ -52,7 +55,9 @@ import { canonicalPrState, prRecord } from '@/lib/pr-presentation';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
-import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
+import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
+import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -347,7 +352,8 @@ export async function POST(req: NextRequest) {
     const integrationBase = missionBaseGuard.integrationBase;
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const isStackedPhase = missionBaseGuard.isStackedPhase;
+    let isStackedPhase = missionBaseGuard.isStackedPhase;
+    let stackedBaseMissing = false;
 
     // §6.10 tier 1 (S31): a workspace that opts in has the body and title it is
     // about to open scanned with CI's own prose rule, and a body CI would fail
@@ -460,13 +466,13 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
         if (!ownership.owned) return refusePrOwnership(worker, ownership, 'pr.adopt');
         // Record what was actually adopted: later lookups (get_pr, merge_pr,
         // CI attribution) key off workers.branch, and the generated name
         // claim_task handed this worker was never the real one.
-        if ((ownership.basis === 'interactive_head' || ownership.basis === 'cut_from_assigned_base') && worker.branch !== observedHead) {
+        if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
           await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
           worker.branch = observedHead;
         }
@@ -643,19 +649,20 @@ export async function POST(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    // Get the GitHub repo details
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.create',
+      worker: { id: worker.id, taskId: worker.taskId },
+      head,
+      surface: 'POST /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     // Dedup: if worker already has a PR for THIS head branch, and it isn't
     // already known merged/closed, return the existing one. A worker that
@@ -689,7 +696,7 @@ export async function POST(req: NextRequest) {
 
     // An agent run opens or adopts a PR only from a head its task owns. The
     // PR number is not known yet; dedup below re-asks with it, in case the
-    // task names the PR it found.
+    // task's records link the PR it found.
     const ownershipApplied = ownershipApplies(prAccess.actor, account);
     const ownershipInput = ownershipApplied
       ? {
@@ -697,7 +704,7 @@ export async function POST(req: NextRequest) {
           task: worker.task,
           protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
           interactiveWorker: isInteractiveWorker,
-          otherHeadHolders: needsHeadHolders(isInteractiveWorker, worker.branch, worker.task) ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
         }
       : null;
     const headOwnership = ownershipInput
@@ -708,7 +715,7 @@ export async function POST(req: NextRequest) {
     // attribution, and the DERIVE-DON'T-ACCEPT mission-base check just below)
     // all key off workers.branch, and the generated name claim_task handed
     // this worker was never the real one.
-    if (headOwnership && headOwnership.owned && (headOwnership.basis === 'interactive_head' || headOwnership.basis === 'cut_from_assigned_base') && worker.branch !== head) {
+    if (headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head' && worker.branch !== head) {
       await db.update(workers).set({ branch: head, updatedAt: new Date() }).where(eq(workers.id, workerId));
       worker.branch = head;
     }
@@ -982,6 +989,24 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    // A stacked phase's predecessor branch is deleted when its PR merges into
+    // the integration branch (often under a differently-named head). The phase
+    // then belongs on the integration branch like any other mission task, so
+    // check the ref live rather than 400 on a base that no longer exists.
+    if (isStackedPhase && integrationBase && typeof taskContext?.baseBranch === 'string') {
+      try {
+        await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/git/ref/heads/${taskContext.baseBranch}`,
+        );
+      } catch (err) {
+        if (/GitHub API error: 404/.test(err instanceof Error ? err.message : String(err))) {
+          stackedBaseMissing = true;
+          isStackedPhase = false;
+        }
+      }
+    }
+
     // ── PART 2: the integration branch may already be GONE ──────────────────
     //
     // A merging mission PR deletes the integration branch by design
@@ -1031,10 +1056,7 @@ export async function POST(req: NextRequest) {
     // stacked-plan phase (`isStackedPhaseBase` — its correct base is a
     // sibling task's own branch, not the integration branch).
     if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
-      // A worker assigned the integration branch itself pushed its real work to a
-      // task branch cut from it; that head is legitimate (ownership checked above).
-      const assignedIntegrationBranch = worker.branch === integrationBase && head !== integrationBase;
-      if (worker.branch && head !== worker.branch && !assignedIntegrationBranch) {
+      if (worker.branch && head !== worker.branch) {
         const error = `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`;
         // The embedded branch names are exactly what normalizeErrorSignature
         // collapses, so four workers hitting this refusal land on one row
@@ -1097,6 +1119,7 @@ export async function POST(req: NextRequest) {
         'main',
       ],
       integrationBaseMissing,
+      stackedBaseMissing,
     });
 
     // Create the PR via GitHub API
@@ -1133,6 +1156,36 @@ export async function POST(req: NextRequest) {
       // that was never created, on a task whose own missionId is unset so the
       // integration guard above never ran) rather than from the guard.
       const message = err instanceof Error ? err.message : String(err);
+      // The installation's recorded permissions said yes; GitHub says no.
+      // Same typed refusal as the pre-check, not a raw 500.
+      if (isIntegrationPermissionError(message)) {
+        const perms = (repo.installation.permissions ?? {}) as Record<string, string>;
+        const gaps = missingRepoPermissions(perms, 'pr.create');
+        return refuseForRepoAccess({
+          workspaceId: worker.workspaceId,
+          problem: {
+            reason: 'permission_missing',
+            operation: 'pr.create',
+            repoFullName: repo.fullName,
+            installation: {
+              id: repo.installation.id,
+              installationId: repo.installation.installationId,
+              accountLogin: repo.installation.accountLogin,
+              accountType: repo.installation.accountType,
+              accountId: repo.installation.accountId,
+              installedByUserId: repo.installation.installedByUserId ?? null,
+              repositorySelection: repo.installation.repositorySelection ?? null,
+              suspendedAt: repo.installation.suspendedAt ?? null,
+              permissions: perms,
+            },
+            missingPermissions: gaps.length > 0 ? gaps : [{ name: 'pull_requests', need: 'write', have: perms.pull_requests ?? null }],
+            repoRow: null,
+          },
+          worker: { id: worker.id, taskId: worker.taskId },
+          head,
+          surface: 'POST /api/github/pr',
+        });
+      }
       if (/GitHub API error: 422/.test(message) && /"field":"base"/.test(message)) {
         if (looksLikeMissionIntegrationBranch(effectiveBase)) {
           await reportMissionBranchUnresolved({
@@ -1353,7 +1406,7 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const requestBody = await req.json();
-    const { workerId, prNumber, body: newPrBody, draft: draftUpdate } = requestBody;
+    const { workerId, prNumber, body: newPrBody, draft: draftUpdate, workspaceId: prWorkspaceId } = requestBody;
     // Presence of `body` switches this call from closing the PR to rewriting
     // its body — the two things this route's only caller set ever needed
     // from a bare PATCH. See update_pr in mcp-tools.ts.
@@ -1364,9 +1417,6 @@ export async function PATCH(req: NextRequest) {
     const capability = isReadyUpdate ? 'pr.mark_ready' as const
       : isBodyUpdate ? 'pr.update_body' as const : 'pr.close' as const;
 
-    if (!workerId) {
-      return NextResponse.json({ error: 'workerId required' }, { status: 400 });
-    }
     if (!prNumber || typeof prNumber !== 'number') {
       return NextResponse.json({ error: 'prNumber required' }, { status: 400 });
     }
@@ -1374,42 +1424,57 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'body must be a string' }, { status: 400 });
     }
 
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, workerId),
-      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
-    });
-
-    if (!worker) {
-      return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let worker: any;
+    if (workerId) {
+      worker = await db.query.workers.findFirst({
+        where: eq(workers.id, workerId),
+        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
+      });
+      if (!worker) {
+        return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
+      }
+    } else {
+      // workerId absent — resolve the owning worker from prNumber, as merge_pr does.
+      // The ownership checks below then apply to the resolved worker unchanged.
+      const resolved = await resolveWorkerByPrNumber(account, prNumber, prWorkspaceId);
+      if (typeof resolved.status === 'number') {
+        return NextResponse.json(
+          { error: resolved.error, ...(resolved.candidates ? { candidates: resolved.candidates } : {}) },
+          { status: resolved.status },
+        );
+      }
+      worker = resolved;
     }
 
     if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
     // A per-task token, and an agent run on its runner's key, may act only on a
-    // PR its task owns: its own worker's PR or one the task names.
+    // PR its task owns: its own worker's PR or one its task's records link.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: `A task token may ${isBodyUpdate ? 'update' : 'close'} only its own PR` }, { status: 403 });
     }
     if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-      return NextResponse.json({ error: `An agent run may ${isBodyUpdate ? 'update' : 'close'} only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
+      return NextResponse.json({ error: `An agent run may ${isBodyUpdate ? 'update' : 'close'} only its own PR (#${worker.prNumber ?? 'none'}) or one its task's records link` }, { status: 403 });
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.update',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'PATCH /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     void recordCapabilityDecision({ capability, decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     if (isReadyUpdate) {
@@ -1493,6 +1558,22 @@ function mergePrRefreshResponse(outcome: RefreshOutcome): { kind: RefreshOutcome
  * two in-flight outcomes are 202 because nothing more is asked of the caller —
  * the next green on the named head lands the PR.
  */
+/**
+ * merge_pr's `overrides`: freshness and size only. The review verdict is not
+ * overridable here (a person uses the landing page or a fresh review), and red
+ * CI and deny paths are overridable nowhere.
+ */
+function parseMergeOverrides(raw: unknown): { kinds: LandingOverrideKind[] } | { error: string } {
+  if (raw == null) return { kinds: [] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { error: 'overrides must be an object: { freshness?: boolean, size?: boolean }' };
+  const o = raw as Record<string, unknown>;
+  const unknownKeys = Object.keys(o).filter((k) => !(LANDING_OVERRIDE_KINDS as readonly string[]).includes(k));
+  if (unknownKeys.length) {
+    return { error: `overrides accepts only ${LANDING_OVERRIDE_KINDS.join(' and ')} (got ${unknownKeys.join(', ')}); the review verdict, red CI and deny paths are not overridable from merge_pr` };
+  }
+  return { kinds: LANDING_OVERRIDE_KINDS.filter((k) => o[k] === true) };
+}
+
 function mergePrLandingResponse(
   outcome: LandingOutcome,
   pr: { prNumber: number; prUrl: string | null; tier: string },
@@ -1522,8 +1603,13 @@ function mergePrLandingResponse(
         ok: false,
         merged: false,
         landing: outcome,
-        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}.`,
-        hint: 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
+        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}${outcome.reason ? `: ${outcome.reason}` : ''}.`,
+        // An ESCALATED delivery never returns to APPROVED on its own: promising an
+        // automatic merge there strands the PR behind a caller who stops trying.
+        ...(outcome.needsPerson ? { needsPerson: true } : {}),
+        hint: outcome.needsPerson
+          ? 'Nothing will land this on its own: a person must act. The owner can re-review it from the dashboard, so an approval moves it back to APPROVED, or merge it with a verdict override from the landing page.'
+          : 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
         pr: prRef,
       }, { status: 202 });
     case 'needs_fix':
@@ -1593,6 +1679,27 @@ function mergePrKernelResponse(k: KernelLanding, pr: { prNumber: number; prUrl: 
   }, { status });
 }
 
+/**
+ * The context of the task that owns PR `prNumber` in this workspace — for a
+ * door whose caller may not be that task (merge_pr from another run, or with
+ * no workerId). Null when no task owns it or the read fails.
+ */
+async function prOwnerTaskContext(workspaceId: string, prNumber: number): Promise<unknown> {
+  try {
+    const owners = await db.query.workers.findMany({
+      where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber), isNotNull(workers.taskId)),
+      columns: { taskId: true },
+    });
+    for (const owner of owners) {
+      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, owner.taskId!), columns: { context: true } });
+      if (integrationRefreshOf(task?.context)) return task!.context;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -1631,7 +1738,7 @@ export async function PUT(req: NextRequest) {
       // A per-task token is held to the same rule below, with its own message.
       if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
         void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
+        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task's records link` }, { status: 403 });
       }
     } else {
       // workerId absent — resolve worker from prNumber across the account's workspaces.
@@ -1646,13 +1753,19 @@ export async function PUT(req: NextRequest) {
       worker = resolved;
     }
     // A per-task token, and an agent run on its runner's key, may merge only a
-    // PR its task owns: its own worker's PR or one the task names.
+    // PR its task owns: its own worker's PR or one its task's records link.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }
 
     const workspace = worker.workspace;
+    // An integration-refresh PR lands as a merge commit whatever the caller
+    // asked for (integration-refresh.ts); any other PR keeps the request.
+    const effectiveMergeMethod = resolveMergeMethod(
+      integrationRefreshOf(worker.task?.context) ? worker.task.context : await prOwnerTaskContext(worker.workspaceId, prNumber),
+      mergeMethod as 'merge' | 'squash' | 'rebase',
+    );
 
     // Every merge-policy decision on this handler goes through here, so a new
     // refusal arm cannot be added without a ledger row. `mergePolicyTier` is
@@ -1676,18 +1789,60 @@ export async function PUT(req: NextRequest) {
       });
     };
 
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
+    // The landing escape hatch (workflow-state-kernel.md S15 cycles): merging past base
+    // freshness or the size cap. A person (an OAuth MCP session) makes the call directly; an
+    // agent run only under a grant a person put on its own task (lib/landing-override-grant.ts).
+    // Never the review verdict, never red CI or a deny path.
+    const requestedOverrides = parseMergeOverrides(body.overrides);
+    if ('error' in requestedOverrides) {
+      return NextResponse.json({ error: requestedOverrides.error }, { status: 400 });
+    }
+    let landingActor: LandingActor = { kind: 'agent', workerId: worker.id ?? null };
+    let kernelOverride: { reason: string; kinds: LandingOverrideKind[]; grantedBy?: string } | null = null;
+    if (requestedOverrides.kinds.length > 0) {
+      const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
+      if (!reason) {
+        return NextResponse.json({ error: 'reason is required with overrides: say why this PR should merge past them' }, { status: 400 });
+      }
+      const override = Object.fromEntries(requestedOverrides.kinds.map((k) => [k, true])) as { freshness?: boolean; size?: boolean };
+      const personId = requestingPerson(null, account);
+      if (personId) {
+        landingActor = { kind: 'human', userId: personId, override, overrideReason: reason };
+        kernelOverride = { reason, kinds: requestedOverrides.kinds };
+      } else {
+        // The calling run's own task: its token's task, or the worker it names.
+        const callerTaskId = account.taskScope?.taskId ?? (workerId ? worker.taskId ?? null : null);
+        const callerTask = callerTaskId
+          ? await db.query.tasks.findFirst({ where: eq(tasks.id, callerTaskId), columns: { id: true, context: true } })
+          : null;
+        const granted = grantAllows(callerTask?.context, prNumber, requestedOverrides.kinds);
+        if (!granted.ok) {
+          recordMergeGate('rejected', granted.reason, { overrides: requestedOverrides.kinds });
+          void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'override_not_granted' });
+          return NextResponse.json({
+            error: granted.reason,
+            hint: 'Merging past freshness or the size cap is a person\'s call. Report the PR as blocked and let the owner merge it ("Merge anyway" on the landing page, or merge_pr with overrides from their own session).',
+          }, { status: 403 });
+        }
+        landingActor = { kind: 'agent', workerId: worker.id ?? null, grant: { override, grantedBy: granted.grant.grantedBy, reason } };
+        kernelOverride = { reason, kinds: requestedOverrides.kinds, grantedBy: granted.grant.grantedBy };
+      }
+      recordMergeGate('bypassed', `merge_pr override (${requestedOverrides.kinds.join(', ')}) by ${landingActor.kind === 'human' ? 'a person' : `an agent run under ${kernelOverride.grantedBy}'s grant`}: ${reason}`, { overrides: requestedOverrides.kinds });
     }
 
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.merge',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'PUT /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     // A kernel-owned PR (workflow-state-kernel §14 Slice C): the kernel merges it
     // and owns the post-merge work; this door keeps its policy and rails. A
@@ -1835,13 +1990,13 @@ export async function PUT(req: NextRequest) {
           prNumber,
           eventHeadSha: null,
           door: 'merge_pr',
-          actor: { kind: 'agent', workerId: worker.id ?? null },
+          actor: landingActor,
           mode: landingMode,
           policy,
           owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
           releaseConfig: workspace.releaseConfig ?? null,
           gitConfig: workspace.gitConfig ?? null,
-          mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+          mergeMethod: effectiveMergeMethod,
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         });
         if (landingMode === 'enforce') {
@@ -2095,8 +2250,10 @@ export async function PUT(req: NextRequest) {
       const kernel = kernelOwned
         ? await landThroughKernel({
             workspaceId: worker.workspaceId, installationId: repo.installation.installationId, repoFullName: repo.fullName, prNumber, headSha,
-            door: force ? 'merge_pr_force' : 'merge_pr', actor: `agent:${worker.id ?? 'unknown'}`,
-            mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+            door: force ? 'merge_pr_force' : 'merge_pr',
+            actor: landingActor.kind === 'human' ? `human:${landingActor.userId}` : `agent:${worker.id ?? 'unknown'}`,
+            mergeMethod: effectiveMergeMethod,
+            ...(kernelOverride ? { override: kernelOverride } : {}),
             ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           })
         : null;
@@ -2104,7 +2261,7 @@ export async function PUT(req: NextRequest) {
         repo.installation.installationId,
         repo.fullName,
         prNumber,
-        mergeMethod as 'merge' | 'squash' | 'rebase',
+        effectiveMergeMethod,
         headSha,
       ) };
     });
@@ -2341,18 +2498,19 @@ export async function GET(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
-    if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
-      return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
-    }
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-      with: { installation: true },
+    // Typed refusal naming the unmet GitHub requirement (lib/github-repo-access-gate.ts).
+    const repoAccess = await ensureRepoAccessForPr({
+      workspace,
+      workspaceId: worker.workspaceId,
+      operation: 'pr.read',
+      worker: { id: worker.id, taskId: worker.taskId },
+      surface: 'GET /api/github/pr',
     });
-
-    if (!repo || !repo.installation) {
-      return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
+    if (!repoAccess.ok) return repoAccess.response;
+    if (!workspace) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
+    const repo = repoAccess.repo;
 
     const prNumber = resolvedPrNumber;
 

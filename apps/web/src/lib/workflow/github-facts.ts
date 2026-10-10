@@ -7,7 +7,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
-import { isContentEquivalentHead } from '@/lib/pr-content-equivalence';
+import { isBaseDiffEquivalent, isContentEquivalentHead } from '@/lib/pr-content-equivalence';
+import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
 
@@ -18,6 +19,7 @@ interface GithubPull {
   merge_commit_sha?: string | null;
   updated_at?: string | null;
   mergeable_state?: string | null;
+  draft?: boolean;
   head?: { sha?: string; repo?: { full_name?: string } | null };
   base?: { ref?: string };
 }
@@ -35,10 +37,12 @@ export function toLivePr(pr: GithubPull | null | undefined): LivePr | null {
     mergeCommitSha: pr.merge_commit_sha ?? null,
     updatedAt: pr.updated_at ?? null,
     mergeableState: pr.mergeable_state ?? null,
+    ...(pr.draft ? { draft: true } : {}),
   };
 }
 
-const PASSING = new Set(['success', 'neutral', 'skipped']);
+// One rule with the landing door (ci-verdict.ts), so the two cannot drift.
+const PASSING = PASSING_CONCLUSIONS;
 
 /** §10.5 revalidation of a CI repair: green only when every suite completed and none failed. */
 export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: string | null }> | null | undefined): boolean | null {
@@ -47,7 +51,7 @@ export function ciGreenFromSuites(suites: Array<{ status?: string; conclusion?: 
   return suites.every((x) => PASSING.has(String(x.conclusion ?? '')));
 }
 
-const FAILING = new Set(['failure', 'timed_out', 'startup_failure']);
+const FAILING = FAILING_CONCLUSIONS;
 
 /** §6.10: which check runs fail on a commit, and whether all of them finished. null = no runs. */
 export function checkRunsSummary(runs: Array<{ name?: string; status?: string; conclusion?: string | null }> | null | undefined): { complete: boolean; failing: string[] } | null {
@@ -83,8 +87,10 @@ export function githubReader(installationId: number, api: typeof githubApi = git
     },
     async checkRuns(repoFullName, sha) {
       try {
-        const data = await api(installationId, `/repos/${repoFullName}/commits/${sha}/check-runs?per_page=100`) as { check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> } | null;
-        return checkRunsSummary(data?.check_runs);
+        const read = await listAllCheckRuns<{ name?: string; status?: string; conclusion?: string | null }>(api, installationId, repoFullName, sha);
+        const summary = checkRunsSummary(read.items);
+        // A read short of total_count is unknown, never "complete".
+        return summary && !read.complete ? { ...summary, complete: false } : summary;
       } catch {
         return null;
       }
@@ -93,9 +99,9 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       try {
         const [runs, checks] = await Promise.all([
           api(installationId, `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&per_page=50`) as Promise<{ workflow_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
-          api(installationId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`) as Promise<{ check_runs?: Array<{ name?: string | null; conclusion?: string | null }> } | null>,
+          listAllCheckRuns<{ name?: string | null; conclusion?: string | null }>(api, installationId, repoFullName, headSha),
         ]);
-        return failingNames([...(runs?.workflow_runs ?? []), ...(checks?.check_runs ?? [])]);
+        return failingNames([...(runs?.workflow_runs ?? []), ...checks.items]);
       } catch {
         return null;
       }
@@ -128,6 +134,10 @@ export function githubReader(installationId: number, api: typeof githubApi = git
     async contentEquivalent(repoFullName, baseRef, fromSha, toSha) {
       // isContentEquivalentHead fails closed: an unreadable compare is "not equivalent".
       const r = await isContentEquivalentHead({ installationId, repoFullName, baseRef, fromSha, toSha, api });
+      return r.equivalent;
+    },
+    async baseDiffEquivalent(repoFullName, fromBase, toBase, headSha) {
+      const r = await isBaseDiffEquivalent({ installationId, repoFullName, fromBase, toBase, sha: headSha, api });
       return r.equivalent;
     },
   };

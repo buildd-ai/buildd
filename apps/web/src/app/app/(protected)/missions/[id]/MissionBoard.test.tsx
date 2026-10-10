@@ -36,17 +36,12 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('1/4');
   });
 
-  // Regression (surface audit, 390px/320px): a runner with ten slots ran its
-  // boxes past the Fleet cell's divider onto "nothing waiting", and a phase's
-  // progress squares pushed its count past the viewport. The slot row wraps
-  // inside its cell; the squares give way before the label and count do.
-  it('keeps a wide slot row inside the Fleet cell', () => {
-    const rows = [...html.matchAll(/data-testid="fleet-runner"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
-    expect(rows.length).toBeGreaterThan(0);
-    for (const cls of rows) {
-      expect(cls).toContain('flex-wrap');
-      expect(cls).toContain('min-w-0');
-    }
+  // Runners are shared across missions, so the Fleet cell counts this
+  // mission's agents instead of drawing runner squares.
+  it('names this mission\'s agents, not the shared runners', () => {
+    expect(html).not.toContain('data-testid="fleet-runner"');
+    const fleet = html.match(/data-testid="fleet-agents"[^>]*>([^<]+)</)![1];
+    expect(fleet).toMatch(/^(No agent|\d+ agents?) on this mission/);
   });
 
   it('lets the phase progress squares shrink so the count stays in view', () => {
@@ -566,5 +561,62 @@ describe('MissionBoard — a failed tile says so in words', () => {
     for (const m of html.matchAll(/data-testid="board-tile-body"[^>]*>([\s\S]*?)<\/div>/g)) {
       expect(m[1].replace(/<span class="flex-1"><\/span>/g, '').trim()).not.toBe('');
     }
+  });
+});
+
+// Surface audit: a local-executor mission's ready task waits for an
+// interactive session to claim it (runners never pick it up), so its tile
+// must not promise "the next free slot".
+describe('MissionBoard — ready tile wording follows the executor', () => {
+  const readyTile = (executor: 'runner' | 'local' | null) => {
+    const model = boardFixture('running');
+    model.tasks.guide = { ...model.tasks.guide, status: 'ready' };
+    const html = renderToStaticMarkup(<MissionBoard model={model} missionId="mission-1" executor={executor} />);
+    return (html.split('data-task-id="guide"')[1] ?? '').split('</a>')[0].replace(/<[^>]+>/g, ' ');
+  };
+  it('a runner mission keeps "next free slot"', () => {
+    expect(readyTile('runner')).toContain('next free slot');
+    expect(readyTile(null)).toContain('next free slot');
+  });
+  it('a local mission says it needs a local claim', () => {
+    const tile = readyTile('local');
+    expect(tile).not.toContain('next free slot');
+    expect(tile).toContain('needs a local claim');
+  });
+});
+
+// Surface audit (touch, 390/320): landed rows, ticker chips and the goal
+// links were 17–32px tall. Each is 44px below md and keeps desktop density.
+describe('MissionBoard — touch targets', () => {
+  const classesOf = (html: string, testid: string) =>
+    [...html.matchAll(new RegExp(`data-testid="${testid}"[^>]*class="([^"]+)"`, 'g'))].map(m => m[1]);
+  it('landed rows, ticker chips and goal criteria rows are 44px on touch', () => {
+    const complete = render('complete', { completionText: 'x' });
+    const running = render('running');
+    const groups = {
+      landed: classesOf(complete, 'board-tile').filter(c => c.includes('border-b')),
+      ticker: classesOf(running, 'mission-ticker-event'),
+      criteria: classesOf(running, 'goal-criterion'),
+    };
+    for (const [name, list] of Object.entries(groups)) {
+      expect({ name, found: list.length > 0 }).toEqual({ name, found: true });
+      for (const cls of list) expect({ name, touch: cls.includes('min-h-11') && cls.includes('md:min-h-0') }).toEqual({ name, touch: true });
+    }
+  });
+});
+
+describe('MissionBoard tile ↻ badge', () => {
+  it('with the shared projection it is the repair count, not every attempt (a review run is audit)', async () => {
+    const { missionTaskStripFixture, stripFixtureId, DELIVERY_REPAIRING } = await import('../../../dev/fixtures/mission-task-strip-fixtures');
+    const f = missionTaskStripFixture('delivery');
+    const badge = (html: string) => {
+      const at = html.indexOf(`data-task-id="${stripFixtureId(DELIVERY_REPAIRING)}"`);
+      return /data-testid="board-tile-retry"[^>]*>([^<]+)</.exec(html.slice(at))?.[1];
+    };
+    const withDeliveries = renderToStaticMarkup(<MissionBoard model={f.model} missionId="m" deliveries={f.deliveries} />);
+    expect(badge(withDeliveries)).toBe('↻2');
+    // Without it, the board's own attempt count, as before.
+    const without = renderToStaticMarkup(<MissionBoard model={f.model} missionId="m" />);
+    expect(badge(without)).toBe(`↻${f.model.tasks[stripFixtureId(DELIVERY_REPAIRING)].attempt}`);
   });
 });

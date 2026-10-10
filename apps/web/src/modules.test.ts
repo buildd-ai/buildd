@@ -53,7 +53,7 @@ describe('composition root', () => {
     expect(byEvent('team.created')).toEqual(['roles-skills:seed-default-roles']);
     expect(byEvent('task.retrying')).toEqual(['notifications:push-task-retrying']);
     // The evidence record is written before the verdict that reads it.
-    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'jev-decisions:verdict-on-terminal']);
+    expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence', 'health-quality:failure-pattern-sentinel', 'jev-decisions:verdict-on-terminal']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     expect(byEvent('pr.merged')).toEqual([
@@ -63,6 +63,7 @@ describe('composition root', () => {
       'missions:loop-advance-on-merge', 'missions:open-mission-integration-pr', 'releases:early-release-undraft-stacked',
     ]);
     expect(byEvent('pr.review_ready')).toEqual(['releases:early-release-dispatch']);
+    expect(byEvent('task.left_mission')).toEqual(['visual-qa:surface-audit-detach']);
     // The mission wakes and dependents unblock before the release trigger.
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
@@ -77,7 +78,8 @@ describe('composition root', () => {
       'reviews:dead-pr-shutdown',
       'jev-decisions:verdict-on-close',
     ]);
-    expect(byEvent('pr.close_delivered')).toEqual(['reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
+    expect(byEvent('pr.close_delivered')).toEqual(['jev-decisions:merge-readiness-outcome', 'reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
+    expect(byEvent('sweep.pr_hourly')).toEqual(['jev-decisions:merge-readiness-outcome-sweep', 'jev-decisions:escalation-dispatch-sweep']);
     expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
     expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);

@@ -332,6 +332,19 @@ export async function PATCH(
           );
         }
       }
+      // The workflow kernel kill switch (docs/specs/workflow-state-kernel.md §14):
+      // a boolean or null on write. Reads tolerate older string forms through the
+      // one reading (lib/workflow/authority.ts), but a new write says exactly
+      // which side it means.
+      if ('workflowKernel' in gitConfig) {
+        const v = (gitConfig as Record<string, unknown>).workflowKernel;
+        if (v !== null && typeof v !== 'boolean') {
+          return NextResponse.json(
+            { error: 'gitConfig.workflowKernel must be true, false (the kill switch: deliveries go to legacy) or null to clear' },
+            { status: 400 },
+          );
+        }
+      }
       // Path-claim enforcement opt-in: exact values only, so a truthy typo can
       // never quietly turn edit denial on (or appear to and not).
       if ('pathClaimEnforcement' in gitConfig) {
@@ -364,6 +377,12 @@ export async function PATCH(
               { status: 400 },
             );
           }
+        }
+      }
+      if ('overlapHotspots' in gitConfig) {
+        const hs = (gitConfig as Record<string, unknown>).overlapHotspots;
+        if (hs !== null && (!Array.isArray(hs) || hs.length > 200 || !hs.every((h) => typeof h === 'string' && h.trim().length > 0 && h.trim() !== '**'))) {
+          return NextResponse.json({ error: 'gitConfig.overlapHotspots must be null or a list (at most 200) of non-empty paths or dir/** patterns; a repo-wide pattern is not a hotspot' }, { status: 400 });
         }
       }
       if ('mergiraf' in gitConfig) {
@@ -400,6 +419,29 @@ export async function PATCH(
           { error: 'gitConfig.runnerSizeDerived is set by buildd; send null to clear it' },
           { status: 400 },
         );
+      }
+      // Member repo access (lib/member-repo-access.ts): exact values only, and
+      // turning it on needs a linked repo, or every member would be refused.
+      if ('memberRepoAccess' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).memberRepoAccess;
+        if (mode !== null && mode !== 'off' && mode !== 'require_read') {
+          return NextResponse.json(
+            { error: "gitConfig.memberRepoAccess must be 'off', 'require_read' or null" },
+            { status: 400 },
+          );
+        }
+        if (mode === 'require_read') {
+          const linked = await db.query.workspaces.findFirst({
+            where: eq(workspaces.id, id),
+            columns: { githubRepoId: true },
+          });
+          if (!linked?.githubRepoId) {
+            return NextResponse.json(
+              { error: 'gitConfig.memberRepoAccess needs a linked GitHub repository first' },
+              { status: 400 },
+            );
+          }
+        }
       }
       // GitHub credentials opt-out for self-hosted agents: the one accepted
       // value is 'runner', so a typo cannot hand agents the operator's token.

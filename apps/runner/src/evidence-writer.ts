@@ -107,6 +107,8 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   // Team agent model endpoint: authToken is a credential the agent env carries.
   modelEndpoint: 'secret',
   modelEndpointIgnored: 'not_secret',
+  // A per-run ENABLE_TOOL_SEARCH=false marker, not a credential.
+  toolSearchDisabled: 'not_secret',
   // A mode marker. The task-scoped token is fetched later, never on the claim;
   // its ghs_ shape is caught by the redactor's generic token pattern.
   githubCredentials: 'not_secret',
@@ -118,6 +120,8 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   roleEnvMissing: 'not_secret',
   skillBundles: 'secret',
   questionGate: 'not_secret',
+  // How the model credential was chosen (scope, policy, runnerLocalAllowed); no secret.
+  credentialDecision: 'not_secret',
 };
 
 export interface WorkerSecretChannels {
@@ -133,7 +137,7 @@ export interface WorkerSecretChannels {
     apiKey?: string;
     [k: string]: unknown;
   };
-  modelEndpoint?: { authToken?: string; [k: string]: unknown };
+  modelEndpoint?: { authToken?: string; headers?: Record<string, string>; [k: string]: unknown };
   roleInstructions?: { slug?: string; content?: string } | null;
   skillBundles?: Array<{ slug?: string; content?: string; files?: Array<{ path?: string; content?: string; encoding?: string }> }>;
   /** The packaged role bundle held in memory (not a claim field; carries the same kind of text). */
@@ -195,6 +199,11 @@ export function buildWorkerSecretValues(
     { label: 'codexIdToken', value: cx?.idToken },
     { label: 'codexApiKey', value: cx?.apiKey },
     { label: 'modelEndpointAuthToken', value: worker.modelEndpoint?.authToken },
+    // Header values (an AI Gateway token), whole and without their `Bearer ` scheme.
+    ...Object.entries(worker.modelEndpoint?.headers ?? {}).flatMap(([name, value]) => [
+      { label: `modelEndpointHeader:${name}`, value },
+      { label: `modelEndpointHeader:${name}`, value: typeof value === 'string' ? value.replace(/^Bearer\s+/i, '') : undefined },
+    ]),
     ...promptTextValues(worker),
   ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
 }

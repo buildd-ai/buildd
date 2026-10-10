@@ -178,7 +178,12 @@ async function runSession(manager: InstanceType<typeof WorkerManager>, workerId:
   const task = makeTask();
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 300));
+  // Poll for the terminal PATCH instead of sleeping a fixed time: the first
+  // session in a cold process can take longer than 300ms on a loaded runner.
+  for (let i = 0; i < 200 && !terminalCall(); i++) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  await new Promise(r => setTimeout(r, 50));
 }
 
 /** An assistant turn plus a result, so there is real measurement to lose. */

@@ -24,9 +24,15 @@
  * (`missions.branchRefreshConflictTaskId`), reusing the same shape as
  * `conflict-retry.ts`'s per-PR retries: its PR targets the integration branch
  * and must land as a merge commit too (see `requireMergeCommit` in its
- * context, honored by `auto-merge.ts` / `pr-landing.ts`) — squashing it would
- * lose the ancestry the merge was for, and the same conflict would reappear on
- * the very next refresh.
+ * context, honored by every merge door via `integration-refresh.ts`) —
+ * squashing it would lose the ancestry the merge was for, and the same
+ * conflict would reappear on the very next refresh.
+ *
+ * A merged refresh PR is not taken on trust: the task stays the mission's one
+ * conflict task until the integration branch's live head provably contains the
+ * trunk sha it was dispatched for (`settleConflictTask`). A squash that slipped
+ * through (a person merging on GitHub) is recorded once and stops further
+ * dispatches instead of opening a new PR for the same conflict on every merge.
  *
  * ## Debounce
  *
@@ -47,9 +53,9 @@
 
 import { randomUUID } from 'node:crypto';
 import { db } from '@buildd/core/db';
-import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { missions, missionNotes, tasks, workers, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
-import { and, eq, inArray, lt, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, lt, isNull, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
@@ -58,6 +64,7 @@ import { resolveMissionRepoWorkspaceId } from '@/lib/mission-repo-workspace';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { findMissionPrOwner } from '@/lib/mission-pr';
 import { workspaceRepoMatches } from '@/lib/repo-scope';
+import { integrationRefreshOf, verifyRefreshLanded } from '@/lib/integration-refresh';
 
 /** How long a single-flight claim holds, before another caller may retry it. */
 export const BRANCH_REFRESH_LEASE_MS = 45_000;
@@ -80,6 +87,7 @@ export type MissionBranchRefreshOutcome =
         | 'mission_terminal'
         | 'mission_pr_merged'
         | 'conflict_task_open'
+        | 'refresh_unverified'
         | 'in_flight'
         | 'already_current'
         | 'no_repo'
@@ -177,16 +185,24 @@ export async function refreshMissionIntegrationBranch(
     // The pre-lease snapshot may be stale after another caller finishes.
     const current = await db.query.missions.findFirst({ where: eq(missions.id, missionId) });
     if (!current || current.branchRefreshLeaseToken !== leaseToken) return { kind: 'skipped', reason: 'in_flight' };
-    // A conflict task is still live: stop retrying until it finishes (self-heals
-    // once it observes the task reached a terminal status).
+    // A conflict task is in flight: stop retrying until it is settled — its PR
+    // merged AND the branch provably caught up, or it ended without a merge.
+    // Every later trunk advance coalesces into it rather than opening another.
     if (current.branchRefreshConflictTaskId) {
-      const conflictTask = await db.query.tasks.findFirst({
-        where: eq(tasks.id, current.branchRefreshConflictTaskId),
-        columns: { id: true, status: true },
+      const settled = await settleConflictTask({
+        taskId: current.branchRefreshConflictTaskId,
+        missionId,
+        branch,
+        trunk,
+        workspaceId: workspace.id,
+        installationId,
+        repoFullName: repo.fullName,
       });
-      const terminal = conflictTask && (TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status);
-      if (!terminal) {
-        return { kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: current.branchRefreshConflictTaskId };
+      if (settled.kind === 'open') {
+        return { kind: 'skipped', reason: 'conflict_task_open', conflictTaskId: current.branchRefreshConflictTaskId, ...(settled.detail ? { detail: settled.detail } : {}) };
+      }
+      if (settled.kind === 'unverified') {
+        return { kind: 'skipped', reason: 'refresh_unverified', conflictTaskId: current.branchRefreshConflictTaskId, detail: settled.detail };
       }
       await db
         .update(missions)
@@ -247,6 +263,8 @@ export async function refreshMissionIntegrationBranch(
           mission,
           branch,
           trunk,
+          trunkSha,
+          installationId,
           workspaceId: workspace.id,
           repoFullName: repo.fullName,
           leaseToken,
@@ -291,19 +309,120 @@ export async function refreshMissionIntegrationBranch(
 }
 
 /** Mission feed visibility. Best-effort — a failed note must never affect the refresh. */
-async function postRefreshNote(missionId: string, body: string): Promise<void> {
+async function postRefreshNote(missionId: string, body: string, title = 'Integration branch refreshed'): Promise<void> {
   try {
     await db.insert(missionNotes).values({
       missionId,
       authorType: 'system',
       type: 'update',
-      title: 'Integration branch refreshed',
+      title,
       body,
       status: 'open',
     });
   } catch (err) {
     console.error(`[mission-branch-refresh] failed to post note for mission ${missionId}:`, err);
   }
+}
+
+type ConflictTaskSettlement =
+  | { kind: 'open'; detail?: string }
+  | { kind: 'cleared' }
+  | { kind: 'unverified'; detail: string };
+
+/**
+ * Is the mission's one conflict-resolution task done with?
+ *
+ * A task reaching a terminal status is not enough: a builder completes once its
+ * PR is open, and clearing the pointer then let every later trunk merge 409 into
+ * a fresh task and a fresh PR for the same conflict. So the task's PR decides:
+ *
+ *  - task still running, or its PR still open → `open` (later trunk advances
+ *    coalesce into it; it merges trunk again before landing);
+ *  - PR closed unmerged, or the task ended with no PR → `cleared` (a person
+ *    judged it; the next refresh may try again);
+ *  - PR merged → the branch must provably contain the trunk sha the refresh was
+ *    for and the mission head it started from (`verifyRefreshLanded`). Proven →
+ *    `cleared`. Not proven → `unverified`: the pointer stays set so no
+ *    replacement task is dispatched, the violation is recorded once, and every
+ *    later call re-checks — a repair that lands a real merge clears it.
+ */
+async function settleConflictTask(args: {
+  taskId: string;
+  missionId: string;
+  branch: string;
+  trunk: string;
+  workspaceId: string;
+  installationId: number;
+  repoFullName: string;
+}): Promise<ConflictTaskSettlement> {
+  const { taskId, missionId, branch, trunk, workspaceId, installationId, repoFullName } = args;
+  const conflictTask = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, status: true, context: true },
+  });
+  // A missing row is an in-progress reservation (see dispatch), never a release.
+  if (!conflictTask || !(TERMINAL_TASK_STATUSES as readonly string[]).includes(conflictTask.status)) {
+    return { kind: 'open' };
+  }
+
+  const prWorker = await db.query.workers.findFirst({
+    where: and(eq(workers.taskId, taskId), isNotNull(workers.prNumber)),
+    columns: { prNumber: true },
+    orderBy: [desc(workers.createdAt)],
+  });
+  if (!prWorker?.prNumber) return { kind: 'cleared' };
+
+  let pr: { state?: string; merged?: boolean; head?: { sha?: string } } | null;
+  try {
+    pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prWorker.prNumber}`);
+  } catch (err) {
+    return { kind: 'open', detail: `could not read PR #${prWorker.prNumber}: ${githubErrorMessage(err)}` };
+  }
+  if (!pr) return { kind: 'open', detail: `could not read PR #${prWorker.prNumber}` };
+  if (!pr.merged) {
+    return pr.state === 'closed' ? { kind: 'cleared' } : { kind: 'open', detail: `PR #${prWorker.prNumber} is still open` };
+  }
+
+  const refresh = integrationRefreshOf(conflictTask.context) ?? { trunk: null, trunkSha: null, missionHeadSha: null };
+  const verdict = await verifyRefreshLanded({
+    installationId,
+    repoFullName,
+    branch,
+    trunk: refresh.trunk ?? trunk,
+    refresh,
+    prHeadSha: typeof pr.head?.sha === 'string' ? pr.head.sha : null,
+  });
+  if (verdict.ok) return { kind: 'cleared' };
+  if (verdict.transient) return { kind: 'open', detail: verdict.reason };
+
+  const ctx = (conflictTask.context ?? {}) as Record<string, unknown>;
+  if (!ctx.refreshInvariantViolation) {
+    // Recorded once on the task, so the page, the gate ledger and the mission
+    // feed each say it one time — not on every hourly sweep.
+    await db.update(tasks)
+      .set({ context: { ...ctx, refreshInvariantViolation: { reason: verdict.reason, branchHead: verdict.branchHead, prNumber: prWorker.prNumber, at: new Date().toISOString() } } })
+      .where(eq(tasks.id, taskId))
+      .catch((err) => console.error(`[mission-branch-refresh] could not record violation on task ${taskId}:`, err));
+    fireGateEvent({
+      gate: GATE_SLUGS.MISSION_BRANCH_REFRESH,
+      surface: 'mission-branch-refresh',
+      outcome: 'stranded',
+      reason: verdict.reason,
+      workspaceId,
+      taskId,
+      missionId,
+      callerOrigin: 'system',
+      detail: { branch, trunk, prNumber: prWorker.prNumber, branchHead: verdict.branchHead, trunkSha: verdict.trunkSha, missing: verdict.missing, invariant: 'refresh_ancestry' },
+    });
+    await postRefreshNote(
+      missionId,
+      `PR #${prWorker.prNumber} merged into \`${branch}\`, but the branch still does not contain ${verdict.missing.join(' or ')} — it was squashed or rebased, so \`${trunk}\` is not in the branch's history and the same conflict would come back. ` +
+        `No new refresh task will be opened for this. To repair: merge current \`${trunk}\` into \`${branch}\` with a real merge commit (open a PR from a branch cut from \`${branch}\` after \`git merge origin/${trunk}\`, and land it with "Create a merge commit"). Never force-push \`${branch}\`. ` +
+        `Refreshing resumes on its own once the branch contains ${verdict.trunkSha ? verdict.trunkSha.slice(0, 7) : trunk}.`,
+      'Integration branch refresh did not land',
+    );
+  }
+  return { kind: 'unverified', detail: verdict.reason };
 }
 
 /**
@@ -315,11 +434,13 @@ async function dispatchBranchRefreshConflictTask(args: {
   mission: { id: string; title: string };
   branch: string;
   trunk: string;
+  trunkSha: string;
+  installationId: number;
   workspaceId: string;
   repoFullName: string;
   leaseToken: string;
 }): Promise<{ taskId: string; dispatched: boolean } | null> {
-  const { mission, branch, trunk, workspaceId, repoFullName, leaseToken } = args;
+  const { mission, branch, trunk, trunkSha, installationId, workspaceId, repoFullName, leaseToken } = args;
 
   // Reserve the pointer before insertion. A missing task behind this pointer
   // is an in-progress reservation, never permission to dispatch another task.
@@ -333,6 +454,13 @@ async function dispatchBranchRefreshConflictTask(args: {
     return current?.branchRefreshConflictTaskId
       ? { taskId: current.branchRefreshConflictTaskId, dispatched: false } : null;
   }
+
+  // The mission work the refresh must keep: proven present after it lands.
+  let missionHeadSha: string | null = null;
+  try {
+    const ref = await githubApi(installationId, `/repos/${repoFullName}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`);
+    missionHeadSha = typeof ref?.object?.sha === 'string' ? ref.object.sha : null;
+  } catch { /* best effort — verification then checks the trunk side only */ }
 
   const description = `Merging \`${trunk}\` into this mission's integration branch \`${branch}\` hit merge conflicts. This is routine upkeep (docs/design/mission-delivery-arc.md P5, superseded) — dev is kept merged into every active mission branch automatically, and this is the one case that needs a person's judgment.
 
@@ -349,7 +477,7 @@ async function dispatchBranchRefreshConflictTask(args: {
 4. Run \`bun run test\`, \`bun run type-check\`, \`bun run specs:check\` — all green.
 5. Push your branch and open a PR with base \`${branch}\`.
 
-**This PR must land as a merge commit, not a squash** — a squash would drop \`${trunk}\`'s commits from this branch's ancestry, and the exact same conflict would reappear on the very next refresh. Say so in the PR body. If you call \`merge_pr\` yourself, pass \`mergeMethod: "merge"\` explicitly.`;
+**This PR must land as a merge commit, not a squash** — a squash would drop \`${trunk}\`'s commits from this branch's ancestry, and the exact same conflict would reappear on the very next refresh. Say so in the PR body. Every buildd merge door lands it as a merge commit on its own; a person merging it on GitHub must pick "Create a merge commit". After it merges, buildd checks that \`${branch}\` really contains \`${trunk}\` ${trunkSha.slice(0, 7)} before it counts the refresh as done.`;
 
   let newTask;
   try {
@@ -371,6 +499,10 @@ async function dispatchBranchRefreshConflictTask(args: {
         context: {
           baseBranch: branch,
           requireMergeCommit: true,
+          // Read by integration-refresh.ts: what this refresh must prove landed.
+          refreshTrunk: trunk,
+          refreshTrunkSha: trunkSha,
+          refreshMissionHeadSha: missionHeadSha,
           failureContext: {
             summary: `${branch} has merge conflicts with ${trunk}. Merge the integration branch in and resolve on the merits.`,
             errorType: 'merge_conflict' as const,

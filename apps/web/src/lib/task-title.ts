@@ -17,11 +17,12 @@
  */
 
 import { stripTaskTitlePrefixes } from '@buildd/core/task-title';
+import { CONVENTIONAL_PREFIX_RE } from '@buildd/core/task-label';
 
-export { stripTaskTitlePrefixes };
+export { stripTaskTitlePrefixes, CONVENTIONAL_PREFIX_RE };
 
 /** Attempt reason for a builder retry after reviewer feedback. */
-export type AttemptReason = 'after review' | 'after conflict' | 'after CI' | 'migration collision' | 'semantic overlap';
+export type AttemptReason = 'after review' | 'after conflict' | 'after CI' | 'migration collision' | 'semantic overlap' | 'split migrations';
 
 /**
  * Format a task title with the role and attempt context.
@@ -63,4 +64,33 @@ export function reviewerTitle(prNumber: number, baseTitle: string | null | undef
 /** Title for a human-initiated Apply/Apply-with-corrections dispatch — exactly one prefix, no stacking. */
 export function applyRecommendationTitle(baseTitle: string | null | undefined): string {
   return `[apply recommendation] ${stripTaskTitlePrefixes(baseTitle)}`;
+}
+
+const REFRESH_TITLE = /^chore\(mission\): merge (\S+) into the (.+) integration branch$/;
+const SHIP_TITLE = /^((?:\[[^\]]*\]\s*)*)Ship mission:\s+(.+)$/;
+const BRACKETS = /^((?:\[[^\]]*\]\s*)*)([\s\S]*)$/;
+
+/**
+ * The one display form of a task title, for every place a title is rendered:
+ *   - `chore(mission): merge <trunk> into the <X> integration branch`
+ *     (mission-branch-refresh.ts) → `Refresh <X> from <trunk>`
+ *   - `Ship mission: <X>` (MISSION_PR_TASK_PREFIX) → `Ship <X>`, keeping any retry wrap
+ *   - `type(scope): subject` → `Subject` (the type and scope belong in a chip
+ *     or eyebrow, not the title), keeping any retry wrap
+ *
+ * Display only. Never store the result or send it in an API payload: the full
+ * title stays the tooltip and the record.
+ */
+export function displayTaskTitle(title: string | null | undefined): string {
+  const t = (title ?? '').trim();
+  const refresh = REFRESH_TITLE.exec(t);
+  if (refresh) return `Refresh ${refresh[2]} from ${refresh[1]}`;
+  const ship = SHIP_TITLE.exec(t);
+  if (ship) return `${ship[1]}Ship ${ship[2]}`;
+  const [, wrap, rest] = BRACKETS.exec(t) ?? ['', '', t];
+  const conv = CONVENTIONAL_PREFIX_RE.exec(rest);
+  if (!conv) return t;
+  const subject = rest.slice(conv[0].length).trim();
+  if (!subject) return t;
+  return `${wrap}${subject.charAt(0).toUpperCase()}${subject.slice(1)}`;
 }

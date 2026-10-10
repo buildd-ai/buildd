@@ -19,7 +19,7 @@
  * `group`) and reports it through `onHover`; a bar with `href` is a real link.
  */
 import Link from 'next/link';
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { assignSlots, axisFraction, axisTicks, dependencyEdge, formatAxisMinutes, SLOT_LANE_AXIS_PX, SLOT_LANE_ROW_PX } from './slot-lanes-layout';
 
 export type SlotLaneTone = 'live' | 'done' | 'waiting' | 'plan' | 'foreign' | 'side' | 'stopped';
@@ -31,6 +31,8 @@ export interface SlotLaneBar {
   /** Epoch ms; null while live (drawn to `now`). */
   end: number | null;
   tone: SlotLaneTone;
+  /** Fill the bar with this state's strip-cell texture (`state-cell`) instead of the tone's. */
+  cell?: { state: string; tone: string; pattern: string; frame: string };
   /** Small leading tag, e.g. a scope chip. */
   scope?: string | null;
   label: string;
@@ -49,13 +51,20 @@ export interface SlotLaneBar {
   title?: string;
   /** Extra facts for the hover card ("done · Builder · PR #12"), one per line. */
   details?: readonly string[];
+  /**
+   * Bars sharing a focus key light up together when one is selected (Health
+   * passes the mission id). A bar without one is selected on its own.
+   */
+  focusKey?: string;
+  /** For a folded "N short runs" tick: the ids of the runs inside it. */
+  shortIds?: readonly string[];
 }
 
 export interface SlotLane {
   id: string;
   label: string;
-  /** One-letter avatar. Defaults to the label's first letter. */
-  badge?: string;
+  /** One-letter avatar. Defaults to the label's first letter; null draws none. */
+  badge?: string | null;
   bars: readonly SlotLaneBar[];
   /** Draw at least this many slot rows. */
   minSlots?: number;
@@ -99,6 +108,17 @@ export interface SlotLanesProps {
    * place of the native tooltip, which a row of thin ticks made useless.
    */
   hoverCard?: boolean;
+  /** Spans tinted flat behind the bars, across every lane (e.g. idle while work waited). */
+  shade?: ReadonlyArray<{ from: number; to: number }>;
+  /**
+   * Tap to select: a tap on a bar highlights every bar sharing its
+   * `focusKey` and dims the rest lightly; the empty track or Escape clears.
+   * Bars draw no links in this mode (the caller shows the selected run with
+   * an explicit link). Off, a tap is a plain link.
+   */
+  selectable?: boolean;
+  /** The selected bar, or null when the selection clears. */
+  onSelect?: (bar: SlotLaneBar | null) => void;
 }
 
 function formatSpan(ms: number): string {
@@ -170,7 +190,7 @@ const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
 export default function SlotLanes({
   lanes, from, to, now = null, nowLabel, phases, phasesLabel = 'Phase', marks, marksLabel,
   onHover, pinnedId = null, testId = 'slot-lanes', className = '',
-  labels = true, bare = false, tickLabel, hoverCard = false,
+  labels = true, bare = false, tickLabel, hoverCard = false, shade, selectable = false, onSelect,
 }: SlotLanesProps) {
   const labelPx = labels ? LABEL_COL_PX : 0;
   const pct = (t: number) => `${axisFraction(t, from, to) * 100}%`;
@@ -184,8 +204,31 @@ export default function SlotLanes({
     return Array.from({ length: n }, (_, slot) => ({ lane, slot, bars: a.bySlot[slot] ?? [] }));
   }), [lanes]);
 
-  const { stepMin, ticks } = axisTicks(to - from, 10);
+  // About one tick per 70px of axis: a fixed ten printed HH:MM labels over
+  // each other on a phone. Unmeasured (server render) keeps ten.
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [axisPx, setAxisPx] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const root = chartRef.current;
+    if (!root) return;
+    const measure = () => setAxisPx(Math.max(0, root.getBoundingClientRect().width - labelPx));
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(root);
+    return () => ro.disconnect();
+  }, [labelPx]);
+  const tickTarget = axisPx ? Math.max(2, Math.min(10, Math.floor(axisPx / 70))) : 10;
+  const { stepMin, ticks } = axisTicks(to - from, tickTarget);
   const [hovered, setHovered] = useState<SlotLaneBar | null>(null);
+  const [selected, setSelected] = useState<SlotLaneBar | null>(null);
+  const focusOf = (b: SlotLaneBar) => b.focusKey ?? `#${b.id}`;
+  const focus = selectable && selected ? focusOf(selected) : null;
+  const select = (b: SlotLaneBar | null) => {
+    if (b === null && selected === null) return;
+    setSelected(b);
+    onSelect?.(b);
+  };
   const active = hovered ?? (pinnedId ? lanes.flatMap(l => l.bars).find(b => b.id === pinnedId) ?? null : null);
   const hover = (b: SlotLaneBar | null) => {
     setHovered(b);
@@ -194,7 +237,6 @@ export default function SlotLanes({
 
   // Dependency edges for the active bar, measured from the DOM so they follow
   // whatever the layout did with the bars.
-  const chartRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState<Array<{ d: string; x: number; y: number }>>([]);
   useLayoutEffect(() => {
     const root = chartRef.current;
@@ -259,6 +301,7 @@ export default function SlotLanes({
       data-testid={testId}
       className={`relative ${bare ? '' : 'border-2 border-border-strong bg-card shadow-[var(--card-shadow)]'} ${className}`}
       onMouseLeave={() => hover(null)}
+      onKeyDown={selectable ? (e) => { if (e.key === 'Escape') select(null); } : undefined}
     >
       {/* Axis */}
       <div className="grid border-b border-border-default" style={{ gridTemplateColumns: `${labelPx}px 1fr`, height: SLOT_LANE_AXIS_PX }}>
@@ -299,15 +342,30 @@ export default function SlotLanes({
         >
           {labels ? (
           <div className="flex items-center gap-[7px] border-r border-border-default pl-3 font-mono text-meta text-text-secondary">
-            <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-meta font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
-              {lane.badge ?? lane.label.slice(0, 1)}
-            </span>
+            {lane.badge !== null && (
+              <span className={`grid h-5 w-5 shrink-0 place-items-center border-[1.5px] border-border-strong bg-surface-1 text-meta font-bold uppercase text-text-primary ${slot ? 'invisible' : ''}`}>
+                {lane.badge ?? lane.label.slice(0, 1)}
+              </span>
+            )}
             {slot === 0 && <span className="min-w-0 truncate">{lane.label}</span>}
             <span className="text-[var(--fleet-faint)]">{`·${slot + 1}`}</span>
           </div>
           ) : <div />}
-          <div className="relative overflow-hidden">
+          <div
+            data-testid="slot-lane-track"
+            className="relative overflow-hidden"
+            onClick={selectable ? () => select(null) : undefined}
+          >
             {grid}
+            {(shade ?? []).map((sh, si) => (
+              <i
+                key={si}
+                aria-hidden="true"
+                data-testid="slot-lanes-shade"
+                className="absolute inset-y-0 bg-[var(--q-tint)]"
+                style={{ left: pct(sh.from), width: width(sh.from, sh.to) }}
+              />
+            ))}
             {bars.map((b, bi) => {
               const end = drawEnd(b);
               // Wholly outside the axis: clamped, it would draw as an empty
@@ -332,6 +390,13 @@ export default function SlotLanes({
                 ? [b.prefix, b.scope, b.label].filter(Boolean).join(' ')
                 : tooltip;
               const isActive = active?.id === b.id || (!!b.group && activeGroups.has(b.group));
+              const focused = focus === null ? null : focusOf(b) === focus;
+              // Selected: an ink outline (the L2 focus frame). Not selected while
+              // something is: a quarter strength. Hover alone keeps full strength.
+              const ring = focused ? 'z-[3] outline outline-[1.5px] outline-offset-0 outline-text-primary' : isActive ? 'z-[3] outline outline-1 outline-offset-0 outline-border-strong' : '';
+              // On the bar's wrapper, so its outside label, live pulse and
+              // question marker dim with it.
+              const dim = focused === false ? 'opacity-60' : '';
               const content = short || claimed ? null : (
                 <>
                   <BarLabel bar={b} />
@@ -340,11 +405,11 @@ export default function SlotLanes({
               );
               const tickTone = TICK_TONE[b.tone] ?? (b.endMark === 'fail' ? 'border-status-error bg-status-error' : b.endMark === 'ok' ? 'border-status-success bg-status-success' : 'border-text-muted bg-text-muted');
               const cls = claimed
-                ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${isActive ? 'shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`
+                ? `absolute top-[9px] z-[7] block h-8 w-2 animate-status-pulse border-[1.5px] border-accent bg-accent ${ring}`
                 : tick
                   // The short-run marker: a solid tick at the run's start, never an empty box.
-                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${isActive ? 'z-[3] shadow-[2px_2px_0_0_var(--border-strong)]' : ''}`
-                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${TONE_CLASS[b.tone]} ${isActive ? 'z-[3] shadow-[3px_3px_0_0_var(--border-strong)]' : ''}`;
+                  ? `absolute top-[9px] z-[1] block h-8 w-1.5 border-[1.5px] ${tickTone} ${ring}`
+                  : `absolute top-[9px] flex h-8 items-center gap-1.5 overflow-hidden whitespace-nowrap border-[1.5px] ${short ? 'px-0' : 'px-[7px]'} font-mono text-meta text-text-secondary ${b.cell ? 'state-cell border-border-strong' : TONE_CLASS[b.tone]} ${ring}`;
               const nowRight = (1 - axisFraction(end, from, to)) * 100;
               // An open bar is anchored by its right edge at NOW: a box has a
               // minimum drawn width, and anchored at its start a fresh bar
@@ -362,20 +427,30 @@ export default function SlotLanes({
                 'data-testid': 'lane-bar',
                 'data-bar-id': b.id,
                 'data-bar-group': b.group ?? b.id,
-                'data-tone': b.tone,
+                'data-tone': b.cell && !tick && !claimed ? b.cell.tone : b.tone,
+                ...(b.cell && !tick && !claimed ? { 'data-state': b.cell.state, 'data-pattern': b.cell.pattern, 'data-frame': b.cell.frame } : {}),
                 ...(short ? { 'data-shape': 'short', 'aria-label': shortTitle } : {}),
                 ...(claimed ? { 'data-shape': 'claimed', 'aria-label': claimedTitle } : {}),
+                ...(focused === null ? {} : { 'data-focus': focused ? 'on' : 'off' }),
+                ...(selectable ? { 'aria-pressed': selected?.id === b.id } : {}),
                 // The card replaces the native tooltip; two at once is noise.
                 title: hoverCard ? undefined : claimed ? claimedTitle : short ? shortTitle : b.title,
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),
+                // A tap selects. Nothing navigates: a selectable chart draws
+                // no links, and the caller shows the run with an explicit one.
+                onClick: selectable ? (e: MouseEvent) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (selected?.id !== b.id) select(b);
+                } : undefined,
                 onFocus: () => hover(b),
                 ...(hoverCard ? { onMouseLeave: () => hover(null), onBlur: () => hover(null) } : {}),
               } as const;
               return (
-                <span key={b.id}>
-                  {b.href ? (
+                <span key={b.id} className={dim || undefined} data-dimmed={dim ? 'true' : undefined}>
+                  {b.href && !selectable ? (
                     <Link href={b.href} {...(b.linkData ?? {})} {...common}>{content}</Link>
                   ) : (
                     <span {...common}>{content}</span>
@@ -462,14 +537,14 @@ export default function SlotLanes({
         </>
       )}
 
-      {hoverCard && hovered && (() => {
+      {hoverCard && hovered && !(selectable && selected) && (() => {
         const c = barCard(hovered, { now, clock: tickLabel });
         return (
           <div
             ref={cardRef}
             data-testid="lane-bar-card"
             role="tooltip"
-            className="pointer-events-none fixed z-50 flex flex-col gap-1 border-2 border-border-strong bg-card px-3 py-2.5 font-mono text-meta leading-snug shadow-[var(--card-shadow)]"
+            className="card pointer-events-none fixed z-50 flex flex-col gap-1 px-3 py-2.5 font-mono text-meta leading-snug"
             // First paint is unpositioned and hidden: it exists to be measured.
             style={card ? { left: card.left, top: card.top, width: CARD_PX } : { left: 0, top: 0, width: CARD_PX, visibility: 'hidden' }}
           >
@@ -477,7 +552,11 @@ export default function SlotLanes({
             {c.title && <span className="line-clamp-3 text-text-secondary">{c.title}</span>}
             <span className="tabular-nums text-text-muted">{c.when}</span>
             {c.details.map(d => <span key={d} className="text-text-secondary">{d}</span>)}
-            {hovered.href && <span className="text-meta text-[var(--fleet-faint)]">Click to open</span>}
+            {hovered.href && !selectable && (
+              <span className="text-meta text-[var(--fleet-faint)]">
+                {'Click to open'}
+              </span>
+            )}
           </div>
         );
       })()}

@@ -1,197 +1,256 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
-import { ActiveMissionCard, DoneMissionRows, MiniMissionCard } from '@/components/missions/MissionListCards';
-import { PhaseBarLegend } from '@/components/missions/PhaseBar';
-import type { MissionCardView } from '@/lib/mission-card-view';
-import type { ListCardKind, MissionListCardModel } from '@/lib/mission-list-card';
-import { timeAgo } from '@/lib/mission-helpers';
-import { classifyReleaseState, isReleaseVisible } from '@/lib/release-state';
-
-// Completed missions older than this are collapsed by default
-const COMPLETED_AGE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
- * One row of the list: the shared card model (lib/mission-card-view.ts — the
- * same builder Home uses), the list card model on top of it
- * (lib/mission-list-card.ts), and the list's own sort facts.
+ * The Missions portfolio: compact rows read from the shared delivery
+ * projection (lib/delivery-projection.ts), several per phone screen.
+ * Filtering and counting live in lib/mission-portfolio.ts, the sections
+ * (Needs you / In motion / Waiting / On dev, criteria pending) and their
+ * orderings in lib/mission-sections.ts; this file only renders. Each row is
+ * the shared MissionRow: title, small task strip, one state line, Next. L1
+ * rows on hairlines, no boxes; one column on phones, two from md. Workspace
+ * scope comes from the shell's switcher (the page reads `?workspace=`).
  */
-export interface MissionItem {
-  view: MissionCardView;
-  list: MissionListCardModel;
-  workspaceId: string | null;
-  workspaceName: string | null;
-  isHeld: boolean;
-  nextScanMins: number | null;
-  /** ISO string of most recent task/worker activity; null if mission has no tasks. */
-  lastActivityAt: string | null;
-  lastRunAt: string | null;
-}
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
+import Disclosure from '@/components/ui/Disclosure';
+import MissionRow from '@/components/ui/MissionRow';
+import Segmented from '@/components/ui/Segmented';
+import { DELIVERY_KIND } from '@/lib/delivery-projection';
+import { STATE_OF_KIND, buildMissionSections, type MissionSection } from '@/lib/mission-sections';
+import {
+  COUNTER_DEFINITIONS,
+  PORTFOLIO_STATUS_FILTERS,
+  filterPortfolio,
+  portfolioFilterCounts,
+  splitPortfolio,
+  type PortfolioRow,
+  type PortfolioStatusFilter,
+} from '@/lib/mission-portfolio';
+import { shortDuration } from '@/lib/mission-list-card';
 
-type Tab = 'all' | ListCardKind;
-
-const TAB_ORDER: Array<{ key: Tab; label: string; square?: string; always?: boolean }> = [
-  { key: 'all', label: 'All', always: true },
-  { key: 'active', label: 'Running', square: 'bg-accent', always: true },
-  { key: 'recurring', label: 'Recurring', always: true },
-  { key: 'held', label: 'Held', square: 'bg-status-warning', always: true },
-  { key: 'scheduled', label: 'Scheduled' },
-  { key: 'paused', label: 'Paused' },
-  { key: 'done', label: 'Done', square: 'bg-status-success', always: true },
-];
-
-const MINI_KINDS: readonly ListCardKind[] = ['recurring', 'held', 'scheduled', 'paused'];
+export type { PortfolioRow } from '@/lib/mission-portfolio';
 
 export function MissionGrid({
-  missions,
-  releaseFooters = {},
-  slots = null,
+  rows,
+  slots,
+  now = Date.now(),
 }: {
-  missions: MissionItem[];
-  /** Workspace id → its release footer. Rendered once per workspace, never per card (D6). */
-  releaseFooters?: Record<string, ReleaseFooterData>;
-  /** Seat use across the team, for the "nothing running" line. */
-  slots?: { live: number; max: number } | null;
+  rows: PortfolioRow[];
+  /** Live workers / seats across the team. */
+  slots: { live: number; max: number };
+  now?: number;
 }) {
-  const [tab, setTab] = useState<Tab>('all');
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState<PortfolioStatusFilter>('all');
   const [showOlder, setShowOlder] = useState(false);
 
-  const byKind = useMemo(() => {
-    const out: Record<ListCardKind, MissionItem[]> = { active: [], recurring: [], held: [], scheduled: [], paused: [], done: [] };
-    for (const m of missions) out[m.list.kind].push(m);
-    out.recurring.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
-    return out;
-  }, [missions]);
+  const { open, recentDone, olderDone } = useMemo(() => splitPortfolio(rows, now), [rows, now]);
+  // Header counts never follow the search: they describe the portfolio.
+  const totals = useMemo(() => portfolioFilterCounts(open), [open]);
+  // Filter counts follow the search, so each number is what tapping it shows.
+  const scoped = useMemo(() => filterPortfolio(open, { q }), [open, q]);
+  const filterCounts = useMemo(() => portfolioFilterCounts(scoped), [scoped]);
+  const visible = useMemo(() => filterPortfolio(scoped, { status }), [scoped, status]);
+  const sections = useMemo(() => buildMissionSections(visible), [visible]);
+  const doneRows = filterPortfolio([...recentDone, ...(showOlder || recentDone.length === 0 ? olderDone : [])], { q });
 
-  const counts = useMemo(() => {
-    const c: Record<Tab, number> = { all: missions.length, active: 0, recurring: 0, held: 0, scheduled: 0, paused: 0, done: 0 };
-    for (const k of Object.keys(byKind) as ListCardKind[]) c[k] = byKind[k].length;
-    return c;
-  }, [missions.length, byKind]);
-
-  const show = (k: ListCardKind) => tab === 'all' || tab === k;
-  const multiWorkspace = new Set(missions.map(m => m.workspaceId ?? '')).size > 1;
-  const ws = (m: MissionItem) => (multiWorkspace ? m.workspaceName : null);
-
-  const now = Date.now();
-  const doneAge = (m: MissionItem) => {
-    const ref = m.view.completedAt ?? m.lastActivityAt ?? m.lastRunAt;
-    return ref ? now - new Date(ref).getTime() : Infinity;
-  };
-  const recentDone = byKind.done.filter(m => doneAge(m) < COMPLETED_AGE_THRESHOLD_MS);
-  const olderDone = byKind.done.filter(m => doneAge(m) >= COMPLETED_AGE_THRESHOLD_MS);
-  // Nothing recent: show what there is rather than an empty section.
-  const visibleDone = showOlder || recentDone.length === 0 ? byKind.done : recentDone;
-  const hiddenDone = visibleDone.length === byKind.done.length ? 0 : olderDone.length;
-
-  const active = show('active') ? byKind.active : [];
-  const minis = MINI_KINDS.filter(show).flatMap(k => byKind[k]);
-  // Only workspaces with something to say: an empty footer is a stray rule.
-  const releases = Object.entries(releaseFooters).filter(([, data]) =>
-    isReleaseVisible(classifyReleaseState({ archetype: data?.archetype ?? 'none', data })));
-  const lastDone = byKind.done[0] ?? null;
+  const multiWorkspace = new Set(rows.map(r => r.workspaceId ?? '')).size > 1;
+  const filtered = q.trim() !== '' || status !== 'all';
+  const listed = sections.filter(sec => sec.key !== 'landed');
+  const onDev = sections.find(sec => sec.key === 'landed');
 
   return (
-    <div className="space-y-6">
-      <FilterTabBar tab={tab} counts={counts} onSelect={setTab} />
+    <div className="space-y-5">
+      <Headline open={totals.all} counts={totals} slots={slots} />
 
-      {(tab === 'all' || tab === 'active' || MINI_KINDS.includes(tab as ListCardKind)) && (
-        <section data-testid="mission-group" data-group="active" className="space-y-4">
-          <div className="flex items-center justify-between gap-4">
-            <span className="section-label text-text-muted">Active</span>
-            {active.length > 0 && <PhaseBarLegend />}
+      <div data-testid="portfolio-tools" className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="relative min-w-0">
+          <div
+            data-testid="portfolio-filters"
+            className="min-w-0 overflow-x-auto pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:pr-0"
+          >
+            <Segmented
+              label="Filter missions"
+              value={status}
+              onChange={setStatus}
+              items={PORTFOLIO_STATUS_FILTERS.map(f => ({
+                value: f.key,
+                label: (
+                  <span title={f.title} data-filter={f.key} className="whitespace-nowrap">
+                    {f.label}
+                    {f.key !== 'all' && <span className="ml-1 font-mono text-meta text-text-muted">{filterCounts[f.key]}</span>}
+                  </span>
+                ),
+              }))}
+            />
           </div>
-          {show('active') && active.length === 0 && lastDone && (
-            <div data-testid="missions-nothing-running" className="font-mono text-[12px] text-text-muted">
-              <span>
-                Last: {lastDone.view.title}{lastDone.view.completedAt ? ` · ${timeAgo(lastDone.view.completedAt)}` : ''}
-              </span>
-            </div>
-          )}
-          {active.map(m => <ActiveMissionCard key={m.view.id} view={m.view} model={m.list} workspaceName={ws(m)} />)}
-          {minis.length > 0 && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
-              {minis.map(m => <MiniMissionCard key={m.view.id} view={m.view} model={m.list} workspaceName={ws(m)} />)}
-            </div>
-          )}
-        </section>
-      )}
+          {/* The chips scroll sideways on phones; the fade says there is more past the edge. */}
+          <div
+            aria-hidden="true"
+            data-testid="portfolio-filters-fade"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-surface-1 to-transparent md:hidden"
+          />
+        </div>
+        <input
+          type="search"
+          data-testid="portfolio-search"
+          aria-label="Search missions"
+          placeholder="Search missions"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          className="min-h-11 w-full min-w-0 rounded-[var(--radius-card)] border border-border-default bg-transparent px-3 text-[16px] text-text-primary placeholder:text-text-muted focus:border-border-strong focus:outline-none md:min-h-9 md:w-[240px] md:text-body"
+        />
+      </div>
 
-      {/* D6: each workspace's release state, once — not on every card. */}
-      {tab === 'all' && releases.length > 0 && (
-        <section className="space-y-2">
-          {releases.map(([wsId, data]) => (
-            <div key={wsId} data-testid="workspace-release-footer" className="border border-border-default bg-card">
-              <MissionReleaseFooter data={data} />
-            </div>
-          ))}
-        </section>
-      )}
-
-      {show('done') && byKind.done.length > 0 && (
-        <section data-testid="mission-group" data-group="completed" className="space-y-2.5">
-          <div className="flex items-center justify-between gap-4">
-            <span className="section-label text-text-muted">Done</span>
-            {(hiddenDone > 0 || showOlder) && olderDone.length > 0 && recentDone.length > 0 && (
+      <div data-testid="mission-group" data-group="open" aria-label="Open missions" className="space-y-6">
+        {listed.map(sec => <SectionView key={sec.key} sec={sec} now={now} showWorkspace={multiWorkspace} />)}
+        {onDev && (
+          <section data-testid="mission-section" data-section="landed" aria-label={onDev.label}>
+            <Disclosure
+              summary={
+                <span className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-title font-semibold text-text-primary">{onDev.label}</span>
+                  <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{onDev.rows.length}</span>
+                  <span className="text-meta text-text-muted">Landed on dev, but a goal criterion hasn&rsquo;t passed yet.</span>
+                </span>
+              }
+            >
+              <div className="mt-1 grid grid-cols-1 gap-x-8 md:grid-cols-2">
+                {onDev.rows.map(r => <PortfolioRowView key={r.delivery.id} row={r} now={now} showWorkspace={multiWorkspace} />)}
+              </div>
+            </Disclosure>
+          </section>
+        )}
+        {visible.length === 0 && (
+          <p data-testid="portfolio-empty" className="py-4 text-body text-text-secondary">
+            {open.length === 0 ? 'No open missions.' : 'No missions match.'}
+            {filtered && open.length > 0 && (
               <button
                 type="button"
-                onClick={() => setShowOlder(v => !v)}
-                className="min-h-11 font-mono text-[11px] text-text-muted hover:text-text-secondary md:min-h-0"
+                onClick={() => { setQ(''); setStatus('all'); }}
+                className="ml-2 min-h-11 text-text-muted underline underline-offset-4 md:min-h-0"
               >
-                {showOlder ? 'hide older ↑' : `show ${olderDone.length} older →`}
+                Clear filters
               </button>
             )}
-          </div>
-          <DoneMissionRows items={visibleDone.map(m => ({ view: m.view, model: m.list }))} />
+          </p>
+        )}
+      </div>
+
+      {recentDone.length + olderDone.length > 0 && (
+        <section data-testid="mission-group" data-group="completed" aria-label="Completed missions">
+          <Disclosure
+            summary={<span className="text-title font-semibold text-text-primary">Completed{recentDone.length > 0 ? ' this week' : ''}</span>}
+            count={recentDone.length > 0 ? recentDone.length : olderDone.length}
+          >
+            <div className="mt-1">
+              {doneRows.map(r => <DoneRow key={r.delivery.id} row={r} now={now} />)}
+              {recentDone.length > 0 && olderDone.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowOlder(v => !v)}
+                  className="mt-1 min-h-11 text-meta text-text-muted hover:text-text-secondary md:min-h-0"
+                >
+                  {showOlder ? 'Hide older' : `Show ${olderDone.length} older`}
+                </button>
+              )}
+            </div>
+          </Disclosure>
         </section>
       )}
 
-      {missions.length > 0 && tab !== 'all' && counts[tab] === 0 && (
-        <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary">No missions in this view.</p>
-        </div>
-      )}
+      <p data-testid="portfolio-definitions" className="text-meta leading-relaxed text-text-muted">
+        <span className="text-text-secondary">Open:</span> {COUNTER_DEFINITIONS.open}{' '}
+        <span className="text-text-secondary">Agent slots:</span> {COUNTER_DEFINITIONS.slots}{' '}
+        <span className="text-text-secondary">On dev:</span> every task landed on dev; the mission completes when its goal criteria pass. Only complete missions leave this list.
+      </p>
     </div>
   );
 }
 
-function FilterTabBar({
-  tab, counts, onSelect,
-}: {
-  tab: Tab;
-  counts: Record<Tab, number>;
-  onSelect: (t: Tab) => void;
-}) {
+function SectionView({ sec, now, showWorkspace }: { sec: MissionSection; now: number; showWorkspace: boolean }) {
   return (
-    // Below md the tabs can outrun a phone's width: fade the trailing edge so
-    // it reads as "scrolls", and pad the end so the last tab clears the fade.
-    <div
-      data-testid="mission-filter-bar"
-      role="tablist"
-      className="flex overflow-x-auto border-b border-border-default pr-6 md:pr-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)] md:[mask-image:none]"
-    >
-      {TAB_ORDER.filter(t => t.always || counts[t.key] > 0).map(({ key, label, square }) => {
-        const on = tab === key;
-        return (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            data-testid="mission-filter-tab"
-            data-tab={key}
-            onClick={() => onSelect(key)}
-            className={`-mb-px flex min-h-11 shrink-0 items-center gap-2 border-b-2 px-3.5 font-mono text-[12.5px] ${
-              on ? 'border-accent text-text-primary' : 'border-transparent text-text-muted hover:text-text-secondary'
-            }`}
-          >
-            {square && <span aria-hidden="true" className={`inline-block h-[7px] w-[7px] ${square}`} />}
-            {label}
-            <b className={`font-semibold ${on ? 'text-text-primary' : 'text-text-secondary'}`}>{counts[key]}</b>
-          </button>
-        );
-      })}
+    <section data-testid="mission-section" data-section={sec.key} aria-labelledby={`mission-section-${sec.key}`}>
+      <h2 id={`mission-section-${sec.key}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className={`text-title font-semibold ${sec.key === 'needs' ? 'text-accent-text' : 'text-text-primary'}`}>{sec.label}</span>
+        <span data-testid="mission-section-count" className="font-mono text-meta text-text-secondary">{sec.rows.length}</span>
+        <span data-testid="mission-section-order" className="text-meta text-text-muted">{sec.order}</span>
+      </h2>
+      <div className="mt-1 grid grid-cols-1 gap-x-8 md:grid-cols-2">
+        {sec.rows.map(r => <PortfolioRowView key={r.delivery.id} row={r} now={now} showWorkspace={showWorkspace} />)}
+      </div>
+    </section>
+  );
+}
+
+/** "14 open" and one line: what needs you, what's moving, what's waiting, what's on dev, and the agent slots. */
+function Headline({ open, counts, slots }: { open: number; counts: Record<PortfolioStatusFilter, number>; slots: { live: number; max: number } }) {
+  const parts = [
+    counts.needs > 0 ? `${counts.needs} need${counts.needs === 1 ? 's' : ''} you` : null,
+    `${counts.motion} in motion`,
+    `${counts.waiting} waiting`,
+    counts.landed > 0 ? `${counts.landed} on dev, criteria pending` : null,
+    slots.max > 0 ? `${slots.live} of ${slots.max} agent slots` : null,
+  ].filter(Boolean);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-2">
+        <span data-testid="portfolio-open" title={COUNTER_DEFINITIONS.open} className="font-mono text-[32px] font-semibold leading-none tabular-nums text-text-primary">{open}</span>
+        <span className="text-body text-text-secondary">open</span>
+      </div>
+      <p data-testid="portfolio-breakdown" className="font-mono text-meta text-text-secondary">{parts.join(' · ')}</p>
+    </div>
+  );
+}
+
+function ago(ms: number | null, now: number): string {
+  if (ms == null) return '';
+  const d = now - ms;
+  return d < 60_000 ? 'now' : shortDuration(d);
+}
+
+function nextLine(r: PortfolioRow): string {
+  if (r.nextScanMins != null && r.delivery.kind !== 'needs') return `Recurring · next run in ${r.nextScanMins < 1 ? 'under a minute' : shortDuration(r.nextScanMins * 60_000)}`;
+  return r.delivery.next;
+}
+
+function PortfolioRowView({ row, now, showWorkspace }: { row: PortfolioRow; now: number; showWorkspace: boolean }) {
+  const d = row.delivery;
+  const k = DELIVERY_KIND[d.kind];
+  const state = STATE_OF_KIND[d.kind] ?? undefined;
+  const age = ago(row.lastAdvancedAt, now);
+  const aside = [
+    row.liveAgents > 0 ? `${row.liveAgents} agent${row.liveAgents === 1 ? '' : 's'}` : null,
+    showWorkspace ? row.workspaceName : null,
+    age ? `${age} ago` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <div data-testid="portfolio-row" data-mission-id={d.id} data-kind={d.kind}>
+      <MissionRow
+        href={d.href}
+        title={d.title}
+        strip={row.strip ?? []}
+        state={state}
+        stat={d.total > 0 ? `${d.landed} of ${d.total} landed` : undefined}
+        decide={d.kind === 'needs' ? d.evidence : undefined}
+        meta={state ? undefined : `${k.glyph} ${k.label}${d.total > 0 ? ` · ${d.landed} of ${d.total} landed` : ''}`}
+        aside={aside || undefined}
+        next={nextLine(row)}
+      />
+    </div>
+  );
+}
+
+export function DoneRow({ row, now }: { row: PortfolioRow; now: number }) {
+  const d = row.delivery;
+  return (
+    <div data-testid="portfolio-done-row" className="relative flex items-center gap-2.5 border-t border-border-default py-2.5">
+      <span aria-hidden="true" className="font-mono text-meta text-status-success">■</span>
+      <Link href={d.href} className="min-w-0 flex-1 truncate text-body text-text-primary after:absolute after:inset-0 hover:underline">
+        {d.title}
+      </Link>
+      {d.total > 0 && <span className="shrink-0 whitespace-nowrap font-mono text-meta tabular-nums text-text-secondary">{d.landed}/{d.total} landed</span>}
+      <span className="shrink-0 whitespace-nowrap font-mono text-meta text-text-muted">{ago(row.completedAt, now)}</span>
     </div>
   );
 }

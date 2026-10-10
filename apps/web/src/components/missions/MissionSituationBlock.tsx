@@ -41,13 +41,6 @@ import SituationTaskAffordance from './SituationTaskAffordance';
  */
 export const MISSION_CRITERIA_ANCHOR = 'mission-criteria';
 
-const TONE_BLOCK_CLASS: Record<WaitingOnTone, string> = {
-  neutral: 'border-border-default bg-surface-3/40',
-  info: 'border-status-info/30 bg-status-info/5',
-  warning: 'border-status-warning/30 bg-status-warning/5',
-  error: 'border-status-error/30 bg-status-error/5',
-};
-
 const TONE_TEXT_CLASS: Record<WaitingOnTone, string> = {
   neutral: 'text-text-muted',
   info: 'text-status-info',
@@ -221,25 +214,27 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       // Provenance is for diagnostics, not for the reader: it names the
       // derivation (`mission-state-view.ts`), which is noise on the page.
       data-derived-from={situation.derivedFrom}
-      className={`mb-3 border px-3 py-2.5 ${TONE_BLOCK_CLASS[situation.tone]}`}
+      // No frame of its own: the page's notice slot (MissionNoticeSlot) frames
+      // it as a decision only when a person has to act.
+      data-tone={situation.tone}
     >
       <p
         data-testid="mission-situation-headline"
-        className="text-[13px] font-medium text-text-primary leading-snug"
+        className="text-title font-semibold text-text-primary leading-snug"
       >
         {situation.headline}
       </p>
 
       {detail?.kind === 'why' && (
-        <p className="mt-1 text-[12px] text-text-secondary leading-snug">
+        <p className="mt-1 text-body text-text-secondary leading-snug">
           {detail.link.claim} <RefLink refs={detail.link.refs} missionId={missionId} />
         </p>
       )}
       {detail?.kind === 'text' && (
-        <p className="mt-1 text-[12px] text-text-secondary leading-snug">{detail.text}</p>
+        <p className="mt-1 text-body text-text-secondary leading-snug">{detail.text}</p>
       )}
       {detail?.kind === 'blockers' && (
-        <ul data-testid="mission-situation-blockers" className="mt-1 text-[12px] leading-snug">
+        <ul data-testid="mission-situation-blockers" className="mt-1 text-body leading-snug">
           {detail.items.map(b => (
             <li key={b.taskId}>
               <Link
@@ -270,7 +265,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
               href={affordance.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
+              className="btn btn-primary h-11 w-full md:h-9 md:w-auto"
             >
               {affordance.label} →
             </a>
@@ -281,7 +276,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
             <Link
               data-testid="mission-primary-action"
               href={affordance.href}
-              className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
+              className="btn btn-primary h-11 w-full md:h-9 md:w-auto"
             >
               {affordance.label} →
             </Link>
@@ -292,7 +287,7 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       {situation.alsoOutstanding.length > 0 && (
         <ul data-testid="mission-also-outstanding" className="mt-2.5 space-y-0.5">
           {situation.alsoOutstanding.map(fact => (
-            <li key={fact.kind} className="text-[12px] leading-snug">
+            <li key={fact.kind} className="text-body leading-snug">
               <span className={`mr-1.5 ${TONE_TEXT_CLASS[fact.tone]}`}>·</span>
               <span className="text-text-secondary">{fact.label}</span>
             </li>

@@ -27,11 +27,14 @@ Buildd is a **task coordination system** for AI agents:
 
 ## Auth Model
 
-Dual auth with different billing strategies:
-- **API key** (`bld_xxx`): Pay-per-token, cost-limited
-- **OAuth token**: Seat-based, session-limited
+A runner account's `authType` says how its **model** usage is paid, and so which claim limits apply:
+- **`api`**: an API key, pay-per-token, bounded by `maxCostPerDay`.
+- **`oauth`**: a subscription login on the runner's **own machine** (`claude login`, `CLAUDE_CODE_OAUTH_TOKEN`), bounded by sessions and plan walls.
 
-Check `authType` field to know which limits apply.
+buildd coordinates the agent; it does not provide model access. A subscription login stays on the machine
+or interactive session that owns it. Do not add code that stores, refreshes or hands out subscription
+logins server-side: that path is being removed (`knowledge-base: buildd/plans/seat-custody-removal.md`).
+The `bld_xxx` key authenticates to buildd itself and is unrelated to model billing.
 
 ## Database
 
@@ -124,7 +127,7 @@ Roles are skills with `isRole: true` on the `workspaceSkills` table. They define
 - **Task routing**: `tasks.roleSlug` → claim route filters by runner's `availableSkills`
 - **Config packaging**: `apps/web/src/lib/role-config.ts` bundles CLAUDE.md + .mcp.json + env mapping → R2
 - **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
-- **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
+- **Roles page**: `apps/web/src/app/app/(protected)/settings/roles/page.tsx` (the old `/app/team` redirects here)
 
 ## Issues & Friction
 
@@ -238,7 +241,8 @@ chromium` — just never type the literal word `sudo` in a Bash command, it's bl
 by the harness safety policy even though the underlying escalation works. This also means
 root `bun run build` fails in a sandbox (it runs `db:migrate` first) — use `cd apps/web &&
 bun run build:only` (same command CI's `Build` step uses) to verify compilation with no DB
-and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
+and no extra flags. A local build or `next dev` rewrites `apps/web/next-env.d.ts`; never commit
+that (pre-commit refuses it, `scripts/next-env-canonical.test.ts` pins it). See `docs/testing.md` → "Worker Sandbox Constraints".
 Workers get screenshots by dispatching the Visual QA workflow (`gh workflow run visual-qa.yml
 --ref <branch> -f routes=… -f viewport=mobile`), not from a local DB. See `/visual-review`.
 Workspaces with Vercel previews can audit the preview instead (`gitConfig.visualQa.pageSource`

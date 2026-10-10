@@ -1,3 +1,4 @@
+import { admitsToNeedsYou } from '@buildd/core/needs-you';
 import { isOpenAsk } from './open-ask';
 /**
  * Home's fleet queries: the runner snapshot (heartbeats × live workers), each
@@ -15,10 +16,11 @@ import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/co
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
 import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
+import { idleWhileQueued, type IdleStretch, type QueuedInterval, type RunInterval } from './idle-while-queued';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
-import { workerProgressSql } from './worker-progress';
+import { deriveRunEvidence } from '@buildd/core/run-evidence';
 import { noRowOfPrMerged } from './pr-merge-stamp';
 import { homeQuestionView } from './home-attention';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
@@ -136,6 +138,17 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
   return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
 }
 
+/** Interactive sessions online now in these workspaces, or null when the read fails. */
+async function loadSessionsOnline(wsIds: string[], now: number): Promise<number | null> {
+  try {
+    const { listLocalSessions, countInteractiveSessions } = await import('./local-session-view');
+    return countInteractiveSessions(await listLocalSessions({ workspaceIds: wsIds, now: new Date(now) }));
+  } catch (err) {
+    console.warn('[home-fleet] sessions online read failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export async function loadHomeFleet(input: {
   teamId: string | null;
   wsIds: string[];
@@ -148,7 +161,7 @@ export async function loadHomeFleet(input: {
   const windowStart = new Date(Math.max(now - FLEET_WINDOW_MS, Math.min(dayStart, now - 30 * 60_000)));
   const dayStartDate = new Date(dayStart);
 
-  const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions] = await Promise.all([
+  const [heartbeatRows, workerRows, ciRows, healedRows, doneMissions, sessionsOnline] = await Promise.all([
     loadFleetHeartbeats({ teamId, wsIds, now }),
     // No cap on live workers (every one is a slot); the history half is windowed.
     db
@@ -159,7 +172,10 @@ export async function loadHomeFleet(input: {
         // Only beside a question: the context fallback for a card whose brief was lost.
         error: sql<string | null>`case when ${workers.waitingFor} is not null then ${workers.error} end`,
         linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
-        progress: workerProgressSql,
+        createdAt: workers.createdAt, milestones: workers.milestones, dirtyWorktree: workers.dirtyWorktree,
+        observedTouches: workers.observedTouches, lastCommitSha: workers.lastCommitSha, commitCount: workers.commitCount,
+        prUrl: workers.prUrl, prIsDraft: workers.prIsDraft, prLifecycleStatus: workers.prLifecycleStatus,
+        outputRequirement: tasks.outputRequirement,
         taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
@@ -206,12 +222,16 @@ export async function loadHomeFleet(input: {
           .where(and(eq(missions.teamId, teamId), eq(missions.status, 'completed'), gte(missions.completedAt, windowStart)))
           .limit(10)
       : Promise.resolve([] as Array<{ id: string; title: string; completedAt: Date | null }>),
+    // The sessions lane's "N online" caption. Best effort: the lane still
+    // draws its live claims without it.
+    loadSessionsOnline(wsIds, now),
   ]);
 
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
-    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], progress: r.progress == null ? null : Number(r.progress),
+    waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'],
+    phase: deriveRunEvidence(r).phases.filter(p => p.state === 'done' || p.state === 'current' || p.state === 'failed').at(-1)?.label ?? 'Claimed',
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
@@ -221,11 +241,13 @@ export async function loadHomeFleet(input: {
   // from an older run feeds the counts, not the lanes.
   const laneRows = rows.filter(r => r.startedAt && new Date(r.startedAt).getTime() >= windowStart.getTime() || (LIVE_WORKER_STATUSES as readonly string[]).includes(r.status));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], laneRows, {
-    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS, sessionsOnline,
   });
 
   const runnerNameById = new Map<string, string>();
-  for (const runner of fleet.runners) for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
+  for (const runner of fleet.sessions ? [...fleet.runners, fleet.sessions] : fleet.runners) {
+    for (const slot of runner.slots) for (const bar of slot.lane.bars) runnerNameById.set(bar.id, runner.name);
+  }
   const ticker = buildTickerEvents(
     workerRows.map(r => ({
       id: r.id, status: r.status, startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt,
@@ -240,7 +262,8 @@ export async function loadHomeFleet(input: {
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
   const questions: HomeFleetQuestion[] = workerRows
-    .filter(r => isOpenAsk(r.taskStatus, r.status))
+    // Needs You admission: an open ask whose park a disposition hands to a person.
+    .filter(r => isOpenAsk(r.taskStatus, r.status) && admitsToNeedsYou(r.waitingFor as Record<string, unknown> | null, now))
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
     .flatMap(r => {
       const question = homeQuestionView({ waitingFor: r.waitingFor, error: r.error, taskTitle: r.taskTitle });
@@ -268,4 +291,109 @@ export async function loadHomeFleet(input: {
       selfHealed: healedRows[0]?.n ?? 0,
     },
   };
+}
+
+/**
+ * What `idleWhileQueued` reads for a window: every run's span (runner slots
+ * and sessions both count as busy) and each claimable task's wait. A task is
+ * waiting from creation to its first run; one with `dependsOn` is held by
+ * something else, not by a slot, so it is left out. Capped like the lanes.
+ */
+export async function loadQueueHistory(input: { wsIds: string[]; from: number; now: number }): Promise<{ runs: RunInterval[]; queued: QueuedInterval[] }> {
+  const { wsIds, from, now } = input;
+  if (wsIds.length === 0) return { runs: [], queued: [] };
+  const fromDate = new Date(from);
+  const [runRows, taskRows] = await Promise.all([
+    db
+      .select({ startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt, status: workers.status })
+      .from(workers)
+      .where(and(
+        inArray(workers.workspaceId, wsIds),
+        isNotNull(workers.startedAt),
+        or(inArray(workers.status, [...LIVE_WORKER_STATUSES]), gte(workers.updatedAt, fromDate)),
+      ))
+      .limit(FLEET_WORKER_ROW_CAP * 2),
+    db
+      .select({
+        createdAt: tasks.createdAt,
+        status: tasks.status,
+        firstStart: sql<Date | null>`(select min(${workers.startedAt}) from ${workers} where ${workers.taskId} = ${tasks.id})`,
+      })
+      .from(tasks)
+      .where(and(
+        inArray(tasks.workspaceId, wsIds),
+        sql`coalesce(jsonb_array_length(${tasks.dependsOn}), 0) = 0`,
+        or(
+          eq(tasks.status, 'pending'),
+          gte(tasks.updatedAt, fromDate),
+        ),
+      ))
+      .limit(FLEET_WORKER_ROW_CAP * 2),
+  ]);
+  const live = new Set<string>(LIVE_WORKER_STATUSES);
+  const runs: RunInterval[] = runRows.map(r => ({
+    start: new Date(r.startedAt!).getTime(),
+    end: live.has(r.status) ? null : new Date(r.completedAt ?? r.updatedAt ?? now).getTime(),
+  }));
+  const queued: QueuedInterval[] = [];
+  for (const t of taskRows) {
+    const created = new Date(t.createdAt).getTime();
+    if (t.firstStart) queued.push({ from: created, to: new Date(t.firstStart).getTime() });
+    else if (t.status === 'pending') queued.push({ from: created, to: null });
+  }
+  return { runs, queued };
+}
+
+/**
+ * Health › Runners' lanes: the fleet with its recent runs (not just the live
+ * ones) and the stretches every slot sat idle while work waited. Lean on
+ * purpose: no ticker, counts or questions, and only the runners page calls it.
+ */
+export async function loadRunnersFleet(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<{ fleet: FleetSnapshot; idle: IdleStretch[] }> {
+  const { teamId, wsIds, now } = input;
+  if (wsIds.length === 0) return { fleet: EMPTY.fleet, idle: [] };
+  const windowStart = now - FLEET_WINDOW_MS;
+  const [heartbeatRows, workerRows, history] = await Promise.all([
+    loadFleetHeartbeats({ teamId, wsIds, now }),
+    db
+      .select({
+        id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
+        status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
+        prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
+        taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+        roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
+      })
+      .from(workers)
+      .leftJoin(tasks, eq(workers.taskId, tasks.id))
+      .where(and(
+        inArray(workers.workspaceId, wsIds),
+        or(inArray(workers.status, [...LIVE_WORKER_STATUSES]), gte(workers.startedAt, new Date(windowStart))),
+      ))
+      .orderBy(desc(workers.startedAt))
+      .limit(FLEET_WORKER_ROW_CAP),
+    loadQueueHistory({ wsIds, from: windowStart, now }),
+  ]);
+  // A run that stopped (a session limit, say) whose task merged later, from
+  // this run or another: the merged PR, so the run reads "merged as #N".
+  const taskIds = [...new Set(workerRows.map(r => r.taskId).filter((id): id is string => !!id))];
+  const mergedRows = taskIds.length === 0 ? [] : await db
+    .select({ taskId: workers.taskId, prNumber: workers.prNumber })
+    .from(workers)
+    .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
+  const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
+  const rows: FleetWorkerRow[] = workerRows.map(r => ({
+    id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
+    startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
+    taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
+    task: r.taskId ? {
+      id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
+      roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
+    } : null,
+  }));
+  const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], rows, {
+    now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
+  });
+  const from = Math.max(fleet.window.from, windowStart);
+  return { fleet, idle: idleWhileQueued({ ...history, from, to: now }) };
 }

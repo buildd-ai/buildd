@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { roleHas } from '@/lib/permission-registry';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -9,6 +10,7 @@ const mockGetWorkspaceRoles = mock(() => Promise.resolve([] as any[]));
 const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsInsert = mock(() => null as any);
+const mockWorkspaceSkillsFindMany = mock(async (_args?: any) => [] as any[]);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -22,12 +24,19 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
   getUserTeamIds: mockGetUserTeamIds,
+  resolveActiveTeamId: async () => ((await mockGetUserTeamIds()) as string[])[0] ?? null,
   getAccountWorkspacePermissions: mock(() => Promise.resolve([])),
 }));
 
 mock.module('@/lib/account-workspace-cache', () => ({
   getAccountWorkspacePermissions: mock(() => Promise.resolve([])),
 }));
+
+// The caller's role per team; `can` resolves through the real registry.
+let teamRoles: Record<string, string> = {};
+const mockCan = mock(async (caller: any, permission: any, teamId: string) =>
+  caller.kind === 'user' && roleHas(teamRoles[teamId], permission, {}));
+mock.module('@/lib/permissions', () => ({ can: mockCan }));
 
 mock.module('@/lib/mission-context', () => ({
   getWorkspaceRoles: mockGetWorkspaceRoles,
@@ -38,7 +47,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       accounts: { findFirst: mock(() => null) },
       workspaces: { findMany: mockWorkspacesFindMany },
-      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst },
+      workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
+      users: { findMany: mock(async () => []) },
     },
     insert: mockWorkspaceSkillsInsert,
     update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) })),
@@ -50,6 +60,8 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ c }),
   or: (...c: any[]) => ({ c }),
   isNull: (f: any) => ({ f }),
+  isNotNull: (f: any) => ({ f, not: true }),
+  ne: (f: any, v: any) => ({ f, v, ne: true }),
   inArray: (f: any, v: any) => ({ f, v }),
   desc: (f: any) => ({ f }),
   sql: Object.assign((s: any, ...v: any[]) => ({ s, v }), { empty: '' }),
@@ -61,7 +73,9 @@ mock.module('@buildd/core/db/schema', () => ({
   workspaceSkills: {
     id: 'id', workspaceId: 'workspace_id', teamId: 'team_id',
     slug: 'slug', name: 'name', isRole: 'is_role', enabled: 'enabled', accountId: 'account_id',
+    ownerUserId: 'owner_user_id', visibility: 'visibility',
   },
+  users: { id: 'id', name: 'name' },
 }));
 
 mock.module('@/lib/storage', () => ({ isStorageConfigured: () => false }));
@@ -85,6 +99,8 @@ describe('GET /api/roles', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockGetWorkspaceRoles.mockReset();
     mockWorkspacesFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
   });
 
   it('returns 401 if not authenticated', async () => {
@@ -107,6 +123,11 @@ describe('GET /api/roles', () => {
   it('returns deduplicated roles across workspaces', async () => {
     mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
     mockGetUserWorkspaceIds.mockReturnValue(Promise.resolve(['ws1', 'ws2']));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    // 1st read: personal roles (none); 2nd: slugs backed by a team role.
+    mockWorkspaceSkillsFindMany
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [{ slug: 'builder' }]);
     mockGetWorkspaceRoles
       .mockImplementationOnce(() => Promise.resolve([{ slug: 'builder', name: 'Builder', workspaceId: 'ws1' }]))
       .mockImplementationOnce(() => Promise.resolve([{ slug: 'builder', name: 'Builder', workspaceId: 'ws2' }]));
@@ -124,6 +145,7 @@ describe('POST /api/roles', () => {
     mockGetUserTeamIds.mockReset();
     mockWorkspaceSkillsFindFirst.mockReset();
     mockWorkspaceSkillsInsert.mockReset();
+    teamRoles = { team1: 'owner' };
   });
 
   it('returns 401 if not authenticated', async () => {
@@ -201,6 +223,49 @@ describe('POST /api/roles', () => {
     const data = await res.json();
     expect(data.skill.workspaceId).toBeNull();
     expect(data.skill.teamId).toBe('team1');
+  });
+
+  // manage_agent_roles (docs/specs/team-permissions.md)
+  function insertSpy() {
+    const values = mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'r1', teamId: 'team1', workspaceId: null, isRole: true }])) }));
+    mockWorkspaceSkillsInsert.mockReturnValue({ values });
+    return values;
+  }
+  function createRole(extra: Record<string, unknown> = {}) {
+    mockGetCurrentUser.mockReturnValue(Promise.resolve({ id: 'user1' }));
+    mockGetUserTeamIds.mockReturnValue(Promise.resolve(['team1']));
+    mockWorkspaceSkillsFindFirst.mockReturnValue(Promise.resolve(null));
+    return POST(new NextRequest('http://localhost/api/roles', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Builder', content: 'You are Builder', ...extra }),
+    }));
+  }
+
+  it('refuses a team member and writes nothing', async () => {
+    teamRoles = { team1: 'member' };
+    const values = insertSpy();
+    const res = await createRole();
+    expect(res.status).toBe(403);
+    expect(values).not.toHaveBeenCalled();
+    expect(mockCan).toHaveBeenCalledWith({ kind: 'user', userId: 'user1' }, 'manage_agent_roles', 'team1');
+  });
+
+  for (const role of ['owner', 'admin']) {
+    it(`lets a team ${role} create a role`, async () => {
+      teamRoles = { team1: role };
+      const values = insertSpy();
+      const res = await createRole();
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it('leaves a non-role skill (isRole: false) as before: a member may create it', async () => {
+    teamRoles = { team1: 'member' };
+    const values = insertSpy();
+    const res = await createRole({ isRole: false });
+    expect(res.status).toBe(201);
+    expect(values).toHaveBeenCalledTimes(1);
   });
 });
 

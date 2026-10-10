@@ -144,8 +144,8 @@ metric read as a measured zero.
   (`apps/web/src/lib/usage-stats.ts:343-354`).
 - A zero is never presented as a measurement. `measuredDistribution` drops
   non-positive values and returns `derivedUnavailable('no_scope', detail)` when
-  nothing recorded the metric — seat/OAuth windows therefore read "no cost
-  recorded", never `$0.00 per task` (`apps/web/src/lib/usage-stats.ts:199-206`,
+  nothing recorded the metric — a window with no recorded cost therefore reads
+  "no cost recorded", never `$0.00 per task` (`apps/web/src/lib/usage-stats.ts:199-206`,
   `:430-442`).
 - Every tool number is published alongside `tools.coverage`
   (`histogram | derived | none`, plus `truncated`). A task's source is the
@@ -166,8 +166,8 @@ metric read as a measured zero.
   its tokens are the sum of both workers.
 - AC-5: GIVEN a window in which every worker reported `costUsd = 0` WHEN the
   rollup is computed THEN `perTask.costUsd` is
-  `{ kind: 'unavailable', reason: 'no_scope' }` with a `detail` naming seat-based
-  auth, and no `$0.00` distribution is returned.
+  `{ kind: 'unavailable', reason: 'no_scope' }` with a `detail` stating that
+  no task recorded a cost, and no `$0.00` distribution is returned.
 - AC-6: GIVEN a caller whose teams do not include workspace `W` WHEN
   `GET /api/stats/usage?workspace=W` is called THEN the server returns HTTP 404
   and no usage figures for `W`.
@@ -206,10 +206,10 @@ NOT silently become a claim gate.
   task ran on Codex, or whose task carries a tenant credential, MUST NOT move
   `teams.monthlyCostUsd` or fire its alerts (`countsTowardAgentSdkCreditPool`,
   `packages/core/budget-alerts.ts`). The worker row's `costUsd` is still
-  written for every session. API-key (metered) Claude spend is still counted:
-  `accounts.authType` records CLI-login accounts as `api` even on a seat, so
-  it cannot exclude metered work without silently dropping seat spend. That
-  exclusion waits on a per-worker billing mode.
+  written for every session. `accounts.authType` records CLI-login accounts as
+  `api` even on a seat, so it is not used; the worker's own `costBasis` is
+  (`real-and-virtual-cost.md`): a `real` row does not draw on the pool, every
+  other basis does.
 - The charge is `costUsd` when the worker reported a positive cost, otherwise
   `estimateCostUsd(resultMeta.modelUsage)` at published list prices
   (`packages/core/model-prices.ts:28-72`,
@@ -280,6 +280,13 @@ defers that task and reports the reason.
   `maxCostPerDay` vs `totalCost` for `authType = 'api'`,
   `maxConcurrentSessions` vs `activeSessions` for `authType = 'oauth'`.
   A gate MUST NOT be applied to the other auth type.
+- `maxConcurrentWorkers` is the number of slots the account's runners are
+  assigned, not a cap on a person. A verified interactive session (the
+  `verifyInteractiveSession` marker) is never refused by it or by
+  `maxConcurrentSessions`, and its workers (`runner = 'mcp'`) are left out of
+  the count a runner claim is checked against, in the pre-check and in the
+  atomic insert. `mcp-unverified` is an ordinary runner. `maxCostPerDay` still
+  applies to every caller.
 - `activeSessions` is a seat counter, not a usage number: it is incremented by
   exactly the number of workers claimed and decremented on every path that moves
   a live worker to a terminal state, so it cannot ratchet upward and
@@ -295,8 +302,9 @@ defers that task and reports the reason.
   (`route.ts:932-987`). The router downshifts tiers in bands and returns
   `paused` for priority-0 work at ≥ 95%, which becomes a `routing_paused`
   deferral (`packages/core/model-router.ts:116-148`, `route.ts:1580-1585`).
-- OAuth pacing has exactly two exemptions, both deliberate: an explicit
-  single-task claim (`taskId` present) always wins over pacing, and
+- OAuth pacing has exactly three exemptions, all deliberate: an explicit
+  single-task claim (`taskId` present) always wins over pacing, a verified
+  interactive session runs on the person's own credentials, and
   `OAUTH_BUDGET_PACING=off` makes it fully inert. Below `MIN_SAMPLES` episodes
   the window is not even measured (`route.ts:953-987`,
   `packages/core/oauth-budget.ts:57-67`, `:187-229`).

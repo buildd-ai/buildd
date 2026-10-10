@@ -13,6 +13,8 @@
  * one.
  */
 
+import { enforceTierCeiling, type TierCeiling } from '@buildd/shared';
+import { enforceModelCeiling } from '@buildd/core/model-tier-ceiling';
 import { NextResponse } from 'next/server';
 import type { Tier, TierEntry } from '@buildd/core/model-tier-defaults';
 import type { CatalogEntry, TokenPrice } from '@buildd/core/model-catalog';
@@ -66,6 +68,12 @@ export interface PlanDeps extends AiAuthDeps {
    * the chat-surface check. Never throws; empty = unknown, and allows.
    */
   chatCatalog(): Promise<readonly CatalogEntry[]>;
+  /**
+   * The team/workspace model-tier ceiling for chat and inference
+   * (docs/specs/model-tier-ceilings.md). An API key is not a person, so
+   * personal maximums never apply here. Absent = no ceiling.
+   */
+  tierCeiling?(teamId: string, workspaceId: string | null): Promise<TierCeiling>;
   loadBudget(account: AiApiAccount, now: Date): Promise<{ dailyCapUsd: number | null; spentTodayUsd: number }>;
   savePlan(row: PlanRow): Promise<void>;
   now(): Date;
@@ -157,12 +165,22 @@ export async function handlePlanRequest(req: Request, deps: PlanDeps): Promise<R
       workspaceId = await deps.defaultWorkspaceId(account.id);
     }
 
+    // Model-tier ceiling: a requested tier above it is refused, not quietly
+    // served cheaper; a cheaper option whose model is priced above it is
+    // dropped below (the plan then downgrades or denies on what is left).
+    const ceiling = deps.tierCeiling ? await deps.tierCeiling(account.teamId, workspaceId) : null;
+    if (ceiling?.max) {
+      const v = enforceTierCeiling({ ceiling, tier: request.tier, origin: 'request_tier' });
+      if (!v.ok) return json(v.denied, 403);
+    }
+
     const now = deps.now();
     const planId = deps.newId();
     const tiers = tiersFrom(request.tier);
     const entries: Partial<Record<Tier, TierEntry>> = {};
     // A chat plan only serves models that call tools and answer in text.
     const catalog = request.surface === 'chat' ? await deps.chatCatalog() : null;
+    const priceCatalog = ceiling?.max ? catalog ?? await deps.chatCatalog() : null;
     const options: PlanOption[] = await Promise.all(tiers.map(async (tier): Promise<PlanOption> => {
       const resolved = await deps.resolveEntry(tier, account.teamId, workspaceId);
       const arm = await deps.drawPoolArm({
@@ -176,6 +194,10 @@ export async function handlePlanRequest(req: Request, deps: PlanDeps): Promise<R
         entry = chat.entry;
         routed = chat.routed;
         if (chat.excluded) console.warn(`[ai/plan] ${tier}: ${chat.excluded} is not chat-capable; serving ${routed?.model ?? 'nothing'}`);
+      }
+      if (routed && ceiling?.max && priceCatalog && !enforceModelCeiling({ ceiling, model: routed.model, origin: 'auto', catalog: priceCatalog }).ok) {
+        console.warn(`[ai/plan] ${tier}: ${routed.model} is priced above the ceiling ${ceiling.max}; not offered`);
+        routed = null;
       }
       entries[tier] = entry;
       const price = routed ? await deps.price(routed.provider, routed.model) : null;

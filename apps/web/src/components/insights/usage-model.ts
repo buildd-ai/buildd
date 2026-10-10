@@ -1,19 +1,39 @@
 import type { FlowSeries } from '@/lib/insights-flow';
 import { BAND_LABEL, tasksInBand, type BandKey } from './flow-chart-model';
+import { basisOfRow } from '@/lib/cost-basis-split';
 
 export type UsageRow = NonNullable<FlowSeries['usage']>[number];
+
+/** A row's bucket: its basis, or unknown when it carries usage without one. */
+const basisOf = (row: UsageRow) => basisOfRow(row.basis, { costUsd: row.costUsd, inputTokens: row.tokens });
+
+interface Totals { role: string; tokens: number; costUsd: number; realUsd: number; virtualUsd: number; hours: number }
+function add(into: Totals, row: UsageRow) {
+  into.tokens += row.tokens; into.costUsd += row.costUsd; into.hours += row.hours;
+  const basis = basisOf(row);
+  if (basis === 'real') into.realUsd += row.costUsd;
+  if (basis === 'virtual') into.virtualUsd += row.costUsd;
+}
+
+/**
+ * Per role and tier. `costUsd` is the combined figure; `realUsd` and
+ * `virtualUsd` are the two shown, so mixed and unknown cost appear in neither
+ * (Usage reports them on their own).
+ */
 export function usageByRole(rows: UsageRow[]) {
-  const groups = new Map<string, { role: string; tokens: number; costUsd: number; hours: number; tiers: (UsageRow & { tier: string })[] }>();
+  const groups = new Map<string, Totals & { tiers: (Totals & { tier: string })[] }>();
+  const zero = (role: string) => ({ role, tokens: 0, costUsd: 0, realUsd: 0, virtualUsd: 0, hours: 0 });
   for (const row of rows) {
     let group = groups.get(row.role);
-    if (!group) { group = { role: row.role, tokens: 0, costUsd: 0, hours: 0, tiers: [] }; groups.set(row.role, group); }
+    if (!group) { group = { ...zero(row.role), tiers: [] }; groups.set(row.role, group); }
     const tier = ['standard', 'premium', 'premium-plus', 'budget'].includes(row.tier ?? '') ? row.tier! : 'unknown';
     let split = group.tiers.find(t => t.tier === tier);
-    if (!split) { split = { role: row.role, tier, tokens: 0, costUsd: 0, hours: 0 }; group.tiers.push(split); }
-    for (const key of ['tokens', 'costUsd', 'hours'] as const) { group[key] += row[key]; split[key] += row[key]; }
+    if (!split) { split = { ...zero(row.role), tier }; group.tiers.push(split); }
+    add(group, row); add(split, row);
   }
   return [...groups.values()].sort((a, b) => b.tokens - a.tokens || a.role.localeCompare(b.role));
 }
+
 function counts(values: string[]) {
   const by = new Map<string, number>();
   for (const value of values) by.set(value, (by.get(value) ?? 0) + 1);

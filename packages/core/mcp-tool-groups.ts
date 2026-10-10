@@ -51,6 +51,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   explain: 'workers',
   get_error_traces: 'workers',
   get_failure_analytics: 'workers',
+  list_incidents: 'workers',
   dispatch_health: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
@@ -58,6 +59,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_path_claim_stats: 'workers',
   get_decision_stats: 'workers',
   list_connectors: 'workers',
+  resolve_capability: 'workers',
   list_runners: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
@@ -101,9 +103,11 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   manage_model_tiers: 'admin',
   manage_evidence_backends: 'admin',
   manage_secrets: 'admin',
+  manage_providers: 'admin',
   // a worker's own lifecycle: never a chat tool
   claim_task: 'work',
   update_progress: 'work',
+  receive_messages: 'work',
   complete_task: 'work',
   create_pr: 'work',
   emit_event: 'work',
@@ -137,6 +141,7 @@ const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
   explain: 'analytics',
   get_error_traces: 'analytics',
   get_failure_analytics: 'analytics',
+  list_incidents: 'analytics',
   dispatch_health: 'analytics',
   read_evidence: 'analytics',
   get_budget_forecast: 'analytics',
@@ -165,6 +170,116 @@ export const mcpGroupToolName = (group: McpToolGroup): string => `buildd_${group
 export function mcpGroupOfToolName(name: string): McpToolGroup | null {
   const g = name.startsWith('buildd_') ? name.slice('buildd_'.length) : '';
   return (MCP_TOOL_GROUPS as readonly string[]).includes(g) ? (g as McpToolGroup) : null;
+}
+
+/**
+ * Which actions a group tool's description lists, one line each, and which it
+ * only names on its closing `More:` line. Both kinds stay in the tool's action
+ * enum and are called exactly the same way; `help {action}` documents either.
+ *
+ * USAGE-DERIVED, dated 2026-10-08: ranked by buildd action calls over the 30
+ * days before that date (get_usage_stats, buildd actions; the figures stay out
+ * of this public repo). An action is `listed` when it is in the frequently
+ * called head of that ranking, which carries the large majority of all calls,
+ * or when a skill (.claude/skills, the onboarding consumer skill), a default
+ * role prompt or a runner prompt tells agents to call it — that reason is
+ * noted inline (a test holds it). Everything else, the long tail, is `more`.
+ * Re-derive from get_usage_stats when usage moves; a Record, so a new action
+ * does not compile until it is placed.
+ */
+export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
+  // the frequently called head
+  get_task: 'listed',
+  update_progress: 'listed',
+  create_pr: 'listed',
+  get_failure_analytics: 'listed',
+  list_incidents: 'more',
+  list_tasks: 'listed',
+  upload_artifact: 'listed',
+  create_artifact: 'listed',
+  get_pr: 'listed',
+  create_task: 'listed',
+  manage_missions: 'listed',
+  explain: 'listed',
+  complete_task: 'listed',
+  get_artifact: 'listed',
+  get_pr_review: 'listed',
+  list_artifacts: 'listed',
+  post_note: 'listed',
+  update_artifact: 'listed',
+  claim_task: 'listed',
+  get_error_traces: 'listed',
+  merge_pr: 'listed',
+  get_path_claim_stats: 'listed',
+  list_prs: 'listed',
+  request_pr_review: 'listed',
+  get_page_source: 'listed',
+  update_pr: 'listed',
+  dispatch_health: 'listed',
+  update_task: 'listed',
+  // the tail, but a workflow tells agents to call it
+  spec_compare: 'listed', // spec-sync skill; spec-validator role
+  manage_workspaces: 'listed', // workspace-onboarding skill; organizer prompts
+  list_runners: 'listed', // default role prompts
+  get_usage_stats: 'listed', // default role prompts
+  get_budget_forecast: 'listed', // default role prompts
+  get_manifest_coverage: 'listed', // default role prompts
+  deploy: 'listed', // Platform Operator role
+  close_pr: 'listed', // runner PR-mutation prompt
+  manage_secrets: 'listed', // visual-review skill (preview bypass secret)
+  get_visual_review: 'listed', // the mission visual-QA phase is read only here
+  // rare: named on the More: line
+  get_task_messages: 'more',
+  receive_messages: 'more',
+  get_decision_stats: 'more',
+  list_schedules: 'more',
+  read_evidence: 'more',
+  record_pr_supersession: 'more',
+  get_release: 'more',
+  list_releases: 'more',
+  release_status: 'more',
+  manage_experiments: 'more',
+  manage_initiatives: 'more',
+  link_tracker: 'more',
+  list_discrepancies: 'more',
+  get_discrepancy: 'more',
+  adjudicate_discrepancy: 'more',
+  promote_discrepancy: 'more',
+  correct_task_result: 'more',
+  approve_plan: 'more',
+  reject_plan: 'more',
+  send_agent_message: 'more',
+  query_events: 'more',
+  emit_event: 'more',
+  suggest_schedule_update: 'more',
+  list_connectors: 'more',
+  resolve_capability: 'more',
+  trace_schedule: 'more',
+  create_schedule: 'more',
+  update_schedule: 'more',
+  pause_schedules: 'more',
+  delete_schedule: 'more',
+  list_artifact_templates: 'more',
+  trigger_release: 'more',
+  manage_watched_projects: 'more',
+  list_skills: 'more',
+  get_skill: 'more',
+  register_skill: 'more',
+  update_skill: 'more',
+  delete_skill: 'more',
+  manage_model_tiers: 'more',
+  manage_evidence_backends: 'more',
+  manage_providers: 'more',
+  consolidate_knowledge: 'more',
+  memory_delete: 'more',
+};
+
+/** `actions` split into the ones a group description lists and the ones its More: line names. */
+export function splitListed(actions: readonly string[]): { listed: string[]; more: string[] } {
+  const listed: string[] = [];
+  const more: string[] = [];
+  for (const a of actions) (ACTION_LISTING[a as BuilddAction] === 'more' ? more : listed).push(a);
+  return { listed, more };
 }
 
 /** Every action of a group, in `allActions` order. */
@@ -200,6 +315,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'claim', actions: ['claim_task'] },
       { text: 'report progress', actions: ['update_progress'] },
+      { text: 'messages', actions: ['receive_messages'] },
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
@@ -221,7 +337,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
     parts: [
       { text: 'coordination stats', actions: ['get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] },
       { text: 'stuck work', actions: ['explain'] },
-      { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'read_evidence'] },
+      { text: 'errors, run logs', actions: ['get_error_traces', 'get_failure_analytics', 'list_incidents', 'read_evidence'] },
       { text: 'budget, usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
       { text: 'runners', actions: ['list_runners'] },
       { text: 'dispatch', actions: ['dispatch_health'] },
@@ -229,7 +345,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connector health', actions: ['list_connectors'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -249,6 +365,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'workspace config', actions: ['manage_workspaces'] },
       { text: 'skills and roles', actions: ['list_skills', 'get_skill', 'register_skill', 'update_skill', 'delete_skill'] },
       { text: 'secrets', actions: ['manage_secrets'] },
+      { text: 'model providers', actions: ['manage_providers'] },
       { text: 'experiments', actions: ['manage_experiments'] },
       { text: 'model tiers, evidence', actions: ['manage_model_tiers', 'manage_evidence_backends'] },
       { text: 'watched projects', actions: ['manage_watched_projects'] },
@@ -269,10 +386,10 @@ export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[])
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {
-  manage_missions: 'list, create, edit, arm, delete missions; link tasks; criteria',
+  manage_missions: 'list, create, edit, arm, delete; link tasks; criteria',
   manage_initiatives: 'initiatives: containers above missions',
-  link_tracker: 'link a mission to a Linear project or issue',
-  get_visual_review: "per-screen visual QA and shots; workspaceId alone: missions awaiting review",
+  link_tracker: 'link mission to a Linear project/issue',
+  get_visual_review: 'per-screen visual QA; workspaceId alone: missions awaiting review',
   list_discrepancies: 'spec vs code discrepancy rows',
   get_discrepancy: 'one discrepancy with its evidence',
   adjudicate_discrepancy: 'accept a discrepancy or flip its direction',
@@ -287,30 +404,32 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   approve_plan: 'approve a planning task',
   reject_plan: 'reject a plan with feedback',
   send_agent_message: 'steer the agent running a task',
-  explain: 'task/mission/workspace/PR blockers and evidence',
-  get_error_traces: 'errors caught from agent tool output',
-  get_failure_analytics: 'failure patterns; error= finds a known one',
-  dispatch_health: 'task delivery: verdict, outbox counts, latency',
+  explain: 'what blocks a task, mission, PR; evidence',
+  get_error_traces: 'errors from tool output',
+  get_failure_analytics: 'failure patterns; error= finds one',
+  list_incidents: 'failure incidents',
+  dispatch_health: 'task delivery: verdict, outbox, latency',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcomes',
   get_decision_stats: 'decision-shadow counts',
-  list_connectors: 'mounted connectors and their health',
+  list_connectors: 'connector health',
+  resolve_capability: 'who serves a need',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
-  get_pr: 'PR state, CI, reviews, body',
+  get_pr: 'PR state, CI, reviews',
   list_prs: 'open PRs (conflicts/red CI first) or merged',
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
   update_pr: 'replace a PR\'s body',
   request_pr_review: 'dispatch PR review',
-  list_releases: 'releases, newest first',
+  list_releases: 'recent releases',
   get_release: 'one release with its tasks',
-  release_status: 'what a release would ship and whether CI is green',
+  release_status: 'what a release would ship; CI green?',
   list_schedules: 'schedules with last run and errors',
-  trace_schedule: 'find the schedule behind a task or notification',
+  trace_schedule: 'the schedule behind a task or notification',
   create_schedule: 'create a schedule',
   update_schedule: 'edit a schedule',
   pause_schedules: 'pause or resume schedules in bulk',
@@ -324,22 +443,24 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_watched_projects: 'deploy-watched projects',
   list_skills: 'skills and roles',
   get_skill: 'one skill, in the shape update_skill takes',
-  register_skill: 'add a skill or role',
+  register_skill: 'add a skill or role (personal: yours)',
   update_skill: 'edit a skill or role',
   delete_skill: 'delete a skill',
   manage_experiments: 'experiments and their readouts',
   manage_model_tiers: 'model per tier',
   manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
+  manage_providers: 'model keys per scope, credential policy, what runs',
   consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
-  claim_task: 'claim your assignment, the next, or a named pending task',
-  update_progress: 'report progress; returns messages for you',
+  claim_task: 'claim your assignment, the next, or a named task',
+  update_progress: 'report progress',
+  receive_messages: 'your inbox',
   complete_task: 'finish your task (error marks it failed)',
   create_pr: 'open the PR for your branch',
   emit_event: 'record a milestone event',
   query_events: "a worker's events",
-  create_artifact: 'save an artifact (report, analysis, link...)',
+  create_artifact: 'save an artifact (report, analysis, link)',
   upload_artifact: 'get an upload URL for a file artifact',
   get_page_source: 'sandbox or preview URL for visual audit',
   deploy: 'Operator deploy with a credential you never see',
@@ -355,12 +476,18 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
-  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, …}',
-  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, …}',
+  resolve_capability: '{capability?, …}',
+  register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
+  update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
   manage_evidence_backends: '{action, backendId?, …}',
   read_evidence: '{taskId?|prNumber?, grep?, …}',
+  list_incidents: '{}',
   record_pr_supersession: '{prNumber?, supersedingPrNumber, supersedingRepo?, reason, …}',
+  merge_pr: '{prNumber, workspaceId?, overrides?, reason?, …}',
+  manage_providers: '{action: list|set|delete|explain|set_policy, provider?, scope?, value?, surface?, …}',
+  manage_watched_projects: '{action: list|create|update|delete|run, workspaceId?, projectId?, repo?, …}',
+  manage_workspaces: '{action: list|get|create|update|create_repo|init|readiness|scaffold|author_spec, workspaceId?, name?, repoUrl?, gitConfig?, releaseConfig?, …}',
 };
 
 /** The long parameter docs of one action (what the params description used to carry for it). */
@@ -527,7 +654,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
-    param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
+    param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [

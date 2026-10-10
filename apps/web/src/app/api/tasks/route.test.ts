@@ -1,4 +1,21 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+
 
 // The trigger-hint batch needs a real driver; here it runs the write as-is and
 // records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
@@ -53,6 +70,11 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
+/** A role row as the role lookups select it (role-visibility columns included). */
+const roleFixture = (o: Record<string, unknown> = {}) => ({
+  id: 'role-1', slug: 'builder', workspaceId: null, teamId: 'team-1', ownerUserId: null, visibility: 'team',
+  enabled: true, isRole: true, defaultBackend: null, connectorRefs: [], model: 'inherit', metadata: {}, ...o,
+});
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockResolveCreatorContext = mock(() =>
   Promise.resolve({
@@ -638,7 +660,8 @@ describe('POST /api/tasks', () => {
         const refused = await POST(createMockRequest({
           method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Elsewhere', missionId: OTHER_MISSION },
         }));
-        expect(refused.status).toBe(404);
+        expect(refused.status).toBe(403);
+        expect((await refused.json()).error).toMatch(/only in its own task's mission/);
         expect(mockTasksInsert).not.toHaveBeenCalled();
 
         const filed = await POST(createMockRequest({
@@ -998,6 +1021,114 @@ describe('POST /api/tasks', () => {
     expect(inserted.context.startResolution).toBe('relative');
     const data = await response.json();
     expect(new Date(data.startAt).toISOString()).toBe(inserted.startAt.toISOString());
+  });
+
+  // Opt-in GitHub repo check (lib/member-repo-access.ts): with the setting on
+  // and nothing to confirm access against, a person is refused (fails closed).
+  it('refuses a session user when memberRepoAccess is on and access cannot be confirmed', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { memberRepoAccess: 'require_read' } });
+
+    const response = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Test Task' } }));
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe('member_repo_access');
+    expect(data.reason).toBe('check_failed');
+  });
+
+  // The landing escape hatch's grant (lib/landing-override-grant.ts): a person's call, stamped by the server.
+  it('a person may grant a task a landing override; the server stamps who granted it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockAccountsFindFirst.mockResolvedValue(null);
+    mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    let insertedValues: any;
+    mockTasksInsert.mockReturnValue({ values: mock((values: any) => { insertedValues = values; return { returning: mock(() => [{ id: 'task-g', workspaceId: 'ws-1', title: 'Land #42' }]) }; }) });
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: { workspaceId: 'ws-1', title: 'Land #42', context: { landingOverride: { prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:someone-else' } } },
+    }));
+    expect(response.status).toBe(200);
+    expect(insertedValues.context.landingOverride).toMatchObject({ prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:user-123' });
+  });
+
+  it('an API key or task token may not grant a landing override', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    const insertCalls = mockTasksInsert.mock.calls.length;
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Land #42', context: { landingOverride: { prNumbers: [42], overrides: ['freshness'] } } },
+    }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toContain('person');
+    expect(mockTasksInsert.mock.calls.length).toBe(insertCalls);
+  });
+
+  // A task's PR link (lib/pr-reach-grant.ts): stamped by the server at filing, never taken from the caller.
+  describe('PR link stamped at filing (context.prReach)', () => {
+    const capture = () => {
+      const seen: { values?: any } = {};
+      mockTasksInsert.mockReturnValue({ values: mock((values: any) => { seen.values = values; return { returning: mock(() => [{ id: 'task-l', workspaceId: 'ws-1', title: 't' }]) }; }) });
+      return seen;
+    };
+    const forged = { prReach: { prNumbers: [99], grantedBy: 'human:someone-else', grantedAt: 'x' } };
+
+    it('a person filing links the PRs the filing names, and the server stamps who', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'user-account-123', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', body: { workspaceId: 'ws-1', title: 'Resolve conflicts on #42', context: forged } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [42], grantedBy: 'human:user-123' });
+    });
+
+    it('an API key with no person and no worker gets no link, and its own prReach is dropped', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Land PR #42', context: { ...forged, prNumber: 42 } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('prReach');
+    });
+
+    const agentFiling = () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: 'w-parent', creationSource: 'mcp', parentTaskId: 'task-parent' });
+      // First lookup: the filing worker's task. Later ones: does the filing task own the PR through a worker? No.
+      let n = 0;
+      mockWorkersFindFirst.mockImplementation((async () => (n++ === 0 ? { taskId: 'task-parent' } : null)) as never);
+    };
+    const parentTask = (context: unknown) => ({ id: 'task-parent', workspaceId: 'ws-1', missionId: null, roleSlug: 'builder', mode: 'execution', context, reviewerRetryPrNumber: null, ciRetryPrNumber: null, conflictRetryPrNumber: null });
+
+    it('an agent run filing a child that names a PR its own task does not reach links nothing', async () => {
+      agentFiling();
+      mockTasksFindFirst.mockResolvedValue(parentTask({}));
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Land PR #7', description: 'merge #7', context: { prNumber: 7, ...forged } } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context).not.toHaveProperty('prReach');
+    });
+
+    it('an agent run passes on a PR link its own task holds', async () => {
+      agentFiling();
+      mockTasksFindFirst.mockResolvedValue(parentTask({ prReach: { prNumbers: [7], grantedBy: 'human:user-123', grantedAt: 'x' } }));
+      const seen = capture();
+      const res = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', title: 'Rebase PR #7 and #8' } }));
+      expect(res.status).toBe(200);
+      expect(seen.values.context.prReach).toMatchObject({ prNumbers: [7], grantedBy: 'task:task-parent' });
+    });
   });
 
   it('creates task with session auth', async () => {
@@ -1684,9 +1815,72 @@ describe('POST /api/tasks', () => {
     expect(captured().missionId).toBe('m-1');
   });
 
+  it("refuses a roleSlug naming another member's private role (400)", async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private' }),
+    ]);
+
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'bobs-helper' },
+    }));
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.gateReason).toBe('role_not_visible');
+    expect(data.error).toContain('private role');
+    expect(captured()).toBeNull();
+  });
+
+  it("accepts the owner's own private role", async () => {
+    const captured = backendCase();
+    mockResolveCreatorContext.mockResolvedValue({ createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null, createdByUserId: 'u-bob' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'bobs-helper', ownerUserId: 'u-bob', visibility: 'private', defaultBackend: 'codex' }),
+    ]);
+
+    const res = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'bobs-helper' },
+    }));
+
+    expect(res.status).not.toBe(400);
+    expect(captured().roleSlug).toBe('bobs-helper');
+    expect(captured().backend).toBe('codex');
+  });
+
+  it('accepts a shared personal role and a slug with a team row beside a private one', async () => {
+    backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-bob', slug: 'reviewer', ownerUserId: 'u-bob', visibility: 'team', defaultBackend: 'codex' }),
+    ]);
+    const shared = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'reviewer' },
+    }));
+    expect(shared.status).not.toBe(400);
+
+    const captured = backendCase();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([
+      roleFixture({ id: 'r-team', defaultBackend: 'claude' }),
+      roleFixture({ id: 'r-bob', ownerUserId: 'u-bob', visibility: 'private', defaultBackend: 'codex' }),
+    ]);
+    await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    }));
+    // The team row governs: another member's private row's backend hint is not read.
+    expect(captured().backend).toBe('claude');
+  });
+
   it('inherits backend from the role default when not explicitly set', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1699,7 +1893,7 @@ describe('POST /api/tasks', () => {
 
   it('explicit task.backend overrides the role default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1726,7 +1920,7 @@ describe('POST /api/tasks', () => {
 
   it('does not pin a backend inherited from a role, mission or workspace default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
@@ -1739,7 +1933,7 @@ describe('POST /api/tasks', () => {
 
   it('omits backend (schema default applies) when neither task nor role specify one', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: null });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: null })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1766,7 +1960,7 @@ describe('POST /api/tasks', () => {
   it('mission default backend overrides the role default', async () => {
     const captured = backendCase();
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: 'codex' });
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'claude' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1793,7 +1987,7 @@ describe('POST /api/tasks', () => {
   it('falls through to the role default when the mission has no backend', async () => {
     const captured = backendCase();
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultBackend: null });
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'codex' })]);
 
     const request = createMockRequest({
       method: 'POST',
@@ -1819,8 +2013,8 @@ describe('POST /api/tasks', () => {
 
   it('role default takes precedence over the workspace default', async () => {
     const captured = backendCase();
-    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'claude' });
-    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { defaultBackend: 'codex' } });
+    mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ defaultBackend: 'claude' })]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { defaultBackend: 'codex' } });
 
     const request = createMockRequest({
       method: 'POST',
@@ -2624,7 +2818,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.pathManifest).toContain('apps/runner/src/env-scan.ts');
   });
 
-  it('inferred manifest overlapping a sibling pending task → auto-dependsOn edge created', async () => {
+  it('inferred manifest overlapping a sibling pending task on the same file → soft same_file evidence, no edge', async () => {
     frictionSetup();
     mockTasksFindFirst.mockResolvedValue(null); // dedup miss
 
@@ -2663,8 +2857,11 @@ describe('POST /api/tasks', () => {
       'apps/runner/src/env-scan.ts',
       'apps/runner/src/workers.ts',
     ]);
-    // The overlap with the sibling task triggered the auto-dependsOn edge
-    expect(capturedValues.dependsOn).toContain('sibling-task-99');
+    // The same-file overlap is decided at claim (HOLD/START), not a stored edge
+    expect(capturedValues.dependsOn ?? []).not.toContain('sibling-task-99');
+    expect(capturedValues.pathDeclaration.softOverlaps).toEqual([
+      { taskId: 'sibling-task-99', paths: ['apps/runner/src/workers.ts'], kind: 'same_file' },
+    ]);
   });
 
   it('manifest inference skipped when caller already provides pathManifest', async () => {
@@ -2987,7 +3184,7 @@ describe('POST /api/tasks', () => {
     expect(captured().pathDeclaration.softOverlaps).toHaveLength(8);
   });
 
-  it('an exact same-file overlap with a queued writer is still a hard inferred edge', async () => {
+  it('an exact same-file overlap with a queued writer is soft same_file evidence, not an edge', async () => {
     const captured = missionPathManifestSetup();
     mockTasksFindMany.mockResolvedValue([
       { id: 'sibling-same-file', pathManifest: ['apps/web/src/lib/shared.ts'] },
@@ -3001,12 +3198,28 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(captured().dependsOn).toEqual(['sibling-same-file']);
+    expect(captured().dependsOn).toBeUndefined();
     expect(captured().pathDeclaration).toMatchObject({
-      inferredDependsOn: ['sibling-same-file'],
       overlapPolicy: 'v2',
-      softOverlaps: [{ taskId: 'sibling-dir' }],
+      softOverlaps: [
+        { taskId: 'sibling-same-file', kind: 'same_file' },
+        { taskId: 'sibling-dir', kind: 'prefix' },
+      ],
     });
+  });
+
+  it('a same-file overlap on a generated file stays a hard inferred edge', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([{ id: 'sibling-index', pathManifest: ['docs/specs/INDEX.md'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Mission task S', missionId: 'mission-1', pathManifest: ['docs/specs/INDEX.md'] },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual(['sibling-index']);
   });
 
   it('a migration-namespace overlap stays hard even when prefix-only', async () => {
@@ -3570,7 +3783,7 @@ describe('POST /api/tasks', () => {
     it('rejects requiredConnectors not in role connectorRefs', async () => {
       setupApiKeyAuth();
       // Role has connectorRefs: ['conn-uuid-A']
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A'] });
+      mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ slug: 'email-agent', connectorRefs: ['conn-uuid-A'] })]);
 
       const response = await POST(createMockRequest({
         method: 'POST',
@@ -3591,9 +3804,7 @@ describe('POST /api/tasks', () => {
     it('creates task with valid requiredConnectors', async () => {
       setupApiKeyAuth();
       // Role has connectorRefs: ['conn-uuid-A', 'conn-uuid-B']
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce({ connectorRefs: ['conn-uuid-A', 'conn-uuid-B'] });
-      // defaultBackend lookup returns null
-      mockWorkspaceSkillsFindFirst.mockResolvedValueOnce(null);
+      mockWorkspaceSkillsFindMany.mockResolvedValue([roleFixture({ slug: 'email-agent', connectorRefs: ['conn-uuid-A', 'conn-uuid-B'] })]);
 
       let insertedValues: any;
       const createdTask = { id: 'task-rc', workspaceId: 'ws-1', title: 'Email task', status: 'pending' };
@@ -3716,6 +3927,21 @@ describe('POST /api/tasks', () => {
       expect(data.error).toContain('kind must be one of');
     });
 
+    it.each([['feature'], ['test'], ['constructor']])('rejects category-shaped kind=%s with a 400 so it never reaches the router', async (kind) => {
+      setupKindAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('kind must be one of');
+    });
+
     it('rejects an invalid complexity with a 400 instead of dropping it', async () => {
       setupKindAuth();
       captureInsert();
@@ -3805,6 +4031,74 @@ describe('POST /api/tasks', () => {
       const data = await response.json();
       expect(data.routing.tier).toBe('premium');
       expect(data.routing.reason).toContain('role "builder" floor premium raised standard → premium');
+    });
+
+    describe('model-tier ceiling', () => {
+      afterEach(() => { ceilingTest.inputs = {}; });
+
+      it('team premium cap: an explicit premium-plus task is refused with policy_denied and not filed', async () => {
+        ceilingTest.inputs = { team: { team: { all: 'premium' } } };
+        setupRoutingAuth();
+        const captured = captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium-plus' },
+        }));
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: 'policy_denied', code: 'tier_above_ceiling', maxTier: 'premium', binding: { source: 'team' } });
+        expect(captured.values).toBeNull();
+      });
+
+      it("a stated role whose floor is above the ceiling is refused", async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'standard' } } };
+        setupRoutingAuth();
+        captureInsert();
+        mockWorkspaceSkillsFindMany.mockResolvedValue([{ slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: null }]);
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', roleSlug: 'builder' },
+        }));
+        expect(response.status).toBe(403);
+        expect((await response.json()).requested).toMatchObject({ tier: 'premium', origin: 'role_model' });
+      });
+
+      it('an API-key caller with no person behind it gets the team cap, not a personal one', async () => {
+        ceilingTest.inputs = { team: { membersCapped: true, team: { all: 'premium' } }, members: { 'user-x': { self: { all: 'budget' } } } };
+        setupRoutingAuth();
+        captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium' },
+        }));
+        expect(response.status).toBe(200);
+      });
+
+      it("the routing preview shows an automatic premium pick at the ceiling, as the claim will serve it", async () => {
+        ceilingTest.inputs = { team: { team: { agent: 'standard' } } };
+        setupRoutingAuth();
+        captureInsert();
+        mockWorkspaceSkillsFindMany.mockResolvedValue([{ slug: 'builder', model: 'opus', workspaceId: null, teamId: 'team-1', metadata: null }]);
+        // No stated role: the matrix alone picks premium for complex engineering.
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', kind: 'engineering', complexity: 'complex' },
+        }));
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data.routing.tier).toBe('standard');
+        expect(data.routing.reason).toContain('capped at standard by the team tier maximum');
+      });
+
+      it('no ceiling: a premium-plus task files as before', async () => {
+        setupRoutingAuth();
+        const captured = captureInsert();
+        const response = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+          body: { workspaceId: 'ws-1', title: 'Task', tier: 'premium-plus' },
+        }));
+        expect(response.status).toBe(200);
+        expect(captured.values.tier).toBe('premium-plus');
+      });
     });
 
     it('says an inferred role will not change the model when a role-less task has candidates', async () => {
@@ -4411,6 +4705,26 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       }));
 
       expect(response.status).toBe(409);
+    });
+
+    it('refuses an organizer create on a decomposition-none mission even before any sibling is filed', async () => {
+      organizerCallSetup({ missionRow: { decompositionSkipped: true } });
+      mockTasksFindMany.mockResolvedValue([]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Organizer decomposed task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.error).toMatch(/coordinate-only/i);
     });
 
     it('allows a retry child even when sibling tasks exist, as long as parentTaskId is explicit', async () => {

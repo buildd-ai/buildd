@@ -92,6 +92,11 @@ interface Worker {
   prUrl: string | null;
   prNumber: number | null;
   prLifecycleStatus?: string | null;
+  createdAt?: string | null;
+  mergedAt?: string | null;
+  dirtyWorktree?: boolean | null;
+  observedTouches?: string[] | null;
+  prIsDraft?: boolean | null;
   localUiUrl: string | null;
   commitCount: number | null;
   filesChanged: number | null;
@@ -101,10 +106,9 @@ interface Worker {
   waitingFor: WorkerWaitingFor | null;
   /** The worker's own report beside a question (`needs_input: …`): the context fallback. */
   error?: string | null;
-  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
+  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' | 'acknowledged' }>;
   pendingInstructions: string | null;
   updatedAt: string | null;
-  account?: { authType: string } | null;
   resultMeta?: {
     stopReason: string | null;
     terminalReason?: string | null;
@@ -118,6 +122,10 @@ interface Worker {
 
 interface Props {
   initialWorker: Worker;
+  outputRequirement?: string | null;
+  deliverableArtifactCount?: number;
+  usesReviewer?: boolean;
+  reviewState?: string;
   /**
    * Keys the coalesced-refresh debounce — must match the taskId TaskAutoRefresh
    * uses on the same page so their refreshes for the same PATCH collapse into
@@ -148,14 +156,14 @@ interface Props {
    * GitHub yet) is never shown as "Needs input" just because the worker
    * stopped on a question (workflow-state-kernel §17.5, S36).
    */
-  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null } | null;
+  delivery?: { headline: string; owner: string; needsYou: boolean; detail: string | null; prState?: PrDisplayState | null; state: string } | null;
 }
 
 // Entries carry optional agentId/parentAgentId (SDK v0.3.202+) so nested agent
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null }: Props) {
+export default function RealTimeWorkerView({ initialWorker, outputRequirement, deliverableArtifactCount, usesReviewer, reviewState, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp, delivery = null }: Props) {
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const lastStatusRef = useRef(initialWorker.status);
@@ -340,9 +348,10 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
   const milestones = worker.milestones || [];
   const startMs = worker.startedAt ? new Date(worker.startedAt).getTime() : null;
   const now = deriveNow(milestones, {
-    status: worker.status,
+    ...worker,
     currentAction: worker.currentAction,
     prUrl: worker.prUrl,
+    outputRequirement, deliverableArtifactCount, usesReviewer, reviewState,
     startMs,
     nowMs,
   });
@@ -430,11 +439,11 @@ export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus =
           />
         </div>
 
-        <PausedBar pct={now.pct} elapsed={elapsed} turns={worker.turns} tokens={tokensShown ? formatTokens(tokens) : null} />
+        <PausedBar evidence={now.evidence} elapsed={elapsed} turns={worker.turns} tokens={tokensShown ? formatTokens(tokens) : null} nowMs={nowMs} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
           {now.headline && now.headline !== question.headline && (
-            <ContextRow label="Why it stopped" summary={collapseWorkspacePath(now.headline)} meta={now.pct != null ? `${now.pct}%` : null} />
+            <ContextRow label="Why it stopped" summary={collapseWorkspacePath(now.headline)} meta={null} />
           )}
           <ContextRow
             label="Activity"

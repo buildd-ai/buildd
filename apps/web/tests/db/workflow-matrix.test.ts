@@ -196,7 +196,7 @@ const { buildActionQueue, isActionableChip } = await import('../../src/lib/actio
 const { dispatchConflictRetry } = await import('../../src/lib/conflict-retry');
 const { recordPrSupersession, recordPrAbandonment } = await import('../../src/lib/pr-supersession');
 const { canCompleteMission } = await import('../../src/lib/mission-completion');
-const { taskScopeTaskNamesPr } = await import('../../src/lib/task-token-auth');
+const { taskScopeTaskLinksPr } = await import('../../src/lib/task-token-auth');
 const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[id]/TaskSidePanel');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
@@ -264,8 +264,16 @@ async function open(): Promise<Delivery> {
 async function openAndHandOn(): Promise<Delivery> {
   const o = await open();
   const workerId = await seedWorker(o.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: o.prNumber, commitCount: 1 });
-  const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
-  expect(ended.handled).toBe(true);
+  // The checks a test sets are the ones T10 reads after the hand-off: CI has not reported when the
+  // owner ends here (a red already on the head at the hand-off is e9f1674b's, workflow-scenarios-ci).
+  const checks = gh.checks;
+  gh.checks = undefined;
+  try {
+    const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    expect(ended.handled).toBe(true);
+  } finally {
+    gh.checks = checks;
+  }
   return o;
 }
 
@@ -870,6 +878,23 @@ describe('S9–S15', () => {
     expect((await transitions(o.deliveryId)).filter((t) => t.command === 'PrMerged').length).toBe(1);
   });
 
+  // Per-workspace isolation: a second workspace connected to the same repo can hold a worker row with
+  // the same PR number and url (and, on a reused database, an earlier run's rows do). The merge's
+  // post-merge work must complete THIS delivery's owner task, never the other workspace's.
+  test('S10 (isolation): a same-repo, same-number worker row in another workspace is not the merged PR\'s owner', async () => {
+    const o = await openAndHandOn();
+    const url = `https://github.com/${REPO}/pull/${o.prNumber}`;
+    await q(sql`UPDATE workers SET pr_url = ${url} WHERE pr_number = ${o.prNumber}::int AND workspace_id = ${workspaceId}::uuid`);
+    const other = await seedWorkspace();
+    const foreignTask = await seedTask(other.workspaceId, { status: 'in_progress', title: 'feat: foreign owner' });
+    await q(sql`INSERT INTO workers (workspace_id, task_id, name, runner, branch, status, pr_number, pr_url, created_at)
+      VALUES (${other.workspaceId}::uuid, ${foreignTask}::uuid, 'w', 'test', 'feat/other', 'running', ${o.prNumber}, ${url}, now() - interval '1 hour')`);
+    await verdict(o, 'approve');
+    await seam.landThroughKernel({ workspaceId, installationId: 1, repoFullName: REPO, prNumber: o.prNumber, headSha: 'H1', door: 'auto_merge', actor: 'system:auto_merge' }, deps);
+    expect((await taskRow(o.ownerTaskId)).status).toBe('completed');
+    expect((await taskRow(foreignTask)).status).toBe('in_progress');
+  });
+
   test('S10 (doors): an indeterminate merge answer is verified before anything re-calls; nothing landed → APPROVED, and the next door lands it', async () => {
     const o = await openAndHandOn();
     await verdict(o, 'approve');
@@ -1094,6 +1119,45 @@ describe('S9–S15', () => {
     const mech = (await loadView({ deliveryId: o.deliveryId })).attempts.filter((a) => a.mode === 'mechanical');
     expect(mech.map((a) => [a.attemptNo, a.outcome])).toEqual([[1, 'delivered'], [1, 'delivered'], [1, 'delivered']].map(([, out], i) => [i + 1, out]));
     expect(reviewersCreated.length).toBe(1);
+
+    // S15 cycles: past the cooldown (0 here) the sweep's real SQL finds the treadmill escalation and
+    // restarts it pinned to its version; the next behind is refreshed again instead of escalating.
+    const restarted = await seam.restartTreadmillCycles({ cooldownMs: 0, limit: 50 });
+    expect(restarted.restarted).toBeGreaterThanOrEqual(1);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: head });
+    const marker = (await loadView({ deliveryId: o.deliveryId })).attempts.find((a) => a.triggerReason === 'treadmill_cycle');
+    expect(marker).toMatchObject({ status: 'skipped', boundHeadSha: null, attemptNo: 4 });
+    expect(await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } })).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+    // A delivery that is not a treadmill escalation is never picked up.
+    await seam.restartTreadmillCycles({ cooldownMs: 0, limit: 50 });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'REPAIRING', stateReason: 'behind' });
+  });
+
+  test("S15 (escape hatch): a person's freshness override lands a treadmill-escalated delivery; the bypass names its kinds", async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    override.refresh_branch = async () => ({ outcome: 'ok' });
+    let head = 'H1';
+    for (let i = 1; i <= 3; i++) {
+      await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+      await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } });
+      const next = `F${i}`;
+      await push(o, next, { ancestors: [head], equivalent: true });
+      head = next;
+    }
+    await applyCommand({ type: 'LandingRequested', actor: 'kernel', door: 'auto', headSha: head, live: live(), rails: { passed: true } }, { ref: { deliveryId: o.deliveryId } });
+    await applyCommand({ type: 'MergeCallResult', actor: 'kernel', headSha: head, outcome: 'behind' }, { ref: { deliveryId: o.deliveryId } });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'ESCALATED', stateReason: 'landing_needs_human' });
+    const res = await applyCommand({
+      type: 'LandingRequested', actor: 'human:owner', door: 'merge_pr', headSha: head, live: live(), rails: { passed: true },
+      override: { reason: 'base keeps moving', kinds: ['freshness'] },
+    }, { ref: { deliveryId: o.deliveryId } });
+    expect(res).toMatchObject({ result: 'applied' });
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'LANDING' });
+    const t = (await q(sql`SELECT bypass FROM workflow_transitions WHERE delivery_id = ${o.deliveryId}::uuid AND command = 'LandingRequested' AND bypass IS NOT NULL`)) as Array<{ bypass: Record<string, unknown> }>;
+    expect(t.at(-1)?.bypass).toMatchObject({ actor: 'human:owner', kinds: ['freshness'], overrodeState: 'ESCALATED' });
   });
 
   // Intended: landPr and the landing sweep raise MergeCallResult(behind) from their real merge call,
@@ -1109,6 +1173,37 @@ describe('S9–S15', () => {
     expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
     expect((await repairAttempts(o.deliveryId)).map((a) => [a.mode, a.status, a.outcome, a.taskId])).toEqual([['mechanical', 'ended', 'delivered', null]]);
     expect(reviewersCreated.length).toBe(1);
+  });
+
+  // The live shape that stranded approved, green PRs: no "require up to date" protection, so GitHub
+  // says `clean` for a PR behind its base. Landing's freshness rail saw behind_by > 0 and asked for a
+  // refresh; T12 read `clean` as not_conflicting, every sweep, with no update-branch call. Ancestry
+  // decides instead: the base tip missing from the head is behind, and refresh_branch runs once.
+  test('S15 (refresh_branch, unprotected base): GitHub says clean but the head lacks the base tip → one pinned refresh, approval carried', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'clean';
+    gh.baseHead = 'B9';
+    updateBranch({ merged: 'R1' });
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: true, branchUpdated: true });
+    expect(ghWrites.filter((w) => w.path.endsWith('/update-branch')).map((w) => w.body)).toEqual([{ expected_head_sha: 'H1' }]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'R1', approvedHeads: ['H1', 'R1'] });
+    expect(reviewersCreated.length).toBe(1);
+    // The refreshed head carries the base tip: the same door is now a no-op, not a second refresh.
+    gh.ancestors.R1 = ['H1', 'B9'];
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(ghWrites.filter((w) => w.path.endsWith('/update-branch')).length).toBe(1);
+  });
+
+  test('S15 (refresh_branch, unprotected base): a head that already contains the base tip is not refreshed', async () => {
+    const o = await openAndHandOn();
+    await verdict(o, 'approve');
+    gh.mergeable = 'clean';
+    gh.baseHead = 'B0';
+    gh.ancestors.H1 = ['B0'];
+    expect(await conflictDoor(o, { behindOnly: true })).toMatchObject({ dispatched: false, alreadyUpToDate: true });
+    expect(updateBranchCalls).toEqual([]);
+    expect(await delivery(o.deliveryId)).toMatchObject({ state: 'APPROVED', currentHeadSha: 'H1' });
   });
 
   // Slice C: a door's real merge call answered "behind" is T16, and refresh_branch runs the
@@ -1180,7 +1275,7 @@ describe('S16–S21', () => {
     const blocked = await canCompleteMission(m2, { evaluateCriteria: false });
     expect(blocked).toMatchObject({ ok: false, code: 'awaiting_merge' });
     expect(blocked.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
-    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:owner@example.com' })).toEqual({ ok: true });
     expect(await delivery(closed.deliveryId)).toMatchObject({ state: 'ABANDONED', stateReason: 'plan changed' });
     expect((await transitions(closed.deliveryId)).at(-1)!.evidence.actor).toBe('human:owner@example.com');
     expect((await prRows(closed)).every((r) => r.abandoned_reason === 'plan changed' && r.abandoned_recorded_by === 'owner@example.com')).toBe(true);
@@ -1484,24 +1579,31 @@ describe('S16–S21', () => {
   // §17.1 on real rows: who may record T20 is decided on the CALLER's own task. The routes apply
   // this rule (apps/web/src/app/api/github/pr/supersede/route.test.ts and .../pr/review/route.test.ts
   // run the full matrix: owner, caller-names-PR, sibling, other workspace, a person, other team).
-  test('S21: the caller\'s own task decides (owner, names it, retry subject, sibling, other workspace); T20 records the caller', async () => {
+  test('S21: the caller\'s own task decides (owner, linked, retry subject, text-only, sibling, other workspace); T20 records the caller', async () => {
     const o = await openAndHandOn();
     await q(sql`UPDATE tasks SET description = ${`Opens #${o.prNumber}.`} WHERE id = ${o.ownerTaskId}::uuid`);
     const names = await seedTask(workspaceId, { status: 'in_progress', title: `friction: #${o.prNumber} shipped elsewhere` });
+    await q(sql`UPDATE tasks SET context = ${JSON.stringify({ prReach: { prNumbers: [o.prNumber], grantedBy: 'human:owner', grantedAt: 'x' } })}::jsonb WHERE id = ${names}::uuid`);
+    // Names the PR in its title, description and context, with no server-stamped link.
+    const textOnly = await seedTask(workspaceId, { status: 'in_progress', title: `land #${o.prNumber}` });
+    await q(sql`UPDATE tasks SET description = ${`merge #${o.prNumber}`}, context = ${JSON.stringify({ prNumber: o.prNumber })}::jsonb WHERE id = ${textOnly}::uuid`);
     const retry = await seedTask(workspaceId, { status: 'in_progress', title: 'fix review' });
     await q(sql`UPDATE tasks SET reviewer_retry_pr_number = ${o.prNumber} WHERE id = ${retry}::uuid`);
     const sibling = await seedTask(workspaceId, { status: 'in_progress', title: 'sibling work on the same files' });
     const elsewhere = (await seedWorkspace()).workspaceId;
     const foreign = await seedTask(elsewhere, { status: 'in_progress', title: `see #${o.prNumber}` });
-    const may = (taskId: string, ws = workspaceId) => taskScopeTaskNamesPr({ taskScope: { taskId, workspaceId: ws, expiresAt: Date.now() + 60_000 } }, { workspaceId, prNumber: o.prNumber });
+    const may = (taskId: string, ws = workspaceId) => taskScopeTaskLinksPr({ taskScope: { taskId, workspaceId: ws, expiresAt: Date.now() + 60_000 } }, { workspaceId, prNumber: o.prNumber });
 
-    expect(await may(o.ownerTaskId)).toBe(true);
+    // The owner reaches its PR through its own worker (taskScopeAllowsWorkerPr at the route);
+    // its description naming the PR adds nothing.
+    expect(await may(o.ownerTaskId)).toBe(false);
     expect(await may(names)).toBe(true);
     expect(await may(retry)).toBe(true);
+    expect(await may(textOnly)).toBe(false);
     // The owner's task names the PR; that gives the sibling nothing.
     expect(await may(sibling)).toBe(false);
     expect(await may(foreign, elsewhere)).toBe(false);
-    expect(await taskScopeTaskNamesPr({}, { workspaceId, prNumber: o.prNumber })).toBe(false);
+    expect(await taskScopeTaskLinksPr({}, { workspaceId, prNumber: o.prNumber })).toBe(false);
 
     gh.state = 'closed'; gh.updatedAt = 'u-closed';
     await stampPrUrl(o);
@@ -1663,6 +1765,9 @@ describe('S24–S27', () => {
   const incidentsOf = (signature: string) => q<{ id: string; status: string; signature: string; trunk_fix_task_id: string | null; affected_deliveries: string[] }>(
     sql`SELECT id, status, signature, trunk_fix_task_id, affected_deliveries FROM trunk_incidents WHERE workspace_id = ${workspaceId}::uuid AND signature = ${signature} ORDER BY first_seen_at`);
   const trunkFixTasks = (incidentId: string) => q<{ id: string; status: string; title: string }>(sql`SELECT id, status, title FROM tasks WHERE context->>'trunkIncidentId' = ${incidentId}`);
+  // Each scenario starts on a green trunk: a red base runs one fixer for all its incidents, so an
+  // incident an earlier scenario left open on the shared base would absorb this one's fix.
+  beforeEach(() => q(sql`UPDATE trunk_incidents SET status = 'resolved', resolved_at = now() WHERE workspace_id = ${workspaceId}::uuid AND status <> 'resolved'`));
 
   test('S24: one signature red on trunk and on several PRs → one incident, one trunk fix, zero per-PR attempts (queued ones skipped), BLOCKED_ON_TRUNK; recovery resumes with the ci budget untouched', async () => {
     gh.baseHead = 'B0'; gh.checks = { B0: [], H1: ['Unit tests'] };
@@ -1772,6 +1877,92 @@ describe('S24–S27', () => {
     const p2 = await openAndHandOn();
     expect(await ciFail(p2)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
     expect(await incidentsOf('ci:integration')).toHaveLength(1);
+  });
+
+  // ── S24 (one fixer per base): a red base runs one trunk fix, whatever its incidents ──
+  /** Every trunk-fix task filed for one base of this workspace, oldest first. */
+  const trunkFixTasksOnBase = (baseRef: string) => q<{ id: string; status: string; title: string; description: string }>(
+    sql`SELECT id, status, title, description FROM tasks WHERE workspace_id = ${workspaceId}::uuid AND context->>'trunkIncidentId' IS NOT NULL
+        AND context->>'baseBranch' = ${baseRef} ORDER BY created_at, id`);
+  const incidentsOnBase = (baseRef: string) => q<{ id: string; status: string; signature: string; trunk_fix_task_id: string | null }>(
+    sql`SELECT id, status, signature, trunk_fix_task_id FROM trunk_incidents WHERE workspace_id = ${workspaceId}::uuid AND base_ref = ${baseRef} ORDER BY first_seen_at, id`);
+
+  test('S24 (one fixer per base): a second incident on a base whose fix is still open joins that fixer and steers it; no second task', async () => {
+    const base = 'mission/two-fixers-a';
+    // The base's runs are read before every check finished: only Lint fails so far.
+    gh.baseRef = base; gh.baseHead = 'MA1'; gh.checks = { MA1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    expect(await ciFail(a)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const [first] = await trunkFixTasksOnBase(base);
+    expect(first).toBeDefined();
+    // The fixer is running (a budget failover keeps it this same task, merely re-pended on another backend).
+    await q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${first.id}::uuid`);
+    const fixerWorker = await seedWorker(first.id, { status: 'running' });
+
+    // The base now fails more on the same head; another PR fails only the new check. The open
+    // incident (Lint) does not explain it, so a second incident opens on the base's wider signature.
+    gh.checks.MA1 = ['Lint', 'Unit tests']; gh.checks.H1 = ['Unit tests'];
+    const b = await openAndHandOn();
+    expect(await ciFail(b)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    expect(await ciFail(b)).toMatchObject({ handled: true, result: { result: 'stale' } });
+
+    const incs = await incidentsOnBase(base);
+    expect(incs.map((i) => i.signature)).toEqual(['ci:lint', 'ci:lint|unit tests']);
+    // Exactly one fix task for the base: the second incident is linked to the running fixer.
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes.map((t) => t.id)).toEqual([first.id]);
+    expect(incs.map((i) => [i.status, i.trunk_fix_task_id])).toEqual([['fixing', first.id], ['fixing', first.id]]);
+    expect((await effects(b.deliveryId, 'dispatch_trunk_fix'))[0]).toMatchObject({ status: 'done', outcome: 'ok:joined_open_fix' });
+    // Steered, not duplicated: the live fixer is told about the check it was not filed for, once.
+    const [w] = await q<{ pending_instructions: string | null }>(sql`SELECT pending_instructions FROM workers WHERE id = ${fixerWorker}::uuid`);
+    expect(w.pending_instructions).toContain('unit tests');
+    expect(w.pending_instructions!.split(`trunk-incident:${incs[1].id}`).length).toBe(2);
+    expect(await taskRow(first.id)).toMatchObject({ status: 'in_progress' });
+    expect((await taskRow(first.id)).task.context).toMatchObject({ trunkIncidentId: incs[0].id });
+  });
+
+  test('S24 (one fixer per base): two incidents opened before either fix is dispatched file one task, in either drain order', async () => {
+    const base = 'mission/two-fixers-b';
+    gh.baseRef = base; gh.baseHead = 'MB1'; gh.checks = { MB1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    await ciFail(a, { d: crashedDeps });
+    gh.checks.MB1 = ['Lint', 'Unit tests']; gh.checks.H1 = ['Unit tests'];
+    const b = await openAndHandOn();
+    await ciFail(b, { d: crashedDeps });
+    expect((await incidentsOnBase(base)).map((i) => i.trunk_fix_task_id)).toEqual([null, null]);
+    // The newer incident drains first.
+    await drain(b.deliveryId);
+    await drain(a.deliveryId);
+    const incs = await incidentsOnBase(base);
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes).toHaveLength(1);
+    expect(incs.map((i) => [i.status, i.trunk_fix_task_id])).toEqual([['fixing', fixes[0].id], ['fixing', fixes[0].id]]);
+  });
+
+  test('S24 (one fixer per base): after recovery, a new red on the same base files a new fix, even while the old fixer is still open', async () => {
+    const base = 'mission/two-fixers-c';
+    gh.baseRef = base; gh.baseHead = 'MC1'; gh.checks = { MC1: ['Lint'], H1: ['Lint'] };
+    const a = await openAndHandOn();
+    await ciFail(a);
+    const [first] = await trunkFixTasksOnBase(base);
+    await q(sql`UPDATE tasks SET status = 'in_progress' WHERE id = ${first.id}::uuid`);
+
+    // The base recovers: the incident resolves and the PR resumes.
+    gh.baseHead = 'MC2'; gh.checks.MC2 = [];
+    await seam.reconcileTrunkIncidents(deps);
+    expect((await incidentsOnBase(base)).map((i) => i.status)).toEqual(['resolved']);
+    expect((await delivery(a.deliveryId)).state).toBe('AWAITING_REVIEW');
+
+    // It breaks again on the same check: a new incident, and a new fix of its own.
+    gh.baseHead = 'MC3'; gh.checks.MC3 = ['Lint'];
+    const c = await openAndHandOn();
+    expect(await ciFail(c)).toMatchObject({ handled: true, result: { result: 'applied', decision: { toState: 'BLOCKED_ON_TRUNK' } } });
+    const incs = await incidentsOnBase(base);
+    expect(incs.map((i) => i.status)).toEqual(['resolved', 'fixing']);
+    const fixes = await trunkFixTasksOnBase(base);
+    expect(fixes.map((t) => t.id)).toEqual([first.id, incs[1].id]);
+    expect(incs[1].trunk_fix_task_id).toBe(incs[1].id);
+    expect((await effects(c.deliveryId, 'dispatch_trunk_fix'))[0]).toMatchObject({ status: 'done', outcome: 'ok' });
   });
 
   test('S25: a fix whose head moved between the verdict and the dispatch is skipped at dispatch: no ledger row, no task; replay is a no-op', async () => {

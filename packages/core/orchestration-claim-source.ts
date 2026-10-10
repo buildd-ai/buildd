@@ -10,13 +10,15 @@
  *  - `findAppliedStart` is the gated-START lookup; the claim route calls it
  *    only when `isGatedStartReachable()` is true, which it is not as shipped.
  */
-import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from './db/client';
-import { orchestrationDecisions, tasks, workers } from './db/schema';
-import { CLAIM_HOLD_DECISION } from './orchestration-claim-decision';
-import type { ClaimHoldHolderState } from './orchestration-claim-decision';
+import { gateEvents, orchestrationDecisions, orchestrationManifestPredictions, reviewFeedback, tasks, workers } from './db/schema';
+import { GATE_SLUGS } from './gate-events';
+import { CLAIM_HOLD_DECISION, deriveHolderStage, summarizeFileConflictHistory } from './orchestration-claim-decision';
+import type { ClaimHoldEvidence, ClaimHoldHolderState, FileConflictCount } from './orchestration-claim-decision';
 import type { ClaimDecisionForReadout, ClaimHoldReadoutInput, TaskStartForReadout } from './orchestration-claim-readout';
 import { labelDecisionOutcomes } from './orchestration-outcomes';
+import type { SiblingProbeEventForReadout, SoftStartForReadout, SoftStartReadoutInput } from './orchestration-soft-start-readout';
 
 export const CLAIM_HOLD_CAPABILITY = 'orchestration_claim';
 
@@ -120,21 +122,99 @@ export async function loadClaimHolderState(opts: { workspaceId: string; taskId: 
     db.select({
       status: workers.status,
       updatedAt: workers.updatedAt,
+      startedAt: workers.startedAt,
       prLifecycleStatus: workers.prLifecycleStatus,
       prNumber: workers.prNumber,
     }).from(workers).where(holderWorkersWhere(scope)).orderBy(desc(workers.updatedAt)).limit(5),
     db.select({ title: tasks.title }).from(tasks).where(holderTaskWhere(scope)).limit(1),
   ]);
-  const rows = workerRows as Array<{ status: string; updatedAt: Date | null; prLifecycleStatus: string | null; prNumber: number | null }>;
+  const rows = workerRows as Array<{ status: string; updatedAt: Date | null; startedAt?: Date | null; prLifecycleStatus: string | null; prNumber: number | null }>;
   const w = (opts.prNumber !== null ? rows.find(r => r.prNumber === opts.prNumber) : undefined) ?? rows[0];
   const lifecycle = w?.prLifecycleStatus ?? null;
+  const prNumber = w?.prNumber ?? null;
+  // Approved = the newest top-level review on the holder's PR approves it.
+  let approved = false;
+  if (prNumber !== null) {
+    const reviews = await db.select({ state: reviewFeedback.state })
+      .from(reviewFeedback)
+      .where(holderReviewWhere({ workspaceId: opts.workspaceId, prNumber }))
+      .orderBy(desc(reviewFeedback.submittedAt))
+      .limit(1);
+    approved = (reviews as Array<{ state: string | null }>)[0]?.state === 'approved';
+  }
   return {
     title: (taskRows as Array<{ title: string | null }>)[0]?.title ?? null,
     workerStatus: w?.status ?? null,
     lastActivityAt: w?.updatedAt ? new Date(w.updatedAt).toISOString() : null,
     prLifecycle: lifecycle,
     baseStale: lifecycle === null ? null : lifecycle === 'conflict' || lifecycle === 'unresolvable',
+    stage: deriveHolderStage({
+      workerStatus: w?.status ?? null,
+      startedAt: w?.startedAt ? new Date(w.startedAt).toISOString() : null,
+      prNumber,
+      prLifecycle: lifecycle,
+      approved,
+      now: new Date().toISOString(),
+    }),
   };
+}
+
+export function holderReviewWhere(opts: { workspaceId: string; prNumber: number }) {
+  return and(
+    eq(reviewFeedback.workspaceId, opts.workspaceId),
+    eq(reviewFeedback.prNumber, opts.prNumber),
+    eq(reviewFeedback.kind, 'review'),
+    inArray(reviewFeedback.state, ['approved', 'changes_requested']),
+  );
+}
+
+/** How far back merged-PR history counts toward a file's conflict rate. */
+export const FILE_CONFLICT_HISTORY_DAYS = 90;
+
+/**
+ * Per-file history for a same-file soft overlap: of the merged PRs whose task
+ * touched each file (orchestration_touch_labels joined to a merged worker),
+ * how many needed a conflict retry (a task with `conflict_retry_pr_number` on
+ * that PR). Plus the candidate's latest recorded expected size. THROWS on a
+ * DB error: the decision then falls back to the rule's HOLD.
+ */
+export async function loadSoftOverlapEvidence(opts: { workspaceId: string; taskId: string; paths: string[] }): Promise<ClaimHoldEvidence> {
+  const paths = [...new Set(opts.paths.filter(p => typeof p === 'string' && p.length > 0))].slice(0, 20);
+  const since = new Date(Date.now() - FILE_CONFLICT_HISTORY_DAYS * 86_400_000);
+  const [countRows, sizeRows] = await Promise.all([
+    paths.length === 0 ? Promise.resolve(null) : db.execute(fileConflictCountsSql({ workspaceId: opts.workspaceId, paths, since })),
+    db.select({ expectedSize: orchestrationManifestPredictions.expectedSize })
+      .from(orchestrationManifestPredictions)
+      .where(eq(orchestrationManifestPredictions.taskId, opts.taskId))
+      .orderBy(desc(orchestrationManifestPredictions.createdAt))
+      .limit(1),
+  ]);
+  const raw = countRows === null ? [] : (Array.isArray(countRows) ? countRows : (countRows as { rows?: unknown[] }).rows ?? []);
+  const counts: FileConflictCount[] = (raw as Array<{ path: string; merged_prs: number | string; conflicted: number | string }>)
+    .map(r => ({ path: r.path, mergedPrs: Number(r.merged_prs) || 0, conflicted: Number(r.conflicted) || 0 }));
+  const size = (sizeRows as Array<{ expectedSize: { files: number; minutes: number; source: string } | null }>)[0]?.expectedSize ?? null;
+  return {
+    conflictHistory: paths.length === 0 ? null : summarizeFileConflictHistory(paths, counts),
+    predictedChange: size ? { files: size.files, minutes: size.minutes, source: size.source } : null,
+  };
+}
+
+export function fileConflictCountsSql(opts: { workspaceId: string; paths: string[]; since: Date }) {
+  return sql`
+    SELECT p.path AS path,
+      COUNT(DISTINCT l.pr_number)::int AS merged_prs,
+      COUNT(DISTINCT l.pr_number) FILTER (WHERE EXISTS (
+        SELECT 1 FROM tasks r
+        WHERE r.workspace_id = l.workspace_id AND r.conflict_retry_pr_number = l.pr_number
+      ))::int AS conflicted
+    FROM orchestration_touch_labels l
+    CROSS JOIN LATERAL jsonb_array_elements_text(l.touched_paths) AS p(path)
+    JOIN workers w ON w.id = l.worker_id AND w.merged_at IS NOT NULL
+    WHERE l.workspace_id = ${opts.workspaceId}
+      AND l.pr_number IS NOT NULL
+      AND l.recorded_at >= ${opts.since.toISOString()}
+      AND p.path IN (SELECT jsonb_array_elements_text(${JSON.stringify(opts.paths)}::jsonb))
+    GROUP BY p.path`;
 }
 
 /**
@@ -181,4 +261,67 @@ export async function loadClaimHoldReadoutInput(opts: { workspaceId: string; sin
       .map((r): TaskStartForReadout => ({ taskId: r.taskId, startedAt: r.createdAt })),
     windowEnd: opts.until,
   };
+}
+
+export const SOFT_START_REASON = 'soft_overlap_start';
+
+export function softStartEventsWhere(opts: { workspaceId: string; since: Date; until: Date }) {
+  return and(
+    eq(gateEvents.workspaceId, opts.workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+    eq(gateEvents.outcome, 'accepted'),
+    eq(gateEvents.reason, SOFT_START_REASON),
+    gte(gateEvents.occurredAt, opts.since),
+    lt(gateEvents.occurredAt, opts.until),
+  );
+}
+
+export function siblingProbeEventsWhere(opts: { workspaceId: string; since: Date; until: Date }) {
+  return and(
+    eq(gateEvents.workspaceId, opts.workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.SIBLING_CONFLICT_PROBE),
+    gte(gateEvents.occurredAt, opts.since),
+    lt(gateEvents.occurredAt, opts.until),
+  );
+}
+
+/**
+ * Soft-overlap STARTs (rule or Jev) in a window, with the labeller's inputs for
+ * the started tasks (the same join the Jev decisions use) and the sibling
+ * probes of the same workspace, for `summarizeSoftStartReadout`.
+ */
+export async function loadSoftStartReadoutInput(opts: { workspaceId: string; since: Date; until: Date }): Promise<SoftStartReadoutInput> {
+  const rows = await db.select({
+    id: gateEvents.id,
+    taskId: gateEvents.taskId,
+    workspaceId: gateEvents.workspaceId,
+    occurredAt: gateEvents.occurredAt,
+    detail: gateEvents.detail,
+  }).from(gateEvents).where(softStartEventsWhere(opts)).limit(CLAIM_HOLD_READOUT_MAX_DECISIONS);
+  const starts: SoftStartForReadout[] = (rows as Array<{ id: string; taskId: string | null; workspaceId: string | null; occurredAt: Date; detail: Record<string, unknown> | null }>)
+    .flatMap((r) => {
+      if (!r.taskId || !r.workspaceId) return [];
+      const d = r.detail ?? {};
+      return [{
+        id: r.id,
+        taskId: r.taskId,
+        workspaceId: r.workspaceId,
+        holderTaskId: typeof d.holderTaskId === 'string' ? d.holderTaskId : null,
+        decidedBy: d.decidedBy === 'jev' ? 'jev' as const : 'rule' as const,
+        riskTier: typeof d.riskTier === 'string' ? d.riskTier : null,
+        startedAt: r.occurredAt,
+      }];
+    });
+  const empty = { tasks: [], labels: [], prs: [], conflictTasks: [], gateEvents: [] };
+  if (starts.length === 0) return { starts, outcome: empty, probes: [], windowEnd: opts.until };
+  const { loadOutcomeJoinFor } = await import('./orchestration-ledger-source');
+  const [join, probeRows] = await Promise.all([
+    loadOutcomeJoinFor(starts.map(s => ({
+      id: s.id, taskId: s.taskId, workspaceId: s.workspaceId, prNumber: null, headSha: null, baseRef: null, createdAt: s.startedAt,
+    })), opts),
+    db.select({ workspaceId: gateEvents.workspaceId, taskId: gateEvents.taskId, occurredAt: gateEvents.occurredAt, detail: gateEvents.detail })
+      .from(gateEvents).where(siblingProbeEventsWhere({ workspaceId: opts.workspaceId, since: opts.since, until: new Date() })),
+  ]);
+  const { decisions: _decisions, ...outcome } = join;
+  return { starts, outcome, probes: probeRows as SiblingProbeEventForReadout[], windowEnd: opts.until };
 }

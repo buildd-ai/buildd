@@ -14,6 +14,9 @@ name: Visual QA
 # Ad-hoc screenshots (humans and worker agents — workers have no DATABASE_URL):
 #   gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
 #   gh run download <run-id> -n qa-screenshots
+# Run-activity regression (fixture states; fails on overflow / sub-44px targets):
+#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780
+#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=desktop
 # See .claude/skills/visual-review/SKILL.md. Dispatch defaults to capture +
 # artifact only; the dispatching agent reads the PNGs and judges them itself.
 
@@ -29,7 +32,7 @@ on:
         required: false
         default: ""
       plan:
-        description: "QA_PLAN capture plan, instead of routes: the JSON itself, or a repo path to it. Steps open dialogs/menus before a shot (docs/specs/qa-capture-steps.md)."
+        description: "QA_PLAN capture plan, instead of routes: the JSON itself, or a repo path to it (e.g. scripts/qa/plans/run-activity.json). Steps open dialogs/menus before a shot; assertLayout fails the run on overflow or small tap targets (docs/specs/qa-capture-steps.md)."
         type: string
         required: false
         default: ""
@@ -212,11 +215,24 @@ jobs:
         # On a prod clone the journal is usually current and bun db:migrate is a
         # no-op, or applies this branch's pending migrations. "already exists" is
         # treated as success: the schema is already correct.
+        #
+        # A mission branch's own migration usually predates dev's newest released
+        # one, so on this clone it sits below prod's high-water mark with no
+        # tracking row and its DDL absent. The prod rule refuses that as a
+        # contradicted backfill. MIGRATION_CI_CLONE_APPLY_ABSENT=1 (honoured only
+        # in GitHub Actions, set only here; see packages/core/db/migrate-backfill.ts)
+        # executes such a migration in journal order instead. DDL that is only
+        # partly present is still refused: replaying it is unsafe on any database,
+        # and the branch needs a reconciliation migration.
         run: |
           OUTPUT=$(cd packages/core && bun db:migrate 2>&1) && echo "$OUTPUT" || {
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "::warning::Migration warning (schema already applied): ${OUTPUT##*Migration failed: }"
               echo "$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "partially present, so not applied on this clone"; then
+              echo "$OUTPUT"
+              echo "::error::A migration on this branch is partly applied on prod's schema, so it cannot be replayed here. Add an idempotent reconciliation migration on the branch (see the schema-change skill)."
+              exit 1
             else
               echo "$OUTPUT"
               exit 1
@@ -224,6 +240,7 @@ jobs:
           }
         env:
           DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          MIGRATION_CI_CLONE_APPLY_ABSENT: "1"
 
       # --- Scrub (required before app starts, before any data is rendered) ---
       # The artifact is downloadable by anyone on this public repo, so the clone
@@ -307,7 +324,7 @@ jobs:
             fi
             if [ "$i" -eq 24 ]; then
               echo "::error::App failed to start after 120s"
-              tail -50 /tmp/app.log || true
+              tail -50 /tmp/app.log | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<uuid>/g; s/PR #[0-9]+/PR #<n>/g' || true
               exit 1
             fi
           done
@@ -515,7 +532,14 @@ jobs:
 
       - name: Dump app log on failure
         if: failure()
-        run: tail -100 /tmp/app.log 2>/dev/null || echo '(no app log)'
+        # The app runs against a prod clone and Actions logs are world-readable:
+        # redact row ids and PR numbers before printing anything.
+        run: |
+          if [ -f /tmp/app.log ]; then
+            tail -100 /tmp/app.log | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<uuid>/g; s/PR #[0-9]+/PR #<n>/g'
+          else
+            echo '(no app log)'
+          fi
 
       # The Neon prod-clone branch is always deleted — success or failure.
       # This is the only write-back to Neon: branch deletion. No prod data is modified.

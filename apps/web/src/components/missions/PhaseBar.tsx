@@ -6,8 +6,8 @@
  * - `sm`: Home's compact missions summary — no labels, no captions.
  *
  * Colour is tokens only and comes from the cell's canonical tone: landed =
- * success fill, failed = error fill, active = accent outline (with a fill to
- * the worker's progress while running), open = hairline, held = dashed.
+ * success fill, failed = error fill, active = accent outline, open =
+ * hairline, held = dashed.
  */
 import Link from 'next/link';
 import type { ListCell, ListCellState, ListPhase } from '@/lib/mission-list-card';
@@ -46,7 +46,7 @@ const TONE_TEXT: Record<StripTone, string> = {
 };
 
 function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
-  const h = size === 'lg' ? 'h-[26px]' : 'h-[18px]';
+  const h = size === 'lg' ? 'h-11 md:h-[26px]' : 'h-[18px]';
   return (
     <Link
       href={cell.href}
@@ -58,13 +58,6 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
       title={`${cell.title} · ${CELL_STATE_LABEL[cell.state]}`}
       className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${TONE_BOX[cell.tone]} hover:opacity-90`}
     >
-      {cell.state === 'running' && (
-        <span
-          aria-hidden="true"
-          className="absolute inset-y-0 left-0 bg-accent"
-          style={{ width: `${Math.round(cell.fill * 100)}%` }}
-        />
-      )}
       {size === 'lg' && (
         <span
           className={`absolute inset-0 flex items-center justify-center overflow-hidden whitespace-nowrap px-0.5 font-mono text-[11px] md:text-[10px] font-semibold ${TONE_TEXT[cell.tone]}`}
@@ -119,7 +112,6 @@ export function PhaseBarLegend() {
       {LEGEND.map(({ tone, label }) => (
         <span key={tone} className="inline-flex items-center gap-1.5">
           <i aria-hidden="true" className={`relative inline-block h-2.5 w-2.5 overflow-hidden ${TONE_BOX[tone]}`}>
-            {tone === 'active' && <b className="absolute inset-y-0 left-0 w-1/2 bg-accent" />}
           </i>
           {label}
         </span>

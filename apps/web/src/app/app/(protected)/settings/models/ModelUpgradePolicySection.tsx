@@ -1,8 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { MODEL_TIERS_CHANGED_EVENT } from './CellEditor';
 import { Select } from '@/components/ui/Select';
-import Chip from '@/components/ui/Chip';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import type { ModelUpgradeMode, ModelUpgradePolicy, PolicySource, TierAdoption } from '@buildd/core/model-upgrade-policy';
 
@@ -18,7 +18,7 @@ const SOURCE_TEXT: Record<PolicySource, string> = {
   default: 'Default: nothing set yet.',
 };
 
-interface PolicyResponse {
+export interface PolicyResponse {
   policy: ModelUpgradePolicy;
   source: PolicySource;
   tiers: TierAdoption[];
@@ -40,10 +40,26 @@ export function withheldText(t: TierAdoption): string | null {
 }
 
 /**
- * Settings → Models → Model upgrades: how catalog-resolved tiers move to newly
- * certified models (packages/core/model-upgrade-policy.ts), and per tier what
- * runs, why, and what newer certified model exists. Pinned tiers are edited in
- * the tier table above; this section only explains them.
+ * One tier's upgrade state as a muted line under its name in the tier table:
+ * a newer certified model (and why it is not in use), or a deprecation. Null
+ * when there is nothing to say: what runs and why is already the table's cell.
+ */
+export function upgradeNote(t: TierAdoption): string | null {
+  const parts: string[] = [];
+  if (t.deprecated) {
+    parts.push(t.deprecated.retired
+      ? `${getModelDisplayName(t.model)} is retired.`
+      : `${getModelDisplayName(t.model)} is deprecated${t.deprecated.retiresAt ? `, retires ${shortDate(t.deprecated.retiresAt)}` : ''}.`);
+  }
+  if (t.newer) parts.push(`${getModelDisplayName(t.newer.model)} is available. ${withheldText(t) ?? 'Older runners stay on the previous model.'}`);
+  return parts.length ? parts.join(' ') : null;
+}
+
+/**
+ * Settings → Models → Tiers → Upgrade policy: how catalog-resolved tiers move
+ * to newly certified models (packages/core/model-upgrade-policy.ts). One row:
+ * the policy. What each tier runs, and any newer model, is in the tier table
+ * above (`upgradeNote`), so this does not list the tiers a second time.
  */
 export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId: string; isAdmin: boolean }) {
   const [data, setData] = useState<PolicyResponse | null>(null);
@@ -60,6 +76,12 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
   }, [teamId]);
 
   useEffect(() => { void load(); }, [load]);
+  // A tier edit above changes what is pinned and why; revalidate rather than wait for a reload.
+  useEffect(() => {
+    const onChanged = () => { void load(); };
+    window.addEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MODEL_TIERS_CHANGED_EVENT, onChanged);
+  }, [load]);
 
   async function send(url: string, init: RequestInit, ok: string) {
     setBusy(true);
@@ -69,6 +91,8 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Could not save');
       setMsg({ tone: 'ok', text: ok });
       await load();
+      // The tier table shows each tier's model and upgrade note; let it reload.
+      window.dispatchEvent(new CustomEvent(MODEL_TIERS_CHANGED_EVENT));
     } catch (e) {
       setMsg({ tone: 'err', text: e instanceof Error ? e.message : 'Could not save' });
     } finally {
@@ -87,14 +111,15 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
   const withheld = data?.tiers.filter((t) => t.newer && t.withheld && t.withheld.reason === 'manual') ?? [];
 
   return (
-    <section id="model-upgrades" className="mt-6 max-w-5xl scroll-mt-20" data-testid="model-upgrade-policy">
-      <h2 className="font-mono text-body text-text-primary">Model upgrades</h2>
-      <p className="mt-1 text-meta text-text-secondary">
-        When your tiers move to a model Buildd has certified. Pinned tiers never move.
-      </p>
-
-      <div className="card mt-3 flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:gap-4">
-        <span id="model-upgrade-mode-label" className="font-mono text-body text-text-primary">Upgrade policy</span>
+    <section id="model-upgrades" className="mt-6 scroll-mt-20" data-testid="model-upgrade-policy">
+      <div className="flex flex-col gap-2 border-t border-border-default py-3 sm:flex-row sm:items-center sm:gap-4">
+        <span className="min-w-0 flex-1">
+          <span id="model-upgrade-mode-label" className="block text-sm font-semibold text-text-primary">Upgrade policy</span>
+          <span className="block text-meta text-text-muted">
+            When your tiers move to a model Buildd has certified. Pinned tiers never move.{' '}
+            <span data-testid="model-upgrade-source">{data ? SOURCE_TEXT[data.source] : ''}</span>
+          </span>
+        </span>
         <Select
           aria-labelledby="model-upgrade-mode-label"
           testId="model-upgrade-mode"
@@ -120,37 +145,12 @@ export default function ModelUpgradePolicySection({ teamId, isAdmin }: { teamId:
             hours
           </label>
         )}
-        <span className="text-meta text-text-muted sm:ml-auto" data-testid="model-upgrade-source">
-          {data ? SOURCE_TEXT[data.source] : ''}
-        </span>
       </div>
-
-      {data && (
-        <ul className="mt-2 flex flex-col gap-1" data-testid="model-upgrade-tiers">
-          {data.tiers.map((t) => (
-            <li key={t.tier} className="card flex flex-col gap-1 px-3 py-2 sm:flex-row sm:items-center sm:gap-3">
-              <span className="w-28 font-mono text-meta text-text-muted">{t.tier}</span>
-              <span className="text-body text-text-primary">{getModelDisplayName(t.model)}</span>
-              {t.deprecated && (
-                <Chip tone={t.deprecated.retired ? 'error' : 'warning'} variant="soft">
-                  {t.deprecated.retired ? 'Retired' : 'Deprecated'}
-                  {t.deprecated.retiresAt && !t.deprecated.retired ? ` · retires ${shortDate(t.deprecated.retiresAt)}` : ''}
-                </Chip>
-              )}
-              <span className="text-meta text-text-secondary sm:ml-auto">
-                {t.newer
-                  ? `${getModelDisplayName(t.newer.model)} is available. ${withheldText(t) ?? 'Older runners stay on the previous model.'}`
-                  : t.why}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
 
       {isAdmin && mode === 'manual' && withheld.length > 0 && (
         <button
           type="button"
-          className="btn btn-primary mt-3"
+          className="btn mt-1"
           disabled={busy}
           data-testid="model-upgrade-adopt"
           onClick={() => void send('/api/model-tiers/policy/adopt', { method: 'POST', body: JSON.stringify({ teamId }) }, 'Adopted')}

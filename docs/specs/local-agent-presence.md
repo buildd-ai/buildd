@@ -7,8 +7,8 @@ summary: A local coding session with the buildd plugin MUST show as seat-free pr
 domain: runners
 surfaces: [apps/web/src/lib/local-session.ts, apps/web/src/app/api/workers/local-sessions/route.ts, packages/shared/src/local-session.ts, apps/runner/plugin/scripts/buildd-hook.mjs]
 related: [runner-liveness, mission-task-lifecycle]
-keywords: [local_sessions, presence_tokens, presence token, bldp_, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
-verified_by: [apps/web/src/lib/local-session.test.ts, packages/core/__tests__/model-prices.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
+keywords: [receive_messages, turn boundary nudge, local_sessions, presence_tokens, presence token, bldp_, interactive session, presence, buildd plugin, agent plugin, hooks, SessionStart, SessionEnd, claude code, codex, cursor, buildd install, release slot]
+verified_by: [packages/core/__tests__/mcp-tools-receive-messages.test.ts, apps/web/src/lib/local-session.test.ts, packages/core/__tests__/model-prices.test.ts, apps/web/src/lib/presence-token.test.ts, apps/web/src/lib/presence-token-routes.test.ts, apps/web/src/lib/local-session-view.test.ts, apps/runner/__tests__/unit/agent-plugin.test.ts, apps/web/src/app/app/(protected)/tasks/InteractiveSessions.test.tsx, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/local-sessions/workspaces/route.test.ts]
 assertions:
   - id: "presence-token-auth"
     type: "symbol"
@@ -73,7 +73,7 @@ agent loop it runs in.
 - A presence is owned by exactly one of an account (API key) or a person (presence token), enforced by a check constraint.
 - Every event is idempotent: a replayed `start`/`touch` refreshes, a replayed `bind` answers `already_bound`, a replayed `end` answers `already_ended`.
 - The hook script exits 0 on every path (no key, buildd down, non-2xx, timeout, bad payload, unknown client) within its 3 s request timeout, and prints nothing except an optional one-line nudge.
-- Writes are coalesced to one a minute per session: on the client (state file per session) and on the server (`last_seen_at < now - 60s` guard).
+- Writes are coalesced to one a minute per session: on the client (state file per session; a `Stop` touch is exempt, it is the turn's last chance to learn a message waits) and on the server (`last_seen_at < now - 60s` guard).
 
 **Acceptance criteria**:
 - AC-1: WHEN a body carries a field outside the contract (e.g. `prompt`) THEN the endpoint answers 400 and writes nothing.
@@ -89,7 +89,7 @@ become tracked work only through that session's own verified `claim_task`.
 
 **Invariants**:
 - The hook sends nothing for a session outside the account's workspace repos: only a session in a workspace repo (cached per key, refreshed at most every 10 minutes on an unknown repo, fail closed), in a repo whose `.mcp.json` names buildd, or one that has claimed a task (`bind`) is reported.
-- A `start` carries `interactive`: false for a session nobody is attending (Claude Code `claude -p` and SDK runs, read from `CLAUDE_CODE_SESSION_ATTENDED` then `CLAUDE_CODE_ENTRYPOINT`; Cursor background agents). Such a presence is neither listed nor counted as an interactive session until it binds a worker for a task.
+- A `start` carries `interactive`: false for a session nobody is attending (Claude Code `claude -p` and SDK runs, read from `CLAUDE_CODE_SESSION_ATTENDED` then `CLAUDE_CODE_ENTRYPOINT`; Cursor background agents). Claude Code's `bind` and `touch` carry the same flag, because a session outside a workspace repo sends no `start` and its presence is first created by the bind (or a touch healing a missed start). Such a presence is neither listed nor counted as an interactive session until it binds a worker for a task.
 - `start`/`touch` write only `local_sessions`. They never insert a `workers` row, change `accounts.activeSessions`, or write a task. Presence is never counted as agent capacity; where it is counted it is labelled "Interactive sessions".
 - `bind` attaches a presence to an existing worker only when that worker belongs to the calling account (API key), or, for a presence token, was claimed by an account of a team the person is in and, when the claim recorded who made it (`interactiveClaimUserId`, an OAuth session), by that person; it must have `runner = 'mcp'` (written by the claim route only after the HMAC session marker verifies; `mcp-unverified` and runner workers are refused), and is live. Another account's worker and an unknown id get the same 404.
 - A presence may hold several workers: Claude Code subagents share the parent's `session_id` and their tool calls fire the parent's hooks, so each subagent's `claim_task` binds to the same presence (`local_session_workers`, one row per worker). One worker is bound to at most one presence, ever (primary key on `local_session_workers.worker_id`). A presence bound before multi-claim keeps its single worker through the legacy `local_sessions.bound_worker_id` column, which is read (never written) and also guards that worker against other sessions.
@@ -131,10 +131,11 @@ subagents) MUST be counted in the task's usage and cost the same way runner work
 is, from numbers the client already wrote locally, and MUST never move content.
 
 **Invariants**:
-- Claude Code only, once the session holds a claim. On `Stop` and `SessionEnd` the hook reads the lines appended since its last report (byte offsets in the per-session hook state, at most 8 MB per file per run) of the session's transcript and of each `<session>/subagents/agent-<id>.jsonl`. From each API response record it keeps only the message id, model id, the four token counts (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` with its 5m/1h split), the timestamp and the number of `tool_use` blocks. Message text, tool inputs and outputs are never kept or sent. `BUILDD_HOOK_USAGE=0` turns it off.
-- A message written once per content block is counted once (deduped by message id); its tool calls are added up across the copies.
+- Claude Code only, once the session holds a claim. On `Stop` and `SessionEnd` the hook reads the lines appended since its last report (byte offsets in the per-session hook state, at most 8 MB per file per run) of the session's transcript and of each `<session>/subagents/agent-<id>.jsonl`. From each API response record it keeps only the message id, model id, the four token counts (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` with its 5m/1h split), the timestamp and each `tool_use` block's id and tool name (`Bash`, `mcp__buildd__buildd`; a name outside `[A-Za-z0-9_.:-]{1,128}` counts as `other`). Message text, tool inputs and outputs are never kept or sent. `BUILDD_HOOK_USAGE=0` turns it off.
+- A message written once per content block is counted once (deduped by message id); a tool call is counted once by its `tool_use` id, however many records repeat it.
 - Attribution: a subagent that claimed a task is that task's for its whole run (the hook knows which subagent claimed what from its PostToolUse `agent_id`). Everything else, the session's own calls and subagents that claimed nothing, goes to the session's newest own claim, else its first claim, and only from the session's first claim on.
-- `usage` carries cumulative totals per worker (per model: the four buckets and a request count; plus tool calls, subagents, first/last timestamp) on the session's own `touch`/`end`, so `end` lands its last report before the release, in one request.
+- `usage` carries cumulative totals per worker (per model: the four buckets and a request count; plus tool calls, per-tool counts `toolCounts`, subagents, first/last timestamp). `toolCounts` is written as the worker's `resultMeta.toolCounts`, the same tool histogram a runner worker fills and usage stats read, so a session's tool calls count there; an older hook that sends none writes none on the session's own `touch`/`end`, so `end` lands its last report before the release, in one request.
+- `usage.costBasis` (`real`, `virtual` or `unknown`) says how the session's usage was charged, classified by the hook from its own environment and client config (`costBasisFor`); absent from an older hook, which the server records as `unknown`. See `real-and-virtual-cost.md`.
 - The server writes only to a worker this presence holds, that is interactive and live or ended within 10 minutes (the report after `complete_task`). It raises, never lowers: `inputTokens` (all-in), `outputTokens`, `turns` (requests), `costUsd`, and `resultMeta.modelUsage`/`totalUsage`/`localSessionUsage`, so replays and reordering are harmless.
 - Pricing is server-side and strict (`priceSessionUsage`): the live catalog, else the static table for a recognisably Anthropic model id; a 5-minute cache write at the table's write rate, a 1-hour write at 2x input. A model with no known price makes the cost unknown: no cost and no `modelUsage` are written, `localSessionUsage.costUnknown` is true and the model is listed in `unpricedModels`. It is never priced as some other model.
 
@@ -143,17 +144,22 @@ is, from numbers the client already wrote locally, and MUST never move content.
 - AC-10: WHEN `usage` names a worker this presence does not hold THEN nothing is written.
 - AC-11: GIVEN a model with no known price WHEN usage is recorded THEN no cost is written and it is flagged unknown.
 
-**Code surface**: `usageRecord`, `collectUsage` (`apps/runner/plugin/scripts/buildd-hook.mjs`), `usageWrite`, `usageWriteWhere` (`apps/web/src/lib/local-session.ts`), `priceSessionUsage` (`packages/core/model-prices.ts`).
+**Code surface**: `usageRecord`, `collectUsage`, `costBasisFor` (`apps/runner/plugin/scripts/buildd-hook.mjs`), `usageWrite`, `usageWriteWhere` (`apps/web/src/lib/local-session.ts`), `priceSessionUsage` (`packages/core/model-prices.ts`).
 
 ## Reporting and steering
 
 **Invariants**:
 - Session → buildd uses existing primitives only: `update_progress`, `post_note`, `create_pr`, `complete_task` over MCP. Hooks never post task progress, notes or summaries, and a presence-only session never produces task progress.
-- Buildd → session reuses the instruction queue. `send_agent_message`/instruct queues into `workers.pending_instructions` for an interactive worker even for `priority: urgent` (no runner listens on Pusher for it). `update_progress` returns and acknowledges the text. The hook's `touch` answer carries only a `pendingInstructions` flag; on Claude Code's and Codex's `UserPromptSubmit` the hook adds one line telling the agent to call `update_progress`. The message text never travels through a hook.
+- Buildd → session reuses the instruction queue. `send_agent_message`/instruct queues into `workers.pending_instructions` for an interactive worker even for `priority: urgent` (no runner listens on Pusher for it). On an interactive worker the agent is the queue's only consumer: the dedicated `receive_messages` action returns the text once and acknowledges it delivered and read by id in one PATCH; `update_progress` still does the same for older prompts, but nothing depends on it. The hook's `touch` answer carries only a `pendingInstructions` flag. On Claude Code and Codex the hook turns that flag into a nudge naming `receive_messages` at every turn boundary the client exposes: `UserPromptSubmit` and `PostToolUse` add one line of context, and `Stop` blocks once (`decision: 'block'`, never while `stop_hook_active`, so it cannot loop). `Stop` touches are never throttled; `PostToolUse` touches are (one a minute). The message text never travels through a hook.
+
+**Acceptance criteria**:
+- AC-9: GIVEN `pendingInstructions: true` WHEN a Claude Code or Codex `PostToolUse` hook runs THEN stdout is `additionalContext` naming `receive_messages`; WHEN `Stop` runs THEN `decision: 'block'` once, and nothing while `stop_hook_active`; GIVEN `false` THEN stdout is empty on every event; the message text appears in no hook output.
+- AC-10: WHEN `receive_messages` is called with a message queued THEN it returns the text once and acknowledges it by id; a second call returns nothing.
 
 ## Surfaces
 
-- Activity shows an "Interactive sessions" section: client as a muted badge, state word (Working / Online / Offline / Ended), repo, the bound task, and for live work the line "Runs on your machine. Buildd can release its slot, not close it." A task worked from a local session names its client (e.g. "Claude Code · local") where a runner name would appear.
+- Home's runner board shows live session claims as their own lane, "Your sessions", after the runners: one row per live claim (task, elapsed, progress, steer), captioned "N working · M online". The lane exists only while a claim is live; it is never one of the runners, never counted in the runner count, "Agents live n/N" or capacity, and never reads offline or idle. A claim whose start was never stamped starts at its last activity.
+- Activity shows an "Interactive sessions" section, collapsed so it never buries the task list: sessions working on a task are shown; online sessions with no task are rows when there are at most two, else one "N online with no task" disclosure; offline and ended sessions fold under "N earlier sessions"; a session lists at most three tasks (live first, newest first) then "+N more". Each row: client as a muted badge, state word (Working / Online / Offline / Ended), repo, time, and for live work the line "Runs on your machine. Buildd can release its slot, not close it." The section count is sessions online now. A task worked from a local session names its client (e.g. "Claude Code · local") where a runner name would appear.
 - Release from the dashboard stays the task page's "Release slot" (owner/admin).
 
 ## Install
@@ -176,7 +182,7 @@ installable from the repo's marketplace (`.claude-plugin/marketplace.json`).
 | Stable session id | `session_id` | `session_id` | `conversation_id` |
 | Session end | reliable on exit; `clear` keeps the claim | `SessionEnd` reason is always `other` (treated as exit) | only `window_close` / `user_close` end; `completed`/`aborted`/`error` are touches |
 | Subagent identity | subagents share the parent `session_id`; they are the same presence | same | same conversation |
-| Inbound steering | queued + `UserPromptSubmit` nudge | queued + `UserPromptSubmit` nudge | queued only (read on next `update_progress`) |
+| Inbound steering | queued + nudge on `UserPromptSubmit`, `PostToolUse`, `Stop` | queued + nudge on `UserPromptSubmit`, `PostToolUse`, `Stop` | queued only (read on the next `receive_messages` / `update_progress`) |
 | Without hooks | MCP-only: works as before; buildd sees the session once it claims, and MCP calls keep the claim alive | same | same |
 
 `BUILDD_HOOKS_DISABLED=1` forces MCP-only mode on any client.

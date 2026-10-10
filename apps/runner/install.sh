@@ -19,10 +19,89 @@ NC='\033[0m'
 # without --client upgrades it in place to the full runner.
 WANT_SERVICE=0
 CLIENT_MODE=0
+REPAIR_MODE=0
 for arg in "$@"; do
   [ "$arg" = "--service" ] && WANT_SERVICE=1
   [ "$arg" = "--client" ] && CLIENT_MODE=1
+  [ "$arg" = "--repair" ] && REPAIR_MODE=1
 done
+
+# Install zstd: apps/runner/src/warm-repo.ts shells out to the real CLI to
+# compress/restore the cloud runner's cache tarball, and its unit tests do the
+# same to exercise that path for real (no mock) — a sandbox without the binary
+# fails those tests even though nothing else here needs it. Best-effort and
+# idempotent: a missing package manager or a failed install just leaves those
+# tests failing, same as today, rather than aborting the rest of the install.
+zstd_userspace_provision() {
+  command -v dpkg-deb >/dev/null 2>&1 || return 1
+  local work apt_opts
+  work="$(mktemp -d)" || return 1
+  mkdir -p "$work/lists/partial" "$work/cache/archives/partial" "$work/dl"
+  apt_opts=(-o "Dir::State::Lists=$work/lists" -o "Dir::Cache=$work/cache" -o Debug::NoLocking=1)
+  if (apt-get "${apt_opts[@]}" update -qq && cd "$work/dl" && apt-get "${apt_opts[@]}" download -qq zstd) >/dev/null 2>&1 \
+     && dpkg-deb -x "$work"/dl/zstd_*.deb "$work/root" 2>/dev/null \
+     && [ -x "$work/root/usr/bin/zstd" ]; then
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$work/root/usr/bin/zstd" "$HOME/.local/bin/zstd"
+    rm -rf "$work"
+    "$HOME/.local/bin/zstd" --version >/dev/null 2>&1
+    return $?
+  fi
+  rm -rf "$work"
+  return 1
+}
+
+zstd_provision() {
+  if command -v zstd >/dev/null 2>&1; then
+    return 0
+  fi
+  case "$(uname -s)" in
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        if [ "$(id -u)" -eq 0 ]; then
+          apt-get update -qq && apt-get install -y -qq zstd
+          return $?
+        elif [ "${BUILDD_NO_SUDO:-}" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+          echo -e "${YELLOW}Using sudo (passwordless) to apt-install zstd. Set BUILDD_NO_SUDO=1 to skip.${NC}"
+          sudo -n true 2>/dev/null && sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          return $?
+        fi
+        # Not root and no passwordless escalation (the usual worker sandbox):
+        # fetch the .deb with a user-owned apt state dir, unpack into ~/.local.
+        zstd_userspace_provision && return 0
+      fi
+      ;;
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install -q zstd
+        return $?
+      fi
+      ;;
+  esac
+  return 1
+}
+
+zstd_warn() {
+  echo -e "${YELLOW}Warning: zstd not installed — warm-repo compression tests will fail without it.${NC}"
+  echo -e "${YELLOW}  Install manually: apt-get install zstd (Linux) or brew install zstd (macOS)${NC}"
+}
+
+# --repair: reconcile an EXISTING machine/sandbox without reinstalling the
+# runner. Today that means provisioning zstd via the same idempotent path a fresh
+# install uses (including the no-root user-space .deb unpack into ~/.local/bin),
+# for sandboxes created before install.sh provisioned it:
+#   bash apps/runner/install.sh --repair
+# Exits 0 when zstd is present afterwards, 1 otherwise. Make sure ~/.local/bin is
+# on PATH for the shell that runs the tests.
+if [ "$REPAIR_MODE" = "1" ]; then
+  export PATH="$HOME/.local/bin:$PATH"
+  if zstd_provision; then
+    echo -e "${GREEN}zstd available: $(command -v zstd)${NC}"
+    exit 0
+  fi
+  zstd_warn
+  exit 1
+fi
 
 if [ "$CLIENT_MODE" = "1" ]; then
   echo -e "${GREEN}Installing buildd (client only: login and Claude Code / Codex / Cursor setup, no runner)...${NC}"
@@ -33,9 +112,18 @@ fi
 # Check for bun
 if ! command -v bun &> /dev/null; then
   echo -e "${YELLOW}Bun not found. Installing...${NC}"
-  curl -fsSL https://bun.sh/install | bash
+  # bun.sh is a single host; retry a transient connect failure, and never carry
+  # on without bun (the `buildd` launcher execs it, so a bunless install is broken).
+  for attempt in 1 2 3 4; do
+    curl -fsSL --connect-timeout 15 https://bun.sh/install | bash && break
+    [ "$attempt" -lt 4 ] && sleep $((attempt * 5))
+  done
   # bun's installer honours BUN_INSTALL; look where it actually put the binary.
   export PATH="${BUN_INSTALL:-$HOME/.bun}/bin:$PATH"
+  if ! command -v bun &> /dev/null; then
+    echo -e "${RED}Could not install Bun from https://bun.sh/install. Check your network and re-run this installer.${NC}" >&2
+    exit 1
+  fi
 fi
 
 # Install directory
@@ -596,64 +684,8 @@ if [ "$CLIENT_MODE" = "1" ]; then
   exit 0
 fi
 
-# Install zstd: apps/runner/src/warm-repo.ts shells out to the real CLI to
-# compress/restore the cloud runner's cache tarball, and its unit tests do the
-# same to exercise that path for real (no mock) — a sandbox without the binary
-# fails those tests even though nothing else here needs it. Best-effort and
-# idempotent: a missing package manager or a failed install just leaves those
-# tests failing, same as today, rather than aborting the rest of the install.
-zstd_userspace_provision() {
-  command -v dpkg-deb >/dev/null 2>&1 || return 1
-  local work apt_opts
-  work="$(mktemp -d)" || return 1
-  mkdir -p "$work/lists/partial" "$work/cache/archives/partial" "$work/dl"
-  apt_opts=(-o "Dir::State::Lists=$work/lists" -o "Dir::Cache=$work/cache" -o Debug::NoLocking=1)
-  if (apt-get "${apt_opts[@]}" update -qq && cd "$work/dl" && apt-get "${apt_opts[@]}" download -qq zstd) >/dev/null 2>&1 \
-     && dpkg-deb -x "$work"/dl/zstd_*.deb "$work/root" 2>/dev/null \
-     && [ -x "$work/root/usr/bin/zstd" ]; then
-    mkdir -p "$HOME/.local/bin"
-    install -m 0755 "$work/root/usr/bin/zstd" "$HOME/.local/bin/zstd"
-    rm -rf "$work"
-    "$HOME/.local/bin/zstd" --version >/dev/null 2>&1
-    return $?
-  fi
-  rm -rf "$work"
-  return 1
-}
-
-zstd_provision() {
-  if command -v zstd >/dev/null 2>&1; then
-    return 0
-  fi
-  case "$(uname -s)" in
-    Linux)
-      if command -v apt-get >/dev/null 2>&1; then
-        if [ "$(id -u)" -eq 0 ]; then
-          apt-get update -qq && apt-get install -y -qq zstd
-          return $?
-        elif [ "${BUILDD_NO_SUDO:-}" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-          echo -e "${YELLOW}Using sudo (passwordless) to apt-install zstd. Set BUILDD_NO_SUDO=1 to skip.${NC}"
-          sudo -n true 2>/dev/null && sudo apt-get update -qq && sudo apt-get install -y -qq zstd
-          return $?
-        fi
-        # Not root and no passwordless escalation (the usual worker sandbox):
-        # fetch the .deb with a user-owned apt state dir, unpack into ~/.local.
-        zstd_userspace_provision && return 0
-      fi
-      ;;
-    Darwin)
-      if command -v brew >/dev/null 2>&1; then
-        brew install -q zstd
-        return $?
-      fi
-      ;;
-  esac
-  return 1
-}
-
 if ! zstd_provision; then
-  echo -e "${YELLOW}Warning: zstd not installed — warm-repo compression tests will fail without it.${NC}"
-  echo -e "${YELLOW}  Install manually: apt-get install zstd (Linux) or brew install zstd (macOS)${NC}"
+  zstd_warn
 fi
 
 # Install mergiraf: structural merge driver for language-aware conflict resolution.

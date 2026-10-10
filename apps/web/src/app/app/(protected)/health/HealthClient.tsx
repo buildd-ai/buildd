@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
+import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { findDuplicateScheduleIds, isScheduleErrorLive } from '@/lib/schedule-health';
+import { isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
   ConsumptionStats,
@@ -30,18 +30,23 @@ import ToolBreakdownList from './_components/ToolBreakdownList';
 import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
   coverageLabel,
-  depletionProjection,
   failureStreak,
   freshness,
   groupFailuresBySignature,
   lifetimeRuns,
-  monthlyAnchor,
   observedAgo,
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
+import { OccupancyChart } from '@/components/fleet/OccupancyChart';
+import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
+import { RunningNow } from '@/components/fleet/RunningNow';
+import Disclosure from '@/components/ui/Disclosure';
+import Segmented from '@/components/ui/Segmented';
+import type { FleetSnapshot } from '@buildd/shared';
+import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
 import { AgentAccessSection } from '@/components/AgentAccessCard';
@@ -51,6 +56,7 @@ import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
+import { backendCredentialLabel } from '@/lib/claude-credential-rows';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -199,20 +205,29 @@ function humanizeCron(expr: string): string {
 export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator';
 
 type HealthBlock =
-  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch' | 'schedules'
+  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch'
   | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption'
   | 'subagentDelegation' | 'errorPatterns' | 'failureGroups';
 
 const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> = {
   overview: new Set(['problems']),
   // One failures view (lib/health-failure-groups.ts); the raw breakdown is on Operator.
-  failures: new Set(['failureGroups']),
-  runners: new Set(['capacity', 'budget', 'credentials', 'agentAccess', 'schedules']),
+  // Access problems stop runs and blocked actions are agents reaching outside
+  // their task: both are things to act on, so they sit with the failures.
+  failures: new Set(['agentAccess', 'failureGroups']),
+  // Only what sets capacity. A schedule lives where it is configured: its
+  // mission, or the workspace's schedules (`scheduleHref`).
+  runners: new Set(['capacity', 'budget', 'credentials']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
 };
+
+/** Where a schedule is configured: its mission, else the workspace's schedules. */
+export function scheduleHref(s: Pick<ScheduleRow, 'workspaceId' | 'missionId'>): string {
+  return s.missionId ? `/app/missions/${s.missionId}` : `/app/workspaces/${s.workspaceId}/schedules`;
+}
 
 /** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
 const SANDBOX_PLAIN_LABEL: Record<string, string> = {
@@ -225,13 +240,15 @@ const VIEW_TITLE: Record<HealthView, string> = {
   all: 'Health',
   overview: 'Health',
   failures: 'Failures',
-  runners: 'Runners & capacity',
+  runners: 'Runners',
   operator: 'Operator',
 };
 
 interface Props {
   /** Which page is rendering; defaults to every section. */
   page?: HealthView;
+  /** Rendered under the page header (Runners: the workspace pause control). */
+  top?: React.ReactNode;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
   orphanedPrs: OrphanedPrRow[];
   runners: RunnerHeartbeat[];
@@ -256,6 +273,8 @@ interface Props {
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
+  /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -305,23 +324,16 @@ export function HealthClient({
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
   agentAccess = null,
+  runnerLanes = null,
   now,
   page = 'all',
+  top = null,
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
   const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
-  const showsState = (['capacity', 'budget', 'credentials', 'agentAccess', 'dispatch', 'schedules'] as const).some(show);
-  const router = useRouter();
-  const [, startTransition] = useTransition();
+  const showsState = (['capacity', 'budget', 'credentials', 'dispatch'] as const).some(show);
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
-  const [showSchedules, setShowSchedules] = useState(false);
-  const [showPausedSchedules, setShowPausedSchedules] = useState(false);
-  const [showHeartbeatSchedules, setShowHeartbeatSchedules] = useState(false);
-  const [expandedCronId, setExpandedCronId] = useState<string | null>(null);
-  const [scheduleError, setScheduleError] = useState<string | null>(null);
-  const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
-  const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);
 
   const checkRunnerHealth = useCallback(async (heartbeatId: string) => {
     const current = runnerHealth.get(heartbeatId);
@@ -404,53 +416,6 @@ export function HealthClient({
     }
   }, [runners, runnerHealth]);
 
-  const refresh = () => startTransition(() => router.refresh());
-
-  const duplicateScheduleIds = useMemo(() => findDuplicateScheduleIds(schedules), [schedules]);
-
-  const [overdueHeartbeatCount, setOverdueHeartbeatCount] = useState(0);
-  useEffect(() => {
-    const now = Date.now();
-    setOverdueHeartbeatCount(
-      schedules.filter(s => s.isHeartbeat && s.enabled && s.nextRunAt != null && new Date(s.nextRunAt).getTime() < now).length,
-    );
-  }, [schedules]);
-
-  const toggleSchedule = async (s: ScheduleRow) => {
-    setScheduleBusyId(s.id);
-    setScheduleError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${s.workspaceId}/schedules/${s.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !s.enabled }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Update failed');
-      refresh();
-    } catch (err) {
-      setScheduleError(err instanceof Error ? err.message : 'Request failed');
-    } finally {
-      setScheduleBusyId(null);
-    }
-  };
-
-  const confirmDeleteSchedule = async () => {
-    if (!scheduleToDelete) return;
-    setScheduleBusyId(scheduleToDelete.id);
-    setScheduleError(null);
-    try {
-      const res = await fetch(`/api/workspaces/${scheduleToDelete.workspaceId}/schedules/${scheduleToDelete.id}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? 'Delete failed');
-      setScheduleToDelete(null);
-      refresh();
-    } catch (err) {
-      setScheduleError(err instanceof Error ? err.message : 'Request failed');
-    } finally {
-      setScheduleBusyId(null);
-    }
-  };
 
   // `now` comes in as a prop, pinned server-side — see the Props doc comment.
   // Freshness is measured from each stat's OWN last-observed timestamp; `now`
@@ -483,20 +448,25 @@ export function HealthClient({
     const costAbsent = consumption.perTask.costUsd.kind === 'unavailable';
     const divergenceAbsent = consumption.modelDivergence.kind === 'unavailable';
     if (!perModelAbsent && !costAbsent && !divergenceAbsent) return null;
-    return 'Seat-based (OAuth) auth reports no per-model usage and no cost, so some numbers below '
-      + 'are blank. Each blank shows its reason in place.';
+    // Plan (subscription) usage does report cost now, valued at list price
+    // (docs/specs/real-and-virtual-cost.md), so the cause is not an auth type.
+    return 'Some usage figures were not recorded in this window, so they are blank. Each blank shows why.';
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
+  // Access problems stop runs before they start, so Overview counts them; the
+  // full list (with blocked actions) is on Failures.
+  const accessProblems = agentAccess?.grantProblems ?? [];
   // On Overview the failures come from the merged failure groups (the same ones
-  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  // the Problems row counts), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
   const nonFailureProblems =
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
-    failedSchedules.length > 0;
+    failedSchedules.length > 0 ||
+    (page === 'overview' && accessProblems.length > 0);
   const hasProblems =
     nonFailureProblems || (page === 'overview' ? overviewFailureGroups > 0 : recentFailures.length > 0);
 
@@ -511,6 +481,7 @@ export function HealthClient({
           strandedBackends: strandedBackends.length,
           failingSchedules: failedSchedules.length,
           failureGroups: overviewFailureGroups,
+          accessProblems: accessProblems.length,
         }),
         rows: overviewStatusRows({
           runners: {
@@ -530,12 +501,6 @@ export function HealthClient({
       }
     : null;
 
-  // Partition schedules: heartbeat (mission internals) vs regular
-  const heartbeatSchedules = schedules.filter(s => s.isHeartbeat);
-  const regularSchedules = schedules.filter(s => !s.isHeartbeat);
-  const activeRegular = regularSchedules.filter(s => s.enabled);
-  const pausedRegular = regularSchedules.filter(s => !s.enabled);
-
   return (
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
       {/* Header — one window control for the whole page, not one per section. */}
@@ -549,6 +514,8 @@ export function HealthClient({
           )}
         </div>
       </div>
+
+      {top}
 
       {overview && <OverviewHeadline tone={overview.headline.tone} text={overview.headline.text} />}
 
@@ -568,21 +535,17 @@ export function HealthClient({
           )}
         </div>
         {!hasProblems ? (
-          <div className="card px-4 py-3 flex items-center gap-2">
+          <div className="border-y border-border-default px-4 py-3 flex items-center gap-2">
             <span className="glow-dot glow-dot-success" />
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
           <>
-          {(page !== 'overview' || nonFailureProblems) && (
-          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
+          {(page !== 'overview' || nonFailureProblems || overviewFailureGroups > 0) && (
+          <div className={`border-y border-border-default divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
-              const purposeLabel =
-                cred.purpose === 'oauth_token' ? 'Claude OAuth token'
-                : cred.purpose === 'anthropic_api_key' ? 'Anthropic API key'
-                : cred.purpose === 'codex_credential' ? 'Codex credential'
-                : cred.purpose;
+              const purposeLabel = backendCredentialLabel(cred.purpose);
               const isRevoked = cred.healthStatus === 'revoked';
               return (
                 <div key={cred.id} className="px-4 py-3">
@@ -701,8 +664,15 @@ export function HealthClient({
             })}
 
             {/* Schedules with errors */}
+            {page === 'overview' && accessProblems.map((p) => (
+              <a key={`access-${p.workspaceId}-${p.reason}`} href="/app/health/failures" data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
+                <p className="text-sm font-medium text-text-primary">{p.workspaceName}: runs can&apos;t get access</p>
+                <p className="text-xs text-text-muted mt-0.5">{p.reason} ({p.count}×){p.fix ? `. ${p.fix}` : ''}</p>
+              </a>
+            ))}
+
             {failedSchedules.map((s) => (
-              <div key={s.id} className="px-4 py-3">
+              <a key={s.id} href={scheduleHref(s)} data-testid="problem-schedule" className="block px-4 py-3 hover:bg-surface-2">
                 <div className="flex items-start gap-3">
                   <span className="text-status-error mt-0.5 shrink-0 text-sm">⚠</span>
                   <div className="min-w-0 flex-1">
@@ -711,7 +681,7 @@ export function HealthClient({
                     <p className="text-xs text-text-muted mt-0.5">{s.workspaceName}</p>
                   </div>
                 </div>
-              </div>
+              </a>
             ))}
 
             {/* Recent failures, grouped by error signature.
@@ -755,6 +725,14 @@ export function HealthClient({
               );
             })}
 
+            {/* Overview names what is failing in one row; the list is on Failures. */}
+            {page === 'overview' && failureGroupsView && failureGroupsView.groups.length > 0 && (
+              <a href="/app/health/failures" data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
+                <span className="text-sm text-text-primary">{failureProblemLine(failureGroupsView, activeWindow)}</span>
+                <span aria-hidden="true" className="text-text-muted">›</span>
+              </a>
+            )}
+
             {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
@@ -768,7 +746,6 @@ export function HealthClient({
             )}
           </div>
           )}
-          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
           </>
         )}
       </section>
@@ -785,6 +762,34 @@ export function HealthClient({
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
+      {/* What is running now, in words, comes first. The per-slot timeline
+          (the diagnostic) is one tap away, and the occupancy history, the
+          same busy-slot count at a coarser grain, one more. */}
+      {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
+        <>
+          <div data-testid="health-section-running-now" className="mb-4">
+            <RunningNow fleet={runnerLanes.fleet} now={now} missions={runnerLanes.missions ?? {}} />
+          </div>
+          <div data-testid="health-section-lanes" className="mb-6">
+            <Disclosure summary="Timeline: each slot over the last hours">
+              <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
+            </Disclosure>
+          </div>
+        </>
+      )}
+
+      {show('capacity') && (
+        <div data-testid="health-section-slot-history" className="mb-6">
+          <Disclosure summary="Slot history over 24 hours, 7 or 30 days">
+            <OccupancyChart
+              capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+              busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+              workspaceId={wsFilter}
+            />
+          </Disclosure>
+        </div>
+      )}
+
       {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
@@ -793,7 +798,7 @@ export function HealthClient({
             <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
           )}
         </div>
-        <div className="card">
+        <div className="border-y border-border-default">
           {runners.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
@@ -945,208 +950,8 @@ export function HealthClient({
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
 
-      {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
-
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
 
-      {/* Schedules — collapsed by default. Lives under State because what it
-          carries is a STATE (enabled, next run) plus two LIFETIME counters
-          (total runs, consecutive failures), none of which obey the window. */}
-      {show('schedules') && schedules.length > 0 && (
-        <div data-testid="health-section-schedules" className="mb-6">
-          <button
-            onClick={() => setShowSchedules(p => !p)}
-            className="flex items-center gap-2 section-label mb-3 hover:text-text-primary transition-colors w-full text-left"
-          >
-            <svg
-              className={`w-3 h-3 transition-transform shrink-0 ${showSchedules ? 'rotate-90' : ''}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            Schedules
-            <span className="font-normal text-text-muted ml-1">
-              ({activeRegular.length} on{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${countOf(heartbeatSchedules.length, 'mission check-in')}` : ''})
-            </span>
-          </button>
-
-          {showSchedules && (
-            <>
-              {duplicateScheduleIds.size > 0 && (
-                <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-                  <div className="font-medium text-status-warning">Duplicate crons detected</div>
-                  <p className="text-text-secondary mt-1">
-                    {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
-                    workspace. They fire at the same time. Pause the stale copy below.
-                  </p>
-                </div>
-              )}
-
-              {overdueHeartbeatCount > 0 && (
-                <div className="mb-3 rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-sm">
-                  <div className="font-medium text-status-warning">
-                    {overdueHeartbeatCount} overdue mission check-in{overdueHeartbeatCount > 1 ? 's' : ''}
-                  </div>
-                  <p className="text-text-secondary mt-1">
-                    {overdueHeartbeatCount === 1
-                      ? 'A mission check-in missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
-                      : `${overdueHeartbeatCount} mission check-ins missed their last run. The cron may have stalled. Check schedules below.`}
-                  </p>
-                </div>
-              )}
-
-              {scheduleError && (
-                <div className="mb-3 text-sm text-status-error">{scheduleError}</div>
-              )}
-
-              {(() => {
-                const renderRow = (s: ScheduleRow) => {
-                  const isDupe = duplicateScheduleIds.has(s.id);
-                  const humanLabel = humanizeCron(s.cronExpression);
-                  const isRawDifferent = humanLabel !== s.cronExpression;
-                  const cronExpanded = expandedCronId === s.id;
-                  return (
-                    <div key={s.id} className={`px-4 py-3 ${isDupe ? 'bg-status-warning/5' : ''}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className="text-sm font-medium text-text-primary truncate">{s.name}</p>
-                            {isDupe && (
-                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-warning/15 text-status-warning font-medium">
-                                duplicate cron
-                              </span>
-                            )}
-                            {s.missionTitle && (
-                              <span className="text-[11px] md:text-[10px] px-1.5 py-0.5 rounded bg-status-info/10 text-status-info truncate max-w-[10rem]">
-                                {s.missionTitle}
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs text-text-muted mt-0.5">
-                            {isRawDifferent ? (
-                              <button
-                                onClick={() => setExpandedCronId(cronExpanded ? null : s.id)}
-                                className="text-left hover:text-text-secondary transition-colors"
-                                title={cronExpanded ? 'Hide raw cron' : 'Show raw cron'}
-                              >
-                                <span>{humanLabel}</span>
-                                {cronExpanded && (
-                                  <span className="font-mono ml-1.5 text-text-tertiary">({s.cronExpression})</span>
-                                )}
-                              </button>
-                            ) : (
-                              <span className="font-mono">{s.cronExpression}</span>
-                            )}
-                            <span className="mx-1">·</span>
-                            <span>{s.timezone}</span>
-                            <span className="mx-1">·</span>
-                            <span>{s.workspaceName}</span>
-                          </div>
-                          {/* `{N} runs since created` / `{N} in a row` — both
-                              LIFETIME. Rendered with their own anchor so neither
-                              reads as a count over the page window. */}
-                          <p className="text-xs text-text-tertiary mt-0.5">
-                            {s.enabled ? `next ${timeUntil(s.nextRunAt, now)}` : 'paused'} · last {timeAgo(s.lastRunAt, now)}
-                            {' · '}
-                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt, now)}. All-time counter; the page window doesn't apply.` : undefined}>
-                              {lifetimeRuns(s.totalRuns)}
-                            </span>
-                            {s.consecutiveFailures > 0 && (
-                              <span className="text-status-error" title="Consecutive failed runs. Resets on the next success.">
-                                {' · '}{failureStreak(s.consecutiveFailures)} failed
-                              </span>
-                            )}
-                          </p>
-                          {isScheduleErrorLive(s) && (
-                            <p className="text-xs text-status-error mt-1 truncate">⚠ {s.lastError}</p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={() => toggleSchedule(s)}
-                            disabled={scheduleBusyId === s.id}
-                            className={`text-xs px-3 h-8 rounded-lg border font-medium disabled:opacity-50 ${
-                              s.enabled ? 'text-text-secondary' : 'text-status-success border-status-success/40'
-                            }`}
-                          >
-                            {scheduleBusyId === s.id ? '…' : s.enabled ? 'Pause' : 'Resume'}
-                          </button>
-                          <button
-                            data-testid="schedule-delete-btn"
-                            onClick={() => setScheduleToDelete(s)}
-                            disabled={scheduleBusyId === s.id}
-                            className="h-8 w-8 flex items-center justify-center rounded-lg text-text-muted hover:text-status-error hover:bg-status-error/10 disabled:opacity-50 transition-colors"
-                            title="Delete schedule"
-                            aria-label={`Delete schedule ${s.name}`}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                };
-
-                return (
-                  <>
-                    {activeRegular.length > 0 && (
-                      <div className="card divide-y divide-border-default mb-2">
-                        {activeRegular.map(renderRow)}
-                      </div>
-                    )}
-
-                    {pausedRegular.length > 0 && (
-                      <div className="mb-2">
-                        <button
-                          onClick={() => setShowPausedSchedules(p => !p)}
-                          className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
-                        >
-                          <svg
-                            className={`w-3 h-3 transition-transform ${showPausedSchedules ? 'rotate-90' : ''}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                          {pausedRegular.length} paused {pausedRegular.length === 1 ? 'schedule' : 'schedules'}
-                        </button>
-                        {showPausedSchedules && (
-                          <div className="card divide-y divide-border-default opacity-75">
-                            {pausedRegular.map(renderRow)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {heartbeatSchedules.length > 0 && (
-                      <div>
-                        <button
-                          onClick={() => setShowHeartbeatSchedules(p => !p)}
-                          className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
-                        >
-                          <svg
-                            className={`w-3 h-3 transition-transform ${showHeartbeatSchedules ? 'rotate-90' : ''}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                          {heartbeatSchedules.length} mission check-in{heartbeatSchedules.length !== 1 ? 's' : ''}
-                        </button>
-                        {showHeartbeatSchedules && (
-                          <div className="card divide-y divide-border-default opacity-75">
-                            {heartbeatSchedules.map(renderRow)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </>
-          )}
-        </div>
-      )}
       </section>
       )}
 
@@ -1181,6 +986,9 @@ export function HealthClient({
           />
         )}
 
+        {/* After the failures: access problems and blocked actions are fewer and fixed-window (24h). */}
+        {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
+
         {show('failureAnalytics') && failureAnalytics && (
           <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
@@ -1207,46 +1015,6 @@ export function HealthClient({
       </section>
       )}
 
-      {/* Delete schedule confirm modal */}
-      {scheduleToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40"
-          onClick={() => setScheduleToDelete(null)}
-        >
-          <div
-            data-testid="schedule-delete-confirm"
-            className="w-full sm:max-w-sm sm:rounded-xl rounded-t-2xl bg-surface-elevated p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-base font-semibold mb-1">Delete schedule?</h3>
-            <p className="text-sm text-text-secondary mb-4">
-              You can&apos;t undo this.
-            </p>
-            <div className="rounded-lg bg-surface-3 px-4 py-3 mb-5 space-y-1">
-              <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
-              <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
-              <p className="text-xs text-text-muted">
-                {countOf(scheduleToDelete.totalRuns, 'run')} · last {timeAgo(scheduleToDelete.lastRunAt, now)}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setScheduleToDelete(null)}
-                className="flex-1 h-11 rounded-lg border border-border-default text-sm font-medium text-text-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDeleteSchedule}
-                disabled={scheduleBusyId === scheduleToDelete.id}
-                className="flex-1 h-11 rounded-lg bg-status-error text-white text-sm font-medium disabled:opacity-50"
-              >
-                {scheduleBusyId === scheduleToDelete.id ? 'Deleting…' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1385,7 +1153,7 @@ function ConsumptionSection({
           </span>
         )}
       </div>
-      <div className="card p-4 space-y-4">
+      <div className="border-y border-border-default py-4 space-y-4">
         {/* The per-task cost/turn/tool-call tiles that used to sit here now live
             on the usage drill-down, whole — not copied. Publishing them in two
             places is how the same number ends up stated under two windows. */}
@@ -1567,7 +1335,7 @@ function SubagentDelegationSection({
             : sectionDenominator(0, 'sessions')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           <>
             <div className="flex items-baseline justify-between gap-3">
@@ -1634,7 +1402,7 @@ function ErrorPatternSection({
             : sectionDenominator(0, 'workers')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           panel.value.patterns.length === 0 ? (
             <p className="text-xs text-text-muted">No error-trace pattern fired in this window.</p>
@@ -1746,7 +1514,6 @@ function ProviderWallRow({ label, state, resetsAt, now }: {
 function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
-    forecast.monthly !== null ||
     // Wall rows only render while exhausted; an elapsed pause alone must not
     // leave an empty card.
     !!forecast.codex?.isExhausted ||
@@ -1762,11 +1529,11 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
     <div data-testid="health-section-budget-forecast" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <h3 className="text-xs font-medium text-text-secondary">Budget</h3>
-        {/* Pinned to each provider's own usage period and the calendar month,
+        {/* Pinned to each provider's own usage period,
             never to a page window; this page has no window control. */}
-        <span className="text-[11px] text-text-muted text-right">usage limits and monthly spend</span>
+        <span className="text-[11px] text-text-muted text-right">provider usage limits</span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
 
         {/* Active OAuth session rows — labeled by account name */}
         {activeSessions.map((s) => (
@@ -1818,58 +1585,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
               {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
             </span>
-          </div>
-        )}
-
-        {/* Monthly dollar budget */}
-        {forecast.monthly && (
-          <div className="px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
-              <span className="text-sm text-text-primary">Monthly budget</span>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
-                    labelled with that anchor rather than left to look windowed. */}
-                <span className="tabular-nums font-medium text-text-primary" title={ESTIMATED_COST_TITLE}>
-                  {formatEstimatedUsd(forecast.monthly.spentUsd)} / ${forecast.monthly.budgetUsd.toFixed(0)}
-                </span>
-                <span className="text-text-muted">·</span>
-                <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
-                <span className="text-text-muted">·</span>
-                <span>{formatReset(forecast.monthly.resetsAt, now)}</span>
-                {/* PROJECTION: the runway and the window its burn rate came from
-                    are ONE string, so the value can never be read as windowed by
-                    the page control. */}
-                {depletionProjection(forecast.monthly.daysToDepletion, '24h') && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span data-testid="budget-runway">
-                      {depletionProjection(forecast.monthly.daysToDepletion, '24h')}
-                    </span>
-                  </>
-                )}
-                {forecast.monthly.confidence !== 'low' && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span
-                      className={confidenceClass(forecast.monthly.confidence)}
-                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence means a stable reading. It is not a guarantee.' : undefined}
-                    >
-                      {forecast.monthly.confidence === 'high' ? 'burn rate est.' : `confidence: ${forecast.monthly.confidence}`}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  forecast.monthly.pctUsed >= 90 ? 'bg-status-error' :
-                  forecast.monthly.pctUsed >= 70 ? 'bg-status-warning' :
-                  'bg-primary'
-                }`}
-                style={{ width: `${Math.min(100, forecast.monthly.pctUsed)}%` }}
-              />
-            </div>
           </div>
         )}
 
@@ -1925,11 +1640,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
 
 // ── Credential health (STATE) ────────────────────────────────────────────────
 
-const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
-  oauth_token: 'Claude OAuth token',
-  anthropic_api_key: 'Anthropic API key',
-  codex_credential: 'Codex credential',
-};
 
 const CREDENTIAL_STATUS_WORD: Record<CredentialHealthItem['healthStatus'], string> = {
   healthy: 'working',
@@ -1971,11 +1681,11 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
             <span className="text-sm text-text-primary truncate">
-              {CREDENTIAL_PURPOSE_LABELS[c.purpose] ?? c.purpose}
+              {backendCredentialLabel(c.purpose)}
             </span>
             <div className="flex items-center gap-2 text-xs shrink-0">
               <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>
@@ -2031,7 +1741,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
           {sectionDenominator(stats.total, stats.total === 1 ? 'task' : 'tasks')} ({window})
         </span>
       </div>
-      <div className="card px-4 py-3 space-y-2">
+      <div className="border-y border-border-default px-4 py-3 space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-sm text-text-secondary">
             {stats.completed}/{stats.total} tasks completed ({window})
@@ -2122,27 +1832,8 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
   };
 
   return (
-    <div
-      role="group"
-      aria-label="Window"
-      data-testid="health-window-picker"
-      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
-    >
-      {WINDOW_OPTIONS.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => select(o.value)}
-          aria-pressed={current === o.value}
-          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
-            current === o.value
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div data-testid="health-window-picker" className={pending ? 'opacity-60' : ''}>
+      <Segmented label="Window" items={WINDOW_OPTIONS} value={current} onChange={select} />
     </div>
   );
 }
@@ -2173,13 +1864,13 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
       </div>
 
       {totals.events === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">
             Nothing was refused, deferred, warned or bypassed in this window.
           </p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
             {([
               ['Rejected', totals.rejected, 'Requests buildd refused with a 4xx the caller had to act on.'],
@@ -2190,7 +1881,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
-                  className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  className="text-meta font-medium text-text-muted"
                   title={title}
                 >
                   {label}
@@ -2205,7 +1896,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </div>
 
           <div className="px-4 py-3">
-            <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            <p className="text-meta font-medium text-text-muted mb-2">
               By gate
             </p>
             <ul className="space-y-1.5">
@@ -2246,7 +1937,7 @@ function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
 
   return (
     <div className="px-4 py-3" data-testid="gate-claim-deferrals">
-      <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+      <p className="text-meta font-medium text-text-muted mb-2">
         Claim-loop deferrals by reason
       </p>
       <ul className="space-y-1.5">
@@ -2292,16 +1983,16 @@ function FailureAnalyticsSection({
       </div>
 
       {totals.started === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">No workers ran in this window.</p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           {/* Headline stat tiles */}
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failed / finished workers in the window. In-flight workers are excluded."
               >
                 Failure rate
@@ -2318,7 +2009,7 @@ function FailureAnalyticsSection({
             </div>
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failures that used 2 turns or fewer at $0 cost. They took a slot and produced nothing. A high count points at a platform bug."
               >
                 Died early
@@ -2340,7 +2031,7 @@ function FailureAnalyticsSection({
                 window cannot make it more true). One tile could only lie about
                 one of them. */}
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Completed
               </span>
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
@@ -2351,7 +2042,7 @@ function FailureAnalyticsSection({
               </p>
             </div>
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Still running
               </span>
               <p
@@ -2367,7 +2058,7 @@ function FailureAnalyticsSection({
           {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
           {byExitCause.length > 0 && (
             <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 By exit cause
               </span>
               {byExitCause.map((c) => (
@@ -2393,7 +2084,7 @@ function FailureAnalyticsSection({
           {signatures.length > 0 && (
             <div className="py-1" data-testid="failure-signatures">
               <div className="px-4 pt-2 pb-1">
-                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                <span className="text-meta font-medium text-text-muted">
                   Failure signatures
                 </span>
               </div>
@@ -2488,7 +2179,7 @@ function FailureAnalyticsSection({
                 <div className="mt-3 space-y-4" data-testid="failure-breakdown">
                   {byRole.length > 0 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By role
                       </span>
                       {byRole.slice(0, 6).map((r) => (
@@ -2505,7 +2196,7 @@ function FailureAnalyticsSection({
 
                   {byWorkspace.length > 1 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By workspace
                       </span>
                       {byWorkspace.slice(0, 6).map((w) => (
@@ -2523,7 +2214,7 @@ function FailureAnalyticsSection({
                   {repeatFailureTasks.length > 0 && (
                     <div className="space-y-1">
                       <span
-                        className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        className="text-meta font-medium text-text-muted"
                         title="Tasks that burned more than one worker inside the window"
                       >
                         Repeat-failure tasks

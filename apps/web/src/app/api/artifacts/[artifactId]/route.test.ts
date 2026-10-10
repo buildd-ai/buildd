@@ -33,6 +33,19 @@ mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
 
+// The opt-in GitHub repo check (lib/member-repo-access.ts has its own tests).
+const mockAssertMemberRepoAccess = mock(async (..._args: unknown[]) => null as any);
+mock.module('@/lib/member-repo-access', () => ({
+  assertMemberRepoAccess: mockAssertMemberRepoAccess,
+  memberRepoAccessSubject: (a: { sessionUserId?: string } | null, u: { id: string } | null) => (a ? a.sessionUserId ?? null : u?.id ?? null),
+}));
+
+let storageConfigured = true;
+mock.module('@/lib/storage', () => ({
+  isStorageConfigured: () => storageConfigured,
+  generateDownloadUrl: async (key: string) => `https://signed.example/${key}`,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -283,6 +296,31 @@ describe('GET /api/artifacts/[artifactId] — dashboard session', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).artifact.title).toBe('Session Report');
     expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1');
+  });
+
+  it('a diff artifact goes through the member repo access check for a session', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue({ ...artifactRow, type: 'diff' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockAssertMemberRepoAccess.mockResolvedValueOnce(Response.json({ error: 'member_repo_access', reason: 'not_collaborator' }, { status: 403 }));
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).reason).toBe('not_collaborator');
+    expect(mockAssertMemberRepoAccess).toHaveBeenLastCalledWith('user-1', 'ws-1');
+  });
+
+  it('a non-diff artifact is not repo-access checked', async () => {
+    mockAssertMemberRepoAccess.mockClear();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockArtifactsFindFirst.mockResolvedValue(artifactRow);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+
+    const res = await GET(createMockGetRequest(), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockAssertMemberRepoAccess).not.toHaveBeenCalled();
   });
 
   it('404s (not 403) a signed-in user outside the artifact workspace', async () => {
@@ -645,5 +683,39 @@ describe('/api/artifacts/[artifactId] — per-task token', () => {
     const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
     expect(res.status).toBe(200);
     expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/artifacts/[artifactId] — file artifact download URL', () => {
+  const fileRow = {
+    id: 'artifact-1', workerId: 'worker-1', workspaceId: 'ws-1', type: 'file', title: 'proto',
+    content: null, shareToken: null, visibility: 'private', metadata: {}, storageKey: 'ws-1/proto.html',
+    worker: { accountId: 'account-1', workspaceId: 'ws-1' },
+  };
+
+  beforeEach(() => {
+    storageConfigured = true;
+    mockAuthenticateApiKey.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+  });
+
+  it('includes a presigned downloadUrl for a file artifact the caller may read', async () => {
+    mockArtifactsFindFirst.mockResolvedValue(fileRow);
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBe('https://signed.example/ws-1/proto.html');
+  });
+
+  it('omits downloadUrl when storage is not configured', async () => {
+    storageConfigured = false;
+    mockArtifactsFindFirst.mockResolvedValue(fileRow);
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBeNull();
+  });
+
+  it('omits downloadUrl for an artifact without a stored file', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...fileRow, storageKey: null });
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect((await res.json()).artifact.downloadUrl).toBeNull();
   });
 });

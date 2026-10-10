@@ -2,6 +2,23 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { APPROVAL_ROW_CAP, approvalRowOutcome, CHANGED_SINCE_SHOWN, isHeldBack, isSystemDenied, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@builddai/ai-kit/chat/contract';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 
+// Model-tier ceilings (docs/specs/model-tier-ceilings.md): the real rule over
+// a per-test policy instead of the DB. No ceiling unless a test sets one.
+const { resolveTierCeiling: realResolveTierCeiling } = await import('@buildd/shared');
+const ceilingTest = { inputs: {} as Record<string, any> };
+const fakeCeiling = async (s: any, surface: any) => {
+  const userId = typeof s.userId === 'function' ? await s.userId() : s.userId ?? null;
+  return realResolveTierCeiling({
+    team: ceilingTest.inputs.team ?? null, workspaceId: s.workspaceId ?? null, userId,
+    member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null,
+  }, surface);
+};
+mock.module('@buildd/core/model-tier-ceiling-store', () => ({
+  loadTierCeiling: fakeCeiling,
+  tierCeilingLoader: () => fakeCeiling,
+}));
+
+
 /**
  * The P1 acceptance properties, through the real AI SDK v7 loop with a mock
  * model: capability off / no key ⇒ no turn; one approval card; confirming files
@@ -757,7 +774,8 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
   it('turnGroups: a member never gets admin, even when routing names it', async () => {
     const { turnGroups } = await import('./turn');
     const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: false });
-    expect([...g].sort()).toEqual(['missions', 'notifications', 'tasks']);
+    // workers instead: it carries the member's own personal-role tools.
+    expect([...g].sort()).toEqual(['missions', 'notifications', 'tasks', 'workers']);
     const a = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: true });
     expect(a.has('admin')).toBe(true);
   });
@@ -1126,6 +1144,88 @@ describe('a conversation pinned to a tier', () => {
     await turn(userMsg('hi'));
     expect(tiersAsked[0]).toBe('budget');
     expect(routed[0].tierPinned).toBeUndefined();
+  });
+});
+
+describe('model-tier ceiling, every turn', () => {
+  const price = (id: string, input: number, prefix = 'anthropic') => ({
+    id, canonicalId: null, openRouterId: `${prefix}/${id}`, provider: prefix === 'openai' ? 'openai' : 'anthropic',
+    displayName: id, contextLength: 400000, created: 1, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
+  });
+  const catalog = async () => [price('claude-sonnet-5', 2), price('claude-opus-5', 5), price('gpt-5.3', 2.5, 'openai'), price('gpt-5.3-pro', 15, 'openai')];
+  const served = (modelId: string, provider = 'anthropic') => (o: any) => ({ ok: true as const, model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), provider, modelId, tier: o.tier, keyScope: 'team' as const });
+  const after = () => { ceilingTest.inputs = {}; };
+
+  it('a persisted premium pin above the person\'s own maximum is refused with policy_denied; no model is called', async () => {
+    ceilingTest.inputs = { team: { membersCapped: true }, members: { 'u-1': { self: { chat: 'standard' } } } };
+    try {
+      const { turn, tiersAsked } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), conversation: { tier: 'premium' } });
+      const { res, text } = await turn(userMsg('hi'));
+      expect(res.status).toBe(403);
+      expect(JSON.parse(text)).toMatchObject({ error: 'policy_denied', requested: { tier: 'premium', origin: 'chat_pin' }, binding: { source: 'member_self' } });
+      expect(tiersAsked).toHaveLength(0);
+    } finally { after(); }
+  });
+
+  it('an admin-set member cap holds even when the member set a higher one of their own', async () => {
+    ceilingTest.inputs = { team: { membersCapped: true }, members: { 'u-1': { admin: { all: 'budget' }, self: { all: 'premium' } } } };
+    try {
+      const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), conversation: { tier: 'standard' } });
+      expect((await turn(userMsg('hi'))).res.status).toBe(403);
+    } finally { after(); }
+  });
+
+  it("routing's own premium pick is served at the team ceiling instead", async () => {
+    ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+    try {
+      const { turn, tiersAsked } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), route: async () => ({ tier: 'premium', allowWrites: true, source: 'decision' }) });
+      await turn(userMsg('hi'));
+      expect(tiersAsked[0]).toBe('standard');
+    } finally { after(); }
+  });
+
+  it('the no-key fallback never climbs above the ceiling', async () => {
+    ceilingTest.inputs = { team: { team: { chat: 'budget' } } };
+    try {
+      const { turn, tiersAsked } = harness({ key: false, route: async () => ({ tier: 'budget', allowWrites: true, source: 'decision' }) });
+      const { res } = await turn(userMsg('hi'));
+      expect(res.status).toBe(409);
+      expect(tiersAsked).toEqual(['budget']);
+    } finally { after(); }
+  });
+
+  it('a pool arm priced above the ceiling falls back to the incumbent', async () => {
+    ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+    try {
+      const calls: any[] = [];
+      const { turn } = harness({ model: new MockLanguageModelV4({ doStream: textStream('ok') as any }), extraDeps: {
+        catalog,
+        resolveModel: async (o: any) => { calls.push(o); return o.pool ? served('claude-opus-5')(o) : served('claude-sonnet-5')(o); },
+      } });
+      const { res } = await turn(userMsg('hi'));
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(2);
+      expect(calls[1].pool).toBeUndefined();
+      expect(lastAssistant().model).toBe('claude-sonnet-5');
+    } finally { after(); }
+  });
+
+  it('an OpenAI model the team mapped under standard but priced as premium-plus is refused, not served', async () => {
+    ceilingTest.inputs = { team: { team: { all: 'premium' } } };
+    try {
+      const { turn } = harness({ extraDeps: { catalog, resolveModel: async (o: any) => served('gpt-5.3-pro', 'openai')(o) } });
+      const { res, text } = await turn(userMsg('hi'));
+      expect(res.status).toBe(403);
+      expect(JSON.parse(text)).toMatchObject({ error: 'policy_denied', code: 'model_above_ceiling', requested: { model: 'gpt-5.3-pro', tier: 'premium-plus' } });
+    } finally { after(); }
+  });
+
+  it('an in-band OpenAI model under a ceiling is served normally', async () => {
+    ceilingTest.inputs = { team: { team: { all: 'standard' } } };
+    try {
+      const { turn } = harness({ extraDeps: { catalog, resolveModel: async (o: any) => served('gpt-5.3', 'openai')(o) } });
+      expect((await turn(userMsg('hi'))).res.status).toBe(200);
+    } finally { after(); }
   });
 });
 

@@ -11,6 +11,10 @@ import {
 } from '@/lib/provider-keys-client';
 import { isChatProvider } from '@buildd/shared';
 import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
+import { TonePill } from '@/components/ui/StatePill';
+
+/** Key health in the shared state tones (the same mapping as Settings' StatusChip). */
+const PILL_TONE = { ok: 'ok', warn: 'dec', err: 'bad', idle: 'q' } as const;
 
 /**
  * One provider's key at one scope: the team key (admin screen) or your own key
@@ -142,8 +146,8 @@ export function ProviderKeyCard({
           aria-hidden
         />
         <b className="min-w-0 break-words text-body font-semibold text-text-primary">{info.label}</b>
-        {recommended && <span className="text-[11px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
-        <span className={`status-pill status-pill-${pill.tone} shrink-0 ml-auto`} data-testid="provider-key-health">{pill.label}</span>
+        {recommended && <span className="text-meta text-text-muted">recommended</span>}
+        <span className="shrink-0 ml-auto inline-flex" data-testid="provider-key-health"><TonePill tone={PILL_TONE[pill.tone]}>{pill.label}</TonePill></span>
       </div>
 
       <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">
@@ -238,7 +242,7 @@ export function ProviderKeyCard({
           <p className="text-text-secondary">
             {removeNote ?? (mode === 'team'
               ? 'Chat and model features stop using this provider.'
-              : 'Your chats go back to the team key, if the team has one.')}
+              : 'Your chats and tasks go back to the team key, if the team has one.')}
           </p>
         )}
 

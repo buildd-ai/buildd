@@ -5,9 +5,10 @@ import { ScopeSelector } from '@/components/ScopeSelector';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
 import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
+import { ROTATING_CREDENTIAL_ALL_TEAMS_ERROR } from '@/lib/rotating-credential-scope';
 
-/** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
-const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
+/** Settings → Models → Routing → Agent model endpoint (OpenRouter, LiteLLM). */
+const AGENT_ENDPOINT_HREF = '/app/settings/models#agent-endpoint-h';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -21,7 +22,7 @@ function CredActionRow({ children }: { children: ReactNode }) {
 function CredAction({
   onClick, children, disabled, tone = 'neutral',
 }: { onClick: () => void; children: ReactNode; disabled?: boolean; tone?: 'primary' | 'neutral' | 'danger' }) {
-  const toneCls = tone === 'primary' ? 'btn-accent' : tone === 'danger' ? 'btn-danger' : '';
+  const toneCls = tone === 'danger' ? 'btn-danger' : '';
   return (
     <button onClick={onClick} disabled={disabled} className={`btn ${toneCls}`}>
       {children}
@@ -99,9 +100,9 @@ function StrandedWorkNotice({ stat }: { stat?: BackendStrandStat | null }) {
   return (
     <div className="inset-panel border border-status-error/30 space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="status-pill status-pill-err">
+        <StatusChip tone="err">
           Stranding {n} pending task{plural}
-        </span>
+        </StatusChip>
         <span className="text-xs text-text-muted">no runner can claim {them}</span>
       </div>
       <p className="text-xs text-text-secondary">
@@ -149,6 +150,16 @@ interface Workspace {
 interface Props {
   workspaces: Workspace[];
   currentTeamId: string | null;
+  /** Teams where the user may write team credentials: the only "All my teams" targets. Omitted = every team shown. */
+  manageableTeamIds?: string[];
+  /**
+   * May write team-wide and workspace credentials in the active team
+   * (`manage_team_credentials`). False: every row shows its status only (the
+   * person's own key is under Keys on the same page). Defaults to true.
+   */
+  canManage?: boolean;
+  /** May change provider routing, a team setting (`manage_team_settings`). Defaults to `canManage`. */
+  canManageRouting?: boolean;
 }
 
 type Scope = 'team' | 'workspace' | 'all_teams';
@@ -183,21 +194,26 @@ export interface TeamTarget {
  * or — for an operator who runs one runner across several of their teams — fanned
  * out to every team they manage ("all my teams"). See docs/credentials-architecture.md.
  */
-export default function AgentBackendsSection({ workspaces, currentTeamId }: Props) {
+export default function AgentBackendsSection({ workspaces, currentTeamId, manageableTeamIds, canManage = true, canManageRouting = canManage }: Props) {
+  const readOnly = !canManage;
   // Only workspaces in the active team can share a team-wide credential.
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
   );
 
-  // One representative workspace per distinct team the user can see — the fan-out
-  // targets. Each write is still authorized per-team server-side, so this can only
-  // touch teams the user actually belongs to.
+  // One representative workspace per distinct team the user manages — the fan-out
+  // targets ("every team you manage"). Each write is still authorized per-team
+  // server-side, so this can only touch teams the user actually belongs to.
   const teamTargets = useMemo<TeamTarget[]>(() => {
+    const manageable = manageableTeamIds ? new Set(manageableTeamIds) : null;
     const byTeam = new Map<string, string>();
-    for (const w of workspaces) if (!byTeam.has(w.teamId)) byTeam.set(w.teamId, w.id);
+    for (const w of workspaces) {
+      if (manageable && !manageable.has(w.teamId)) continue;
+      if (!byTeam.has(w.teamId)) byTeam.set(w.teamId, w.id);
+    }
     return Array.from(byTeam, ([teamId, workspaceId]) => ({ teamId, workspaceId }));
-  }, [workspaces]);
+  }, [workspaces, manageableTeamIds]);
   const multiTeam = teamTargets.length > 1;
 
   const [scope, setScope] = useState<Scope>('team');
@@ -243,7 +259,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   }, [teamId, showSeat, open]);
 
   // Deep link from the getting-started checklist and the failed-task page:
-  // /app/settings/runners#agent-key opens the Claude row on the key field.
+  // /app/settings/models#agent-key opens the Claude row on the key field.
   useEffect(() => {
     if (typeof window === 'undefined' || window.location.hash !== '#agent-key') return;
     setOpen('claude');
@@ -276,7 +292,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   const scopeControl = (
     <div className="space-y-2">
       <p className="text-xs text-text-secondary">
-        One sign-in covers every workspace in the team{multiTeam ? <>, or copy it to all {teamTargets.length} teams you manage</> : null}.
+        One sign-in covers every workspace in the team{multiTeam ? <>, or copy a key to all {teamTargets.length} teams you manage</> : null}.
       </p>
       {/* Shared scope selector (also used by connectors/roles, see ScopeSelector). */}
       <ScopeSelector
@@ -293,6 +309,11 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
   return (
     <>
+      {readOnly && (
+        <p data-testid="credentials-read-only" className="px-4 py-3 text-xs text-text-secondary">
+          Admins can change these.
+        </p>
+      )}
       <StoredSeatNotice kinds={storedSeats} />
       {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
           key is a collapsed fallback inside the same row. */}
@@ -305,6 +326,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         open={open === 'claude'}
         onToggle={() => toggle('claude')}
         onOpen={() => setOpen('claude')}
+        readOnly={readOnly}
         onAddKey={() => { setOpen('claude'); setFocusKey((k) => k + 1); }}
         seatOpen={showSeat}
         onSeatToggle={() => setShowSeat((v) => !v)}
@@ -331,6 +353,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         onToggle={() => toggle('codex')}
         onOpen={() => setOpen('codex')}
         scopeControl={scopeControl}
+        readOnly={readOnly}
       />
       {/* A plain OpenAI API key is the simpler alternative to connecting ChatGPT
           above — same purpose (Codex agent tasks), stored like the Anthropic key. */}
@@ -344,6 +367,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         open={open === 'openai_key'}
         onToggle={() => toggle('openai_key')}
         scopeControl={scopeControl}
+        readOnly={readOnly}
       />
       {/* Team provider routing toggle (reversible mask over the resolution chain) */}
       <ProviderRoutingToggle
@@ -352,6 +376,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         onRoutingChange={refreshStrand}
         open={open === 'routing'}
         onToggle={() => toggle('routing')}
+        readOnly={!canManageRouting}
       />
     </>
   );
@@ -376,12 +401,15 @@ function ProviderRoutingToggle({
   onRoutingChange,
   open,
   onToggle,
+  readOnly = false,
 }: {
   teamId: string;
   workspaceId: string;
   onRoutingChange?: () => void;
   open: boolean;
   onToggle: () => void;
+  /** Status only: changing routing is a team setting the person does not hold. */
+  readOnly?: boolean;
 }) {
   const [enabled, setEnabled] = useState<RoutingBackend[] | null>(null); // null = loading/all
   // Track which backends have credentials configured so we can block stranding toggles.
@@ -483,6 +511,7 @@ function ProviderRoutingToggle({
       meta="Turn one off to send its jobs to the other."
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
     >
       <div className="space-y-2">
         {ALL_BACKENDS.map((b) => (
@@ -495,7 +524,7 @@ function ProviderRoutingToggle({
             <button
               onClick={() => toggle(b)}
               disabled={busy || !loaded}
-              className={`btn ${isOn(b) ? '' : 'btn-accent'}`}
+              className="btn"
             >
               {isOn(b) ? 'Disable' : 'Enable'}
             </button>
@@ -721,11 +750,11 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {matching[0].healthStatus === 'revoked' ? (
-              <span className="status-pill status-pill-err">Revoked · re-auth required</span>
+              <StatusChip tone="err">Revoked · re-auth required</StatusChip>
             ) : matching[0].healthStatus === 'degraded' ? (
-              <span className="status-pill status-pill-warn">Degraded · auth failures</span>
+              <StatusChip tone="warn">Degraded · auth failures</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</span>
           </div>
@@ -774,7 +803,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
           {allTeams ? (
             <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
           ) : mode === 'setup_token' ? (
-            <span className="status-pill status-pill-idle">Not connected</span>
+            <StatusChip tone="idle">Not connected</StatusChip>
           ) : null}
           {inputForm}
         </div>
@@ -795,7 +824,7 @@ function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusReques
 // tasks the same way `codex_credential` is, so either one makes Codex runnable.
 
 function OpenAiApiKeyCard({
-  teamId, scope, workspaceId, teamTargets, strand, onCredentialChange, open, onToggle, scopeControl,
+  teamId, scope, workspaceId, teamTargets, strand, onCredentialChange, open, onToggle, scopeControl, readOnly,
 }: {
   teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null;
   onCredentialChange?: () => void;
@@ -924,6 +953,7 @@ function OpenAiApiKeyCard({
       meta="For Codex tasks, instead of a ChatGPT sign-in."
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
     >
       {scopeControl}
       <StrandedWorkNotice stat={strand} />
@@ -987,6 +1017,8 @@ interface RowProps {
   onOpen: () => void;
   /** The shared "applies to" control, drawn at the top of the open row. */
   scopeControl: ReactNode;
+  /** Status only: no toggle, action or controls (the person cannot change it). */
+  readOnly?: boolean;
 }
 
 /**
@@ -995,7 +1027,7 @@ interface RowProps {
  * `children`, the setup token) is folded under one disclosure labelled
  * self-hosted runner only, open by default only for a team already signed in.
  */
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, onAddKey, seatOpen, onSeatToggle, keyForm, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; onAddKey: () => void; seatOpen: boolean; onSeatToggle: () => void; keyForm: ReactNode; children?: ReactNode } & RowProps) {
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, readOnly, onAddKey, seatOpen, onSeatToggle, keyForm, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; onAddKey: () => void; seatOpen: boolean; onSeatToggle: () => void; keyForm: ReactNode; children?: ReactNode } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1044,12 +1076,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       if (!res.ok) { setMsg({ type: 'error', text: data.error ?? 'Exchange failed' }); return; }
       setOauth(null);
       setOauthCode('');
-      if (typeof data.teams === 'number') {
-        setMsg({ type: 'success', text: `Claude connected via OAuth for ${data.teams} of ${data.totalTeams} teams.` });
-      } else {
-        setStatus(data);
-        setMsg({ type: 'success', text: 'Claude connected.' });
-      }
+      setStatus(data);
+      setMsg({ type: 'success', text: 'Claude connected.' });
     } catch {
       setMsg({ type: 'error', text: 'Failed to exchange code' });
     } finally {
@@ -1098,24 +1126,6 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     setPasteError(null);
     setMsg(null);
     try {
-      if (allTeams) {
-        const results = await Promise.all(
-          teamTargets.map((t) =>
-            fetch(`/api/workspaces/${t.workspaceId}/claude-credential`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ credentialsJson: pasteValue, scope: 'team' }),
-            }).then((r) => r.ok).catch(() => false),
-          ),
-        );
-        const ok = results.filter(Boolean).length;
-        setPasteValue('');
-        setMsg({
-          type: ok > 0 ? 'success' : 'error',
-          text: `Connected account saved for ${ok} of ${teamTargets.length} teams.`,
-        });
-        return;
-      }
       const res = await fetch(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1189,12 +1199,13 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       meta={meta}
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
       action={needsReconnect ? (
-        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
+        <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn">
           Reconnect
         </button>
       ) : needsKey ? (
-        <button onClick={onAddKey} className="btn btn-accent">
+        <button onClick={onAddKey} className="btn">
           Add key
         </button>
       ) : undefined}
@@ -1227,13 +1238,13 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired · reconnect</span>
+              <StatusChip tone="warn">Expired · reconnect</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
             {status.expired && status.healthStatus === 'revoked' && fallbackConnected && (
-              <span className="status-pill status-pill-ok">Workers using setup token as fallback</span>
+              <StatusChip tone="ok">Workers using setup token as fallback</StatusChip>
             )}
           </div>
 
@@ -1269,16 +1280,16 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
+      ) : allTeams ? (
+        <p data-testid="claude-seat-all-teams" className="text-xs text-text-muted">{ROTATING_CREDENTIAL_ALL_TEAMS_ERROR}</p>
       ) : (
         <div className="space-y-3">
-          {allTeams ? (
-            <span className="text-xs text-text-muted">Approve once to apply the same Claude login to all {teamTargets.length} teams you manage.</span>
-          ) : fallbackConnected ? (
-            <span className="status-pill status-pill-ok">Connected via setup token / API key</span>
+          {fallbackConnected ? (
+            <StatusChip tone="ok">Connected via setup token / API key</StatusChip>
           ) : (
-            <span className="status-pill status-pill-idle">Not connected</span>
+            <StatusChip tone="idle">Not connected</StatusChip>
           )}
-          {/* OAuth connect (short code) is the clean primary path — incl. all-teams fan-out. */}
+          {/* OAuth connect (short code) is the clean primary path. */}
           {oauth ? (
             <ClaudeOAuthPanel authorizeUrl={oauth.authorizeUrl} code={oauthCode} onChange={setOauthCode} busy={busy}
               onSubmit={submitOAuthCode} onCancel={() => { setOauth(null); setOauthCode(''); }} />
@@ -1290,11 +1301,9 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
               {/* Explanation sits under the button, not beside it: the label stays one
                   line at any width instead of wrapping inside the button box. */}
               <p className="text-xs text-text-muted">
-                {allTeams
-                  ? `Approve once → applied to all ${teamTargets.length} teams`
-                  : fallbackConnected
-                    ? 'Replaces the setup token. Approve in the browser, then paste the code.'
-                    : 'Approve in the browser, then paste the code.'}
+                {fallbackConnected
+                  ? 'Replaces the setup token. Approve in the browser, then paste the code.'
+                  : 'Approve in the browser, then paste the code.'}
               </p>
             </div>
           )}
@@ -1304,7 +1313,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
             </button>
           ) : (
             <ClaudeCredentialsPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect}
-              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+              onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
       )}
@@ -1321,8 +1330,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
   );
 }
 
-function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
-  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
+function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void;
 }) {
   return (
     <div className="space-y-2">
@@ -1339,7 +1348,7 @@ function ClaudeCredentialsPasteForm({ value, onChange, error, busy, onConnect, o
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
-        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+        {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
   );
@@ -1350,7 +1359,7 @@ function ClaudeOAuthPanel({ authorizeUrl, code, onChange, busy, onSubmit, onCanc
   authorizeUrl: string; code: string; onChange: (v: string) => void; busy: boolean; onSubmit: () => void; onCancel: () => void;
 }) {
   return (
-    <div className="border-2 border-accent p-3 space-y-2">
+    <div className="card p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish connecting Claude</div>
         <button onClick={onCancel} className="btn btn-quiet">Cancel</button>
@@ -1386,7 +1395,7 @@ interface CodexStatus {
   scope: 'team' | 'workspace' | null;
 }
 
-function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange, open, onToggle, onOpen, scopeControl }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void } & RowProps) {
+function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredentialChange, open, onToggle, onOpen, scopeControl, readOnly }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null; onCredentialChange?: () => void } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1505,27 +1514,6 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     setPasteError(null);
     setMsg(null);
     try {
-      // Fan out across every team the operator manages — each team gets its own
-      // team-wide Codex credential (authorized via a representative workspace).
-      if (allTeams) {
-        const results = await Promise.all(
-          teamTargets.map((t) =>
-            fetch(`/api/workspaces/${t.workspaceId}/codex-credential`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ authJson: pasteValue, scope: 'team' }),
-            }).then((r) => r.ok).catch(() => false),
-          ),
-        );
-        const ok = results.filter(Boolean).length;
-        setPasteValue('');
-        setMsg({
-          type: ok > 0 ? 'success' : 'error',
-          text: `Codex connected for ${ok} of ${teamTargets.length} teams.`,
-        });
-        if (ok > 0) onCredentialChange?.();
-        return;
-      }
       const res = await fetch(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1615,8 +1603,9 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
       meta={meta}
       open={open}
       onToggle={onToggle}
+      readOnly={readOnly}
       action={needsSignIn ? (
-        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className={`btn ${status?.expired ? 'btn-accent' : ''}`}>
+        <button onClick={() => { onOpen(); void startDeviceLogin(); }} disabled={busy} className="btn">
           Sign in
         </button>
       ) : undefined}
@@ -1631,9 +1620,9 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             {status.expired ? (
-              <span className="status-pill status-pill-warn">Expired · refresh needed</span>
+              <StatusChip tone="warn">Expired · refresh needed</StatusChip>
             ) : (
-              <span className="status-pill status-pill-ok">Connected</span>
+              <StatusChip tone="ok">Connected</StatusChip>
             )}
             <span className="text-xs text-text-muted">{status.scope === 'workspace' ? 'this workspace' : 'all workspaces'}</span>
           </div>
@@ -1673,15 +1662,13 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
               onCancel={() => { setPasteOpen(false); setPasteValue(''); setPasteError(null); }} />
           )}
         </div>
+      ) : allTeams ? (
+        <p data-testid="codex-all-teams" className="text-xs text-text-muted">{ROTATING_CREDENTIAL_ALL_TEAMS_ERROR}</p>
       ) : (
         <div className="space-y-3">
-          {allTeams ? (
-            <span className="text-xs text-text-muted">Paste once to apply the same Codex login to all {teamTargets.length} teams you manage.</span>
-          ) : (
-            <span className="status-pill status-pill-idle">Not connected</span>
-          )}
-          {/* Device login mints a buildd-owned session — no pasted file to go stale. Not for all-teams fan-out. */}
-          {!allTeams && (device ? (
+          <StatusChip tone="idle">Not connected</StatusChip>
+          {/* Device login mints a buildd-owned session — no pasted file to go stale. */}
+          {device ? (
             <DeviceLoginPanel userCode={device.userCode} verificationUri={device.verificationUri}
               onCancel={() => { if (devicePollRef.current) devicePollRef.current.cancelled = true; setDevice(null); }} />
           ) : (
@@ -1692,8 +1679,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
               </button>
               <p className="text-xs text-text-muted">Recommended.</p>
             </div>
-          ))}
-          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
+          )}
+          <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} />
         </div>
       )}
 
@@ -1705,8 +1692,8 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
   );
 }
 
-function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, allTeamsCount }: {
-  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void; allTeamsCount?: number;
+function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel }: {
+  value: string; onChange: (v: string) => void; error: string | null; busy: boolean; onConnect: () => void; onCancel?: () => void;
 }) {
   return (
     <div className="space-y-2">
@@ -1723,7 +1710,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
       />
       {error && <div className="text-sm text-status-error">{error}</div>}
       <button onClick={onConnect} disabled={busy || !value.trim()} className="btn btn-primary">
-        {busy ? 'Connecting…' : allTeamsCount ? `Connect for all ${allTeamsCount} teams` : 'Connect'}
+        {busy ? 'Connecting…' : 'Connect'}
       </button>
     </div>
   );
@@ -1732,7 +1719,7 @@ function CodexPasteForm({ value, onChange, error, busy, onConnect, onCancel, all
 /** Shown while a Codex device-code login is in progress (buildd polls in the background). */
 function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: string; verificationUri: string; onCancel: () => void }) {
   return (
-    <div className="border-2 border-accent p-3 space-y-2">
+    <div className="card p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-text-primary">Finish sign-in</div>
         <button onClick={onCancel} className="btn btn-quiet">Cancel</button>

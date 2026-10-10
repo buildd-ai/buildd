@@ -19,6 +19,14 @@ const updateCalls: { table: any; set: any; where: any }[] = [];
 const deleteCalls: { table: any; where: any }[] = [];
 const insertCalls: { table: any; values: any }[] = [];
 
+import { fakeCan } from '@/lib/connector-team-auth.fixtures';
+
+// can() runs against the registry defaults with the caller's role read from
+// the teamMembers mock; no row (undefined) = no membership, which holds nothing.
+mock.module('@/lib/permissions', () => ({
+  can: fakeCan(async (userId, teamId) =>
+    (await (mockTeamMembersFindFirst as any)({ where: { op: 'and', args: [{ a: 'userId', b: userId }, { a: 'teamId', b: teamId }] } }))?.role),
+}));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ getUserTeamIds: mockGetUserTeamIds }));
@@ -136,6 +144,22 @@ describe('POST /api/connectors/[id]/transfer', () => {
     mockTeamMembersFindFirst
       .mockResolvedValueOnce({ role: 'admin' })   // owner-team check
       .mockResolvedValueOnce({ role: 'member' }); // target-team check
+    const res = await POST(makeReq({ teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('returns 403 when the actor has no membership row in the owner team (fails closed)', async () => {
+    mockTeamMembersFindFirst.mockResolvedValue(undefined);
+    const res = await POST(makeReq({ teamId: 'team-2' }), { params: PARAMS });
+    expect(res.status).toBe(403);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('returns 403 when the actor has no membership row in the target team (fails closed)', async () => {
+    mockTeamMembersFindFirst
+      .mockResolvedValueOnce({ role: 'admin' }) // owner-team check
+      .mockResolvedValueOnce(undefined);        // target-team check
     const res = await POST(makeReq({ teamId: 'team-2' }), { params: PARAMS });
     expect(res.status).toBe(403);
     expect(updateCalls).toHaveLength(0);

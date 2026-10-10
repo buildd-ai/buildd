@@ -103,6 +103,59 @@ describe('resolveAgentEndpoint', () => {
     expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
   });
 
+  const orKey = (o: Partial<Row> & { id: string; value: string }): Row => ({
+    purpose: 'inference_key', label: 'openrouter', workspaceId: null, accountId: null, userId: null,
+    healthStatus: 'healthy', updatedAt: new Date('2026-01-01'), encryptedValue: o.value, ...o,
+  });
+  const orRef = JSON.stringify({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authHeader: 'authorization' });
+
+  it('an openrouter reference routes the stored OpenRouter key, even under key policy own', async () => {
+    policy = 'own';
+    rows = [endpointRow({ id: 'ref', encryptedValue: orRef }), orKey({ id: 'or', value: 'sk-or-stored' })];
+    const r = await resolveAgentEndpoint({ teamId: 't', workspaceId: WS });
+    expect(r).toMatchObject({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or-stored', secretId: 'ref', scope: 'team' });
+    expect(r?.openAiBaseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+
+  it('an openrouter reference resolves at its own scope or broader, never narrower or personal', async () => {
+    // Team reference: a workspace key or a person's key never serves it.
+    rows = [
+      endpointRow({ id: 'ref', encryptedValue: orRef }),
+      orKey({ id: 'ws-key', value: 'sk-or-ws', workspaceId: WS }),
+      orKey({ id: 'mine', value: 'sk-or-mine', userId: 'u-1' }),
+      orKey({ id: 'acct', value: 'sk-or-acct', accountId: ACC }),
+    ];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    // Workspace reference: its own workspace key over the team's.
+    rows = [
+      endpointRow({ id: 'ref', workspaceId: WS, encryptedValue: orRef }),
+      orKey({ id: 'team-key', value: 'sk-or-team' }),
+      orKey({ id: 'ws-key', value: 'sk-or-ws', workspaceId: WS }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-ws');
+    // ...and the team key when the workspace has none.
+    rows = [endpointRow({ id: 'ref', workspaceId: WS, encryptedValue: orRef }), orKey({ id: 'team-key', value: 'sk-or-team' })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-team');
+  });
+
+  it('an openrouter reference reads the legacy decision_key, canonical first', async () => {
+    rows = [
+      endpointRow({ id: 'ref', encryptedValue: orRef }),
+      orKey({ id: 'legacy', purpose: 'decision_key', label: null, value: 'sk-or-legacy', updatedAt: new Date('2026-06-01') }),
+    ];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-legacy');
+    rows.push(orKey({ id: 'canon', value: 'sk-or-canon' }));
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-canon');
+  });
+
+  it('an openrouter reference with no stored key resolves to nothing; a legacy inline key still routes', async () => {
+    rows = [endpointRow({ id: 'ref', encryptedValue: orRef })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    // Inline (legacy) wins over the stored key: the row says which key it uses.
+    rows = [endpointRow({ id: 'inline', encryptedValue: openRouter('sk-or-inline') }), orKey({ id: 'or', value: 'sk-or-stored' })];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.apiKey).toBe('sk-or-inline');
+  });
+
   it('an unreadable row is skipped, never thrown', async () => {
     rows = [endpointRow({ id: 'bad', workspaceId: WS, encryptedValue: 'garbage' }), endpointRow({ id: 'team' })];
     expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.secretId).toBe('team');
@@ -208,6 +261,45 @@ describe('resolveAgentModelRoute: backend: "codex" ranks against the Codex-side 
   });
 });
 
+// Provider parity: the team's API key competes with the endpoint wherever it
+// is stored, canonical (`inference_key` + provider label) or legacy.
+describe('resolveAgentModelRoute: canonical API-key storage competes like the legacy one', () => {
+  const route = (backend: 'claude' | 'codex') => resolveAgentModelRoute({ teamId: 't', workspaceId: WS, accountId: ACC, backend });
+  const key = (label: string, o: Partial<Row> = {}) => cred('inference_key', { id: `inference_key-${label}-${o.workspaceId ?? o.userId ?? 'team'}`, label, userId: null, ...o });
+
+  it('a workspace canonical Anthropic key keeps that workspace off a team endpoint (Claude)', async () => {
+    rows = [endpointRow({ id: 'team' }), key('anthropic', { workspaceId: WS })];
+    const d = await route('claude');
+    expect(d?.winner).toBe('anthropic');
+    expect(d?.winner === 'anthropic' && d.beatenBy).toBe('workspace');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+
+  it('a workspace canonical OpenAI key keeps that workspace off a team endpoint (Codex)', async () => {
+    rows = [endpointRow({ id: 'team' }), key('openai', { workspaceId: WS })];
+    expect((await route('codex'))?.winner).toBe('anthropic');
+    expect((await route('claude'))?.winner).toBe('endpoint');
+  });
+
+  it('a team canonical key ties a team endpoint, and the endpoint wins the tie', async () => {
+    rows = [endpointRow({ id: 'team' }), key('anthropic'), key('openai')];
+    expect((await route('claude'))?.winner).toBe('endpoint');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+
+  it('another provider’s chat key and a personal key never compete', async () => {
+    rows = [
+      endpointRow({ id: 'team' }),
+      key('openrouter', { workspaceId: WS }),
+      key('litellm', { workspaceId: WS }),
+      key('anthropic', { workspaceId: WS, userId: 'user-1' }),
+      key('openai', { workspaceId: WS, userId: 'user-1' }),
+    ];
+    expect((await route('claude'))?.winner).toBe('endpoint');
+    expect((await route('codex'))?.winner).toBe('endpoint');
+  });
+});
+
 describe('hasOpenAiCompatibleAgentEndpoint', () => {
   it('false with no endpoint row', async () => {
     rows = [];
@@ -275,5 +367,66 @@ describe('appliesTo: a team endpoint narrowed to a list of workspaces', () => {
     rows = [endpointRow({ id: 'team', encryptedValue: listed([WS], 'openrouter') })];
     expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS })).toBe(true);
     expect(await hasOpenAiCompatibleAgentEndpoint({ teamId: 't', workspaceId: WS2 })).toBe(false);
+  });
+});
+
+describe('cloudflare endpoint reference', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+  const TEAM_CF_TOKEN = 'team-cloudflare-deploy-token-abcdefgh';
+  const cfRow = (o: Partial<Row> = {}): Row => ({
+    id: 'cf', purpose: 'cloudflare_token', workspaceId: null, accountId: null, userId: null, healthStatus: 'healthy',
+    encryptedValue: JSON.stringify({ apiToken: TEAM_CF_TOKEN, accountId: ACCOUNT, aiGatewayId: 'buildd' }), ...o,
+  });
+  const anthropicKey = (o: Partial<Row> = {}): Row => ({
+    id: 'ak', purpose: 'inference_key', label: 'anthropic', workspaceId: null, accountId: null, userId: null,
+    healthStatus: 'healthy', encryptedValue: 'sk-ant-api03-team', ...o,
+  });
+  const cfEndpoint = (blob: object = {}) => endpointRow({ id: 'ep', encryptedValue: JSON.stringify({ kind: 'cloudflare', upstream: 'anthropic', ...blob }) });
+
+  it("resolves to the gateway's anthropic path on the team's Anthropic key, never the Cloudflare token", async () => {
+    rows = [cfEndpoint(), cfRow(), anthropicKey()];
+    const r = await resolveAgentEndpoint({ teamId: 't', workspaceId: WS });
+    expect(r).toMatchObject({
+      kind: 'cloudflare', secretId: 'ep', scope: 'team',
+      baseUrl: `https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/buildd/anthropic`,
+      apiKey: 'sk-ant-api03-team', authHeader: 'x-api-key',
+    });
+    expect(JSON.stringify(r)).not.toContain(TEAM_CF_TOKEN);
+  });
+
+  it('resolves even under the own key policy (agent runs are not bound by it)', async () => {
+    policy = 'own';
+    rows = [cfEndpoint(), cfRow(), anthropicKey()];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.kind).toBe('cloudflare');
+  });
+
+  it('routes nothing without a Cloudflare credential, a gateway, a live credential, or the upstream key', async () => {
+    rows = [cfEndpoint(), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow({ encryptedValue: JSON.stringify({ apiToken: TEAM_CF_TOKEN, accountId: ACCOUNT }) }), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow({ healthStatus: 'revoked' }), anthropicKey()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+    rows = [cfEndpoint(), cfRow()];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
+  });
+
+  it("sends the team's minted run token as the gateway header when the endpoint has none, never a person's", async () => {
+    const run = (id: string, token: string, userId: string | null): Row => ({
+      id, purpose: 'cloudflare_gateway_token', workspaceId: null, accountId: null, userId, healthStatus: 'healthy',
+      encryptedValue: JSON.stringify({ token, tokenId: `tok${id}000000`, accountId: ACCOUNT, expiresOn: '2099-01-01T00:00:00Z' }),
+    });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer team-run-token-abcdefghijklmnop' });
+    rows = [cfEndpoint(), cfRow(), anthropicKey(), run('me', 'personal-run-token-abcdefghijk', 'u-1')];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toBeUndefined();
+    // A pasted token on the endpoint wins.
+    rows = [cfEndpoint({ gatewayToken: 'pasted-run-token-abcdefghijkl' }), cfRow(), anthropicKey(), run('team', 'team-run-token-abcdefghijklmnop', null)];
+    expect((await resolveAgentEndpoint({ teamId: 't', workspaceId: WS }))?.headers).toEqual({ 'cf-aig-authorization': 'Bearer pasted-run-token-abcdefghijkl' });
+  });
+
+  it("a team-wide endpoint never picks up one workspace's Anthropic key", async () => {
+    rows = [cfEndpoint(), cfRow(), anthropicKey({ workspaceId: WS })];
+    expect(await resolveAgentEndpoint({ teamId: 't', workspaceId: WS })).toBeNull();
   });
 });

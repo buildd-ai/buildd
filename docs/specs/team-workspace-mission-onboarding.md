@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-09-26
 summary: The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx]
+surfaces: [apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx, apps/web/src/app/api/workspaces/route.ts, apps/web/src/app/api/workspaces/[id]/create-repo/route.ts, apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx]
 related: [surface-ia-home-missions-initiatives, team-namespace-scoping, mission-task-lifecycle]
 keywords: [create-repo, githubinstallationid, githubrepoid, repo picker, new workspace form, personal team]
 supersedes: []
@@ -62,7 +62,7 @@ pasting a repo URL, in a single form submission.
 
 **Acceptance criteria**:
 - AC-1: GIVEN a configured GitHub App with ≥1 installation, WHEN the user opens
-  `/app/workspaces/new`, THEN a repo picker lists repos for the selected
+  `/app/settings/workspaces/new`, THEN a repo picker lists repos for the selected
   installation and a "enter repository URL manually" fallback is present.
 - AC-2: WHEN the user selects a single repo and submits, THEN `POST /api/workspaces`
   is called with `{ repoUrl, githubRepo, githubInstallationId, teamId, accessMode }`
@@ -75,7 +75,7 @@ pasting a repo URL, in a single form submission.
   renders the API `error` string and no navigation occurs.
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/workspaces/new/page.tsx`, `RepoPicker.tsx`
+- UI: `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx`, `RepoPicker.tsx`
 - Route: `apps/web/src/app/api/workspaces/route.ts` (POST)
 - Teams source: `apps/web/src/app/api/teams/route.ts`
 - Model: `packages/core/db/schema.ts` (`workspaces`, `teams`, `githubRepos`)
@@ -96,7 +96,7 @@ Workspace form MUST let them choose which team owns the workspace; the team they
   first team returned).
 
 **Acceptance criteria**:
-- AC-1: GIVEN a user in 2+ teams, WHEN `/app/workspaces/new` loads, THEN a Team
+- AC-1: GIVEN a user in 2+ teams, WHEN `/app/settings/workspaces/new` loads, THEN a Team
   dropdown lists every team from `GET /api/teams` and submission includes the
   chosen `teamId`.
 - AC-2: GIVEN a user in exactly 1 team, WHEN the form loads, THEN no Team
@@ -104,10 +104,10 @@ Workspace form MUST let them choose which team owns the workspace; the team they
 - AC-3 (gap): GIVEN a user arrives from a specific team's page, WHEN the form
   loads, THEN the Team selector MUST pre-select that team. *(Currently the form
   always defaults to the personal team regardless of entry context — see
-  `workspaces/new/page.tsx` `loadTeams()`.)*
+  `settings/workspaces/new/page.tsx` `loadTeams()`.)*
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/workspaces/new/page.tsx` (`userTeams`,
+- UI: `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx` (`userTeams`,
   `selectedTeamId`, `loadTeams`)
 - Route: `apps/web/src/app/api/teams/route.ts`
 
@@ -137,10 +137,10 @@ or using the CLI/MCP.
   rejects with HTTP 422 and a `hint` field.
 - AC-3: GIVEN a workspace with no installation and no matching `org`, WHEN
   create-repo is called, THEN it rejects with HTTP 422.
-- AC-4: WHEN a user picks "Create new repo" mode on `/app/workspaces/new`, THEN
+- AC-4: WHEN a user picks "Create new repo" mode on `/app/settings/workspaces/new`, THEN
   the form collects name + GitHub account + visibility + description, creates a
   workspace shell, and calls `create-repo`; a failed `create-repo` reuses the
-  same workspace on retry (no duplicate). *(Implemented in `workspaces/new/page.tsx`.)*
+  same workspace on retry (no duplicate). *(Implemented in `settings/workspaces/new/page.tsx`.)*
 - AC-5: GIVEN a personal (User) GitHub installation, WHEN create-repo runs, THEN
   it targets `POST /user/repos` (not `/orgs/{org}/repos`). *(Fixed — endpoint is
   chosen by `installation.accountType`.)*
@@ -233,7 +233,7 @@ a mission can do useful work.
 **Acceptance criteria**:
 - AC-1: GIVEN a team with zero workspaces, WHEN the user views the Settings
   Workspaces section, THEN it MUST render a header with a "+ New Workspace" link
-  and an empty state linking to `/app/workspaces/new` that explains workspace =
+  and an empty state linking to `/app/settings/workspaces/new` that explains workspace =
   repo. *(Implemented — `settings/workspaces/page.tsx` renders the list with a
   "New workspace" link and an empty state.)*
 - AC-2: GIVEN the New Workspace form, WHEN the user has no GitHub App connected,
@@ -243,8 +243,8 @@ a mission can do useful work.
   visible "Create new repo" mode toggle MUST exist. *(Implemented.)*
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/workspaces/page.tsx` (`+ New Workspace`),
-  `workspaces/new/page.tsx`
+- UI: `apps/web/src/app/app/(protected)/settings/workspaces/page.tsx` (`New workspace`),
+  `settings/workspaces/new/page.tsx`
 
 **Out of scope**: Marketing/first-run tour.
 

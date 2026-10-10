@@ -1,4 +1,5 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
+import { resolvePrReachGrant } from '@/lib/pr-reach-grant';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -6,11 +7,13 @@ import { after } from 'next/server';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
+import { normalizeTaskKind } from '@buildd/core/model-router';
 import type { PathDeclaration, PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
 import { wakeTasks } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
@@ -155,6 +158,8 @@ export async function approvePlan(
     where: eq(tasks.id, planningTaskId),
     columns: {
       id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
+      // Who the plan is for (resolveTaskRequesterUserId): its children are too.
+      createdByUserId: true, parentTaskId: true, scheduleId: true,
       // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
@@ -308,8 +313,12 @@ export async function approvePlan(
   // child at claim (role-routing §1 row 6). A missing or unknown role files
   // role-less, and the rejected slug is recorded on the child's context. The
   // planning task's own role (the Organizer) is never inherited.
+  // The children are for whoever the plan is for: a step may name that
+  // person's private role (never another member's), and each child records
+  // them as its creator so later lookups need no walk.
+  const requesterUserId = await resolveTaskRequesterUserId(task).catch(() => null);
   const knownRoles = survivingPlan.some(step => step.roleSlug) && task.workspaceId
-    ? await resolveEffectiveRoleSlugs(task.workspaceId)
+    ? await resolveEffectiveRoleSlugs(task.workspaceId, requesterUserId)
     : new Set<string>();
 
   // First pass: create all tasks with empty dependsOn to get their IDs
@@ -327,6 +336,14 @@ export async function approvePlan(
     // plan child from birth: never delivered as a plain new task (legacy
     // webhooks, GitHub Actions) in the moment before a label could land.
     const planCause = step.dependsOn?.length ? 'plan_child.created' : 'plan_child.ready';
+    // A step that names a PR reaches it only if the planning task itself does
+    // (lib/pr-reach-grant.ts): a plan passes on its author's reach, never more.
+    const stepPrReach = task.workspaceId
+      ? await resolvePrReachGrant(
+          { title: step.title, description: step.description ?? null, workspaceId: task.workspaceId },
+          { kind: 'task', taskId: planningTaskId },
+        ).catch(() => null)
+      : null;
     const [created] = await withDispatchHint({ cause: planCause }, db
       .insert(tasks)
       .values({
@@ -337,6 +354,7 @@ export async function approvePlan(
         description: step.description || null,
         parentTaskId: planningTaskId,
         missionId: task.missionId,
+        createdByUserId: requesterUserId,
         mode: 'execution',
         taskClass: 'work',
         creationSource: options?.autoApproved ? 'orchestrator' : 'api',
@@ -363,7 +381,10 @@ export async function approvePlan(
         // the floor — the row it routes and draws stayed NULL. A classified
         // coordination step still wins: that intent is read off the platform's
         // own dedupe classifier, not guessed.
-        ...(step.kind && !intentInfo ? { kind: step.kind, classifiedBy: 'organizer' as const } : {}),
+        // Normalized: a planner that writes a category ('feature', 'test')
+        // where a kind belongs must not store it verbatim — the model router
+        // indexes its matrix by this column at claim time.
+        ...(step.kind && !intentInfo ? { kind: normalizeTaskKind(step.kind) ?? 'engineering', classifiedBy: 'organizer' as const } : {}),
         ...(intentInfo ? {
           kind: 'coordination' as const,
           subjectAnchor: {
@@ -389,8 +410,8 @@ export async function approvePlan(
           ...(emitsPlanSpecPath
             ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
             : {}),
-          ...(mission?.integrationBranchEnabled && mission?.workingBranch ? { headBranch: mission.workingBranch } : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
+          ...(stepPrReach ? { prReach: stepPrReach } : {}),
         },
       })
       .returning());
@@ -501,15 +522,7 @@ async function wakeReadyChildren(
  *     the claim route's shared mission branch, or the runner's
  *     `<branch>-w<workerId8>` fallback when the requested branch was already
  *     held by another worktree (`git-operations.ts` shared-branch guard).
- *  2. `context.headBranch` — the shared mission working branch (seeded from
- *     `missions.workingBranch`). The claim route uses it verbatim and never
- *     consults the generator, so reading the dependency's persisted context is
- *     how the mission branch is honoured. When a mission has opted into an
- *     integration branch (integrationBranchEnabled=true), all child tasks are
- *     created with headBranch set to the mission's working branch so they all
- *     work on the shared branch. The organizer's planning task does not get
- *     headBranch set (even for A′ missions) — it stays on its own task branch.
- *  3. Only if neither exists: predict, via the SAME generator the claim route
+ *  2. Only if no worker exists yet: predict, via the SAME generator the claim route
  *     calls. This is genuinely unavoidable here — pass 1 has only just created
  *     the dependency, so no worker can exist yet — but it is now one function,
  *     not a copy that can drift.

@@ -28,7 +28,7 @@ export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'st
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { ScheduleDelegation } from '../token-delegation';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig, DerivedFileRule, FailureIncidentSeverity, FailureIncidentStatus, FailureIncidentRule, FailureIncidentAffectedRefs, FailureIncidentEvidenceRef } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -124,6 +124,13 @@ export const teams = pgTable('teams', {
   // 'own' = each person's own key, no team fallback — team work with no person
   // (grading, visual QA) then finds no key and takes its runner path.
   inferenceKeyPolicy: text('inference_key_policy').$type<'team' | 'team_or_own' | 'own'>().notNull().default('team'),
+  // Whose credential every provider spends — chat, inference AND agent runs:
+  // 'team' = team keys only, personal ones ignored; 'personal_first' = the
+  // requesting person's own key, else the team's; 'personal_only' = no team key
+  // at all. NULL = not chosen yet: read inferenceKeyPolicy through
+  // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
+  // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
+  credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
@@ -150,6 +157,13 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+  // Enforceable model-tier ceilings (most restrictive layer wins): the team's
+  // cap, per-workspace caps, what an auto tier over the cap does, and an audit
+  // tail. NULL = no ceiling, routing unchanged. Distinct from chatDefaultTier,
+  // which only seeds a new chat. Read/written only through
+  // packages/core/model-tier-ceiling-store.ts; contract in
+  // docs/specs/model-tier-ceilings.md.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').TeamTierCeilingPolicy | null>(),
 
   // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
   // gate — read packages/core/entitlements.ts entitlements(team), which also
@@ -196,6 +210,10 @@ export const teamMembers = pgTable('team_members', {
   // value is a choice (all workspaces / auto); an absent key was never chosen.
   // Seeds every new conversation (apps/web/src/lib/chat/composer-prefs.ts).
   chatComposerPrefs: jsonb('chat_composer_prefs').$type<{ workspaceId?: string | null; tier?: string | null }>(),
+  // This person's model-tier ceilings in this team: `admin` (set by a team
+  // admin, the member cannot lift it) and `self` (their own, only lowers).
+  // NULL = none. See teams.modelTierCeilings.
+  modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').MemberTierCeilings | null>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),
@@ -245,6 +263,10 @@ export const accounts = pgTable('accounts', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
+  // The person who minted this key. NULL = minted before this was recorded, or
+  // by no person (system/runner bootstrap). Bounds the key when its creator's
+  // team role drops (key-level-policy.ts).
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
 
   // Authentication type
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
@@ -373,6 +395,13 @@ export interface WorkspaceGitConfig {
   // linked-knowledge.ts) only honours an id the calling account could reach
   // anyway — same team, not sensitive, token restriction respected.
   linkedKnowledgeWorkspaces?: string[];
+
+  // Opt-in: a person (dashboard or OAuth session, never an API key or runner)
+  // must also hold read or higher on the linked GitHub repo before Buildd
+  // shows them code, files tasks for them, or lets chat work over this
+  // workspace. Absent ⇒ 'off': team membership is the whole check. Read only
+  // through resolveMemberRepoAccessMode (apps/web/src/lib/member-repo-access-shared.ts).
+  memberRepoAccess?: 'off' | 'require_read';
 
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
@@ -507,6 +536,11 @@ export interface WorkspaceGitConfig {
   // Register mergiraf (structural merge) as a driver in runner clones for the
   // languages it parses. Off by default; skipped quietly if the binary is absent.
   mergiraf?: boolean;
+  // Explicit overlap hotspots: paths or `dir/**` patterns where a same-file
+  // overlap with an in-flight task is a deterministic hold, never a claim-time
+  // HOLD/START decision (apps/web/src/lib/hard-overlap-surfaces.ts). Absent:
+  // only migrations, generated files and serialized surfaces are hard.
+  overlapHotspots?: string[] | null;
 
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
@@ -973,6 +1007,12 @@ export interface ResultMeta {
    */
   provisionFailure?: { code: string; phase: string; message: string };
   /**
+   * Where an abnormally terminated worker's work went: `origin/<branch>@<sha>`
+   * (WIP checkpoint pushed to the task branch) or `archive:<path>` on the runner.
+   * The retry's context carries it so the next attempt resumes, not restarts.
+   */
+  recoveryRef?: string;
+  /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
    * not events — unlike `workers.mcpCalls` this is never truncated.
@@ -1063,6 +1103,13 @@ export const workspaces = pgTable('workspaces', {
   // this caps it to bound merge-conflict surface. Default 3. No effect on repo-less
   // workspaces (those are never serialized by the per-repo guard).
   maxConcurrentTasks: integer('max_concurrent_tasks').default(3).notNull(),
+
+  // "Pause new starts until <time>": until then runner claims skip this
+  // workspace's tasks (the claim route's workspacePaused gate). Running work
+  // carries on and a person's interactive claim is never paused. NULL or a
+  // past time = not paused, so it resumes on its own. By = the user who set it.
+  newStartsPausedUntil: timestamp('new_starts_paused_until', { withTimezone: true }),
+  newStartsPausedBy: text('new_starts_paused_by'),
 
   // Git workflow configuration
   gitConfig: jsonb('git_config').$type<WorkspaceGitConfig>(),
@@ -1413,6 +1460,11 @@ export const tasks = pgTable('tasks', {
   // Task creator tracking
   createdByAccountId: uuid('created_by_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   createdByWorkerId: uuid('created_by_worker_id'),  // FK constraint defined in migration (circular ref with workers)
+  // The person this task is for: the signed-in creator, or — for a task an agent,
+  // schedule or mission files — the person behind its parent task, schedule or
+  // mission. NULL = no person (pure API-key creation). Personal credentials and
+  // personal roles serve only this person's tasks.
+  createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   creationSource: text('creation_source').default('api').$type<'dashboard' | 'api' | 'mcp' | 'github' | 'local_ui' | 'schedule' | 'webhook' | 'orchestrator' | 'conflict'>(),
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
@@ -1559,6 +1611,7 @@ export const tasks = pgTable('tasks', {
   runnerPrefIdx: index('tasks_runner_pref_idx').on(t.runnerPreference),
   modeIdx: index('tasks_mode_idx').on(t.mode),
   createdByAccountIdx: index('tasks_created_by_account_idx').on(t.createdByAccountId),
+  createdByUserIdx: index('tasks_created_by_user_idx').on(t.createdByUserId),
   parentTaskIdx: index('tasks_parent_task_idx').on(t.parentTaskId),
   projectIdx: index('tasks_project_idx').on(t.project),
   missionIdx: index('tasks_mission_idx').on(t.missionId),
@@ -1828,8 +1881,23 @@ export type WorkerWaitingFor = {
  * older rows carry only the label, so readers must degrade to parsing it.
  */
 export type WorkerMilestone =
-  | { type: 'phase'; label?: string; toolCount: number; ts: number; pending?: boolean }
-  | { type: 'status'; label?: string; progress?: number; ts: number }
+  | {
+      type: 'phase';
+      /** The assistant text that opened the phase (first sentence) — kept verbatim for audit. */
+      label?: string;
+      toolCount: number;
+      ts: number;
+      pending?: boolean;
+      /**
+       * Distinct operations the phase called, in order (`get_decision`, `Edit`,
+       * `Bash`): the MCP action or tool name, never its input. Lets readers name
+       * a phase by what it did when its text was only a lead-in to the calls.
+       * Absent on older runners.
+       */
+      ops?: string[];
+    }
+  | { type: 'status'; label?: string; progress?: number; ts: number; origin?: 'agent' }
+  | { type: 'plan'; label?: string; progress?: number; ts: number; origin?: 'agent' }
   | { type: 'checkpoint'; event: string; label?: string; ts: number }
   | {
       type: 'action';
@@ -1848,12 +1916,24 @@ export const workers = pgTable('workers', {
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // The person whose OAuth session claimed this worker (the session's JWT
+  // subject, a users.id). An OAuth session acts as an account its whole team
+  // shares, so accountId alone cannot tell one member's claim from another's;
+  // the worker owner check (lib/worker-owner.ts) requires this to match the
+  // caller's session user. NULL: claimed by a bld_ key, which owns by account.
+  // No FK on purpose: a deleted user must not turn the claim back into an
+  // account-owned (NULL) one.
+  claimedByUserId: uuid('claimed_by_user_id'),
   name: text('name').notNull(),
   runner: text('runner').notNull(),
   branch: text('branch').notNull(),
   status: text('status').default('idle').notNull().$type<WorkerStatusValue>(),
   waitingFor: jsonb('waiting_for').$type<WorkerWaitingFor | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 6 }).default('0').notNull(),
+  // How costUsd and the tokens were charged: real (per token) | virtual (plan
+  // usage at list price) | mixed | unknown. Reported by whoever picked the
+  // credential (packages/core/cost-basis.ts). NULL = no usage recorded.
+  costBasis: text('cost_basis').$type<import('../cost-basis').CostBasis | null>(),
   // Token usage (for seat-based accounts where cost isn't meaningful)
   inputTokens: integer('input_tokens').default(0).notNull(),
   outputTokens: integer('output_tokens').default(0).notNull(),
@@ -1996,14 +2076,24 @@ export const workers = pgTable('workers', {
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
+    /** Server-generated at enqueue; consumers settle and acknowledge by it. Absent on older entries. */
+    id?: string;
     type: 'instruction' | 'response';
     /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
     message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
-    // (the runner) confirmed the text reached the agent session. Never set to
-    // 'delivered' at write time — that recorded deliveries that never happened.
-    deliveryState?: 'pending' | 'delivered';
+    // 'pending' = queued (shown as Queued); 'delivered' = a consumer (the
+    // runner, or an MCP read) confirmed the text reached the agent session;
+    // 'acknowledged' = the agent's turn read it (observed, never inferred).
+    // Never set to 'delivered' at write time — that recorded deliveries that
+    // never happened. Undelivered is derived (run ended first), never stored.
+    // Read through messageDeliveryStatus (apps/web/src/lib/worker-instructions.ts).
+    deliveryState?: 'pending' | 'delivered' | 'acknowledged';
+    deliveredAt?: number;
+    acknowledgedAt?: number;
+    /** Settled by id: its consumer reports reads, so an unread one is undelivered once the run ends. */
+    awaitsAck?: true;
+    turnAtSend?: number;
   }>>(),
   // Transitional capability flag: true once this worker's runner has checked in
   // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation
@@ -2019,6 +2109,11 @@ export const workers = pgTable('workers', {
   // the worker counts as holding its transcript (answer-resume.ts G2) and is
   // exempt from the offline-runner sweep. NULL for every other runner.
   parkedUntil: timestamp('parked_until', { withTimezone: true }),
+  // A person asked this running worker to pause (POST /api/workers/[id]/pause).
+  // Served to the runner on every PATCH response (`pauseRequested`) until the
+  // worker parks as waiting_input or ends, so a missed realtime push still
+  // lands. Cleared on that park, or on any terminal status.
+  pauseRequestedAt: timestamp('pause_requested_at', { withTimezone: true }),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // What the agent actually sent on a completion the outputRequirement gate
@@ -2730,6 +2825,10 @@ export const missionNotes = pgTable('mission_notes', {
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
+  // Human-attention disposition of an agent/outside-caller question note
+  // (packages/core/needs-you.ts): only 'ask' reaches Needs You;
+  // 'recovered' means a repair task owns it. NULL on every other note.
+  disposition: text('disposition').$type<'ask' | 'recovered'>(),
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
@@ -2986,11 +3085,23 @@ export const workspaceSkills = pgTable('workspace_skills', {
   configHash: text('config_hash'), // SHA-256 of packaged tarball for cache invalidation
   configStorageKey: text('config_storage_key'), // R2 object key for role config tarball
   repoUrl: text('repo_url'), // for builder roles (git clone target)
+  // Personal roles: the member who owns this row. NULL = a team role (the
+  // default) or a workspace override. A personal row is always team-level
+  // (workspaceId NULL) and its slug is unique per owner, not per team.
+  ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Who may run a personal role: 'private' = its owner's tasks only; 'team' =
+  // shared, anyone in the team. Team roles are always 'team'.
+  visibility: text('visibility').notNull().default('team').$type<'private' | 'team'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   // Team-level default: one (team, slug) when workspaceId IS NULL
-  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL`),
+  // Team-level namespace: one (team, slug) across team roles AND shared
+  // personal roles, so two concurrent shares of one slug cannot both land.
+  // Private personal rows are outside it (ownerSlugIdx covers them).
+  teamSlugIdx: uniqueIndex('ws_skills_team_slug_idx').on(t.teamId, t.slug).where(sql`${t.workspaceId} IS NULL AND (${t.ownerUserId} IS NULL OR ${t.visibility} = 'team')`),
+  // Personal roles: one (team, owner, slug)
+  ownerSlugIdx: uniqueIndex('ws_skills_owner_slug_idx').on(t.teamId, t.ownerUserId, t.slug).where(sql`${t.ownerUserId} IS NOT NULL`),
   // Workspace override: one (workspace, slug) when workspaceId IS NOT NULL
   workspaceOverrideSlugIdx: uniqueIndex('ws_skills_workspace_slug_idx').on(t.workspaceId, t.slug).where(sql`${t.workspaceId} IS NOT NULL`),
   workspaceIdx: index('workspace_skills_workspace_idx').on(t.workspaceId),
@@ -3207,7 +3318,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential' | 'cloudflare_gateway_token'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4333,10 +4444,14 @@ export const connectors = pgTable('connectors', {
   // Assertion-mode fields (authMode='assertion')
   assertionAudience: text('assertion_audience'),
   assertionTokenEndpoint: text('assertion_token_endpoint'),
-  // Display icon, resolved best-effort at create time (catalog entry → MCP
-  // serverInfo.icons → site favicon). NULL renders a letter avatar.
+  // Display icon as a `data:` URL, resolved best-effort at create time, after
+  // OAuth connect, and lazily on list (catalog entry → MCP serverInfo.icons →
+  // websiteUrl / site favicon). NULL renders a letter avatar. Legacy rows may
+  // still hold a remote URL until the next lazy refresh inlines it.
   // See apps/web/src/lib/connector-icon.ts.
   iconUrl: text('icon_url'),
+  // Last icon lookup attempt; gates the lazy refresh to once per TTL.
+  iconCheckedAt: timestamp('icon_checked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4957,6 +5072,10 @@ export const workflowDeliveries = pgTable('workflow_deliveries', {
   supersededByUrl: text('superseded_by_url'),
   supersededReason: text('superseded_reason'),
   recordedBy: text('recorded_by'),
+  // The newest head-bound policy finding (PolicyEvidenceRecorded, §6.3 T28):
+  // { headSha, outcome, reason, destructive }. Evidence for ONE head; a
+  // delivery on any other head ignores it.
+  policyEvidence: jsonb('policy_evidence').$type<{ headSha: string; outcome: 'human' | 'agent_split'; reason: string; destructive: boolean } | null>(),
   // Who decides for this delivery (§14 cutover): 'kernel', or 'legacy' once the
   // gitConfig.workflowKernel kill switch handed it back. Sticky: a delivery
   // released to legacy finishes there even if the switch is turned on again,
@@ -5769,6 +5888,43 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
 
+// Live sibling conflict probes (apps/web/src/lib/sibling-conflict-probe.ts).
+// One row per pair of live workers whose observed touches share a file. The
+// cron finds the pair and asks the prober; the prober's runner, which has the
+// clone, runs `git merge-tree` against the other branch on its next heartbeat
+// and reports the result. The row is the request and the per-pair debounce;
+// each result is also a `sibling_conflict_probe` gate event.
+export type SiblingProbeStatus = 'requested' | 'dispatched' | 'done';
+export type SiblingProbeOutcome = 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+
+export const siblingProbes = pgTable('sibling_probes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // `${lowerWorkerId}:${higherWorkerId}`: one row per pair, whichever side found it.
+  pairKey: text('pair_key').notNull(),
+  workerAId: uuid('worker_a_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  workerBId: uuid('worker_b_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  // The worker whose runner runs the merge-tree: the one asked to rebase on a conflict.
+  proberWorkerId: uuid('prober_worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  sharedFiles: jsonb('shared_files').$type<string[]>().notNull(),
+  status: text('status').$type<SiblingProbeStatus>().notNull().default('requested'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  probedAt: timestamp('probed_at', { withTimezone: true }),
+  outcome: text('outcome').$type<SiblingProbeOutcome | null>(),
+  conflictFiles: jsonb('conflict_files').$type<string[] | null>(),
+  // Last time both workers were told.
+  notifiedAt: timestamp('notified_at', { withTimezone: true }),
+  // The two branch heads (sorted, `sha:sha`) of the conflict both workers were
+  // last told about. The same heads conflicting again are never re-sent.
+  notifiedHeads: text('notified_heads'),
+}, (t) => ({
+  pairIdx: uniqueIndex('sibling_probes_pair_idx').on(t.workspaceId, t.pairKey),
+  proberStatusIdx: index('sibling_probes_prober_status_idx').on(t.proberWorkerId, t.status),
+}));
+
+export type SiblingProbe = typeof siblingProbes.$inferSelect;
+
 // Creation-time manifest predictions (knowledge-base: buildd/design/conflict-aware-orchestration.md
 // §5a, packages/core/manifest-prediction.ts). One row per task per candidate
 // policy, written in shadow AFTER the creation response for teams that opted in
@@ -6135,3 +6291,59 @@ export const postSessionFindings = pgTable('post_session_findings', {
 
 export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
 export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;
+
+/**
+ * Failure Pattern Sentinel: one durable incident per systemic failure pattern.
+ *
+ * NOT a raw event table — the events stay in workers, worker_terminal_records
+ * and gate_events. A row here is keyed by the rule engine's stable pattern
+ * `signature` + `detector_version` (apps/web/src/lib/failure-pattern-sentinel.ts)
+ * and carries only bounded pointers back to those rows. Written by
+ * apps/web/src/lib/failure-incident-store.ts: insert is ON CONFLICT DO NOTHING
+ * on the unique key and every update is a compare-and-swap on `version`, so two
+ * sweeps racing on one pattern converge on one row (neon-http has no
+ * interactive transactions).
+ */
+export const failureIncidents = pgTable('failure_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // `<rule>|ws=<id>|<discriminators>` — identity of the pattern, never of one occurrence.
+  signature: text('signature').notNull(),
+  // Bump instead of reshaping a signature in place; a new version is a new incident.
+  detectorVersion: text('detector_version').notNull(),
+  rule: text('rule').notNull().$type<FailureIncidentRule>(),
+  reasonCode: text('reason_code').notNull(),
+  title: text('title').notNull(),
+  // Only ever raised on update; a reopen restarts from the rule's minimum.
+  severity: text('severity').notNull().$type<FailureIncidentSeverity>(),
+  status: text('status').notNull().default('open').$type<FailureIncidentStatus>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  occurrenceCount: integer('occurrence_count').notNull().default(0),
+  // Times it came back after `resolved`.
+  recurrenceCount: integer('recurrence_count').notNull().default(0),
+  affectedRefs: jsonb('affected_refs').$type<FailureIncidentAffectedRefs>().notNull().default({ taskIds: [], workerIds: [], prNumbers: [] }),
+  evidenceRefs: jsonb('evidence_refs').$type<FailureIncidentEvidenceRef[]>().notNull().default([]),
+  // Latest impact counters from the rule (a snapshot, overwritten per detection).
+  impact: jsonb('impact').$type<Record<string, number>>().notNull().default({}),
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  lastAlertSeverity: text('last_alert_severity').$type<FailureIncidentSeverity>(),
+  linkedFixTaskId: uuid('linked_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  // Optimistic-lock counter for the compare-and-swap update.
+  version: integer('version').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  signatureVersionIdx: uniqueIndex('failure_incidents_signature_version_idx').on(t.signature, t.detectorVersion),
+  workspaceStatusSeenIdx: index('failure_incidents_workspace_status_seen_idx').on(t.workspaceId, t.status, t.lastSeenAt),
+}));
+
+export const failureIncidentsRelations = relations(failureIncidents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [failureIncidents.workspaceId], references: [workspaces.id] }),
+  linkedFixTask: one(tasks, { fields: [failureIncidents.linkedFixTaskId], references: [tasks.id] }),
+}));
+
+export type FailureIncidentRow = typeof failureIncidents.$inferSelect;
+export type NewFailureIncidentRow = typeof failureIncidents.$inferInsert;

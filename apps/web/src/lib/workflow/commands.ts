@@ -13,6 +13,7 @@ import type {
   ApprovalBasis,
   CloseCause,
   CompositionAttestation,
+  PolicyEvidence,
   ConstituentEvidence,
   DeliveryState,
   RoundKind,
@@ -30,8 +31,10 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
-  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `draft`, `unknown`, ...). */
   mergeableState?: string | null;
+  /** A draft PR (GitHub refuses to merge it); present only when true. */
+  draft?: boolean;
 }
 
 interface Base {
@@ -83,6 +86,13 @@ export type Command =
       taskRetryBudgetLeft?: boolean;
       /** Whether this workspace's policy wants a review round once a head exists. */
       reviewRequired?: boolean;
+      /**
+       * §6.5 row 1 (e9f1674b): the check runs on the live head, read when the owner attempt
+       * ended. A red head is handed on to `REPAIRING(ci)` by T10's ledger rather than to a
+       * review round, because a failure hint that arrived while `WORKING` was refused there.
+       * Absent or null (unreadable) hands on exactly as before.
+       */
+      ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -152,6 +162,13 @@ export type Command =
       preflightMiss?: string | null;
       trigger?: 'automatic' | 'human';
       triggerFactId?: string | null;
+      /**
+       * §6.3 T10: the check runs on `headSha` read live when the hint was
+       * handled. A read with nothing failing (green, or a re-run still going)
+       * means the hint is no longer true: `rejected(ci_not_red)`. Absent or
+       * null (unreadable) fails toward doing the work.
+       */
+      liveChecks?: { complete: boolean; failing: string[] } | null;
     })
   | (Base & {
       type: 'ConflictObserved';
@@ -180,7 +197,33 @@ export type Command =
       attemptId: string;
       reason: string;
     })
+  | (Base & {
+      /**
+       * S15 cycles: the landing sweep found a delivery the behind-refresh
+       * treadmill escalated, and the cooldown since that escalation has passed.
+       * It returns to `APPROVED` with a fresh refresh budget (a `treadmill_cycle`
+       * marker row opens the new cycle), at most `MAX_TREADMILL_CYCLES` cycles
+       * per delivery. The caller pins `expectedVersion` to the version the
+       * treadmill escalation produced, so any later move refuses it.
+       */
+      type: 'TreadmillCycleRestarted';
+    })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
+  | (Base & {
+      /**
+       * The escalation gate's `policy_merge` rule (@buildd/core/escalation-gate
+       * `isPolicyMerge`): a review escalation that was the policy's alone, with
+       * CI green on the reviewed head, not a draft, not XL, and only the risk
+       * classes that landed cleanly in the backtest. It approves exactly
+       * `headSha` (a later push is not covered) on the basis `policy_rule`, and
+       * the normal landing doors then land it under the workspace merge policy
+       * with every rail (deny paths, size cap, migration inspector) evaluated
+       * again. Rule-only: the actor is `rule:<name>`, never a model.
+       */
+      type: 'PolicyMergeApproved';
+      headSha: string;
+      reason: string;
+    })
   | (Base & {
       type: 'LandingRequested';
       door: string;
@@ -188,11 +231,15 @@ export type Command =
       live: LivePr;
       rails: { passed: boolean; redCi?: boolean; denyPaths?: boolean; reasons?: string[] };
       /**
-       * A person merging past a review verdict (the dashboard's "Merge anyway"):
-       * recorded in `bypass`, allowed from the review states, never past red CI
-       * or a deny path.
+       * A person merging past a rail (the dashboard's "Merge anyway", `merge_pr`
+       * with `overrides`, chat): recorded in `bypass`, never past red CI or a
+       * deny path. `kinds` absent or naming `verdict`: a verdict override, from
+       * the review states. Only `freshness` / `size`: lifts a landing escalation
+       * (`ESCALATED(landing_needs_human)`, e.g. the spent treadmill) and nothing
+       * else. `grantedBy`: an agent run acting under a grant a person put on
+       * its task (`context.landingOverride`); the door is that person's.
        */
-      override?: { reason: string } | null;
+      override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
       /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
       mergeMethod?: 'merge' | 'squash' | 'rebase';
     })
@@ -209,10 +256,23 @@ export type Command =
       detail?: string;
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
+      /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
+      retryAt?: string;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
+  | (Base & {
+      /**
+       * The PR's base branch changed (`pull_request.edited` with `changes.base`, or a live read
+       * that disagrees with `delivery.baseRef`, e.g. GitHub's retarget of a stacked PR). The head
+       * did not move, but the diff did (24e1cfad).
+       */
+      type: 'BaseChanged';
+      live: LivePr;
+      /** The PR's diff against the new base equals its diff against the old one (§8.3 evidence). */
+      diffEquivalent?: boolean;
+    })
   | (Base & {
       type: 'SupersessionRecorded';
       target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };
@@ -260,6 +320,21 @@ export type Command =
       /** `human_takeover` (a person interrupted the reviewer) escalates at once, never re-queued. */
       reason: 'no_verdict' | 'prose_verdict' | 'infra' | 'human_takeover';
       maxContractRetries: number;
+      /**
+       * The reviewer task whose run failed. The failure is counted once per
+       * reviewer (key `roundfail:{round}:{reviewerTaskId}`), and a reviewer that
+       * is not the round's current one is stale. Absent only when the kernel
+       * itself could not serve the round (no reviewer was ever asked).
+       */
+      reviewerTaskId?: string;
+    })
+  | (Base & {
+      /**
+       * T28: a preflight finding for ONE head. Head-bound: a finding for any
+       * other head than the delivery's current one is stale and changes nothing.
+       */
+      type: 'PolicyEvidenceRecorded';
+      evidence: PolicyEvidence;
     })
   | (Base & {
       type: 'CompositionAttested';
@@ -317,6 +392,7 @@ export interface DeliveryPatch {
   supersededByUrl?: string | null;
   supersededReason?: string | null;
   recordedBy?: string | null;
+  policyEvidence?: PolicyEvidence | null;
 }
 
 export type RoundOp =

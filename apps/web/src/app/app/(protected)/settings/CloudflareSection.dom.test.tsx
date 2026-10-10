@@ -53,7 +53,7 @@ function installFetch(state: { stored: boolean; health?: Health; readable?: bool
   return calls;
 }
 
-async function mount(withFleetRow = false) {
+async function mount(withFleetRow = false, manageableTeamIds?: string[]) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -61,7 +61,7 @@ async function mount(withFleetRow = false) {
     root.render(
       <>
         {withFleetRow && <ul><CloudRunnerRow teamId="t1" /></ul>}
-        <CloudflareSection teams={[{ id: 't1', name: 'Team 1' }]} />
+        <CloudflareSection teams={[{ id: 't1', name: 'Team 1' }]} manageableTeamIds={manageableTeamIds} />
       </>,
     );
   });
@@ -70,7 +70,7 @@ async function mount(withFleetRow = false) {
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const next = () => host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-next"]')!;
-const chip = () => host.querySelector('[data-testid="cloudflare-row"] .status-pill')?.textContent;
+const chip = () => host.querySelector('[data-testid="cloudflare-row"] span[data-tone]')?.textContent;
 async function click(el: HTMLElement) { await act(async () => { el.click(); }); await flush(); }
 
 function setInput(el: HTMLInputElement, v: string) {
@@ -163,5 +163,28 @@ describe('CloudflareSection', () => {
     await click(next());
     await flush();
     expect(row().getAttribute('data-state')).toBe('verified');
+  });
+});
+
+/** The Cloudflare token is manage_team_model_keys; the secrets route refuses anyone else. */
+describe('CloudflareSection: read-only without manage_team_model_keys', () => {
+  it('member: the chip and masked metadata, no next step, no Verify/Replace/Delete, no form', async () => {
+    installFetch({ stored: true, health: 'healthy' });
+    await mount(false, []);
+    expect(chip()).toBeTruthy();
+    expect(host.querySelector('[data-testid="cloudflare-next"]')).toBeNull();
+    await click(host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-row"] button[aria-expanded]')!);
+    expect(host.textContent).toContain('…0000');
+    const labels = [...host.querySelectorAll('button')].map((b) => b.textContent);
+    for (const l of ['Verify', 'Replace', 'Delete', 'Store and verify']) expect(labels).not.toContain(l);
+    expect(host.querySelector('input')).toBeNull();
+    expect(host.querySelector('[data-testid="cloudflare-read-only"]')!.textContent).toBe('Admins can change this.');
+  });
+
+  it('admin: the next step is offered', async () => {
+    installFetch({ stored: false });
+    await mount(false, ['t1']);
+    expect(next()).not.toBeNull();
+    expect(host.querySelector('[data-testid="cloudflare-read-only"]')).toBeNull();
   });
 });

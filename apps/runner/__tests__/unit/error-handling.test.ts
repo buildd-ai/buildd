@@ -472,7 +472,10 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-budget')?.status !== 'error'; i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await new Promise(r => setTimeout(r, 50));
 
       const worker = manager.getWorker('w-budget');
       expect(worker?.status).toBe('error');
@@ -500,7 +503,7 @@ describe('Error Handling', () => {
       }] }));
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      for (let i = 0; i < 100 && manager.getWorker('w-cap-ctx')?.status !== 'error'; i++) await new Promise(r => setTimeout(r, 50));
 
       expect(manager.getWorker('w-cap-ctx')?.status).toBe('error');
       expect(Object.keys((manager as any).contextBreaker.snapshot())).toEqual([]);
@@ -524,7 +527,8 @@ describe('Error Handling', () => {
         lastQueryOptions = null;
         manager = new WorkerManager(makeConfig({ maxBudgetUsd: 5 } as any));
         await manager.claimAndStart(makeTask());
-        await new Promise(r => setTimeout(r, 200));
+        // Poll rather than sleep a fixed 200ms: session setup is slower on loaded CI runners.
+        for (let i = 0; i < 100 && lastQueryOptions === null; i++) await new Promise(r => setTimeout(r, 50));
         expect(lastQueryOptions).not.toBeNull();
         return lastQueryOptions;
       }
@@ -836,7 +840,12 @@ describe('Error Handling', () => {
       const events = collectEvents(manager);
 
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed time: loaded CI runners can exceed 200ms.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-unknown-err');
+        if (w?.milestones.some(m => m.label.includes('Error:'))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-unknown-err');
       // Should have an error milestone for the unexpected result subtype
@@ -1083,7 +1092,13 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll for the session to finish rather than sleeping a fixed 200ms: on a loaded CI
+      // runner it can still be running, and eviction only removes finished workers.
+      for (let i = 0; i < 100; i++) {
+        const w = manager.getWorker('w-evict');
+        if (w && (w.status === 'done' || w.status === 'error')) break;
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       const worker = manager.getWorker('w-evict');
       expect(worker).toBeDefined();
@@ -1329,7 +1344,12 @@ describe('Error Handling', () => {
 
       manager = new WorkerManager(makeConfig());
       await manager.claimAndStart(makeTask());
-      await new Promise(r => setTimeout(r, 200));
+      // Poll rather than sleep a fixed 200ms: a loaded CI host can take longer.
+      for (let i = 0; i < 50; i++) {
+        const w = manager.getWorker('w-budget-ms');
+        if (w?.milestones.some(m => m.label.includes(SESSION_BUDGET_CAP_ERROR))) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
 
       const worker = manager.getWorker('w-budget-ms');
       const budgetMilestones = worker?.milestones.filter(m =>

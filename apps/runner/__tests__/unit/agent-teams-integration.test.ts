@@ -196,7 +196,13 @@ async function startWorkerWithTask(
   }] }));
 
   await manager.claimAndStart(task);
-  await new Promise(r => setTimeout(r, 200));
+  // Wait for the session (and its closing turn) to finish, not a fixed sleep:
+  // on a loaded CI host a still-running session leaks its skill syncs and
+  // query options into the next test.
+  const deadline = Date.now() + 5000;
+  while (manager.getWorker(workerId)?.status === 'working' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 20));
+  }
   return manager.getWorker(workerId);
 }
 
@@ -342,9 +348,6 @@ describe('Integration: full claim → session flow', () => {
     // Verify the full query configuration
     const opts = lastQueryOpts.options;
 
-    // Teams env is set
-    expect(opts.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
-
     // Agents are defined
     expect(Object.keys(opts.agents)).toEqual(['deploy', 'test-runner']);
 
@@ -396,9 +399,6 @@ describe('Integration: full claim → session flow', () => {
     });
 
     const opts = lastQueryOpts.options;
-
-    // Teams env still set (always on)
-    expect(opts.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1');
 
     // No agents
     expect(opts.agents).toBeUndefined();

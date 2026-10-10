@@ -22,7 +22,10 @@ import {
   resolveReuseSlots,
   resolveReuseWindowMs,
   routeToLease,
+  waitForTailLease,
   prepMsOf,
+  LEASE_TAIL_WAIT_MS,
+  WARM_UPLOAD_TIMEOUT_MS,
   taskStateOnLease,
   type LeaseHandle,
   type LeaseKey,
@@ -94,6 +97,19 @@ describe('decideLeaseClaim', () => {
     expect(decideLeaseClaim(INITIAL_STATE, args)).toEqual({ claim: 'cold' });
   });
 
+  test('tail: the run\'s outcome is known (run_end), only the runner\'s exit is left', () => {
+    const tail: RunState = { ...exited, status: 'running', timings: { runnerPhases: { run_end: now - 1_000 } } };
+    expect(decideLeaseClaim(tail, args)).toEqual({ claim: 'busy', reason: 'tail' });
+    // Still never across workspaces.
+    expect(decideLeaseClaim(tail, { ...args, workspaceId: 'ws-other' })).toEqual({ claim: 'busy', reason: 'wrong_lease' });
+  });
+
+  test('uploading: the deferred warm upload before the container goes; one stuck past its timeout does not hold the lease', () => {
+    const { warm: _w, ...rest } = exited;
+    expect(decideLeaseClaim({ ...rest, warmUploadSince: now - 10_000 }, args)).toEqual({ claim: 'busy', reason: 'uploading' });
+    expect(decideLeaseClaim({ ...rest, warmUploadSince: now - WARM_UPLOAD_TIMEOUT_MS }, args)).toEqual({ claim: 'cold' });
+  });
+
   test('busy: a live run, a parked run waiting for its answer, a pending wake', () => {
     expect(decideLeaseClaim({ ...exited, status: 'running' }, args)).toEqual({ claim: 'busy', reason: 'live' });
     expect(decideLeaseClaim({ ...exited, status: 'starting' }, args)).toEqual({ claim: 'busy', reason: 'live' });
@@ -114,11 +130,14 @@ describe('decideLeaseClaim', () => {
     for (const o of ['parked', 'crashed', 'usage', 'refused', 'deferred', 'start_deferred'] as const) expect(keepsContainerWarm(o)).toBe(false);
   });
 
-  test('prep time: dispatch to claim, then however the repo got ready', () => {
-    // A fresh container with a warm restore.
-    expect(prepMsOf({ containerStart: 30_000, toClaim: 10_000, restoreWarm: 6_000, restoreCache: 20_000, fetch: 2_000, clone: null, install: 90_000 })).toBe(68_000);
-    // A reused one: the reset is inside containerStart, the seed is restoreReuse.
-    expect(prepMsOf({ containerStart: 40_000, toClaim: 8_000, restoreReuse: 9_000 })).toBe(57_000);
+  test('prep time: any lease wait, then dispatch to claim; the repo steps are inside the claim, never added twice', () => {
+    // A fresh container with a warm restore: restore, cache and fetch ran before the claim line.
+    expect(prepMsOf({ containerStart: 30_000, toClaim: 40_000, restoreWarm: 6_000, restoreCache: 20_000, fetch: 2_000, clone: null, install: 90_000 })).toBe(70_000);
+    // A reused one: the reset is inside containerStart, the seed inside toClaim.
+    // (Measured: toClaim 78 s holding a 74 s seed once summed to a 154 s "prep".)
+    expect(prepMsOf({ containerStart: 2_000, toClaim: 78_000, restoreReuse: 74_000 })).toBe(80_000);
+    // The dispatch waited for a lease in its tail: that is prep too.
+    expect(prepMsOf({ leaseWait: 5_000, containerStart: 2_000, toClaim: 10_000 })).toBe(17_000);
     // Dispatch to claim unmeasured: not comparable.
     expect(prepMsOf({ containerStart: null, toClaim: 8_000, clone: 5_000 })).toBeNull();
     expect(prepMsOf({ containerStart: 1_000, toClaim: null })).toBeNull();
@@ -126,8 +145,57 @@ describe('decideLeaseClaim', () => {
   });
 });
 
+describe('waitForTailLease', () => {
+  const args = { taskId: TASK_B, workspaceId: WS, size: 'standard' as const, slots: 2, request: {} };
+  /** Each lease answers from a script, one entry per offer (the last repeats). */
+  function scripted(scripts: Record<string, Array<'tail' | 'warm' | 'not_warm' | 'busy'>>) {
+    const asked: Array<{ name: string; leaseWaitMs?: number }> = [];
+    let clock = 0;
+    const d = {
+      now: () => clock,
+      sleep: async (ms: number) => { clock += ms; },
+      log: () => {},
+      getLease: async (name: string): Promise<LeaseHandle> => ({
+        async dispatchLeased(r: LeasedDispatchRequest): Promise<LeasedDispatchResult> {
+          asked.push({ name, leaseWaitMs: r.leaseWaitMs });
+          const s = scripts[name]!;
+          const a = s.length > 1 ? s.shift()! : s[0]!;
+          if (a === 'warm') return { accepted: true, attempt: 1, reused: true };
+          return { accepted: false, reason: a, attempt: 0, status: a === 'tail' ? 'running' : 'exited' };
+        },
+      }),
+    };
+    return { d, asked, at: () => clock };
+  }
+  const L0 = leaseName(WS, 'standard', 0);
+  const L1 = leaseName(WS, 'standard', 1);
+
+  test('takes the lease as soon as its tail ends warm, and says how long it waited', async () => {
+    const s = scripted({ [L0]: ['tail', 'tail', 'warm'] });
+    const r = await waitForTailLease(s.d, { ...args, tails: [L0], since: 0, pollMs: 2_000 });
+    expect(r?.lease).toBe(L0);
+    expect(s.asked.at(-1)!.leaseWaitMs).toBe(6_000);
+  });
+
+  test('a lease that leaves its tail without going warm is dropped at once', async () => {
+    const s = scripted({ [L0]: ['not_warm'], [L1]: ['busy'] });
+    expect(await waitForTailLease(s.d, { ...args, tails: [L0, L1], since: 0, pollMs: 2_000 })).toBeNull();
+    expect(s.at()).toBe(2_000);
+  });
+
+  test('bounded: past the wait, no lease', async () => {
+    const s = scripted({ [L0]: ['tail'] });
+    expect(await waitForTailLease(s.d, { ...args, tails: [L0], since: 0 })).toBeNull();
+    expect(s.at()).toBe(LEASE_TAIL_WAIT_MS);
+    // Nothing to wait for, or no time left: no wait at all.
+    const t = scripted({ [L0]: ['tail'] });
+    expect(await waitForTailLease(t.d, { ...args, tails: [L0], since: 0, maxWaitMs: 0 })).toBeNull();
+    expect(t.asked).toEqual([]);
+  });
+});
+
 describe('routeToLease', () => {
-  function leases(answers: Record<number, 'warm' | 'cold' | 'busy' | 'throws'>) {
+  function leases(answers: Record<number, 'warm' | 'cold' | 'busy' | 'tail' | 'throws'>) {
     const asked: Array<{ name: string; warmOnly: boolean }> = [];
     const getLease = async (name: string): Promise<LeaseHandle> => {
       const slot = parseLeaseName(name)!.slot;
@@ -136,6 +204,7 @@ describe('routeToLease', () => {
           asked.push({ name, warmOnly: !!r.warmOnly });
           const a = answers[slot] ?? 'busy';
           if (a === 'throws') throw new Error('unreachable');
+          if (a === 'tail') return { accepted: false, reason: 'tail', attempt: 0, status: 'running' };
           if (a === 'busy' || (r.warmOnly && a !== 'warm')) return { accepted: false, reason: r.warmOnly && a === 'cold' ? 'not_warm' : 'busy', attempt: 0, status: 'idle' };
           return { accepted: true, attempt: 1, reused: a === 'warm' };
         },
@@ -160,9 +229,18 @@ describe('routeToLease', () => {
     expect(l.asked.filter(a => a.warmOnly)).toHaveLength(3);
   });
 
-  test('every slot busy (or unreachable): null, the task runs in its own agent', async () => {
+  test('every slot busy (or unreachable): no lease, the task runs in its own agent', async () => {
     const l = leases({ 0: 'busy', 1: 'throws', 2: 'busy' });
-    expect(await routeToLease({ getLease: l.getLease, log: () => {} }, args)).toBeNull();
+    expect(await routeToLease({ getLease: l.getLease, log: () => {} }, args)).toEqual({ lease: null, tails: [] });
+  });
+
+  test('a slot in its tail is named, for the caller to wait on', async () => {
+    const l = leases({ 0: 'tail', 1: 'busy' });
+    expect(await routeToLease({ getLease: l.getLease, log: () => {} }, args)).toEqual({ lease: null, tails: [leaseName(WS, 'standard', 0)] });
+    // A cold slot still wins on the second pass unless only a warm one is wanted.
+    const m = leases({ 0: 'tail', 1: 'cold' });
+    expect((await routeToLease({ getLease: m.getLease, log: () => {} }, args)).lease).toBe(leaseName(WS, 'standard', 1));
+    expect((await routeToLease({ getLease: m.getLease, log: () => {} }, { ...args, warmOnly: true })).lease).toBeNull();
   });
 
   test('the lease is only ever of the task\'s workspace and size', async () => {
@@ -194,6 +272,9 @@ function leaseHarness(opts: {
   reset?: { code: number; lines: string[] } | 'throws';
   resetMs?: number;
   runner?: (taskId: string, now: number) => { toClaimMs: number; lines: string[] };
+  warmRepos?: boolean;
+  /** `buildd-once --upload-warm`: its exit (held until resolved when given) and lines. */
+  upload?: { exit?: Promise<number>; lines?: string[] };
 } = {}) {
   let state: RunState = INITIAL_STATE;
   let clock = 1_000_000;
@@ -217,6 +298,10 @@ function leaseHarness(opts: {
         if (r === 'throws') throw new Error('exec failed');
         const p: ProcessPort = { stdout: streamOf(r.lines), stderr: streamOf([]), exitCode: Promise.resolve(r.code) };
         return p;
+      }
+      if (cmd[1] === '--upload-warm') {
+        calls.push('upload');
+        return { stdout: streamOf(opts.upload?.lines ?? ['BUILDD_WARM_UPLOAD_DONE=uploaded']), stderr: streamOf([]), exitCode: opts.upload?.exit ?? Promise.resolve(0) };
       }
       calls.push('exec');
       const exit = deferred<number>();
@@ -242,6 +327,7 @@ function leaseHarness(opts: {
       startTimeoutMs: 1_000,
       lease: KEY,
       reuseWindowMs: WINDOW,
+      ...(opts.warmRepos ? { WARM_REPOS: '1' } : {}),
     },
     keepAliveWhile: (fn) => fn(),
     waitUntil: (p) => { pending.push(p); },
@@ -423,6 +509,95 @@ describe('supervisor: a lease hands its warm container to the next task', () => 
   });
 });
 
+describe('supervisor: the container is free the moment its run ends', () => {
+  const deferring = (taskId: string) => ({ toClaimMs: 1_000, lines: taskId === TASK_A ? ['BUILDD_WARM_UPLOAD=deferred'] : [] });
+
+  test('a lease run is told to defer its warm upload; a task agent\'s run is not', async () => {
+    const h = leaseHarness({ warmRepos: true });
+    await h.runTask(TASK_A, 0);
+    expect(h.execs.find(e => e.cmd[1] === '--task')!.env?.BUILDD_WARM_UPLOAD_DEFER).toBe('1');
+    const t = leaseHarness({ warmRepos: true });
+    (t.sup as unknown as { d: SupervisorDeps }).d.config.lease = undefined;
+    t.sup.dispatch({});
+    await t.until(() => t.state.status === 'running');
+    expect(t.execs.find(e => e.cmd[1] === '--task')!.env?.BUILDD_WARM_UPLOAD_DEFER).toBeUndefined();
+    t.exits[0]!.resolve(0);
+    await t.until(() => t.state.status === 'exited');
+    await t.settle();
+  });
+
+  test('a deferred upload is on the report and the warm container; the next task takes the container and the upload is never made', async () => {
+    const h = leaseHarness({ warmRepos: true, runner: deferring });
+    await h.runTask(TASK_A, 0);
+    expect(h.state.report?.repo.warmUploadDeferred).toBe(true);
+    expect(h.state.warm?.uploadPending).toBe(true);
+    await h.runTask(TASK_B, 0);
+    expect(h.calls).not.toContain('upload');
+    expect(h.state.report?.reusedContainer).toMatchObject({ fromTaskId: TASK_A, uploadSkipped: true });
+    expect(h.state.report?.repo.warmUploadDeferred).toBe(false);
+    expect(h.state.warm?.uploadPending).toBeUndefined();
+  });
+
+  test('not taken: the window\'s end uploads, with no task token, the lease busy meanwhile, then destroys', async () => {
+    const hold = deferred<number>();
+    const h = leaseHarness({ warmRepos: true, runner: deferring, upload: { exit: hold.promise } });
+    await h.runTask(TASK_A, 0);
+    h.advance(WINDOW + 1);
+    const expiring = h.sup.expireWarmContainer();
+    await h.until(() => h.calls.includes('upload'));
+    expect(h.state.warmUploadSince).toBeDefined();
+    expect(h.running).toBe(true);
+    // Busy while uploading: never handed out, never destroyed under the upload.
+    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS })).toMatchObject({ accepted: false, reason: 'busy' });
+    const up = h.execs.find(e => e.cmd[1] === '--upload-warm')!;
+    expect(up.cmd).toEqual(['buildd-once', '--upload-warm']);
+    expect(up.env?.BUILDD_API_KEY).toBeUndefined();
+    expect(Object.values(up.env ?? {}).some(v => v.startsWith('bldt_'))).toBe(false);
+    expect(up.env).toMatchObject({ BUILDD_EXECUTOR: 'cloud', BUILDD_WARM_REPO: '1', HOME: '/home/bun' });
+    hold.resolve(0);
+    expect(await expiring).toEqual({ expired: true, uploaded: true });
+    expect(h.calls.slice(-2)).toEqual(['upload', 'destroy']);
+    expect(h.state.warmUploadSince).toBeUndefined();
+    expect(h.running).toBe(false);
+  });
+
+  test('nothing deferred: the window\'s end only destroys', async () => {
+    const h = leaseHarness({ warmRepos: true });
+    await h.runTask(TASK_A, 0);
+    h.advance(WINDOW + 1);
+    expect(await h.sup.expireWarmContainer()).toEqual({ expired: true });
+    expect(h.calls).not.toContain('upload');
+  });
+
+  test('in its tail (run_end printed, runner not yet exited) the lease answers `tail`, then goes warm', async () => {
+    const h = leaseHarness({ runner: () => ({ toClaimMs: 1_000, lines: [`BUILDD_PHASE=run_end ${Date.now()}`] }) });
+    h.sup.dispatchLeased({ taskId: TASK_A, workspaceId: WS });
+    await h.until(() => h.state.timings?.runnerPhases?.run_end !== undefined);
+    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: false, reason: 'tail' });
+    h.exits[0]!.resolve(0);
+    await h.until(() => h.state.status === 'exited');
+    await h.settle();
+    expect(h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, warmOnly: true })).toMatchObject({ accepted: true, reused: true });
+    await h.until(() => h.state.status === 'running');
+    h.exits.at(-1)!.resolve(0);
+    await h.until(() => h.state.status === 'exited');
+    await h.settle();
+  });
+
+  test('the wait for a lease in its tail is on the report, and counted in prep', async () => {
+    const h = leaseHarness({ runner: () => ({ toClaimMs: 10_000, lines: [] }) });
+    await h.runTask(TASK_A, 0);
+    const r = h.sup.dispatchLeased({ taskId: TASK_B, workspaceId: WS, leaseWaitMs: 6_000 });
+    expect(r.accepted).toBe(true);
+    await h.until(() => h.state.status === 'running');
+    h.exits.at(-1)!.resolve(0);
+    await h.until(() => h.state.status === 'exited');
+    await h.settle();
+    expect(h.state.report?.durationsMs.leaseWait).toBe(6_000);
+    expect(h.state.report?.reusedContainer).toMatchObject({ prepMs: 16_000 });
+  });
+});
+
 describe('supervisor: what reuse saved is measured against a fresh container', () => {
   const phases = (at: number, steps: Array<[string, number]>) => {
     const out: string[] = [];
@@ -430,11 +605,13 @@ describe('supervisor: what reuse saved is measured against a fresh container', (
     for (const [step, ms] of steps) { out.push(`BUILDD_PHASE=${step}_start ${t}`); t += ms; out.push(`BUILDD_PHASE=${step}_end ${t}`); }
     return out;
   };
-  // Fresh: 40 s to claim, then warm restore 6 s, cache 20 s, fetch 2 s: 68 s.
-  // Reused: the seed from kept packs, 9 s, and no cache restore.
+  // The repo steps run before the claim line (the runner resolves the
+  // workspace inside its claim), so they are inside toClaim.
+  // Fresh: 68 s to claim, of which warm restore 6 s, cache 20 s, fetch 2 s.
+  // Reused: 17 s to claim, of which the seed from kept packs, 9 s; no cache restore.
   const runner = (taskId: string, now: number) => taskId === TASK_A
-    ? { toClaimMs: 40_000, lines: phases(now + 40_000, [['restore_warm', 6_000], ['restore_cache', 20_000], ['fetch', 2_000]]) }
-    : { toClaimMs: 8_000, lines: [...phases(now + 8_000, [['restore_reuse', 9_000]]), 'BUILDD_REPO_SOURCE=reuse'] };
+    ? { toClaimMs: 68_000, lines: phases(now + 40_000, [['restore_warm', 6_000], ['restore_cache', 20_000], ['fetch', 2_000]]) }
+    : { toClaimMs: 17_000, lines: [...phases(now + 8_000, [['restore_reuse', 9_000]]), 'BUILDD_REPO_SOURCE=reuse'] };
 
   test('a fast reset: saved = the fresh run\'s prep minus the reused run\'s, both measured', async () => {
     const h = leaseHarness({ runner, resetMs: 20_000 });
@@ -442,7 +619,7 @@ describe('supervisor: what reuse saved is measured against a fresh container', (
     expect(h.state.warm?.baselinePrepMs).toBe(68_000);
     await h.runTask(TASK_B, 0);
     const reused = h.state.report?.reusedContainer;
-    // 20 s reset + 8 s to claim + 9 s seed.
+    // 20 s reset + 17 s to claim (the 9 s seed inside it, counted once).
     expect(reused).toEqual({ fromTaskId: TASK_A, idleMs: 0, resetMs: 20_000, prepMs: 37_000, baselinePrepMs: 68_000, savedMs: 31_000 });
     expect(h.state.report?.durationsMs.restoreReuse).toBe(9_000);
     expect(h.state.report?.durationsMs.restoreCache).toBeNull();
@@ -466,7 +643,7 @@ describe('supervisor: what reuse saved is measured against a fresh container', (
   });
 
   test('after a failed reset the fresh container is the new baseline', async () => {
-    const h = leaseHarness({ runner: (t, now) => ({ toClaimMs: 50_000, lines: phases(now + 50_000, [['clone', 10_000]]) }), reset: { code: 1, lines: [] } });
+    const h = leaseHarness({ runner: (t, now) => ({ toClaimMs: 60_000, lines: phases(now + 50_000, [['clone', 10_000]]) }), reset: { code: 1, lines: [] } });
     await h.runTask(TASK_A, 0);
     await h.runTask(TASK_B, 0);
     expect(h.state.report?.reusedContainer).toMatchObject({ fallback: 'reset_failed' });

@@ -8,7 +8,7 @@
  * server/tenant value. Unset means deleted, not ''.
  */
 import { describe, test, expect } from 'bun:test';
-import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, type ModelEnvInput } from '../../src/agent-model-env';
+import { applyModelEnv, customHeadersValue, endpointSessionModels, shouldUseClaudeCredential, type ModelEnvInput } from '../../src/agent-model-env';
 import { buildAgentBaseEnv, RUNNER_ENV_PASSTHROUGH } from '../../src/agent-env';
 import type { ClaimModelEndpoint } from '@buildd/shared';
 import type { ProviderConfig } from '../../src/types';
@@ -574,5 +574,58 @@ describe('shouldUseClaudeCredential: the Claude credential never rides along to 
   test('workers.ts fails the task when a Codex endpoint has no OpenAI-compatible route', async () => {
     const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
     expect(src).toContain('if (modelEnv.error) {');
+  });
+});
+
+describe('cloud run: claim says the endpoint behind egress lacks ToolSearch', () => {
+  test('default Anthropic route in the container: ENABLE_TOOL_SEARCH=false', () => {
+    const got = run({ ANTHROPIC_API_KEY: 'placeholder' }, { toolSearchDisabled: true });
+    expect(got.env.ENABLE_TOOL_SEARCH).toBe('false');
+    expect(got.endpoint).toBe('anthropic');
+  });
+
+  test('absent marker leaves Claude Code\'s default; an inherited value is not trusted', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({}, {}).env).toBe(false);
+    expect('ENABLE_TOOL_SEARCH' in run({ ENABLE_TOOL_SEARCH: 'false' }, {}).env).toBe(false);
+  });
+
+  test('not applied to Codex, nor over a delivered team endpoint', () => {
+    expect('ENABLE_TOOL_SEARCH' in run({}, { toolSearchDisabled: true, isCodexTask: true }).env).toBe(false);
+    const team = run({}, { toolSearchDisabled: true, modelEndpoint: { ...gatewayEndpoint, toolSearch: true } });
+    expect(team.env.ENABLE_TOOL_SEARCH).toBe('true');
+  });
+});
+
+describe('team endpoint headers (Cloudflare AI Gateway)', () => {
+  const cfEndpoint: ClaimModelEndpoint = {
+    kind: 'cloudflare', upstream: 'anthropic',
+    baseUrl: 'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/buildd/anthropic',
+    authToken: 'upstream-anthropic-key', authHeader: 'x-api-key', models: {},
+    headers: { 'cf-aig-authorization': 'Bearer gw-run-token' },
+  };
+
+  test('sets ANTHROPIC_CUSTOM_HEADERS from the endpoint, replacing any the machine set', () => {
+    const got = run({ ANTHROPIC_CUSTOM_HEADERS: 'x-machine: 1' }, { modelEndpoint: cfEndpoint, serverApiKey: SERVER_KEY });
+    expect(got.endpoint).toBe('team');
+    expect(got.env.ANTHROPIC_BASE_URL).toBe(cfEndpoint.baseUrl);
+    expect(got.env.ANTHROPIC_API_KEY).toBe('upstream-anthropic-key');
+    expect(got.env.ANTHROPIC_CUSTOM_HEADERS).toBe('cf-aig-authorization: Bearer gw-run-token');
+    expect(Object.values(got.env)).not.toContain(SERVER_KEY);
+  });
+
+  test('no headers on the endpoint: a machine header is still removed', () => {
+    const got = run({ ANTHROPIC_CUSTOM_HEADERS: 'x-machine: 1' }, { modelEndpoint: { ...cfEndpoint, headers: undefined } });
+    expect(got.env.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
+
+  test('a header that would inject another line is dropped', () => {
+    expect(customHeadersValue({ 'cf-aig-authorization': 'Bearer t\nx-evil: 1' })).toBeNull();
+    expect(customHeadersValue({ 'bad name': 'v' })).toBeNull();
+    expect(customHeadersValue({ a: '1', b: '2' })).toBe('a: 1\nb: 2');
+  });
+
+  test('OpenRouter upstream names models the OpenRouter way', () => {
+    const wire = endpointSessionModels({ ...cfEndpoint, upstream: 'openrouter' }, { model: 'claude-haiku-4-5-20251001' });
+    expect(wire.model).toBe('anthropic/claude-haiku-4.5');
   });
 });

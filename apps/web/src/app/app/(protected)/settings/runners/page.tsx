@@ -1,45 +1,49 @@
+import Link from 'next/link';
 import SettingsPage from '../_components/SettingsPage';
 import SettingsSection from '../SettingsSection';
-import AgentBackendsSection from '../AgentBackendsSection';
 import RunnerTokensSection from '../RunnerTokensSection';
 import CloudflareSection from '../CloudflareSection';
+import { StatusChip } from '../_components/ConnectionRow';
 import { loadAccountLastSeen, loadRunnerAccounts, loadSettingsContext } from '../_lib/settings-context';
 import { loadFleetSnapshot } from '@/lib/home-fleet';
+import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import type { FleetSnapshot } from '@buildd/shared';
 import FleetOverview from './FleetOverview';
 import CloudRunnerRow from './CloudRunnerRow';
-import { roleHas } from '@/lib/permission-registry';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+import SignInsAnchorRedirect from './SignInsAnchorRedirect';
+import { teamIdsHolding } from '../_lib/settings-permissions';
 
 export const dynamic = 'force-dynamic';
 
 const NO_FLEET: FleetSnapshot = { runners: [], live: 0, capacity: 0, window: { from: 0, to: 0 } };
 
+/** Where runner sign-ins (Claude, Codex, an OpenAI key, provider routing) live. */
+const SIGN_INS_HREF = '/app/settings/models#sign-ins';
+
 /**
- * Settings → Connections → Runners (was /app/settings#agent-backends).
- * Fleet first (what runs your tasks), then connections (what it signs in
- * with), then runner tokens (how it reaches buildd).
+ * Settings → Runners. Fleet first (what runs your tasks), then connections
+ * (the Cloudflare account cloud runs use, and a pointer to the sign-ins on
+ * Models), then runner tokens (how a runner reaches buildd).
  */
 export default async function RunnersSettingsPage() {
-  const { user, teams, currentTeamId, currentTeam, workspaces } = await loadSettingsContext();
+  const { teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
-  const [accounts, fleet] = await Promise.all([
+  const [accounts, fleet, hasSignIn] = await Promise.all([
     loadRunnerAccounts(teams.map((t) => t.id)),
     loadFleetSnapshot({ teamId, wsIds: teamWsIds, now: Date.now() }).catch((err) => {
       console.error('[settings/runners] fleet load failed (non-fatal):', err);
       return NO_FLEET;
     }),
+    // Status only: null (unknown) drops the chip rather than guessing.
+    teamId ? teamHasAgentCredential(teamId).catch(() => null) : Promise.resolve(null),
   ]);
   const lastSeen = await loadAccountLastSeen(accounts.map((a) => a.id as string)).catch(() => ({} as Record<string, string>));
-  // Owners/admins of a token's team may change its host-runner flag (the PUT
-  // route enforces the same rule); a personal team counts as owned.
-  const teamOverrides = await Promise.all(teams.map((t) => getTeamPermissionOverrides(t.id)));
-  const adminTeamIds = new Set(
-    teams
-      .filter((t, i) => roleHas(t.role, 'manage_team_keys', teamOverrides[i]) || t.slug === `personal-${user.id}`)
-      .map((t) => t.id),
-  );
+  // Each control follows the permission its route enforces, with each team's
+  // overrides (a personal team counts as owned): the host-runner flag is
+  // manage_team_keys, the Cloudflare token manage_team_model_keys.
+  const adminTeamIds = new Set(teamIdsHolding(permsByTeam, 'manage_team_keys'));
+  const cloudflareTeamIds = teamIdsHolding(permsByTeam, 'manage_team_model_keys');
   const tokens = accounts.map((a) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
@@ -51,15 +55,26 @@ export default async function RunnersSettingsPage() {
     <SettingsPage
       title="Runners"
     >
+      <SignInsAnchorRedirect />
       <FleetOverview
         fleet={fleet}
         teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}
         cloud={teamId ? <CloudRunnerRow teamId={teamId} /> : undefined}
       />
-      <SettingsSection title="Connections" id="agent-backends" bare>
-        <div data-testid="runners-connections" className="card divide-y divide-border-default p-0">
-          <AgentBackendsSection workspaces={workspaces} currentTeamId={currentTeamId} />
-          <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} />
+      <SettingsSection title="Connections" bare>
+        <div data-testid="runners-connections" className="border-y border-border-default divide-y divide-border-default">
+          <div data-testid="runners-sign-ins" className="flex min-h-14 items-center gap-3 py-2.5 pl-4 pr-3">
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <span className="text-sm font-semibold text-text-primary">Sign-ins</span>
+                {hasSignIn === true && <StatusChip tone="ok">Connected</StatusChip>}
+                {hasSignIn === false && <StatusChip tone="idle">Not connected</StatusChip>}
+              </span>
+              <span className="mt-1 block truncate text-meta text-text-muted">What your runners log in with</span>
+            </span>
+            <Link href={SIGN_INS_HREF} className="btn btn-quiet shrink-0">Models ›</Link>
+          </div>
+          <CloudflareSection teams={cloudTeams} defaultTeamId={teamId} manageableTeamIds={cloudflareTeamIds} />
         </div>
       </SettingsSection>
       <RunnerTokensSection accounts={tokens} workspaces={workspaces} />

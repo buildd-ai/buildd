@@ -38,3 +38,18 @@ export function normalizeDerivedFiles(input: unknown): NormalizedDerivedFileRule
   }
   return out;
 }
+
+/**
+ * Sent on the completion PATCH when the runner finished a conflict retry itself:
+ * every conflict was in a derived file, so it merged the base, regenerated,
+ * verified and pushed without starting an agent. The server records it in the
+ * gate ledger (`base_refresh`, accepted).
+ */
+export interface DerivedMergeFinishReport {
+  baseRef: string;
+  /** Regenerate commands run and committed in the merge. */
+  regenerated: string[];
+  /** The verification command that passed, or null when none was set. */
+  verification: string | null;
+  headSha?: string;
+}

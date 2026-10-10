@@ -36,13 +36,15 @@ import { missionNeedsYou } from './mission-state-view';
 import { missionTaskHref } from './mission-task-href';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import type { WaitingFor } from '@buildd/shared';
+import { waitingForOptionLabels } from '@/lib/waiting-for-options';
 
 type DateLike = Date | string | null | undefined;
 
 // ─── Input (the list's extra columns over MissionCardRow) ─────────────────────
 
 export interface ListWorkerRow extends MissionCardWorkerRow {
-  waitingFor?: { type?: string; prompt?: string; options?: string[] } | null;
+  waitingFor?: Partial<WaitingFor> | null;
 }
 export interface ListTaskRow extends MissionCardTaskRow {
   result?: { summary?: string | null } | null;
@@ -59,8 +61,6 @@ export interface MissionListCardOptions {
   now?: number;
   /** Role slug → the role's own colour (workspace_skills.color). Never hardcoded here. */
   roleColors?: ReadonlyMap<string, string | null>;
-  /** Live worker id → its last reported progress, 0..100. */
-  progressByWorker?: ReadonlyMap<string, number>;
   /**
    * Every task the page loaded, by id (the page's cross-mission index): a
    * dependency on another mission's task is judged from it, the way the
@@ -82,8 +82,6 @@ export interface ListCell {
   state: ListCellState;
   /** The canonical strip tone: the only thing a surface paints from. `state` is the raw word. */
   tone: StripTone;
-  /** 0..1 — the live worker's reported progress for `running`, 1 otherwise. */
-  fill: number;
   href: string;
 }
 
@@ -259,18 +257,11 @@ export function buildMissionListCard(
     const fs = deriveFeedTaskState(r, { now });
     const source = byId.get(r.task.id)!;
     let state: ListCellState;
-    let fill = 1;
     switch (fs.state) {
       case 'moving': {
         // A completed row that is still moving is its PR in CI or mid-merge.
         const inCi = r.task.status === 'completed' && !!deriveFeedPrState(r.task.worker);
         state = inCi ? 'in_ci' : 'running';
-        if (!inCi) {
-          const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
-          const live = candidates.map(liveWorkerOf).find(Boolean);
-          const pct = live?.id ? opts.progressByWorker?.get(live.id) : undefined;
-          fill = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
-        }
         break;
       }
       default:
@@ -283,7 +274,7 @@ export function buildMissionListCard(
     if (strip && state !== 'skipped') cellStates.push(strip);
 
     const { label } = taskShortLabel(source);
-    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, tone: stripTone(strip ?? 'ready'), fill, href: link(r.task.id) };
+    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, tone: stripTone(strip ?? 'ready'), href: link(r.task.id) };
 
     if (state === 'needs_you' && !question) {
       const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
@@ -293,7 +284,7 @@ export function buildMissionListCard(
       if (parked) {
         question = {
           taskId: r.task.id, label, href: cell.href, workerId: parked.id ?? null,
-          prompt: parked.waitingFor!.prompt!, options: (parked.waitingFor!.options ?? []).slice(0, 3),
+          prompt: parked.waitingFor!.prompt!, options: waitingForOptionLabels(parked.waitingFor!.options).slice(0, 3),
         };
       }
     }

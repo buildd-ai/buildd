@@ -2,13 +2,13 @@
 title: Workflow State Kernel
 status: draft
 owner: max
-last_verified: 2026-10-07
+last_verified: 2026-10-09
 summary: One kernel MUST own each task-to-PR-to-review-to-merge delivery's state, advance it only by version-checked transitions citing GitHub-confirmed evidence, and leave other lifecycle columns fact caches or projections.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/route.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/pr-landing.ts, apps/web/src/lib/workflow/landing.ts]
 related: [mission-task-lifecycle, pr-lifecycle-reconciliation, task-dispatch-authority, surface-merge-ordering]
 keywords: [workflow kernel, delivery state, AWAITING_PUSH, review round, head sha binding, outbox, CAS, fix_ended, stale verdict, write sites]
-verified_by: [apps/web/tests/db/pr-facts.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts]
+verified_by: [apps/web/tests/db/pr-facts.test.ts, apps/web/tests/db/workflow-scenarios-repeat.test.ts, packages/core/__tests__/pr-fact-write-sites.test.ts, apps/web/src/lib/workflow/pr-fact-effects.test.ts, apps/web/src/lib/pr-fact-import.test.ts, apps/web/src/lib/workflow/projections.test.ts, apps/web/src/lib/workflow/review-composition.test.ts, apps/web/src/lib/workflow/pr-activity-render.test.ts, apps/web/src/lib/action-queue.delivery-view.test.ts, apps/web/src/lib/workflow/reducer.test.ts, apps/web/src/lib/workflow/review-effects.test.ts, apps/web/src/lib/workflow/pr-landing-effects.test.ts, apps/web/src/lib/pr-landing.test.ts, apps/web/src/lib/auto-merge.test.ts, apps/web/src/lib/ci-verdict.test.ts, apps/web/tests/db/workflow-probe-github.test.ts, apps/web/tests/db/workflow-probe-concurrency.test.ts, apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts, apps/web/src/app/api/github/pr/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts, apps/web/src/lib/ci-failure-retry.wake.test.ts, apps/web/tests/db/workflow-matrix.test.ts, apps/web/tests/db/review-request-authority.test.ts, apps/web/tests/db/review-provenance.test.ts, packages/core/__tests__/pr-shipped.test.ts, apps/web/src/lib/mission-completion.test.ts, apps/web/src/lib/pr-supersession.test.ts, apps/web/src/app/api/github/pr/supersede/route.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/workflow/facts.test.ts, apps/web/src/lib/workflow/github-facts.test.ts, apps/web/src/modules.test.ts, apps/web/src/lib/workflow/conflict-retry-effects.test.ts, apps/web/src/lib/conflict-retry.test.ts, apps/web/src/lib/workflow/trunk.test.ts, apps/web/src/lib/workflow/delivery-display.test.ts, apps/web/src/lib/explain-because.test.ts, apps/web/src/lib/explain.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/lib/pr-list.test.ts, apps/web/src/app/api/tasks/[id]/summary/route.test.ts, packages/core/__tests__/workflow-write-sites.test.ts]
 supersedes: []
 ---
 
@@ -167,6 +167,7 @@ cites facts.
 | Human GitHub review | GitHub review with `commit_id` | `(repo, pr, review_id)` | Counts for the head in `commit_id` only |
 | PR merged | GitHub read: `merged=true`, `merged_at`, `merge_commit_sha` | `(repo, pr, 'merged')` | Terminal; replay is a no-op |
 | PR closed unmerged / reopened | GitHub read: `state` | `(repo, pr, 'closed'|'reopened', updated_at)` | Reducer re-reads; ordering by live state, not arrival |
+| PR base changed (retarget) | GitHub read: `base.ref`, after a `pull_request.edited` with `changes.base`, or any live read that disagrees with `delivery.base_ref` | `(repo, pr, from_base, to_base, version)` | The live base wins over the payload and over the stored `base_ref` (T29) |
 | Merge call result | GitHub `PUT /merge` response | `(repo, pr, sha, 'merge_call')` | `indeterminate` is a fact, not a verdict |
 
 **Canonical state** is `workflow_deliveries.state` plus its bound attributes (§4–5):
@@ -227,7 +228,7 @@ the platform waits on; every non-terminal state has exactly one.
 | `BLOCKED_ON_TRUNK` | The current head's CI failure matches an open trunk incident (§5.8): the base branch itself is red on the same failure, so no per-PR repair is dispatched. Attribute `resume_state` (the state to return to) and `trunk_incident_id` | trunk-fix attempt (one per incident) | T25 |
 | `APPROVED` | An `approve` verdict is bound to the current head (or to a head recorded as equivalent) and nothing blocks landing except gates not yet satisfied | landing | `ReviewVerdictRecorded(approve)`; `HumanApproved` |
 | `LANDING` | A merge or branch-refresh attempt for the current head is claimed | landing effect | `LandingRequested` |
-| `ESCALATED` | A person must act; attribute `reason` ∈ `review_escalated`, `review_exhausted`, `review_unavailable` (no valid verdict after the bounded contract retry), `ci_exhausted`, `conflict_exhausted`, `push_undeliverable`, `landing_needs_human`, `effect_dead` (a critical effect went `dead` and no more specific reason fits, §10.3), `policy_human`, `unsafe_to_merge` | human | explicit transitions only |
+| `ESCALATED` | A person must act; attribute `reason` ∈ `review_escalated`, `review_exhausted`, `review_unavailable` (no valid verdict after the bounded contract retry, or the round's `dispatch_review` went `dead`), `ci_exhausted`, `conflict_exhausted`, `push_undeliverable`, `landing_needs_human`, `effect_dead` (a critical effect went `dead` and no more specific reason fits, §10.3), `policy_human`, `unsafe_to_merge` | human | explicit transitions only |
 | `MERGED` | GitHub confirmed the PR merged (terminal) | none | `PrMerged` |
 | `CLOSED_UNMERGED` | GitHub confirmed the PR closed without merging; attribute `close_cause` (`manual`, `base_deleted`, `superseded_by_policy`, `unknown`) | platform (supersession scan), then human | `PrClosedUnmerged` |
 | `SUPERSEDED` | Closed unmerged, and a verified merged PR carries the work (terminal) | none | `SupersessionRecorded` |
@@ -353,6 +354,10 @@ Rules:
    in the statement that dispatches it. A budget is spent when work is *dispatched*,
    not inferred later from who authored the resulting commit. The cap therefore
    bounds dispatches even if provenance recognition fails.
+   One exception (a90fc99b): an attempt that ended `unproven` (reported success with
+   nothing provable on GitHub) is not a try at the fix, so up to
+   `UNPROVEN_ATTEMPT_ALLOWANCE` of them per family do not spend the cap; past it they
+   count, so an agent that always claims success still ends.
 2. **Infra requeues are not attempts.** A task requeued by the reaper, a budget wall,
    a mount gap or a provider failover keeps its own `infraRetryCount`/`retryCount`
    (today's behaviour, correct) and never touches a ledger; conversely an attempt row
@@ -447,30 +452,33 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | T2 | `PrBound` (create_pr, adopt, webhook `opened`) | `WORKING`, `AWAITING_PUSH`, none (adoption) | live read: PR open, same repo as workspace, `head.repo == repo` (fork guard), base ref recorded | unchanged, except adoption creates `AWAITING_REVIEW` | project PR columns; `dispatch_review` if policy requires it and `H` has no round | `bind:{repo}#{pr}` | a second bind with a different PR number for the same delivery is `rejected(pr_already_bound)`; it does NOT reset merge or lifecycle columns (fixes adopt-override finding 8). A bound PR leaves `WORKING` when the owner attempt ends (§6.5 row 1): to `AWAITING_REVIEW`, or to `APPROVED` with `approval_basis = policy` when the policy requires no review |
 | T3 | `HeadObserved(H')` fact | any non-terminal | live read confirms `H'` is the PR's current head | per §6.4 | per §6.4 | `head:{repo}#{pr}:{H}->{H'}@v{version}` (the move, read at the delivery's version: a head that returns to an earlier SHA, A→B→A, is a new observation) | webhook payload head ≠ live head → apply the live head; a late event whose live head equals stored head is `duplicate` (a redelivery after the move landed answers with that move's fact, §5.3) |
 | T4 | `AttemptEnded(a, outcome, L)` (worker PATCH terminal, reaper) | `WORKING`, `FIXING`, `REPAIRING` | attempt `a` is the delivery's bound attempt (else `stale`); `L`, `commitCount` recorded as fact | see §6.5 | project `tasks`/`workers` rows; `announce_fix_ended` only for outcomes below | `end:{a}` | an exit for a non-bound attempt is recorded and returns `stale` |
-| T5 | `ReviewRequested(head, forced?)` (webhook `opened`, push, `request_pr_review`, re-review route, stale-approval) | `WORKING`(PR bound), `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `APPROVED`, `ESCALATED` | `head == current_head_sha` (live read); no round with status `queued`/`reviewing` for `(head)`; `forced` needs a human or `force` actor and is recorded in `bypass` | `AWAITING_REVIEW`, round `r+1` queued bound to `head` | `dispatch_review(round)`; announce `review_queued` | `round:{delivery}:{head}:{r+1}` | a request naming a head ≠ current is `rejected(round_head_not_current)`; a request for a head that already has a decided round is `rejected(head_already_reviewed)` unless `forced` |
-| T6 | `ReviewVerdictRecorded(round, verdict, headBound)` (reviewer completes) | `AWAITING_REVIEW` | `round.status ∈ {queued,reviewing}`; `headBound == round.head_sha`; server escalation rules (file list, confidence) applied to produce `effective_verdict` | `approve`→`APPROVED` (or `ESCALATED(review_escalated)` if the rules override); `request_changes`→`CHANGES_REQUESTED`; `escalate`→`ESCALATED(review_escalated)`; if `round.head_sha != current_head_sha` the verdict is stored and the round marked `superseded` with **no state change** | `post_review(commit_id=round.head_sha)`; `dispatch_fix(round)` when under budget else transition T7 instead; `supersede_open_fix_on_approve`; `announce_*`; mission note | `verdict:{round}` | stale head or round: `stale` (verdict kept for audit). Replaying the PATCH is `duplicate` (closes the "no already-handled marker" gap) |
-| T7 | `ReviewBudgetExhausted` (inside T6/T11) | `CHANGES_REQUESTED`, `FIXING` | `current_round >= max_rounds` | `ESCALATED(review_exhausted)` | `escalate_exhaustion` (mission note + notify) | `exhaust:{delivery}:{head}` | resets only by a new head (T3) |
+| T5 | `ReviewRequested(head, forced?)` (webhook `opened`, push, `request_pr_review`, re-review route, stale-approval) | `WORKING`(PR bound), `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `APPROVED`, `ESCALATED` | `head == current_head_sha` (live read); no round with status `queued`/`reviewing` for `(head)`; `forced` needs a `human:` actor (a signed-in person or the person's own interactive OAuth session; runner agents always act as `agent:`, never `human:`; an API key or per-task token is never a person, whatever its level — `lib/request-person.ts`) and is recorded in `bypass`; from `ESCALATED`, a non-human actor is accepted only when the reason is `review_*` (every other escalation is left by a person, §4) | `AWAITING_REVIEW`, round `r+1` queued bound to `head` | `dispatch_review(round)`; announce `review_queued` | `round:{delivery}:{head}:{r+1}` | a request naming a head ≠ current is `rejected(round_head_not_current)`; a request for a head that already has a decided round is `rejected(head_already_reviewed)` unless `forced`; a non-human `forced` is `rejected(force_requires_human)`; a non-human request from a non-review escalation is `rejected(escalation_needs_human)` |
+| T6 | `ReviewVerdictRecorded(round, verdict, headBound)` (reviewer completes) | `AWAITING_REVIEW` | `round.status ∈ {queued,reviewing}`; `headBound == round.head_sha`; server escalation rules (file list, confidence) applied to produce `effective_verdict` | `approve`→`APPROVED` (or `ESCALATED(review_escalated)` if the rules override); `request_changes`→`CHANGES_REQUESTED`; `escalate`→`ESCALATED(review_escalated)`; if `round.head_sha != current_head_sha` the verdict is stored and the round marked `superseded` with **no state change**. A verdict for the **current** head and round that arrives while `REPAIRING` or `BLOCKED_ON_TRUNK` decides its round with **no state change**; leaving the hold (T11's resume, `RepairNotNeeded`, a no-push `AttemptEnded`, T26) re-enters that verdict at the head exactly as §6.5 row 2 does, and a head move before then supersedes it. It is never superseded at the same head, so the resume never starts a second round there (b666505e) | `post_review(commit_id=round.head_sha)`; `dispatch_fix(round)` when under budget else transition T7 instead; `supersede_open_fix_on_approve`; `announce_*`; mission note | `verdict:{round}` | stale head or round: `stale` (verdict kept for audit). Replaying the PATCH is `duplicate` (closes the "no already-handled marker" gap) |
+| T7 | `ReviewBudgetExhausted` (inside T6/T11) | `CHANGES_REQUESTED`, `FIXING` | `current_round >= max_rounds` | `ESCALATED(review_exhausted)` | `escalate_exhaustion` (mission note + notify) | `exhaust:{delivery}:{head}@v{version}` (the version read: a person who resolves back to the same head and sees it exhaust again gets a second escalation and a second notice, 10658a4c) | resets only by a new head (T3); a replay is answered by the state, which has left `CHANGES_REQUESTED`/`FIXING` (`stale(state_moved)`) |
 | T8 | `FixDispatched` (effect completion) | `CHANGES_REQUESTED` | **revalidation (§10.5) passed**: live read shows PR still open, head still the round's head, no newer approve; ledger row `review_fix` allocated (`attempt_no` = previous + 1, `≤ max_attempts`); fix task row created for `(round)`; unique per round | unchanged; past `max_attempts` (failed fixes spend the ledger faster than rounds, so T6 can owe a fix the budget cannot pay) → `ESCALATED(review_exhausted)` with `escalate_exhaustion`, key `fixbudget:{delivery}:{round}`, never a silent refusal (AC-14) | link `tasks.delivery_id`, role `fix` | `fix:{delivery}:{round}` | a fix for a round that is no longer current is cancelled (`newer_verdict_supersedes_fix`) |
 | T9 | `FixClaimed(a)` (claim route) | `CHANGES_REQUESTED` | `a` is the fix task of the current round; **claim-time revalidation** (§10.5): live read still shows the round's head current, PR open and not approved | `FIXING` bound to `(H, r, a)` | announce `fix_started` | `claim:{a}` | a claim for a fix of a superseded round, or one whose target was resolved meanwhile (merged, approved, head moved), is `rejected(fix_superseded)` / `rejected(fix_not_needed)`; the claim route cancels the task as `skipped` (not failed) and the ledger row becomes `skipped` |
-| T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED` | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}` | `H' != current` → recorded fact only; this is what stops an old-SHA failure overwriting a newer head |
+| T10 | `CiFailedObserved(H', signature)` fact | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `CHANGES_REQUESTED`; `ESCALATED` with a review or policy reason (`review_*`, `policy_human`: a person can't merge a red head, so the CI fix runs first; a spent budget there is `rejected(budget_exhausted)` and keeps the escalation's reason) | `H' == current_head_sha`; live check-suite read; no open trunk incident matches `signature` (else T25); no `ci` attempt already `queued`/`running` for `H'` (a deferral is recorded with its reason, §12.1 `ci_failed`) | `REPAIRING(ci)` (from `CHANGES_REQUESTED` stays, ci attribute only) | `dispatch_ci_fix(head)` allocating a `ci` ledger row (§5.7) under budget, else `ESCALATED(ci_exhausted)`; always `render_activity` with the failure reason, whether or not a retry was dispatched | `ci:{delivery}:{H'}:{n}` (§13.1 deviation 17) | `H' != current` → recorded fact only; CI not red on `H'` in the live read → `rejected(ci_not_red)`; this is what stops an old-SHA failure overwriting a newer head |
 | T11 | `RepairDelivered` = T3 from `REPAIRING` | `REPAIRING`, `AWAITING_PUSH` | §9 proof | `AWAITING_REVIEW` (new round) or `APPROVED` if §8.3 carry-forward holds | as T5 / T13 | via T3 key | as T3 |
-| T12 | `ConflictObserved(H')` fact | as T10 | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10 |
+| T12 | `ConflictObserved(H')` fact | as T10; from `ESCALATED(review_*/policy_human)` only for a conflict or a migration collision, never a behind-only refresh | `H' == current`; `mergeable=dirty` or behind-base from a live read taken **now**, not a stored snapshot | `REPAIRING(conflict)` or `REPAIRING(behind)` with `repair_mode` per §6.7 | mechanical attempt first (`refresh_branch`, or `renumber_migration` for a collision); only on a mechanical refusal an `agent` ledger row and `dispatch_conflict_fix` | `conflict:{delivery}:{H'}` | as T10 |
 | T13 | `CarryForwardEvaluated(H')` (inside T3 from `APPROVED`/`LANDING`) | `APPROVED`, `LANDING` | the previous head is covered by the delivery's own approval (`headCoverage`: `approved_heads` or `composition_heads`, any basis) **and** the PR diff is unchanged from it to `H'`; recorded as `own_refresh` when the previous head is the one a `refresh_branch` effect of this delivery was pinned to (payload `headSha`), else `content_equivalent`. Never decided from a reviewer task row | `APPROVED`, `approved_heads += H'` (`composition_heads += H'` for a composition basis) | `equivalentHeadShas` projected onto the approving round's reviewer after the transition commits | `carry:{delivery}:{H'}` | not equivalent → T5 (round `r+1`, delta) from `APPROVED` |
 | T14 | `HumanApproved(H')` (GitHub human review or dashboard approve on current head) | `ESCALATED`, `CHANGES_REQUESTED`, `AWAITING_REVIEW` | review `commit_id == current_head_sha`; actor holds merge permission | `APPROVED` with `approver=human` | notify; never enables unattended merge (§17.2) | `approve:{repo}#{pr}:{review}` | review on an older commit: recorded, `stale` |
-| T15 | `LandingRequested(door)` (the five merge doors, sweep) | `APPROVED`; `AWAITING_REVIEW`/`CHANGES_REQUESTED`/`ESCALATED` only for a person's verdict override (§13.7 deviation 3) | live read: open, head == `current_head_sha`; `landPr` rails pass (CI, deny paths, size, migration inspector, freshness, surface order, review gate, mission-PR gate; on a kernel-owned PR the door's review gate is the delivery itself, never the legacy reviewer row, and the landing sweep picks kernel candidates from deliveries in `APPROVED`); override recorded in `bypass` and never covers red CI or deny paths | `LANDING` | `merge_call(head)` | `merge:{repo}#{pr}:{head}:v{version}` (§13.7 deviation 1) | head moved → `stale` and T3 path; a second door while `LANDING` at the head → `duplicate(landing_in_flight)` |
-| T16 | `MergeCallResult` | `LANDING` | GitHub response | merged → T17 (not asserted here: the merged fact comes from a live read); `indeterminate` → stay, `verify_merge` effect; `not_merged` (the verify read shows the PR open and unmerged) → `APPROVED`; behind/out-of-date → `REPAIRING(behind)`; conflict → `REPAIRING(conflict)`; policy/other refusal → `ESCALATED(landing_needs_human)` | `refresh_branch` or alert | `mergeresult:{repo}#{pr}:{head}:{landing_version}:{outcome}` | result for a head that is no longer current: ignored (`stale`) |
+| T14b | `PolicyMergeApproved(H', reason)` (the escalation gate's `policy_merge` rule, lib/merge-policy-rule-executor.ts) | `ESCALATED` with `review_*` or `policy_human` | actor `rule:<name>` (never a model, never a person); `H' == current_head_sha`; no destructive `policy_evidence`; the caller already checked the workspace merge policy lets the platform land | `APPROVED` with `approval_basis = policy_rule` and `H'` in `approved_heads` (exact head: a later push is not covered) | none (the landing doors land it, every rail evaluated again); recorded as a bypass | `policymerge:{repo}#{pr}:{H'}` | another state: `stale`; a hand-off or spent-budget reason, a destructive migration, a non-rule actor: `rejected` |
+| T15 | `LandingRequested(door)` (the five merge doors, sweep) | `APPROVED`; `AWAITING_REVIEW`/`CHANGES_REQUESTED`/`ESCALATED` only for a person's verdict override, and `ESCALATED(landing_needs_human)` for a person's freshness / size override or an agent run's under a person's task grant (§13.7 deviation 3) | live read: open, head == `current_head_sha`; `landPr` rails pass (CI, deny paths, size, migration inspector, freshness, surface order, review gate, mission-PR gate; on a kernel-owned PR the door's review gate is the delivery itself, never the legacy reviewer row, and the landing sweep picks kernel candidates from deliveries in `APPROVED`); override recorded in `bypass` and never covers red CI or deny paths | `LANDING` | `merge_call(head)` | `merge:{repo}#{pr}:{head}:v{version}` (§13.7 deviation 1) | head moved → `stale` and T3 path; a second door while `LANDING` at the head → `duplicate(landing_in_flight)`; a draft PR (live `draft`, or `mergeable_state: draft`) → `rejected(pr_is_draft)` from every door, the override included: no merge call, the delivery stays where it was |
+| T16 | `MergeCallResult` | `LANDING` | GitHub response | merged → T17 (not asserted here: the merged fact comes from a live read); `indeterminate` → stay, `verify_merge` effect; `not_merged` (the verify read shows the PR open and unmerged, a rate limit, or a draft made between the read and the call) → `APPROVED`, with `retryAt` when GitHub said when to come back; a 5xx → `indeterminate`; behind/out-of-date → `REPAIRING(behind)`; conflict → `REPAIRING(conflict)`; policy/other refusal → `ESCALATED(landing_needs_human)` | `refresh_branch` or alert | `mergeresult:{repo}#{pr}:{head}:{landing_version}:{outcome}` | result for a head that is no longer current: ignored (`stale`) |
 | T17 | `PrMerged` fact | **any** non-terminal | live read `merged=true`; records GitHub `merged_at` and `merge_commit_sha` | `MERGED` | stamp `workers.mergedAt`/`prLifecycleStatus` on **all** rows of the PR; cancel open review/fix attempts; `task.pr_merged` emit; dependents, mission wake, release attribution, mission-branch deletion (`finalizeMissionPrMerge`); classify merged-over-verdict | `merged:{repo}#{pr}` | replay is `duplicate`; "merged" is never overwritten by a later fact |
 | T18 | `PrClosedUnmerged` fact | any non-terminal | live read `state=closed`, `merged=false` | `CLOSED_UNMERGED(close_cause)` | cancel open attempts; `scan_supersession`; mission note; stamp all rows `closed` | `closed:{repo}#{pr}:{updated_at}` | a closed fact older than a later `PrReopened` loses to the live read |
 | T19 | `PrReopened` | `CLOSED_UNMERGED` | live read `state=open` | `AWAITING_REVIEW` at the live head | `dispatch_review` | `reopen:{repo}#{pr}:{updated_at}` | none |
 | T20 | `SupersessionRecorded(target)` | `CLOSED_UNMERGED` **only** | live read: target PR exists, `merged=true`, is a different PR; caller authorised (§17.1) | `SUPERSEDED` | project `workers.supersededBy*`; mission wake | `supersede:{repo}#{pr}` | not closed → `rejected(not_closed_unmerged)`; fixes today's ability to mark an open PR superseded and to overwrite an edge |
 | T21 | `Abandon(reason)` | `CLOSED_UNMERGED` | human actor; reason non-empty | `ABANDONED` | project `workers.abandoned*` | `abandon:{repo}#{pr}` | not closed → `rejected` |
-| T22 | `PushRecoveryExhausted` | `AWAITING_PUSH` | `push_recovery` effect hit its attempt cap | `ESCALATED(push_undeliverable)` | notify with branch and reported `L` | `pushdead:{delivery}:{L}` | a head observed meanwhile wins (T3): before the escalation applies, the cap is `stale`; after it, a head with §9 proof against `L` still returns the delivery to `AWAITING_REVIEW` (§6.4), so a person who pushes the branch need not also dismiss the escalation |
-| T22b | `EffectDead(effect)` (the drain, §10.3) | the state that owed the effect: `LANDING` (`merge_call`, `verify_merge`), `AWAITING_PUSH` (`push_recovery`), `CHANGES_REQUESTED` (`dispatch_fix`), `AWAITING_REVIEW` (`dispatch_review`), any non-terminal (`post_review`) | the effect is `critical` and went `dead` | `ESCALATED(landing_needs_human)` for landing, `ESCALATED(push_undeliverable)` for `push_recovery`, else `ESCALATED(effect_dead)` | notify a person | `effectdead:{effect}` | the delivery left that state → `stale(state_moved)`; already `ESCALATED` → `duplicate`; a non-critical kind → `rejected(not_critical)` |
+| T22 | `PushRecoveryExhausted` | `AWAITING_PUSH` | `push_recovery` effect hit its attempt cap | `ESCALATED(push_undeliverable)` | notify with branch and reported `L` | `pushdead:{delivery}:{L}` on the first visit to `AWAITING_PUSH`, `pushdead:{delivery}:{L}@v{N}` on a later one (`N` the version it entered at, §9) | a head observed meanwhile wins (T3): before the escalation applies, the cap is `stale`; after it, a head with §9 proof against `L` still returns the delivery to `AWAITING_REVIEW` (§6.4), so a person who pushes the branch need not also dismiss the escalation |
+| T22b | `EffectDead(effect)` (the drain, §10.3) | the state that owed the effect: `LANDING` (`merge_call`, `verify_merge`), `AWAITING_PUSH` (`push_recovery`), `CHANGES_REQUESTED` (`dispatch_fix`), `AWAITING_REVIEW` (`dispatch_review`), any non-terminal (`post_review`) | the effect is `critical` and went `dead` | `ESCALATED(landing_needs_human)` for landing, `ESCALATED(push_undeliverable)` for `push_recovery`, `ESCALATED(review_unavailable)` for `dispatch_review` (the round is not being served, T27's outcome, so T5 lets anyone ask again; its open round is closed `failed` as T27 closes one), else `ESCALATED(effect_dead)` | notify a person | `effectdead:{effect}` | the delivery left that state → `stale(state_moved)`; already `ESCALATED` → `duplicate`; a non-critical kind → `rejected(not_critical)` |
 | T23 | `Escalate(reason)` / `HumanResolve(choice)` | `ESCALATED` | human actor; choice ∈ approve (T14's evidence: the approved commit is the live `current_head_sha` and the actor holds merge permission, else `stale(review_on_older_commit)` / `rejected(no_merge_permission)`), request changes (→ `CHANGES_REQUESTED`), apply recommendation (→ `FIXING` path, new attempt), dismiss with reason (→ `AWAITING_REVIEW` forced round) | per choice | per choice | `resolve:{delivery}:{version}` | resolves only the escalation at the version the human saw (§7); apply/request changes need a review round at the current head (`no_review_at_head`) and dispatch a `trigger=human` T8 carrying the person's instructions |
-| T24 | `DeliveryFailed(reason)` (owner task terminal, no PR) | `WORKING`, `AWAITING_PUSH` | task `failed`/`cancelled`, retry budget spent, no PR bound | `FAILED` | none | `fail:{task}` | with a PR bound, T18/T22 apply instead |
+| T24 | `DeliveryFailed(reason)` (owner task terminal, no PR) | `WORKING`, `AWAITING_PUSH` | task `failed`/`cancelled`, retry budget spent, no PR bound | `FAILED` | none | `fail:{task}` | with a PR bound, T18/T22 apply instead. The key never repeats by design: `FAILED` is terminal, so there is no second occurrence to drop |
 | T25 | `TrunkRedObserved(signature)` (circuit breaker, §6.10) | `AWAITING_REVIEW`, `APPROVED`, `LANDING`, `REPAIRING(ci)` | the same `signature` is failing on the base branch's own head, **or** ≥ the configured count of deliveries in the workspace hit it inside the configured window; open or join the `trunk_incidents` row | `BLOCKED_ON_TRUNK` with `resume_state` = the source | one `dispatch_trunk_fix` per incident (never per PR); cancel queued per-PR `ci` attempts for affected deliveries as `skipped`; `render_activity` ("blocked on trunk") | `trunk:{incident}:{delivery}` | a fact for a head that is no longer current is recorded only |
-| T26 | `TrunkRecovered(incident)` (base head green for the signature, or incident resolved by the trunk-fix PR merging) | `BLOCKED_ON_TRUNK` | live read: base branch's CI no longer fails the signature | `resume_state` re-entered at the current head; if that head predates the trunk fix, effect `refresh_branch` then re-run CI is the mechanical repair | none | `trunkok:{incident}:{delivery}` | a still-red re-read keeps the state; the budget of the `ci` family is **not** consumed while blocked |
-| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{n}` | a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
+| T26 | `TrunkRecovered(incident)` (base head green for the signature, or incident resolved by the trunk-fix PR merging) | `BLOCKED_ON_TRUNK` | live read: base branch's CI no longer fails the signature | `resume_state` re-entered at the current head; if that head predates the trunk fix, effect `refresh_branch` then re-run CI is the mechanical repair. `APPROVED` (or `AWAITING_REVIEW`) re-enters only what the head is owed: covered → `APPROVED`; a round open at the head → `AWAITING_REVIEW`; a round decided at the head (a verdict that arrived while blocked, T6) → its verdict's state; otherwise round `r+1` at the head → `AWAITING_REVIEW`. Never an `APPROVED` no verdict covers (47be5f6c) | none | `trunkok:{incident}:{delivery}` | a still-red re-read keeps the state; the budget of the `ci` family is **not** consumed while blocked |
+| T27 | `ReviewRoundFailed(round, reason)` (no valid structured verdict, reviewer died, contract retry spent, a person interrupted the reviewer) | `AWAITING_REVIEW` | round exists and is `queued`/`reviewing`; `reason` ∈ `no_verdict`, `prose_verdict`, `infra`, `human_takeover` | stay `AWAITING_REVIEW` while the contract/infra retry budget allows (round re-queued at the same head, **not** a new round number), then `ESCALATED(review_unavailable)`; `human_takeover` (`POST /api/workers/[id]/interrupt`) is never re-queued and escalates at once | `dispatch_review` retry; `gate_events` row | `roundfail:{round}:{reviewerTask}` (the reviewer task whose run failed; `roundfail:{round}:{n}` only for a kernel-side failure where no reviewer was ever asked) | a repeated report of one reviewer's failure (a retried PATCH, the reaper) is `duplicate`, and a reviewer task that is not the round's recorded reviewer is `stale(reviewer_not_current)`: the round's contract budget is spent once per reviewer (04a79514); a prose verdict is a failure, never an approve; the existing prose fallback can only *propose* a verdict that a person confirms, it cannot apply T6 |
+| T28 | `PolicyEvidenceRecorded(evidence)` (the PR-open pre-flight finding; `workflow_deliveries.policy_evidence`) | any non-terminal | `evidence.headSha == current_head_sha`. `outcome` is `human` (destructive or uninspectable SQL, deny path, human-tier policy) or `agent_split` (a PR mixing EXPAND and CONTRACT migrations, a mechanical-split job for an agent) | from `AWAITING_REVIEW`/`APPROVED` with no open attempt: `human` → `ESCALATED(policy_human)`, open rounds superseded; `agent_split` → `REPAIRING(migration)` with one agent `migration` ledger row (past 2 rows → `ESCALATED(policy_human)`). Every other state (a running owner, an open repair, an owed fix, landing) **records** the finding and acts on nothing: the platform already owns the PR, so no human is notified and no second branch writer is queued. An owner hand-off (§6.5 row 1) at exactly that head applies the recorded finding instead of queuing a review round | `notify(policy_human)` (admitted only while the delivery is still `ESCALATED` at that head); `dispatch_conflict_fix(repairKind=migration_split)` | `policy:{delivery}:{head}:{outcome}@v{version}` | a finding for any other head is `stale(head_not_current)` and never re-escalates a newer head; the same finding replays as `duplicate` while the delivery holds it (`policy_evidence` equal, `evidence_recorded`), so a person's resolution at that head stands against a redelivered import. Once the delivery has dropped the finding (T29 clears it), the same finding applies again (10658a4c). It never bypasses CI or T15's rails |
+| T29 | `BaseChanged(live)` (`pull_request.edited` with `changes.base`; GitHub's retarget of a PR stacked on a merged, deleted branch; or a live read at a CI, landing or floor door whose `base.ref` differs from `delivery.base_ref`) | any non-terminal | live read: PR open, `base.ref != base_ref` | `base_ref` follows the live base. Unless the PR's diff against the new base equals its diff against the old one (`diffEquivalent`: each side's `base...head` diff less the files whose head content that base's tip already holds, e.g. a squash-landed parent of a stacked PR, compared per file patch; fails closed, so an unreadable or deleted old base is not equivalent), every approval is dropped (`approved_heads`, `composition_heads`, `approval_basis`, `policy_evidence` cleared) and rounds decided at the head are `superseded`. From `APPROVED`, `LANDING`, `AWAITING_REVIEW`: round `r+1` at the head → `AWAITING_REVIEW` (a queued `merge_call` skips once the delivery left `LANDING`). From `BLOCKED_ON_TRUNK`: `resume_state = APPROVED` becomes `AWAITING_REVIEW`. Every other state keeps its owner and only records | `dispatch_review` when a round starts | `base:{repo}#{pr}:{from}->{to}@v{version}` | same base: `duplicate(base_unchanged)`. T15 refuses a landing whose live read names another base than `base_ref` (`stale(base_moved)`); the landing door records T29 first. CI classification and incident joins (§6.10) read the live base over the stored one (24e1cfad) |
 
 ### 6.4 `HeadObserved(H')` by state
 
@@ -484,6 +492,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `REPAIRING` | `duplicate` | proof (§9) → T11 |
 | `APPROVED` | `duplicate` | T13 carry-forward, else round `r+1`; **this replaces today's "re-review only when a merge is attempted"** |
 | `LANDING` | `duplicate` | abort landing; as `APPROVED` |
+| `BLOCKED_ON_TRUNK` | `duplicate` | record head; stay blocked (T26 re-enters). With `resume_state = APPROVED`: T13 carry-forward evidence keeps the approval (the head joins `approved_heads`); without it `resume_state` becomes `AWAITING_REVIEW`, so recovery reviews the new head instead of landing it (47be5f6c) |
 | `ESCALATED` | `duplicate` | `review_*` escalations at an older head: round `r+1`; `push_undeliverable`: as `AWAITING_PUSH` — if proof (§9) holds against the escalated `L`, `AWAITING_REVIEW`, new round (the escalation's cause is gone: the work arrived), else record only (no new `push_recovery`: a person owns it now); other reasons: record only |
 | terminal | ignored (recorded) | ignored (recorded) |
 
@@ -494,6 +503,7 @@ turns a fact into the command shown; a human or agent caller issues commands dir
 | `WORKING`, success, PR bound and live head `H` contains `L` (or `L` is empty and the output requirement is satisfied by the PR) | `AWAITING_REVIEW`, round queued at `H` per T5 unless one is already open at `H` (§15 step 2). The owner attempt has ended, so `WORKING` (worker owns the next move, §4) would leave the delivery with no owner |
 | as above, round already **decided** at `H` | the state that round's verdict maps to, exactly as T6: approve → `APPROVED`; request changes → `CHANGES_REQUESTED` with `dispatch_fix` unless a fix for that round is open (`ESCALATED(review_exhausted)` at the round budget); escalate → `ESCALATED(review_escalated)` |
 | as above, the workspace policy requires no review (auto-threshold) | `APPROVED` with `approval_basis = policy`, `state_reason = policy_no_review`: no round, no verdict, `approved_heads` untouched, so it never reads as a reviewer verdict (§8). Policy covers only the current head; a later push stays `APPROVED` by policy. Landing is still gated by T15's rails |
+| as row 1, the live read of the head's check runs shows a failing check | T10's outcome, under T4's key: `REPAIRING(ci)` with one `ci` ledger row and `dispatch_ci_fix(H)`, or `ESCALATED(ci_exhausted)` at the cap; no round is queued (the repair's resume starts one, so a reviewer is never spent on a red head). A trunk-explained failure (§6.10) hands on as row 1 and then takes T25. A policy finding (T28) or a verdict already decided at `H` is applied first; an unreadable check read hands on as row 1. Why: a `CiFailedObserved` hint that arrived while `WORKING` was `stale(state_not_allowed)` (the owner owned the move, and is never interrupted), so the hand-off is the first point the platform can act on it (§13.1 deviation 18) |
 | `WORKING`, success, PR required and `commitCount>0` but live head does not contain `L`, or no PR | `AWAITING_PUSH` with effect `push_recovery` |
 | `WORKING`, `failed`/`lost`, retry budget left | stay `WORKING` (task retried, attempt count +1) |
 | `WORKING`, `failed`/`lost`, budget spent, PR bound | `ESCALATED(push_undeliverable)` if `L` unproven; else, with the PR open, hand on exactly as row 1 (review round, decided verdict, or policy approval) |
@@ -576,7 +586,8 @@ opens a trunk incident (T25) when the same signature (a) is failing on the base
 branch's own head, or (b) is failing on at least a configured number of distinct
 deliveries inside a configured window. While an incident is open: no per-PR `ci`
 attempt is dispatched for that signature; queued ones are cancelled as `skipped`; one
-`trunk` family attempt (`dispatch_trunk_fix`) exists per incident; affected deliveries
+`trunk` family attempt (`dispatch_trunk_fix`) exists per incident, and one trunk-fix
+task runs per red base however many incidents it holds; affected deliveries
 are `BLOCKED_ON_TRUNK`, visible on the comment and on Home as "blocked on trunk"
 rather than "CI failing"; and the `ci` budget is not consumed. Time-dependent
 ("time-bomb") failures are the same case seen first on trunk. The base-red rule (a)
@@ -584,8 +595,9 @@ is ON by default with the kernel (owner decision: the kernel ships live; open
 question 7's lean that base-red alone opens the incident); the multi-delivery rule
 (b) is opt-in through `gitConfig.trunkBreaker = { minDeliveries, windowMinutes }`,
 and `trunkBreaker: false` turns the breaker off (§13.5). The safety bound is one
-trunk-fix task per incident, and a PR is blocked only while its every failing check
-also fails on the base.
+open trunk-fix task per base branch (an incident opened while another unresolved
+incident on that base has an unfinished fix joins that fix), and a PR is blocked
+only while its every failing check also fails on the base.
 
 **Policy checks before PR creation and push.** Failures of rules that are known before
 CI runs (production-data scan of PR body and commits, ratchet and drift tests, lint
@@ -737,6 +749,12 @@ HEAD` and `git ls-remote` output; (2) otherwise requeue a recovery attempt on th
 branch (`resumeBranch`, as retries already do); (3) re-read GitHub. A head observed at
 any point ends recovery through T3.
 
+One chain per visit to `AWAITING_PUSH`: `push_recovery:{delivery}:{L}:{n}` on the first
+visit, `push_recovery:{delivery}:{L}@v{N}:{n}` on a later one, `N` the version of the
+transition that entered it (the view's `pushEntries` / `pushPendingSince`). A delivery a
+person took out of `ESCALATED(push_undeliverable)` whose work comes back unpushed at the
+same `L` gets its own tries and its own T22, never the first visit's spent keys (10658a4c).
+
 **Surfaces this binds:**
 
 - **Completion gate.** For attempts with role `fix`/`ci_fix`/`conflict_fix`, a terminal
@@ -786,7 +804,7 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 | `push_recovery` | §9 | bounded tries; each try is a read-then-instruct |
 | `stamp_pr_rows` | project columns on every worker row of the PR | `WHERE` guarded on `merged_at IS NULL` etc. |
 | `renumber_migration` | mechanical migration index fix (§6.7) | computed from live trees; re-running on an already-renumbered head finds nothing to do |
-| `dispatch_trunk_fix` | one trunk-fix task per incident | unique per `trunk_incidents` row |
+| `dispatch_trunk_fix` | one open trunk-fix task per red base | unique per `trunk_incidents` row; the task id is the base's anchor incident (§13.5) |
 | `render_activity` | regenerate the PR comment from canonical state (§12.1) | a pure function of `(delivery, transitions)`; convergent, coalesced per delivery |
 | `notify` / `mission_note` / `wake_mission` / `release_attribution` / `finalize_mission_pr` | existing helpers | keyed by `(delivery, transition)`; helpers already dedupe by marker or note key |
 | `scan_supersession` | existing detector | `supersessionScan` rescan gate |
@@ -795,8 +813,16 @@ between "merge accepted" and "`task.pr_merged` emitted" loses the effect.
 
 Mirror `task_dispatch_outbox` (`packages/core/dispatch-outbox.ts`, `dispatch-authority.ts`):
 claim due rows with `FOR UPDATE SKIP LOCKED` in one CTE, set `status='delivering'` and
-`attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again;
-ack with `WHERE id AND status='delivering'`; failure returns the row to `pending` with
+`attempt_count+1`; a `delivering` row older than the lease (120s) is claimable again.
+A batch is claimed under one lease but its handlers run one after another, so each row
+is renewed for itself just before its turn (`renewEffectLeaseSql`: `WHERE id AND
+status='delivering' AND attempt_count` = the claim's) and kept alive while its handler
+runs; no row back means another drain re-claimed it after the batch lease ran out, and
+this drain skips it (`lost`) instead of running it a second time. §10.4's current-ness
+check reads the delivery as returned by that renewal, not the claim-time snapshot. Ack
+and failure are fenced the same way (`WHERE id AND status='delivering' AND
+attempt_count`), so a stale attempt can neither settle nor re-open the attempt that
+re-claimed its row (625449c7). Failure returns the row to `pending` with
 exponential backoff (15s doubling, cap 30m); at 8 attempts the row is `dead`, a
 `gate_events` row is written (`workflow_effect_dead`: `stranded` for a critical
 effect, `warned` otherwise; `dead-effects.ts`) and, for effects marked `critical`
@@ -870,13 +896,26 @@ each one it reads the PR once and imports what GitHub says through
 - the head, when it differs from `current_head_sha` (T3);
 - merged or closed, when the delivery has not recorded it (T17/T18);
 - reopened, for a `CLOSED_UNMERGED` delivery whose PR is open again (T19).
+- the owner's end, for a `WORKING` delivery whose owner task is terminal and whose
+  latest owner worker ended (T4): `AttemptEnded` rebuilt from that workers row, keyed
+  `end:{worker}` like the runner's, so an end the kernel already holds is a
+  `duplicate`. It also stamps a missing `tasks.delivery_id`. An owner end can be lost
+  three ways, and this is the one repair for all of them: a completion that races the
+  PR open (each side reads the other's row before it is written), a crash between the
+  open's transitions and its `tasks.delivery_id` stamp, and a command that loses the
+  version check twice (`stale(cas_conflict)`). The open's own late hand-off re-reads the
+  task and worker at the hand-off rather than trusting its first read (bb6a3a56).
 
 It then inserts whatever `enqueueMissingEffects` (`enqueue-missing.ts`) says the
 state owes and the delivery lacks:
 - `CHANGES_REQUESTED`: a `dispatch_fix` for the current round at the current head;
-- `AWAITING_REVIEW`: a `dispatch_review` for the queued round at the current head;
+- `AWAITING_REVIEW`: a `dispatch_review` for the queued round at the current head; a
+  queued round with no reviewer whose every `dispatch_review` key is `done` (one acked
+  `skipped:*` while the delivery was briefly elsewhere, e.g. a not-needed repair that
+  resumed the round) owes a fresh one per version
+  (`dispatch_review:{delivery}:{round}:floor:v{version}`) (a6cbd241);
 - `AWAITING_PUSH`: a `push_recovery` chain; a chain whose every try is `dead` owes its
-  last try (`push_recovery:{delivery}:{L}:final`), which is T22 when the head has not moved;
+  last try (`push_recovery:{delivery}:{L}:final`, in the current visit's chain, §9), which is T22 when the head has not moved;
 - `LANDING`: with no `merge_call` or `verify_merge` still pending or delivering, one
   `verify_merge` per version (`verify_merge:{delivery}:{head}:floor:v{version}`): it
   re-reads the PR and is T17, a head fact, or `MergeCallResult(not_merged)` → `APPROVED`.
@@ -1124,6 +1163,31 @@ Part 2 deviations:
 16. A queued mechanical attempt counts as live for attribution (the platform's own
     refresh is in flight from dispatch). The runner's `remoteHeadSha` /
     `unpushedCommits` payload is not added: provenance uses the reported local heads.
+17. **T10's live check-suite read is the check runs on `H'` now, and its key carries
+    the ledger row: `ci:{delivery}:{H'}:{n}`.** The `check_suite` hint and the red-PR
+    sweep both pass through `observeCiFailure`, which reads the runs on the live head
+    through the `GithubFactReader`; a read with nothing failing (re-run green, or a
+    re-run still going, whose own completion is the next hint) is
+    `rejected(ci_not_red)` and records nothing, so a stale or redelivered failure hint
+    never leaves `APPROVED`. The read is the transition's `liveChecks` evidence; an
+    unreadable one (and a person's "Fix CI") fails toward doing the work. The key keeps
+    `:{n}` because T10 at the same head is a designed path, not a replay: the sweep
+    re-observes a head whose attempt ended without a push, the cap escalates at that
+    head, and a re-run that fails again after going green is a new red. A plain
+    `ci:{delivery}:{H'}` would answer every one of those `duplicate` and strand a red
+    head with no repair. Redelivery is bounded by the live read, `fix_in_flight` and
+    the ledger cap instead.
+18. **The owner's hand-off reads CI on its head (e9f1674b).** T10 does not move
+    `WORKING`, so a `check_suite` failure that arrived while the owner ran was dropped
+    until the red-PR sweep or a push. `attemptEnded` in the seam now reads the check runs
+    on the live head when an owner attempt ends with the PR open, and passes them as
+    `AttemptEnded.ci` (`liveChecks`, the failing checks' `signature`, the workspace's
+    `maxCiRetries`). A red read routes §6.5 row 1 to `REPAIRING(ci)` through the same
+    ledger, dispatch key and cap as T10; the read is the transition's `liveChecks`
+    evidence either way. A red the trunk explains (the T10 classification, §6.10) is
+    handed on as before and then applied as `TrunkRedObserved`. A green, still-running
+    or unreadable read changes nothing, so recorded histories without the field replay
+    unchanged.
 
 Deferred to part 3, which shipped them (§13.2): `DeliveryView` with one owner of the
 next move, `render_activity` regenerating the comment from transitions (§12.1),
@@ -1280,7 +1344,13 @@ not own keeps the legacy conflict retry unchanged:
   migration-collision dispatch) reaches `dispatchConflictRetry`, which now asks
   `observeConflict` (`seam.ts`) first. For a kernel-owned PR it takes a live read of
   `mergeable_state` now (the door's own reading is used only when GitHub says
-  `unknown`), records the head first, and applies `ConflictObserved`. The legacy
+  `unknown`), records the head first, and applies `ConflictObserved`. GitHub says
+  `behind` only under "require up to date" protection; without it a PR behind its
+  base reads `clean`. So a door that saw the PR behind (landing's freshness rail) on
+  a mergeable PR is answered by ancestry (`conflictReading`): the base tip missing
+  from the head is `behind`, and `refresh_branch` runs. Reading `clean` as
+  `not_conflicting` there stranded approved, green PRs: landing asked for a refresh
+  every sweep and was told the branch already had every base commit. The legacy
   decision does not run: no `conflictIteration` counter, no spent-key release, no
   behind-only refresh, no task insert. `kernelConflictOutcome` maps the answer onto the
   `DispatchConflictRetryResult` the doors already understand (a landed mechanical
@@ -1384,9 +1454,20 @@ T25/T26, S24, AC-15):
   delivery already `REPAIRING(ci)` joins too (its queued attempt is `skipped`, it
   spends nothing). A newly opened incident also takes every kernel delivery on the
   same base repairing a failure it explains. `dispatch_trunk_fix`
-  (`lib/workflow/ci-red-trunk-effects.ts`) files exactly one trunk-fix task per incident:
-  the task id is the incident id, it is linked after it exists (the FK, §13.1
-  deviation 9), and a base that is already green at dispatch files nothing. The
+  (`lib/workflow/ci-red-trunk-effects.ts`) files one trunk-fix task per red base,
+  not per incident: a base can hold several unresolved incidents at once (one per
+  signature: its runs were read before every check finished, or its head moved and
+  broke more), and each used to file its own fixer. The task id is the base's
+  anchor (`trunkFixAnchorSql`): the oldest unresolved incident on the base whose fix
+  is unfinished, else the incident itself. Every incident of one red base, and
+  concurrent drains in either order, insert that one id, so the primary key files it
+  once with no interactive transaction. An incident that joins a fixer is linked to
+  it and steers it with the checks it was not filed for (appended to the task, and
+  queued to a live worker), once per incident. A resolved incident never anchors, so
+  a red after recovery files a fix of its own; the effect's dedupe key stays the
+  incident (a base-scoped key would swallow every later red on the base forever).
+  The task is linked after it exists (the FK, §13.1 deviation 9), and a base that
+  is already green at dispatch files nothing. The
   `cancel_open_attempts(blocked_on_trunk)` effect cancels the per-PR CI fix tasks
   that never started. The CI doors map a blocked delivery to the skip reason
   `blocked_on_trunk`, so the red-PR sweep files nothing and does not come back.
@@ -1524,6 +1605,21 @@ door exactly as it was (AC-11):
   (`dispatch_conflict_fix`); a branch already current skips the row and resumes
   `APPROVED`. Anything else GitHub definitely refused is
   `ESCALATED(landing_needs_human)`.
+- **Transient answers are a wait, not a refusal** (9bfe0d23). `classifyMergeCall`
+  reads the HTTP status first: a rate limit (429, or a 403 with a rate-limit message
+  or reset headers) is `not_merged`, since GitHub refuses it before looking at the PR;
+  a 5xx is `indeterminate` and goes through `verify_merge` like a lost answer. Only
+  the remaining definite answers (405/409/422 and other 4xx) are refusals. The
+  MergeCallResult records `retryAt` from `retry-after`, or `x-ratelimit-reset` once
+  the quota is spent (a rate limit with neither waits a minute; capped at an hour),
+  and `listApprovedKernelPrs` skips the delivery until then, so the landing sweep
+  does not spend another call against the same limit. A door a caller drives may
+  still ask earlier.
+- **A draft is a hold, not a refusal** (e89035b6). T15 refuses a draft PR as
+  `rejected(pr_is_draft)` before any merge call, so the delivery stays `APPROVED`
+  and the landing sweep lands it once a person marks it ready for review (the next
+  sweep tick after `ready_for_review`). A draft made between the live read and the
+  merge call is GitHub's 405, which T16 maps to `not_merged`.
 - **Post-merge work is outbox effects.** T17 queues `stamp_pr_rows`,
   `cancel_open_attempts`, `emit_pr_merged` and `finalize_mission_pr`.
   `emit_pr_merged` runs `runMergedPrWork` (`lib/pr-merged-work.ts`, extracted from the
@@ -1560,7 +1656,19 @@ Deviations, each deliberate:
    (`APPROVED`, `AWAITING_REVIEW`, `CHANGES_REQUESTED`, `ESCALATED`), matching the
    dashboard's "Merge anyway", which also overrides an in-flight review. It is
    recorded in `bypass` with the state it overrode; red CI and deny paths stay
-   non-overridable, and an agent actor never gets it.
+   non-overridable, and an agent actor never gets it on its own. An override
+   naming only `freshness` / `size` (`override.kinds`) is not a verdict override:
+   it lifts `ESCALATED(landing_needs_human)` and nothing else
+   (`rejected(override_does_not_cover_state)` from a review state). The doors that
+   carry one are the landing page's "Merge anyway" (`POST /api/prs/[prNumber]/merge`),
+   `merge_pr` with `overrides` + `reason` from a person's OAuth session, and chat's
+   `merge_pr` (which merges through that same dashboard route, behind an approval
+   card it never skips). An agent run gets the door only under a grant a person
+   put on its task at creation, `context.landingOverride: { prNumbers, overrides }`
+   (`lib/landing-override-grant.ts`): the server stamps `grantedBy` with that person
+   and refuses the field from any API key or task token, a template-spawned task
+   never inherits one, and the run may override only the named PRs and kinds,
+   never the verdict. T15 records `kinds` and `grantedBy` in `bypass`.
 4. **The mission wake and release attribution are not separate T17 effects.** They
    are subscribers of the `task.pr_merged` event `emit_pr_merged` emits, and they read
    the task transition (`flipped` / `already_completed`) that same effect produced; two
@@ -1581,6 +1689,19 @@ Deviations, each deliberate:
 8. **`version` is accepted, not yet shown.** The routes take it and the kernel
    enforces it; the dashboard card, `get_pr` and the MCP `merge_pr` tool do not send
    or display it yet (Slice E reads the delivery view).
+9. **The kernel's treadmill has cycles (S15 cycles).** `DEFAULT_MAX_BEHIND_REFRESHES`
+   bounds the behind refreshes in one *cycle*, not over the delivery's life. A spent
+   cycle escalates `ESCALATED(landing_needs_human)` with `evidence.treadmill` and the
+   cycle number (a90fc99b: with no `notify` effect unless it is the final cycle, because
+   the sweep restarts every other one; a person hears only when nothing will); once `LANDING_CYCLE_COOLDOWN_MS` has passed since that escalation,
+   `restartTreadmillCycles` (the `pr-reconcile` cron, beside the kernel floor) applies
+   `TreadmillCycleRestarted`, pinned to the escalation's version: the delivery returns
+   to `APPROVED` (its approval still covering the head) and a skipped
+   `treadmill_cycle` marker row in the conflict ledger opens the next cycle. Only the
+   treadmill cause qualifies (the escalation transition's `:treadmill` key at the
+   current version; the reducer also checks the cycle is spent), and after
+   `MAX_TREADMILL_CYCLES` the escalation stays with a person. Landing pages a spent
+   treadmill as `refresh_exhausted`, so the page offers "Merge anyway" past freshness.
 
 ### 13.8 What Slice D shipped, and its deviations
 
@@ -1598,7 +1719,7 @@ direct column writes exactly as they were:
   409, `same_pr` and `reason_required` 400. The direct `workers` update runs only for
   a legacy PR.
 - **T21 is the only write of an abandonment** for a kernel-owned PR
-  (`recordPrAbandonment` → `abandonDelivery`), with the person as `human:<who>`.
+  (`recordPrAbandonment` → `abandonDelivery`), with the person as `human:<userId>`.
 - **The close reconciler leaves kernel PRs alone** (`review-subscribers.ts`,
   final-audit fix 708a55c0). Like its detect sibling, `supersession-reconcile-on-close`
   asks `kernelDeliveryForPr` first. For a kernel-owned PR it does not run
@@ -1631,8 +1752,8 @@ direct column writes exactly as they were:
   projection and the gate's own rules are unchanged: the `mission-task-lifecycle`
   acceptance tests pass unmodified (S16).
 - **§17.1 (b) holds at the supersede route.** A task token may supersede the PR its
-  own run opened **or** a PR its own task names (`taskScopeTaskNamesPr`, shared with
-  `POST /api/github/pr/review`), never one the owner's task names; its T20 actor is
+  own run opened **or** a PR its own task's records link (`taskScopeTaskLinksPr`, shared with
+  `POST /api/github/pr/review`), never one the owner's task links; its T20 actor is
   `agent:<its task>` (S21).
 - **Found and fixed: Slice C's handlers were never composed.** `modules.ts`
   imported `withLandingEffects` and did not apply it, so in production `merge_call`,
@@ -1654,9 +1775,15 @@ Deviations, each deliberate:
 3. **The hourly sweep still runs the detector** for every closed, unresolved row,
    kernel-owned or not, instead of only re-enqueueing `scan_supersession`. Its write
    is T20 either way, so it is a second door, not a second authority.
-4. **An admin API key may abandon** through the mission card route, recorded as
-   `human:<key name>`. Agents hold worker-level and task tokens, which that route
-   refuses; an admin key is a person's own credential.
+4. **Abandon needs a person** (task c2bdd4ba; this slice first let an admin API key
+   abandon as `human:<key name>`). The mission card route passes `human:<userId>`
+   only for a dashboard session or the person's own OAuth session, and refuses any
+   API key (403) and any per-task token (401) before the kernel is asked;
+   `recordPrAbandonment` itself refuses a non-`human:` actor on a legacy PR too.
+   Runner agents never present an OAuth session: their buildd MCP connection is the
+   worker endpoint on a per-task token or the runner's buildd key, and a runner
+   started on a session bearer hands the agent no buildd credential rather than
+   that bearer (`apps/runner/src/agent-task-token.ts`).
 5. **Lineage-derived supersession stays a read-time proof.** A closed PR followed
    by a merged PR from its own attempt lineage reads as shipped in the gate
    (`deriveLineageSupersession`) without a T20, as before; the delivery stays
@@ -1898,8 +2025,34 @@ code path only for workspaces still flagged off.
 
 **Per-workspace kill switch.** `gitConfig.workflowKernel` is a boolean, absent = on:
 the kernel ships live, not dark (owner decision for Slice A, superseding the earlier
-default-off plan). `false` (or `'off'`) is the emergency rollback. There is no `shadow`
-value on purpose.
+default-off plan). `false` is the emergency rollback. There is no `shadow` value on
+purpose.
+
+*One reading.* The key is read in exactly one place per language:
+`kernelEnabled(gitConfig)` in TypeScript and `kernelOnSql(gitConfigColumn)` in SQL
+(`apps/web/src/lib/workflow/authority.ts`); no other code parses it, and a test runs
+both over the same value forms and requires them to agree
+(`apps/web/tests/db/workflow-probe-killswitch.test.ts`). The kernel is **on** only
+when the key is absent, JSON `null`, `true`, or the string `'true'` or `'on'` (a
+`git_config` that is null or not an object reads as absent). **Every other value is
+off**: `false`, `'false'`, `'off'`, and anything unrecognised (`'no'`, `'TRUE'`,
+`0`, an empty string, an object). An emergency switch fails toward legacy, the path
+that needs no kernel at all, and an operator never needs the exact spelling to stop
+it. A write is stricter than a read: the workspace `PATCH` accepts only `true`,
+`false` or `null` for the key and answers 400 otherwise, so no new string form is
+stored; the read tolerates the forms already stored.
+
+*A read that fails.* Ownership is a database read, so it can fail. Kernel-side
+decisions **fail closed**: an effect whose claim (which reads the switch in the same
+statement) fails is not run and is retried with backoff; a sweep row whose authority
+cannot be resolved is skipped and counted as an error; a seam function throws to its
+caller. No kernel decision is made on an unknown answer. The two legacy doors that ask
+"is this PR the kernel's?" (the PR-opened policy and the `synchronize` re-review)
+fall back to legacy on an unreadable answer, as they did before the kernel: a legacy
+door has no floor to retry it, so failing closed there would lose a review, which is
+the stranding this section forbids; the duplicate it risks is bounded by
+`createReviewerTask`'s per-head single-flight guard. Display reads degrade to the
+legacy projection, which the kernel keeps current (§12).
 
 **Cutover: pre-existing deliveries finish on legacy.** A delivery row is opened only at
 the point the legacy code would dispatch a PR's first review, so a PR that is already
@@ -1912,11 +2065,58 @@ and the population drains on its own as those PRs merge or close.
 **Kill switch semantics.** With the switch off, the first kernel touch of a delivery
 releases it (`authority = 'legacy'`, `released_at`) in the same statement that reads
 it; no new delivery opens. The release is sticky: switching back on does not hand a
-released delivery back, because legacy may have acted on it meanwhile. Effects already
-committed still drain (they are decisions already made, and they create legacy-shaped
-tasks: fix tasks carry `reviewerRetry*`, `iteration`, `resumeBranch`; reviewer tasks
-carry the full legacy context), so legacy can carry a released delivery on. Neither
-direction rewrites kernel state.
+released delivery back, because legacy may have acted on it meanwhile. Neither
+direction rewrites kernel state. "A kernel touch" is every path that would decide for
+a delivery, including the sweeps: the reconciliation floor, the treadmill restart,
+the trunk recovery sweep and its incident join each resolve authority per delivery
+before acting, so a sweep never applies a transition or pushes to a PR branch in a
+switched-off workspace. Read-only surfaces (delivery views, the PR activity
+diversion, the ship state, landing's candidate lists) apply the same reading, so a
+switched-off delivery is shown and landed by legacy before anything has released it.
+
+*The kernel decides nothing for a released delivery.* `applyCommand` refuses any
+command on a delivery whose `authority` is `legacy` (`rejected: legacy_owns`), and the
+transition write itself is guarded on `authority = 'kernel'`, so a release that lands
+between the read and the write wins. Whatever asks (a draining effect reporting back,
+a sweep, a door that raced the release), no new transition is recorded.
+
+*Committed effects drain, narrowed.* The effect runner reads who decides in the
+statement that claims an effect. For a delivery the kernel no longer owns it first
+releases a switched-off one, then:
+
+- the kinds that act on GitHub for the kernel's own landing and repair loop,
+  `merge_call`, `refresh_branch`, `renumber_migration` and `push_recovery`
+  (`KERNEL_ONLY_EFFECTS`), are done as `skipped:legacy_owns` and never run. Their
+  answer is something only the kernel reads (a merge answered `behind` becomes a
+  refresh, a refresh a new head, a new head an approval), and a merge is the one
+  action an emergency rollback must be able to stop, so a merge queued before the
+  switch never lands after it;
+- every other kind still drains: projections and notifications, and the dispatches,
+  which are decisions already made and create legacy-shaped tasks (fix tasks carry
+  `reviewerRetry*`, `iteration`, `resumeBranch`; reviewer tasks carry the full legacy
+  context), so legacy can carry the delivery on. A committed `dispatch_review` must
+  drain: skipping it would leave a PR whose round was queued with no reviewer from
+  either authority. What a draining handler reports back is refused by the rule
+  above, so a drained effect never starts a new kernel decision chain. A dead effect
+  on a released delivery records its gate event and escalates nothing.
+
+*Switch-off hands live deliveries to legacy.* A delivery is opened where legacy would
+file a PR's first review, and the kernel's first round is queued only when the owner
+attempt ends (§6.5 row 1). A delivery the switch releases before then has had no
+review from either authority, and legacy files a first review only when the PR opens,
+which has passed. So when an owner attempt ends on a released delivery that has no
+round, in a workspace whose switch is off, for a PR that is still open, the seam
+(`handOffToLegacy`) runs legacy's first review through the reviews module's
+`LEGACY_FIRST_REVIEW` slot: one reviewer task at the live head with no
+`workflowRound` (legacy's), announced and woken, and the PR's `review_queued` line; a
+delivery opened with a pre-flight finding gets legacy's answer to that instead, a
+`human_review_required` line and a team notice. The policy is not re-run, because the
+delivery exists only where the policy already asked for a review. It runs once per
+owner task (`tasks.context.workflowLegacyHandoff`); a failure clears the claim so the
+next owner end tries again. A delivery released while the switch is on was handed
+over by a legacy decision (a pre-flight escalation, an unbindable PR) that already
+answered it, and is not handed off again. A delivery released after its first round
+was queued is carried by the drained `dispatch_review` above.
 
 **Rollback.** Turning the flag off returns the family to legacy, and the projections
 (`workers.*`, `tasks.*`) already hold correct values because the kernel projects into
@@ -1940,7 +2140,7 @@ worker's local commit; rounds and versions are as the kernel would number them.
 | 7 | Today: the PR body now describes the corrected check | `update_pr` | any | **No fact, no transition.** Body text never counts as delivery |
 | 8 | Push recovery: runner is told to push; or recovery attempt pushes `L2` | `HeadObserved(L2)` live head `L2`, contains `L2`, `!= H1` | `AWAITING_PUSH` (v6) | proof holds → `AWAITING_REVIEW`, round 2 bound to `L2`, kind `delta` from `H1` (v7); `dispatch_review` |
 | 9 | If recovery cannot push (runner lost, three tries spent) | `PushRecoveryExhausted` | `AWAITING_PUSH` (v6) | `ESCALATED(push_undeliverable)` (v7): a person sees the branch and `L2`, instead of an open PR that looks "in review" |
-| 10 | Reviewer approves `L2`, CI green | `ReviewVerdictRecorded(round2, approve, head=L2)`, `LandingRequested` | `AWAITING_REVIEW` (v7) | `APPROVED` → `LANDING` → merge pinned at `L2`; `PrMerged` → `MERGED`; the recorded supersession of the sibling PR (`SupersessionRecorded`, T20) is then authorised by "the caller's task names the PR" (§17.1) |
+| 10 | Reviewer approves `L2`, CI green | `ReviewVerdictRecorded(round2, approve, head=L2)`, `LandingRequested` | `AWAITING_REVIEW` (v7) | `APPROVED` → `LANDING` → merge pinned at `L2`; `PrMerged` → `MERGED`; the recorded supersession of the sibling PR (`SupersessionRecorded`, T20) is then authorised by "the caller's task's records link the PR" (§17.1) |
 
 **The exact rejected transitions** are two: `FIXING → AWAITING_REVIEW` at step 5
 (evidence `H' != Hb` absent, result `AWAITING_PUSH`/`delivery_not_advanced`) and
@@ -1978,19 +2178,19 @@ directory to `UNIT_TEST_ROOTS` in `scripts/run-unit-tests.ts` (the
 | S9 | Reaper/cleanup sees a dead worker with only local commits | `AttemptEnded(lost)` → `AWAITING_PUSH`; task not `completed` with `result.sha` | `apps/web/src/lib/stale-workers.test.ts`, `apps/web/src/app/api/tasks/cleanup/route.test.ts` |
 | S10 | Merge response `indeterminate`; double merge call | stays `LANDING`; `verify_merge`; one `PrMerged`; merge pinned at head | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/auto-merge.test.ts`, `apps/web/src/app/api/prs/[prNumber]/merge/route.test.ts` |
 | S11 | Human merges on GitHub while `AWAITING_REVIEW` | T17 from any state; open attempts cancelled; merged-over-verdict classified | webhook route test; `apps/web/src/lib/review-subscribers.test.ts` (new: none today) |
-| S12 | Closed unmerged, work shipped under another PR; caller task names the PR | T20 allowed only from `CLOSED_UNMERGED`; authorised on caller's task, not the owner's; overwrite refused; mission completion treats it as shipped | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/lib/pr-supersession.test.ts`, `apps/web/src/lib/mission-completion.test.ts` |
+| S12 | Closed unmerged, work shipped under another PR; caller task links the PR | T20 allowed only from `CLOSED_UNMERGED`; authorised on caller's task, not the owner's; overwrite refused; mission completion treats it as shipped | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/lib/pr-supersession.test.ts`, `apps/web/src/lib/mission-completion.test.ts` |
 | S13 | Crash between transition and effect; crash mid-effect | effect row present atomically; lease expiry re-runs; idempotent | `apps/web/src/lib/workflow/effects.test.ts` (new), pattern of `apps/web/src/lib/dispatch-reconcile.test.ts` |
 | S14 | A sweep tries to assign state | sweep modules import only `ingestFact`/`enqueueMissingEffects`; write-site guard fails on any direct write to a guarded column outside the allowlist | `packages/core/__tests__/workflow-write-sites.test.ts` (new; pattern of `packages/core/__tests__/model-policy-authority.test.ts`) |
-| S15 | Base keeps moving under an approved PR | `LANDING`/`REPAIRING(behind)` bounded by the existing treadmill cap; hard gates unchanged | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/pr-landing-sweep.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
+| S15 | Base keeps moving under an approved PR | `LANDING`/`REPAIRING(behind)` bounded by the treadmill cap per cycle; a spent cycle escalates, restarts after the cooldown up to `MAX_TREADMILL_CYCLES`, then stays with a person, whose freshness override lands it; hard gates unchanged | `apps/web/src/lib/pr-landing.test.ts`, `apps/web/src/lib/pr-landing-sweep.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
 | S16 | Mission with a `SUPERSEDED`/`ABANDONED`/open/closed delivery | `canCompleteMission` results identical to today for all legacy inputs | `apps/web/src/lib/mission-completion.test.ts`, `packages/core/__tests__/pr-shipped.test.ts` |
 | S17 | UI projections agree | one `DeliveryView` → Home chip, task header and mission failure reading agree (part 3); task card stage, mission strip and feed, chat dock, chat tile, PR pill and explain's state chain agree with it for every §4 state, and none reads the worker columns for a kernel-owned PR (Slice E, §13.9) | `apps/web/src/lib/workflow/delivery-display.test.ts`, `apps/web/src/lib/action-queue.delivery-view.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts`, `apps/web/src/app/app/(protected)/tasks/[id]/lineage-status.test.tsx`, `apps/web/src/lib/explain-because.test.ts` |
 | S18 | Mission integration branch deleted under an open task PR (cause of the PR #3744 closure) | `CLOSED_UNMERGED(base_deleted)`, `scan_supersession` finds the re-opened PR, T20 records it | `apps/web/src/lib/pr-supersession-detect.test.ts`, `apps/web/src/lib/mission-pr.test.ts` |
 | S19 | Fix worker killed after claim | `FIXING → CHANGES_REQUESTED`, the ledger row ends `failed`, the next dispatch allocates the next `attempt_no`, or exhausts | reducer test |
 | S20 | Stale `version` from a human action | `stale` + current view, HTTP 409; nothing applied | reducer test; route tests for `/api/prs/[prNumber]/merge`, `/api/github/pr` and `/api/prs/[prNumber]/apply-recommendation`; `apps/web/tests/db/workflow-matrix.test.ts` (S20, T23) |
 | S21 | Authorization matrix (§17.1) | owner, caller-names-PR, sibling, other workspace, human | `apps/web/src/app/api/github/pr/supersede/route.test.ts`, `apps/web/src/app/api/github/pr/review/route.test.ts`, `apps/web/src/lib/task-token-auth.test.ts` |
-| S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function | `apps/web/tests/db/workflow-seam.test.ts`, `bun run test` |
+| S22 | Kill switch | with `workflowKernel=false` a delivery is released to legacy (sticky), no new one opens, and a PR with no delivery is untouched by every seam function; the string `"false"` reads the same in TypeScript and SQL; a queued `merge_call` never merges or refreshes after the switch; the trunk sweep decides nothing; a PR released before its first round gets legacy's first review | `apps/web/tests/db/workflow-seam.test.ts`, `apps/web/tests/db/workflow-probe-killswitch.test.ts`, `bun run test` |
 | S23 | CI provenance (audit): worker pushes under the owner's git identity; worker pushes under the bot identity; a person pushes | the first two are attributed by SHA set and consume a ledger row; the third is `foreign_push` and consumes none; the cap bounds dispatches in all three; manual "Fix CI" uses the configured cap | `apps/web/src/lib/ci-failure-retry.test.ts`, `apps/web/src/app/api/prs/[prNumber]/retry-ci/route.test.ts`, reducer test (replaces the author-string cases around `isBuilddWorkerCommit`) |
-| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
+| S24 | Trunk breakage: one signature red on trunk and on several PRs | one incident, one trunk-fix task, zero per-PR `ci` attempts, queued ones `skipped`, deliveries `BLOCKED_ON_TRUNK`, `ci` budget untouched, recovery re-enters `resume_state`; two dependency-bot PRs do not accumulate retries; a second incident on a base whose fix is open joins that fixer (one task, in either drain order), and a red after recovery files a new one | `apps/web/src/lib/workflow/trunk.test.ts`, `apps/web/src/lib/ci-failure-retry.wake.test.ts`, `apps/web/src/lib/workflow/reducer.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S25 | Stale dispatch: target merged / approved / CI green / conflict resolved between trigger and dispatch, and between dispatch and claim | ledger row `skipped`, no task (or task cancelled as skipped, not failed); replay is a no-op; reason recorded | `apps/web/src/lib/workflow/effects.test.ts` (new), `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/ci-failure-retry.test.ts` |
 | S26 | Comment as projection: concurrent renders, lost-update race (a `reviewing` write racing the merge), entries after merge, duplicate sticky comments, PR with no comment, CI red while approved | final comment equals a fresh render of canonical state; `Merged` stays the headline; one comment; created for every bound PR; "Approved" never heads a `REPAIRING` delivery | `apps/web/src/lib/pr-activity-comment.test.ts`, `apps/web/src/lib/workflow/pr-activity-render.test.ts`, `apps/web/src/lib/workflow/pr-activity-effects.test.ts`, `apps/web/tests/db/workflow-matrix.test.ts` |
 | S27 | Mechanical versus agent repair | behind-only conflict and byte-identical renumber complete with no task; textual conflict and non-identical renumber escalate to an agent attempt; false collision from a lagging mission branch is not a collision; dependency-bot PRs are never pushed to | `apps/web/src/lib/conflict-retry.test.ts`, `apps/web/src/lib/migration-collision-retry.test.ts`, `apps/web/src/lib/base-refresh.test.ts` |
@@ -2068,16 +2268,22 @@ by the workers route test.
 ### 17.1 Authorization
 
 - The kernel adds **no new capability**: T-commands call the same permission checks
-  the routes use today (`agentRunMayActOnPr` / `taskNamesPr` in
-  `apps/web/src/lib/agent-capabilities/pr-ownership.ts`, `taskScopeAllowsWorkerPr`,
+  the routes use today (`agentRunMayActOnPr` / `taskLinksPr` in
+  `apps/web/src/lib/agent-capabilities/pr-links.ts`, `taskScopeAllowsWorkerPr`,
   team permission registry). The authorisation decision stays in the route; the kernel
   receives `actor` and records it.
 - PR #3754 (supersede route) is the live proof that "own PR only" and "caller's task
-  names the PR" are different rules: the check MUST be on the **caller's** task. T20's
-  actor rules: (a) the owner task's own token; (b) a task token whose own task names
-  the PR (`taskNamesPr(callerTask, pr)`); (c) a human with the team permission; (d)
+  links the PR" are different rules: the check MUST be on the **caller's** task. T20's
+  actor rules: (a) the owner task's own token; (b) a task token whose own task's records
+  link the PR (`taskLinksPr(callerTask, pr)`); (c) a human with the team permission; (d)
   the automatic detector after verification. A task token never gains `SupersessionRecorded`
-  for a PR merely because the *owner's* task names it.
+  for a PR merely because the *owner's* task links it.
+- A task's records link a PR through its retry column (`ciRetryPrNumber`,
+  `conflictRetryPrNumber`, `reviewerRetryPrNumber`), a person's landing grant, or the
+  PR link stamped when it was filed (`context.prReach`, `apps/web/src/lib/pr-reach-grant.ts`):
+  a person's filing links the PRs it names; an agent run's filing links only PRs its own
+  task already reaches. A PR named only in a task's title, description or context links
+  nothing.
 - Version-carrying human actions are authorised before the CAS, never after, so a
   `stale` response cannot be used as an oracle for deliveries the caller cannot read.
 - `workflow_*` rows are workspace-scoped like every table; effect handlers act with
@@ -2089,6 +2295,18 @@ by the workers route test.
   unchanged (`evaluateAutoMergeSafety`, migration inspector, deny paths, size cap,
   base freshness, surface ordering, review-verdict gate, `guardMissionPrMerge`,
   `resolvePolicy`). `human` and `agent-review` tiers keep their refusals.
+- The CI rail is an allow-list and fails closed (`apps/web/src/lib/ci-verdict.ts`,
+  shared with the kernel's GitHub reader so the two cannot drift). CI is green on a
+  head only when every check run, read across every page (`per_page=100` until
+  GitHub's `total_count` is covered), is `completed` with conclusion `success`,
+  `neutral` or `skipped`, and every commit status (the Statuses API, for CI that
+  posts no check runs) is `success`. Any other conclusion (`timed_out`,
+  `cancelled`, `startup_failure`, `action_required`, `stale`, none), any unfinished
+  run (`queued`, `in_progress`, `waiting`, `requested`, `pending`), any `failure`,
+  `error` or `pending` status, and any read that comes back short or fails, refuses
+  the landing. Re-runs are judged by the latest run per check name, so a failed run
+  superseded by a green re-run does not block. Only `failure`, `timed_out` and
+  `startup_failure` are red enough to file a CI fix; the rest wait.
 - `HumanApproved` makes the delivery `APPROVED` for manual merge; it never satisfies
   an unattended merge for a policy-protected path (matches the Home task that landed
   as #3751).
@@ -2386,11 +2604,11 @@ is a site to tick off in the Phase 2 PR that moves it.
 - AC-8: GIVEN `PrMerged` WHEN any later `synchronize`, `check_suite` or `opened` fact arrives THEN the delivery stays `MERGED` and no fact-cache column regresses.
 - AC-9: GIVEN `SupersessionRecorded` for a delivery not in `CLOSED_UNMERGED`, or whose target PR is not merged THEN it is rejected, and an existing edge is never overwritten.
 - AC-10: GIVEN a task with a delivery WHEN the reaper or cleanup finds its worker dead with only local commits THEN `tasks.status` is not set to `completed`, and the delivery is `AWAITING_PUSH`.
-- AC-11: GIVEN `workflowKernel=false` THEN no new delivery opens, an existing one is released to legacy and stays there, and a PR with no delivery behaves exactly as before the kernel.
+- AC-11: GIVEN `workflowKernel=false` THEN no new delivery opens, an existing one is released to legacy and stays there, and a PR with no delivery behaves exactly as before the kernel. AND no effect queued before the switch merges, refreshes, renumbers or pushes for it, no sweep applies a transition to it, and a PR it released before its first review round gets legacy's first review (§14).
 - AC-12: GIVEN `canCompleteMission` inputs from before the change THEN its results are unchanged.
 - AC-13: GIVEN a worker pushes a CI fix under any git author identity WHEN the head advances during or just after its attempt THEN the push is attributed to that attempt by SHA set and the `ci` ledger row exists with `attempt_no` allocated at dispatch.
 - AC-14: GIVEN a ledger family with `max_attempts` reached WHEN another dispatch is requested THEN no task is created and the delivery is `ESCALATED(ci_exhausted)` (or the family's equivalent); a human retry records `BudgetExtended` and is never numbered 0.
-- AC-15: GIVEN an open trunk incident for a signature WHEN CI on any delivery fails with that signature THEN no per-PR `ci` attempt is dispatched, the delivery is `BLOCKED_ON_TRUNK`, and exactly one trunk-fix attempt exists for the incident.
+- AC-15: GIVEN an open trunk incident for a signature WHEN CI on any delivery fails with that signature THEN no per-PR `ci` attempt is dispatched, the delivery is `BLOCKED_ON_TRUNK`, and exactly one trunk-fix attempt exists for the incident; a second incident on the same base while the first one's fix is open files no second trunk-fix task.
 - AC-16: GIVEN a dispatched fix, CI or conflict task whose target is merged, approved at the current head, green, or no longer conflicting at dispatch or claim time THEN the ledger row is `skipped`, no worker failure is recorded, and replay changes nothing.
 - AC-17: GIVEN concurrent `render_activity` runs THEN the comment converges to a render of the latest delivery version, `Merged` is the headline of a merged delivery whatever is appended later, and exactly one comment exists.
 - AC-18: GIVEN a behind-only branch or a byte-identical migration renumber THEN it completes as a mechanical attempt with no agent task and consumes no agent budget; GIVEN a textual conflict or a non-identical renumber THEN an agent attempt is allocated.

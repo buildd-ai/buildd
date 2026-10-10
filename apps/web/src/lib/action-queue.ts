@@ -1,8 +1,11 @@
 import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
+import type { MergeAdviceSlot } from './merge-advice';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
+import { readGithubAccessBlock, repoAccessSettingsPath } from './github-repo-access';
 import { attemptFailureCounts, type DeliveryView } from './workflow/projections';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 
 /**
  * ── The queue freshness rule ────────────────────────────────────────────────
@@ -124,6 +127,21 @@ function describeReviewMachineState(item: EscalationRawItem, now: Date): string 
   if (item.ciGate?.kind === 'fixing') return item.ciGate.fixKind === 'review' ? 'Review fix queued' : 'CI fix queued';
   if (item.ciGate?.kind === 'blocked' || item.prLifecycleStatus === 'ci_failed') return 'CI failing';
   return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
+}
+
+/**
+ * Buildd is still acting on a PR that also waits on a human review: a conflict
+ * repair is live, a CI or review fix is in flight, checks or a reviewer agent
+ * are running. The review waits for that to settle; Home names it in its quiet
+ * "also in progress" line instead of asking for it now. A repair that gave up,
+ * a plain conflict or red CI with no fix running is the person's again.
+ */
+export function reviewMachineActing(item: Pick<EscalationRawItem, 'deadZoneExhausted' | 'conflictRetryTaskId' | 'ciGate' | 'reviewInFlight' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt'>, now: Date): boolean {
+  if (item.deadZoneExhausted) return false;
+  if (item.conflictRetryTaskId) return true;
+  if (item.ciGate?.kind === 'fixing' || item.ciGate?.kind === 'running') return true;
+  if (item.reviewInFlight) return true;
+  return pendingCiState({ ...item, now }) === 'running';
 }
 
 function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
@@ -336,7 +354,20 @@ export interface WaitingOnYouRawItem {
   workspaceName?: string | null;
 }
 
+/** The escalation gate's verdict on a PR (lib/escalation-gate-check.ts), as a card reads it. */
+export interface EscalationGateMark {
+  owner: 'person' | 'buildd';
+  /** One line: the rail that makes it the person's, or the step Buildd is taking. */
+  reason: string;
+  /** The rail that made it the person's (a policy rail batches into a digest). */
+  rail?: string | null;
+  /** The tenant the verdict was read for; a digest never spans two. */
+  teamId?: string | null;
+}
+
 export interface EscalationRawItem {
+  /** The escalation gate's verdict: a Buildd-owned PR is never a Needs You card. */
+  gate?: EscalationGateMark | null;
   /** Canonical current-head reviewer approval; a review action still takes precedence. */
   reviewApproved?: boolean;
   humanReview?: HumanPrReview | null;
@@ -450,11 +481,23 @@ export interface EscalationRawItem {
   reviewInFlight?: 'queued' | 'reviewing' | null;
   /** `workers.updatedAt` — bounds the `pr_open` "awaiting CI" reading, see AWAITING_CI_WINDOW_MS. */
   prLifecycleUpdatedAt?: Date | null;
+  /**
+   * Which of a mission's two bookkeeping PRs this is, from structured markers
+   * only: `'ship'` is the mission's own integration PR (`isMissionPrTask`),
+   * `'refresh'` a conflict task merging trunk into the integration branch
+   * (`context.refreshTrunk`, mission-branch-refresh.ts). When both are queued
+   * for one mission they fold into the ship card — see {@link ActionQueueItem.refreshFirst}.
+   */
+  missionPrRole?: 'ship' | 'refresh' | null;
 }
 
 export interface ActionQueueItem {
   humanReview?: HumanPrReview | null;
   machineStatus?: string | null;
+  /** A human review whose PR Buildd is still repairing or checking (`reviewMachineActing`). */
+  machineActing?: boolean;
+  /** The escalation gate's verdict, when the PR went through it. */
+  gate?: EscalationGateMark | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -591,7 +634,22 @@ export interface ActionQueueItem {
    * next move, its headline and evidence (workflow-state-kernel §17.5). The
    * card's chip was taken from it, not from raw worker/reviewer columns.
    */
-  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  delivery?: Pick<DeliveryView, 'owner' | 'state' | 'stage' | 'headline' | 'detail' | 'cta' | 'compositionVerified'> | null;
+  /**
+   * Set on a mission's ship card when the same mission's refresh PR is also
+   * queued: the refresh lands first (the ship PR cannot ship while its
+   * integration branch is behind trunk), so the two read as one card with
+   * one ordered next step instead of two cards explaining the same blocker.
+   */
+  refreshFirst?: { prNumber: number | null; prUrl: string | null; taskId: string | null; chip: ActionChip } | null;
+  /** Carried from {@link EscalationRawItem.missionPrRole}; drives the fold above. */
+  missionPrRole?: 'ship' | 'refresh' | null;
+  /**
+   * Human-review cards only: Jev's stored "can this merge now?" answer and the
+   * token to ask for one (merge-advice-server.ts `attachMergeAdvice`). Advice
+   * only; nothing in the queue reads it.
+   */
+  mergeAdvice?: MergeAdviceSlot | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -700,7 +758,7 @@ const isKernelReviewerEscalation = (v: DeliveryView): boolean =>
   v.state === 'ESCALATED' && v.stateReason != null && REVIEWER_ESCALATION_REASONS.has(v.stateReason);
 
 const deliveryCard = (v: DeliveryView): NonNullable<ActionQueueItem['delivery']> => ({
-  owner: v.owner, state: v.state, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
+  owner: v.owner, state: v.state, stage: v.stage, headline: v.headline, detail: v.detail, cta: v.cta, compositionVerified: v.compositionVerified,
 });
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
@@ -781,6 +839,9 @@ export interface FailedTaskCandidate {
   workerError: string | null;
   missionId: string | null;
   missionTitle: string | null;
+  workspaceId?: string | null;
+  /** `tasks.context` — carries `githubAccessBlock` when a PR door refused for GitHub access. */
+  context?: unknown;
 }
 
 /**
@@ -790,10 +851,30 @@ export interface FailedTaskCandidate {
  * the queue as soon as it is pending again. A failure with no owner-fixable
  * cause stays on the task page; Home only asks for what the owner can act on.
  */
-export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): WaitingOnYouRawItem[] {
+export function buildFailedTaskItems(
+  candidates: FailedTaskCandidate[],
+  opts: {
+    /**
+     * Workspaces whose GitHub access this person can fix (manage_workspace_settings).
+     * A task waiting on GitHub access is shown only to them — once per
+     * workspace, however many tasks are waiting — so the ask lands on the
+     * responsible admin instead of on everyone, once per task. Omitted: none.
+     */
+    githubAccessFixableWorkspaceIds?: ReadonlySet<string>;
+  } = {},
+): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
+  const accessWaiting = new Map<string, { first: FailedTaskCandidate; repo: string | null; count: number }>();
   for (const c of candidates) {
     if (c.status !== 'failed') continue;
+    const block = readGithubAccessBlock(c.context);
+    if (block && !block.resumedAt && c.workspaceId) {
+      if (!opts.githubAccessFixableWorkspaceIds?.has(c.workspaceId)) continue;
+      const cur = accessWaiting.get(c.workspaceId);
+      if (cur) cur.count++;
+      else accessWaiting.set(c.workspaceId, { first: c, repo: block.repo, count: 1 });
+      continue;
+    }
     const cause = explainProviderAuthFailure(c.workerError, c.backend);
     if (!cause) continue;
     items.push({
@@ -805,6 +886,19 @@ export function buildFailedTaskItems(candidates: FailedTaskCandidate[]): Waiting
       failureMessage: cause.message,
       fixHref: cause.href,
       fixLabel: cause.linkLabel,
+    });
+  }
+  for (const [workspaceId, { first, repo, count }] of accessWaiting) {
+    const what = count > 1 ? `${count} tasks are` : 'This task is';
+    items.push({
+      kind: 'failed',
+      taskId: first.taskId,
+      taskTitle: first.title,
+      missionId: first.missionId,
+      missionTitle: first.missionTitle,
+      failureMessage: `Buildd can’t reach ${repo ?? 'this workspace’s GitHub repository'}. ${what} waiting for GitHub access and will resume on their own once it is granted.`,
+      fixHref: repoAccessSettingsPath(workspaceId),
+      fixLabel: 'Fix GitHub access',
     });
   }
   return items;
@@ -1322,6 +1416,8 @@ export function buildActionQueue(
       subjectKey: key,
       humanReview: item.humanReview,
       machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
+      machineActing: item.humanReview ? reviewMachineActing(item, now) : false,
+      gate: item.gate ?? null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
@@ -1358,6 +1454,7 @@ export function buildActionQueue(
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
       ...(mergeConflict ? { mergeConflict: true, conflictReason: item.conflictReason ?? null, remediationStalled: item.remediationStalled ?? null } : {}),
       missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
+      missionPrRole: item.missionPrRole ?? null,
       pendingGates,
       ...(kernelView ? {
         delivery: deliveryCard(kernelView),
@@ -1547,8 +1644,9 @@ export function buildActionQueue(
   }
 
   const snoozed = options.snoozedSubjectKeys;
-  return [...map.values()]
-    .filter((item) => !snoozed?.has(item.subjectKey))
+  // Fold after the snooze filter: snoozing the ship card must not take the
+  // refresh PR (a separate decision) off the queue with it.
+  return foldMissionRefreshes([...map.values()].filter((item) => !snoozed?.has(item.subjectKey)))
     .sort((a, b) => {
     const chipDiff = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
     if (chipDiff !== 0) return chipDiff;
@@ -1579,6 +1677,42 @@ export function buildActionQueue(
     }
     return 0;
   });
+}
+
+/** {@link EscalationRawItem.missionPrRole} for a PR's owning task. */
+export function missionPrRoleOf(task: {
+  title?: string | null;
+  taskClass?: string | null;
+  missionId?: string | null;
+  context?: unknown;
+}): 'ship' | 'refresh' | null {
+  if (!task.missionId) return null;
+  if (isMissionPrTask(task)) return 'ship';
+  const ctx = task.context as Record<string, unknown> | null | undefined;
+  return typeof ctx?.refreshTrunk === 'string' ? 'refresh' : null;
+}
+
+/**
+ * A mission's refresh PR (trunk → integration branch) and its ship PR
+ * (integration branch → trunk) are one decision in sequence, not two: fold the
+ * refresh into the ship card as `refreshFirst`. Only within one workspace and
+ * mission, only on the structural `missionPrRole` marker; a refresh with no
+ * ship card queued stays a card of its own.
+ */
+function foldMissionRefreshes(items: ActionQueueItem[]): ActionQueueItem[] {
+  const shipKey = (i: ActionQueueItem) => `${i.workspaceId ?? ''}:${i.missionId}`;
+  const ships = new Map<string, ActionQueueItem>();
+  for (const i of items) if (i.missionPrRole === 'ship' && i.missionId) ships.set(shipKey(i), i);
+  if (ships.size === 0) return items;
+  const folded = new Set<ActionQueueItem>();
+  for (const i of items) {
+    if (i.missionPrRole !== 'refresh' || !i.missionId) continue;
+    const ship = ships.get(shipKey(i));
+    if (!ship) continue;
+    folded.add(i);
+    ship.refreshFirst ??= { prNumber: i.prNumber ?? null, prUrl: i.prUrl ?? null, taskId: i.taskId ?? null, chip: i.chip };
+  }
+  return folded.size ? items.filter((i) => !folded.has(i)) : items;
 }
 
 export interface ActionQueueAgeMetrics {

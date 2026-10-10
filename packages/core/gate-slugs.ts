@@ -75,6 +75,13 @@ export const GATE_SLUGS = {
    * protected head; or a PR outside the workspace's linked repo).
    */
   PR_OWNERSHIP: 'pr_ownership',
+  /**
+   * create_pr / get_pr / merge_pr / update_pr — the GitHub App cannot act on
+   * the workspace's repo (installation missing, repo not selected, suspended,
+   * permission not granted, workspace not linked). Reason is the
+   * RepoAccessReason; see lib/github-repo-access.ts.
+   */
+  GITHUB_REPO_ACCESS: 'github_repo_access',
   /** merge_pr — workspace merge policy, and the admin `force` bypass. */
   MERGE_POLICY: 'merge_policy',
   /** merge_pr — mission-PR branch-lifecycle wait. */
@@ -190,6 +197,8 @@ export const GATE_SLUGS = {
    * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
    * exhausted, with an operational diagnostic posted. A textual conflict is
    * never recorded here as an operational failure — it goes to the conflict agent.
+   * Also `accepted` with `detail.stage: 'derived_merge'`: a conflict retry the
+   * runner finished itself because every conflict was in a derived file.
    */
   BASE_REFRESH: 'base_refresh',
   /**
@@ -231,6 +240,17 @@ export const GATE_SLUGS = {
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
   /**
+   * Live sibling conflict probe (`lib/sibling-conflict-probe.ts`): two live
+   * workers' observed touches share a file, so one runner ran `git merge-tree`
+   * between the two branch heads (mergiraf on the conflicted files when the
+   * workspace enables it). ADVISORY: nothing is blocked. `warned` = a real
+   * conflict, both workers told once per conflicting pair of heads
+   * (`detail.notified`, `detail.debounced`; `detail.suppressed` when the
+   * kernel owns a side); `accepted` = clean, or resolved structurally by
+   * mergiraf. Compared against conflict retries to measure early warning.
+   */
+  SIBLING_CONFLICT_PROBE: 'sibling_conflict_probe',
+  /**
    * Keeping a mission's integration branch current with dev
    * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,
    * superseded). `accepted` = GitHub's merges API landed dev cleanly (a merge
@@ -249,6 +269,13 @@ export const GATE_SLUGS = {
    * reconciler action that later revokes or re-bases such a release.
    */
   EARLY_RELEASE: 'early_release',
+  /**
+   * Model-tier ceilings (docs/specs/model-tier-ceilings.md). `rejected` = a
+   * task create/update or chat request explicitly asked for a tier or model
+   * above the effective maximum (`detail` is the policy_denied error). Claim
+   * holds are the claim loop's `tier_policy` deferral, not this slug.
+   */
+  TIER_CEILING: 'tier_ceiling',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

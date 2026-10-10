@@ -83,7 +83,7 @@ describe('GET /api/tasks/waiting-input', () => {
       {
         taskId: 'task-1',
         workspaceId: 'ws-1',
-        waitingFor: { type: 'question', prompt: 'Which database?' },
+        waitingFor: { type: 'question', prompt: 'Which database?', disposition: 'ask' },
       },
     ]);
     mockTasksFindMany.mockReturnValue([
@@ -105,7 +105,7 @@ describe('GET /api/tasks/waiting-input', () => {
       title: 'Setup database',
       workspaceId: 'ws-1',
       missionId: 'mission-1',
-      waitingFor: { type: 'question', prompt: 'Which database?' },
+      waitingFor: { type: 'question', prompt: 'Which database?', disposition: 'ask' },
       answerSent: false,
       actionUrl: 'https://buildd.dev/app/tasks/task-1/respond',
     });
@@ -133,7 +133,7 @@ describe('GET /api/tasks/waiting-input', () => {
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
     mockWorkersFindMany.mockReturnValue([
       { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: null },
-      { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Again?' } },
+      { taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Again?', disposition: 'ask' } },
     ]);
     mockTasksFindMany.mockReturnValue([
       { id: 'task-1', title: 'Setup database', status: 'running', workspaceId: 'ws-1', missionId: null },
@@ -143,6 +143,30 @@ describe('GET /api/tasks/waiting-input', () => {
     expect(data.tasks[0]).toMatchObject({ answerSent: false, waitingFor: { prompt: 'Again?' } });
   });
 
+  // Needs You admission (@buildd/core/needs-you): only a park whose
+  // disposition hands it to a person reaches the banner and phone Home.
+  it('drops parks with no disposition, a recovered blocker, and a hold before its deadline', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    const ahead = new Date(Date.now() + 10 * 60_000).toISOString();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    mockWorkersFindMany.mockReturnValue([
+      { taskId: 'task-legacy', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Undisposed?' } },
+      { taskId: 'task-recovered', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Merge conflict?', disposition: 'recovered', repairTaskId: 'r-1' } },
+      { taskId: 'task-held', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Later?', disposition: 'hold', resurfaceAt: ahead } },
+      { taskId: 'task-due', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Now?', disposition: 'hold', resurfaceAt: past } },
+      { taskId: 'task-perm', workspaceId: 'ws-1', waitingFor: { type: 'permission', prompt: 'Allow Bash?', disposition: 'ask' } },
+    ]);
+    // Like the DB: only the tasks the admitted workers name come back.
+    mockTasksFindMany.mockImplementation(((args: any) => (args.where.args[1] as string[]).map(id => (
+      { id, title: id, status: 'running', workspaceId: 'ws-1', missionId: null }
+    ))) as any);
+
+    const data = await (await GET()).json();
+    expect(data.tasks.map((t: any) => t.id).sort()).toEqual(['task-due', 'task-perm']);
+    mockTasksFindMany.mockReset();
+  });
+
   it('excludes completed/failed tasks', async () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1', email: 'test@test.com' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
@@ -150,7 +174,7 @@ describe('GET /api/tasks/waiting-input', () => {
       {
         taskId: 'task-1',
         workspaceId: 'ws-1',
-        waitingFor: { type: 'question', prompt: 'Test?' },
+        waitingFor: { type: 'question', prompt: 'Test?', disposition: 'ask' },
       },
     ]);
     mockTasksFindMany.mockReturnValue([
@@ -171,7 +195,7 @@ describe('GET /api/tasks/waiting-input', () => {
   it('excludes cancelled tasks with a retained waiting worker', async () => {
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' });
     mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
-    mockWorkersFindMany.mockReturnValue([{ taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Test?' } }]);
+    mockWorkersFindMany.mockReturnValue([{ taskId: 'task-1', workspaceId: 'ws-1', waitingFor: { type: 'question', prompt: 'Test?', disposition: 'ask' } }]);
     mockTasksFindMany.mockReturnValue([{ id: 'task-1', title: 'Cancelled task', status: 'cancelled', workspaceId: 'ws-1' }]);
     expect((await (await GET()).json()).tasks).toEqual([]);
   });
@@ -183,7 +207,7 @@ describe('GET /api/tasks/waiting-input', () => {
       {
         taskId: 'task-1',
         workspaceId: 'ws-1',
-        waitingFor: { type: 'question', prompt: 'Which database?' },
+        waitingFor: { type: 'question', prompt: 'Which database?', disposition: 'ask' },
       },
     ]);
     mockTasksFindMany.mockReturnValue([
@@ -209,12 +233,12 @@ describe('GET /api/tasks/waiting-input', () => {
       {
         taskId: 'task-1',
         workspaceId: 'ws-1',
-        waitingFor: { type: 'question', prompt: 'Yes?' },
+        waitingFor: { type: 'question', prompt: 'Yes?', disposition: 'ask' },
       },
       {
         taskId: 'task-2',
         workspaceId: 'ws-other', // Not user's workspace
-        waitingFor: { type: 'question', prompt: 'No?' },
+        waitingFor: { type: 'question', prompt: 'No?', disposition: 'ask' },
       },
     ]);
     mockTasksFindMany.mockReturnValue([

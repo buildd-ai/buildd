@@ -144,6 +144,8 @@ export interface SetProviderKeyRequest {
 /** `PUT /api/inference-keys` → the stored key, checked against the provider. */
 export interface SetProviderKeyResponse {
   key: MaskedProviderKey;
+  /** Team scope only: auth-failed tasks put back in the queue (0 for a chat-only key). */
+  requeued?: number;
 }
 
 /** `DELETE /api/inference-keys?teamId=&provider=&scope=` → `{ deleted: boolean }` */
@@ -277,7 +279,7 @@ export interface ChatToolResult<T = unknown> {
 export const CHAT_READ_TOOLS = [
   'list_tasks', 'get_task', 'get_task_messages',
   'list_discrepancies', 'get_discrepancy',
-  'query_events', 'explain', 'get_error_traces', 'get_failure_analytics', 'get_budget_forecast', 'list_connectors', 'list_runners', 'read_evidence',
+  'query_events', 'explain', 'get_error_traces', 'get_failure_analytics', 'list_incidents', 'get_budget_forecast', 'list_connectors', 'list_runners', 'read_evidence',
   'get_pr', 'list_prs', 'get_pr_review', 'list_releases', 'get_release', 'release_status',
   'spec_compare', 'recall',
   'list_schedules', 'trace_schedule',
@@ -315,6 +317,7 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   promote_discrepancy: [''],
   send_agent_message: [''],
   trigger_release: [''],
+  merge_pr: [''],
   consolidate_knowledge: [''],
   memory_delete: [''],
   create_schedule: [''],
@@ -333,6 +336,8 @@ export const CHAT_APPROVAL_TOOLS: Readonly<Record<string, readonly string[]>> = 
   learn: [''],
   watch: [''],
   unwatch: [''],
+  create_personal_role: [''],
+  share_personal_role: [''],
 };
 
 /**

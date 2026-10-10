@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { SlotMeter } from './SlotMeter';
 
@@ -32,19 +30,5 @@ describe('SlotMeter', () => {
   it('fills every drawn square when live exceeds the cap', () => {
     const html = renderToStaticMarkup(<SlotMeter live={30} max={64} maxSquares={8} />);
     expect(filled(html)).toBe(8);
-  });
-});
-
-describe('missions header slots chip', () => {
-  const src = readFileSync(join(import.meta.dir, '../../app/app/(protected)/missions/page.tsx'), 'utf8');
-  const chip = src.slice(src.indexOf('data-testid="missions-slots"'), src.indexOf('<SetUpChatNudge'));
-
-  it('never wraps the live/capacity label', () => {
-    expect(chip).toContain('whitespace-nowrap');
-    expect(chip).toContain('shrink-0');
-  });
-
-  it('bounds the meter for phones', () => {
-    expect(chip).toMatch(/maxSquares=\{\d+\}/);
   });
 });

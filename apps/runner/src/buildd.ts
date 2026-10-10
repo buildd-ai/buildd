@@ -1,7 +1,8 @@
 import type { BuilddTask, LocalUIConfig } from './types';
-import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
+import { AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
+import { PERSONAL_CREDENTIAL_RUNNER_FEATURE } from '@buildd/core/providers';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { PromptBundlesPayload } from './session-prompt-bundles';
@@ -175,12 +176,20 @@ export class BuilddClient {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
       // (workers.ts); without it the server keeps sending Anthropic credentials.
+      // AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE: it also applies
+      // modelEndpoint.headers as ANTHROPIC_CUSTOM_HEADERS (agent-model-env.ts),
+      // so it may be given an endpoint that needs them (an authenticated
+      // Cloudflare AI Gateway).
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
       // through /question-check when the claim carries a questionGate marker.
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
       // githubCredentials (agent-github-credentials.ts); without it the
       // server never asks this runner to scope the agent's GitHub access.
-      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
+      // PERSONAL_CREDENTIAL_RUNNER_FEATURE: this build keeps a requester's
+      // own key (credentialDecision.scope = personal) to the one worker it
+      // came with: never in the per-team credCache, never reused
+      // (workers.ts startFromClaim). Without it the server never sends one.
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE, PERSONAL_CREDENTIAL_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
@@ -295,6 +304,13 @@ export class BuilddClient {
      */
     costUsd?: number;
     /**
+     * How this session's usage was charged: `real` (per token: API key, team
+     * endpoint) or `virtual` (a subscription login, valued at list price).
+     * Sent with every report that carries usage; the server records `unknown`
+     * when it is absent (docs/specs/real-and-virtual-cost.md).
+     */
+    costBasis?: 'real' | 'virtual' | 'unknown';
+    /**
      * The model the session actually ran on. Feeds task_outcomes.actual_model.
      * Optional: an older runner simply omits it and the server falls back to
      * deriving it from resultMeta.
@@ -357,6 +373,9 @@ export class BuilddClient {
     verificationEvidence?: Record<string, unknown>;
     // Structured output (for structured_predicate evaluation by server)
     structuredOutput?: Record<string, unknown>;
+    // A conflict retry the runner finished with no agent (merge-drivers.ts finishDerivedMerge).
+    derivedMergeFinish?: import('@buildd/shared').DerivedMergeFinishReport;
+    summarySource?: 'agent' | 'fallback';
     // Subagent spans — terminal-only flush (completed/failed/error). Never sent on hot path.
     subagentSpans?: Array<{
       taskId: string;
@@ -395,6 +414,10 @@ export class BuilddClient {
     shipCheckpoints?: import('@buildd/shared').ShipCheckpointReport[];
     /** Legacy pre-push/completion sweep flag (servers before `workingSet`). */
     checkpointSweep?: boolean;
+    /** This runner runs live sibling conflict probes (sibling-probe.ts); the server hands them out only then. */
+    siblingProbe?: boolean;
+    /** Results of probes the server handed out on an earlier sync. */
+    siblingProbeResults?: import('@buildd/shared').SiblingProbeResult[];
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

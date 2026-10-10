@@ -94,11 +94,7 @@ export default function ContinueOnRunnerCta({
       disabled={disabled}
       aria-disabled={disabled}
       title={blocked ?? undefined}
-      className={`inline-flex min-h-11 items-center justify-center gap-1 px-3.5 font-mono text-[12.5px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-        order === 'runner-first'
-          ? 'border-2 border-primary bg-primary text-white hover:bg-primary-hover'
-          : 'border border-border-strong text-text-primary hover:bg-surface-3'
-      }`}
+      className={`btn h-11 gap-1 disabled:cursor-not-allowed md:h-9 ${order === 'runner-first' ? 'btn-primary' : ''}`}
     >
       {busy || isPending ? 'Switching…' : 'Continue on a runner →'}
     </button>
@@ -110,11 +106,7 @@ export default function ContinueOnRunnerCta({
       data-testid="strand-keep-local"
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); keepLocal(); }}
       disabled={busy || isPending}
-      className={`inline-flex min-h-11 items-center justify-center px-3.5 font-mono text-[12.5px] transition-colors disabled:opacity-50 ${
-        order === 'local-first'
-          ? 'border-2 border-primary bg-primary font-semibold text-white hover:bg-primary-hover'
-          : 'border border-border-strong text-text-secondary hover:bg-surface-3'
-      }`}
+      className={`btn h-11 md:h-9 ${order === 'local-first' ? 'btn-primary' : ''}`}
     >
       Keep local
     </button>

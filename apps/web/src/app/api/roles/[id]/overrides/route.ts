@@ -11,6 +11,8 @@ import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
 import { parseOperatorGrantInput, withOperatorGrantMetadata, type OperatorGrantConfig } from '@/lib/operator-capability';
 import { AGENT_CAPABILITY_NAMES, roleMayHold } from '@/lib/permission-registry';
+import { can } from '@/lib/permissions';
+import { canSeeRole, isPersonalRole } from '@/lib/personal-roles';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -68,12 +70,29 @@ export async function POST(
       );
     }
 
+    // Personal roles have no workspace overrides; another member's private
+    // role is not even visible.
+    if (isPersonalRole(teamDefault)) {
+      if (!canSeeRole(teamDefault, user.id)) {
+        return NextResponse.json({ error: 'Team-level role not found or not accessible' }, { status: 404 });
+      }
+      return NextResponse.json(
+        { error: 'Personal roles have no workspace overrides; edit the role itself with PATCH /api/roles/[id]' },
+        { status: 400 }
+      );
+    }
+
     // Verify user has access to the target workspace
     if (!wsIds.includes(workspaceId)) {
       const hasAccess = await verifyWorkspaceAccess(user.id, workspaceId);
       if (!hasAccess) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
       }
+    }
+
+    // manage_agent_roles in the role's team (a plain skill stays member-writable).
+    if (teamDefault.isRole && !(await can({ kind: 'user', userId: user.id }, 'manage_agent_roles', teamDefault.teamId))) {
+      return NextResponse.json({ error: 'Managing agent roles requires team admin' }, { status: 403 });
     }
 
     // Agent capability grant (docs/specs/agent-capabilities.md): same rule as

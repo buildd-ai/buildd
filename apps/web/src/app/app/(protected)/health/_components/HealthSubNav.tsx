@@ -34,7 +34,7 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
                     data-active={isActive ? 'true' : undefined}
                     className={`block px-2 py-1.5 text-body border-l-2 transition-colors ${
                       isActive
-                        ? 'border-accent text-accent-text bg-accent-soft font-medium'
+                        ? 'border-text-primary text-text-primary font-semibold'
                         : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-3'
                     }`}
                   >
@@ -59,7 +59,7 @@ export default function HealthSubNav({ isOperator }: { isOperator: boolean }) {
               href={href(item.href)}
               aria-current={isActive ? 'page' : undefined}
               className={`shrink-0 px-3 min-h-11 flex items-center text-body border-b-2 ${
-                isActive ? 'border-accent text-accent-text font-medium' : 'border-transparent text-text-secondary'
+                isActive ? 'border-text-primary text-text-primary font-semibold' : 'border-transparent text-text-secondary'
               }`}
             >
               {item.label}

@@ -2,7 +2,11 @@
 
 import { useTransition } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+import { MonthlySpend } from './MonthlySpend';
+import { RoleUsage, type RoleUsageData } from './RoleUsage';
+import type { MonthlyBudgetForecast } from '@/lib/budget-forecast';
 import { MetricStat, Stat } from '@/components/StatTile';
+import Segmented from '@/components/ui/Segmented';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
 import { scanCaveat } from '@/lib/model-presentation';
 import { countOf } from '@/lib/plural';
@@ -12,12 +16,12 @@ import {
   formatRate,
   formatTokens,
   formatUsd,
-  healthHref,
   shortToolName,
   type DrilldownWindow,
   type UsageDrilldownView,
 } from '@/lib/usage-drilldown';
-import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
+import type { Distribution, PerTaskMetric, UsageStats } from '@/lib/usage-stats';
+import { BASIS_KEYS, BASIS_LABEL, splitTotal } from '@/lib/cost-basis-split';
 import type { HostedRunnerMeterView } from '@/lib/hosted-runner-usage';
 import { HostedRunnerUsageSection, type HostedRunnerWorkspaceRow } from '@/components/hosted-runner/HostedRunnerUsageSection';
 import {
@@ -37,6 +41,8 @@ interface Props {
   wsFilter: string | null;
   /** The active team's month on the hosted runner; null hides the section. */
   hostedRunner?: HostedRunnerProps | null;
+  roleUsage?: RoleUsageData | null;
+  monthly?: MonthlyBudgetForecast | null;
 }
 
 /**
@@ -45,7 +51,7 @@ interface Props {
  * TASK-KEYED throughout, which is what the header denominator claims and what
  * every section below honours.
  */
-export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
+export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -59,18 +65,8 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
       <div className="mb-6">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            {/* Back to Health at the window it was left on — 24h included. The
-                clamp below is this route's decision and does not follow you out. */}
-            <a
-              data-testid="usage-back-link"
-              href={healthHref({ window: view.requestedWindow, workspaceId: wsFilter })}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
-              ← Health
-            </a>
-            <h1 className="hidden md:block text-2xl font-bold">Usage</h1>
-          </div>
+          {/* No back link: the Health sub-nav is one tap away on both widths. */}
+          <h1 className="hidden md:block text-2xl font-bold">Usage</h1>
           <div className="flex items-center gap-2 ml-auto">
             <DrilldownWindowPicker window={window} />
           </div>
@@ -98,9 +94,6 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
         )}
       </div>
 
-      {/* Hosted runner time: month-scoped, not the window above. */}
-      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
-
       {tasks === 0 ? (
         <div data-testid="usage-empty" className="card px-4 py-3">
           <p className="text-sm text-text-secondary">
@@ -112,7 +105,7 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
           {/* 1. What a task costs. */}
           <section data-testid="usage-section-per-task" className="mb-6">
             <h2 className="section-label mb-3">Per task</h2>
-            <div className="card p-4">
+            <div className="border-y border-border-default py-4">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <MetricStat<Distribution>
                   label="Tokens / task"
@@ -120,15 +113,14 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
                   render={(d) => formatTokens(d.median)}
                   sub={(d) => `p90 ${formatTokens(d.p90)} · ${sampleNote('inputTokens')}`}
                 />
-                {/* Under seat/OAuth auth cost is ABSENT, not approximate: the em-dash
-                    carries its own reason and no number is ever shown with a hedge
-                    word attached. The token proxy underneath is a different,
-                    measurable quantity — labelled as a proxy, never as cost. */}
+                {/* With no recorded cost, cost is ABSENT, not approximate: no number
+                    is shown with a hedge word attached. The token proxy underneath
+                    is a different, measurable quantity, labelled as a proxy. */}
                 <MetricStat<Distribution>
                   label="Cost / task"
                   metric={perTask.costUsd}
                   render={(d) => formatUsd(d.median)}
-                  sub={() => `${formatUsd(totals.costUsd)} total · ${sampleNote('costUsd')}`}
+                  sub={() => `${formatUsd(totals.costUsd)} combined total · ${sampleNote('costUsd')}`}
                   extra={
                     view.costProxyTokens === null
                       ? null
@@ -150,15 +142,23 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
               </div>
               {perTask.costUsd.kind === 'unavailable' && view.costProxyTokens !== null && (
                 <p data-testid="usage-cost-proxy-note" className="mt-3 text-[11px] text-text-muted">
-                  Seat-based (OAuth) auth reports no per-task cost, so this page shows no dollar
-                  figure. Median input tokens per task is the closest measurable stand-in.
+                  No cost recorded in this window. Median input tokens per task is the closest
+                  measurable stand-in.
                 </p>
               )}
             </div>
           </section>
 
+          <CostBasisSection byBasis={view.byBasis} />
         </>
       )}
+
+      {roleUsage && <RoleUsage {...roleUsage} window={window} />}
+      {monthly && <MonthlySpend monthly={monthly} />}
+
+      {/* Hosted runner time is month-scoped, so it follows the windowed figures
+          instead of sitting between the window control and what it controls. */}
+      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
     </div>
   );
 }
@@ -429,27 +429,8 @@ function DrilldownWindowPicker({ window: current }: { window: DrilldownWindow })
   };
 
   return (
-    <div
-      role="group"
-      aria-label="Window"
-      data-testid="usage-window-picker"
-      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
-    >
-      {DRILLDOWN_WINDOWS.map((value) => (
-        <button
-          key={value}
-          type="button"
-          onClick={() => select(value)}
-          aria-pressed={current === value}
-          className={`px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
-            current === value
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'
-          }`}
-        >
-          {value}
-        </button>
-      ))}
+    <div data-testid="usage-window-picker" className={pending ? 'opacity-60' : ''}>
+      <Segmented label="Window" items={DRILLDOWN_WINDOWS.map(value => ({ value, label: value }))} value={current} onChange={select} />
     </div>
   );
 }
@@ -554,5 +535,49 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Real dollars and plan usage at list price, never summed unlabelled
+ * (docs/specs/real-and-virtual-cost.md "Reporting"). Mixed and "basis not
+ * reported" rows appear only when the window has them.
+ */
+function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
+  const { total, byExecutor } = byBasis;
+  if (BASIS_KEYS.every(k => total[k].workers === 0)) return null;
+  const shown = BASIS_KEYS.filter(k => k === 'real' || k === 'virtual' || total[k].workers > 0);
+  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem] sm:grid-cols-[minmax(0,1fr)_5.5rem_6.5rem_5.5rem] gap-2';
+  return (
+    <section data-testid="usage-cost-basis" className="mb-6">
+      <h2 className="section-label mb-3">Cost</h2>
+      <div className="border-y border-border-default py-4 text-body">
+        <div className={`${cols} text-[11px] text-text-muted`}>
+          <span />
+          <span className="text-right">Runners</span>
+          <span className="text-right">Interactive</span>
+          <span className="text-right">Total</span>
+        </div>
+        <ul className="mt-2 space-y-2">
+          {shown.map(k => (
+            <li key={k} className={cols}>
+              <span>
+                {BASIS_LABEL[k]}
+                {k === 'unknown' && <span className="text-text-muted"> · {countOf(total.unknown.workers, 'worker')}</span>}
+              </span>
+              <span className="text-right">{formatUsd(byExecutor.runner[k].costUsd)}</span>
+              <span className="text-right">{formatUsd(byExecutor.interactive[k].costUsd)}</span>
+              <span className="text-right font-semibold">{formatUsd(total[k].costUsd)}</span>
+            </li>
+          ))}
+          <li className={`${cols} border-t-2 border-border pt-2 text-text-secondary`}>
+            <span>Combined</span>
+            <span />
+            <span />
+            <span className="text-right">{formatUsd(splitTotal(total).costUsd)}</span>
+          </li>
+        </ul>
+      </div>
+    </section>
   );
 }

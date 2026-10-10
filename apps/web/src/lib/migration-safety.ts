@@ -3,11 +3,35 @@ export type OperationClass = 'EXPAND' | 'CONTRACT';
 export interface MigrationCollision {
   /** This PR's colliding migration filename (basename only). */
   file: string;
-  /** The other open PR's colliding migration filename (basename only). */
+  /** The other side's colliding migration filename (basename only). */
   otherFile: string;
-  /** The other open PR's number. */
-  otherPrNumber: number;
+  /** The other open PR's number; null when the slot is taken on the base itself. */
+  otherPrNumber: number | null;
+  /**
+   * `'base'`: the slot is already used by a migration on the PR's own base
+   * (e.g. dev merged a migration with the same number after this branch
+   * forked). Absent: another open PR holds it.
+   */
+  against?: 'base';
 }
+
+/**
+ * Why a migration verdict is unsafe. Callers route on this, never on `reason`:
+ *  - `destructive`: the SQL itself is CONTRACT (drop, rename, type change,
+ *    ambiguous). A person decides.
+ *  - `data`: the only CONTRACT statements move data (INSERT/UPDATE/DELETE/
+ *    MERGE). A person decides unless the workspace merge policy lets the
+ *    reviewer agent decide (`mergePolicy.dataMigrations`, see
+ *    `agentReviewsDataMigrations` in @buildd/shared).
+ *  - `lineage`: the PR deletes, rewrites or reorders existing migrations.
+ *  - `mixed`: safe EXPAND plus CONTRACT in one PR; an agent splits it.
+ *  - `collision`: a mechanical renumber (see `MigrationSafety.collision`).
+ *  - `uninspectable`: GitHub could not be read; the inspector retries once,
+ *    then fails closed.
+ * Absent means `destructive` (see `unsafeKind`), so a verdict without one
+ * still fails closed.
+ */
+export type MigrationUnsafeKind = 'destructive' | 'data' | 'lineage' | 'mixed' | 'collision' | 'uninspectable';
 
 export type MigrationSafety =
   | { safe: true; operationClass: 'EXPAND' }
@@ -15,6 +39,7 @@ export type MigrationSafety =
       safe: false;
       reason: string;
       operationClass: 'CONTRACT';
+      kind?: MigrationUnsafeKind;
       /**
        * Present only when the sole reason for `!safe` is a migration-number
        * collision AND this PR's own SQL is independently non-destructive. A
@@ -26,7 +51,20 @@ export type MigrationSafety =
        * `classifyPullRequestMigrations`).
        */
       collision?: MigrationCollision;
+      /**
+       * Present only for a PR that mixes EXPAND and CONTRACT migrations: the
+       * additive part is safe to land on its own, so the remedy is an agent
+       * splitting the PR in two, not a human decision. Absent for a PR whose
+       * only problem is its destructive SQL.
+       */
+      mixedSplit?: true;
     };
+
+/** The structured kind of an unsafe verdict; one without a kind counts as destructive. */
+export function unsafeKind(safety: MigrationSafety): MigrationUnsafeKind | null {
+  if (safety.safe) return null;
+  return safety.kind ?? (safety.collision ? 'collision' : safety.mixedSplit ? 'mixed' : 'destructive');
+}
 
 const MIGRATION_PATH = /(?:^|\/)drizzle\/(\d{4})_[^/]+\.sql$/;
 
@@ -112,6 +150,10 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
   if (parsed.length === 0) {
     return { safe: false, operationClass: 'CONTRACT', reason: 'generated migration contains no SQL statements' };
   }
+
+  // A data statement doesn't end the scan: a later destructive statement in
+  // the same file must win, so a backfill can't hide a DROP behind it.
+  let firstData: Extract<MigrationSafety, { safe: false }> | null = null;
 
   for (const raw of parsed) {
     const statement = unwrapIdempotentDoBlock(raw) ?? raw;
@@ -202,11 +244,13 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
       statement,
     );
     if (match) {
-      return {
+      firstData ??= {
         safe: false,
         operationClass: 'CONTRACT',
         reason: `runs data migration ${match[1].split(/\s/)[0].toUpperCase()} on ${identifier(match[2])}`,
+        kind: 'data',
       };
+      continue;
     }
 
     if (/^CREATE\s+TABLE\b/i.test(statement)) continue;
@@ -251,6 +295,7 @@ export function classifyMigrationSql(sql: string): MigrationSafety {
     };
   }
 
+  if (firstData) return firstData;
   return { safe: true, operationClass: 'EXPAND' };
 }
 
@@ -300,6 +345,7 @@ export function classifyPullRequestMigrations(
         safe: false,
         operationClass: 'CONTRACT',
         reason: `could not inspect generated migration ${migration.filename}`,
+        kind: 'uninspectable',
       };
     }
 
@@ -317,7 +363,9 @@ export function classifyPullRequestMigrations(
     }
   }
 
-  const firstContract = results.find((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
+  // A destructive file outranks a data one, whatever the file order.
+  const contracts = results.filter((r): r is Extract<MigrationSafety, { safe: false }> => !r.safe);
+  const firstContract = contracts.find((r) => r.kind !== 'data') ?? contracts[0];
   const hasExpand = results.some((r) => r.safe);
 
   // Reject PRs that mix EXPAND and CONTRACT migrations. Each operation class must
@@ -329,13 +377,17 @@ export function classifyPullRequestMigrations(
       operationClass: 'CONTRACT',
       reason:
         `PR mixes EXPAND and CONTRACT migrations — split into two PRs: ship additive changes first, then land the destructive ones separately once nothing reads the old columns. Triggered by: ${firstContract.reason}`,
+      mixedSplit: true,
+      kind: 'mixed',
     };
   }
 
   // A migration whose own SQL is genuinely destructive always escalates on
   // its own merits — a collision on the same slot doesn't make it MORE
   // destructive, and it doesn't make it any safer either.
-  if (firstContract) return firstContract;
+  // Data-only SQL with a colliding number: the renumber is mechanical, so it
+  // goes first; the data verdict applies again on the renumbered head.
+  if (firstContract && !(firstContract.kind === 'data' && collision)) return firstContract;
 
   if (collision) {
     return {
@@ -343,6 +395,7 @@ export function classifyPullRequestMigrations(
       operationClass: 'CONTRACT',
       reason: `migration number collision: ${collision.file} conflicts with open PR #${collision.otherPrNumber} migration ${collision.otherFile}`,
       collision,
+      kind: 'collision',
     };
   }
 

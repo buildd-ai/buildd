@@ -338,7 +338,9 @@ describe('WorkerManager — lifecycle', () => {
       ];
 
       await manager.retry('w-lc-1');
-      await new Promise(r => setTimeout(r, 150));
+      for (let i = 0; i < 100 && !(manager.getWorker('w-lc-1')?.completedAt && !manager.getWorker('w-lc-1')?.error); i++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
 
       // Worker should be done (retry session completed)
       const updated = manager.getWorker('w-lc-1');
@@ -645,7 +647,7 @@ describe('WorkerManager — lifecycle', () => {
         id: 'w-hook-post', lastActivity: Date.now() - 100_000, toolInFlight: true,
       } as unknown as LocalWorker;
 
-      const hook = (manager as any).hookFactory.createTeamTrackingHook(worker);
+      const hook = (manager as any).hookFactory.createToolActivityHook(worker);
       await hook({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} });
 
       expect(worker.toolInFlight).toBe(false);

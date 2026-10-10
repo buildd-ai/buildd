@@ -10,7 +10,8 @@ import {
 import { signAccessToken } from '@/lib/oauth/tokens';
 import { db } from '@buildd/core/db';
 import { accounts, workspaces, users } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
+import { findTeamSessionAccount } from '@/lib/oauth/session-account';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 
@@ -35,10 +36,8 @@ async function ensureUserAccount(userId: string, workspaceId: string): Promise<v
     });
     if (!workspace) return;
 
-    const existing = await db.query.accounts.findFirst({
-      where: and(eq(accounts.teamId, workspace.teamId), eq(accounts.type, 'user')),
-      columns: { id: true, seatId: true },
-    });
+    // The same row the session will act as (lib/api-auth.ts).
+    const existing = await findTeamSessionAccount(workspace.teamId);
 
     let accountId: string;
     if (existing) {
@@ -67,7 +66,7 @@ async function ensureUserAccount(userId: string, workspaceId: string): Promise<v
 
     // Set seatId from the team's Claude credential so this account is grouped
     // correctly with other accounts sharing the same Anthropic subscription.
-    const cred = await resolveClaudeCredential({ teamId: workspace.teamId });
+    const cred = await resolveClaudeCredential({ teamId: workspace.teamId, accountId });
     if (cred) {
       const seatId = extractJwtSub(cred.accessToken);
       if (seatId) {

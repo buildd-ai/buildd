@@ -9,6 +9,9 @@
 
 import { describe, test, expect } from 'bun:test';
 import {
+  phaseOpName,
+  recordPhaseOp,
+  PHASE_OPS_CAP,
   lineDiff,
   countLines,
   relativizePath,
@@ -204,5 +207,40 @@ describe('appendMilestone', () => {
     // no actions left → shift
     appendMilestone(list, status('s4'), 4);
     expect(list.map(m => m.label)).toEqual(['s1', 's2', 's3', 's4']);
+  });
+});
+
+test('cap preserves checkpoints when only statuses remain', () => {
+  const checkpoint: Milestone = { type: 'checkpoint', event: 'first_commit', label: 'First commit', ts: 1 };
+  const list: Milestone[] = [checkpoint, { type: 'status', label: 'old', ts: 2 }];
+  appendMilestone(list, { type: 'status', label: 'new', ts: 3 }, 2);
+  expect(list).toEqual([checkpoint, { type: 'status', label: 'new', ts: 3 }]);
+});
+
+describe('phaseOpName / recordPhaseOp (phase milestone `ops`)', () => {
+  test('a grouped MCP tool is named by its action', () => {
+    expect(phaseOpName('mcp__buildd__buildd_work', { action: 'create_pr', params: { title: 'x' } })).toBe('create_pr');
+  });
+
+  test('an MCP tool without an action is named by its last segment', () => {
+    expect(phaseOpName('mcp__buildd__recall', { query: 'some query text' })).toBe('recall');
+  });
+
+  test('built-in tools keep their name', () => {
+    expect(phaseOpName('Edit', { file_path: '/a.ts' })).toBe('Edit');
+    expect(phaseOpName('Bash', { command: 'git status' })).toBe('Bash');
+  });
+
+  test('never returns input values that are not bare identifiers', () => {
+    expect(phaseOpName('mcp__x__do', { action: 'sk-live 123 drop table' })).toBe('do');
+    expect(phaseOpName('', {})).toBeNull();
+  });
+
+  test('records distinct ops in order, capped', () => {
+    const ops: string[] = [];
+    for (const op of ['Read', 'get_decision', 'Read', null, 'a', 'b', 'c', 'd', 'e']) recordPhaseOp(ops, op);
+    expect(ops[0]).toBe('Read');
+    expect(ops[1]).toBe('get_decision');
+    expect(ops).toHaveLength(PHASE_OPS_CAP);
   });
 });

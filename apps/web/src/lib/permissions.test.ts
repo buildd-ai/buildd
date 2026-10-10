@@ -52,12 +52,19 @@ const EXPECTED: Record<Permission, Row> = {
   migrate_workspace: { roles: OA, keys: ADMIN_KEY },
   manage_github_installation: { roles: OA, keys: NONE },
   review_memory: { roles: OA, keys: ADMIN_KEY },
+  delegate_schedule_access: { roles: OA, keys: ADMIN_KEY },
   steer_workers: { roles: OA, keys: ADMIN_KEY },
   force_reassign_task: { roles: OA, keys: ANY_KEY },
   manage_releases: { roles: OA, keys: ADMIN_KEY },
   manage_connectors: { roles: OA, keys: ADMIN_KEY },
   manage_evidence_backends: { roles: OA, keys: ADMIN_KEY },
   run_experiments: { roles: OA, keys: ADMIN_KEY },
+  assign_team_roles: { roles: OA, keys: NONE },
+  manage_team_credentials: { roles: OA, keys: ADMIN_KEY },
+  manage_team_notifications: { roles: OA, keys: ADMIN_KEY },
+  create_workspace: { roles: OA, keys: ADMIN_KEY },
+  manage_agent_roles: { roles: OA, keys: ADMIN_KEY },
+  create_personal_roles: { roles: ['owner', 'admin', 'member'], keys: ['worker', 'admin'] },
 };
 
 const ALL = Object.keys(PERMISSIONS) as Permission[];
@@ -78,8 +85,8 @@ describe('registry', () => {
     for (const p of ALL) expect(PERMISSIONS[p].description.length).toBeGreaterThan(0);
   });
 
-  it('a member holds no permission by default', () => {
-    for (const p of ALL) expect(roleHas('member', p, null)).toBe(false);
+  it('a member holds no permission by default except creating their own roles', () => {
+    for (const p of ALL) expect(roleHas('member', p, null)).toBe(p === 'create_personal_roles');
   });
 });
 

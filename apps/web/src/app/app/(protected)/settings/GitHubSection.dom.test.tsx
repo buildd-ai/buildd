@@ -53,3 +53,34 @@ describe('GitHubSection', () => {
     expect(container.querySelector('a[href="/api/github/install"]')).not.toBeNull();
   });
 });
+
+/**
+ * Disconnect follows the DELETE route's own rule (the page passes the ids it
+ * allows); Sync only needs to see the installation, so it stays for everyone.
+ */
+describe('GitHubSection: Disconnect only where the API allows it', () => {
+  const inst = (id: string, login: string) => ({
+    id, installationId: 1, accountLogin: login, accountAvatarUrl: null, accountType: 'Organization',
+    repositorySelection: 'all', repoCount: 2, suspendedAt: null,
+  });
+  const buttons = () => [...container.querySelectorAll('button')].map((b) => b.textContent);
+
+  it('member: Sync, no Disconnect, and says who can', async () => {
+    stub({ configured: true, installations: [inst('i1', 'harborline')] });
+    act(() => root.render(<GitHubSection disconnectableIds={[]} />));
+    await flush();
+    expect(buttons()).toEqual(['Sync']);
+    // State words are TonePills, not the legacy outlined chip.
+    expect(container.querySelector('.status-pill')).toBeNull();
+    expect(container.querySelector('[data-tone="q"]')!.textContent).toBe('Organization');
+    expect(container.querySelector('[data-testid="github-read-only-i1"]')!.textContent).toBe('Admins can disconnect this.');
+  });
+
+  it('admin: Disconnect on the installations they manage, not the others', async () => {
+    stub({ configured: true, installations: [inst('i1', 'harborline'), inst('i2', 'tidewater')] });
+    act(() => root.render(<GitHubSection disconnectableIds={['i1']} />));
+    await flush();
+    expect(buttons()).toEqual(['Sync', 'Disconnect', 'Sync']);
+    expect(container.querySelector('[data-testid="github-read-only-i2"]')).not.toBeNull();
+  });
+});

@@ -743,6 +743,26 @@ mock.module('@/lib/workflow/seam', () => ({
   REVIEW_CONTRACT_RETRIES: 2,
 }));
 
+// Reviewer provenance and the PR's delivery authority read real rows; their
+// SQL is covered against real Postgres (apps/web/tests/db/review-provenance.test.ts).
+// Here: the review task's own context stands in for the server-resolved PR,
+// and a test overrides either to check the verdict path stops.
+const realReviewProvenance = await import('@/lib/verdict-provenance');
+const mockResolveDispatchedReview = mock(async (task: any, _workspaceId: string): Promise<any> => {
+  const ctx = (task?.context ?? {}) as Record<string, any>;
+  return { ok: true, originalTaskId: ctx.reviewerFor, prNumber: ctx.prNumber, repoFullName: ctx.repoFullName, installationId: ctx.installationId };
+});
+mock.module('@/lib/verdict-provenance', () => ({
+  ...realReviewProvenance,
+  resolveDispatchedReview: mockResolveDispatchedReview,
+}));
+const realWorkflowAuthority = await import('@/lib/workflow/authority');
+const mockKernelDeliveryForPr = mock(async (_ws: string, _repo: string, _pr: number): Promise<string | null> => null);
+mock.module('@/lib/workflow/authority', () => ({
+  ...realWorkflowAuthority,
+  kernelDeliveryForPr: mockKernelDeliveryForPr,
+}));
+
 // The terminal-record ledger is fire-and-forget over a real db client
 // (`packages/core/db/client`, same reason path-claim is stubbed above), so it
 // is mocked directly here rather than left to reach the network and be
@@ -820,6 +840,12 @@ mock.module('@/lib/chat/mission-events', () => ({
   ...realChatMissionEvents,
   postTaskCompletedEvent: mock(async (...args: unknown[]) => { fanout.push(['postTaskCompletedEvent', ...args]); }),
   postQuestionEvent: mock(async (...args: unknown[]) => { fanout.push(['postQuestionEvent', ...args]); }),
+}));
+
+const siblingProbeCalls: any[] = [];
+let siblingProbeReply: any[] = [];
+mock.module('@/lib/sibling-conflict-probe-store', () => ({
+  siblingProbeHeartbeat: async (input: any) => { siblingProbeCalls.push(input); return siblingProbeReply; },
 }));
 
 import { GET, PATCH } from './route';
@@ -1532,6 +1558,60 @@ describe('PATCH /api/workers/[id]', () => {
       expect(written.lastCommitSha).toBe('abc1234');
     });
 
+    // docs/specs/real-and-virtual-cost.md: the basis is whatever the reporter
+    // says, combined atomically in SQL; absent reads as unknown.
+    describe('cost basis', () => {
+      const metricsWorker = {
+        id: 'worker-1', accountId: 'account-1', status: 'completed', error: null,
+        workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null, resultMeta: null,
+        costUsd: '0', inputTokens: 0, outputTokens: 0, turns: 3, costBasis: null,
+      };
+      const send = (body: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+      }), { params: mockParams });
+      const basisValues = (v: any) => (v?.costBasis?.values ?? []).filter((x: unknown) => typeof x === 'string');
+
+      beforeEach(() => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue(metricsWorker);
+        captureUpdates();
+      });
+
+      it('writes the reported basis with usage', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2, costUsd: 0.5, costBasis: 'real' });
+        expect(res.status).toBe(200);
+        expect(basisValues(metricsSets[0])).toContain('real');
+      });
+
+      it('records unknown when usage arrives with no basis', async () => {
+        await send({ metricsOnly: true, inputTokens: 10, outputTokens: 2 });
+        expect(basisValues(metricsSets[0])[0]).toBe('unknown');
+      });
+
+      it('leaves the basis alone when the report carries no usage', async () => {
+        await send({ metricsOnly: true, lastCommitSha: 'abc1234' });
+        expect(metricsSets[0]?.costBasis).toBeUndefined();
+      });
+
+      it('rejects a basis that is not one of the four with 400 and writes nothing', async () => {
+        const res = await send({ metricsOnly: true, inputTokens: 10, costBasis: 'oauth' });
+        expect(res.status).toBe(400);
+        expect(metricsSets.length).toBe(0);
+      });
+
+      it('marks a server-estimated cost as estimated without changing the basis', async () => {
+        await send({
+          metricsOnly: true, costUsd: 0, inputTokens: 1_000_000, outputTokens: 100_000, costBasis: 'virtual',
+          actualModel: 'claude-sonnet-4-20250514',
+          resultMeta: { totalUsage: { inputTokens: 1_000_000, outputTokens: 100_000 } },
+        });
+        const written = metricsSets[0];
+        expect(Number(written.costUsd)).toBeGreaterThan(0);
+        expect((written.resultMeta as any).costEstimated).toBe(true);
+        expect(basisValues(written)).toContain('virtual');
+      });
+    });
+
     it('does not revive status, error or turns through a metrics-only PATCH', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({
@@ -1875,6 +1955,33 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(req, { params: mockParams });
 
       expect(mockRecordOrchestrationTouchLabel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('live sibling conflict probe wiring', () => {
+    it('passes results, support and moved touches through, and returns the probes to run', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+        pendingInstructions: null, milestones: [], observedTouches: ['apps/web/a.ts'],
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running' }]) })) })),
+      });
+      siblingProbeCalls.length = 0;
+      siblingProbeReply = [{ probeId: 'p1', otherBranch: 'buildd/x', sharedFiles: ['a.ts'], mergiraf: false }];
+      const results = [{ probeId: 'p0', outcome: 'clean' }];
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { touchedPaths: ['apps/web/c.ts'], siblingProbe: true, siblingProbeResults: results },
+      }), { params: mockParams });
+
+      expect(siblingProbeCalls).toHaveLength(1);
+      expect(siblingProbeCalls[0]).toMatchObject({ results, supportsProbe: true, touchesMoved: true, terminal: false });
+      expect((await res.json()).siblingProbes).toEqual(siblingProbeReply);
+      siblingProbeReply = [];
     });
   });
 
@@ -2370,6 +2477,43 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.milestones[1].progress).toBe(50);
   });
 
+  it('preserves appended agent narration through a full runner milestone sync', async () => {
+    let capturedSet: any;
+    mockWorkersUpdate.mockReturnValue({ set: mock((updates: any) => {
+      capturedSet = updates;
+      return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+    }) });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    const worker: any = { id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', milestones: [], pendingInstructions: null };
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    const agent = { type: 'status', label: 'Tests passed', ts: 2000 };
+    expect((await PATCH(createMockRequest({ method: 'PATCH', body: { appendMilestones: [agent] } }), { params: mockParams })).status).toBe(200);
+    expect(capturedSet.milestones[0].origin).toBe('agent');
+    worker.milestones = capturedSet.milestones;
+    const runner = { type: 'checkpoint', event: 'session_started', ts: 1000 };
+    expect((await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: [runner] } }), { params: mockParams })).status).toBe(200);
+    expect(capturedSet.milestones).toEqual([runner, { ...agent, origin: 'agent' }]);
+    worker.milestones = capturedSet.milestones;
+    await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: capturedSet.milestones } }), { params: mockParams });
+    expect(capturedSet.milestones).toHaveLength(2);
+  });
+
+  it('caps full runner snapshots without evicting lifecycle checkpoints', async () => {
+    let capturedSet: any;
+    mockWorkersUpdate.mockReturnValue({ set: mock((updates: any) => {
+      capturedSet = updates;
+      return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+    }) });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', milestones: [{ type: 'plan', origin: 'agent', label: 'Ship verified work', ts: 200 }], pendingInstructions: null });
+    const checkpoint = { type: 'checkpoint', event: 'session_started', ts: 0 };
+    const runner = [checkpoint, ...Array.from({ length: 100 }, (_, ts) => ({ type: 'status', label: 'Running', ts: ts + 1 }))];
+    await PATCH(createMockRequest({ method: 'PATCH', body: { milestones: runner } }), { params: mockParams });
+    expect(capturedSet.milestones).toHaveLength(100);
+    expect(capturedSet.milestones[0]).toEqual(checkpoint);
+    expect(capturedSet.milestones.at(-1).origin).toBe('agent');
+  });
+
   it('caps appendMilestones at 50 entries', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({
@@ -2553,6 +2697,74 @@ describe('PATCH /api/workers/[id]', () => {
 
     expect(res.status).toBe(200);
     expect(capturedSet.waitingFor.contractViolation).toBe(true);
+  });
+
+  // Found in the live pause proof (task 4b2b30a9): after Resume, the run
+  // completed but its row kept error "paused: ...", so a finished task showed an
+  // error line. Leaving a park clears the park's marker.
+  it.each([
+    ['paused: paused by a person; Resume continues the same session', 'a pause'],
+    ['needs_input: Which database?', 'a parked question'],
+  ])('a waiting_input worker resuming to running clears its park marker (%s, %s)', async (parkError) => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'waiting_input', error: parkError, workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', currentAction: 'Processing follow-up...', reactivate: true },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.error).toBeNull();
+  });
+
+  it('a running update keeps an error that is not a park marker', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'waiting_input', error: 'something else', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.error).toBeUndefined();
   });
 
   it('does not flag a real question as a contract violation', async () => {
@@ -2746,8 +2958,95 @@ describe('PATCH /api/workers/[id]', () => {
       await park(['packages/core/drizzle/0001_add_column.sql']);
       expect(askedSomeone()).toBe(true);
       expect(ledgered()).toBe(true);
-      expect(capturedSet.waitingFor.disposition).toBeUndefined();
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', rail: 'migration' });
       expect(capturedSet.waitingFor.resurfaceAt).toBeUndefined();
+    });
+  });
+
+  // Needs You admission (lib/park-disposition.ts, @buildd/core/needs-you):
+  // no park is stored without a human-attention disposition, and only an
+  // admitted one notifies.
+  describe('park disposition', () => {
+    const TEAM_WS = { dataClass: null, teamId: 'team-1', gitConfig: null };
+    const REPAIR_ID = 'abcdef12-0000-4000-8000-000000000000';
+    let capturedSet: any;
+    async function parkWith(waitingFor: Record<string, unknown>, opts: { pathManifest?: string[]; stored?: unknown } = {}) {
+      capturedSet = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null, waitingFor: opts.stored ?? null });
+      mockWorkspacesFindFirst.mockResolvedValue(TEAM_WS as any);
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', title: 'Visual QA', missionId: 'mission-1', pathManifest: opts.pathManifest ?? ['apps/web/src/lib/export.ts'] } as any);
+      mockNotifySubject.mockClear();
+      mockRecordEvent.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    }
+    const askedSomeone = () => mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention');
+    const ledgered = () => mockRecordEvent.mock.calls.some((c: any) => c[0]?.type === 'task.needs_input');
+    const BLOCKER = {
+      type: 'question',
+      prompt: 'Should I skip visual QA?',
+      context: 'Visual QA cannot boot the app: the mission migration is below the migration high-water mark.',
+      options: [{ label: 'Skip visual QA' }, { label: 'Wait' }],
+    };
+
+    afterEach(() => { mockWorkspacesFindFirst.mockResolvedValue(null); });
+
+    it('a legacy-runner park (no gate disposition) describing a recoverable blocker self-routes: repair task owns it, nobody asked', async () => {
+      // The real filer runs against the mocked db: its live-repair lookup
+      // returns a row, so the repair is reused rather than inserted.
+      await parkWith(BLOCKER);
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', dispositionBy: 'server_recheck', gateOutcome: 'recovered' });
+      expect(typeof capturedSet.waitingFor.repairTaskId).toBe('string');
+      expect(askedSomeone()).toBe(false);
+      expect(ledgered()).toBe(false);
+    });
+
+    it('a re-send of a question the server already disposed reuses it and files nothing twice', async () => {
+      await parkWith(BLOCKER, { stored: { ...BLOCKER, disposition: 'recovered', dispositionBy: 'server_recheck', repairTaskId: REPAIR_ID } });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'recovered', repairTaskId: REPAIR_ID });
+      expect(askedSomeone()).toBe(false);
+    });
+
+    it('a hard-rail legacy park still asks, even when it reads like a recoverable blocker', async () => {
+      await parkWith(BLOCKER, { pathManifest: ['packages/core/drizzle/0001_add_column.sql'] });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck', rail: 'migration' });
+      expect(capturedSet.waitingFor.repairTaskId).toBeUndefined();
+      expect(askedSomeone()).toBe(true);
+      expect(ledgered()).toBe(true);
+    });
+
+    it('a real decision from a legacy runner is stamped ask and notifies', async () => {
+      await parkWith({ type: 'question', prompt: 'Should the export use CSV or JSON?', options: [{ label: 'CSV' }, { label: 'JSON' }] });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck' });
+      expect(askedSomeone()).toBe(true);
+    });
+
+    it('a gate-tagged ask is kept as the gate said, with its outcome', async () => {
+      await parkWith({ type: 'question', prompt: 'CSV or JSON?', disposition: 'ask', gateOutcome: 'asked', rail: 'bogus' });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'gate', gateOutcome: 'asked' });
+      expect(capturedSet.waitingFor.rail).toBeUndefined();
+    });
+
+    it('a permission prompt carries a disposition before it renders', async () => {
+      await parkWith({ type: 'permission', prompt: 'Permission required for Bash: rm -rf dist', options: ['Allow once', 'Deny'] });
+      expect(capturedSet.waitingFor).toMatchObject({ type: 'permission', disposition: 'ask', dispositionBy: 'permission' });
+    });
+
+    it('a runner-tagged recovered park whose repair task is not in this workspace is re-checked, not trusted', async () => {
+      await parkWith({ type: 'question', prompt: 'Which export format?', disposition: 'recovered', repairTaskId: 'not-a-uuid' });
+      expect(capturedSet.waitingFor).toMatchObject({ disposition: 'ask', dispositionBy: 'server_recheck' });
+      expect(capturedSet.waitingFor.repairTaskId).toBeUndefined();
     });
   });
 
@@ -5012,6 +5311,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase, undraft, and merge PR #2165',
         description: 'Get PR #2165 merged to dev.',
+        context: { prReach: { prNumbers: [2165], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5038,7 +5338,59 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet?.result?.prNumber).toBe(2165);
     });
 
-    // The fallback adopts a PR the task names, so ownership passes on that
+    it('pr_required + a merged PR the task only names in its text → not recorded', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/2165', prNumber: 2165 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+        context: { prNumber: 2165 },
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'feature/pr-2165' } });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(capturedTaskSet?.result?.prNumber).not.toBe(2165);
+    });
+
+    // The fallback adopts a PR the task's records link, so ownership passes on that
     // basis — except for a protected head: naming a release PR does not make
     // it this task's deliverable (lib/agent-capabilities/pr-ownership.ts).
     it('pr_required + referenced PR is merged but its head is the protected default branch → not recorded', async () => {
@@ -5140,7 +5492,9 @@ describe('PATCH /api/workers/[id]', () => {
       });
 
       it('records a person’s session report as given', async () => {
-        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', sessionUserId: 'user-1' });
+        // A session acts only as a worker it claimed (lib/worker-owner.ts).
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', sessionUserId: 'user-1' });
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, claimedByUserId: 'user-1' });
         const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50' });
         expect(res.status).toBe(200);
         expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50')).toBe(true);
@@ -5156,6 +5510,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase, undraft, and merge PR #2165',
         description: 'Get PR #2165 merged to dev.',
+        context: { prReach: { prNumbers: [2165], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5215,6 +5570,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5278,6 +5634,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5317,6 +5674,7 @@ describe('PATCH /api/workers/[id]', () => {
         outputRequirement: 'pr_required',
         title: 'Rebase and fix PR #15',
         description: 'Push fixes to PR #15\'s branch and request review.',
+        context: { prReach: { prNumbers: [15], grantedBy: 'human:user-1', grantedAt: 'x' } },
       });
       mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
       mockGithubReposFindFirst.mockResolvedValue({
@@ -5347,6 +5705,110 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.hint).toBe('create_pr');
+    });
+
+    // The task asked for work that had already landed in another task's PR,
+    // which its text never names, so the referenced-PR fallback above cannot
+    // see it, and adopting it would make this worker own someone else's PR.
+    // `alreadyShippedIn` names the PR; the gate checks it is merged in the
+    // linked repo and records it on the result, never on the worker row.
+    describe('pr_required + alreadyShippedIn', () => {
+      const shippedTask = {
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'fix(conflict-retry): verify a real conflict before dispatching',
+        description: 'Re-check the base tip before dispatching an agent.',
+      };
+      let capturedTaskSet: any;
+      let workerSets: any[];
+
+      beforeEach(() => {
+        capturedTaskSet = null;
+        workerSets = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            capturedTaskSet = updates;
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'completed' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockTasksFindFirst.mockResolvedValue(shippedTask);
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', installation: { installationId: 123 },
+        });
+      });
+
+      const githubPr = (merged: boolean) => mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/3851') {
+          return Promise.resolve({
+            number: 3851, merged, html_url: 'https://github.com/org/repo/pull/3851',
+            head: { ref: 'buildd/aaaa1111-another-task' }, base: { ref: 'dev' },
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const complete = (extra: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Already shipped in #3851; verified on dev.', summarySource: 'agent', ...extra },
+      }), { params: mockParams });
+
+      it('a merged PR completes the task and is recorded on the result, not the worker', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn).toEqual({
+          prNumber: 3851, prUrl: 'https://github.com/org/repo/pull/3851',
+        });
+        expect(workerSets.some(u => u.prNumber === 3851 || u.prUrl)).toBe(false);
+      });
+
+      it('an unmerged PR still refuses, and says why', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(false);
+
+        const res = await complete({ alreadyShippedIn: 3851 });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain('#3851');
+        expect(data.error).toContain('not merged');
+      });
+
+      it('own commits on the branch need discardEdits too, so they are not stranded silently', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 1 });
+        githubPr(true);
+
+        const refused = await complete({ alreadyShippedIn: 3851 });
+        expect(refused.status).toBe(400);
+        expect((await refused.json()).error).toContain('discardEdits');
+
+        const accepted = await complete({ alreadyShippedIn: 3851, discardEdits: 'duplicate of tests already on dev' });
+        expect(accepted.status).toBe(200);
+        expect(capturedTaskSet?.result?.alreadyShippedIn?.prNumber).toBe(3851);
+      });
+
+      it('the plain pr_required refusal points at alreadyShippedIn', async () => {
+        mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, commitCount: 0 });
+        githubPr(true);
+
+        const res = await complete({});
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('alreadyShippedIn');
+      });
     });
 
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
@@ -7694,6 +8156,32 @@ describe('PATCH /api/workers/[id]', () => {
         expect(getSet()).toBeNull();
       });
 
+      // Real usage was charged per token, not drawn from the plan.
+      it('does not count a session that reports a real basis', async () => {
+        const getSet = setupCompletion({}, POOL);
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'real' },
+        }), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(getSet()).toBeNull();
+      });
+
+      it('does not count a worker already recorded as real when the terminal report has no basis', async () => {
+        const getSet = setupCompletion({}, POOL, { costBasis: 'real' });
+        await PATCH(completion(), { params: mockParams });
+        expect(getSet()).toBeNull();
+      });
+
+      it('counts a session that reports a virtual basis, as before', async () => {
+        const getSet = setupCompletion({}, POOL);
+        await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', costUsd: 10, costBasis: 'virtual' },
+        }), { params: mockParams });
+        expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(55, 6);
+      });
+
       it('still writes the cost onto the worker row for an excluded session', async () => {
         setupCompletion({}, POOL, {}, { backend: 'codex' });
         const workerSetCalls: any[] = [];
@@ -8515,6 +9003,48 @@ describe('PATCH /api/workers/[id]', () => {
         repoFullName: 'org/repo',
         event: 'APPROVE',
       });
+    });
+
+    it('approve: acts through the repo and installation resolved from the workspace, not the task context', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockResolveDispatchedReview.mockImplementationOnce(async () => ({ ok: true, originalTaskId: 'original-task-1', prNumber: 42, repoFullName: 'org/linked', installationId: 7 }));
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockResolveDispatchedReview.mock.calls.at(-1)?.[1]).toBe('ws-1');
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ repoFullName: 'org/linked', installationId: 7, prNumber: 42 });
+    });
+
+    it('approve: a review the server cannot trace to its own dispatch posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockResolveDispatchedReview.mockImplementationOnce(async () => ({ ok: false, reason: 'reviewed task is not in this workspace' }));
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('approve: a legacy reviewer for a PR the kernel owns posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockKernelDeliveryForPr.mockImplementationOnce(async () => 'delivery-9');
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('approve: an unreadable delivery authority posts no review and merges nothing', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockKernelDeliveryForPr.mockImplementationOnce(async () => { throw new Error('connection reset'); });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('request-changes: posts exactly one GitHub REQUEST_CHANGES review for the verdict', async () => {
@@ -11015,7 +11545,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedSet.milestones).toHaveLength(2);
       // Label prose stripped — only type and ts preserved
       expect(capturedSet.milestones[0]).toEqual({ type: 'phase', ts: 1000 });
-      expect(capturedSet.milestones[1]).toEqual({ type: 'status', ts: 2000 });
+      expect(capturedSet.milestones[1]).toEqual({ type: 'status', ts: 2000, origin: 'agent' });
       expect(capturedSet.milestones[0].label).toBeUndefined();
       expect(capturedSet.milestones[1].progress).toBeUndefined();
     });
@@ -11042,7 +11572,8 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      expect(capturedSet.waitingFor).toEqual({ type: 'question' });
+      // No prose — but the disposition survives: Needs You admission reads it.
+      expect(capturedSet.waitingFor).toEqual({ type: 'question', disposition: 'ask', dispositionBy: 'server_recheck' });
       expect(capturedSet.waitingFor.prompt).toBeUndefined();
     });
 
@@ -16074,6 +16605,80 @@ describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
     await patch({ status: 'running', milestones: [] });
     expect(sets.some(v => v.turns !== undefined)).toBe(true);
   });
+
+  // ── Turn-boundary steering: one consumer per worker, explicit ids ──────────
+  const idWorker = {
+    ...baseWorker,
+    runner: 'runner-1',
+    supportsInstructionAck: true,
+    instructionHistory: [
+      { id: 'i-1', type: 'instruction', message: 'Switch to the other auth flow', timestamp: 1, deliveryState: 'pending' },
+    ],
+  };
+
+  it('B-2: the agent is not a consumer on a runner-managed worker — no instructions, queue untouched', async () => {
+    setup(idWorker);
+    const res = await patch({ status: 'running', appendMilestones: [{ type: 'status', label: 'x', ts: 5 }], consumer: 'agent' });
+    const data = await res.json();
+    expect(data.instructions).toBeUndefined();
+    expect(data.instructionIds).toBeUndefined();
+    expect(data.instructionsAck).toBeUndefined();
+    // Not even the legacy drain-on-read: appendMilestones alone used to qualify.
+    expect(sets.some(v => 'pendingInstructions' in v)).toBe(false);
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
+  it('B-2: the agent is the consumer on an interactive worker — served with ids, held until acked', async () => {
+    setup({ ...idWorker, runner: 'mcp' });
+    const res = await patch({ status: 'running', consumer: 'agent' });
+    const data = await res.json();
+    expect(data.instructions).toBe('Switch to the other auth flow');
+    expect(data.instructionsAck).toBe('Switch to the other auth flow');
+    expect(data.instructionIds).toEqual(['i-1']);
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(false);
+  });
+
+  it('the runner sync is served the ids alongside the ack token', async () => {
+    setup(idWorker);
+    const data = await (await patch({ status: 'running', milestones: [], consumeInstructions: true, consumer: 'runner' })).json();
+    expect(data.instructionIds).toEqual(['i-1']);
+  });
+
+  it('settles delivery by id when ids are echoed, flagging the entry as awaiting acknowledgement', async () => {
+    setup(idWorker);
+    await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'] });
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0]).toMatchObject({ id: 'i-1', deliveryState: 'delivered', awaitsAck: true });
+    expect(typeof marked[0].deliveredAt).toBe('number');
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('B-3: instructionsAcknowledged flips exactly that entry, ignores unknown ids, and is not a turn', async () => {
+    setup({
+      ...idWorker,
+      pendingInstructions: null,
+      instructionHistory: [
+        { id: 'i-1', type: 'instruction', message: 'a', timestamp: 1, deliveryState: 'delivered', deliveredAt: 2, awaitsAck: true },
+        { id: 'i-2', type: 'instruction', message: 'b', timestamp: 1, deliveryState: 'delivered', deliveredAt: 2, awaitsAck: true },
+      ],
+    });
+    const res = await patch({ instructionsAcknowledged: ['i-2', 'not-a-message'] });
+    expect(res.status).toBe(200);
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('delivered');
+    expect(marked[1].deliveryState).toBe('acknowledged');
+    expect(typeof marked[1].acknowledgedAt).toBe('number');
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('delivered and acknowledged in one PATCH (an MCP consumer reads the text in the same turn)', async () => {
+    setup({ ...idWorker, runner: 'mcp' });
+    await patch({ instructionsDelivered: 'Switch to the other auth flow', instructionIdsDelivered: ['i-1'], instructionsAcknowledged: ['i-1'] });
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('acknowledged');
+    expect(typeof marked[0].deliveredAt).toBe('number');
+  });
 });
 
 describe('PATCH /api/workers/[id] — mission note delivery', () => {
@@ -16177,6 +16782,33 @@ describe('PATCH /api/workers/[id] — mission note delivery', () => {
 
     const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
     expect((await res.json()).instructions).toContain('Use the device flow');
+  });
+
+  it('B-4: an id-speaking consumer is served the note ids and nothing is marked until it acks', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany
+      .mockResolvedValueOnce([{ id: 'q-1', title: 'Which auth flow?' }])
+      .mockResolvedValueOnce([{ id: 'r-1', replyTo: 'q-1', title: 'Use the device flow', body: null }])
+      .mockResolvedValueOnce([{ id: 'g-1', title: 'Prefer small PRs', body: null }]);
+
+    const data = await (await patch({ status: 'running', milestones: [], consumeInstructions: true, consumer: 'runner' })).json();
+    expect(data.instructions).toContain('Use the device flow');
+    expect(data.instructionIds).toEqual(expect.arrayContaining(['r-1', 'g-1']));
+    // A consumer that is served but never injects must not mark anything delivered.
+    expect(missionNotesUpdateSets).toHaveLength(0);
+  });
+
+  it('B-4: the ack stamps deliveredTo for the acked note ids', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany.mockResolvedValue([]);
+
+    const res = await patch({ instructionIdsDelivered: ['r-1'] });
+    expect(res.status).toBe(200);
+    expect(missionNotesUpdateSets).toHaveLength(1);
+    expect(missionNotesUpdateSets[0].deliveredTo).toBeDefined();
+    expect(JSON.stringify(missionNotesUpdateWheres[0])).toContain('r-1');
   });
 });
 
@@ -16674,5 +17306,102 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(runnerOutcomes()).toEqual(['completed']);
     expect(missionVerdicts()).toEqual([['mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]]);
     expect(evidenceWrites()).toHaveLength(1);
+  });
+});
+
+// An OAuth MCP session resolves to an account its whole team shares, so the
+// account alone cannot say which member claimed a worker. The claim records the
+// session user (workers.claimedByUserId) and only that user's session, on that
+// account, passes the owner check. Nothing here widens who may write a worker:
+// no team-membership fallback, and a missing team or workspace id is a 403.
+describe('PATCH /api/workers/[id] — OAuth session owner check', () => {
+  const sessionWorker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    taskId: 'task-1',
+    workspaceId: 'ws-1',
+    runner: 'mcp',
+    status: 'running',
+    claimedByUserId: 'user-a',
+    milestones: [],
+    pendingInstructions: 'Rebase onto the new base',
+    instructionHistory: [],
+    supportsInstructionAck: false,
+  };
+  const session = (userId: string, extra: Record<string, unknown> = {}) => ({
+    id: 'account-1', teamId: 'team-1', type: 'user', authType: 'oauth', level: 'worker', sessionUserId: userId, ...extra,
+  });
+
+  function setup(account: any, worker: any = sessionWorker) {
+    mockAuthenticateApiKey.mockResolvedValue(account);
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+  }
+
+  function patch() {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer eyJ.session.jwt' }, body: { status: 'running', progress: 10 } }),
+      { params: mockParams },
+    );
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  });
+
+  it('the OAuth session that claimed gets 200 and its pending instructions', async () => {
+    setup(session('user-a'));
+    const res = await patch();
+    expect(res.status).toBe(200);
+    expect((await res.json()).instructions).toBe('Rebase onto the new base');
+  });
+
+  it('another OAuth user in the same team, resolving to the same account, gets 403', async () => {
+    setup(session('user-b'));
+    const res = await patch();
+    expect(res.status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('an admin OAuth session that did not claim gets 403', async () => {
+    setup(session('user-b', { level: 'admin' }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('an admin bld_ key that did not claim gets 403, on another account or the shared one', async () => {
+    setup({ id: 'account-2', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    setup({ id: 'account-1', teamId: 'team-1', authType: 'api', level: 'admin' });
+    expect((await patch()).status).toBe(403);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a session with no team id gets 403', async () => {
+    setup(session('user-a', { teamId: null }));
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('a session on a worker with no workspace id gets 403', async () => {
+    setup(session('user-a'), { ...sessionWorker, workspaceId: null });
+    expect((await patch()).status).toBe(403);
+  });
+
+  it('the bld_ key path is unchanged: the claiming account gets 200', async () => {
+    setup({ id: 'account-1', authType: 'api', level: 'worker' }, { ...sessionWorker, runner: 'runner-1', claimedByUserId: null });
+    expect((await patch()).status).toBe(200);
   });
 });

@@ -165,11 +165,14 @@ const SAFE: Record<string, string[]> = {
     'permission_overrides', // permission names -> team role names, both fixed sets (lib/permission-registry.ts)
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
     'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
-    'model_upgrade_policy'], // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
+    'model_upgrade_policy', // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
+    'model_tier_ceilings'], // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
-    'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
+    'chat_composer_prefs', // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
+    'model_tier_ceilings'], // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
   users: ['timezone'],
-  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
+  workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
+    'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
@@ -187,7 +190,8 @@ const SAFE: Record<string, string[]> = {
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],
-  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha'],
+  workers: ['status', 'pr_opened_base_sha', 'last_commit_sha',
+    'cost_basis'], // fixed vocabulary (packages/core/cost-basis.ts COST_BASES)
   worker_action_events: ['action'],
   worker_prompt_composition_events: ['policy_version', 'backend', 'sections'],
   // Memory use ledger: ids of a memory / its chunk, plus two fixed vocabularies

@@ -1,3 +1,6 @@
+import type { RunProgressReaders } from '@/lib/run-progress-read';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { resolvePolicy } from '@/lib/merge-policy';
 /**
  * Composition root: the one place optional modules are wired into core.
  *
@@ -30,8 +33,11 @@ import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
+import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
@@ -40,6 +46,8 @@ import { roleSubscribers } from '@/lib/default-roles-subscribers';
 import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers';
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
+import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
+import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -60,6 +68,10 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...connectorCatalogSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
+  // task.left_mission: the surface audit lets go of a task that left its mission.
+  ...surfaceAuditSubscribers,
+  // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
+  ...failurePatternSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
@@ -83,6 +95,18 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
 
+/**
+ * The kill-switch hand-off slot (lib/workflow/legacy-handoff.ts): a delivery
+ * the switch released before its first kernel round gets legacy's first
+ * review from the reviews module, so the PR is never left with no reviewer.
+ */
+export const LEGACY_FIRST_REVIEW: LegacyFirstReview = legacyFirstReview;
+
+/** Review-backed read hooks for core's run-progress projection. */
+export const RUN_PROGRESS_READERS: RunProgressReaders = {
+  review: readPrReviewStatus,
+  usesReviewer: (...args) => resolvePolicy(...args).tier === 'agent-review',
+};
 /**
  * The approved-merge slot (lib/workflow/delivery-view.ts): the reviews
  * module's merge policy says whether an APPROVED delivery waits on a person
@@ -117,3 +141,11 @@ export function workflowEffectHandlers(): EffectHandlers {
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
+
+/**
+ * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
+ * and the repair filer, for a core caller such as Home that gates PRs.
+ */
+export const ESCALATION_GATE_DEPS = escalationGateDeps;
+/** What a page passes: stored verdicts and rules, the rest looked at after the response. */
+export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;

@@ -27,7 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
@@ -42,6 +42,7 @@ import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import { classifyConflictFix, type ConflictRecoveryAction } from '@/lib/conflict-fix-liveness';
@@ -182,6 +183,11 @@ export interface ConflictRetryInput {
    */
   migrationCollision?: MigrationCollision;
   /**
+   * The PR mixes safe EXPAND and CONTRACT migrations: the task splits it in
+   * two (additive half stays, destructive half moves to a follow-up PR).
+   */
+  migrationSplit?: { reason: string };
+  /**
    * The open PR's actual head/base refs. When `headRef` differs from the
    * worker's own branch (e.g. the PR is a mission integration PR the retry is
    * bound to), `create_pr` will 409 on a fresh PR from the worker branch, so
@@ -224,7 +230,7 @@ export interface ConflictRetryTask {
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict, prRefs, conflictBasis } = params;
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, migrationSplit, semanticConflict, prRefs, conflictBasis } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -250,14 +256,16 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, {
-      reason: migrationCollision ? 'migration collision' : semanticConflict ? 'semantic overlap' : 'after conflict',
+      reason: migrationSplit ? 'split migrations' : migrationCollision ? 'migration collision' : semanticConflict ? 'semantic overlap' : 'after conflict',
       iteration: nextIteration,
     }),
-    description: migrationCollision
+    description: migrationSplit
+      ? buildMigrationSplitDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationSplit.reason)
+      : migrationCollision
       ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prRefs ?? null)
       : semanticConflict
-        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
-        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict, prRefs ?? null)
+        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, prRefs ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -270,9 +278,18 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       baseBranch: worker.branch,
       resumeBranch: worker.branch,
       // Structured failure context
-      failureContext: migrationCollision
+      failureContext: migrationSplit
         ? {
-            summary: `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
+            summary: `PR #${worker.prNumber} mixes additive (EXPAND) and destructive (CONTRACT) migrations. Split it: keep the additive half here, move the destructive half to a follow-up PR.`,
+            errorType: 'migration_split' as const,
+            prNumber: worker.prNumber,
+            headSha,
+          }
+        : migrationCollision
+        ? {
+            summary: migrationCollision.otherPrNumber == null
+              ? `PR #${worker.prNumber}'s migration ${migrationCollision.file} is at or below ${migrationCollision.otherFile}, already on its base. Merge the base in and renumber past it.`
+              : `PR #${worker.prNumber}'s migration ${migrationCollision.file} collides with open PR #${migrationCollision.otherPrNumber}'s migration ${migrationCollision.otherFile}. Renumber off the colliding slot.`,
             errorType: 'migration_collision' as const,
             prNumber: worker.prNumber,
             headSha,
@@ -315,16 +332,40 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
   };
 }
 
+/**
+ * The PR's head when it is not this worker's own branch (the retry is bound to
+ * an existing PR, typically a mission integration PR). `create_pr` refuses a
+ * second PR for that lineage with a 409, so briefs must name the real head.
+ */
+function boundHeadRef(worker: ConflictRetryInput['worker'], prRefs: ConflictRetryInput['prRefs']): string | null {
+  return prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
+}
+
+function boundLineageNote(
+  worker: ConflictRetryInput['worker'],
+  prRefs: ConflictRetryInput['prRefs'],
+  fixWhat: string,
+): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  if (!boundHead) return '';
+  return `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. ${fixWhat} on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`;
+}
+
 function buildConflictDescription(
   task: ConflictRetryInput['originalTask'],
   worker: ConflictRetryInput['worker'],
   repoFullName: string,
   iteration: number,
   maxIterations: number,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push the resolved merge to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} will auto-update.`
+    : `Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.
+  return `PR #${worker.prNumber} for "${task.title}" has merge conflicts with the base branch.${boundLineageNote(worker, prRefs, 'Resolve the conflicts')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -338,7 +379,7 @@ function buildConflictDescription(
    \`\`\`
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
 4. Run the test suite and verify correctness before pushing.
-5. Push your resolved branch — the existing PR (#${worker.prNumber}) will auto-update.
+5. ${pushStep}
 
 PR: ${prUrl}
 
@@ -356,7 +397,12 @@ function buildSemanticConflictDescription(
   iteration: number,
   maxIterations: number,
   assessment: SemanticAssessment,
+  prRefs: ConflictRetryInput['prRefs'] = null,
 ): string {
+  const boundHead = boundHeadRef(worker, prRefs);
+  const pushStep = boundHead
+    ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force); PR #${worker.prNumber} updates, and CI plus normal review decide the merge on the new head.`
+    : `Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
   const base = assessment.baseRef ?? "the PR's base branch";
   const evidence = (assessment.evidence ?? [])
@@ -367,7 +413,7 @@ function buildSemanticConflictDescription(
 
 ${evidence}
 
-A clean git merge does not mean the two changes agree. This is a semantic conflict review.
+A clean git merge does not mean the two changes agree. This is a semantic conflict review.${boundLineageNote(worker, prRefs, 'Reconcile the symbols')}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -381,11 +427,32 @@ A clean git merge does not mean the two changes agree. This is a semantic confli
    \`\`\`
 3. Read each symbol above as it now stands and reconcile both intents on the merits. If they already agree, say so in your summary and change nothing else.
 4. Run the tests that cover those symbols before pushing.
-5. Push — the existing PR (#${worker.prNumber}) updates, and CI plus normal review decide the merge on the new head.
+5. ${pushStep}
 
 PR: ${prUrl}
 
 ${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
+}
+
+function buildMigrationSplitDescription(
+  task: ConflictRetryInput['originalTask'],
+  worker: ConflictRetryInput['worker'],
+  repoFullName: string,
+  iteration: number,
+  maxIterations: number,
+  reason: string,
+): string {
+  const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
+  return `PR #${worker.prNumber} (${prUrl}) for "${task.title}" mixes additive (EXPAND) and destructive (CONTRACT) migrations, so it cannot land as one PR. ${reason}
+
+**Attempt ${iteration} of ${maxIterations}.**
+
+## Instructions
+
+1. You are on branch \`${worker.branch}\`. Keep ONLY the additive (EXPAND) migration and the code that needs it on this branch; regenerate the migration if removing the destructive statements leaves it inconsistent (\`cd packages/core && bun db:generate\`).
+2. Move the destructive (CONTRACT) statements out of this PR. Do not delete the intent: note it in the PR description as a follow-up that lands once nothing reads the old column/table.
+3. Do not weaken any check, and do not add the destructive SQL back under another name.
+4. Push to the existing branch; the PR is re-reviewed at the new head.`;
 }
 
 function buildMigrationCollisionDescription(
@@ -400,17 +467,24 @@ function buildMigrationCollisionDescription(
   // The PR's head is not this worker's branch: the retry is bound to an
   // existing PR (typically a mission integration PR). create_pr rejects a new
   // PR from the worker branch as duplicate lineage, so name the real target.
-  const boundHead = prRefs?.headRef && prRefs.headRef !== worker.branch ? prRefs.headRef : null;
-  const lineageNote = boundHead
-    ? `\n\n**Bound PR lineage:** PR #${worker.prNumber} is open from \`${boundHead}\`${prRefs?.baseRef ? ` into \`${prRefs.baseRef}\`` : ''}, not from \`${worker.branch}\`. Do NOT open a new PR with \`create_pr\` — it will 409 as duplicate lineage. Fix the migration on \`${boundHead}\` and push there (fast-forward; fetch first), then \`create_pr\` only to record the existing PR if asked.`
-    : '';
+  const boundHead = boundHeadRef(worker, prRefs);
+  const lineageNote = boundLineageNote(worker, prRefs, 'Fix the migration');
   const pushStep = boundHead
     ? `Push to \`${boundHead}\` (the PR's head branch — fast-forward, do not force), then request re-review so the collision flag clears.`
     : `Push to the existing branch, then request re-review so the collision flag clears.`;
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
-  const otherPrUrl = `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
+  // A slot already taken on the base itself (the base merged a migration with
+  // this number after the branch forked) has no other PR to look at.
+  const onBase = collision.against === 'base' || collision.otherPrNumber == null;
+  const otherPrUrl = onBase ? null : `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
+  const opening = onBase
+    ? `PR #${worker.prNumber} for "${task.title}" adds \`${collision.file}\`, but its base already has \`${collision.otherFile}\` at or above that number — the base merged a migration after this branch forked. This is a mechanical renumber, not a decision.`
+    : `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.`;
+  const regenerateStep = onBase
+    ? `4. Regenerate at an index past the base's newest migration (\`${collision.otherFile}\` or later):`
+    : `4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):`;
 
-  return `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.${lineageNote}
+  return `${opening}${lineageNote}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
@@ -423,7 +497,7 @@ function buildMigrationCollisionDescription(
    git merge origin/dev   # or the PR's actual base branch
    \`\`\`
 3. Take dev's \`packages/core/drizzle/meta/_journal.json\` and snapshots wholesale, then drop this PR's colliding \`${collision.file}\` (and its snapshot). Do NOT hand-edit the journal or a snapshot.
-4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):
+${regenerateStep}
    \`\`\`bash
    cd packages/core && bun db:generate
    \`\`\`
@@ -432,7 +506,7 @@ function buildMigrationCollisionDescription(
 7. ${pushStep}
 
 PR: ${prUrl}
-Colliding PR: ${otherPrUrl}
+${otherPrUrl ? `Colliding PR: ${otherPrUrl}` : `Colliding migration on the base: \`${collision.otherFile}\``}
 
 ${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }
@@ -547,9 +621,19 @@ export interface DispatchConflictRetryResult {
   refreshInFlight?: boolean;
   /** update-branch failed operationally; a later event or sweep retries (bounded). */
   refreshDeferred?: boolean;
-  /** Operational failures hit their bound; a diagnostic was posted. */
+  /**
+   * The kernel's mechanical refresh is queued or running (it may already have
+   * pushed): not a failure. Landing re-reads on the new head's event.
+   */
+  refreshQueued?: boolean;
+  /** Operational failures hit their bound (or the kernel escalated the refresh); a diagnostic was posted. */
   refreshExhausted?: boolean;
+  /** Set when the kernel's treadmill bound escalated: how many refreshes the base outran. */
+  refreshTreadmill?: number;
+  /** Legacy path: the classified update-branch failure. The kernel path has none. */
   refreshFailure?: BranchUpdateFailure | null;
+  /** Why, in words: the raw GitHub error (legacy) or the kernel's escalation detail. */
+  refreshReason?: string | null;
   /** Semantic clearance unknown; a later event or sweep rechecks (bounded). */
   semanticDeferred?: boolean;
   /** Semantic clearance could not be verified within the bound; a diagnostic was posted. */
@@ -585,17 +669,28 @@ export function kernelConflictOutcome(seen: ConflictSeen): DispatchConflictRetry
     const to = r.decision.toState;
     if (to === 'ESCALATED') {
       const reason = r.decision.patch.stateReason;
-      return reason === 'landing_needs_human'
-        ? { dispatched: false, refreshExhausted: true, kernel }
-        : { dispatched: false, exhausted: true, kernel };
+      if (reason !== 'landing_needs_human') return { dispatched: false, exhausted: true, kernel };
+      const notify = (r.decision.effects ?? []).find((e) => e.kind === 'notify');
+      const detail = typeof notify?.payload?.detail === 'string' ? notify.payload.detail : null;
+      const refreshes = r.decision.evidence?.refreshes;
+      return {
+        dispatched: false, refreshExhausted: true, kernel,
+        refreshReason: detail ?? 'the kernel escalated the refresh to a person (landing_needs_human)',
+        ...(typeof refreshes === 'number' ? { refreshTreadmill: refreshes } : {}),
+      };
     }
     if (a?.mode === 'agent') return { dispatched: true, ...(a.taskId ? { taskId: a.taskId } : {}), kernel };
     if (a?.mode === 'mechanical') {
       if (a.outcome === 'delivered') return { dispatched: true, branchUpdated: true, kernel };
       if (a.status === 'skipped') return { dispatched: false, alreadyUpToDate: true, kernel };
-      if (a.status === 'queued') return { dispatched: false, refreshDeferred: true, kernel };
+      if (a.status === 'queued') return { dispatched: false, refreshQueued: true, kernel };
       // The mechanical row ended failed: what followed (an agent, an escalation) is in `state`.
-      if (state === 'ESCALATED') return { dispatched: false, refreshExhausted: true, kernel };
+      if (state === 'ESCALATED') {
+        return {
+          dispatched: false, refreshExhausted: true, kernel,
+          refreshReason: `the kernel's mechanical refresh ended failed and the delivery escalated (${seen.after?.stateReason ?? 'no reason recorded'})`,
+        };
+      }
     }
     // The inline drain moved the delivery on (an agent attempt now bound, or a fresh round).
     return { dispatched: state === 'REPAIRING', kernel };
@@ -661,6 +756,45 @@ async function kernelConflictRetry(
     }
   }
   return out;
+}
+
+/** Reconcile inferred inverse waits on the canonical queued repair before waking it. */
+async function reconcilePendingRepairEdges(
+  row: Pick<typeof tasks.$inferSelect, 'id' | 'status' | 'taskClass' | 'conflictRetryPrNumber' | 'dependsOn' | 'pathDeclaration'>,
+  workspaceId: string,
+  subjectTaskId: string,
+) {
+  if (row.status !== 'pending' || row.taskClass !== 'attempt' || row.conflictRetryPrNumber == null) return;
+  const deps = row.dependsOn ?? [];
+  if (!deps.length) return;
+  const decl = row.pathDeclaration;
+  // Tagged rows preserve every caller edge. The legacy conflict dispatcher
+  // copied no caller edges, so untagged pre-v2 attempts have only inferred ones.
+  const inferred = new Set(decl?.inferredDependsOn ?? (decl?.overlapPolicy == null ? deps : []));
+  if (!inferred.size) return;
+  const subject = await db.query.tasks.findFirst({ where: eq(tasks.id, subjectTaskId), columns: { pathManifest: true } });
+  if (!subject) return;
+  const candidates = await db.query.tasks.findMany({
+    where: and(eq(tasks.workspaceId, workspaceId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+    columns: { id: true, status: true, pathManifest: true, dependsOn: true },
+  });
+  const graph = new Map(candidates.map(t => [t.id, t.dependsOn]));
+  const remove = new Set(candidates.filter(t => inferred.has(t.id) && (
+    isDownstreamOf(t.id, subjectTaskId, graph) || (t.status === 'pending' &&
+      findBlockingPr(t.pathManifest ?? [], [{ pathManifest: subject.pathManifest, prNumber: row.conflictRetryPrNumber }]))
+  )).map(t => t.id));
+  if (!remove.size) return;
+  await db.update(tasks).set({
+    dependsOn: deps.filter(id => !remove.has(id)),
+    ...(decl ? { pathDeclaration: { ...decl,
+      ...(decl.inferredDependsOn ? { inferredDependsOn: decl.inferredDependsOn.filter(id => !remove.has(id)) } : {}),
+      ...(decl.softOverlaps ? { softOverlaps: decl.softOverlaps.filter(e => !remove.has(e.taskId)) } : {}),
+    } } : {}),
+  }).where(and(eq(tasks.id, row.id), eq(tasks.status, 'pending'),
+    // A concurrent claim, declaration or dependency edit wins over this read.
+    sql`${tasks.dependsOn} = ${JSON.stringify(deps)}::jsonb`,
+    sql`${tasks.pathDeclaration} IS NOT DISTINCT FROM ${decl ? JSON.stringify(decl) : null}::jsonb`,
+  ));
 }
 
 // ── S37: an existing conflict fix is recovered, not duplicated ──────────────
@@ -756,11 +890,12 @@ export async function dispatchConflictRetry(
       ),
       inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
     ),
-    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true },
+    columns: { id: true, conflictRetryHeadSha: true, status: true, conflictRetryPrNumber: true, createdAt: true, claimedAt: true, updatedAt: true, context: true, taskClass: true, dependsOn: true, pathDeclaration: true },
   });
   if (liveRetry) {
     // S37: an existing remediation is the canonical one. A stalled one is
     // re-dispatched or repaired, never shadowed by a second fix task.
+    await reconcilePendingRepairEdges(liveRetry, workspaceId, taskId);
     const recovery = await recoverStalledConflictFix(liveRetry);
     console.log(
       `[conflict-retry] PR #${prNumber} already has live fix attempt ${liveRetry.id} — not filing another` +
@@ -892,9 +1027,9 @@ export async function dispatchConflictRetry(
         return { dispatched: false, refreshInFlight: true };
       case 'deferred':
         console.warn(`[conflict-retry] update-branch ${refresh.failure} on PR #${prNumber} (attempt ${refresh.attempts}) — deferred, no agent: ${refresh.reason}`);
-        return { dispatched: false, refreshDeferred: true, refreshFailure: refresh.failure };
+        return { dispatched: false, refreshDeferred: true, refreshFailure: refresh.failure, refreshReason: refresh.reason };
       case 'exhausted':
-        return { dispatched: false, refreshExhausted: true, refreshFailure: refresh.failure };
+        return { dispatched: false, refreshExhausted: true, refreshFailure: refresh.failure, refreshReason: refresh.reason };
       case 'semantic_deferred':
         return { dispatched: false, semanticDeferred: true };
       case 'semantic_unverified':
@@ -1076,7 +1211,7 @@ export async function dispatchConflictRetry(
         eq(tasks.workspaceId, workspaceId),
         inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
       ),
-      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true },
+      columns: { id: true, pathManifest: true, subjectPrNumber: true, conflictRetryPrNumber: true, dependsOn: true, status: true },
     });
     const dependsOnById = new Map<string, readonly string[] | null | undefined>(
       inFlightTasks.map((t) => [t.id, t.dependsOn as string[] | null]),
@@ -1096,9 +1231,17 @@ export async function dispatchConflictRetry(
           // exists to unblock — an edge (hard or soft) repair→t would make the
           // repair wait on something that is itself waiting on the repair's own
           // subject, a structural deadlock rather than real serialization.
-          return isDownstreamOf(t.id, taskId, dependsOnById);
+          if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
+          // Pending work with no stored edge can still wait on this PR through
+          // the claim route's open-PR backstop. Reuse that exact predicate before
+          // storing either a hard edge or soft evidence in the reverse direction.
+          // Already-admitted work can finish without this PR landing, so keep its
+          // genuine migration / serialized-surface ordering.
+          return t.status === 'pending' && !!findBlockingPr(t.pathManifest ?? [], [
+            { pathManifest: task.pathManifest as string[] | null, prNumber },
+          ]);
         },
-        isSerialized: (paths) => overlapTouchesSerializedSurface(paths, gitConfig),
+        isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, gitConfig, kind),
       },
     );
     resolvedDependsOn.push(...split.hard);
@@ -1173,6 +1316,10 @@ export async function dispatchConflictRetry(
   if (installationId) {
     schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
   }
+
+  // Bounded, deferred — a new conflict-retry child is exactly what the
+  // retry-fork / lineage rules watch for.
+  scheduleFailurePatternSentinel(workspaceId);
 
   return { dispatched: true, taskId: newTask.id };
 }

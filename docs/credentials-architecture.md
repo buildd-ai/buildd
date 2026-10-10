@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `claude_credential`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -62,10 +62,50 @@ Then pick the **most specific** match:
 2. `accountId = A`, `workspaceId IS NULL` (account-wide)
 3. `accountId IS NULL`, `workspaceId IS NULL` (team-wide)
 
-For single-valued credentials (one Codex login per scope) the resolver returns the single
-most-specific row. The claim route already applies the team/account/workspace filter for
-`anthropic_api_key` / `oauth_token` / `mcp_credential`; `codex_credential` uses the same
-filter plus the precedence pick.
+For single-valued credentials (one Codex or Claude login per scope) the resolver returns the
+single most-specific row. Every agent-credential read — `anthropic_api_key` / `oauth_token` /
+`mcp_credential` in the claim route, `claude_credential` and `codex_credential` in their
+resolvers — applies the filter above plus the same pick: a live row before a revoked one, then
+the most specific scope, then the newest `updatedAt` within that scope. Recency never beats
+scope: a newer team-wide row does not shadow an older workspace row. `mcp_credential` is many
+rows (one per env-var `label`), so the pick runs per label. The pick is
+`pickMostSpecificCredential` in `packages/core/secrets/team-scope.ts`; the query goes through
+`teamCredentialWhere`, so a personal (`userId`) row is never returned.
+
+### One stored Anthropic or OpenAI key, every surface
+
+A team's Anthropic or OpenAI API key has one canonical storage, `inference_key` with the
+provider's `label` (`anthropic`, `openai`): the row chat reads. Agent runs read it too: the
+host claim's key attach, the Claude route decision, the endpoint ranking, the Codex OpenAI
+key (`resolveOpenAiApiKey` / `hasOpenAiApiKey`) and server-side Anthropic auth
+(`resolveAnthropicAuth`, which cloud egress uses). The legacy purposes `anthropic_api_key`
+and `openai_api_key` are still read as aliases. The pick is `pickTeamAgentApiKey`: the order
+above, plus, within one scope, canonical before legacy (so a team with only legacy rows is
+served exactly as before). The storages come from the provider registry
+(`packages/core/providers/agent-keys.ts`). These are team reads: `user_id IS NULL` is pinned in
+SQL and re-checked in code; a requester's own key reaches a run only through the credential
+policy (`claim/personal-credential-injection.ts`).
+
+`/api/providers` writes team and workspace Anthropic and OpenAI keys to canonical storage
+(`writeStorage` in `packages/core/providers/manage.ts`). Setting one needs both
+`manage_team_model_keys` and `manage_team_credentials`, since it is a chat key and an agent
+credential at once. `POST /api/secrets` still writes the purpose it is given.
+
+### Who may write a shared credential
+
+Writing or deleting a team-wide, workspace-wide or account-wide credential
+requires a named team permission (`docs/specs/team-permissions.md`), resolved
+through `can()` so a team's permission overrides apply:
+
+- `manage_team_model_keys` — `inference_key`, `decision_key`, `cloudflare_token`.
+- `manage_team_credentials` — every other purpose `/api/secrets` stores, and the
+  workspace Claude/Codex connect, OAuth/device-login and delete routes.
+
+Both default to owner and admin, and to an admin-level API key. `/api/secrets`
+never writes a personal (`userId`) row, so a plain member writes nothing there.
+A `workspaceId` in the body must belong to the target team. Listing stays open
+to members (metadata only, never values). Refreshing an existing Claude/Codex
+credential rotates it in place and stays open to any member of the team.
 
 ### API-token model keys (chat, inference, decision calls)
 
@@ -101,12 +141,54 @@ delete path reaches them. They're managed through `/api/inference-keys` (persona
 scope for any member, team scope for owners/admins), which returns only the last
 four characters and health, never plaintext.
 
+#### Personal keys on agent runs (`teams.credential_policy`)
+
+A personal Anthropic or OpenAI key (the `inference_key` rows above) can also
+pay for agent runs, only for tasks the person started, and only when the team
+has explicitly set `credential_policy`. The host claim decides per task in
+`apps/web/src/app/api/workers/claim/personal-credential-injection.ts`, through
+`resolveProviderCredential` (`@buildd/core/providers/resolve`), with the
+requester from `resolveTaskRequesterUserId`:
+
+| `credential_policy` | Agent run |
+|---|---|
+| NULL | Team credentials exactly as above; nothing personal is read and the claim gains no field. |
+| `team` | The same, plus a non-secret `credentialDecision` marker. |
+| `personal_first` | The requester's own key (Anthropic for Claude tasks, OpenAI for Codex) is the only model credential; without one, team credentials. |
+| `personal_only` | The requester's own key, or the task is not claimed (deferral `no_personal_credential`, with the reason: no requester, no key, old runner). |
+
+A personal key goes only to a runner declaring the `personal_credentials`
+feature (`PERSONAL_CREDENTIAL_RUNNER_FEATURE`): older runners cache
+`serverApiKey` per team and would reuse it for another person's worker. A cloud
+claim carries no model credential at all: cloud egress resolves the personal
+route per run, and under `personal_only` the claim defers when egress would
+find none. Personal subscription seats and personal
+endpoints are not delivered. The legacy purposes `anthropic_api_key` /
+`openai_api_key` stay team-only: `POST /api/secrets` refuses a `userId` for
+them and points to `/api/inference-keys`.
+
 ### Agent model endpoint
 
 `purpose = 'agent_endpoint'`, team-wide or one workspace (never account or
 personal). Encrypted JSON: `{ "kind": "gateway" }` (a reference to the team's
-LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
-"anthropic-compatible", "baseUrl", "apiKey", "authHeader", "models"? }`.
+LiteLLM row above; its root minus `/v1`), `{ "kind": "openrouter", "baseUrl",
+"authHeader" }` with no key (a reference to the stored OpenRouter key,
+`inference_key`/`openrouter` or legacy `decision_key`, same scope or broader),
+or `{ "kind": "openrouter" | "anthropic-compatible", "baseUrl", "apiKey",
+"authHeader", "models"? }`. An inline OpenRouter `apiKey` is legacy and still
+routes; `packages/core/scripts/consolidate-openrouter-endpoint-keys.ts` (dry
+run by default, `--apply` to write) turns it into a reference, or flags the row
+`capabilities.legacyInlineKey` when the stored key differs.
+`{ "kind": "cloudflare", "upstream": "anthropic" | "openrouter", "gatewayToken"? }`
+references the team's `cloudflare_token` row for its account and AI Gateway ids
+only (never its token) and the stored Anthropic or OpenRouter key (same scope or
+broader). Agents call `gateway.ai.cloudflare.com/v1/<account>/<gateway>/<upstream>`
+with that key. `gatewayToken`, for an authenticated gateway, must be a separate
+token limited to AI Gateway Run: it reaches runners as `cf-aig-authorization`
+(`modelEndpoint.headers` → `ANTHROPIC_CUSTOM_HEADERS`), so an endpoint carrying
+one is only given to a runner declaring the `agent_endpoint_headers` feature;
+the cloud egress adds it to each forwarded call. A Codex task gets an OpenAI
+route only through an OpenRouter upstream with no gateway token.
 `resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
 `anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
 team, a tie to the endpoint, only the winner delivered. The key policy does not
@@ -299,7 +381,7 @@ network refresh; concurrent callers get `locked`. This is the same pattern the r
 `userId` all NULL). `encryptedValue` is JSON `{ apiToken, accountId, aiGatewayId? }`,
 validated and normalized by `parseCloudflareCredential`
 (`apps/web/src/lib/cloudflare-credential-shared.ts`) before it is encrypted.
-Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
+Set and delete through `/api/secrets` (`manage_team_model_keys`: team owner/admin by default, or an admin API key);
 `POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
 endpoints and records `lastVerifiedAt` / health (a rejection marks it
 `revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`
@@ -319,6 +401,37 @@ own team only, `no-store`, audited as elevated before it decrypts. Its one
 remaining caller is the container-image `wrangler deploy` step of
 `apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
+The same row's account and gateway ids (never the token) also route **agent
+runs** through an `agent_endpoint` of kind `cloudflare` (see "Agent model
+endpoint" above).
+
+It also serves **decision calls** when the team's decision model says
+`via: 'cloudflare'` (`packages/core/cloudflare-ai-gateway.ts`). Cloudflare's Clef
+models run on Workers AI with the token as the key, through `aiGatewayId` when it is
+set. Jev goes through the gateway's OpenRouter path, still on the team's OpenRouter
+key, and the token is sent as `cf-aig-authorization`. The key policy `own` turns
+this off, and a `revoked` row is skipped. For Clef the token needs Workers AI Read,
+and AI Gateway Run if the gateway is authenticated.
+
+### Minted AI Gateway Run tokens (`cloudflare_gateway_token`)
+
+Tokens the team's `cloudflare_token` mints (`POST /accounts/<id>/tokens`,
+account-owned, AI Gateway Run + Workers AI Read only, 90-day expiry), so model
+calls stop spending a token that can deploy Workers. Purpose
+`cloudflare_gateway_token`, a `PERSONAL_SECRET_PURPOSES` entry: one row per
+person (`userId` set) and one team row (no `userId`, the agents token), JSON
+`{ token, tokenId, accountId, expiresOn }`. Minting needs the team token to hold
+Account API Tokens Edit; a refusal says so. Creating again replaces the row and
+revokes the old token at Cloudflare; removing revokes first and keeps the row if
+Cloudflare cannot be reached. `/api/cloudflare/gateway-tokens` (session only):
+any member manages their own, owners and admins the team's; reads are masked.
+
+Spent by `packages/core/cloudflare-gateway-tokens.ts` `resolveGatewayRunToken`:
+decision calls via Cloudflare use the acting person's token, else the team's,
+else the team `cloudflare_token` as before. A `cloudflare` agent endpoint with no
+pasted `gatewayToken` sends the team's token (never a person's) as
+`cf-aig-authorization`. Expired, revoked and other-account tokens are skipped.
+
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 
 `purpose = 'openai_api_key'`, a plain raw string, scoped team/account/workspace
@@ -326,7 +439,9 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
 `inference_key` (label `openai`), and **not** the same purpose as
 `codex_credential` — both already existed, and this backend reuses neither:
 
-- **Why not reuse `inference_key`/`openai`?** That row serves chat and decision
+- **Why not reuse `inference_key`/`openai`?** (Superseded: Codex runs now read
+  that row too, ranked above `openai_api_key` within a scope; see "One stored
+  Anthropic or OpenAI key, every surface". The original reasoning:) That row served chat and decision
   calls only (`resolveInferenceKey` in `packages/core/inference-keys.ts`), with
   its own precedence (caller → account → workspace → team, plus a personal
   `userId` dimension — see "API-token model keys" above). Routing it into
@@ -348,7 +463,7 @@ exactly like `anthropic_api_key`. This is **not** the same credential as
 **Resolution order:** `attachCodexCredentials` (claim route) tries
 `resolveCodexCredential` (`codex_credential`) first — an existing ChatGPT
 connect, OAuth or legacy API-key blob, wins if present — and falls back to
-`resolveOpenAiApiKey` (`openai_api_key`) only when nothing resolves there.
+`resolveOpenAiApiKey` (`inference_key`/`openai`, then `openai_api_key`) only when nothing resolves there.
 Either one is synthesized into the exact same `codexCredential: { credentialType:
 'api_key', apiKey }` wire shape the runner already materializes into
 `auth.json` (`writeCodexApiKeyToHome` in `apps/runner/src/codex-auth.ts`) — so

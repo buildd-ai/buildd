@@ -14,6 +14,7 @@ import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
 import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 import { normalizeBackend } from '@/lib/normalize-backend';
+import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 async function authenticateRequest(req: NextRequest) {
@@ -42,6 +43,21 @@ async function authenticateRequest(req: NextRequest) {
 
     return null;
 }
+
+/**
+ * manage_agent_roles for a session touching a role (an existing role, or a row
+ * being made one). API keys were already held to admin in authenticateRequest;
+ * a plain skill stays writable by anyone who can reach the workspace.
+ */
+async function sessionMayManageRole(
+    access: { teamId: string; role: string } | null,
+    touchesRole: boolean,
+): Promise<boolean> {
+    if (!access || !touchesRole) return true;
+    return roleHas(access.role, 'manage_agent_roles', await getTeamPermissionOverrides(access.teamId));
+}
+
+const ROLE_FORBIDDEN = { error: 'Managing agent roles requires team admin' };
 
 function generateSlug(name: string): string {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -90,10 +106,12 @@ export async function GET(
         // Fetch workspace-scoped AND team-level skills in one query.
         // Workspace-scoped rows (workspaceId = id) take precedence over team-level
         // rows (workspaceId IS NULL, teamId = ws.teamId) for the same slug.
+        // Personal roles (ownerUserId set) are listed by GET /api/roles,
+        // which filters them by owner and visibility; never here.
         const scopeClause = ws
             ? or(
                 eq(workspaceSkills.workspaceId, id),
-                and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId)),
+                and(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.teamId, ws.teamId), isNull(workspaceSkills.ownerUserId)),
               )
             : eq(workspaceSkills.workspaceId, id);
 
@@ -137,9 +155,10 @@ export async function POST(
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    let sessionAccess: { teamId: string; role: string } | null = null;
     if (auth.type === 'session') {
-        const access = await verifyWorkspaceAccess(auth.user.id, id);
-        if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        sessionAccess = await verifyWorkspaceAccess(auth.user.id, id);
+        if (!sessionAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
         const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -150,6 +169,15 @@ export async function POST(
         const { name, description, content, source, metadata, enabled,
             model, allowedTools, canDelegateTo, background, maxTurns, color,
             mcpServers, requiredEnvVars, connectorRefs, isRole, repoUrl, accountId, defaultBackend } = body;
+
+        // Personal roles are team-level rows owned by one member; they are
+        // created and edited through /api/roles, never as workspace skills.
+        if (body.personal !== undefined || body.ownerUserId !== undefined) {
+            return NextResponse.json(
+                { error: 'Personal roles are created with POST /api/roles { personal: true } and shared with POST /api/roles/[id]/share' },
+                { status: 400 }
+            );
+        }
 
         if (!name || !content) {
             return NextResponse.json(
@@ -178,11 +206,11 @@ export async function POST(
             );
         }
 
-        // `/app/team/new` is a static route, so a role with this slug could
+        // `/app/settings/roles/new` is a static route, so a role with this slug could
         // never reach its own detail page. See lib/reserved-slugs.ts.
         if (isReservedRoleSlug(slug)) {
             return NextResponse.json(
-                { error: `"${slug}" is reserved because /app/team/${slug} is a built-in page. Pick a different slug.` },
+                { error: `"${slug}" is reserved because /app/settings/roles/${slug} is a built-in page. Pick a different slug.` },
                 { status: 400 }
             );
         }
@@ -202,6 +230,9 @@ export async function POST(
         const existing = await db.query.workspaceSkills.findFirst({
             where: and(eq(workspaceSkills.workspaceId, id), eq(workspaceSkills.slug, slug)),
         });
+        if (!(await sessionMayManageRole(sessionAccess, isRole === true || Boolean(existing?.isRole)))) {
+            return NextResponse.json(ROLE_FORBIDDEN, { status: 403 });
+        }
 
         if (existing) {
             const [updated] = await db

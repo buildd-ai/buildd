@@ -14,8 +14,9 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
+import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
@@ -26,6 +27,12 @@ import {
   type CheckRunState,
   type ModelApproveBound,
 } from '@/lib/auto-merge-bound';
+import {
+  isPassingCheckRun,
+  isPassingStatus,
+  listAllCheckRuns,
+  listAllCommitStatuses,
+} from '@/lib/ci-verdict';
 import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
@@ -40,6 +47,7 @@ import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-do
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
 import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
+import { refreshCause } from '@/lib/refresh-cause';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -172,7 +180,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations'>,
   // One options bag, because the bound now needs the mission row too: the
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
@@ -209,22 +217,44 @@ export async function evaluateAutoMergeSafety(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
 
-  // CI completeness check — verify no check runs are still pending or failing.
+  // CI completeness check (ci-verdict.ts): every check run on every page, and
+  // every commit status, must have finished and passed. Allow-list, fail closed:
+  // only success/neutral/skipped pass; timed_out, cancelled, startup_failure,
+  // action_required, an unfinished run (queued, in_progress, waiting,
+  // requested, pending) or a status that is not `success` all refuse.
   try {
-    const checkRunsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-runs`,
-    );
-    checkRuns = latestRunPerName(checkRunsData?.check_runs ?? []);
+    const read = await listAllCheckRuns<CheckRunState>(githubApi, installationId, repoFullName, headSha);
+    checkRuns = latestRunPerName(read.items);
     if (opts?.observed) opts.observed.checkRuns = checkRuns;
+    if (!read.complete) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: could not read every check run (${read.items.length} read)`,
+      };
+    }
 
-    const pendingOrFailed = checkRuns.filter(
-      (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
-    );
+    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
-        reason: `CI checks still pending or failed: ${pendingOrFailed.map((r) => r.name).join(', ')}`,
+        reason: `CI checks still pending or failed: ${pendingOrFailed
+          .map((r) => `${r.name} (${r.status === 'completed' ? r.conclusion ?? 'no conclusion' : r.status})`)
+          .join(', ')}`,
+      };
+    }
+
+    // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
+    // Vercel contexts) never creates check runs.
+    const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
+    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    if (!statuses.complete || notPassing.length > 0) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: ${
+          statuses.complete
+            ? notPassing.map((st) => `${st.context ?? 'unnamed status'} (${st.state ?? 'unknown'})`).join(', ')
+            : `could not read every commit status (${statuses.items.length} read)`
+        }`,
       };
     }
 
@@ -245,10 +275,10 @@ export async function evaluateAutoMergeSafety(
     // merge when it fails means a GitHub API blip silently becomes a merge with
     // no CI verification at all. Refusing parks the PR for a human instead,
     // which is recoverable — an unverified merge into dev is not.
-    console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+    console.warn(`Could not verify check runs / commit statuses for ${repoFullName}@${headSha}:`, err);
     return {
       ok: false,
-      reason: `could not verify CI status — GitHub check-runs lookup failed: ${
+      reason: `could not verify CI status — GitHub check-runs or commit-status lookup failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
     };
@@ -292,6 +322,15 @@ export async function evaluateAutoMergeSafety(
     return { ok: false, reason: 'malformed PR files response' };
   }
 
+  // An integration-refresh PR is judged on what it adds on top of trunk, not on
+  // the trunk history its stale fork point makes GitHub list (integration-refresh.ts).
+  // Mission-authored schema and migration changes stay in that delta.
+  const deltaBase = await refreshDeltaBaseForTask(opts?.taskId ?? null, opts?.gitConfig ?? null);
+  if (deltaBase) {
+    const delta = await effectiveDeltaFiles(installationId, repoFullName, deltaBase, headSha);
+    if (delta) files = delta;
+  }
+
   if (denyPaths.length > 0) {
     const hits = files.flatMap((file) =>
       denyPaths
@@ -331,8 +370,12 @@ export async function evaluateAutoMergeSafety(
       prNumber,
       headSha,
       files,
+      ...(deltaBase ? { deltaBase } : {}),
     });
-    if (!migrationSafety.safe) {
+    // A data migration is a person's call unless the workspace lets the
+    // reviewer agent decide it (mergePolicy.dataMigrations, agent-review tier
+    // only); then the approval that got the PR here is the decision.
+    if (!migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
       return { ok: false, reason: migrationSafety.reason };
     }
   }
@@ -815,12 +858,10 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
-  // it IS the merge commit that catches the integration branch up with dev, so
-  // squashing it would drop that ancestry and the same conflict would reappear
-  // on the very next refresh.
-  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
-  const mergeMethod = requireMergeCommit ? 'merge' : 'squash';
+  // An integration-refresh PR IS the merge commit that catches the mission
+  // branch up with dev; squashing it would drop that ancestry and the same
+  // conflict would reappear on the very next refresh (integration-refresh.ts).
+  const mergeMethod = resolveMergeMethod(mergingTask?.context);
   // Every rail passed. For a kernel-owned PR this door is only an adapter: the
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
@@ -903,12 +944,19 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
 } {
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_exhausted',
+    };
+  }
   if (res.refreshExhausted) {
     return {
       refreshOutcome: 'refresh_exhausted',
-      reason: `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict; retries are used up`,
+      reason: `updating the branch kept failing (${refreshCause(res)}), not a conflict; retries are used up`,
       page: 'refresh_failed',
     };
   }
@@ -927,8 +975,9 @@ export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult):
   }
   if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
   if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
+  if (res.refreshQueued) return { refreshOutcome: 'refresh_queued', reason: 'a branch refresh is queued; the new head re-evaluates', page: null };
   if (res.refreshDeferred) {
-    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry`, page: null };
+    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${refreshCause(res)}), not a conflict; will retry`, page: null };
   }
   if (res.semanticDeferred) return { refreshOutcome: 'semantic_deferred', reason: 'semantic overlap with the base is not yet verified; will recheck', page: null };
   if (res.alreadyUpToDate) return { refreshOutcome: 'already_up_to_date', reason: 'the branch already has every base commit', page: null };
@@ -994,6 +1043,20 @@ async function recordUnfiledRefreshOutcome(
  * PR" — every gate then applies exactly as it did before Option A′, and a bound
  * merge is refused outright.
  */
+/** The trunk a refresh task's PR is measured against; null for any other task. Never throws. */
+async function refreshDeltaBaseForTask(
+  taskId: string | null,
+  gitConfig: WorkspaceGitConfig | null,
+): Promise<string | null> {
+  if (!taskId) return null;
+  try {
+    const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId), columns: { context: true } });
+    return refreshDeltaBase(task?.context, gitConfig);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadMissionIntegrationFields(
   taskId: string | null,
 ): Promise<MissionIntegrationFields | null> {
@@ -1093,7 +1156,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -1166,7 +1229,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -1250,7 +1313,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber: prNumber ?? null }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

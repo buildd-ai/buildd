@@ -3,9 +3,10 @@
 import { useState } from 'react';
 
 /**
- * Connector logo. `iconUrl` comes from the catalog or is resolved at create
- * time (lib/connector-icon.ts); a missing or broken image falls back to the
- * name's first letter so a row never shows a broken-image glyph.
+ * Connector logo. For a connector `iconUrl` is an inlined `data:` URL
+ * (lib/connector-icon.ts); catalog presets may still pass a remote URL. Always
+ * an <img>, never inline SVG markup, so an SVG icon cannot run script. A
+ * missing or broken image falls back to the name's first letter.
  */
 export function ConnectorIcon({ name, iconUrl, size = 20 }: { name: string; iconUrl?: string | null; size?: number }) {
   const [failed, setFailed] = useState(false);

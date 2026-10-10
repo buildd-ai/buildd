@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeDecisionShadows, normalizeFeatureModes } from '@buildd/core/inference-policy';
-import { isInferenceKeyPolicy } from '@buildd/core/inference-key-policy';
+import { isInferenceKeyPolicy, isCredentialPolicy, policyColumns, effectiveKeyPolicy, toCredentialPolicy } from '@buildd/core/inference-key-policy';
 import { normalizeDecisionModel } from '@buildd/core/decision-model';
 import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
@@ -94,6 +94,7 @@ export async function GET(
         chatDailyBudgetUsd: true,
         chatUserDailyBudgetUsd: true,
         inferenceKeyPolicy: true,
+        credentialPolicy: true,
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
         timezone: true,
@@ -124,7 +125,7 @@ export async function GET(
 
     return NextResponse.json({
       // Sanitized, so a client's roleHas() answers what the server will enforce.
-      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides) },
+      team: { ...team, permissionOverrides: sanitizeOverrides(team.permissionOverrides), inferenceKeyPolicy: effectiveKeyPolicy(team) ?? 'team', credentialPolicy: toCredentialPolicy(effectiveKeyPolicy(team) ?? 'team') },
       members: memberList,
       currentUserRole,
     });
@@ -158,7 +159,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -236,11 +237,24 @@ export async function PATCH(
       updates[field] = value.toFixed(2);
     }
     // Whose key a person's chat turn spends; enforced by resolveInferenceKey.
-    if (inferenceKeyPolicy !== undefined) {
+    // credentialPolicy is the new name, and setting it is how a team opts its
+    // agent runs in (they follow it only once it is non-NULL). The legacy
+    // inferenceKeyPolicy name governs chat only: it never opts a team in, and
+    // keeps credentialPolicy in step only for a team that already opted in.
+    if (credentialPolicy !== undefined) {
+      if (!isCredentialPolicy(credentialPolicy)) {
+        return NextResponse.json({ error: 'credentialPolicy must be "team", "personal_first" or "personal_only"' }, { status: 400 });
+      }
+      Object.assign(updates, policyColumns(credentialPolicy));
+    } else if (inferenceKeyPolicy !== undefined) {
       if (!isInferenceKeyPolicy(inferenceKeyPolicy)) {
         return NextResponse.json({ error: 'inferenceKeyPolicy must be "team", "team_or_own" or "own"' }, { status: 400 });
       }
       updates.inferenceKeyPolicy = inferenceKeyPolicy;
+      const current = await db.query.teams.findFirst({ where: eq(teams.id, id), columns: { credentialPolicy: true } });
+      if (isCredentialPolicy(current?.credentialPolicy)) {
+        updates.credentialPolicy = toCredentialPolicy(inferenceKeyPolicy);
+      }
     }
     // The tier a new chat caps at, and whether the cap is on
     // (apps/web/src/lib/chat/composer-prefs.ts). `null` default = auto: no cap.

@@ -469,10 +469,33 @@ export interface MergePolicy {
 
   // How long a PR can sit at this tier before notifying
   stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
+
+  /**
+   * Who decides a migration that moves data (INSERT/UPDATE/DELETE/MERGE).
+   * 'person' (default): a person merges it, as before. 'agent-review': it goes
+   * through the reviewer agent like any other PR and lands on approval. Only
+   * takes effect under tier 'agent-review' (there is no reviewer otherwise).
+   * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
+   */
+  dataMigrations?: DataMigrationsPolicy;
+}
+
+export type DataMigrationsPolicy = 'person' | 'agent-review';
+const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
+
+/**
+ * True when the reviewer agent, not a person, decides data migrations: tier
+ * 'agent-review' and `dataMigrations: 'agent-review'`. Tolerates any stored
+ * shape (a malformed or missing policy is the default: a person decides).
+ */
+export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -557,6 +580,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.tier must be one of: ${VALID_TIERS.join(', ')}`,
       field: 'tier',
+    };
+  }
+
+  if (obj.dataMigrations !== undefined && !VALID_DATA_MIGRATIONS.includes(obj.dataMigrations as DataMigrationsPolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
+      field: 'dataMigrations',
     };
   }
 
@@ -866,6 +897,8 @@ export interface Worker {
   status: WorkerStatusType;
   waitingFor: WaitingFor | null;
   costUsd: number;
+  /** How costUsd and the tokens were charged (docs/specs/real-and-virtual-cost.md). NULL = no usage. */
+  costBasis?: 'real' | 'virtual' | 'mixed' | 'unknown' | null;
   turns: number;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -914,7 +947,8 @@ export interface QuestionRecommendation {
 }
 
 export interface WaitingFor {
-  type: 'question' | 'permission' | 'confirmation';
+  /** `pause`: a person paused a running agent; answering it (Resume) continues the same session. */
+  type: 'question' | 'permission' | 'confirmation' | 'pause';
   prompt: string;
   options?: (string | WaitingForOption)[];
   /**
@@ -934,6 +968,24 @@ export interface WaitingFor {
   recommended?: QuestionRecommendation;
   /** Deterministic origin facts the runner adds. */
   where?: QuestionWhere;
+  /**
+   * Human-attention disposition (packages/core/needs-you.ts), stamped
+   * by the worker PATCH route on every park: only `ask` (or a `hold` past its
+   * `resurfaceAt`) is admitted to Needs You. A runner may send `ask`/`hold`
+   * from its question-gate reply, or `recovered` with a `repairTaskId` the
+   * server verifies; anything else is re-checked server-side.
+   */
+  disposition?: 'ask' | 'hold' | 'recovered';
+  dispositionBy?: 'gate' | 'server_recheck' | 'permission' | 'backfill';
+  /** The question gate's outcome that produced the disposition, when the gate did. */
+  gateOutcome?: string;
+  /** The hard rail that forced an `ask`. */
+  rail?: string;
+  /** The repair task that owns a `recovered` park. */
+  repairTaskId?: string;
+  holdReason?: string;
+  /** ISO timestamp a `hold` is surfaced at. */
+  resurfaceAt?: string;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
@@ -1432,7 +1484,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1456,6 +1508,15 @@ export interface ClaimModelEndpoint {
    * default. Absent/false: not set. Never applied to a Codex run.
    */
   toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -1499,6 +1560,8 @@ export type ClaimTaskExclusionCode =
   | 'workspace_cap'
   /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
   | 'workspace_executor'
+  /** The workspace paused new starts until a set time (runner claims only). */
+  | 'workspace_paused'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1612,6 +1675,20 @@ export interface ClaimDiagnostics {
      * (counted hours) is used. Only when an allowance is set.
      */
     hosted_runner_hours?: number;
+    /**
+     * The team's credential policy needs the requester's own key for this task
+     * (`personal_only`) and this claim cannot deliver one: no requester, no key
+     * stored (for a cloud claim: no personal route for egress), or a runner
+     * without the personal-credential feature.
+     */
+    no_personal_credential?: number;
+    /**
+     * The task's tier or model is above the effective model-tier ceiling for
+     * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
+     * Held, not failed: it runs when the ceiling is raised or the task is
+     * re-tiered. The gate event's detail is the structured policy_denied error.
+     */
+    tier_policy?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).
@@ -1651,7 +1728,7 @@ export interface AssertionConnectorEntry {
 export interface DegradedConnector {
   id: string;
   name: string;
-  failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
+  failureMode: 'never_mounted' | 'blocked_by_policy' | 'expired_or_revoked' | 'transient';
   detail?: string;
 }
 
@@ -1677,6 +1754,26 @@ export interface WorkerPromptBundlesResponse {
   skillBundles?: SkillBundle[];
   roleConfig?: RoleConfig;
   roleInstructions?: RoleInstructions;
+}
+
+/**
+ * How a claimed worker's model credential was chosen, when the team has set a
+ * credential policy (`teams.credential_policy`). No secret material. Absent
+ * when the team has no policy: the claim is exactly what it was before.
+ */
+export interface ClaimCredentialDecision {
+  surface: 'agent-claude' | 'agent-codex';
+  policy: 'team' | 'personal_first' | 'personal_only';
+  /**
+   * `personal`: the requester's own key is the only model credential attached.
+   * `team`: the team's credentials, chosen as before.
+   * `none`: no model credential (an interactive session under personal_only).
+   */
+  scope: 'personal' | 'team' | 'none';
+  /** Provider of the personal key, when `scope` is `personal`. */
+  provider?: string;
+  /** May the runner's own machine credentials (host seat, llmProvider) take precedence? */
+  runnerLocalAllowed: boolean;
 }
 
 export interface ClaimTasksResponse {
@@ -1732,6 +1829,17 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Cloud claims only: the team's agent model endpoint won for this task but
+     * does not pass deferred tool loading (ToolSearch / `tool_reference`)
+     * through. The container's Claude Code believes it talks to Anthropic (the
+     * dispatcher's egress rewrites the traffic), so the runner sets
+     * ENABLE_TOOL_SEARCH=false. A per-run marker, not a credential; absent
+     * means "leave Claude Code's default".
+     */
+    toolSearchDisabled?: boolean;
+    /** How the model credential was chosen; set only for a team with a credential policy. */
+    credentialDecision?: ClaimCredentialDecision;
     /**
      * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
      * `scoped`: the runner strips inherited GitHub tokens and host git/gh
@@ -1964,12 +2072,13 @@ export interface PathDeclaration {
   overlapPolicy?: 'v2';
   /**
    * Soft overlap evidence: in-flight tasks whose declared scope overlapped this
-   * one's only by directory prefix (or, `legacy_inferred`, an inferred edge
+   * one's by directory prefix or on the same ordinary file (`same_file`; a
+   * generated, hotspot or migration file stays a hard edge), or, `legacy_inferred`, an inferred edge
    * minted before the hard/soft rule, reclassified against current manifests
    * at claim). Never a dependsOn edge: the claim route defers on it only while
    * the other task is in flight, and the HOLD/START decision may start it.
    */
-  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'legacy_inferred' }>;
+  softOverlaps?: Array<{ taskId: string; paths: string[]; kind: 'prefix' | 'same_file' | 'legacy_inferred' }>;
   /** Most recent narrowings, oldest first, capped. */
   narrowings?: PathNarrowing[];
   /**
@@ -2051,6 +2160,38 @@ export interface WorkingSetAck {
   applied: boolean;
   /** `complete`: nothing blocked and the runner said the set was fully offered. `blocked`: a holder stands in the way. `partial`: more chunks to come. */
   coverage: 'complete' | 'blocked' | 'partial';
+}
+
+/**
+ * Server → runner, on the PATCH response: run `git merge-tree` between this
+ * worker's HEAD and a live sibling's pushed branch (sibling-conflict-probe).
+ */
+export interface SiblingProbeRequest {
+  probeId: string;
+  /** The sibling's branch on `origin`. */
+  otherBranch: string;
+  /** Files both workers touched; a conflict outside them still counts. */
+  sharedFiles: string[];
+  /** Workspace `gitConfig.mergiraf`: try mergiraf on each conflicted file before calling it real. */
+  mergiraf: boolean;
+}
+
+/** One conflicted file, with its conflict regions (line ranges in the merged result). */
+export interface SiblingProbeConflict {
+  path: string;
+  hunks: Array<{ startLine: number; endLine: number }>;
+}
+
+/** Runner → server, on the next PATCH: what the merge-tree found. */
+export interface SiblingProbeResult {
+  probeId: string;
+  outcome: 'clean' | 'conflict' | 'mergiraf_resolved' | 'error';
+  conflicts?: SiblingProbeConflict[];
+  /** Files mergiraf merged cleanly (counted out of `conflicts`). */
+  resolvedByMergiraf?: string[];
+  error?: string;
+  headSha?: string | null;
+  otherSha?: string | null;
 }
 
 /** Cap on `heldPaths` in an ACK; above it the runner re-offers from its own sweep instead. */
@@ -3470,6 +3611,12 @@ export interface LaneBar {
   prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
+  /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
+  missionId?: string | null;
+  /** The run's task, for an explicit "Open task" link. */
+  taskId?: string | null;
+  /** How the run stands or ended, in words ("Stopped: session limit · work kept"). lib/fleet-view-end-reason.ts. */
+  endReason?: string | null;
 }
 
 export interface Lane {
@@ -3485,12 +3632,14 @@ export interface FleetSlotWorker {
   /** One-word task name ("checkout") and its short label. */
   label: string;
   rest: string;
+  /** The task's full title, for a readable name when the label is a machine identifier. */
+  title?: string | null;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;
   status: string;
-  /** 0..100, or null when the runner has not reported progress. */
-  progress: number | null;
+  /** Latest phase supported by lifecycle evidence. */
+  phase: string | null;
   startedAt: string | null;
   /** Set while the worker is parked on a question. */
   question: string | null;
@@ -3528,10 +3677,27 @@ export interface FleetRunner {
     /** Live runs in the group now (== slots.length). */
     running: number;
   };
+  /**
+   * Set on the one `FleetSnapshot.sessions` lane: the tasks people's own coding
+   * sessions (Claude Code, Codex, Cursor) claimed, one slot per live claim.
+   * Not a runner and no runner capacity (docs/specs/local-agent-presence.md).
+   */
+  interactive?: {
+    /** Live session claims (== slots.length). */
+    running: number;
+    /** Sessions online now, with or without a task; null when not loaded. */
+    online: number | null;
+  };
 }
 
 export interface FleetSnapshot {
   runners: FleetRunner[];
+  /**
+   * Live claims from interactive sessions, as their own lane. Never one of
+   * `runners`, never in `live` or `capacity`. Null (or absent) when none is live.
+   */
+  sessions?: FleetRunner | null;
+  /** Live workers on runner slots (session claims are in `sessions`). */
   live: number;
   capacity: number;
   /** Timeline window, epoch ms. */
@@ -3563,6 +3729,8 @@ export interface PrListItem {
   // Present only when they matter (apps/web/src/lib/pr-list.ts prSignals):
   /** Why a person is needed: the escalation inbox's decision. */
   waitingOnYou?: string;
+  /** The escalation gate kept it from you: the next step Buildd is taking, in words. */
+  builddOwns?: string;
   /** An agent is already on it. */
   resolving?: 'conflict' | 'ci' | 'review';
   /** CI fix tasks buildd has dispatched for this PR (red only). */
@@ -4175,4 +4343,68 @@ export interface DerivedFileRule {
   regenerate: string;
   /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
   strategy?: 'ours' | 'theirs';
+}
+
+// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
+// One row per stable systemic-failure pattern (`failure_incidents`), written by
+// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
+// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
+// events stay where they already live (workers / worker_terminal_records /
+// gate_events); an incident only carries bounded refs back to them.
+
+/** Ordered: low < medium < high < critical. */
+export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** The deterministic rule that raised an incident. Renaming one forks its history. */
+export type FailureIncidentRule =
+  | 'retry_fork'
+  | 'lineage_multi_pr'
+  | 'repeated_failure'
+  | 'stranded_gate'
+  | 'path_overlap_stall'
+  | 'provider_attribution_mismatch'
+  | 'failure_rate_spike'
+  | 'output_unmet_boundary';
+
+/** A pointer at an existing row — never a copy of it. */
+export interface FailureIncidentEvidenceRef {
+  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
+  /** Row id, or the PR number as a string for `kind: 'pr'`. */
+  id: string;
+  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
+  at: string;
+  note?: string;
+}
+
+/** Bounded (newest kept) sets of what the incident touched. */
+export interface FailureIncidentAffectedRefs {
+  taskIds: string[];
+  workerIds: string[];
+  prNumbers: number[];
+}
+
+export interface FailureIncident {
+  id: string;
+  workspaceId: string | null;
+  signature: string;
+  detectorVersion: string;
+  rule: FailureIncidentRule;
+  reasonCode: string;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  recurrenceCount: number;
+  affectedRefs: FailureIncidentAffectedRefs;
+  evidenceRefs: FailureIncidentEvidenceRef[];
+  impact: Record<string, number>;
+  lastAlertedAt: string | null;
+  lastAlertSeverity: FailureIncidentSeverity | null;
+  linkedFixTaskId: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
 }

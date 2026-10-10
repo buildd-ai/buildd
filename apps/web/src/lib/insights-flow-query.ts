@@ -59,6 +59,8 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
       supersededAt: true,
       abandonedAt: true,
       prBaseRef: true,
+      costBasis: true,
+      runner: true,
     },
     with: {
       task: {
@@ -102,6 +104,8 @@ export async function fetchFlowWorkerRows(workspaceIds: string[], since: Date): 
     prSupersededAt: ms(w.supersededAt),
     prAbandonedAt: ms(w.abandonedAt),
     prBaseRef: w.prBaseRef ?? null,
+    costBasis: w.costBasis ?? null,
+    runner: w.runner ?? null,
   }));
 }
 
@@ -183,4 +187,12 @@ export async function loadFlowSeries(workspaceIds: string[], window: FlowWindow,
   });
   const names = workspaceIds.length ? await db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(inArray(workspaces.id, workspaceIds)) : [];
   return { ...series, workspaceNames: Object.fromEntries(names.map(w => [w.id, w.name])), truncated: workerRows.length >= FLOW_ROW_LIMIT };
+}
+
+/** The role/tier counters formerly shown on Insights, using the same attribution. */
+export async function loadFlowUsage(workspaceIds: string[], window: FlowWindow, now = Date.now()) {
+  const from = now - windowMsFor(window);
+  const rows = await fetchFlowWorkerRows(workspaceIds, new Date(from - LOOKBACK_MS));
+  const series = buildFlowSeries({ window: { from, to: now }, bucketMs: bucketMsFor(window), now, workers: rows, releases: [], releaseTasks: [], releaseWorkspaceIds: [] });
+  return { rows: series.usage ?? [], truncated: rows.length >= FLOW_ROW_LIMIT };
 }

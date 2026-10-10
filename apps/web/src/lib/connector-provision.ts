@@ -2,9 +2,9 @@ import { db } from '@buildd/core/db';
 import { connectors, connectorWorkspaces, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { encrypt } from '@buildd/core/secrets';
-import { discoverOAuthMetadata, registerClient, getCallbackUrl } from '@/lib/mcp-oauth';
-import { resolveConnectorIcon } from '@/lib/connector-icon';
-import { normalizeConnectorUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
+import { discoverOAuthMetadata, registerClient, getCallbackUrl, ClientRegistrationRejectedError } from '@/lib/mcp-oauth';
+import { resolveConnectorIconData } from '@/lib/connector-icon';
+import { normalizeConnectorUrl, catalogEntryForUrl, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 export interface OAuthSetup {
   /** What discovery concluded. 'none' = the server answered without auth. */
@@ -28,11 +28,30 @@ export async function discoverAndRegister(url: string, origin: string, existingC
   let clientId = existingClientId ?? null;
   let encryptedClientSecret: string | null = null;
   if (!clientId && discovered.authorizationServer.registration_endpoint) {
-    const dcr = await registerClient(discovered.authorizationServer.registration_endpoint, getCallbackUrl(origin));
+    const dcr = await registerClient(discovered.authorizationServer.registration_endpoint, getCallbackUrl(origin), {
+      grantTypesSupported: discovered.authorizationServer.grant_types_supported,
+    });
     clientId = dcr.client_id;
     if (dcr.client_secret) encryptedClientSecret = encrypt(dcr.client_secret);
   }
   return { authMode: 'oauth', discoveredMetadata: discovered as unknown as Record<string, unknown>, clientId, encryptedClientSecret };
+}
+
+/**
+ * The 422 body for a provider that refused to register buildd as a client
+ * because it only admits clients it has approved; null for any other failure
+ * (callers keep their generic discovery error). Names the vendor step, and
+ * never suggests pasting a token from another client.
+ */
+export function registrationRefusalBody(err: unknown, url: string): { error: 'needs_approved_client'; message: string; actionUrl?: string } | null {
+  if (!(err instanceof ClientRegistrationRejectedError) || !err.needsApprovedClient) return null;
+  const support = catalogEntryForUrl(url)?.clientSupport;
+  if (support) return { error: 'needs_approved_client', message: support.detail, actionUrl: support.actionUrl };
+  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
+  return {
+    error: 'needs_approved_client',
+    message: `${host} only lets MCP clients it has approved sign in, and it refused buildd${err.description ? ` (${err.description})` : ''}. Ask the provider to approve buildd as an MCP client.`,
+  };
 }
 
 type ConnectorRow = typeof connectors.$inferSelect;
@@ -52,7 +71,8 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
   const setup: OAuthSetup = entry.authMode === 'oauth'
     ? await discoverAndRegister(entry.url, origin)
     : { authMode: 'none', discoveredMetadata: null, clientId: null, encryptedClientSecret: null };
-  const iconUrl = entry.iconUrl || await resolveConnectorIcon(entry.url).catch(() => null);
+  // Stored inline (data: URL), so the dashboard never hotlinks the catalog's icon host.
+  const iconUrl = await resolveConnectorIconData(entry.url, { preferred: entry.iconUrl || null }).catch(() => null);
 
   const [created] = await db.insert(connectors).values({
     teamId,
@@ -65,6 +85,7 @@ export async function ensureCatalogConnector(teamId: string, entry: ResolvedCata
     clientId: setup.clientId,
     encryptedClientSecret: setup.encryptedClientSecret,
     iconUrl: iconUrl || null,
+    iconCheckedAt: new Date(),
   }).onConflictDoNothing().returning();
   if (created) return created;
   // Lost a race on (teamId, name): the winner's row is the one to use.

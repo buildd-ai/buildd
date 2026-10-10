@@ -1447,7 +1447,7 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
     expect(item.taskTitle).toBe('Write a haiku about onboarding into hello.md');
     expect(item.failureMessage).toContain('no working model key');
     expect(item.failureMessage).not.toContain('/login');
-    expect(item.fixHref).toBe('/app/settings/runners#agent-key');
+    expect(item.fixHref).toBe('/app/settings/models#agent-key');
     expect(item.fixLabel).toBe('Add an agent key');
   });
 
@@ -1464,7 +1464,7 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
 
   it('a Codex sign-in failure points at the Codex row', () => {
     const [item] = buildFailedTaskItems([failed({ backend: 'codex', workerError: 'No Codex auth found' })]);
-    expect(item.fixHref).toBe('/app/settings/runners#agent-backends');
+    expect(item.fixHref).toBe('/app/settings/models#sign-ins');
     expect(item.failureMessage).toContain('Codex');
   });
 
@@ -1483,5 +1483,46 @@ describe('buildFailedTaskItems — a failed task whose cause the owner can fix',
   it('one card per task', () => {
     const items = buildFailedTaskItems([failed(), failed()]);
     expect(buildActionQueue(items, [])).toHaveLength(1);
+  });
+});
+
+describe('buildFailedTaskItems — tasks waiting on GitHub access', () => {
+  const block = (over: Record<string, unknown> = {}) => ({
+    githubAccessBlock: { reason: 'repo_not_selected', operation: 'pr.create', repo: 'acme/web', workerId: 'w', head: 'b', at: '2026-10-08T00:00:00Z', resumedAt: null, ...over },
+  });
+  const waiting = (id: string, ws = 'ws-1', ctx: unknown = block()): FailedTaskCandidate => ({
+    taskId: id,
+    title: `Task ${id}`,
+    status: 'failed',
+    backend: 'claude',
+    // Whatever the agent wrote — the stamp, not the text, is what counts.
+    workerError: 'github_repo_access_required: could not open PR',
+    missionId: null,
+    missionTitle: null,
+    workspaceId: ws,
+    context: ctx,
+  });
+
+  it('one card per workspace for the admin who can fix it, however many tasks wait', () => {
+    const items = buildFailedTaskItems([waiting('t-1'), waiting('t-2'), waiting('t-3')], { githubAccessFixableWorkspaceIds: new Set(['ws-1']) });
+    expect(items).toHaveLength(1);
+    expect(items[0].failureMessage).toContain('acme/web');
+    expect(items[0].failureMessage).toContain('3 tasks are waiting');
+    expect(items[0].fixHref).toBe('/app/settings/workspace/ws-1#github-access');
+    expect(items[0].fixLabel).toBe('Fix GitHub access');
+  });
+
+  it('is not shown to people who cannot fix the workspace connection', () => {
+    expect(buildFailedTaskItems([waiting('t-1')])).toEqual([]);
+    expect(buildFailedTaskItems([waiting('t-1')], { githubAccessFixableWorkspaceIds: new Set(['ws-other']) })).toEqual([]);
+  });
+
+  it('a resumed task drops out', () => {
+    expect(buildFailedTaskItems([waiting('t-1', 'ws-1', block({ resumedAt: '2026-10-08T01:00:00Z' }))], { githubAccessFixableWorkspaceIds: new Set(['ws-1']) })).toEqual([]);
+  });
+
+  it('separate workspaces get separate cards', () => {
+    const items = buildFailedTaskItems([waiting('t-1', 'ws-1'), waiting('t-2', 'ws-2')], { githubAccessFixableWorkspaceIds: new Set(['ws-1', 'ws-2']) });
+    expect(items.map(i => i.fixHref)).toEqual(['/app/settings/workspace/ws-1#github-access', '/app/settings/workspace/ws-2#github-access']);
   });
 });

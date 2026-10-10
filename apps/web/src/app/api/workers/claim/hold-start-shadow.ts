@@ -8,7 +8,7 @@
  *
  *  1. `ClaimHoldCollector`: called synchronously at the three advisory
  *     deferrals in the dispatch loop (scope-undeclared serialization, layer 1
- *     open-PR overlap, soft prefix-only overlap). It runs the deterministic
+ *     open-PR overlap, soft same-file or prefix overlap). It runs the deterministic
  *     rails and remembers eligible deferrals. No I/O, and the loop still
  *     `continue`s exactly as before.
  *  2. `scheduleClaimHoldShadow`: registers the decisions with `after()`, so
@@ -26,6 +26,15 @@
  * The applying fraction is the committed `CLAIM_HOLD_APPLYING_FRACTION` (no
  * shadow-promotion gate, by owner decision, task 7eb191b9). Setting it to 0
  * is the single rollback switch back to deterministic HOLD.
+ *
+ * Every note carries a risk profile (packages/core/orchestration-claim-risk.ts).
+ * Code decides what code can: a soft overlap whose holder never started, or
+ * that shares only a directory, starts without a model call
+ * (`softOverlapStartVerdict` → `rule_start`; its paths are still acquired
+ * exclusively); a same-file overlap whose files measurably conflict is held
+ * after the evidence read, with a `rule_decided` ledger row and no model call.
+ * Only the ambiguous rest reaches Jev. `CLAIM_RISK_DETERMINISTIC_START = false`
+ * sends the deterministic STARTs back to the model.
  */
 import { after } from 'next/server';
 import { TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
@@ -43,6 +52,7 @@ import {
   classifyClaimHoldEligibility,
   isGatedStartReachable,
   type ClaimHoldCandidate,
+  type ClaimHoldEvidence,
   type ClaimHoldHolder,
   type ClaimHoldHolderState,
   type ClaimHoldRail,
@@ -51,12 +61,17 @@ import {
   runOrchestrationDecision,
   type OrchestrationDecisionDeps,
 } from '@buildd/core/orchestration-decision';
-import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL, type ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { LIVE_HOLDER_STATUSES, assessClaimOverlapRisk, holderStateOf, type ClaimRiskAssessment } from '@buildd/core/orchestration-claim-decision';
+import { RULE_DECIDED } from '@buildd/core/orchestration-decision';
+import type { EffectiveScope, PairProbeEvidence } from '@buildd/core/orchestration-claim-risk';
+import type { PrDiffScope } from '@/lib/claim-pr-diff-scope';
 import type { AcquireInput, AcquireResult, LeaseRowsRelease, ReleaseResult } from '@buildd/core/path-claim';
 import type { PathReleaseReason } from '@/lib/path-claim-release';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { resolveSerializedSurfaces } from '@/lib/surface-ordering-config';
+import { overlapIsHard, resolveHardOverlapSurfaces } from '@/lib/hard-overlap-surfaces';
 
 type ClaimHoldDecision = Decision<typeof CLAIM_HOLD_QUESTIONS>;
 
@@ -69,6 +84,8 @@ export interface ClaimHoldDeps {
   decisionDeps?: OrchestrationDecisionDeps;
   hasRecent?: (k: ClaimDecisionKey) => Promise<boolean>;
   loadHolder?: (opts: { workspaceId: string; taskId: string | null; prNumber: number | null }) => Promise<ClaimHoldHolderState | null>;
+  /** Same-file evidence for a soft overlap (conflict history, predicted size). Throws → HOLD. Default `loadSoftOverlapEvidence`. */
+  loadEvidence?: (opts: { workspaceId: string; taskId: string; paths: string[] }) => Promise<ClaimHoldEvidence>;
   findAppliedStart?: (k: ClaimDecisionKey) => Promise<boolean>;
   acquire?: (input: AcquireInput) => Promise<AcquireResult>;
   /** Give back exactly the rows one acquisition inserted. Default `releaseLeaseRows`. */
@@ -113,8 +130,21 @@ export interface SoftOverlapHolderEntry {
   taskId: string;
   /** The overlapping paths (both sides), as classified at claim time. */
   overlapPaths: string[];
+  /** Same file on both sides, or only a directory. Default `prefix`. */
+  overlapKind?: 'same_file' | 'prefix';
   /** The holder's newest worker status, or null when it has not started. */
   workerStatus: string | null;
+}
+
+/**
+ * Evidence the route read BEFORE the synchronous collector runs (the collector
+ * does no I/O): each open PR's current diff, and the newest sibling probe of
+ * the (candidate, holder) pair. Absent = unknown, never "disjoint".
+ */
+export interface ClaimRiskEvidence {
+  /** Current changed files of the holders' open PRs, by PR number. */
+  prScopes?: ReadonlyMap<number, PrDiffScope>;
+  probe?: PairProbeEvidence | null;
 }
 
 export interface ClaimHoldNote {
@@ -122,19 +152,29 @@ export interface ClaimHoldNote {
   digest: string;
 }
 
+/** A soft overlap's claim-time verdict: the note (when the model may be asked) and the risk profile. */
+export interface SoftOverlapAssessment {
+  note: ClaimHoldNote | null;
+  risk: ClaimRiskAssessment;
+}
+
+/**
+ * Notes remembered per claim response. Bounded so a huge backlog costs
+ * nothing extra, and larger than `CLAIM_HOLD_MAX_PER_CLAIM` so a note that is
+ * skipped as recently asked does not crowd out one that was never asked.
+ */
+export const CLAIM_HOLD_MAX_NOTES = 50;
+
 // ── 1. Collector (synchronous, no I/O) ───────────────────────────────────────
 
 /**
- * Do these paths touch a workspace serialized surface? Fails closed (true) on
- * a malformed config. Shared with the claim route's soft-overlap gate so the
- * route reaches the surface config through this one edge.
+ * Do these paths touch a workspace hard surface (serialized namespace,
+ * generated file, explicit hotspot)? Fails closed (true) on a malformed
+ * config. Shared with the claim route's soft-overlap gate so the route reaches
+ * the surface config through this one edge.
  */
-export function touchesSerializedSurface(paths: string[], gitConfig: WorkspaceGitConfig | null | undefined): boolean {
-  try {
-    return resolveSerializedSurfaces(paths, gitConfig).length > 0;
-  } catch {
-    return true;
-  }
+export function touchesHardOverlapSurface(paths: string[], kind: ManifestOverlapKind, gitConfig: WorkspaceGitConfig | null | undefined): boolean {
+  return overlapIsHard(paths, kind, gitConfig, resolveSerializedSurfaces);
 }
 
 /** Does `concrete` overlap a live exclusive lease held by a task other than `selfId`? */
@@ -164,7 +204,9 @@ export class ClaimHoldCollector {
 
   private keep(candidate: ClaimHoldCandidate): ClaimHoldNote {
     const note = { candidate, digest: claimHoldStateDigest(candidate) };
-    if (this.candidates.length < CLAIM_HOLD_MAX_PER_CLAIM) this.candidates.push(note);
+    // Code decided it at claim time: nothing for the model to answer.
+    if (candidate.risk && candidate.risk.route !== 'ask_model') return note;
+    if (this.candidates.length < CLAIM_HOLD_MAX_NOTES) this.candidates.push(note);
     return note;
   }
 
@@ -191,13 +233,15 @@ export class ClaimHoldCollector {
       holder,
     });
     if (!verdict.eligible) return this.skip(verdict.rail);
-    return this.keep(this.candidate(ctx, 'advisory_manifest', 'undeclared', [], [], holder));
+    const c = this.candidate(ctx, 'advisory_manifest', 'undeclared', [], [], holder);
+    return this.keep({ ...c, risk: assessClaimOverlapRisk({ gate: 'advisory_manifest', rail: null, candidatePaths: [], overlapPaths: [], holderState: null, now: ctx.now }) });
   }
 
   /**
-   * The soft-overlap gate deferred this task: its declared scope shares only a
-   * directory with an in-flight task's. The candidate must not overlap a live
-   * lease held by another task, a serialized surface or a migration path.
+   * The soft-overlap gate deferred this task: its declared scope shares a file
+   * or a directory with an in-flight task's. The candidate must not overlap a
+   * live lease held by another task, a hard surface (serialized, generated,
+   * hotspot: reported on the `serialized_surface` rail) or a migration path.
    */
   noteSoftOverlap(
     ctx: ClaimHoldTaskContext,
@@ -205,10 +249,41 @@ export class ClaimHoldCollector {
     holder: SoftOverlapHolderEntry,
     activeLeases: Map<string, string[]> | undefined,
   ): ClaimHoldNote | null {
+    return this.assessSoftOverlap(ctx, manifest, holder, activeLeases).note;
+  }
+
+  /**
+   * `noteSoftOverlap` plus the risk profile, which the route records on the
+   * deferral and uses to start the low-risk tiers without a model call. A
+   * note that threw is a hard `state_unresolved`: fail closed.
+   */
+  assessSoftOverlap(
+    ctx: ClaimHoldTaskContext,
+    manifest: string[],
+    holder: SoftOverlapHolderEntry,
+    activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence = {},
+  ): SoftOverlapAssessment {
+    // Built defensively: this runs in the claim loop for every team, and the
+    // fail-closed answer below must not itself throw on a malformed input.
+    const riskOf = (rail: ClaimHoldRail | null): ClaimRiskAssessment => assessClaimOverlapRisk({
+      gate: 'soft_overlap',
+      rail,
+      overlapKind: holder?.overlapKind ?? 'prefix',
+      candidatePaths: Array.isArray(manifest) ? manifest.filter(p => p !== REPO_WIDE_SENTINEL) : [],
+      overlapPaths: Array.isArray(holder?.overlapPaths) ? holder.overlapPaths : [],
+      holderState: holderStateOf(holder?.workerStatus, LIVE_HOLDER_STATUSES),
+      probe: evidence?.probe ?? null,
+      now: typeof ctx?.now === 'string' ? ctx.now : new Date().toISOString(),
+    });
     try {
       const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
       const overlapsLiveLease = overlapsOtherLease(ctx.taskId, concrete, activeLeases);
-      const serializedSurfaces = resolveSerializedSurfaces([...concrete, ...holder.overlapPaths], ctx.gitConfig);
+      // Generated files and hotspots are hard only for a same-file overlap (overlapIsHard).
+      const surfacePaths = [...concrete, ...holder.overlapPaths];
+      const serializedSurfaces = holder.overlapKind === 'same_file'
+        ? resolveHardOverlapSurfaces(surfacePaths, ctx.gitConfig, resolveSerializedSurfaces)
+        : resolveSerializedSurfaces(surfacePaths, ctx.gitConfig);
       const h: ClaimHoldHolder = { taskId: holder.taskId, prNumber: null, workerStatus: holder.workerStatus, prLifecycle: null };
       const verdict = classifyClaimHoldEligibility({
         gate: 'soft_overlap',
@@ -220,11 +295,18 @@ export class ClaimHoldCollector {
         serializedSurfaces,
         holder: h,
       });
-      if (!verdict.eligible) return this.skip(verdict.rail);
-      return this.keep(this.candidate(ctx, 'soft_overlap', 'declared', concrete, [...holder.overlapPaths], h));
+      if (!verdict.eligible) return { note: this.skip(verdict.rail), risk: riskOf(verdict.rail) };
+      const risk = riskOf(null);
+      const note = this.keep({
+        ...this.candidate(ctx, 'soft_overlap', 'declared', concrete, [...holder.overlapPaths], h),
+        overlapKind: holder.overlapKind ?? 'prefix',
+        risk,
+      });
+      return { note, risk };
     } catch (err) {
       console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
-      return this.skip('error');
+      this.skip('error');
+      return { note: null, risk: riskOf('state_unresolved') };
     }
   }
 
@@ -238,9 +320,10 @@ export class ClaimHoldCollector {
     manifest: string[],
     openPrs: OpenPrHolderEntry[],
     activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence = {},
   ): ClaimHoldNote | null {
     try {
-      return this.openPrOverlap(ctx, manifest, openPrs, activeLeases);
+      return this.openPrOverlap(ctx, manifest, openPrs, activeLeases, evidence);
     } catch (err) {
       console.warn('[claim] hold/start note failed (skipped):', (err as Error)?.message ?? err);
       return this.skip('error');
@@ -252,6 +335,7 @@ export class ClaimHoldCollector {
     manifest: string[],
     openPrs: OpenPrHolderEntry[],
     activeLeases: Map<string, string[]> | undefined,
+    evidence: ClaimRiskEvidence,
   ): ClaimHoldNote | null {
     const concrete = manifest.filter(p => p !== REPO_WIDE_SENTINEL);
     const blockers = openPrs.filter(p => p.pathManifest?.length && intersectPaths(concrete, p.pathManifest).length > 0);
@@ -276,7 +360,20 @@ export class ClaimHoldCollector {
     }
     const first = blockers[0];
     const holder: ClaimHoldHolder = { taskId: first.taskId, prNumber: first.prNumber, workerStatus: first.workerStatus ?? null, prLifecycle: first.prLifecycle ?? null };
-    return this.keep(this.candidate(ctx, 'open_pr_overlap', 'declared', concrete, overlap, holder));
+    // The holders' PRs' current diffs, when every blocker's is known: a disjoint
+    // diff means the overlap came from an older or broader declaration. One
+    // unknown diff makes the whole scope unknown (uncertain, never disjoint).
+    const risk = assessClaimOverlapRisk({
+      gate: 'open_pr_overlap',
+      rail: null,
+      candidatePaths: concrete,
+      overlapPaths: overlap,
+      holderState: 'ended',
+      holderScope: combinedPrScope(blockers, evidence.prScopes),
+      probe: blockers.length === 1 ? evidence.probe ?? null : null,
+      now: ctx.now,
+    });
+    return this.keep({ ...this.candidate(ctx, 'open_pr_overlap', 'declared', concrete, overlap, holder), risk });
   }
 
   private candidate(
@@ -304,6 +401,32 @@ export class ClaimHoldCollector {
       title: ctx.title,
     };
   }
+}
+
+/** Is this worker status a live writer (a hard rail for an open PR)? */
+export const isLiveHolderStatus = (status: string | null | undefined): boolean => LIVE_HOLDER_STATUSES.has(status ?? '');
+
+/** One effective scope for several blockers; null unless every blocker's current diff is known. */
+function combinedPrScope(
+  blockers: ReadonlyArray<{ prNumber: number | null }>,
+  scopes: ReadonlyMap<number, PrDiffScope> | undefined,
+): EffectiveScope | null {
+  if (!scopes || blockers.length === 0) return null;
+  const found: PrDiffScope[] = [];
+  for (const b of blockers) {
+    const s = b.prNumber ? scopes.get(b.prNumber) : undefined;
+    if (!s) return null;
+    found.push(s);
+  }
+  // Any diff from a head that has since moved makes the combination stale.
+  const lead = found.find(s => s.headSha !== s.currentHeadSha) ?? found[0];
+  return {
+    source: 'pr_diff_at_head',
+    paths: [...new Set(found.flatMap(s => s.paths))],
+    headSha: lead.headSha,
+    currentHeadSha: lead.currentHeadSha,
+    observedAt: found.reduce((oldest, s) => (Date.parse(s.observedAt) < Date.parse(oldest) ? s.observedAt : oldest), found[0].observedAt),
+  };
 }
 
 // ── 2. Shadow dispatch (after the response) ──────────────────────────────────
@@ -349,16 +472,33 @@ const defaultResolveAccess: NonNullable<OrchestrationDecisionDeps['resolveAccess
 const defaultHasRecent = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).hasRecentClaimDecision(k);
 const defaultLoadHolder: NonNullable<ClaimHoldDeps['loadHolder']> = async (opts) =>
   (await import('@buildd/core/orchestration-claim-source')).loadClaimHolderState(opts);
+const defaultLoadEvidence: NonNullable<ClaimHoldDeps['loadEvidence']> = async (opts) =>
+  (await import('@buildd/core/orchestration-claim-source')).loadSoftOverlapEvidence(opts);
 const defaultFindAppliedStart = async (k: ClaimDecisionKey) => (await import('@buildd/core/orchestration-claim-source')).findAppliedStart(k);
 const defaultAcquire = async (input: AcquireInput) => (await import('@buildd/core/path-claim')).acquirePathClaims(input);
 
-/** Ask about each eligible deferral. Never throws. */
+/** Longest-waiting first: a task deferred for hours is asked before one deferred this minute. */
+function byLongestWait(a: ClaimHoldNote, b: ClaimHoldNote): number {
+  const ta = a.candidate.taskCreatedAt ? Date.parse(a.candidate.taskCreatedAt) : Infinity;
+  const tb = b.candidate.taskCreatedAt ? Date.parse(b.candidate.taskCreatedAt) : Infinity;
+  return (Number.isFinite(ta) ? ta : Infinity) - (Number.isFinite(tb) ? tb : Infinity);
+}
+
+/**
+ * Ask about eligible deferrals, longest-waiting first. At most
+ * `CLAIM_HOLD_MAX_PER_CLAIM` decisions run per call; a note skipped as
+ * recently asked (memo or ledger) does not use a slot, so the same handful of
+ * held tasks can no longer starve every task queued behind them. Never throws.
+ */
 export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: ClaimHoldDeps = {}): Promise<void> {
   const decision = deps.decision ?? CLAIM_HOLD_DECISION;
   const now = deps.now ?? (() => Date.now());
   const decide = deps.decide ?? runOrchestrationDecision;
   const resolveAccess = deps.decisionDeps?.resolveAccess ?? defaultResolveAccess;
-  for (const note of notes) {
+  let asked = 0;
+  for (const note of [...notes].sort(byLongestWait)) {
+    if (asked >= CLAIM_HOLD_MAX_PER_CLAIM) break;
+    if (note.candidate.risk && note.candidate.risk.route !== 'ask_model') continue;
     try {
       const c = note.candidate;
       const t = now();
@@ -382,6 +522,7 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         remember(recentAsks, memoKey, t + RECENT_ASK_TTL_MS);
         continue;
       }
+      asked++;
       const outcome = await decide({
         decision,
         question: 'action',
@@ -396,9 +537,31 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
         },
         ruleVerdict: 'HOLD',
         candidatePolicy: { version: claimHoldCandidatePolicyVersion(c.gate), digest: note.digest, count: CLAIM_HOLD_LABELS.length },
-        buildState: async () => buildClaimHoldState(c, await (deps.loadHolder ?? defaultLoadHolder)({
-          workspaceId: c.workspaceId, taskId: c.holder.taskId, prNumber: c.holder.prNumber,
-        })),
+        // A failed evidence read throws here, and the adapter falls back to HOLD.
+        buildState: async () => {
+          const [holder, evidence] = await Promise.all([
+            (deps.loadHolder ?? defaultLoadHolder)({ workspaceId: c.workspaceId, taskId: c.holder.taskId, prNumber: c.holder.prNumber }),
+            c.gate === 'soft_overlap'
+              ? (deps.loadEvidence ?? defaultLoadEvidence)({ workspaceId: c.workspaceId, taskId: c.taskId, paths: c.overlapPaths })
+              : Promise.resolve(null),
+          ]);
+          // Re-tier with the history just read: a measured high-conflict file
+          // is held in code, recorded as `rule_decided`, with no model call.
+          const risk = c.gate === 'soft_overlap' && evidence?.conflictHistory
+            ? assessClaimOverlapRisk({
+                gate: 'soft_overlap',
+                rail: null,
+                overlapKind: c.overlapKind ?? 'prefix',
+                candidatePaths: c.concretePaths,
+                overlapPaths: c.overlapPaths,
+                holderState: holderStateOf(holder?.workerStatus ?? c.holder.workerStatus, LIVE_HOLDER_STATUSES),
+                history: evidence.conflictHistory,
+                now: c.deferredAt,
+              })
+            : c.risk ?? null;
+          if (risk && risk.route === 'deterministic_hold') return RULE_DECIDED;
+          return buildClaimHoldState(c, holder, evidence, risk);
+        },
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
         cohort: { fraction: grantedFraction(deps, c.gate), unitId: c.taskId },
         // The access just resolved is reused, so the adapter does not read the team again.
@@ -471,6 +634,43 @@ export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimH
   } catch {
     return false;
   }
+}
+
+/**
+ * The soft-overlap verdict for one note: `rule_start` when the risk profile
+ * starts it in code (no ledger read), `START` when an applied Jev START exists
+ * for this exact state, else `HOLD`. A null note (a rail refused it, or the
+ * note threw) is always HOLD. Never throws.
+ */
+export async function softOverlapStartVerdict(
+  note: ClaimHoldNote | null,
+  gated: boolean,
+  deps: ClaimHoldDeps = {},
+): Promise<'rule_start' | 'START' | 'HOLD'> {
+  if (!note) return 'HOLD';
+  if (note.candidate.risk?.route === 'deterministic_start') return 'rule_start';
+  if (note.candidate.risk?.route === 'deterministic_hold') return 'HOLD';
+  return gated && await gatedStartApplies(note, deps) ? 'START' : 'HOLD';
+}
+
+/**
+ * The open-PR-overlap verdict for one note: `rule_start` only when the risk
+ * profile proved the holders' CURRENT diffs disjoint from the candidate's
+ * (`effective_scope_disjoint`: every blocker's diff known, at its current head);
+ * otherwise `START` when an applied Jev START exists for this exact state, else
+ * `HOLD`. A null note is HOLD. Either START's paths are acquired exclusively
+ * before the claim, exactly as for the soft path. Never throws.
+ */
+export async function openPrStartVerdict(
+  note: ClaimHoldNote | null,
+  gated: boolean,
+  deps: ClaimHoldDeps = {},
+): Promise<'rule_start' | 'START' | 'HOLD'> {
+  if (!note) return 'HOLD';
+  const risk = note.candidate.risk;
+  if (risk?.route === 'deterministic_start' && risk.reasons.includes('effective_scope_disjoint')) return 'rule_start';
+  if (risk?.route === 'deterministic_hold') return 'HOLD';
+  return gated && await gatedStartApplies(note, deps) ? 'START' : 'HOLD';
 }
 
 export interface GatedStartAcquisition {

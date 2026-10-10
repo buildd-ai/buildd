@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ScopeSelector, type ShareScope } from '@/components/ScopeSelector';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 import { CONNECTOR_CATALOG, catalogEntryForUrl, normalizeConnectorUrl, type ConnectorCatalogEntry, type ResolvedCatalogEntry } from '@/lib/connector-catalog';
 
 interface CreatedConnector {
@@ -102,8 +103,9 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
         if (wsList.length > 0) setSelectedWorkspaceId(wsList[0].id);
       }
       if (teamsRes.ok) {
-        const data = await teamsRes.json() as { teams?: { id: string; name: string }[] };
-        setTeams(data.teams ?? []);
+        const data = await teamsRes.json() as { teams?: { id: string; name: string; role?: string | null; permissionOverrides?: PermissionOverrides | null }[] };
+        // "All my teams" = teams the user manages; the shares route refuses the rest.
+        setTeams((data.teams ?? []).filter((t) => roleHas(t.role, 'manage_connectors', t.permissionOverrides ?? null)));
       }
     }
     void loadScopeData();
@@ -311,8 +313,14 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                           <span className="text-sm font-medium text-text-primary">{entry.name}</span>
                           {added && <span className="text-xs font-mono text-status-success">Added</span>}
                           {entry.policy === 'preinstalled' && <span className="text-xs font-mono text-text-muted">Preinstalled</span>}
+                          {entry.clientSupport && <span className="text-xs font-mono text-status-warning">Needs approval</span>}
                         </span>
                         <span className="block text-xs text-text-muted mt-0.5">{entry.description}</span>
+                        {entry.clientSupport && (
+                          <span className="block text-xs text-status-warning mt-1" data-testid={`connector-catalog-${entry.slug}-client-support`}>
+                            {entry.clientSupport.detail}
+                          </span>
+                        )}
                       </span>
                     </button>
                   );
@@ -321,7 +329,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                   type="button"
                   onClick={pickCustom}
                   data-testid="connector-catalog-custom"
-                  className="flex items-start gap-3 p-3 text-left border border-dashed border-border-default hover:border-primary transition-colors"
+                  className="flex items-start gap-3 p-3 text-left border border-border-default rounded-[var(--radius-card)] hover:border-border-strong transition-colors"
                 >
                   <ConnectorIcon name="+" size={24} />
                   <span className="min-w-0 flex-1">
@@ -355,7 +363,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
               ) : null}
               {preset?.authMode === 'header' && (
                 <div>
-                  <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">
                     {preset.headerName || 'API key'}
                   </label>
                   <input
@@ -371,7 +379,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
               {!preset && (
               <>
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
                   Name
                 </label>
                 <input
@@ -384,7 +392,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
                   URL
                 </label>
                 <input
@@ -424,7 +432,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                 <button
                   type="submit"
                   disabled={submitting || !name.trim() || !url.trim() || (preset?.authMode === 'header' && !headerValue.trim())}
-                  className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                  className="btn btn-primary flex-1"
                 >
                   {submitting ? 'Checking…' : preset ? `Add ${preset.name}` : 'Continue'}
                 </button>
@@ -469,7 +477,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     <button
                       onClick={handleConnect}
                       disabled={submitting}
-                      className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                      className="btn btn-primary flex-1"
                     >
                       {submitting ? 'Redirecting…' : 'Connect'}
                     </button>
@@ -488,7 +496,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                   </button>
                   <button
                     onClick={handleDone}
-                    className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+                    className="btn btn-primary flex-1"
                   >
                     Done
                   </button>
@@ -502,7 +510,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     API key header detected
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-text-secondary mb-1.5 uppercase tracking-wide">
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
                       {createdConnector.headerName || 'API Key'}
                     </label>
                     <input
@@ -530,7 +538,7 @@ export default function AddConnectionModal({ onClose, onAdded, existingUrls = []
                     <button
                       type="submit"
                       disabled={submitting || !headerValue.trim()}
-                      className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                      className="btn btn-primary flex-1"
                     >
                       {submitting ? 'Saving…' : 'Save'}
                     </button>

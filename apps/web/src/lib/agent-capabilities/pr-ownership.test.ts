@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { branchCarriesTaskId, needsHeadHolders, ownershipApplies, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
+import { branchCarriesTaskId, ownershipApplies, prNumbersNamedAtFiling, taskLinksPr, verifyPrOwnership, type PrOwnershipInput } from './pr-ownership';
 
 // ── fixtures (illustrative) ───────────────────────────────────────────────────
 
@@ -41,16 +41,27 @@ describe('verifyPrOwnership — shapes a task owns', () => {
   });
 
   it.each([
+    ['a person', 'human:user-1'],
+    ['the task that filed it', 'task:task-0'],
+  ])('a PR the task was linked to when %s filed it (context.prReach)', async (_label, grantedBy) => {
+    const v = await verify(input({ head: 'docs/human-branch', task: { context: { prReach: { prNumbers: [42], grantedBy, grantedAt: '2026-01-01T00:00:00.000Z' } } } }));
+    expect(v).toEqual({ owned: true, basis: 'linked_pr' });
+  });
+
+  it('a PR a person granted a landing override on', async () => {
+    const v = await verify(input({ head: 'docs/human-branch', task: { context: { landingOverride: { prNumbers: [42], overrides: ['freshness'], grantedBy: 'human:user-1', grantedAt: 'x' } } } }));
+    expect(v).toEqual({ owned: true, basis: 'linked_pr' });
+  });
+
+  it.each([
     ['title', { title: 'Fix review comments on #42' }],
     ['description', { description: 'Follow up on https://github.com/acme/widget/pull/42 please' }],
     ['context', { context: { prNumber: 42 } }],
-  ])('a PR the task names in its %s', async (_label, task) => {
+    ['an unstamped context.prReach', { context: { prReach: { prNumbers: [42] } } }],
+    ['a context.prReach stamped by neither a person nor a task', { context: { prReach: { prNumbers: [42], grantedBy: 'agent:x' } } }],
+    ['an unstamped landing override', { context: { landingOverride: { prNumbers: [42], overrides: ['freshness'] } } }],
+  ])('does not own a PR merely named in its %s', async (_label, task) => {
     const v = await verify(input({ head: 'docs/human-branch', task }));
-    expect(v).toEqual({ owned: true, basis: 'task_names_pr' });
-  });
-
-  it('does not read #420 as naming #42', async () => {
-    const v = await verify(input({ head: 'docs/human-branch', task: { title: 'see #420' } }));
     expect(v.owned).toBe(false);
   });
 
@@ -88,53 +99,33 @@ describe('verifyPrOwnership — shapes a task owns', () => {
 
 // ── refused shapes ────────────────────────────────────────────────────────────
 
-describe('verifyPrOwnership — worker assigned the mission branch', () => {
-  const assigned = (o: Partial<PrOwnershipInput> = {}) => input({
-    head: 'task/no-id-in-name',
-    workerBranch: 'mission/integration',
-    task: { context: { baseBranch: 'mission/integration' } },
-    ...o,
+// A mission task's worker branch is its own generated head; the integration
+// branch is only its base. Having the right base proves nothing about a head,
+// so a worker that somehow sits on the integration branch itself (provisioned
+// before claim stopped handing it out) gets no blanket exception: it owns the
+// heads every other worker owns, and nothing else.
+describe('verifyPrOwnership — mission task on an integration base', () => {
+  const missionTask = { context: { baseBranch: 'mission/integration' } };
+
+  it('owns its generated task head', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-fix-thing', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'own_branch' });
   });
 
-  it('owns a task branch cut from the assigned integration branch', async () => {
-    expect(await verify(assigned())).toEqual({ owned: true, basis: 'cut_from_assigned_base' });
-  });
-
-  it('owns its own task-id branch via lineage first', async () => {
-    expect(await verify(assigned({ head: 'buildd/aaaa1111-cut' }))).toEqual({ owned: true, basis: 'task_lineage' });
-  });
-
-  it('refuses another task’s branch', async () => {
-    const v = await verify(assigned({ head: 'buildd/dddd4444-someone-else' }));
+  it('refuses an unrelated head with no task id, even when no other worker holds it', async () => {
+    const v = await verify(input({ head: 'task/no-id-in-name', task: missionTask, otherHeadHolders: [] }));
     expect(v).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
   });
 
-  it('refuses a head another live worker holds', async () => {
-    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'running', hasPr: false }] }));
-    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
+  it('a worker sitting on the integration branch itself gains no ownership of other heads', async () => {
+    const onBase = (head: string) => input({ head, workerBranch: 'mission/integration', task: missionTask, otherHeadHolders: [] });
+    expect(await verify(onBase('task/no-id-in-name'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
+    expect(await verify(onBase('buildd/dddd4444-someone-else'))).toMatchObject({ owned: false, reasonCode: 'head_not_owned' });
   });
 
-  it('refuses a head another task already opened a PR from', async () => {
-    const v = await verify(assigned({ otherHeadHolders: [{ workerId: 'w2', taskId: DEP_ID, status: 'completed', hasPr: true }] }));
-    expect(v).toMatchObject({ owned: false, reasonCode: 'head_claimed' });
-  });
-
-  it('still refuses a protected head', async () => {
-    expect(await verify(assigned({ head: 'dev' }))).toMatchObject({ owned: false, reasonCode: 'protected_head' });
-  });
-
-  it('does not apply when the worker branch is not the task base', async () => {
-    const v = await verify(input({ head: 'task/no-id-in-name', workerBranch: 'buildd/aaaa1111-x', task: { context: { baseBranch: 'mission/integration' } } }));
-    expect(v.owned).toBe(false);
-  });
-});
-
-describe('needsHeadHolders', () => {
-  it('interactive sessions and workers assigned their task base', () => {
-    expect(needsHeadHolders(true, 'x', null)).toBe(true);
-    expect(needsHeadHolders(false, 'mission/m', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(true);
-    expect(needsHeadHolders(false, 'buildd/aaaa1111-x', { id: TASK_ID, context: { baseBranch: 'mission/m' } })).toBe(false);
-    expect(needsHeadHolders(false, null, { id: TASK_ID, context: {} })).toBe(false);
+  it('a worker sitting on the integration branch still owns a head carrying its own task id', async () => {
+    const v = await verify(input({ head: 'buildd/aaaa1111-cut', workerBranch: 'mission/integration', task: missionTask }));
+    expect(v).toEqual({ owned: true, basis: 'task_lineage' });
   });
 });
 
@@ -253,3 +244,47 @@ describe('ownershipApplies', () => {
   it('exempts a teammate', () => expect(ownershipApplies({ kind: 'team_member', accountId: 'a' }, {})).toBe(false));
 });
 
+
+describe('taskLinksPr — a task reaches the PRs its own records link it to', () => {
+  const task = (o: Record<string, unknown> = {}) => ({ id: TASK_ID, title: '', description: '', context: {}, ...o });
+  const reach = (grantedBy: string, prNumbers = [42]) => ({ prReach: { prNumbers, grantedBy, grantedAt: 'x' } });
+
+  it.each([
+    ['ciRetryPrNumber', { ciRetryPrNumber: 42 }],
+    ['conflictRetryPrNumber', { conflictRetryPrNumber: 42 }],
+    ['reviewerRetryPrNumber', { reviewerRetryPrNumber: 42 }],
+    ['a person-stamped prReach', { context: reach('human:user-1') }],
+    ['a task-stamped prReach', { context: reach('task:task-0') }],
+    ['a person-stamped landing override', { context: { landingOverride: { prNumbers: [42], overrides: ['size'], grantedBy: 'human:user-1', grantedAt: 'x' } } }],
+  ])('links through %s', (_l, o) => {
+    expect(taskLinksPr(task(o), 42)).toBe(true);
+  });
+
+  it.each([
+    ['title', { title: 'land PR #42' }],
+    ['description', { description: 'resolve conflicts on https://github.com/acme/widget/pull/42' }],
+    ['a context scalar', { context: { prNumber: 42 } }],
+    ['a prReach with no stamp', { context: { prReach: { prNumbers: [42] } } }],
+    ['a prReach with a foreign stamp', { context: reach('agent:x') }],
+    ['a prReach for another PR', { context: reach('human:user-1', [7]) }],
+  ])('does not link through %s', (_l, o) => {
+    expect(taskLinksPr(task(o), 42)).toBe(false);
+  });
+
+  it('no task links nothing', () => {
+    expect(taskLinksPr(null, 42)).toBe(false);
+  });
+});
+
+describe('prNumbersNamedAtFiling', () => {
+  it('collects #N and /pull/N from title and description, and context.prNumber / prNumbers', () => {
+    expect(prNumbersNamedAtFiling({
+      title: 'land #42 and #7',
+      description: 'see https://github.com/acme/widget/pull/9; not #420x',
+      context: { prNumber: 11, prNumbers: [12, 'x', 13], priority: 5 },
+    })).toEqual([7, 9, 11, 12, 13, 42, 420]);
+  });
+  it('ignores other context scalars', () => {
+    expect(prNumbersNamedAtFiling({ title: '', description: null, context: { priority: 5, iteration: 2 } })).toEqual([]);
+  });
+});

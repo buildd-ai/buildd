@@ -14,47 +14,87 @@
  * z-50: Modals, dialogs, dropdowns (highest layer)
  */
 
-/* ── Buildd Design Tokens ── */
+/* ── Buildd Design Tokens ──
+ * Refined palette (docs/design/design-system.md §2). The prototype's names map
+ * onto the slots below: ground → --surface-1, card → --card / --surface-2,
+ * inset → --surface-3, line → --border, line-strong → --border-strong,
+ * ink → --text-primary, sub → --text-secondary/-desc/-muted, ok → --status-success,
+ * run → --status-info, act → --status-running / --accent-text, act-fill → --accent,
+ * bad → --status-error, dec → --status-warning. Tints, hatches, --faint,
+ * --inset, --line-soft, --q and the decision frame have no older slot and keep
+ * the prototype's name. Contrast is pinned by globals-contrast.test.ts. */
 
-/* Night — Warm Charcoal */
+/* Geometry: three radii and no shadows (tailwind.config.ts reads these). */
+:root {
+  /* Schibsted Grotesk for UI and titles, JetBrains Mono for counts, IDs and
+     lifecycle, Newsreader (.font-voice) for Buildd's voice. */
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  --radius-cell: 3px;
+  --radius-pill: 4px;
+  --radius-card: 6px;
+}
+
+/* Night */
 :root, [data-theme="dark"] {
   --surface-1: #1a1816;
-  --surface-2: #211f1c;
-  --surface-3: #2a2724;
-  --surface-4: #302c28;
+  --surface-2: #221f1c;
+  --surface-3: #26221e;
+  --surface-4: #2f2c28;
 
-  --card: #2a2724;
-  --card-hover: #302c28;
-  --card-finding: #252220;
-  --card-rightnow: #1f1d1a;
-  --card-border: rgba(255, 245, 230, 0.06);
-  /* Darker than the page, so the offset reads as depth. A light offset sat
-     beside the pale card outline and looked like a second border. */
-  --card-shadow: 5px 5px 0 0 rgba(0, 0, 0, 0.55);
+  --card: #221f1c;
+  --card-hover: #26221e;
+  --card-finding: #26221e;
+  --card-rightnow: #1a1816;
+  --card-border: rgba(255, 245, 230, 0.10);
+  --card-shadow: none;
+
+  --inset: #26221e;
+  --on-ink: #1a1816;
 
   --text-primary: #ede8e2;
   --text-secondary: #a89f96;
-  --text-muted: #968e86;
-  --text-desc: #9f978e;
+  --text-muted: #a89f96;
+  --text-desc: #a89f96;
+  /* Graphics only (strip outlines, idle marks): never text. */
+  --faint: #7a7269;
 
-  --border: rgba(255, 245, 230, 0.14);
-  --border-strong: rgba(255, 245, 230, 0.55);
+  --border: rgba(255, 245, 230, 0.10);
+  --line-soft: rgba(255, 245, 230, 0.07);
+  --border-strong: rgba(255, 245, 230, 0.22);
 
   --accent: #f4811f;
-  --accent-soft: rgba(244, 129, 31, 0.14);
+  --accent-soft: rgba(244, 129, 31, 0.12);
   --accent-text: #f59b4e;
-  --accent-deep: #f7a261;
+  --accent-deep: #f59b4e;
 
   --primary: #f4811f;
   --primary-hover: #d96e12;
   --primary-subtle: rgba(244, 129, 31, 0.10);
   --primary-ring: rgba(244, 129, 31, 0.30);
 
-  --status-success: #5ec495;
-  --status-running: #f4811f;
-  --status-warning: #e0b35a;
-  --status-error: #d97a71;
-  --status-info: #7aacca;
+  --status-success: #86c99d;
+  --status-running: #f59b4e;
+  --status-warning: #f59b4e;
+  --status-error: #e08a7f;
+  --status-info: #93b8d6;
+
+  /* State tints (a cell or chip fill behind its hue) and hatches (queued or
+     in-audit shares of a strip). */
+  --ok-tint: rgba(94, 196, 149, 0.13);
+  --ok-cell: #3d5a47;
+  --ok-hatch: #5e8f6d;
+  --run-tint: rgba(122, 172, 202, 0.13);
+  --run-hatch: #4f7896;
+  --act-hatch: #a5612c;
+  --bad-tint: rgba(217, 122, 113, 0.14);
+  --q: #a89f96;
+  --q-tint: rgba(255, 245, 230, 0.06);
+
+  /* Decisions (L3): the 1.5px frame and the hover on its action. */
+  --dec-frame: #f4811f;
+  --dec-hover: #f7b57a;
 
   --cat-bug: #d4736a;
   --cat-feature: #7aacca;
@@ -78,52 +118,70 @@
   --chrome-bg: rgba(26, 24, 22, 0.92);
   --chrome-sidebar: #15130f;
 
-  /* Task page: the hard shadow under an accent-bordered hero, ink on an accent
-     fill, and the muted fill for read ticks on the activity tape. */
-  --accent-shadow: 5px 5px 0 0 #f4811f;
+  /* Task page: the hero frame's shadow (none now), ink on an accent fill, and
+     the muted fill for read ticks on the activity tape. */
+  --accent-shadow: none;
   --on-accent: #1a1512;
   --tape-read: rgba(255, 245, 230, 0.28);
 
   color-scheme: dark;
 }
 
-/* Day — Warm Linen */
+/* Day */
 [data-theme="light"] {
-  --surface-1: #e7e3db;
-  --surface-2: #eee9e3;
-  --surface-3: #e5dfd8;
-  --surface-4: #dbd4cc;
+  --surface-1: #f7f5f0;
+  --surface-2: #fdfcf9;
+  --surface-3: #f2efe9;
+  --surface-4: #eeebe4;
 
-  --card: #ffffff;
-  --card-hover: #fdfcfa;
-  --card-finding: #faf8f5;
-  --card-rightnow: #f5f2ee;
-  --card-border: rgba(0, 0, 0, 0.06);
-  --card-shadow: 5px 5px 0 0 rgba(26, 21, 18, 0.95);
+  --card: #fdfcf9;
+  --card-hover: #f2efe9;
+  --card-finding: #f2efe9;
+  --card-rightnow: #f7f5f0;
+  --card-border: #e3ded5;
+  --card-shadow: none;
 
-  --text-primary: #1f1b17;
-  --text-secondary: #423c35;
-  --text-muted: #6a625a;
-  --text-desc: #5f5850;
+  --inset: #f2efe9;
+  --on-ink: #fdfcf9;
 
-  --border: rgba(0, 0, 0, 0.42);
-  --border-strong: #1a1512;
+  --text-primary: #26231f;
+  --text-secondary: #6b655c;
+  --text-muted: #6b655c;
+  --text-desc: #6b655c;
+  --faint: #8f887d;
 
-  --accent: #f4811f;
-  --accent-soft: rgba(244, 129, 31, 0.12);
-  --accent-text: #aa410b;
-  --accent-deep: #b5450c;
+  --border: #e3ded5;
+  --line-soft: #eae5dc;
+  --border-strong: #cfc8bc;
 
-  --primary: #f4811f;
-  --primary-hover: #d96e12;
-  --primary-subtle: rgba(244, 129, 31, 0.10);
-  --primary-ring: rgba(244, 129, 31, 0.28);
+  --accent: #e07a2e;
+  --accent-soft: #faeadb;
+  --accent-text: #9a4a12;
+  --accent-deep: #9a4a12;
 
-  --status-success: #3a9864;
-  --status-running: #d96e12;
-  --status-warning: #9a7a20;
-  --status-error: #9e3b34;
-  --status-info: #5088b0;
+  --primary: #e07a2e;
+  --primary-hover: #c2611f;
+  --primary-subtle: rgba(224, 122, 46, 0.10);
+  --primary-ring: rgba(224, 122, 46, 0.28);
+
+  --status-success: #2f6440;
+  --status-running: #9a4a12;
+  --status-warning: #a9521a;
+  --status-error: #97391f;
+  --status-info: #2d5a7c;
+
+  --ok-tint: #e6efe7;
+  --ok-cell: #b9d2bf;
+  --ok-hatch: #8db89a;
+  --run-tint: #e4ecf2;
+  --run-hatch: #7fa3c0;
+  --act-hatch: #e6a774;
+  --bad-tint: #f6e5df;
+  --q: #5f594f;
+  --q-tint: #eeebe4;
+
+  --dec-frame: #c2611f;
+  --dec-hover: #7f3c11;
 
   --cat-bug: #c0524a;
   --cat-feature: #5088b0;
@@ -142,10 +200,10 @@
   --flow-released: var(--status-success);
   --flow-lost: var(--status-error);
 
-  --chrome-bg: rgba(247, 244, 240, 0.92);
-  --chrome-sidebar: #f7f4f0;
+  --chrome-bg: rgba(247, 245, 240, 0.92);
+  --chrome-sidebar: #f7f5f0;
 
-  --accent-shadow: 5px 5px 0 0 #1a1512;
+  --accent-shadow: none;
   --on-accent: #1a1512;
   --tape-read: rgba(26, 21, 18, 0.30);
 
@@ -153,12 +211,12 @@
 }
 
 body {
-  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-family: var(--font-sans);
   background-color: var(--surface-1);
   color: var(--text-primary);
 }
 
-/* Brutalist focus — square, on-palette (kills the browser-default blue ring) */
+/* Focus ring on-palette (kills the browser-default blue ring) */
 :focus { outline: none; }
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -172,10 +230,10 @@ input[type="radio"] {
   accent-color: var(--accent);
 }
 
-/* Square custom radio and checkbox (opt in with the class plus appearance-none).
+/* Custom radio and checkbox (opt in with the class plus appearance-none).
    Native radios render as circles next to square checkboxes; these match the
-   card language: a 2px ink box, the accent fill when checked. A radio shows an
-   inset square, a checkbox an ink tick. */
+   control language: a 1px control border, the accent fill when checked. A
+   radio shows an inset square, a checkbox an ink tick. */
 .control-radio,
 .control-check {
   appearance: none;
@@ -183,8 +241,8 @@ input[type="radio"] {
   width: 16px;
   height: 16px;
   margin: 0;
-  border: 2px solid var(--border-strong);
-  border-radius: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-cell);
   background: var(--surface-1);
   cursor: pointer;
 }
@@ -204,13 +262,13 @@ input[type="radio"] {
   cursor: default;
 }
 
-/* Brutalist form controls — one 2px ink border everywhere, matching .card.
+/* Form controls: one 1px control border and the pill radius everywhere.
    Ties editor/form pages to the dashboard (single border language). */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 textarea,
 select {
-  border: 2px solid var(--border-strong) !important;
-  border-radius: 0 !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-pill) !important;
 }
 
 /* The text field inside a brand Combobox: the wrapper draws the border. */
@@ -245,9 +303,9 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
-/* Block-ticker spinner — brutalist replacement for animate-spin+rounded-full rings
-   (Tailwind's borderRadius scale is zeroed, so ring spinners render as rotating
-   squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather
+/* Block-ticker spinner — the replacement for animate-spin+rounded-full rings
+   (there is no circle in the radius scale, so ring spinners render as rotating
+   rounded squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather
    than glide. Bar N's animation-delay staggers which 20% slice it lights in. */
 @keyframes block-tick {
   0%, 20% { opacity: 1; }
@@ -287,7 +345,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .glow-dot {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: var(--radius-cell);
     flex-shrink: 0;
   }
   .glow-dot-success {
@@ -318,49 +376,58 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 
 @layer components {
+  /* L2 surface: a 1px hairline frame, no shadow. A focused card swaps the
+     frame for 1.5px --text-primary, a decision for 1.5px --dec-frame on --inset. */
   .card {
     background: var(--card);
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
-    box-shadow: var(--card-shadow);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
     transition: background 150ms ease, transform 150ms ease;
   }
+  /* A linked card (components/ui/Card.tsx `interactive`): hover fill, and a
+     keyboard focus ring in ink, never orange. */
   .card-interactive:hover {
     background: var(--card-hover);
     transform: translateY(-0.5px);
+  }
+  .card-interactive:focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
+  }
+  /* L3: a genuine decision. The frame and the charcoal primary button are the
+     only loud things on the card; everything else stays sub. */
+  .card-decision {
+    background: var(--inset);
+    border: 1.5px solid var(--dec-frame);
+    border-radius: var(--radius-card);
   }
 }
 
 @layer components {
   .section-label {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--type-eyebrow);
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text-muted);
   }
 }
 
 @layer components {
   .type-label {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 9px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
   }
 }
 
 @layer components {
   .health-pill {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
     padding: 2px 8px;
-    border-radius: 0;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border-strong);
     background: transparent;
     color: var(--text-secondary);
@@ -418,12 +485,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
   /* Filter pill bar */
   .filter-pill {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.3px;
     padding: 5px 12px;
-    border-radius: 3px;
+    border-radius: var(--radius-pill);
     color: var(--text-muted);
     background: transparent;
     border: none;
@@ -433,20 +500,18 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
   .filter-pill:hover {
     color: var(--text-secondary);
-    background: rgba(255, 245, 230, 0.04);
+    background: var(--q-tint);
   }
   .filter-pill-active {
-    background: rgba(255, 245, 230, 0.08);
+    background: var(--surface-4);
     color: var(--text-primary);
   }
 
   /* Section header label */
   .section-label-missions {
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-sans);
+    font-size: var(--type-eyebrow);
     font-weight: 600;
-    letter-spacing: 2px;
-    text-transform: uppercase;
   }
 
   /* Imminent run highlight */
@@ -458,7 +523,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 
 @layer components {
   /* ── Buttons ──
-   * One scale, one border language (square, 2px ink) so an action row reads as
+   * One scale, one border language (1px control border, pill radius) so an action row reads as
    * a set instead of a pile of one-offs. Sizes: .btn = 32px, .btn-lg = 40px.
    * Tones: default (neutral ink), -primary (solid accent), -accent, -danger,
    * -warning, -quiet (borderless text action). */
@@ -469,11 +534,11 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     gap: 6px;
     height: 32px;
     padding: 0 12px;
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--text-primary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
     line-height: 1;
@@ -492,14 +557,26 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     background: color-mix(in srgb, var(--status-success) 12%, transparent);
   }
 
+  /* The one primary action on a view: ink, like .btn-ink. Orange is kept for
+   * needs-you and live state, so it is never a button fill. */
   .btn-primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--on-ink);
   }
   .btn-primary:hover:not(:disabled) {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
+    background: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
+  }
+
+  /* The L3 primary: charcoal, the one filled button on a decision card. */
+  .btn-ink {
+    background: var(--text-primary);
+    border-color: var(--text-primary);
+    color: var(--on-ink);
+  }
+  .btn-ink:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--text-primary) 86%, var(--surface-1));
   }
 
   .btn-accent { color: var(--accent-text); border-color: var(--accent); }
@@ -526,7 +603,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .btn-quiet:hover:not(:disabled) { background: transparent; color: var(--text-primary); }
 
   /* ── Status pills ──
-   * Square, mono, uppercase — same family as .health-pill but tone-based, for
+   * Mono, uppercase — same family as .health-pill but tone-based, for
    * connection/credential state rather than task health. The leading square
    * dot comes from ::before so callers never hand-roll one. */
   .status-pill {
@@ -535,14 +612,12 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     gap: 6px;
     padding: 3px 8px;
     border: 1px solid var(--border-strong);
-    border-radius: 0;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--text-secondary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
     white-space: nowrap;
   }
   .status-pill::before {
@@ -559,66 +634,71 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .status-pill-plain::before { display: none; }
 
   /* ── Inset panel ──
-   * Recessed detail block inside a .card (metadata, toggle rows). Square, and
-   * bordered rather than floating on a translucent fill. */
+   * Recessed detail block inside a .card (metadata, toggle rows), bordered
+   * rather than floating on a translucent fill. */
   .inset-panel {
     background: var(--surface-3);
-    border: 1px solid var(--border);
-    border-radius: 0;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-pill);
     padding: 10px 12px;
   }
 
 
   /* ── Segmented control ──
-   * Square, single shared 2px frame with hairline dividers. Used wherever a
-   * small set of mutually exclusive options replaces a select. */
+   * A quiet --q-tint trough; the chosen option is lifted onto the card with a
+   * hairline (same look as components/ui/Segmented). Used wherever a small set
+   * of mutually exclusive options replaces a select. */
   .seg {
     display: inline-flex;
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
-    overflow: hidden;
+    gap: 2px;
+    padding: 3px;
+    background: var(--q-tint);
+    border-radius: var(--radius-card);
   }
   .seg-item {
     padding: 0 12px;
     height: 32px;
     background: transparent;
-    color: var(--text-secondary);
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 12px;
-    font-weight: 600;
+    border-radius: var(--radius-pill);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease;
   }
-  .seg-item + .seg-item { border-left: 1px solid var(--border); }
   .seg-item:hover:not(:disabled) { color: var(--text-primary); }
   .seg-item-active {
-    background: var(--accent);
-    color: #fff;
+    background: var(--card);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 0 0 1px var(--border);
   }
   .seg-item:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ── Inline notice ──
-   * Square status banner at the top of a section (saved / failed / needs action). */
+   * The one inline alert (components/ui/Notice.tsx): saved / heads up /
+   * failed / for your information. A 1px frame in the tone's hue, no tint
+   * fill. info is neutral ink on the strong border, never orange. */
   .notice {
-    border: 2px solid var(--border-strong);
-    border-radius: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-card);
     padding: 10px 12px;
     font-size: 13px;
   }
   .notice-ok   { border-color: var(--status-success); color: var(--status-success); }
+  .notice-warn { border-color: var(--status-warning); color: var(--status-warning); }
   .notice-err  { border-color: var(--status-error);   color: var(--status-error); }
-  .notice-info { border-color: var(--accent);         color: var(--accent-text); }
+  .notice-info { border-color: var(--border-strong);  color: var(--text-primary); }
 
   /* ── Field label ──
    * The small caption above an input or select in a settings form. */
   .field-label {
     display: block;
-    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
-    font-size: 10px;
+    font-family: var(--font-sans);
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 1px;
-    text-transform: uppercase;
     color: var(--text-muted);
     margin-bottom: 6px;
   }
@@ -629,8 +709,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
  * call site writes one class instead of a `text-[Npx] md:text-[Npx]` pair.
  * Mobile values first; the md block only changes the roles that differ. */
 :root {
-  --type-chip: 11px;
-  --type-eyebrow: 11px;
+  --type-chip: 12px;
+  --type-eyebrow: 13px;
   --type-meta: 12px;
   --type-body: 13px;
   --type-title: 14px;
@@ -640,7 +720,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 @media (width >= 48rem) {
   :root {
-    --type-chip: 10px;
+    --type-chip: 11px;
     --type-lede: 15px;
     --type-heading: 24px;
     --type-display: 40px;
@@ -654,7 +734,6 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   @media (width < 48rem) {
     .type-label,
     .health-pill,
-    .section-label-missions,
     .status-pill,
     .field-label {
       font-size: 11px;
@@ -679,10 +758,10 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --fleet-border-mid: color-mix(in srgb, var(--border-strong) 42%, transparent);
   --fleet-hatch: color-mix(in srgb, var(--border-strong) 8%, transparent);
 }
-:root {
-  --fleet-faint: color-mix(in srgb, var(--text-muted) 70%, var(--surface-1));
-  --fleet-ok-soft: color-mix(in srgb, var(--status-success) 14%, transparent);
-  --fleet-err-soft: color-mix(in srgb, var(--status-error) 16%, transparent);
+:root, [data-theme] {
+  --fleet-faint: var(--faint);
+  --fleet-ok-soft: var(--ok-tint);
+  --fleet-err-soft: var(--bad-tint);
 }
 @layer components {
   .fleet-hatch { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 2px, transparent 2px 6px); }
@@ -692,8 +771,42 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .fleet-hatch-err { background-image: repeating-linear-gradient(135deg, var(--fleet-err-soft) 0 3px, transparent 3px 5px); }
 }
 
+/* ── State cells (components/ui/states.ts, TaskStrip). The hue comes from
+ * data-tone, the shape from data-pattern and data-frame, so a cell reads
+ * without colour: every state has its own (pattern, frame) pair. A frame is an
+ * inset line inside the cell (it casts nothing), so the selection outline stays free. */
+@layer components {
+  .state-cell { --cell-ink: var(--q); --cell-tint: var(--q-tint); --cell-hatch: var(--faint); background: var(--cell-tint); color: var(--cell-ink); }
+  .state-cell[data-tone="ok"] { --cell-ink: var(--status-success); --cell-tint: var(--ok-tint); --cell-hatch: var(--ok-hatch); }
+  .state-cell[data-tone="run"] { --cell-ink: var(--status-info); --cell-tint: var(--run-tint); --cell-hatch: var(--run-hatch); }
+  .state-cell[data-tone="act"] { --cell-ink: var(--accent-text); --cell-tint: var(--accent-soft); --cell-hatch: var(--act-hatch); }
+  .state-cell[data-tone="bad"] { --cell-ink: var(--status-error); --cell-tint: var(--bad-tint); --cell-hatch: var(--status-error); }
+  .state-cell[data-tone="dec"] { --cell-ink: var(--status-warning); --cell-tint: var(--accent-soft); --cell-hatch: var(--dec-frame); }
+
+  .state-cell[data-pattern="solid"] { background: var(--ok-cell); }
+  .state-cell[data-pattern="empty"] { background: var(--card); }
+  .state-cell[data-pattern="flat"] { background: var(--cell-tint); }
+  .state-cell[data-pattern="hatch-horizontal"] { background: repeating-linear-gradient(0deg, var(--cell-hatch) 0 2px, var(--cell-tint) 2px 6px); }
+  .state-cell[data-pattern="hatch-vertical"] { background: repeating-linear-gradient(90deg, var(--cell-hatch) 0 2px, var(--cell-tint) 2px 6px); }
+  .state-cell[data-pattern="hatch-bold"] { background: repeating-linear-gradient(135deg, var(--cell-hatch) 0 3px, var(--cell-tint) 3px 6px); }
+  .state-cell[data-pattern="hatch-45"] { background: repeating-linear-gradient(45deg, var(--cell-hatch) 0 2px, var(--cell-tint) 2px 6px); }
+  .state-cell[data-pattern="hatch-dense"] { background: repeating-linear-gradient(135deg, var(--faint) 0 2px, var(--q-tint) 2px 6px); }
+  .state-cell[data-pattern="hatch-sparse"] { background: repeating-linear-gradient(135deg, var(--border-strong) 0 1px, var(--q-tint) 1px 8px); }
+  .state-cell[data-pattern="dots"] { background: radial-gradient(var(--cell-hatch) 1px, transparent 1.5px) 0 0 / 5px 5px, var(--cell-tint); }
+  .state-cell[data-pattern="crosshatch"] {
+    background:
+      repeating-linear-gradient(45deg, var(--cell-hatch) 0 1px, transparent 1px 6px),
+      repeating-linear-gradient(135deg, var(--cell-hatch) 0 1px, transparent 1px 6px),
+      var(--cell-tint);
+  }
+
+  .state-cell[data-frame="hairline"] { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .state-cell[data-frame="decision"] { box-shadow: inset 0 0 0 1.5px var(--dec-frame); }
+  .state-cell[data-frame="heavy"] { box-shadow: inset 0 0 0 2.5px var(--accent); }
+}
+
 /* ── Chat canvas (knowledge-base: buildd/design/chat-canvas.md). Two materials, one rule: the
- * conversation is soft (Plex Sans, gentle tints, rounded bubbles, no frames)
+ * conversation is soft (Schibsted, gentle tints, rounded bubbles, no frames)
  * and fleet objects inside it (a mission, an approval, a question, a task)
  * stay hard and square. Orange still means action or live, never decoration:
  * here it is the send button. (While a turn streams, the only glow is the blue
@@ -715,80 +828,64 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --canvas-dim: rgba(231, 227, 219, 0.74);
 }
 @layer components {
-  .font-convo { font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .font-convo { font-family: var(--font-sans); }
 }
-/* ── Chat v3 foreground (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"). The
- * foreground is square: no radius, 1px rules, offset shadows. Colour carries
- * meaning only: calm (teal), needs you (copper), thinking (blue/violet),
- * landed (green). Components read these roles, never the hex. */
+/* ── Chat foreground (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"). Chat
+ * has no palette of its own: every --chat-* role below is an alias of an app
+ * token, so day/night and any future retune reach chat for free
+ * (chat-tokens.test.ts holds this). Only three values stay chat-specific, each
+ * with its reason beside it. Colour carries meaning only, and means the same
+ * as everywhere else: thinking = audit blue, needs you = decision orange,
+ * landed = delivered green, calm = neutral. Components read these roles,
+ * never the hex. */
+:root, [data-theme] {
+  --chat-ground: var(--surface-1);
+  --chat-bar: var(--surface-1);
+  --chat-surface: var(--card);
+  --chat-raised: var(--surface-3);
+  --chat-rule: var(--border);
+  /* --faint is the app's 3:1 graphics grey: what a chat object's outline needs. */
+  --chat-rule-strong: var(--faint);
+  --chat-text: var(--text-primary);
+  --chat-muted: var(--text-muted);
+  --chat-dim: var(--text-muted);
+  /* The glass behind the composer and menus: the ground, see-through. */
+  --chat-panel: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  --mood-calm: var(--q);
+  --mood-needs: var(--status-warning);
+  --mood-needs-fill: var(--accent);
+  --on-mood-needs: var(--on-accent);
+  --mood-thinking: var(--status-info);
+  --mood-landed: var(--status-success);
+}
 :root, [data-theme="dark"] {
-  --chat-ground: #141312;
-  --chat-bar: #171513;
-  --chat-surface: #1f1c19;
-  --chat-raised: #2a2622;
-  --chat-rule: #37322c;
-  --chat-rule-strong: #8a8378;
-  --chat-text: #efe8dc;
-  --chat-muted: #a89f92;
-  --chat-dim: #8b8276;
-  --chat-panel: rgba(20, 19, 18, 0.78);
+  /* Chat-specific: the phone sheet's dark overlay, near-black in both themes
+   * (the app's --canvas-dim is a light wash in day and cannot stand in). */
   --chat-scrim: rgba(14, 13, 12, 0.94);
-  --mood-calm: #8fb9b3;
-  --mood-needs: #e0955a;
-  --mood-needs-fill: #c9783b;
-  --on-mood-needs: #171513;
-  --mood-thinking: #7ea6ff;
-  --mood-thinking-alt: #b49cff;
-  --mood-thinking-rule: #5f7fd0;
-  --mood-thinking-done: #4a5a7a;
-  --mood-thinking-text: #dfe8ff;
-  --mood-thinking-label: #9ec0ff;
-  --mood-landed: #86c9a1;
-  /* Pools are capped so the dimmest body text (--text-muted) keeps AA over
-   * each one's peak (sea.test.ts, "AA over the sea"). */
-  --sea-calm-1: rgba(70, 122, 124, 0.24);
-  --sea-calm-2: rgba(44, 78, 100, 0.41);
-  --sea-calm-3: rgba(98, 130, 114, 0.21);
-  --sea-calm-4: rgba(28, 46, 60, 0.7);
-  --sea-needs: rgba(224, 149, 90, 0.15);
-  --sea-thinking-1: rgba(126, 166, 255, 0.23);
-  --sea-thinking-2: rgba(180, 156, 255, 0.22);
-  --sea-thinking-3: rgba(64, 112, 114, 0.4);
-  --sea-thinking-4: rgba(30, 40, 82, 0.7);
+  /* Chat-specific: the sea. Pools are capped so the dimmest body text keeps AA
+   * over each one's peak, and over all of them stacked (chat-tokens.test.ts).
+   * Calm is neutral, thinking is the audit blue, needs you the decision orange. */
+  --sea-calm-1: rgba(168, 159, 150, 0.09);
+  --sea-calm-2: rgba(122, 114, 105, 0.20);
+  --sea-calm-3: rgba(168, 159, 150, 0.07);
+  --sea-calm-4: rgba(10, 9, 8, 0.45);
+  --sea-needs: rgba(244, 129, 31, 0.12);
+  --sea-thinking-1: rgba(147, 184, 214, 0.18);
+  --sea-thinking-2: rgba(122, 172, 202, 0.16);
+  --sea-thinking-3: rgba(79, 120, 150, 0.30);
+  --sea-thinking-4: rgba(14, 30, 46, 0.6);
 }
-/* Day: the same roles on linen, each dark enough for AA on --chat-ground. */
 [data-theme="light"] {
-  --chat-ground: #f4efe8;
-  --chat-bar: #efe9e1;
-  --chat-surface: #fbf8f3;
-  --chat-raised: #e9e2d8;
-  --chat-rule: #d3cabe;
-  --chat-rule-strong: #5f574e;
-  --chat-text: #1f1b17;
-  --chat-muted: #514a42;
-  --chat-dim: #625a51;
-  --chat-panel: rgba(251, 248, 243, 0.86);
   --chat-scrim: rgba(38, 34, 30, 0.9);
-  --mood-calm: #2f6f68;
-  --mood-needs: #9c4f14;
-  --mood-needs-fill: #c9783b;
-  --on-mood-needs: #171513;
-  --mood-thinking: #3a5fc4;
-  --mood-thinking-alt: #6a4fc0;
-  --mood-thinking-rule: #3a5fc4;
-  --mood-thinking-done: #8a9ac0;
-  --mood-thinking-text: #1f2f66;
-  --mood-thinking-label: #2c4fb0;
-  --mood-landed: #2f7d52;
-  --sea-calm-1: rgba(70, 122, 124, 0.22);
-  --sea-calm-2: rgba(44, 78, 100, 0.18);
-  --sea-calm-3: rgba(98, 130, 114, 0.18);
-  --sea-calm-4: rgba(28, 46, 60, 0.12);
-  --sea-needs: rgba(224, 149, 90, 0.24);
-  --sea-thinking-1: rgba(126, 166, 255, 0.24);
-  --sea-thinking-2: rgba(180, 156, 255, 0.22);
-  --sea-thinking-3: rgba(64, 112, 114, 0.18);
-  --sea-thinking-4: rgba(30, 40, 82, 0.12);
+  --sea-calm-1: rgba(150, 142, 130, 0.04);
+  --sea-calm-2: rgba(107, 101, 92, 0.02);
+  --sea-calm-3: rgba(150, 142, 130, 0.035);
+  --sea-calm-4: rgba(107, 101, 92, 0.015);
+  --sea-needs: rgba(224, 122, 46, 0.03);
+  --sea-thinking-1: rgba(127, 163, 192, 0.07);
+  --sea-thinking-2: rgba(79, 120, 150, 0.03);
+  --sea-thinking-3: rgba(127, 163, 192, 0.05);
+  --sea-thinking-4: rgba(45, 90, 124, 0.02);
 }
 @layer components {
   /* Anything said by Buildd or the person: hero, rows, placeholders. */
@@ -912,8 +1009,8 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   --kit-accent-ink: var(--on-accent);
   --kit-radius-soft: 18px;
   --kit-radius-hard: 0;
-  --kit-font-body: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
-  --kit-font-mono: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  --kit-font-body: var(--font-sans);
+  --kit-font-mono: var(--font-mono);
   --kit-sheet-bottom-offset: 0px;
   /* The phone sheet dims the page like buildd's BottomSheet, in both themes. */
   --kit-scrim: rgb(0 0 0 / 0.5);
@@ -1057,7 +1154,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-approval .kit-actions { gap: 8px; padding-top: 4px; }
   .buildd-approval .kit-btn {
     min-height: 44px; padding: 0 14px; white-space: nowrap;
-    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 500;
+    font-family: var(--font-sans); font-size: 14px; font-weight: 500;
     border: 1.5px solid var(--border-strong); color: var(--text-primary);
   }
   .buildd-approval .kit-btn:hover:not(:disabled) { background: var(--surface-3); }
@@ -1187,7 +1284,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-live-chevron { color: var(--chat-muted); }
   .buildd-thread .kit-live-count { color: var(--chat-muted); }
   .buildd-thread .kit-live-timer { color: var(--status-warning); opacity: .85; }
-  .buildd-thread .kit-thinking[data-expanded] > .kit-steps { margin-top: 4px; padding: 4px 0 4px 12px; border-left: 2px solid var(--mood-thinking-rule); }
+  .buildd-thread .kit-thinking[data-expanded] > .kit-steps { margin-top: 4px; padding: 4px 0 4px 12px; border-left: 2px solid var(--run-hatch); }
   .buildd-thread .kit-step[data-weight="key"][data-state="done"] { color: var(--chat-text); }
   .buildd-thread .kit-step-fold-btn { font-family: var(--kit-font-mono); color: var(--chat-dim); }
   .buildd-thread .kit-step-fold-btn:hover { color: var(--chat-muted); }
@@ -1205,17 +1302,17 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-steps { margin-top: 12px; gap: 8px; }
   .buildd-thread .kit-step { gap: 12px; font-family: var(--kit-font-mono); font-size: 13px; line-height: 1.4; }
   .buildd-thread .kit-step[data-state="done"] { color: var(--chat-muted); }
-  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking-text); }
+  .buildd-thread .kit-step[data-state="active"] { color: var(--mood-thinking); }
   .buildd-thread .kit-step[data-state="pending"] { color: var(--chat-dim); }
   .buildd-thread .kit-step-mark { width: 10px; height: 10px; border: 0; border-radius: 0; }
-  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--mood-thinking-done); }
+  .buildd-thread .kit-step[data-state="done"] .kit-step-mark { background: var(--run-hatch); }
   .buildd-thread .kit-step[data-state="active"] .kit-step-mark { background: var(--mood-thinking); animation: mood-dot 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .buildd-thread .kit-step[data-state="active"] .kit-step-mark { animation: none; } }
   .buildd-thread .kit-step[data-state="pending"] .kit-step-mark { border: 1px solid var(--chat-dim); background: transparent; }
   /* The request failed: said once, under the turn. */
   .buildd-thread > .kit-error {
     border: 0; border-radius: 12px; padding: 12px 16px; background: var(--fleet-err-soft);
-    font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; font-size: 14px; color: var(--status-error);
+    font-family: var(--font-sans); font-size: 14px; color: var(--status-error);
   }
   /* The thumbs: 44px to touch on a phone or tablet, 32px on a desktop pointer. */
   .buildd-feedback .kit-thumb-btn { color: var(--text-muted); }
@@ -1300,7 +1397,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   /* ── Steer on the kit (SteerConversation): the canvas's own chrome, rescoped
      to one running agent. A header, the square presence strip (the pinned
      object's family), the sent / delivered list, and a soft composer. */
-  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+  .kit-steer.buildd-steer { height: 100%; font-family: var(--font-sans); }
   .buildd-steer .kit-steer-header { min-height: 56px; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--convo-line); }
   .buildd-steer .kit-steer-header > .kit-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: var(--text-muted); }
   .buildd-steer .kit-steer-header > .kit-eyebrow::after { content: "/"; margin-left: 8px; font-weight: 400; letter-spacing: 0; }

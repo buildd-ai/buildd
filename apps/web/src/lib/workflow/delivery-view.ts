@@ -3,7 +3,8 @@
  * task page, mission views). One statement per call, batched by task id.
  *
  * Only kernel-owned deliveries are returned (§14 cutover): a task whose
- * delivery is legacy-owned, or that has none, is absent from the map and its
+ * delivery is legacy-owned, sits in a workspace whose kill switch is off
+ * (`workspaceKernelOnSql`, the one reading), or has none, is absent from the map and its
  * surface keeps today's projection. A caller therefore never has to know the
  * kill switch exists.
  */
@@ -11,6 +12,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { classifyConflictFix } from '@/lib/conflict-fix-liveness';
 import { toAttemptSnapshot, toDeliverySnapshot, toRoundSnapshot, type Exec } from './kernel';
+import { workspaceKernelOnSql } from './authority';
 import { ownerDeliveryDisplays, replacedFailedTaskIds, type DeliveryDisplay } from './delivery-display';
 import { deriveDeliveryView, type AttemptTaskRef, type DeliveryView, type RemediationRef, type TransitionRef } from './projections';
 
@@ -23,7 +25,7 @@ export function deliveryViewsSql(taskIds: string[]): SQL {
 WITH ids AS (SELECT DISTINCT x::uuid AS id FROM jsonb_array_elements_text(${JSON.stringify(taskIds)}::jsonb) x),
 dl AS (
   SELECT d.* FROM workflow_deliveries d
-  WHERE d.authority = 'kernel'
+  WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
     AND (d.owner_task_id IN (SELECT id FROM ids)
       OR d.id IN (SELECT t.delivery_id FROM tasks t WHERE t.id IN (SELECT id FROM ids) AND t.delivery_id IS NOT NULL))
 )
@@ -148,6 +150,31 @@ export async function kernelReplacedFailedTaskIds(failedTaskIds: string[], exec:
 
 /** Pure half of `kernelReplacedFailedTaskIds`; lives with the client-safe reading. */
 export { replacedFailedTaskIds };
+
+/**
+ * The state of each kernel-owned delivery a task owns, for a caller outside
+ * the kernel that must not act on a PR the kernel is driving (the live sibling
+ * conflict probe, lib/sibling-conflict-probe-store.ts). A delivery released to
+ * legacy (`authority` not `kernel`) is not returned. A SELECT, like the rest
+ * of this file.
+ *
+ * Throws on a read failure, unlike the display loaders above: the caller
+ * decides how to fail (the probe treats an unreadable state as kernel-owned).
+ */
+export async function kernelOwnedDeliveryStates(
+  taskIds: string[],
+  exec: Exec = dbExec,
+): Promise<Array<{ ownerTaskId: string; state: string }>> {
+  const ids = [...new Set(taskIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const res = await exec(sql`-- workflow:kernel_owned_states
+SELECT d.owner_task_id AS "ownerTaskId", d.state AS state
+FROM workflow_deliveries d
+WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
+  AND d.owner_task_id IN (SELECT x::uuid FROM jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb) x)`);
+  return ((res.rows ?? []) as Array<{ ownerTaskId: unknown; state: unknown }>).flatMap(r =>
+    typeof r.ownerTaskId === 'string' && typeof r.state === 'string' ? [{ ownerTaskId: r.ownerTaskId, state: r.state }] : []);
+}
 
 /**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given

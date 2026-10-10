@@ -8,7 +8,8 @@
  * Alongside them: `BUILDD_METRIC=<name> <integer>` for byte counts and ages,
  * and `BUILDD_REPO_SOURCE=warm`, `BUILDD_REPO_SOURCE=reuse` or `BUILDD_REPO_SOURCE=clone <reason>` saying
  * how the repo got onto the disk, and `BUILDD_WARM_UPLOAD=skipped <reason>`
- * when a warm upload was skipped. apps/cloud-runner reads them all into its
+ * when a warm upload was skipped (`deferred` when a lease container left it
+ * for later). apps/cloud-runner reads them all into its
  * per-run report (src/run-report.ts parses the same formats; a test there
  * keeps the two in step). Nothing else is printed: no paths, no URLs.
  *
@@ -29,6 +30,13 @@ export const RUN_PHASES = [
   // A reused container: the clone grown from the packs the reset kept (container-reset.ts).
   'restore_reuse_start', 'restore_reuse_end',
   'worktree_start', 'worktree_end',
+  // Deps in the background (deps-gate.ts): when the agent session started, when
+  // the deps work finished, when the agent first ran a command that needs it.
+  'session_start', 'deps_ready', 'first_gated_tool',
+  // The worker's outcome is known (done or failed, not parked): what is left
+  // is the runner's tail. A lease waits briefly for a container in its tail
+  // rather than starting a fresh one (apps/cloud-runner container-lease.ts).
+  'run_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 
@@ -39,6 +47,11 @@ export const RUN_METRICS = [
   // resource-sampler.ts: working-set peak, the memory it is measured against,
   // lowest free disk and the disk's size. Re-printed as they move; last wins.
   'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
+  // A reused container's seed (container-reset.ts): what its fetch brought,
+  // and 1 when origin's tip was already kept and no fetch ran.
+  'restore_reuse_bytes', 'reuse_fetch_skipped',
+  // deps-gate.ts: total time deps-needing commands were held, and how many were. Last wins.
+  'gate_wait_ms', 'gate_holds',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 
@@ -63,6 +76,12 @@ export type WarmRefreshReason = typeof WARM_REFRESH_REASONS[number];
 export function formatWarmUploadSkippedLine(reason: WarmUploadSkipReason): string {
   return `${WARM_UPLOAD_LINE_PREFIX}skipped ${reason}`;
 }
+
+/**
+ * `BUILDD_WARM_UPLOAD=deferred`: a lease container's run was due an upload
+ * and left it for when the lease releases the container (warm-repo.ts defer).
+ */
+export const WARM_UPLOAD_DEFERRED_LINE = `${WARM_UPLOAD_LINE_PREFIX}deferred`;
 
 /**
  * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: part of the dependency cache
@@ -126,6 +145,11 @@ export function emitRepoSource(source: RepoSource, reason?: RepoFallbackReason, 
 export function emitWarmUploadSkipped(reason: WarmUploadSkipReason, opts: EmitOpts = {}): void {
   if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
   (opts?.log ?? console.log)(formatWarmUploadSkippedLine(reason));
+}
+
+export function emitWarmUploadDeferred(opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(WARM_UPLOAD_DEFERRED_LINE);
 }
 
 export function emitCacheSkipped(part: CacheSkipPart, bytes: number, cap: number, opts: EmitOpts = {}): void {

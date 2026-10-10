@@ -1,12 +1,17 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { pauseRefusal, requestWorkerPause } from '@/lib/worker-pause';
+import { rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
-import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
+import { isTerminalTaskStatus, canDeleteTask, LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc } from 'drizzle-orm';
+import { emit } from '@/lib/core-emit';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
+import { lazyRequester } from '@buildd/core/role-visibility';
+import { checkStatedRole } from '@/lib/stated-role';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -25,6 +30,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
+import { resolveDeferredStart } from '@/lib/deferred-start';
 import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
@@ -137,7 +143,7 @@ export async function GET(
     if (include.has('workers') || include.has('artifacts')) {
       taskWorkers = await db.query.workers.findMany({
         where: eq(workers.taskId, id),
-        orderBy: [desc(workers.createdAt)],
+        orderBy: [desc(workers.createdAt), desc(workers.id)],
         columns: {
           id: true,
           status: true,
@@ -283,7 +289,30 @@ export async function PATCH(
         }, { status: 403 });
       }
     }
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest, startAt, startIn, abort } = body;
+
+    // pause: true pauses the agent working on this task instead of cancelling
+    // it (lib/worker-pause.ts): the session is kept and Resume continues it.
+    // It is its own request, never mixed with other edits.
+    if (body?.pause !== undefined) {
+      if (body.pause !== true) return NextResponse.json({ error: 'pause must be true' }, { status: 400 });
+      if (Object.keys(body).some(k => k !== 'pause')) {
+        return NextResponse.json({ error: 'pause is sent on its own, with no other fields' }, { status: 400 });
+      }
+      const liveWorker = await db.query.workers.findFirst({
+        where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+        columns: { id: true, status: true, runner: true, waitingFor: true },
+      });
+      if (!liveWorker) {
+        return NextResponse.json({ error: 'No agent is working on this task, so there is nothing to pause.', code: 'not_running' }, { status: 409 });
+      }
+      const refusal = pauseRefusal(liveWorker);
+      if (refusal) return NextResponse.json({ error: refusal.error, code: refusal.code, workerId: liveWorker.id }, { status: refusal.status });
+      if (!(await requestWorkerPause(liveWorker.id))) {
+        return NextResponse.json({ error: 'The agent stopped running before the pause landed.', code: 'not_running', workerId: liveWorker.id }, { status: 409 });
+      }
+      return NextResponse.json({ id, paused: 'requested', workerId: liveWorker.id });
+    }
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
     // there, via check_path_claim / POST /api/tasks/[id]/path-claim, which take a
@@ -353,6 +382,15 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Model-tier ceiling: a re-tier or re-pin above the effective maximum is
+      // refused here; lowering is always allowed. The claim re-checks anyway.
+      const ceilingRejection = await rejectOverCeiling({
+        subject: { teamId: task.workspace?.teamId, workspaceId: task.workspaceId, userId: lazyRequester(task) },
+        surface: 'agent',
+        request: { tier, model },
+        gate: { surface: 'PATCH /api/tasks/[id]', workspaceId: task.workspaceId, taskId: task.id },
+      });
+      if (ceilingRejection) return ceilingRejection;
       if (tier !== undefined) updateData.tier = tier;
 
       const baseCtx = (updateData.context ?? task.context ?? {}) as Record<string, unknown>;
@@ -364,7 +402,6 @@ export async function PATCH(
       }
     }
     if (project !== undefined) updateData.project = project;
-    if (roleSlug !== undefined) updateData.roleSlug = roleSlug || null;
     // Link (or unlink) the task to an external issue tracker item (e.g. a Linear
     // issue). Setting this is what enables the PR-merge completion comment in the
     // GitHub webhook (maybePostWorkTrackerIssueUpdate reads task.externalIssueId).
@@ -376,6 +413,25 @@ export async function PATCH(
         return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
       }
       updateData.missionId = missionId || null;
+    }
+    if (roleSlug !== undefined) {
+      // Same gate as creation (POST /api/tasks): an edit may not move a task
+      // onto another member's private role. Who the task is for is read with
+      // any (already scope-checked) mission change in this same PATCH applied.
+      const nextRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
+      if (nextRoleSlug && nextRoleSlug !== task.roleSlug) {
+        const statedRole = await checkStatedRole(nextRoleSlug, {
+          teamId: task.workspace?.teamId ?? null,
+          workspaceId: task.workspaceId,
+          requesterUserId: lazyRequester(
+            missionId !== undefined ? { ...task, missionId: missionId || null } : task,
+          ),
+        });
+        if (statedRole.refused) {
+          return NextResponse.json(statedRole.refused, { status: 400 });
+        }
+      }
+      updateData.roleSlug = roleSlug || null;
     }
     if (dependsOn !== undefined) {
       if (!Array.isArray(dependsOn) || !dependsOn.every((id: unknown) => typeof id === 'string')) {
@@ -425,6 +481,37 @@ export async function PATCH(
       }
       updateData.context = baseCtx;
     }
+    // Reschedule: move a queued task's start later, or back to ASAP (startAt:
+    // null), without cancelling it. The claim route already honours startAt
+    // and the outbox trigger re-wakes on the new time. Only before a worker
+    // has the task: a started run is paused or cancelled, not rescheduled.
+    if (startAt !== undefined || startIn !== undefined) {
+      if (task.status !== 'pending' || task.claimedBy) {
+        const state = task.status === 'pending' ? 'claimed by a worker' : task.status;
+        return NextResponse.json(
+          { error: `This task is already ${state}, so it has no start time to move. A start time only applies while a task is waiting; cancel it, or wait for it to finish.` },
+          { status: 409 },
+        );
+      }
+      let deferred;
+      try {
+        deferred = startAt === null && startIn === undefined
+          ? { startAt: null, resolution: null }
+          : resolveDeferredStart({ startAt, startIn });
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid start time' }, { status: 400 });
+      }
+      updateData.startAt = deferred.startAt;
+      const baseCtx = { ...((updateData.context ?? task.context ?? {}) as Record<string, unknown>) };
+      if (deferred.resolution) {
+        baseCtx.startResolution = deferred.resolution;
+        baseCtx.rescheduledBy = { at: new Date().toISOString(), userId: user && !apiAccount ? user.id : null };
+      } else {
+        delete baseCtx.startResolution;
+        delete baseCtx.rescheduledBy;
+      }
+      updateData.context = baseCtx;
+    }
     if (rawRequiredConnectors !== undefined) {
       if (rawRequiredConnectors === null) {
         updateData.requiredConnectors = null;
@@ -435,6 +522,8 @@ export async function PATCH(
           roleSlug: roleSlug !== undefined ? (roleSlug || null) : task.roleSlug,
           workspaceId: task.workspaceId,
           teamId: (task as any).workspace?.teamId ?? null,
+          // Who the task is for decides which personal role's refs count.
+          requesterUserId: await lazyRequester(task)(),
         });
         if (!check.ok) {
           return NextResponse.json({ error: check.error }, { status: 400 });
@@ -522,6 +611,30 @@ export async function PATCH(
           );
         }
       }
+      // Cancelling stops a live agent mid-run: its session ends and any work it
+      // has not pushed is lost. The caller has to ask for that (abort: true);
+      // without it the cancel is refused and nothing changes.
+      if (status === 'cancelled') {
+        if (abort !== undefined && typeof abort !== 'boolean') {
+          return NextResponse.json({ error: 'abort must be true or false' }, { status: 400 });
+        }
+        if (abort !== true) {
+          const liveWorker = await db.query.workers.findFirst({
+            where: and(eq(workers.taskId, id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
+            columns: { id: true, status: true },
+          });
+          if (liveWorker) {
+            return NextResponse.json(
+              {
+                error: `An agent is working on this task right now (worker ${liveWorker.id}, ${liveWorker.status}). Cancelling stops it mid-run and loses anything it has not pushed. To keep its work, pause it instead (pause: true). To stop it anyway, send abort: true. To hold work that has not started, move its start time instead.`,
+                code: 'live_worker',
+                workerId: liveWorker.id,
+              },
+              { status: 409 },
+            );
+          }
+        }
+      }
       updateData.status = status;
 
       // When resetting to pending, clear claim fields so the task is claimable again
@@ -574,6 +687,13 @@ export async function PATCH(
     const isNowOpen = status !== undefined && !isTerminalTaskStatus(status as string);
     const missionLinkAdded = missionId !== undefined && updated?.missionId && updated.missionId !== task.missionId;
     const missionUnlinked = missionId !== undefined && !updated?.missionId && task.missionId;
+
+    // A task that left its mission (unlinked, or moved to another): modules
+    // holding per-mission state about it let go (the surface audit drops its
+    // edge; lib/surface-audit-subscribers.ts). emit never throws.
+    if (missionId !== undefined && task.missionId && updated && updated.missionId !== task.missionId) {
+      await emit({ type: 'task.left_mission', taskId: id, missionId: task.missionId, workspaceId: updated.workspaceId ?? null });
+    }
 
     // A task linked/unlinked/created against a mission is exactly the kind of
     // silent work the mission feed used to miss — attribute it whether it came

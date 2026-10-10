@@ -39,8 +39,16 @@ import {
  *     `resetMs`, `prepMs`, `baselinePrepMs` and `savedMs` (negative when reuse cost time); adds the `restore_reuse_*`
  *     phases, `durationsMs.restoreReuse` and `repo.source` `reuse` (the clone grown from the packs a reset kept).
  */
-/** 12: adds session materialisation time and clone/worktree mode. */
-export const RUN_REPORT_VERSION = 12;
+/**
+ * 12: adds session materialisation time and clone/worktree mode.
+ * 13: container reuse, measured end to end: `repo.bytes.reuseFetch` (what a reused container's seed fetched),
+ *     `repo.reuseFetchSkipped`, `repo.warmUploadDeferred` (a lease run left its upload for the lease's end),
+ *     `reusedContainer.uploadSkipped` (this run took over a container whose upload was then not needed),
+ *     `durationsMs.leaseWait` (the dispatch waited for a lease in its tail) and the `run_end` phase.
+ *     `prepMs` no longer adds the repo steps a second time: they run inside dispatch-to-claim.
+ * 14: adds `depsOverlap` (deps restore + install in the background behind a Bash gate) and its phases.
+ */
+export const RUN_REPORT_VERSION = 14;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -73,6 +81,10 @@ export const RUN_PHASES = [
   'restore_cache_start', 'restore_cache_end',
   'restore_reuse_start', 'restore_reuse_end',
   'worktree_start', 'worktree_end',
+  // Deps in the background (deps-gate.ts): when the agent session started, when
+  // the deps work finished, when the agent first ran a command that needs it.
+  'session_start', 'deps_ready', 'first_gated_tool',
+  'run_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -100,6 +112,9 @@ export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
   'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
+  'restore_reuse_bytes', 'reuse_fetch_skipped',
+  // deps-gate.ts: total time deps-needing commands were held, and how many were. Last wins.
+  'gate_wait_ms', 'gate_holds',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -107,11 +122,12 @@ export type RunnerMetrics = Partial<Record<RunMetric, number>>;
 export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
 export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
 export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
-export type WarmUploadLine = { skipped: WarmUploadSkipReason };
+export type WarmUploadLine = { skipped: WarmUploadSkipReason } | { deferred: true };
 const WARM_UPLOAD_LINE_RE = /^BUILDD_WARM_UPLOAD=skipped ([a-z_]+)$/;
 
-/** From a `BUILDD_WARM_UPLOAD=skipped <reason>` line, or null. */
+/** From a `BUILDD_WARM_UPLOAD=skipped <reason>` or `BUILDD_WARM_UPLOAD=deferred` line, or null. */
 export function parseWarmUploadLine(line: string): WarmUploadLine | null {
+  if (line.trim() === 'BUILDD_WARM_UPLOAD=deferred') return { deferred: true };
   const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
   const reason = m?.[1] as WarmUploadSkipReason | undefined;
   return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
@@ -644,6 +660,8 @@ export interface RunTimings {
   cacheSkipped?: CacheSkippedLine;
   /** A `task.scheduled` start: the time the wake was scheduled for. */
   scheduledFor?: number;
+  /** How long the dispatch waited for a lease in its tail (container-lease.ts waitForTailLease). */
+  leaseWaitMs?: number;
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -703,6 +721,8 @@ export interface RunReport {
     restoreReuse: number | null;
     /** Materialising the session checkout, whether in-clone or a worktree. */
     worktree: number | null;
+    /** Before the dispatch: waiting for a lease of the workspace to finish its tail and go warm. */
+    leaseWait: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -730,11 +750,24 @@ export interface RunReport {
      */
     cacheSkipped: CacheSkippedLine | null;
     /**
+     * A lease run (container reuse) left the warm upload it was due for when
+     * the lease lets the container go, or for nobody if the next task takes
+     * it over (reusedContainer.uploadSkipped on that task's report).
+     */
+    warmUploadDeferred: boolean;
+    /**
+     * Source `reuse`: true when origin's tip was already in the kept packs and
+     * the seed fetched nothing. Null for any other source.
+     */
+    reuseFetchSkipped: boolean | null;
+    /**
+     * `reuseFetch`: what a reused container's seed fetched from origin (the
+     * kept packs are not counted; `clone` stays null for a seed).
      * `warmRepo`: the clone's object store as measured against the cap.
      * `cache`: the cache tarball as stored (zstd-compressed when the image
      * has zstd); `cacheRaw`: the same tarball before compression, on upload.
      */
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; reuseFetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -814,6 +847,16 @@ export interface RunReport {
    * only; the token itself is never in a report.
    */
   modelAuth: ModelAuth | null;
+  /**
+   * The deps work (cache restore + install) ran behind the agent session
+   * instead of before it (apps/runner/src/deps-gate.ts). `sessionStartAt`:
+   * the agent session began; `depsReadyAt`: the install settled;
+   * `firstGatedToolAt`: the agent first ran a command that needs deps;
+   * `gateWaitMs`: total time such commands were held. `hiddenMs`: deps work
+   * after the session start the agent did not wait for. Null when the run
+   * did not overlap (a host runner, a declared env.yaml, an older image).
+   */
+  depsOverlap: DepsOverlap | null;
   runnerSize: {
     size: RunnerSize;
     source: RunnerSizeSource | null;
@@ -821,6 +864,35 @@ export interface RunReport {
     weight: number;
     runnerSeconds: number | null;
     weightedRunnerSeconds: number | null;
+  };
+}
+
+export interface DepsOverlap {
+  sessionStartAt: number | null;
+  depsReadyAt: number;
+  firstGatedToolAt: number | null;
+  gateWaitMs: number;
+  gateHolds: number;
+  hiddenMs: number | null;
+}
+
+/** Null unless the runner printed `deps_ready`: that phase only exists when the deps ran in the background. */
+export function depsOverlapSection(
+  phase: (p: RunPhase) => number | null,
+  metric: (m: RunMetric) => number | null,
+): DepsOverlap | null {
+  const depsReadyAt = phase('deps_ready');
+  if (depsReadyAt === null) return null;
+  const sessionStartAt = phase('session_start');
+  const gateWaitMs = metric('gate_wait_ms') ?? 0;
+  const behindSession = span(sessionStartAt, depsReadyAt);
+  return {
+    sessionStartAt,
+    depsReadyAt,
+    firstGatedToolAt: phase('first_gated_tool'),
+    gateWaitMs,
+    gateHolds: metric('gate_holds') ?? 0,
+    hiddenMs: sessionStartAt === null ? null : Math.max(0, (behindSession ?? 0) - gateWaitMs),
   };
 }
 
@@ -897,7 +969,11 @@ function reusedContainerSection(v: ReusedContainer | null | undefined, durations
   if ('fallback' in v && v.fallback === 'reset_failed') return { fromTaskId, idleMs, fallback: 'reset_failed', resetMs };
   const baselinePrepMs = msOrNull('baselinePrepMs' in v ? v.baselinePrepMs : null);
   const prepMs = prepMsOf(durationsMs);
-  return { fromTaskId, idleMs, resetMs, prepMs, baselinePrepMs, savedMs: prepMs !== null && baselinePrepMs !== null ? baselinePrepMs - prepMs : null };
+  return {
+    fromTaskId, idleMs, resetMs, prepMs, baselinePrepMs,
+    savedMs: prepMs !== null && baselinePrepMs !== null ? baselinePrepMs - prepMs : null,
+    ...('uploadSkipped' in v && v.uploadSkipped === true ? { uploadSkipped: true } : {}),
+  };
 }
 
 export function assembleRunReport(input: RunReportInput): RunReport {
@@ -931,6 +1007,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
   const source = src?.source === 'warm' || src?.source === 'clone' || src?.source === 'reuse' ? src.source : null;
   const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
   const skipped = (t.warmUpload as { skipped?: unknown } | undefined)?.skipped;
+  const warmUploadDeferred = (t.warmUpload as { deferred?: unknown } | undefined)?.deferred === true;
   const warmUploadSkipReason = WARM_UPLOAD_SKIP_REASONS.includes(skipped as WarmUploadSkipReason) ? skipped as WarmUploadSkipReason : null;
   const durationsMs: RunReport['durationsMs'] = {
     containerStart: span(timestamps.dispatchReceivedAt, timestamps.containerRunningAt),
@@ -945,6 +1022,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
     restoreReuse: span(phase('restore_reuse_start'), phase('restore_reuse_end')),
     worktree: span(phase('worktree_start'), phase('worktree_end')),
+    leaseWait: msOrNull(t.leaseWaitMs),
     toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
     total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
   };
@@ -968,10 +1046,13 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       snapshotAgeMs: metric('snapshot_age_ms'),
       warmUploadSkipReason,
       cacheSkipped: cacheSkipped(t.cacheSkipped),
+      warmUploadDeferred,
+      reuseFetchSkipped: source === 'reuse' && metric('reuse_fetch_skipped') !== null ? metric('reuse_fetch_skipped') === 1 : null,
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
+        reuseFetch: metric('restore_reuse_bytes'),
         cache: metric('cache_bytes'),
         cacheRaw: metric('cache_raw_bytes'),
         upload: metric('warm_upload_bytes'),
@@ -1021,6 +1102,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     }),
     reusedContainer: reusedContainerSection(input.reusedContainer, durationsMs),
     modelAuth: input.modelAuth === 'owner_seat' || input.modelAuth === 'metered' ? input.modelAuth : null,
+    depsOverlap: depsOverlapSection(phase, metric),
     runnerSize: runnerSizeSection(input, timestamps),
   };
 }

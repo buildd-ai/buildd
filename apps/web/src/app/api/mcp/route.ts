@@ -52,6 +52,8 @@ import { mcpGroupOfToolName } from "@buildd/core/mcp-tool-groups";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { resolveMemoryProjectKey } from "@buildd/core/memory-scope";
+import { builddServerInfo } from "@/lib/mcp-server-info";
+import { memberHasRepoAccess, memberRepoAccessMessage } from "@/lib/member-repo-access";
 
 // ── Consumer Skill ───────────────────────────────────────────────────────────
 //
@@ -188,7 +190,7 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 
 // ── Server Factory ───────────────────────────────────────────────────────────
 
-function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false) {
+function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean, accountId?: string, toolSurface: McpToolSurface = 'groups', tokenScopes?: string[] | null, tokenWorkspaceIds?: string[] | null, orchestrationTaskToken = false, sessionUserId: string | null = null, principal?: ActionContext['principal']) {
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -249,6 +251,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     workerId,
     workspaceId: resolvedWorkspaceId ?? undefined,
     authType,
+    principal,
     getWorkspaceId,
     getLevel: async () => accountLevel,
     getScopes: async () => tokenScopes,
@@ -368,25 +371,33 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
         ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
+        // The opt-in GitHub repo check, for the person behind an OAuth session
+        // only; API keys and runners carry no person (lib/member-repo-access.ts).
+        ...(authType === 'oauth' && sessionUserId && wsId
+          ? { codeAccessRefusal: async () => {
+              const r = await memberHasRepoAccess(sessionUserId, wsId);
+              return r.allowed ? null : memberRepoAccessMessage(r);
+            } }
+          : {}),
       },
     };
   };
 
   const server = new Server(
-    { name: "buildd", version: "0.1.0" },
+    builddServerInfo(appBaseUrl || 'https://buildd.dev'),
     {
       capabilities: {
         tools: {},
         resources: {},
       },
-      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes),
+      instructions: mcpServerInstructions(accountLevel, toolSurface, tokenScopes, { principal, orchestrationTaskToken }),
     }
   );
 
   // ── Tools ────────────────────────────────────────────────────────────────
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface, scopes: tokenScopes }),
+    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true, surface: toolSurface, scopes: tokenScopes, principal, orchestrationTaskToken }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -398,7 +409,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
       // action of the group then runs exactly as it does on `buildd`.
       const group = mcpGroupOfToolName(name);
       if (group) {
-        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel, tokenScopes);
+        const routed = routeGroupToolCall(group, args as Record<string, unknown> | undefined, accountLevel, tokenScopes, { principal, orchestrationTaskToken });
         if (routed.kind === 'reply') {
           return { content: [{ type: "text" as const, text: routed.text }], ...(routed.isError ? { isError: true } : {}) };
         }
@@ -756,8 +767,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         };
 
         // Deliver via the shared atomic jsonb append (capped), the same path
-        // REST and releaseAndNotify use. Served by the recipient's next
-        // update_progress check-in and removed only when acked by id.
+        // REST and releaseAndNotify use. Served to the recipient's one
+        // consumer (its runner's sync, or an interactive session's own
+        // receive_messages / update_progress) and removed only when acked by id.
         const delivered = await enqueueWorkerMessage(recipientTaskId, workerMessage);
         if (!delivered) {
           return {
@@ -1000,7 +1012,9 @@ async function handleMcpRequest(req: Request): Promise<Response> {
     workerParam,
     runnerSupportsGroupTools: workerParam ? await workerRunnerSupportsGroupTools(workerParam) : null,
   });
-  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account));
+  const server = createMcpServer(api, accountLevel, workspaceId, repoParam || undefined, account.teamId, workerParam || undefined, account.authType, appBaseUrl, isSensitive, account.id, toolSurface, account.scopes, account.workspaceIds, isOrchestrationTaskToken(account), (account as { sessionUserId?: string }).sessionUserId ?? null,
+    // Who is behind the call: personal roles need a person (mcp-tools.ts PERSONAL_ROLE_ACTIONS).
+    account.taskScope ? 'task_token' : (account as { sessionUserId?: string }).sessionUserId ? 'person' : 'key');
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // Stateless

@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+import { messageDeliveryStatus, type InstructionHistoryEntry } from '@/lib/worker-instructions';
 
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
@@ -53,15 +54,17 @@ export async function GET(
     const worker = await db.query.workers.findFirst({
       where: eq(workers.taskId, id),
       orderBy: desc(workers.createdAt),
-      columns: { id: true, instructionHistory: true },
+      columns: { id: true, instructionHistory: true, status: true, runner: true },
     });
 
-    const messages = (worker?.instructionHistory as Array<{
-      type: string;
-      message: string;
-      timestamp: number;
-      deliveryState?: 'pending' | 'delivered';
-    }> | null) ?? [];
+    // Every human message carries its derived state (messageDeliveryStatus):
+    // callers render `state`, never the stored `deliveryState`.
+    const workerStatus = worker?.status ?? null;
+    const messages = ((worker?.instructionHistory as InstructionHistoryEntry[] | null) ?? []).map((m) => {
+      if (m.type !== 'instruction') return m;
+      const status = messageDeliveryStatus(m, workerStatus);
+      return { ...m, state: status.state, stateAt: status.at };
+    });
 
     // Whether this caller may send, by the same rule POST /api/workers/[id]/instruct
     // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
@@ -69,7 +72,14 @@ export async function GET(
       ? apiAccount.teamId === task.workspace?.teamId
       : user ? await holdsInWorkspace(user.id, task.workspaceId, 'steer_workers') : false;
 
-    return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, canSend, messages });
+    return NextResponse.json({
+      taskId: id,
+      workerId: worker?.id ?? null,
+      workerStatus,
+      workerRunner: worker?.runner ?? null,
+      canSend,
+      messages,
+    });
   } catch (error) {
     console.error('Get task messages error:', error);
     return NextResponse.json({ error: 'Failed to get task messages' }, { status: 500 });

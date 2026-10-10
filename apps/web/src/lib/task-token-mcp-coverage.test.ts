@@ -29,6 +29,7 @@ const API = 'apps/web/src/app/';
 const REFUSED_ACTIONS: Record<string, string> = {
   get_budget_forecast: 'team-wide by nature (team spend, seat pressure across accounts); cannot be narrowed to one workspace',
   suggest_schedule_update: 'writes a pending change to a workspace schedule, not to its own task or worker',
+  list_incidents: 'failure incidents are a team-wide ledger; the route authenticates API keys only, so a per-task token is refused rather than narrowed to its workspace',
 };
 
 /**
@@ -36,6 +37,10 @@ const REFUSED_ACTIONS: Record<string, string> = {
  * or never makes, and why.
  */
 const REFUSED_CALLS: Record<string, Record<string, string>> = {
+  merge_pr: {
+    'apps/web/src/app/api/prs/[prNumber]/merge/route.ts':
+      'only chat (a signed-in person, in process) takes this branch; it is a session route, and a task token never reaches it',
+  },
   manage_experiments: {
     'apps/web/src/app/api/experiments/[id]/readout/route.ts':
       'a readout counts tasks across every workspace on the team; narrowing it to one would change what it measures',

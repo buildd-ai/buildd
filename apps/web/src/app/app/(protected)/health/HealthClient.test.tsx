@@ -9,6 +9,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+import { MonthlySpend } from './usage/MonthlySpend';
 import { HealthClient } from './HealthClient';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import type { CredentialHealthItem, RecentFailure, ScheduleRow } from './page';
@@ -165,24 +166,22 @@ describe('HealthClient — layout', () => {
     expect(trend).toBeGreaterThan(state);
   });
 
-  it('puts capacity, budget, credentials and schedules under State, and the trends after them', () => {
+  it('puts capacity, budget and credentials under State, and the trends after them', () => {
     const html = render({
       runners: [runner()],
       credentialHealth: [credential()],
       schedules: [schedule()],
       failureAnalytics: analytics(),
     });
-    const [runners, creds, schedules, failures] = orderOf(
+    const [runners, creds, failures] = orderOf(
       html,
       'health-section-runners',
       'health-section-credentials',
-      'health-section-schedules',
       'health-section-failure-analytics',
     );
     expect(runners).toBeGreaterThan(-1);
     expect(creds).toBeGreaterThan(runners);
-    expect(schedules).toBeGreaterThan(creds);
-    expect(failures).toBeGreaterThan(schedules);
+    expect(failures).toBeGreaterThan(creds);
   });
 
   it('carries ONE window control, in the header, not one per section', () => {
@@ -278,19 +277,10 @@ describe('HealthClient — STATE grammar', () => {
 });
 
 describe('HealthClient — LIFETIME grammar', () => {
-  // Schedule rows render inside a collapsed panel, so the LIFETIME strings
-  // themselves are covered in health-metric-grammar.test.ts. What matters here
-  // is that the panel is part of State and not a fourth top-level section.
-  it('keeps the schedules panel inside State', () => {
+  // Schedules live on /app/schedules; Health no longer carries a second copy.
+  it('renders no schedules panel', () => {
     const html = render({ schedules: [schedule()] });
-    const [state, schedules, trend] = orderOf(
-      html,
-      'health-section-state',
-      'health-section-schedules',
-      'health-section-trend',
-    );
-    expect(schedules).toBeGreaterThan(state);
-    expect(schedules).toBeLessThan(trend);
+    expect(html).not.toContain('health-section-schedules');
   });
 
   it('anchors monthly budget spend to the calendar month', () => {
@@ -312,7 +302,9 @@ describe('HealthClient — LIFETIME grammar', () => {
         },
       },
     });
-    expect(html).toContain('since Sep 1');
+    expect(html).not.toContain('monthly-anchor');
+    const spend = renderToStaticMarkup(<MonthlySpend monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
+    expect(spend).toContain('since Sep 1');
   });
 });
 
@@ -336,7 +328,9 @@ describe('HealthClient — PROJECTION grammar', () => {
         },
       },
     });
-    expect(html).toContain('depletes in 4.3d · from 24h burn');
+    expect(html).not.toContain('budget-runway');
+    const spend = renderToStaticMarkup(<MonthlySpend monthly={{ kind: 'monthly', spentUsd: 12.5, budgetUsd: 100, pctUsed: 13, resetsAt: '2026-10-01T00:00:00.000Z', burnRateUsdPerDay: 3, daysToDepletion: 4.25, confidence: 'high' }} />);
+    expect(spend).toContain('depletes in 4.3d · from 24h burn');
   });
 });
 
@@ -369,6 +363,8 @@ describe('HealthClient — Trend', () => {
   it('states the shared seat-auth cause once, without removing the per-stat markers', () => {
     const html = render({ consumption: consumption() });
     expect((html.match(/data-testid="seat-auth-confession"/g) ?? []).length).toBe(1);
+    expect(html).toContain('Some usage figures were not recorded');
+    expect(html).not.toContain('Seat-based (OAuth) auth reports');
     // Per-stat reachability is a separate contract
     // (docs/design/derived-metric-availability.md): the per-model block still
     // renders its own absence with its own reason where it sits.
@@ -737,9 +733,8 @@ describe('HealthClient — budget forecast labels', () => {
     const html = render({
       budgetForecast: { oauthSessions: [], codex: null, claudeTenant: null, missions: [], monthly },
     });
-    expect(html).toContain('health-section-budget-forecast');
-    expect(html).not.toContain('?window=');
-    expect(html).toContain('usage limits and monthly spend');
+    expect(html).not.toContain('health-section-budget-forecast');
+    expect(html).not.toContain('Monthly budget');
   });
 
   it('labels monthly and mission spend as an estimate', () => {
@@ -752,7 +747,7 @@ describe('HealthClient — budget forecast labels', () => {
         monthly,
       },
     });
-    expect(html).toContain('$12.50 est.');
+    expect(html).not.toContain('$12.50 est.');
     expect(html).toContain('$2.00 est.');
   });
 

@@ -66,7 +66,11 @@ describe('CatalogSection', () => {
     expect(q(el, 'catalog-policy-vercel-preinstalled')!.getAttribute('aria-checked')).toBe('true');
     expect(q(el, 'catalog-policy-vercel-available')!.getAttribute('aria-checked')).toBe('false');
     expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('Roles still choose');
-    expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Your team');
+    // Only team entries carry a source tag; built-in rows carry none.
+    expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Team');
+    expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('Built-in');
+    // The URL is a detail, folded away until asked for.
+    expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('https://mcp.vercel.example/mcp');
     expect(q(el, 'catalog-remove-internal')).not.toBeNull();
     expect(q(el, 'catalog-remove-vercel')).toBeNull();
     await unmount();
@@ -78,6 +82,30 @@ describe('CatalogSection', () => {
     await click(q(el, 'catalog-policy-neon-preinstalled'));
     expect(calls.find(c => c.url === '/api/connectors/catalog/policy')).toMatchObject({ method: 'PUT', body: { slug: 'neon', policy: 'preinstalled' } });
     expect(q(el, 'catalog-policy-neon-preinstalled')!.getAttribute('aria-checked')).toBe('true');
+    await unmount();
+  });
+
+  it('blocking says agents lose access but the saved connection is kept', async () => {
+    stubFetch({
+      catalog: { canManage: true, entries: [entry('axiom')] },
+      policy: () => new Response(JSON.stringify({ slug: 'axiom', policy: 'blocked', connectorId: null, retainedConnectorIds: ['c1'] })),
+    });
+    const { el, unmount } = await mount();
+    await click(q(el, 'catalog-policy-axiom-blocked'));
+    expect(q(el, 'catalog-message')!.textContent).toContain('Agents can no longer use Axiom');
+    expect(q(el, 'catalog-message')!.textContent).toContain('kept');
+    expect(q(el, 'catalog-entry-axiom')!.textContent).toContain('even where it');
+    await unmount();
+  });
+
+  it("shows a provider's client-approval requirement with where to fix it", async () => {
+    stubFetch({ catalog: { canManage: true, entries: [entry('vercel', {
+      clientSupport: { status: 'needs_approved_client', detail: 'Vercel has not approved buildd.', actionLabel: 'Vercel client review', actionUrl: 'https://vercel.com/docs/x' },
+    })] } });
+    const { el, unmount } = await mount();
+    const note = q(el, 'connector-client-support')!;
+    expect(note.textContent).toContain('Vercel has not approved buildd.');
+    expect(note.querySelector('a')!.getAttribute('href')).toBe('https://vercel.com/docs/x');
     await unmount();
   });
 

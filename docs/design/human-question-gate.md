@@ -16,11 +16,18 @@ assertions:
     key: "jevQuestionGate"
     file: "packages/core/db/schema.ts"
   # A hold parks without a notification (the park path resolves it), and a
-  # sweep surfaces it at its deadline (lib/question-hold.ts).
+  # sweep surfaces it at its deadline (lib/question-hold.ts). The park path
+  # stamps every park's disposition (lib/park-disposition.ts), which resolves
+  # the hold.
+  - id: "park-disposition-read-by-park-path"
+    type: "symbol_reachable"
+    symbol: "disposeParkedWaitingFor"
+    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    as: "read"
   - id: "hold-resurface-read-by-park-path"
     type: "symbol_reachable"
     symbol: "resolveHold"
-    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    entry: "apps/web/src/lib/park-disposition.ts"
     as: "read"
   - id: "hold-resurface-sweep"
     type: "symbol_reachable"
@@ -39,6 +46,38 @@ assertions:
     type: "symbol"
     name: "readDecisionLedgerPage"
     path: "packages/core/decision-ledger.ts"
+  # Slice 3: PR escalations. One gate (rules, then Jev, live) decides every PR
+  # the policy would page about, and the inbox, Home and the pushes all read it.
+  - id: "escalation-gate-rules"
+    type: "symbol"
+    name: "escalationRule"
+    path: "packages/core/escalation-gate.ts"
+  - id: "escalation-gate-read-by-pr-inbox"
+    type: "symbol_reachable"
+    symbol: "gateEscalations"
+    entry: "apps/web/src/lib/pr-attention.ts"
+    as: "read"
+  - id: "escalation-gate-read-by-home"
+    type: "symbol_reachable"
+    symbol: "gateEscalations"
+    entry: "apps/web/src/app/app/(protected)/home/page.tsx"
+    as: "read"
+  - id: "escalation-gate-read-by-pushes"
+    type: "symbol_reachable"
+    symbol: "loadEscalationVerdicts"
+    entry: "apps/web/src/lib/notify.ts"
+    as: "read"
+  # Jev never runs while a page loads: surfaces read stored verdicts and queue
+  # the rest for a look after the response.
+  - id: "escalation-gate-surfaces-read-only"
+    type: "symbol_reachable"
+    symbol: "escalationGateReadDeps"
+    entry: "apps/web/src/lib/pr-attention.ts"
+    as: "read"
+  - id: "escalation-gate-background-look"
+    type: "symbol"
+    name: "createEscalationDecisionScheduler"
+    path: "apps/web/src/lib/escalation-decision.ts"
 ---
 
 # human-question-gate

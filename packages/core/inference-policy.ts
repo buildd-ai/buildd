@@ -6,8 +6,7 @@
  *
  * - **interactive** (`chat`): always on. It runs whenever a key resolves; there
  *   is no switch (`teams.chatDisabled` is deprecated and unread).
- * - **built_in** decision calls (task classification, the task category shadow
- *   check): low cost, no toggle. They run whenever a key resolves.
+ * - **built_in** decision calls (task category): low cost, no toggle. They run whenever a key resolves.
  * - **opt_in** decisions (task role routing, mission goal-criteria quality, the
  *   conflict-aware orchestration decisions): off unless the team row lists the
  *   capability in `teams.enabledDecisionShadows`. A new team starts with every
@@ -32,7 +31,6 @@
 export type InferenceCapability =
   | 'criteria_grading'
   | 'visual_qa'
-  | 'task_classification'
   | 'mission_summary'
   | 'heartbeat_triage'
   | 'task_category'
@@ -47,9 +45,12 @@ export type InferenceCapability =
   | 'scout_probe_selection'
   | 'endpoint_model_match'
   | 'question_gate'
+  | 'escalation_gate'
   | 'post_session_triage'
+  | 'failure_incident_triage'
   | 'task_verdict'
   | 'early_release'
+  | 'merge_readiness'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -86,19 +87,14 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'Answers questions about a mission and condenses long note threads.',
     costHint: '~$0.005 per request',
   },
+  // Retired: the call site was removed with event-driven replanning. The id
+  // stays so a stored override still validates; the AI page no longer lists it.
   heartbeat_triage: {
     id: 'heartbeat_triage',
     kind: 'server_feature',
-    label: 'Heartbeat triage',
-    description: 'Checks whether a mission check-in needs the organizer before starting a runner.',
-    costHint: '~$0.0001 per check-in (OpenRouter key)',
-  },
-  task_classification: {
-    id: 'task_classification',
-    kind: 'built_in',
-    label: 'Task classification',
-    description: 'Tags a new task with its kind and complexity.',
-    costHint: '~$0.001 per task',
+    label: 'Heartbeat triage (retired)',
+    description: 'No longer runs. Mission check-ins are decided by a deterministic prepass.',
+    costHint: 'none',
   },
   task_category: {
     id: 'task_category',
@@ -149,7 +145,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     id: 'orchestration_claim',
     kind: 'opt_in',
     label: 'Hold/start shadow',
-    description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
+    description: 'A decision model says whether an uncertain-scope task should wait or start. A confident start lets the task claim past the one overlap gate; it never overrides a lease, migration or dependency gate, and anything it is unsure about waits.',
     costHint: '~$0.00003 per check',
   },
   // Jev ordering inputs (knowledge-base: buildd/design/jev-scheduling.md §5:
@@ -166,13 +162,12 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     costHint: '~$0.00003 per look',
   },
   // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
-  // Shadow first: logged only; it can at most reorder the two buttons, and
-  // only once its gate is raised in code after a readout. Never flips anything.
+  // Gated: a confident wait-for-local reorders the two buttons. Never flips anything.
   mission_strand_choice: {
     id: 'mission_strand_choice',
     kind: 'opt_in',
     label: 'Stranded mission shadow',
-    description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. Logged only; you always choose.',
+    description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. A confident wait-for-local puts \'Keep local\' first; it never moves the mission, you always choose.',
     costHint: '~$0.00003 per stranded mission, cached',
   },
   // Goal-criteria quality (apps/web/src/lib/goal-criteria-quality-decision.ts,
@@ -207,14 +202,23 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'When an agent endpoint serves none of a model\'s names, a decision model suggests the closest model it does serve. Only a suggestion; you save the mapping.',
     costHint: '~$0.00003 per model, while editing',
   },
-  // Question gate (packages/core/question-gate.ts). Runs only while the team
-  // has a running `question_gate` experiment; the experiment is the opt-in.
+  // Question gate (packages/core/question-gate.ts). Unconditional: runs on
+  // every agent question whenever a key resolves.
   question_gate: {
     id: 'question_gate',
     kind: 'built_in',
     label: 'Question review',
-    description: 'While your question-gate experiment runs, a decision model checks that an agent\'s question can be answered with no other context before it reaches you, and sends unclear ones back to the agent.',
+    description: 'Before an agent\'s question reaches you, a decision model checks that it can be answered with no other context and sends unclear ones back to the agent. It may also answer from the listed options itself, or hold the question until it has waited unanswered.',
     costHint: '~$0.00003 per question',
+  },
+  // Escalation gate (packages/core/escalation-gate.ts). Unconditional, like the
+  // question gate: runs on every stuck PR no rule decides, whenever a key resolves.
+  escalation_gate: {
+    id: 'escalation_gate',
+    kind: 'built_in',
+    label: 'Escalation review',
+    description: 'Before a stuck pull request is sent to you, a decision model checks whether Buildd can move it on itself (a fresh review, a fix, a retry) or should wait. Only what needs your judgment reaches you.',
+    costHint: '~$0.00003 per stuck PR, once per state',
   },
   // Post-session quality triage (packages/core/post-session-triage.ts). Runs
   // in the background after a session ends, on bounded facts only; a
@@ -225,6 +229,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Session quality triage',
     description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
     costHint: '~$0.00005 per session',
+  },
+  // Failure Pattern Sentinel triage (packages/core/decision-kind-failure-incident-triage.ts).
+  // Opt-in: asked only when an incident below critical opens or changes. It can
+  // raise an incident's severity, never lower the rule engine's floor.
+  failure_incident_triage: {
+    id: 'failure_incident_triage',
+    kind: 'opt_in',
+    label: 'Failure incident triage',
+    description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
+    costHint: '~$0.00003 per incident change',
   },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),
@@ -245,6 +259,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Early release',
     description: 'When a task waits on another task\'s pull request, a decision model says whether it can safely start now instead of waiting for the merge. Anything it is unsure about waits.',
     costHint: '~$0.00003 per waiting task',
+  },
+  // Merge readiness (apps/web/src/lib/merge-readiness-decision.ts). Asked only
+  // when a person taps "Assess" on a review card, once per PR head and facts.
+  // Advisory: it is shown, never acted on, and feeds no merge gate.
+  merge_readiness: {
+    id: 'merge_readiness',
+    kind: 'opt_in',
+    label: 'Merge readiness',
+    description: 'On a review card, a decision model says whether the pull request looks safe to merge as-is, from its CI, review and policy. Only advice; you merge.',
+    costHint: '~$0.00003 per tap',
   },
   chat: {
     id: 'chat',
@@ -267,7 +291,7 @@ export type ServerFeature = typeof SERVER_FEATURES[number];
  * QA judgment and mission summaries have ids (and stored overrides survive) but
  * nothing calls them yet; add one here in the PR that wires its call site.
  */
-export const LIVE_SERVER_FEATURES: readonly ServerFeature[] = ['criteria_grading', 'heartbeat_triage'];
+export const LIVE_SERVER_FEATURES: readonly ServerFeature[] = ['criteria_grading'];
 
 /** Where a server-side feature runs. */
 export type FeatureMode = 'server' | 'runner';

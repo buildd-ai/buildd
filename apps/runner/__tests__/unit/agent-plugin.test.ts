@@ -61,18 +61,21 @@ describe('client adapters', () => {
       ...base, hook_event_name: 'PostToolUse', tool_name: 'mcp__buildd__buildd',
       tool_input: { action: 'claim_task', params: { taskId: 'x' } },
       tool_response: [{ type: 'text', text: CLAIM_TEXT }],
-    })).toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'bind', workerId: WORKER });
+    }, {})).toEqual({ clientSessionId: 'cc-1', cwd: '/repo', event: 'bind', workerId: WORKER, interactive: true });
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'prompt_input_exit' })?.reason).toBe('exit');
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'clear' })?.reason).toBe('clear');
     expect(normalizeHookEvent('claude', { ...base, hook_event_name: 'SessionEnd', reason: 'other' })?.reason).toBe('other');
   });
 
-  it('Claude Code: ignores other tools, other actions, failed claims and unknown events', () => {
+  it('Claude Code: other tools, other actions and failed claims are touches, never binds; unknown events are ignored', () => {
+    // A tool call is a turn boundary: a touch (throttled) lets the hook learn a
+    // message is waiting. Only a successful claim binds.
     const base = { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse' };
-    expect(normalizeHookEvent('claude', { ...base, tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: CLAIM_TEXT })).toBeNull();
-    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'get_task' }, tool_response: CLAIM_TEXT })).toBeNull();
-    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task' }, tool_response: 'Nothing claimed: no_slots' })).toBeNull();
-    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task' }, tool_response: { isError: true, content: CLAIM_TEXT } })).toBeNull();
+    const touch = { clientSessionId: 'cc-1', cwd: '/repo', event: 'touch' };
+    expect(normalizeHookEvent('claude', { ...base, tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: CLAIM_TEXT })).toEqual(touch);
+    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'get_task' }, tool_response: CLAIM_TEXT })).toEqual(touch);
+    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task' }, tool_response: 'Nothing claimed: no_slots' })).toEqual(touch);
+    expect(normalizeHookEvent('claude', { ...base, tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task' }, tool_response: { isError: true, content: CLAIM_TEXT } })).toEqual(touch);
     expect(normalizeHookEvent('claude', { session_id: 'cc-1', hook_event_name: 'PreCompact' })).toBeNull();
     expect(normalizeHookEvent('claude', { hook_event_name: 'SessionStart' })).toBeNull();
   });
@@ -128,7 +131,8 @@ describe('privacy', () => {
     expect(s).not.toContain('TOP SECRET');
     expect(s).not.toContain('t.jsonl');
     expect(s).not.toContain('REPLY');
-    expect(Object.keys(body).sort()).toEqual(['client', 'clientSessionId', 'event']);
+    // `interactive` is a boolean the client derives from its own env, not payload content.
+    expect(Object.keys(body).sort()).toEqual(['client', 'clientSessionId', 'event', 'interactive']);
   });
 
   it('repo slugs drop credentials, and match the server normalizer', () => {
@@ -147,12 +151,83 @@ describe('throttle and output', () => {
     expect(shouldSkip('bind', { lastSentAt: 1_000 }, 2_000)).toBe(false);
   });
 
-  it('nudges toward update_progress only when a message waits, and never quotes it', () => {
+  it('nudges toward receive_messages only when a message waits, and never quotes it', () => {
     expect(hookOutput('claude', 'UserPromptSubmit', { pendingInstructions: false })).toBe('');
     const out = JSON.parse(hookOutput('claude', 'UserPromptSubmit', { pendingInstructions: true, taskId: 'abcdef12-0000' }));
-    expect(out.hookSpecificOutput.additionalContext).toContain('update_progress');
-    expect(hookOutput('claude', 'Stop', { pendingInstructions: true })).toBe('');
+    expect(out.hookSpecificOutput.additionalContext).toContain('receive_messages');
+    expect(out.hookSpecificOutput.additionalContext).not.toContain('update_progress');
     expect(hookOutput('cursor', 'sessionStart', null)).toBe('{}');
+  });
+
+  // B-9: delivery at the next turn boundary, not only when a human types.
+  describe('turn-boundary nudges (B-9)', () => {
+    const SECRET = 'rotate the prod key now';
+    const pending = { pendingInstructions: true, taskId: 'abcdef12-0000', instructions: SECRET };
+
+    for (const client of ['claude', 'codex'] as const) {
+      it(`${client}: PostToolUse adds context naming receive_messages`, () => {
+        const out = JSON.parse(hookOutput(client, 'PostToolUse', pending));
+        expect(out.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(out.hookSpecificOutput.additionalContext).toContain('receive_messages');
+      });
+
+      it(`${client}: Stop blocks once, and not when stop_hook_active`, () => {
+        const out = JSON.parse(hookOutput(client, 'Stop', pending, { stop_hook_active: false }));
+        expect(out.decision).toBe('block');
+        expect(out.reason).toContain('receive_messages');
+        expect(hookOutput(client, 'Stop', pending, { stop_hook_active: true })).toBe('');
+      });
+
+      it(`${client}: no pending message → empty stdout on every event`, () => {
+        for (const ev of ['UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionStart', 'SessionEnd']) {
+          expect(hookOutput(client, ev, { pendingInstructions: false })).toBe('');
+          expect(hookOutput(client, ev, null)).toBe('');
+        }
+      });
+    }
+
+    it('the message text appears in no hook output', () => {
+      for (const client of ['claude', 'codex', 'cursor'] as const) {
+        for (const ev of ['UserPromptSubmit', 'PostToolUse', 'Stop', 'sessionStart', 'stop']) {
+          expect(hookOutput(client, ev, pending, { stop_hook_active: false })).not.toContain(SECRET);
+        }
+      }
+    });
+
+    it('Cursor stays queued-only: no nudge on any event', () => {
+      expect(hookOutput('cursor', 'stop', pending)).toBe('');
+      expect(hookOutput('cursor', 'afterMCPExecution', pending)).toBe('');
+    });
+
+    it('PostToolUse on any tool is a (throttled) touch; a buildd claim is still a bind', () => {
+      const base = { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse' };
+      expect(normalizeHookEvent('claude', { ...base, tool_name: 'Bash' })?.event).toBe('touch');
+      expect(normalizeHookEvent('codex', { ...base, tool_name: 'shell' })?.event).toBe('touch');
+    });
+
+    it('Stop is never throttled: it is the last chance this turn', () => {
+      const n = normalizeHookEvent('claude', { session_id: 'cc-1', cwd: '/repo', hook_event_name: 'Stop' });
+      expect(n?.event).toBe('touch');
+      expect(shouldSkip(n!.event, { lastSentAt: 1_000 }, 2_000, n!.force)).toBe(false);
+    });
+
+    it('run(): Stop with a waiting message prints the block decision', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'buildd-hook-stop-'));
+      // A folder whose .mcp.json names buildd is in scope (see 'workspace scope').
+      writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp' } } }));
+      try {
+        const fetchImpl = (async () => Response.json({ ok: true, pendingInstructions: true, taskId: 'abcdef12-0000' })) as any;
+        const env = { BUILDD_API_KEY: 'bld_x', BUILDD_SERVER: 'https://b.test', BUILDD_HOME: dir } as any;
+        const stdin = JSON.stringify({ session_id: 's-1', cwd: dir, hook_event_name: 'Stop', stop_hook_active: false });
+        const r = await run({ client: 'claude', stdin, env, fetchImpl, now: 10_000 });
+        expect(JSON.parse(r.output).decision).toBe('block');
+        // Immediately again (inside the touch window), with stop_hook_active: no second block.
+        const again = await run({ client: 'claude', stdin: JSON.stringify({ session_id: 's-1', cwd: dir, hook_event_name: 'Stop', stop_hook_active: true }), env, fetchImpl, now: 11_000 });
+        expect(again.output).toBe('');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
 
@@ -177,6 +252,22 @@ describe('Claude Code: attended vs headless', () => {
   it('ATTENDED wins over a stale inherited ENTRYPOINT', () => {
     expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '1', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' })).toBe(true);
     expect(interactive({ CLAUDE_CODE_SESSION_ATTENDED: '0', CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe(false);
+  });
+
+  it('bind and touch carry the same flag, so a presence first created by a bind is right', () => {
+    // A session outside a workspace repo sends no start; its first event is the
+    // bind, and the server creates the presence from it.
+    const headless = { CLAUDE_CODE_SESSION_ATTENDED: '0' };
+    const bind = {
+      session_id: 'cc-1', cwd: '/repo', hook_event_name: 'PostToolUse', tool_name: 'mcp__buildd__buildd',
+      tool_input: { action: 'claim_task', params: {} }, tool_response: [{ type: 'text', text: CLAIM_TEXT }],
+    };
+    expect(normalizeHookEvent('claude', bind, headless)?.interactive).toBe(false);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'UserPromptSubmit' }, headless)?.interactive).toBe(false);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'Stop' }, {})?.interactive).toBe(true);
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'Stop' }, headless)).toMatchObject({ interactive: false, force: true });
+    // SessionEnd never needs it.
+    expect(normalizeHookEvent('claude', { ...start, hook_event_name: 'SessionEnd', reason: 'other' }, headless)?.interactive).toBeUndefined();
   });
 
   it('run() reads the hook environment, so the POSTed start says interactive: false', async () => {
@@ -263,8 +354,8 @@ describe('workspace scope', () => {
       agent_id: 'a0123456789abcdef', agent_type: 'general-purpose',
       tool_name: 'mcp__buildd__buildd', tool_input: { action: 'claim_task', params: {} }, tool_response: claim(W2),
     }) });
-    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1 });
-    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2 });
+    expect(parent.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W1, interactive: expect.any(Boolean) });
+    expect(sub.body).toEqual({ event: 'bind', client: 'claude', clientSessionId: 'scope-1', workerId: W2, interactive: expect.any(Boolean) });
     expect(readSessionState({ BUILDD_HOME: dir }, 'claude', 'scope-1').claims).toEqual({ [W1]: null, [W2]: 'a0123456789abcdef' });
   });
 
@@ -366,7 +457,9 @@ describe('session usage', () => {
     type: 'assistant', timestamp: o.at, requestId: `req_${o.id}`, isSidechain: !!o.agentId, ...(o.agentId ? { agentId: o.agentId } : {}),
     message: {
       id: o.id, model: o.model ?? 'claude-sonnet-5', role: 'assistant',
-      content: (o.blocks ?? ['text']).map(t => t === 'tool_use' ? { type: 'tool_use', name: 'Bash', input: { command: SECRET } } : { type: 'text', text: SECRET }),
+      content: (o.blocks ?? ['text']).map((t, i) => t.startsWith('tool_use')
+        ? { type: 'tool_use', id: `toolu_${o.id}_${i}`, name: t.split(':')[1] ?? 'Bash', input: { command: SECRET } }
+        : { type: 'text', text: SECRET }),
       usage: {
         input_tokens: o.input ?? 2, cache_read_input_tokens: o.read ?? 0, output_tokens: o.out ?? 10,
         cache_creation_input_tokens: (o.w5m ?? 0) + (o.w1h ?? 0),
@@ -408,12 +501,40 @@ describe('session usage', () => {
     await stop(Date.parse('2026-10-07T12:03:00Z'));
     const body = bodies.at(-1);
     expect(body.event).toBe('touch');
+    // How it was charged rides along as one word (hook-cost-basis.test.ts).
+    expect(['real', 'virtual', 'unknown']).toContain(body.usage.costBasis);
     expect(body.usage.workers).toEqual([{
       workerId: W1,
       models: [{ model: 'claude-sonnet-5', input: 4, cacheRead: 2200, cacheWrite5m: 200, cacheWrite1h: 50, output: 60, requests: 2 }],
-      toolCalls: 2, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
+      toolCalls: 2, toolCounts: { Bash: 2 }, subagents: 0, firstAt: '2026-10-07T12:01:00.000Z', lastAt: '2026-10-07T12:02:00.000Z',
     }]);
     expect(JSON.stringify(bodies)).not.toContain(SECRET);
+  });
+
+  it('counts tool calls by tool name, once per tool_use block even when Claude Code repeats the record', async () => {
+    // Real Claude Code transcripts write one assistant record per content block,
+    // each with the API message id; a tool_use block has its own id.
+    const call = (id: string, at: string, name: string) => rec({ id, at, blocks: [`tool_use:${name}`] });
+    write(transcript(), [
+      call('m1', '2026-10-07T12:01:00Z', 'mcp__buildd__buildd'),
+      call('m1', '2026-10-07T12:01:00Z', 'mcp__buildd__buildd'), // the same record again: same tool_use id
+      call('m2', '2026-10-07T12:01:30Z', 'Bash'),
+      call('m3', '2026-10-07T12:01:40Z', 'mcp__buildd__buildd'),
+      rec({ id: 'm4', at: '2026-10-07T12:01:50Z', blocks: ['text'] }),
+    ]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:03:00Z'));
+    const w = bodies.at(-1).usage.workers[0];
+    expect(w.toolCalls).toBe(3);
+    expect(w.toolCounts).toEqual({ mcp__buildd__buildd: 2, Bash: 1 });
+    expect(w.models[0].requests).toBe(4);
+  });
+
+  it('a tool name the contract would refuse is counted under "other", never sent raw', async () => {
+    write(transcript(), [rec({ id: 'm1', at: '2026-10-07T12:01:00Z', blocks: ['tool_use:rm -rf /; echo'] })]);
+    await claim(W1);
+    await stop(Date.parse('2026-10-07T12:02:00Z'));
+    expect(bodies.at(-1).usage.workers[0].toolCounts).toEqual({ other: 1 });
   });
 
   it('sends cumulative totals, reading only new bytes since the last report', async () => {
@@ -439,7 +560,7 @@ describe('session usage', () => {
     const byWorker = Object.fromEntries(bodies.at(-1).usage.workers.map((w: any) => [w.workerId, w]));
     // The subagent's whole run is its task's, even the call before its claim landed.
     expect(byWorker[W2].models[0]).toMatchObject({ output: 100, requests: 1 });
-    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, subagents: 1 });
+    expect(byWorker[W2]).toMatchObject({ toolCalls: 1, toolCounts: { Bash: 1 }, subagents: 1 });
     // A subagent that claimed nothing counts toward the session's own claim.
     expect(byWorker[W1].models[0]).toMatchObject({ output: 8, requests: 2 });
     expect(byWorker[W1].subagents).toBe(1);

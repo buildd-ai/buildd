@@ -83,7 +83,9 @@ mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts })
 const mockRunBaseAdvanceNotice = mock((_input: any, _resolver: any) => Promise.resolve({ notified: [], debounced: [] }));
 const mockChangedFilesForPr = mock((_i: number, _r: string, _n: number) => Promise.resolve(['apps/web/src/lib/foo.ts']));
 const mockChangedFilesForCompare = mock((_i: number, _r: string, _b: string, _a: string) => Promise.resolve(['from/compare.ts']));
+const mockIsReleaseRollupPr = mock((_repo: string, _head: string, _base: string) => Promise.resolve(false));
 mock.module('@/lib/base-advance-notice-store', () => ({
+  isReleaseRollupPr: mockIsReleaseRollupPr,
   runBaseAdvanceNotice: mockRunBaseAdvanceNotice,
   changedFilesForPr: mockChangedFilesForPr,
   changedFilesForCompare: mockChangedFilesForCompare,
@@ -111,6 +113,13 @@ mock.module('@/lib/mission-notifications', () => ({
 
 mock.module('@/lib/github-repo-link', () => ({
   syncInstallationReposById: mockSyncInstallationReposById,
+}));
+
+// Resume of tasks waiting on GitHub access — idempotency lives in the store
+// (github-repo-access-store.test.ts); here only which deliveries trigger it.
+const mockResumeAfterInstallationChange = mock(async (_installationId: number) => [] as string[]);
+mock.module('@/lib/github-repo-access-store', () => ({
+  resumeAfterInstallationChange: mockResumeAfterInstallationChange,
 }));
 
 mock.module('@/lib/repo-scope', () => ({
@@ -625,12 +634,15 @@ mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUncha
 const mockOpenKernelDelivery = mock(async (_p: any): Promise<any> => ({ owned: false }));
 const mockObserveHead = mock(async (_p: any): Promise<boolean> => false);
 const mockObservePrState = mock(async (_p: any): Promise<boolean> => false);
+const mockObserveBase = mock(async (_p: any): Promise<boolean> => false);
 const mockReleaseKernelDeliveryForPr = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/workflow/seam', () => ({
   openKernelDelivery: mockOpenKernelDelivery,
   observeHead: mockObserveHead,
   observePrState: mockObservePrState,
+  observeBase: mockObserveBase,
   observeCiFailure: mock(async () => ({ handled: false })),
+  policyFindingFor: (p: any) => ({ outcome: 'human', reason: p.reason, destructive: false }),
 }));
 const mockKernelDeliveryForPr = mock(async (..._a: any[]): Promise<string | null> => null);
 mock.module('@/lib/workflow/authority', () => ({ releaseKernelDeliveryForPr: mockReleaseKernelDeliveryForPr, kernelDeliveryForPr: mockKernelDeliveryForPr }));
@@ -1034,6 +1046,35 @@ describe('POST /api/github/webhook', () => {
     expect(res.status).toBe(200);
     expect(mockSyncInstallationReposById).toHaveBeenCalledWith(5000);
     expect(deleteCalls.length).toBe(0);
+  });
+
+  it('resumes waiting tasks after access-granting deliveries, every time they arrive', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    mockSyncInstallationReposById.mockReturnValue(Promise.resolve({ synced: 1, linked: 0, linkedWorkspaceIds: [] }));
+    const added = { action: 'added', installation: { id: 5000 }, repositories_added: [{ id: 400, full_name: 'acme/web' }] };
+    // GitHub may redeliver; each delivery re-verifies, the store's status
+    // guard makes the second one a no-op.
+    await POST(createWebhookRequest('installation_repositories', added));
+    await POST(createWebhookRequest('installation_repositories', added));
+    await POST(createWebhookRequest('installation', { action: 'unsuspend', installation: makeInstallation() }));
+    expect(mockResumeAfterInstallationChange).toHaveBeenCalledTimes(3);
+    expect(mockResumeAfterInstallationChange.mock.calls[0]?.[0]).toBe(5000);
+  });
+
+  it('records accepted permissions and resumes on new_permissions_accepted', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    const installation = { ...makeInstallation(), permissions: { pull_requests: 'write', contents: 'write' } };
+    const res = await POST(createWebhookRequest('installation', { action: 'new_permissions_accepted', installation }));
+    expect(res.status).toBe(200);
+    expect(updateCalls.at(-1)?.setValues.permissions).toEqual({ pull_requests: 'write', contents: 'write' });
+    expect(mockResumeAfterInstallationChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resume on removal or suspension', async () => {
+    mockResumeAfterInstallationChange.mockClear();
+    await POST(createWebhookRequest('installation_repositories', { action: 'removed', installation: { id: 5000 }, repositories_removed: [{ id: 300 }] }));
+    await POST(createWebhookRequest('installation', { action: 'suspend', installation: makeInstallation() }));
+    expect(mockResumeAfterInstallationChange).not.toHaveBeenCalled();
   });
 
   it('handles installation_repositories removed', async () => {
@@ -4332,7 +4373,23 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('workflow kernel: a pre-flight human escalation releases any kernel delivery and opens none', async () => {
+    it('workflow kernel: a pre-flight human escalation is imported as policy evidence, with no legacy note or release', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockOpenKernelDelivery.mockClear();
+      mockReleaseKernelDeliveryForPr.mockClear();
+      mockOpenKernelDelivery.mockResolvedValueOnce({ owned: true, deliveryId: 'delivery-42' });
+      mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: true, reason: 'touches schema' });
+
+      await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
+
+      expect(mockOpenKernelDelivery).toHaveBeenCalledWith(expect.objectContaining({
+        prNumber: 42,
+        policy: { outcome: 'human', reason: 'touches schema', destructive: false },
+      }));
+      expect(mockReleaseKernelDeliveryForPr).not.toHaveBeenCalled();
+    });
+
+    it('legacy authority: a pre-flight human escalation the kernel does not take releases any kernel delivery', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockOpenKernelDelivery.mockClear();
       mockReleaseKernelDeliveryForPr.mockClear();
@@ -4341,7 +4398,6 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
 
       expect(mockReleaseKernelDeliveryForPr).toHaveBeenCalledWith('ws1', 'test-org/test-repo', 42, expect.stringContaining('pre-flight'));
-      expect(mockOpenKernelDelivery).not.toHaveBeenCalled();
     });
 
     it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
@@ -5631,6 +5687,24 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
   });
 
+  // 24e1cfad: the kernel's base-change fact. A retarget changes the diff an approval reviewed.
+  it('hands a retarget to the workflow kernel (T29 base fact from a live read)', async () => {
+    mockObserveBase.mockClear();
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+    expect(mockObserveBase).toHaveBeenCalledTimes(1);
+    expect(mockObserveBase.mock.calls[0][0]).toMatchObject({
+      workspaceId: 'ws-9', repoFullName: 'test-org/test-repo', prNumber: 9, installationId: 12345, hintedFromBase: 'dev', source: 'webhook:edited',
+    });
+  });
+
+  it('does not hand a title/body edit to the kernel', async () => {
+    mockObserveBase.mockClear();
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ changes: { title: { from: 'old' } } })));
+    expect(mockObserveBase).not.toHaveBeenCalled();
+  });
+
   it('a failed intent retarget never fails the webhook', async () => {
     mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
     mockRetargetSurfaceIntents.mockImplementationOnce(async () => { throw new Error('boom'); });
@@ -6730,6 +6804,39 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       }));
       await settle();
       expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
+    });
+
+    it('a release PR merge does not trigger base-advance notice (no cross-branch notifications)', async () => {
+      mockIsReleaseRollupPr.mockResolvedValueOnce(true);
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 4241, merged: true, title: 'Release v1.0.0', body: null, merge_commit_sha: 'm4241',
+          head: { ref: 'dev', sha: 'h4241' }, base: { ref: 'main' },
+          html_url: 'https://github.com/test-org/test-repo/pull/4241',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).not.toHaveBeenCalled();
+      expect(mockChangedFilesForPr).not.toHaveBeenCalled();
+    });
+
+    it('an ordinary merge still notifies when the release check is false', async () => {
+      mockIsReleaseRollupPr.mockResolvedValueOnce(false);
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 4242, merged: true, title: 'feat: x', body: null, merge_commit_sha: 'm4242',
+          head: { ref: 'feature/x', sha: 'h4242' }, base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/4242',
+        },
+        installation: { id: 7 },
+        repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      }));
+      await settle();
+      expect(mockRunBaseAdvanceNotice).toHaveBeenCalledTimes(1);
     });
   });
 

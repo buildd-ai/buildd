@@ -1014,6 +1014,25 @@ describe('buildReviewerContext — no hardcoded schema.ts path rule', () => {
 
     expect(prompt).toContain('Migration classifier verdict: CONTRACT — drops column missions.legacy');
   });
+
+  it('a data migration the workspace lets the reviewer decide: the reviewer is told it is its call', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      migrationSafety: { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' },
+      agentDecidesDataMigrations: true,
+    });
+    expect(prompt).toContain('runs data migration UPDATE on tasks');
+    expect(prompt).toContain('this workspace lets you decide data migrations');
+    expect(prompt).not.toContain('enforced server-side regardless of your verdict');
+  });
+
+  it('a data migration without the setting keeps the server-side human escalation note', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      migrationSafety: { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' },
+    });
+    expect(prompt).toContain('enforced server-side regardless of your verdict');
+  });
 });
 
 // ── Security escalation is split by whether a decision exists (Part 4) ───────
@@ -1121,6 +1140,39 @@ describe('reviewer prompts render the resolved confidence threshold', () => {
 });
 
 // ── Server-side escalation enforcement (T5) ──────────────────────────────────
+
+describe('preflightEscalationCheck — mergePolicy.dataMigrations', () => {
+  const files = [{ filename: 'packages/core/drizzle/0300_backfill.sql' }];
+  const data = { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' } as const;
+  const destructive = { safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' } as const;
+  const on: MergePolicy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'agent-review' };
+
+  it('escalates a data migration by default', () => {
+    expect(preflightEscalationCheck(files, agentReviewNoEscalatePaths, data)).toEqual({ shouldEscalate: true, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("escalates it under dataMigrations: 'person'", () => {
+    expect(preflightEscalationCheck(files, { ...on, dataMigrations: 'person' }, data).shouldEscalate).toBe(true);
+  });
+
+  it("does not escalate it under dataMigrations: 'agent-review' (the reviewer decides)", () => {
+    expect(preflightEscalationCheck(files, on, data)).toEqual({ shouldEscalate: false });
+  });
+
+  it('still escalates destructive DDL with the setting on', () => {
+    expect(preflightEscalationCheck(files, on, destructive)).toEqual({ shouldEscalate: true, reason: 'drops column tasks.legacy' });
+  });
+
+  it('still honours a human risk class from policyConfig with the setting on', () => {
+    const policyConfig = { preset: 'cautious', riskClasses: [{ name: 'destructive_schema_change', detectedPaths: ['packages/core/drizzle/'] }] } as any;
+    expect(preflightEscalationCheck(files, on, data, policyConfig).shouldEscalate).toBe(true);
+  });
+
+  it('enforceServerSideEscalation keeps an approve on a data migration when the reviewer decides', () => {
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: files, policy: on, migrationSafety: data })).toEqual({ verdict: 'approve', overrideReason: null });
+    expect(enforceServerSideEscalation({ verdict: 'approve', prFiles: files, policy: agentReviewNoEscalatePaths, migrationSafety: data }).verdict).toBe('escalate');
+  });
+});
 
 describe('enforceServerSideEscalation', () => {
   const CLEAN = [{ filename: 'apps/web/src/lib/foo.ts' }];
@@ -2190,5 +2242,65 @@ describe('createReviewerTask — role, work-kind and inherited phase', () => {
     await createReviewerTask(params() as any);
     expect(insertedTask?.missionPhaseIndex).toBeNull();
     expect(insertedTask?.missionPhaseLabel).toBeNull();
+  });
+});
+
+// ── Structured escalation output ─────────────────────────────────────────────
+
+describe('REVIEWER_TASK_OUTPUT_SCHEMA — blockers', () => {
+  it('declares optional structured blockers with a closed kind vocabulary', () => {
+    const blockers = (REVIEWER_TASK_OUTPUT_SCHEMA.properties as any).blockers;
+    expect(blockers.type).toBe('array');
+    expect(blockers.items.properties.kind.enum).toContain('migration');
+    expect(blockers.items.required).toEqual(['kind', 'text']);
+    expect(REVIEWER_TASK_OUTPUT_SCHEMA.required).not.toContain('blockers');
+    expect(validatesAgainstReviewerSchema({ verdict: 'escalate', confidence: 0.5, summary: 's' })).toBe(true);
+  });
+
+  it('policy suggestions are server-owned, not model output', () => {
+    expect(REVIEWER_TASK_OUTPUT_SCHEMA.properties).not.toHaveProperty('policySuggestions');
+  });
+
+  it('asks for a one-sentence recommendation', () => {
+    const desc = (REVIEWER_TASK_OUTPUT_SCHEMA.properties as any).recommendation.description as string;
+    expect(desc).toContain('140');
+    expect(desc.toLowerCase()).toContain('one imperative sentence');
+  });
+});
+
+describe('createReviewerTask — policy suggestions', () => {
+  const params = (policyConfig?: unknown) => ({
+    workspaceId: 'ws-1',
+    originalTaskId: 'original-ps',
+    originalTask: { title: 'Policy suggestion', description: null, backend: 'claude', missionId: null },
+    worker: { branch: 'buildd/ps' },
+    prNumber: 46,
+    prUrl: 'https://example.test/o/r/pull/46',
+    headSha: 'ps46',
+    reviewerRole: 'reviewer',
+    installationId: 1,
+    repoFullName: 'example/project',
+    prFiles: [
+      { filename: 'apps/api/package.json', status: 'modified', additions: 1, deletions: 1 },
+      { filename: 'apps/api/src/handler.ts', status: 'modified', additions: 1, deletions: 1 },
+    ],
+    policyConfig,
+  });
+
+  it('records uncovered risk-adjacent paths on the reviewer task and keeps them out of escalationReason', async () => {
+    insertedTask = undefined;
+    await createReviewerTask(params({ preset: 'balanced', riskClasses: [] }) as any);
+    expect((insertedTask?.context as any).policySuggestions).toEqual([
+      { path: 'apps/api/package.json', class: 'dependency_bump' },
+    ]);
+    expect(String(insertedTask?.description)).toContain('apps/api/package.json');
+    expect(String(insertedTask?.description)).not.toContain('Include in your escalationReason');
+    expect(String(insertedTask?.description)).not.toContain('include any proposed policy additions');
+  });
+
+  it('leaves no key when there is no policy to be uncovered by', async () => {
+    insertedTask = undefined;
+    await createReviewerTask(params() as any);
+    expect((insertedTask?.context as any).policySuggestions).toBeUndefined();
   });
 });

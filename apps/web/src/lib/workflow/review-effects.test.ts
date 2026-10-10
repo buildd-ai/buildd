@@ -11,6 +11,8 @@ let view: KernelView;
 const applied: any[] = [];
 const ingested: any[] = [];
 const executed: string[] = [];
+/** Rows `db.execute` answers with: a follow-up insert that wrote a row returns one. */
+let executeRows: unknown[] = [];
 const inserted: any[] = [];
 const notes: any[] = [];
 let existingTask: { id: string } | null = null;
@@ -63,7 +65,7 @@ mock.module('@buildd/core/db', () => ({
       },
     }),
     update: () => ({ set: () => chain([]) }),
-    execute: async (q: any) => { executed.push(JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat())); return { rows: [] }; },
+    execute: async (q: any) => { executed.push(JSON.stringify(q.queryChunks?.map((c: any) => c.value ?? '').flat())); return { rows: executeRows }; },
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
@@ -93,7 +95,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewer, s
 const mockEscalateExhaustion = mock(async (..._a: any[]) => undefined);
 mock.module('@/lib/auto-merge', () => ({ escalateReviewerExhaustion: mockEscalateExhaustion }));
 
-const { __handlers, reviewEffectHandlers } = await import('./review-effects');
+const { __handlers, pushRecoveryFollowupKey, reviewEffectHandlers } = await import('./review-effects');
 
 const D = (o: any = {}) => ({
   id: 'd1', workspaceId: 'ws1', ownerTaskId: 'owner-1', repoFullName: 'acme/w', prNumber: 7, baseRef: 'dev', state: 'CHANGES_REQUESTED',
@@ -106,6 +108,7 @@ const E = (kind: string, payload: Record<string, unknown>) => ({ id: 'e1', deliv
 
 beforeEach(() => {
   view = { delivery: D() as any, rounds: [round1], attempts: [] };
+  executeRows = [];
   applied.length = 0; ingested.length = 0; executed.length = 0; inserted.length = 0; notes.length = 0;
   existingTask = null; livePr = { state: 'open', merged: false, headSha: 'H1', headRepoFullName: 'acme/w', baseRef: 'dev' };
   roles = [{ slug: 'reviewer' }]; created = { id: 'reviewer-2' }; postResult = { posted: true };
@@ -321,8 +324,22 @@ describe('push_recovery (§9)', () => {
   });
   test('nothing pushed yet: the next bounded try is scheduled', async () => {
     view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
+    executeRows = [{ id: 'e2' }];
     expect(await __handlers.pushRecovery(E('push_recovery', { localHeadSha: 'L2', try: 1, maxTries: 3 }))).toEqual({ outcome: 'ok:retry_2' });
     expect(applied).toHaveLength(0);
+  });
+  test('9e27996d: a next try that already exists scheduled nothing, and is not reported as the chain moving on', async () => {
+    view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
+    executeRows = [];
+    expect(await __handlers.pushRecovery(E('push_recovery', { localHeadSha: 'L2', try: 1, maxTries: 3 }))).toEqual({ outcome: 'skipped:retry_2_exists' });
+  });
+  test('9e27996d: follow-ups stay in their own chain: the head-keyed restart numbers its own tries', () => {
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:1', 1)).toBe('push_recovery:d1:L2:2');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:2', 2)).toBe('push_recovery:d1:L2:3');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:none:1', 1)).toBe('push_recovery:d1:none:2');
+    // The restart's first key carries no number; its follow-ups never land on the original chain's keys.
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:head:H2', 1)).toBe('push_recovery:d1:L2:head:H2:2');
+    expect(pushRecoveryFollowupKey('push_recovery:d1:L2:head:H2:2', 2)).toBe('push_recovery:d1:L2:head:H2:3');
   });
   test('the last try exhausts recovery: a person is told (T22)', async () => {
     view = { ...view, delivery: D({ state: 'AWAITING_PUSH' }) as any };
@@ -343,4 +360,25 @@ test('every effect the fix-loop reducer can emit has a handler (none retries for
   for (const k of ['stamp_pr_rows', 'merge_call', 'verify_merge', 'emit_pr_merged', 'finalize_mission_pr']) {
     expect((reviewEffectHandlers as Record<string, unknown>)[k]).toBeUndefined();
   }
+});
+
+describe('notify policy_human (T28 notification admission)', () => {
+  const payload = { event: 'policy_human', reason: 'drops column a.b', headSha: 'H1', destructive: true };
+  const notified = async () => (await import('@/lib/notify')).notifyTeamOf as unknown as ReturnType<typeof mock>;
+
+  test('admits exactly when the delivery is ESCALATED at the finding\'s head', async () => {
+    view = { delivery: D({ state: 'ESCALATED', stateReason: 'policy_human' }) as any, rounds: [], attempts: [] };
+    const n = await notified(); n.mockClear();
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'ok' });
+    expect(n).toHaveBeenCalledTimes(1);
+  });
+
+  test('a head that moved, or a human who already resolved it, is never announced', async () => {
+    const n = await notified(); n.mockClear();
+    view = { delivery: D({ state: 'ESCALATED', stateReason: 'policy_human', currentHeadSha: 'H2' }) as any, rounds: [], attempts: [] };
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'skipped:state_moved' });
+    view = { delivery: D({ state: 'AWAITING_REVIEW' }) as any, rounds: [], attempts: [] };
+    expect(await __handlers.notify(E('notify', payload))).toEqual({ outcome: 'skipped:state_moved' });
+    expect(n).not.toHaveBeenCalled();
+  });
 });

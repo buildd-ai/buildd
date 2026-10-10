@@ -119,9 +119,20 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(feed).toBeLessThan(description);
   });
 
-  it('the error-count chip is square like its neighbours (brutalist: no radius)', () => {
-    expect(pageSource).toMatch(/className="[^"]*"\n\s*title="Agent errors that affected the outcome/);
-    expect(pageSource).not.toMatch(/className="[^"]*\brounded[^"]*"\n\s*title="Agent errors that affected the outcome/);
+  it('the header is back, title, one mono sub-line and the track: no caps eyebrow, chips or error count', () => {
+    const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('{/* Action first'));
+    expect(header).toContain('data-testid="task-subline"');
+    expect(header).toContain('<Lifecycle state={headerLifecycle}');
+    expect(header).not.toMatch(/upper[c]ase/);
+    expect(header).not.toContain('task-error-count');
+    expect(header).not.toContain('Created <ZonedTime');
+    expect(header).not.toContain('task.category');
+  });
+
+  it('drops "Also running" (Home\'s Agents panel has it) and the bare "Next" link ("Unblocked by this" stays)', () => {
+    expect(pageSource).not.toContain('AlsoRunning');
+    expect(pageSource).not.toContain('nextChainTask');
+    expect(pageSource).toContain('data-testid="task-unblocked"');
   });
 
   it('the side panel follows the main column: the hero stays the first screen on mobile', () => {
@@ -164,10 +175,6 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(pageSource).toContain('descriptionDuplicatesSummary(');
   });
 
-  it('the bare "Next" chain CTA is gone for mission tasks — the context bar steps instead', () => {
-    expect(pageSource).toContain("phase === 'completed' && nextChainTask && !missionContextBar");
-  });
-
   it('keeps the status badge testid (AC-19)', () => {
     expect(pageSource).toContain('<span data-testid="task-header-status" data-status={displayStatus}>');
   });
@@ -178,33 +185,26 @@ describe('mobile layout — tasks/[id]/page.tsx', () => {
   it('Worker History: badge and PR link share one wrapper that wraps under the text below md', () => {
     const meta = pageSource.match(/data-testid="worker-history-meta"[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(meta).toContain('pl-11 md:pl-0');
-    expect(meta).toContain('<StatusBadge');
+    expect(meta).toContain('<StatusPill');
     expect(meta).toContain('worker.prUrl &&');
   });
 
-  it('breadcrumb separator is hidden on mobile, where the task title after it is hidden', () => {
-    expect(pageSource).toContain('<span className="mx-2 hidden md:inline" aria-hidden="true">/</span>');
+  it('outside a mission the breadcrumb is a single back link, not a second copy of the title', () => {
+    const nav = pageSource.slice(pageSource.indexOf('<nav aria-label="Breadcrumb"'), pageSource.indexOf('</nav>'));
+    expect(nav).toContain('data-testid="task-back"');
+    expect(nav).not.toContain('displayTaskTitle');
   });
 });
 
-describe('"Also running" — tasks/[id]/page.tsx', () => {
-  it("drops the task's own lineage (CI-fix attempts, the task being fixed) from the peers list", async () => {
-    expect(pageSource).toContain("import { loadAlsoRunningWorkers } from './also-running-loader'");
-    expect(pageSource).toContain('loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES })');
-    const loader = await Bun.file(new URL('./also-running-loader.ts', import.meta.url)).text();
-    // The peer query must select the column the lineage walk reads, and filter on it.
-    expect(loader).toContain('missionId: true, parentTaskId: true } } },');
-    expect(loader).toContain('!isInTaskLineage(w.task.id, task.id, parentOf)');
-  });
-});
+
 
 describe('Related tasks status — tasks/[id]/page.tsx (demo polish)', () => {
-  it('renders each related task through StatusBadge + deriveDisplayStatus, never the raw status enum', () => {
+  it('renders each related task through StatusPill + deriveDisplayStatus, never the raw status enum', () => {
     const related = pageSource.slice(pageSource.indexOf('Related Tasks'), pageSource.indexOf('{/* Attachments */}'));
     expect(related).not.toContain('{sub.status}');
     expect(related).not.toContain('{task.parentTask.status}');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(sub.status)} />');
-    expect(related).toContain('<StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(sub.status)} />');
+    expect(related).toContain('<StatusPill status={deriveDisplayStatus(task.parentTask.status)} />');
   });
 });
 
@@ -217,13 +217,9 @@ describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
 
 describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () => {
   it('Worker history shows a worker error through plainWorkerError, raw text on hover', () => {
-    expect(pageSource).toContain("import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure'");
+    expect(pageSource).toContain("import { plainWorkerError } from '@/lib/provider-auth-failure'");
     expect(pageSource).toContain('plainWorkerError(worker.error');
     expect(pageSource).not.toMatch(/>\{worker\.error\}</);
-  });
-
-  it('the header error count counts only errors that matter, and steps back once the cause is explained', () => {
-    expect(pageSource).toMatch(/attentionErrorCount > 0 && !terminalSucceeded && !authFailure &&/);
   });
 
   it('the evidence card gets the worker error, so it can tell the cause is already explained', () => {
@@ -231,6 +227,34 @@ describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () =>
   });
 });
 
+// C-5 (attempt ordering): every worker/task list the page reads is ordered by
+// immutable columns with an id tiebreak, so two rows created in the same instant
+// never swap between renders, and the selections derived from them (latest,
+// active, PR worker, attempt numbering) never flip.
+describe('deterministic attempt order — tasks/[id]/page.tsx', () => {
+  it('never orders workers by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*desc\(workers\.createdAt\)\s*[,}]/);
+    expect(pageSource).not.toMatch(/orderBy:\s*\[\s*desc\(workers\.createdAt\)\s*\]/);
+    const withTiebreak = pageSource.match(/orderBy:\s*\[desc\(workers\.createdAt\), desc\(workers\.id\)\]/g) ?? [];
+    // Four reads: the PR-fact refresh no longer re-fetches workers inline (it runs in after()).
+    expect(withTiebreak.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never orders tasks by createdAt without an id tiebreak', () => {
+    expect(pageSource).not.toMatch(/orderBy:\s*asc\(tasks\.createdAt\)\s*[,}]/);
+    expect(pageSource).toMatch(/subTasks:\s*\{\s*columns:\s*\{[^}]*\},\s*orderBy:\s*\[asc\(tasks\.createdAt\), asc\(tasks\.id\)\]/);
+  });
+
+  it('picks latest / active / PR worker from the shared comparator, not from row order', () => {
+    expect(pageSource).toContain("from '@/lib/attempt-order'");
+    expect(pageSource).toContain('selectTaskWorkers(');
+    expect(pageSource).not.toMatch(/taskWorkers\.find\(w => w\.prUrl && w\.prNumber\)/);
+  });
+
+  it('numbers CI-retry attempts in task chrono order', () => {
+    expect(pageSource).toContain('oldestFirst(ciAttemptRows, compareTasksChrono)');
+  });
+});
 describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
   it('derives the verdict from the record and only applies a cached decision; it never calls the model', () => {
     expect(pageSource).toContain('deriveTaskVerdict(buildVerdictInput({');

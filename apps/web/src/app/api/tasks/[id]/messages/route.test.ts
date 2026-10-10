@@ -127,6 +127,30 @@ describe('GET /api/tasks/[id]/messages', () => {
     expect(data.messages).toHaveLength(1);
   });
 
+  it('each human message carries its derived delivery state (queued / delivered / acknowledged / undelivered)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockImplementation(() => Promise.resolve({ teamId: 'team-1', role: 'member' }));
+    mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: { id: 'ws-1' } });
+    const history = [
+      { id: 'a', type: 'instruction', message: 'q', timestamp: 1, deliveryState: 'pending' },
+      { id: 'b', type: 'instruction', message: 'd', timestamp: 2, deliveryState: 'delivered', deliveredAt: 3, awaitsAck: true },
+      { id: 'c', type: 'instruction', message: 'r', timestamp: 4, deliveryState: 'acknowledged', deliveredAt: 5, acknowledgedAt: 6 },
+      { type: 'response', message: 'ok', timestamp: 7 },
+    ];
+
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', status: 'running', runner: 'r-1', instructionHistory: history });
+    let data = await (await GET(req(), { params: Promise.resolve({ id: TASK_ID }) })).json();
+    expect(data.workerStatus).toBe('running');
+    expect(data.messages.map((m: any) => m.state)).toEqual(['queued', 'delivered', 'acknowledged', undefined]);
+    expect(data.messages[2].stateAt).toBe(6);
+
+    // The run ended: what it never read is undelivered; what it read stays read.
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', status: 'completed', runner: 'r-1', instructionHistory: history });
+    data = await (await GET(req(), { params: Promise.resolve({ id: TASK_ID }) })).json();
+    expect(data.messages.map((m: any) => m.state)).toEqual(['undelivered', 'undelivered', 'acknowledged', undefined]);
+  });
+
   it('no worker yet: empty messages, not an error', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);

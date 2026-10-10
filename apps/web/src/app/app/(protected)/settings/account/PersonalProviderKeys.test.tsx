@@ -1,6 +1,7 @@
 /**
- * The Account chat row and your own provider keys, mounted in happy-dom with a
- * stubbed fetch. Fixtures are illustrative; nothing here is a real key.
+ * Profile's "Your keys" row: what chat runs on for you, and the one link to
+ * manage your own keys on Models. Mounted in happy-dom with a stubbed fetch.
+ * Fixtures are illustrative; nothing here is a real key.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register({ url: 'http://localhost/app/settings/account', width: 390, height: 844 });
@@ -61,100 +62,25 @@ async function mount() {
 async function flush() { await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); }
 
 const line = () => host.querySelector('[data-testid="chat-key-line"]')?.textContent;
-const offeredCards = () => [...host.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid')!.replace('provider-key-', ''));
-const button = (scope: ParentNode, text: string) => [...scope.querySelectorAll('button')].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
-async function click(b: HTMLButtonElement | undefined) {
-  expect(b).toBeDefined();
-  await act(async () => { b!.click(); });
-  await flush();
-}
-async function type(input: HTMLInputElement, value: string) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-}
 
-describe('which providers you can bring a key for', () => {
-  it('only Anthropic enabled: one Anthropic card, and the line asks for an Anthropic key', async () => {
+describe('the chat line names the provider you can bring a key for', () => {
+  it('only Anthropic enabled: asks for an Anthropic key', async () => {
     body = { ...body, keyPolicy: 'own', providers: [card('openrouter', false), card('anthropic', true), card('openai', false)] };
     await mount();
-    expect(offeredCards()).toEqual(['anthropic']);
     expect(line()).toBe('Add your Anthropic key');
   });
 
-  it('only OpenAI enabled: one OpenAI card', async () => {
-    body = { ...body, keyPolicy: 'team_or_own', providers: [card('openrouter', false), card('anthropic', false), card('openai', true)], chatUses: { provider: 'openai', scope: 'team' } };
-    await mount();
-    expect(offeredCards()).toEqual(['openai']);
-    expect(line()).toBe('OpenAI · team key');
-  });
-
-  it('only OpenRouter enabled: one OpenRouter card', async () => {
-    body = { ...body, keyPolicy: 'team_or_own', providers: [card('openrouter', true), card('anthropic', false), card('openai', false)], chatUses: { provider: 'openrouter', scope: 'team' } };
-    await mount();
-    expect(offeredCards()).toEqual(['openrouter']);
-  });
-
-  it('several enabled: offers exactly those', async () => {
+  it('several enabled: asks for your own key', async () => {
     body = { ...body, keyPolicy: 'own', providers: [card('openrouter', false), card('anthropic', true), card('openai', true)] };
     await mount();
-    expect(offeredCards()).toEqual(['anthropic', 'openai']);
     expect(line()).toBe('Add your own key');
   });
 
-  it('never shows a provider whose route takes no personal keys', async () => {
+  it('never names a provider whose route takes no personal keys', async () => {
     body = { ...body, keyPolicy: 'own', providers: [card('litellm', true), card('anthropic', true)] };
     await mount();
-    expect(offeredCards()).toEqual(['anthropic']);
+    expect(line()).toBe('Add your Anthropic key');
     expect(host.textContent).not.toContain('LiteLLM');
-  });
-
-  it('has no OpenRouter-only connect button on the personal path', async () => {
-    body = { ...body, keyPolicy: 'own', providers: [card('anthropic', true)] };
-    await mount();
-    expect(host.querySelector('[data-testid="connect-openrouter"]')).toBeNull();
-    expect(host.textContent).not.toMatch(/OpenRouter/);
-  });
-});
-
-describe('the team key policy', () => {
-  it("'team': one line, no personal controls, even with a key of your own on file", async () => {
-    body = { ...body, keyPolicy: 'team', providers: [card('anthropic', true, 'ab12')], chatUses: { provider: 'anthropic', scope: 'team' } };
-    await mount();
-    expect(line()).toBe('Anthropic · team key');
-    expect(offeredCards()).toEqual([]);
-    expect(host.querySelector('details')).toBeNull();
-    expect(host.textContent).not.toContain('Use my own key');
-  });
-
-  it("'team_or_own': the cards sit behind a quiet disclosure", async () => {
-    body = { ...body, keyPolicy: 'team_or_own', providers: [card('anthropic', true)], chatUses: { provider: 'anthropic', scope: 'team' } };
-    await mount();
-    const details = host.querySelector('details')!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector('summary')?.textContent).toContain('Use my own key instead');
-    expect([...details.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid'))).toEqual(['provider-key-anthropic']);
-  });
-
-  it("'team_or_own' with your own key: open, and the line says your key", async () => {
-    body = { ...body, keyPolicy: 'team_or_own', providers: [card('anthropic', true, 'ab12')], chatUses: { provider: 'anthropic', scope: 'user' } };
-    await mount();
-    expect(host.querySelector('details')!.open).toBe(true);
-    expect(line()).toBe('Anthropic · your key');
-  });
-
-  it("'own': the cards are in the open, no disclosure", async () => {
-    body = { ...body, keyPolicy: 'own', providers: [card('openai', true)] };
-    await mount();
-    expect(host.querySelector('details')).toBeNull();
-    expect(offeredCards()).toEqual(['openai']);
-  });
-
-  it("'own' with no provider enabled by the team: every personal-key provider", async () => {
-    body = { ...body, keyPolicy: 'own', providers: [card('openrouter', false), card('anthropic', false), card('openai', false)] };
-    await mount();
-    expect(offeredCards()).toEqual(['openrouter', 'anthropic', 'openai']);
   });
 });
 
@@ -168,13 +94,10 @@ describe('Chat uses: the provider and scope chat actually resolves to', () => {
     expect(host.querySelector('[data-testid="chat-key-row"]')?.textContent).toContain('Chat uses');
   });
 
-  it('is one line that links to Model providers', async () => {
-    body = { ...body, providers: [card('openai', true)], chatUses: { provider: 'openai', scope: 'team' } };
+  it('says your key when chat runs on it', async () => {
+    body = { ...body, keyPolicy: 'team_or_own', providers: [card('anthropic', true, 'ab12')], chatUses: { provider: 'anthropic', scope: 'user' } };
     await mount();
-    const row = host.querySelector('[data-testid="chat-key-row"]')!;
-    expect(row.tagName).toBe('A');
-    expect(row.getAttribute('href')).toBe('/app/settings/providers');
-    expect(host.querySelector('h2')).toBeNull();
+    expect(line()).toBe('Anthropic · your key');
   });
 
   it('with nothing resolving, a member is told to ask an admin', async () => {
@@ -184,47 +107,20 @@ describe('Chat uses: the provider and scope chat actually resolves to', () => {
   });
 });
 
-describe('your key: masked, tested, replaced and removed through the shared API', () => {
-  beforeEach(() => {
+describe('one row, managed on Models', () => {
+  it('is a single row with one Manage link to your keys on Models, and no key controls here', async () => {
     body = { ...body, keyPolicy: 'own', providers: [card('anthropic', true, 'ab12')], chatUses: { provider: 'anthropic', scope: 'user' } };
+    await mount();
+    const links = [...host.querySelectorAll('a')];
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Manage', '/app/settings/models?scope=mine']]);
+    expect(host.textContent).toContain('Your keys');
+    expect(host.querySelector('input')).toBeNull();
+    expect(host.querySelector('details')).toBeNull();
+    expect(host.querySelector('[data-testid^="provider-key-"]')).toBeNull();
   });
 
-  it('shows only the last four characters', async () => {
+  it('only reads: no write calls', async () => {
     await mount();
-    const c = host.querySelector('[data-testid="provider-key-anthropic"]')!;
-    expect(c.textContent).toContain('…ab12');
-    expect(c.textContent).toContain('Your key');
-  });
-
-  it('Test re-checks your key, at your scope', async () => {
-    await mount();
-    await click(button(host, 'Test key'));
-    const post = calls.find((c) => c.method === 'POST')!;
-    expect(post.url).toBe('/api/inference-keys/verify');
-    expect(post.body).toEqual({ teamId: 't', provider: 'anthropic', scope: 'user' });
-    expect(host.textContent).toContain('Anthropic accepted the key.');
-  });
-
-  it('Replace sends the new key at your scope and never leaves it in the DOM', async () => {
-    await mount();
-    await click(button(host, 'Replace'));
-    const input = host.querySelector('input[type="password"]') as HTMLInputElement;
-    const secret = 'sk-ant-api03-example-not-a-real-key-ef56';
-    await type(input, secret);
-    await click(button(host, 'Replace key'));
-    const put = calls.find((c) => c.method === 'PUT')!;
-    expect(put.body).toEqual({ teamId: 't', provider: 'anthropic', scope: 'user', value: secret });
-    expect(host.innerHTML).not.toContain(secret);
-    expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(1);
-  });
-
-  it('Remove deletes your key only, after a confirm', async () => {
-    await mount();
-    await click(button(host, 'Remove'));
-    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
-    await click(button(host, 'Confirm remove'));
-    const del = calls.find((c) => c.method === 'DELETE')!;
-    const qs = new URL(del.url, 'http://localhost').searchParams;
-    expect(Object.fromEntries(qs)).toEqual({ teamId: 't', provider: 'anthropic', scope: 'user' });
+    expect(calls.every((c) => c.method === 'GET')).toBe(true);
   });
 });

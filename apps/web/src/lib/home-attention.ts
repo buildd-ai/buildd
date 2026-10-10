@@ -28,6 +28,94 @@ export interface HomeAttentionItem {
   strand?: StrandCta;
   question?: HomeQuestion;
   held?: HomeHeldMission;
+  /**
+   * One cause across many subjects (a dead key, a lost connector): shown once,
+   * apart from per-subject decisions. `subjects` names what it hits.
+   */
+  systemic?: { count: number; subjects: string[] };
+}
+
+/**
+ * THE "Buildd owns the next move, so this is not a decision" rule for Home,
+ * the badge and the headline. The escalation gate's verdict decides
+ * (lib/escalation-gate-check.ts, `gate`): Buildd's own next step, or what Jev
+ * judged Buildd can do itself, is never a card. Without a verdict (the gate
+ * did not run), a human review on a PR Buildd is still repairing or checking
+ * (`machineActing`, from `reviewMachineActing` in action-queue.ts) waits too.
+ */
+export function waitsOnBuildd(i: Pick<ActionQueueItem, 'humanReview' | 'machineActing' | 'prLifecycleStatus' | 'gate'>): boolean {
+  if (i.prLifecycleStatus === 'merged' || i.prLifecycleStatus === 'closed') return false;
+  if (i.gate) return i.gate.owner === 'buildd';
+  return !!i.humanReview && !!i.machineActing;
+}
+
+/**
+ * Work the platform is already recovering on its own: an agent-handled chip, a
+ * fix or CI run in flight, or a conflict retry with attempts left. It is never
+ * a Needs you card. A human review waits too while Buildd is still repairing or
+ * checking its PR (`machineActing`): reviewing a diff that is about to change is
+ * wasted. Once that settles, a protected-path review needs a person whatever CI says.
+ */
+export function isAutoRecovering(i: ActionQueueItem, isActionable: (chip: ActionQueueItem['chip']) => boolean): boolean {
+  if (!isActionable(i.chip)) return true;
+  // A review on a PR Buildd is still repairing or checking waits for that to settle.
+  if (waitsOnBuildd(i)) return true;
+  if (i.humanReview || i.chip !== 'BLOCKED') return false;
+  if (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running') return true;
+  return !!i.conflictRetryTaskId && !i.deadZoneExhausted;
+}
+
+/** Causes that are about the setup, not one task: collapse when repeated. */
+const SYSTEMIC_ACTIONS: ReadonlySet<AttentionActionType> = new Set(['view', 'reconnect', 'resolve']);
+
+/**
+ * The same failure on several subjects is one problem, not N cards: fold
+ * setup-cause queue items (failed, reconnect, blocked) that share label and
+ * reason into one systemic item. Per-subject decisions (merge, review, answer,
+ * a per-PR fix) are never folded. A lost connector is systemic on its own,
+ * because every agent using it is paused.
+ */
+export function collapseSystemic(items: readonly HomeAttentionItem[]): HomeAttentionItem[] {
+  const groups = new Map<string, HomeAttentionItem[]>();
+  const keyOf = (i: HomeAttentionItem) => {
+    if (i.kind !== 'queue' || !SYSTEMIC_ACTIONS.has(i.actionType)) return null;
+    return `${i.label}\u0000${i.sentence.trim().toLowerCase()}`;
+  };
+  for (const i of items) {
+    const k = keyOf(i);
+    if (k) groups.set(k, [...(groups.get(k) ?? []), i]);
+  }
+  const out: HomeAttentionItem[] = [];
+  const emitted = new Set<string>();
+  for (const i of items) {
+    const k = keyOf(i);
+    const group = k ? groups.get(k)! : [i];
+    if (group.length < 2) {
+      out.push(i.queue?.chip === 'RECONNECT' ? { ...i, systemic: { count: 1, subjects: [i.title] } } : i);
+      continue;
+    }
+    if (emitted.has(k!)) continue;
+    emitted.add(k!);
+    const subjects = [...new Set(group.map(g => g.title))];
+    // One fix for all of them (a settings page) is the action; else the list.
+    const fix = i.queue?.fixHref;
+    const sameFix = !!fix && group.every(g => g.queue?.fixHref === fix);
+    const named = subjects.slice(0, 2).join(', ');
+    const rest = subjects.length - 2;
+    const primary = sameFix ? { label: i.queue?.fixLabel?.trim() || 'Fix', href: fix! } : { label: 'See all in Activity', href: '/app/tasks' };
+    out.push({
+      ...i,
+      key: `systemic:${group.map(g => g.key).sort().join('|')}`,
+      title: i.sentence,
+      sentence: `Seen on ${named}${rest > 0 ? ` and ${rest} more` : ''}.`,
+      meta: `${group.length} affected`,
+      href: primary.href,
+      primary,
+      details: null,
+      systemic: { count: group.length, subjects },
+    });
+  }
+  return out;
 }
 
 
@@ -73,7 +161,7 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
       return make({ label: 'ready for your merge', tone: 'ink', title: subject, sentence: reason, actionType: 'merge', primary: { label: 'Merge', href: pr ?? subjectHref ?? '' }, details: pr ? { label: 'Review PR', href: pr } : null });
     }
     case 'REVIEW': {
-      const reason = i.humanReview ? [i.humanReview.reason, i.machineStatus].filter(Boolean).join(' · ') : text(i.verdictSummary) ?? text(i.escalationReason);
+      const reason = i.humanReview ? [i.humanReview.decision ?? i.humanReview.reason, i.machineStatus].filter(Boolean).join(' · ') : text(i.verdictSummary) ?? text(i.escalationReason);
       return make({ label: 'review needed', tone: 'warning', title: subject, sentence: text(reason), actionType: 'review', primary: { label: text(i.humanReview?.label) ?? 'Review PR', href: pr ? `${pr}/files` : subjectHref ?? '' }, details: subjectHref ? { label: 'View task', href: subjectHref } : null });
     }
     case 'QUESTION':
@@ -133,7 +221,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     }
   }
   for (const [key, i] of prs) {
-    if (!isActionable(i.chip)) continue;
+    if (isAutoRecovering(i, isActionable)) continue;
     if (i.chip === 'QUESTION' && questions.some(q => (q.taskId && q.taskId === i.taskId) || q.workerId === i.workerId)) continue;
     const docFix = queue.find(row => row.docFixTaskId && row.docFixTaskId === i.taskId);
     const displayItem = docFix ? { ...i, docFixTaskId: docFix.docFixTaskId } : i;
@@ -152,7 +240,7 @@ export function deriveHomeAttention({ queue, missions, questions, held, isAction
     const key = `mission:${m.id}`;
     if (!items.has(key)) items.set(key, { key, kind: 'held', label: 'held', tone: 'warning', title: m.title, sentence: 'The work is ready for you to start.', meta: `${m.ready} ready`, href: m.href, actionType: 'start', owner: 'human', held: m });
   }
-  return [...items.values()];
+  return collapseSystemic([...items.values()]);
 }
 
 /** A waiting task as the layout's needs-input feed carries it (components/needs-input-context.ts). */
@@ -205,10 +293,20 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
 };
 
-export function homeAttentionCopy(items: readonly HomeAttentionItem[]) {
+/** "review" / "reviews", the same nouns the headline sub-line uses. */
+export function actionNoun(type: AttentionActionType, n: number): string {
+  return ACTION_NOUN[type][n === 1 ? 0 : 1];
+}
+
+/**
+ * `runnerConnected: false` (a team with no runner yet) changes only the empty
+ * sub-line: there is no fleet to be "working without you".
+ */
+export function homeAttentionCopy(items: readonly HomeAttentionItem[], opts: { runnerConnected?: boolean } = {}) {
   const count = items.length;
   const counts = new Map<AttentionActionType, number>();
   for (const i of items) counts.set(i.actionType, (counts.get(i.actionType) ?? 0) + 1);
-  const subline = [...counts].map(([t, n]) => `${n} ${ACTION_NOUN[t][n === 1 ? 0 : 1]}`).join(' · ') || 'The fleet is working without you.';
+  const idle = opts.runnerConnected === false ? 'No runner is connected yet, so nothing is running.' : 'The fleet is working without you.';
+  const subline = [...counts].map(([t, n]) => `${n} ${ACTION_NOUN[t][n === 1 ? 0 : 1]}`).join(' · ') || idle;
   return { count, headline: needsYouHeadline(count, 'Nothing needs you.'), subline };
 }

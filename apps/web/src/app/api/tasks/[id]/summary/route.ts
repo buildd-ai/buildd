@@ -5,6 +5,7 @@ import { eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { isGateSatisfied } from '@/lib/task-presentation';
+import { dependencyHoldsTask } from '@buildd/core/member-scoped-deps';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { isUuid } from '@/lib/uuid';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@/lib/mission-visual-review';
@@ -15,6 +16,7 @@ import { ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/sh
 import { describeBackendRouting } from '@buildd/core/backend-policy';
 import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import { getDeliveryViewsForTasks } from '@/lib/workflow/delivery-view';
+import type { WaitingFor } from '@buildd/shared';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -107,6 +109,7 @@ export async function GET(
         linesAdded: true,
         linesRemoved: true,
         costUsd: true,
+        costBasis: true,
         inputTokens: true,
         outputTokens: true,
         startedAt: true,
@@ -214,7 +217,7 @@ export async function GET(
     if (task.status === 'pending' && depTaskIds.length > 0) {
       const depTasks = await db.query.tasks.findMany({
         where: inArray(tasks.id, depTaskIds),
-        columns: { id: true, status: true },
+        columns: { id: true, status: true, missionId: true },
         with: {
           workers: {
             columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
@@ -223,8 +226,9 @@ export async function GET(
           },
         },
       });
+      // A surface audit is not held by a task that left its mission (deps-gate.ts).
       blockedByCount = depTasks.filter(
-        d => !isGateSatisfied(d, (d.workers ?? []) as Parameters<typeof isGateSatisfied>[1]),
+        d => dependencyHoldsTask(task, d) && !isGateSatisfied(d, (d.workers ?? []) as Parameters<typeof isGateSatisfied>[1]),
       ).length;
     }
 
@@ -274,7 +278,7 @@ export async function GET(
             outputTokens: worker.outputTokens,
             startedAt: worker.startedAt,
             completedAt: worker.completedAt,
-            waitingFor: worker.waitingFor as { type: string; prompt: string; options?: string[] } | null,
+            waitingFor: worker.waitingFor as WaitingFor | null,
             branch: worker.branch,
             milestones: worker.milestones ?? [],
             account: worker.account

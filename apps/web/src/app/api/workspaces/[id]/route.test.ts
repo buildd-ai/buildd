@@ -670,6 +670,38 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Member repo access (lib/member-repo-access.ts).
+  it('accepts gitConfig.memberRepoAccess off/require_read and null to clear', async () => {
+    for (const value of ['off', 'require_read', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true }, githubRepoId: 'repo-1' });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, memberRepoAccess: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.memberRepoAccess value (returns 400)', async () => {
+    for (const value of ['on', true, 'require_write']) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {}, githubRepoId: 'repo-1' });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/memberRepoAccess/);
+    }
+  });
+
+  it('refuses gitConfig.memberRepoAccess require_read without a linked repo', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {}, githubRepoId: null });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { memberRepoAccess: 'require_read' } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/linked GitHub repository/);
+  });
+
   // Where the workspace's work runs (packages/shared/src/executor.ts).
   it('accepts gitConfig.executor cloud/host/any and null to clear', async () => {
     for (const value of ['cloud', 'host', 'any', null]) {
@@ -731,6 +763,19 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts a list of gitConfig.overlapHotspots and rejects a malformed or repo-wide one', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    let res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { overlapHotspots: ['apps/web/src/app/api/workers/claim/route.ts'] } } }), { params: mockParams });
+    expect(res.status).toBe(200);
+    for (const value of ['x.ts', [''], ['**'], [3]]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { overlapHotspots: value } } }), { params: mockParams });
+      expect(res.status).toBe(400);
+    }
+  });
+
   // Cloud-runner container class (packages/shared/src/runner-size.ts).
   it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
     for (const value of ['standard', 'large', null]) {
@@ -787,6 +832,24 @@ describe('PATCH /api/workspaces/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
       expect(res.status).toBe(400);
       expect((await res.json()).error).toMatch(/earlyRelease/);
+    }
+  });
+
+  // Task 163b59e7: the kill switch is written as a boolean, never a string some readers took for "on".
+  it('accepts gitConfig.workflowKernel true/false/null and rejects any other form (returns 400)', async () => {
+    for (const value of [true, false, null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { workflowKernel: value } } }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, workflowKernel: value });
+    }
+    for (const value of ['false', 'off', 'true', 0]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const res = await PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { workflowKernel: value } } }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/workflowKernel/);
     }
   });
 

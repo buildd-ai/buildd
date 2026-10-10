@@ -4,6 +4,8 @@ import { githubInstallations, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { auth } from '@/auth';
 import { readInstallState, INSTALL_STATE_TTL_MS } from '@/lib/github-install-state';
+import { syncInstallationRepos } from '@/lib/github-repo-link';
+import { resumeAfterInstallationChange } from '@/lib/github-repo-access-store';
 import { createSign, createPrivateKey } from 'crypto';
 
 export async function GET(req: NextRequest) {
@@ -18,7 +20,7 @@ export async function GET(req: NextRequest) {
   const state = searchParams.get('state');
 
   if (!installationId) {
-    return NextResponse.redirect(new URL('/app/workspaces?error=no_installation_id', req.url));
+    return NextResponse.redirect(new URL('/app/settings/workspaces?error=no_installation_id', req.url));
   }
 
   // returnUrl is always a relative in-app path. `boundToUser` is true only when
@@ -41,7 +43,7 @@ export async function GET(req: NextRequest) {
   if (!installationResponse.ok) {
     const error = await installationResponse.text();
     console.error('Failed to fetch installation:', error);
-    return NextResponse.redirect(new URL(`/app/workspaces?error=fetch_failed`, req.url));
+    return NextResponse.redirect(new URL('/app/settings/workspaces?error=fetch_failed', req.url));
   }
 
   const installation = await installationResponse.json();
@@ -114,6 +116,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(
       new URL(`${returnUrl}?error=db_error&message=${encodeURIComponent(String(dbError))}`, req.url)
     );
+  }
+
+  // The person just changed the installation on GitHub (installed it, or
+  // added repos / accepted permissions — setup_action=update). Mirror the
+  // repos and resume tasks that were waiting on this access now, rather than
+  // relying on the webhook alone. Both are idempotent, so a callback arriving
+  // alongside (or twice after) the webhook does nothing extra. Best-effort:
+  // the "Check connection" button is the fallback.
+  try {
+    await syncInstallationRepos({ id: installationDbId, installationId: parseInt(installationId) });
+    await resumeAfterInstallationChange(parseInt(installationId));
+  } catch (err) {
+    console.warn('[GitHub Callback] post-install sync failed:', err instanceof Error ? err.message : err);
   }
 
   console.log('[GitHub Callback] Success, redirecting to:', returnUrl);

@@ -1,14 +1,16 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, isCloudExecutor } from './git-clone';
+import { DepsJob, createDepsGateHook, depsPrelude, DEPS_GATE_HOOK_TIMEOUT_S, type DepsGateStats } from './deps-gate';
+import { emitPhase } from './phase-lines';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -27,11 +29,12 @@ import {
 // `cleanupWorktree` is deliberately NOT imported: every teardown path in this
 // file goes through removeWorktreeIfUnowned so no site can force-remove a
 // directory a live worker is sitting in. See git-operations.ts.
+import { checkpointWorktree } from './worktree-archive';
 import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, collectGitStats } from './git-operations';
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -52,13 +55,13 @@ import {
 } from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { createScoutHostPoller, type ScoutHostPoller } from './scout-host';
-import { CredentialCache, authBackoffMs } from './credential-cache';
+import { CredentialCache, authBackoffMs, isWorkerScopedCredential, runnerLocalCredentialsAllowed } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker, loadTerminalWorkersCached, __resetDiskWorkersCache } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { toolActionMilestone, appendMilestone } from './tool-milestones';
+import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
@@ -87,7 +90,7 @@ import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
-import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint, ClaimCredentialDecision } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import {
   resolveBypassPermissions,
@@ -132,8 +135,10 @@ import {
   SESSION_BUDGET_CAP_ERROR,
   sdkMaxBudgetUsd,
 } from './claim-budget-signals';
+import { InstructionAckTracker } from './instruction-acks';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch, TERMINAL_WORKER_RETENTION_MS, SERVER_TERMINAL_STATUSES, SERVER_TERMINAL_TASK_STATUSES } from './worker-sync';
 import { buildTerminalAttributionPayload } from './terminal-attribution';
+import { claudeCostBasis, cloudCostBasis, codexCostBasis } from './cost-basis';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { handOffUnproven, isHandOffRefusal } from './hand-off-outcome';
 import { preflightHookEntries } from './preflight-guard';
@@ -147,7 +152,7 @@ import {
 } from './bwrap-mount-allowlist';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { gateTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
 import type { QuestionGateReply } from '@buildd/core/question-gate';
 import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
 import {
@@ -252,6 +257,11 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   private resolvers: Array<(result: IteratorResult<SDKUserMessage>) => void> = [];
   private done = false;
 
+  /** Messages enqueued that the session has not taken yet. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
   enqueue(message: SDKUserMessage) {
     if (this.done) {
       console.log(`[MessageStream] ⚠️ enqueue called after stream ended — parent_tool_use_id=${message.parent_tool_use_id}`);
@@ -295,7 +305,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 // Build a user message for the SDK
 function buildUserMessage(
   content: string | Array<{ type: string; text?: string; source?: any }>,
-  opts?: { parentToolUseId?: string; sessionId?: string },
+  opts?: { parentToolUseId?: string; sessionId?: string; uuid?: string },
 ): SDKUserMessage {
   const messageContent = typeof content === 'string'
     ? [{ type: 'text' as const, text: content }]
@@ -309,6 +319,12 @@ function buildUserMessage(
       content: messageContent as any,
     },
     parent_tool_use_id: opts?.parentToolUseId || null,
+    // The CLI echoes this on the assistant frame that answers it
+    // (user_message_uuid / user_message_uuids): how a steering message is
+    // acknowledged as read. No `priority`: its semantics are undocumented, and
+    // a queued message already folds into the running turn at its next
+    // boundary without one.
+    ...(opts?.uuid ? { uuid: opts.uuid as SDKUserMessage['uuid'] } : {}),
   };
 }
 
@@ -563,6 +579,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
@@ -632,6 +649,7 @@ export const METRICS_ONLY_FIELDS = [
   'inputTokens',
   'outputTokens',
   'costUsd',
+  'costBasis',
   'actualModel',
   'lastCommitSha',
   'commitCount',
@@ -693,6 +711,15 @@ function claimDiagnosticDetail(
     ...(typeof diagnostics.matchedTasks === 'number' ? { matchedTasks: diagnostics.matchedTasks } : {}),
   };
 }
+
+/** The install running behind a cloud session, its gate's numbers, and a structural failure once known. */
+interface DepsEntry {
+  job: DepsJob;
+  stats: DepsGateStats;
+  block?: string;
+}
+/** Keyed by the worker object: never persisted, gone with the worker. */
+const depsJobs = new WeakMap<LocalWorker, DepsEntry>();
 
 export class WorkerManager {
   private config: LocalUIConfig;
@@ -757,6 +784,8 @@ export class WorkerManager {
   private hookFactory: HookFactory;
   private recoveryManager: RecoveryManager;
   private workerSync: WorkerSync;
+  /** Served message ids injected into a session, awaiting the session's own read. */
+  private instructionAcks = new InstructionAckTracker();
   // Full knowledge-ingest jobs (KM v2 A2) — claimed only when this runner is idle.
   private knowledgeIngestPoller: KnowledgeIngestPoller;
   // Quality Scout command probes (runner-host design §6) — idle ticks only, never a worker slot.
@@ -796,7 +825,9 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
       abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
+      pause: (workerId) => this.pauseWorker(workerId),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
+      syncWorker: (workerId) => this.workerSync.requestSync(workerId),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
       recover: (workerId, mode) => this.recover(workerId, mode),
       sendHeartbeat: () => this.sendHeartbeat(),
@@ -839,7 +870,8 @@ export class WorkerManager {
       dirtyForDisk: this.dirtyForDisk,
       emit: (event) => this.emit(event),
       abort: (workerId, reason) => this.abort(workerId, reason),
-      sendMessage: (workerId, message) => this.sendMessage(workerId, message),
+      sendMessage: (workerId, message, ids) => this.sendMessage(workerId, message, ids),
+      onPauseRequested: (worker) => { void this.pauseWorker(worker.id); },
       getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
       setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
       recentCycleTimes: this.recentCycleTimes,
@@ -1107,9 +1139,8 @@ export class WorkerManager {
   // Send heartbeat to server announcing this runner instance is alive and ready
   private async sendHeartbeat() {
     try {
-      const activeCount = Array.from(this.workers.values()).filter(
-        w => w.status === 'working' || w.status === 'waiting'
-      ).length;
+      // A paused worker holds no slot (pause.ts); a question still does.
+      const activeCount = Array.from(this.workers.values()).filter(holdsRunnerSlot).length;
       // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
       // liveness while a worker sits inside one long silent tool call — the case
       // where `updatedAt` freezes and the server could not tell a busy worker
@@ -1375,6 +1406,87 @@ export class WorkerManager {
   /** True while an SDK session for this worker is still live (not yet torn down). */
   hasLiveSession(id: string): boolean {
     return this.sessions.has(id);
+  }
+
+  /** How this runner can pause a run (pause.ts): set by --once from its parking config. */
+  private pauseMode(): PauseMode {
+    return this.config.pauseMode ?? (this.config.singleTask ? 'none' : 'session');
+  }
+
+  /**
+   * A person paused this run (POST /api/workers/[id]/pause). Stops the session
+   * once no tool is executing, keeps the worktree and session id, and reports
+   * waiting_input with waitingFor.type 'pause' so answering it resumes the same
+   * session. Refused, with a milestone saying why, where it could not resume.
+   */
+  async pauseWorker(workerId: string): Promise<'apply' | 'defer' | 'refuse'> {
+    const worker = this.workers.get(workerId);
+    if (!worker) return 'refuse';
+    // Already stopping: the session is being torn down (the server repeats the
+    // request on every sync until it sees the park).
+    if (worker.status === 'working' && worker.error?.startsWith(PAUSED_ERROR_PREFIX)) return 'apply';
+    const decide = () => decidePause({
+      mode: this.pauseMode(),
+      status: worker.status,
+      hasLiveSession: this.sessions.has(workerId),
+      toolInFlight: !!worker.toolInFlight,
+      waitingFor: worker.waitingFor,
+      backend: worker.taskBackend,
+    });
+    const decision = decide();
+    if (decision.action === 'refuse') {
+      console.log(`[Worker ${workerId}] Pause refused: ${decision.reason}`);
+      const lastLabel = (worker.milestones[worker.milestones.length - 1] as { label?: string } | undefined)?.label;
+      const unavailable = decision.reason === 'unavailable' ? PAUSE_UNAVAILABLE_MESSAGE
+        : decision.reason === 'unavailable_backend' ? PAUSE_UNAVAILABLE_CODEX_MESSAGE
+        : null;
+      if (unavailable && lastLabel !== unavailable) {
+        this.addMilestone(worker, { type: 'status', label: unavailable, ts: Date.now() });
+        this.buildd.updateWorker(worker.id, { currentAction: unavailable, milestones: worker.milestones }).catch(() => {});
+        this.emit({ type: 'worker_update', worker });
+      }
+      return 'refuse';
+    }
+    if (decision.action === 'defer') {
+      if (worker.pauseRequestedAt) return 'defer';
+      worker.pauseRequestedAt = Date.now();
+      worker.currentAction = 'Pausing after the current step';
+      this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      this.emit({ type: 'worker_update', worker });
+      const timer = setInterval(() => {
+        if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
+        const next = decide();
+        if (next.action === 'defer') return;
+        clearInterval(timer);
+        worker.pauseRequestedAt = undefined;
+        if (next.action === 'apply') void this.applyPause(worker);
+      }, 1000);
+      (timer as { unref?: () => void }).unref?.();
+      return 'defer';
+    }
+    await this.applyPause(worker);
+    return 'apply';
+  }
+
+  /** Same shape as parkQuestion's inputAsRetry branch: report the park, then abort; the catch path parks it. */
+  private async applyPause(worker: LocalWorker): Promise<void> {
+    worker.pauseRequestedAt = undefined;
+    worker.error = PAUSED_ERROR;
+    worker.waitingFor = pausedWaitingFor();
+    worker.currentAction = 'Paused';
+    this.addMilestone(worker, { type: 'status', label: 'Paused', ts: Date.now() });
+    sessionLog(worker.id, 'info', 'paused', 'session stopped between tool calls; resumable by session id', worker.taskId);
+    try {
+      await this.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: worker.waitingFor as any,
+      });
+    } catch (err) {
+      console.warn(`[Worker ${worker.id}] pause sync failed:`, err);
+    }
+    storeSaveWorker(worker);
+    this.sessions.get(worker.id)?.abortController.abort();
   }
 
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
@@ -1946,7 +2058,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; toolSearchDisabled?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number }; credentialDecision?: ClaimCredentialDecision },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
@@ -1974,14 +2086,21 @@ export class WorkerManager {
     // wins. Capturing them unconditionally just guarantees a working fallback.
     const fromClaim = selectServerCredentials(claimedWorker);
     const teamKey = teamKeyOf(fullTask);
-    this.workerTeamKeys.set(claimedWorker.id, teamKey);
+    // A personal (or deliberately withheld) model credential is this worker's
+    // alone: never written to the per-team cache, never filled from it, and an
+    // auth failure on it says nothing about the team's credential. Read
+    // defensively: an older server sends no credentialDecision at all.
+    const workerScoped = isWorkerScopedCredential(claimedWorker.credentialDecision);
+    if (!workerScoped) this.workerTeamKeys.set(claimedWorker.id, teamKey);
 
     // Populate/refresh the in-memory per-team cred cache from this claim's
     // payload (the common path — no extra endpoint needed).
-    this.credCache.set(teamKey, {
-      oauthToken: fromClaim.serverOauthToken,
-      apiKey: fromClaim.serverApiKey,
-    });
+    if (!workerScoped) {
+      this.credCache.set(teamKey, {
+        oauthToken: fromClaim.serverOauthToken,
+        apiKey: fromClaim.serverApiKey,
+      });
+    }
 
     // Prefer the freshly-delivered claim credential; otherwise fall back to a
     // fresh cached entry for this team (e.g. the server didn't re-inject on this
@@ -1990,7 +2109,7 @@ export class WorkerManager {
     let serverOauthToken = fromClaim.serverOauthToken;
     // A team agent model endpoint won the claim's ranking: it is the only model
     // credential for this worker, so no cached Anthropic credential is reused.
-    if (!serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
+    if (!workerScoped && !serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
@@ -2081,6 +2200,12 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.credentialDecision && typeof claimedWorker.credentialDecision === 'object') {
+      // No secret in it; startSession reads runnerLocalAllowed from here.
+      worker.credentialDecision = claimedWorker.credentialDecision;
+      if (workerScoped) console.log(`[Worker ${claimedWorker.id}] Model credential scope: ${claimedWorker.credentialDecision.scope} (this worker only, not cached for the team)`);
+    }
+    if (claimedWorker.toolSearchDisabled) worker.toolSearchDisabled = true;
     if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
       worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
     }
@@ -2195,6 +2320,8 @@ export class WorkerManager {
     let installBlock: string | undefined;
     /** Set when the resolved session cwd cannot host the task at all. */
     let startBlock: string | undefined;
+    /** A conflict retry whose base merged cleanly once derived files were regenerated. */
+    let derivedMerge: { result: DerivedMergeResult; baseRef: string } | undefined;
     if (hasRepo && branchingStrategy !== 'none' && claimedWorker.branch) {
       worker.currentAction = 'Setting up worktree...';
       this.emit({ type: 'worker_update', worker });
@@ -2237,6 +2364,9 @@ export class WorkerManager {
             parentTaskId: fullTask.parentTaskId ?? null,
             onHolderReleased: (holderId) => this.markWorktreeReleased(holderId, worker.id),
           },
+          // Cloud: the install runs behind the agent session (deps-gate.ts).
+          // A host runner installs inline, as before.
+          { deferInstall: isCloudExecutor(process.env) },
         );
       } finally {
         const n = (setupsInFlight.get(workspacePath) ?? 1) - 1;
@@ -2289,17 +2419,13 @@ export class WorkerManager {
               const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
               console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
+                (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
               worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (merged.status === 'merged' || merged.status === 'conflicts') {
-                this.addMilestone(worker, {
-                  type: 'status',
-                  label: merged.status === 'merged'
-                    ? `Base merged by the runner${merged.regenerated.length ? `; regenerated ${merged.regenerated.length} derived file command(s)` : ''}`
-                    : `Base merge started; ${merged.conflicted.length} file(s) left for the agent`,
-                  ts: Date.now(),
-                });
-              }
+              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              // Synced to the server, so the outcome (and what mergiraf did) is
+              // readable from get_task without access to the runner's log.
+              this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -2346,48 +2472,34 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
-        // Dependency install outcome. This used to be unobservable —
-        // installWorkspaceDeps returned void — so a worker could run a full
-        // budget and report `done` with an empty node_modules and nothing
-        // anywhere saying so.
-        //
-        // Fail-vs-degrade splits on whether the runner GUESSED that install
-        // mattered. `skipped` means it did not matter (no manifest, non-bun
-        // toolchain, or a declared manifest the provision gate owns) and raises
-        // nothing at all — that is the population that produced the old
-        // false-alarm noise.
-        const install = setupResult.install;
-        if (install?.status === 'failed') {
-          const where = formatInstallDir(install.dir);
-          const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
-          console.warn(`[Worker ${worker.id}] ${label}`);
-          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-          this.buildd.updateWorker(worker.id, {
-            appendErrorTraces: [{
-              pattern: 'worktree_install_failed',
-              excerpt: `${install.failure} installing at ${where}: ${install.message}`,
-              source: 'git-operations',
-            }],
-          }).catch(() => {});
-
-          if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
-            // Structural and host-level: not fixable by the agent, and it will
-            // hit every task on this runner. Fail before a budget is spent
-            // rather than producing a `done` with broken imports. The trace
-            // above still lands, so this dedupes into one friction report per
-            // host fault instead of one per worker. Raised through the
-            // session-start boundary below so it gets the same server report
-            // and worktree cleanup as any other start failure.
-            // registry-auth names host, package and the env var the repo's
-            // registry config reads, so the fix is readable off the task card.
-            installBlock = describeInstallFailure(install);
-          } else {
-            // Drift / timeout / unknown: proceed, but visibly. The banner goes
-            // in the prompt (see startSession) and the flag rides the worker
-            // record so a `done` carrying it is machine-visible rather than
-            // invisible.
-            worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
-          }
+        // Dependency install outcome (surfaceInstallOutcome). Cloud: the
+        // install (and the cache restore it needs) runs behind the session;
+        // its outcome is surfaced the same way when it lands, and a
+        // structural failure then aborts the session instead of blocking its
+        // start. Everywhere else: inline, before the session, as before.
+        if (setupResult.deferredInstall) {
+          const runInstall = setupResult.deferredInstall;
+          const entry: DepsEntry = {
+            job: new DepsJob(async () => { await depsPrelude(); return runInstall(); }),
+            stats: { firstGatedToolAt: null, gateWaitMs: 0, holds: 0, denials: 0 },
+          };
+          depsJobs.set(worker, entry);
+          this.addMilestone(worker, { type: 'status', label: 'Installing dependencies in the background', ts: Date.now() });
+          void entry.job.promise.then((outcome) => {
+            const block = this.surfaceInstallOutcome(worker, outcome);
+            if (outcome.status === 'ok') {
+              this.addMilestone(worker, { type: 'status', label: `Dependencies installed (${Math.round((Date.now() - entry.job.startedAt) / 1000)} s)`, ts: Date.now() });
+            }
+            if (!block) return;
+            entry.block = block;
+            // Not yet started: the start boundary below throws it instead.
+            if (this.sessions?.has(worker.id)) void this.abort(worker.id, block);
+          });
+        } else {
+          // A warm restore's cache extract may still be running (deferCache);
+          // a declared manifest's provision gate installs from it.
+          await depsPrelude();
+          installBlock = this.surfaceInstallOutcome(worker, setupResult.install);
         }
         this.addMilestone(worker, { type: 'status', label: 'Worktree ready', ts: Date.now() });
       } else {
@@ -2460,6 +2572,11 @@ export class WorkerManager {
       // blocks here, inside the error boundary, so it is reported and cleaned up
       // like any other session-start failure — with zero agent budget spent.
       if (installBlock) throw new Error(installBlock);
+      const deps = depsJobs.get(worker);
+      // Codex has no PreToolUse seam to gate on: it waits for the install here.
+      if (deps && (fullTask.backend || 'claude') === 'codex') await deps.job.promise;
+      // A background install that already failed structurally blocks like an inline one.
+      if (deps?.block) throw new Error(deps.block);
       // A cwd that cannot host the task blocks on the same rail, for the same
       // reason: reported, cleaned up, zero agent budget spent.
       if (startBlock) throw new Error(startBlock);
@@ -2480,6 +2597,10 @@ export class WorkerManager {
           break;
         }
         storeSaveWorker(worker);
+      }
+      // After the branch is persisted: the completion's PR lookup reads it.
+      if (derivedMerge && await this.finishDerivedMergeWithoutAgent(worker, fullTask, sessionCwd, derivedMerge.result, derivedMerge.baseRef)) {
+        return;
       }
       await this.startSession(worker, sessionCwd, fullTask);
     };
@@ -2719,9 +2840,34 @@ export class WorkerManager {
       : isSessionBudgetCap ? ('skipped:session_budget_capped' as const)
       : isSteeringDeliveryCrash ? ('skipped:infra_failure' as const)
       : closingTurnOutcome;
+    // A usage/session-limit death leaves the agent's whole session in the
+    // worktree, usually uncommitted. Save it before anything can remove the
+    // tree, and say where it went in the error so the next attempt resumes.
+    let recoveryRef: string | undefined;
+    if (isBudgetError && worker.worktreePath && worker.branch && existsSync(worker.worktreePath)) {
+      const cp = await checkpointWorktree({
+        worktreePath: worker.worktreePath,
+        branch: worker.branch,
+        workerId: worker.id,
+        reason: 'usage limit',
+      });
+      if (cp.kind === 'pushed' || cp.kind === 'archived') {
+        recoveryRef = cp.ref;
+        worker.recoveryRef = cp.ref;
+        if (cp.kind === 'pushed') worker.commits.push({ sha: cp.sha, message: 'wip: checkpoint after usage limit' });
+        worker.error = `${worker.error} [work preserved: ${cp.ref}]`;
+        sessionLog(worker.id, 'info', 'recovery_checkpoint', `Preserved work at ${cp.ref}`, worker.taskId);
+      } else if (cp.kind === 'failed') {
+        // Quiet-loss risk: the tree stays (removal archives or refuses), but
+        // nothing was written. Make that visible rather than silent.
+        worker.error = `${worker.error} [work NOT checkpointed: ${cp.error}]`;
+        sessionLog(worker.id, 'warn', 'recovery_checkpoint_failed', cp.error, worker.taskId);
+      }
+    }
     const errorPayload = {
       status: 'failed',
       error: worker.error,
+      ...(recoveryRef && worker.commits.length > 0 && { lastCommitSha: worker.commits[worker.commits.length - 1].sha }),
       ...this.terminalAttributionPayload(worker),
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
@@ -2734,6 +2880,7 @@ export class WorkerManager {
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
         ...(mcpPreflightFailures ? { mcpPreflightFailures } : {}),
+        ...(recoveryRef ? { recoveryRef } : {}),
         closingTurnOutcome: resolvedOutcome,
       },
       ...spanPayload,
@@ -2886,7 +3033,7 @@ export class WorkerManager {
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
+    const question = gateTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
@@ -2949,13 +3096,14 @@ export class WorkerManager {
   private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
     console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
-    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
+    // and a "Task failed" milestone right after "Paused" read as one.
     const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
     worker.status = 'waiting';
-    worker.currentAction = 'Needs input';
+    worker.currentAction = worker.waitingFor?.type === 'pause' ? 'Paused' : 'Needs input';
     worker.hasNewActivity = true;
     // Not terminal — no completedAt. The worker is still open.
     // Re-send waitingFor so the dashboard can render the answer UI even
@@ -3010,14 +3158,19 @@ export class WorkerManager {
     label: SessionEndLabel,
     disposition: 'ask' | 'hold',
     note: string,
+    gateReply?: QuestionGateReply,
   ): Promise<void> {
-    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${disposition}`, worker.taskId);
-    const question: WaitingFor = {
+    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${gateReply?.disposition ?? disposition}`, worker.taskId);
+    const base: WaitingFor = {
       type: 'question',
       prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
       context: `Classified as: ${label}. ${note}`.trim(),
-      ...(disposition === 'hold' ? { disposition: 'hold' as const, holdReason: note } : {}),
     };
+    // The gate's own disposition when it answered (so a recovered blocker is
+    // not admitted to Needs You); with no reply the server re-checks the park.
+    const question: WaitingFor = gateReply
+      ? gateTagged(base, gateReply)
+      : disposition === 'hold' ? { ...base, disposition: 'hold', holdReason: note } : base;
     worker.waitingFor = question;
     worker.status = 'waiting';
     worker.currentAction = 'Needs a person';
@@ -3048,7 +3201,7 @@ export class WorkerManager {
     task: BuilddTask,
   ): Promise<
     | { action: 'retry' | 'fail'; text: string }
-    | { action: 'park'; disposition: 'ask' | 'hold'; text: string }
+    | { action: 'park'; disposition: 'ask' | 'hold'; text: string; reply?: QuestionGateReply }
   > {
     const diagnosis = (worker.lastAssistantMessage || '').trim().slice(0, 300);
     const input = genuinelyBlockedQuestionInput(diagnosis || undefined);
@@ -3080,10 +3233,12 @@ export class WorkerManager {
     // error, or a `decide` on neither offered option) fails open to a
     // human-facing park — the only gate reply this mechanism ever treats as
     // "apply the decision without a person" is an actual `decide` on one of
-    // the two options above.
+    // the two options above. A `recovered` reply still parks, but tagged
+    // with its repair task (`gateTagged`), so it never reaches Needs You.
     return {
       action: 'park',
       disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
+      reply,
       text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
     };
   }
@@ -3179,6 +3334,15 @@ export class WorkerManager {
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
+    // Run report (cloud only): how much of the background deps work this start hid.
+    emitPhase('session_start');
+    // A background install can fail structurally between the start check and
+    // this registration; after it, the install's own handler aborts the session.
+    const depsBlock = depsJobs.get(worker)?.block;
+    if (depsBlock) {
+      this.sessions.delete(worker.id);
+      throw new Error(depsBlock);
+    }
 
     // The agent's buildd MCP auth: a per-task token minted for this session
     // (fresh start, resume and follow-up all pass through here), falling back
@@ -3205,6 +3369,8 @@ export class WorkerManager {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
+    } else if (agentBuilddAuth.source === 'none') {
+      sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=none reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
       sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.detail ?? 'unknown'}`, task.id);
     }
@@ -3529,9 +3695,17 @@ export class WorkerManager {
       // The machine's own Claude login (host-seat.ts): used when the claim
       // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
       // With a stored seat under the default, the env is the pre-passthrough one.
+      // credentialDecision.runnerLocalAllowed=false (the requester's own key
+      // under personal_only): the machine's seat, login and provider must not
+      // displace it. Absent on older servers and teams without a policy.
+      const runnerLocalAllowed = runnerLocalCredentialsAllowed(worker.credentialDecision);
+      if (!runnerLocalAllowed) {
+        console.log(`[Worker ${worker.id}] This machine's own model credentials are not used: the claim carries the requester's own key and the team policy is personal keys only`);
+      }
       const seatDecision = applyHostSeatPolicy(cleanEnv, {
         serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
         isCodexTask,
+        runnerLocalAllowed,
       });
       const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
@@ -3544,7 +3718,9 @@ export class WorkerManager {
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
         teamEndpointWithheld: worker.modelEndpointIgnored,
+        toolSearchDisabled: worker.toolSearchDisabled,
         budgetModel: bundledTierEntry('budget').model,
+        runnerLocalAllowed,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
@@ -3566,7 +3742,7 @@ export class WorkerManager {
       if (modelEnv.teamEndpointIgnored) {
         console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
-      if (this.config.llmProvider?.provider === 'openrouter') {
+      if (runnerLocalAllowed && this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
       }
       if (modelEnv.injected.includes('serverApiKey')) {
@@ -3591,6 +3767,13 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
         this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
       }
+      // How this run's usage is charged (docs/specs/real-and-virtual-cost.md),
+      // sent with every usage report. A cloud run's container only holds a
+      // placeholder key, so its supervisor's hint decides there. Codex is
+      // classified below, once its CODEX_HOME auth is in place.
+      worker.costBasis = cloudCostBasis(process.env)
+        ?? (isCodexTask ? 'unknown' : claudeCostBasis(modelEnv, { claudeCredentialUsed: shouldUseClaudeCredential(modelEnv, worker) }));
+      sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
       if (modelEnv.withheld.length > 0) {
         console.log(`[Worker ${worker.id}] Custom model endpoint (${modelEnv.baseUrlOrigin || 'unparseable ANTHROPIC_BASE_URL'}): server-managed Anthropic credentials not given to the agent (${modelEnv.withheld.join(', ')}). Set ${TRUSTED_MODEL_BASE_URL_ENV} to that origin only if it forwards to Anthropic.`);
       }
@@ -3646,6 +3829,7 @@ export class WorkerManager {
           serverCredentialType: worker.codexCredential?.credentialType ?? null,
           localAuthPath: machineCodexAuth,
           explicitCodexHome: !!process.env.CODEX_HOME,
+          runnerLocalAllowed,
         });
         (worker as any).codexSeatSource = codexSeat;
 
@@ -3679,6 +3863,16 @@ export class WorkerManager {
           console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
         }
         cleanEnv.CODEX_HOME = _ch;
+        if (!cloudCostBasis(process.env)) {
+          let authJson: Record<string, unknown> | null = null;
+          try { authJson = JSON.parse(readFileSync(join(_ch, 'auth.json'), 'utf-8')); } catch { /* none */ }
+          worker.costBasis = codexCostBasis({
+            teamEndpoint: modelEnv.endpoint === 'team',
+            authJson,
+            envApiKey: cleanEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+          });
+          sessionLog(worker.id, 'info', 'cost_basis', `basis=${worker.costBasis}`, task.id);
+        }
         const session = this.sessions.get(worker.id);
         if (session) (session as any).codexHome = _ch;
 
@@ -3855,8 +4049,6 @@ export class WorkerManager {
         );
       }
 
-      // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
-      cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
       // Keep task-tracking tools available on newer Claude models.
       cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
       // Nothing re-invokes a session after its turn ends, so background work
@@ -3997,6 +4189,7 @@ export class WorkerManager {
         resumeBranch: (task.context as any)?.resumeBranch,
         lastCommitSha: (task.context as any)?.lastCommitSha,
         failureContext: (task.context as any)?.failureContext,
+        recoveryRef: (task.context as any)?.recoveryRef,
         defaultBranch: gitConfig?.defaultBranch || 'main',
       });
       if (retryContinuitySection) {
@@ -4061,6 +4254,12 @@ export class WorkerManager {
       // becomes the task summary instead of actual results. Agents should not use
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
+      // Narration policy: a text block right before a tool call becomes an
+      // Activity milestone, so "Now let me check X…" filler stacked up as rows.
+      // The dashboard names such phases by their calls (milestone-log.ts) — that
+      // is the durable fix; this only cuts the noise at the source.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Narration Policy\nCall tools directly. Do not narrate an imminent tool call with filler such as "Let me…", "Now I\'ll…" or "I\'m going to check…" — the call itself shows what you are doing. Write text when it carries a finding, a decision, a warning or a result.';
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
@@ -4447,8 +4646,8 @@ export class WorkerManager {
         : null;
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
-      // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
+      // tool activity hook (clears toolInFlight after each tool),
+      // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -4467,6 +4666,16 @@ export class WorkerManager {
             ? [{ hooks: [this.hookFactory.createClaudeAiArtifactHook(worker, worker.claudeAiArtifacts ?? 'off')] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
+          // Deps gate (cloud): while the install runs behind the session,
+          // hold the Bash commands that need it. After the permission hook,
+          // so a command it refuses never waits. See deps-gate.ts.
+          ...(!isCodexTask && depsJobs.get(worker)
+            ? [{
+                matcher: 'Bash',
+                timeout: DEPS_GATE_HOOK_TIMEOUT_S,
+                hooks: [createDepsGateHook(depsJobs.get(worker)!.job, depsJobs.get(worker)!.stats)],
+              }]
+            : []),
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
           // Advisory + fail-open — never blocks the edit; Codex tasks have no PreToolUse hooks.
           ...(!isCodexTask
@@ -4515,13 +4724,12 @@ export class WorkerManager {
           }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
-          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          { hooks: [this.hookFactory.createToolActivityHook(worker)] },
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.hookFactory.createPermissionRequestHook(worker)] }],
-        TeammateIdle: [{ hooks: [this.hookFactory.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.hookFactory.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.hookFactory.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.hookFactory.createSubagentStopHook(worker)] }],
@@ -4730,6 +4938,12 @@ export class WorkerManager {
           throw new Error(event.error);
         }
 
+        // Codex took a queued message as its next turn's prompt: read.
+        if (event.type === 'input_consumed') {
+          this.acknowledgeInstructions(worker.id, this.instructionAcks.onInputConsumed(worker.id, event.uuids));
+          continue;
+        }
+
         if (event.type === 'turn_complete') {
           // Accumulate per-turn usage as the last-resort token source. Assistant
           // messages always carry usage, including on seat auth.
@@ -4781,6 +4995,13 @@ export class WorkerManager {
           }
           if (outputReqNudged) {
             continue; // Keep session alive — agent needs to create the deliverable
+          }
+
+          // A steering message queued during the turn that just ended is
+          // delivered at this boundary, not dropped: Codex takes it as the next
+          // turn's prompt (it parks on the input stream after turn.completed).
+          if ((this.sessions.get(worker.id)?.inputStream.pending ?? 0) > 0) {
+            continue;
           }
 
           // No more turns to force — the SDK session ended naturally (or the
@@ -4835,7 +5056,7 @@ export class WorkerManager {
       // 'waiting_input' phase. See docs/specs/human-in-the-loop-protocol.md.
       // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
       // (answer, or timeout after 4h/24h) — this path only parks.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }
@@ -4938,7 +5159,7 @@ export class WorkerManager {
             if (label === 'genuinely_blocked') {
               const routed = await this.routeGenuinelyBlocked(worker, task);
               if (routed.action === 'park') {
-                await this.parkSessionEnd(worker, label, routed.disposition, routed.text);
+                await this.parkSessionEnd(worker, label, routed.disposition, routed.text, routed.reply);
                 return;
               }
               if (routed.action === 'retry') {
@@ -5350,7 +5571,7 @@ export class WorkerManager {
       // reporting status:'failed' here fed the mission auto-retry gate and
       // classifyReportedFailure's code_failure default. See
       // docs/specs/human-in-the-loop-protocol.md.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }
@@ -5702,6 +5923,76 @@ export class WorkerManager {
   }
 
   /**
+   * A conflict retry whose only conflicts were derived files is already merged
+   * and regenerated by the time we get here. Verify it, push it and complete
+   * the worker, so no agent session is spent on it. True when the worker is
+   * finished (or was stopped meanwhile); false means start the agent as
+   * before, with the merge note saying what the runner tried.
+   *
+   * Loop tasks are left to the agent: their completion carries loop evidence.
+   */
+  private async finishDerivedMergeWithoutAgent(
+    worker: LocalWorker,
+    task: BuilddTask,
+    cwd: string,
+    merge: DerivedMergeResult,
+    baseRef: string,
+  ): Promise<boolean> {
+    if (!worker.branch || task.loopConfig) return false;
+    worker.currentAction = 'Verifying and pushing the base merge...';
+    this.emit({ type: 'worker_update', worker });
+
+    const finish = await finishDerivedMerge(cwd, worker.branch, {
+      verificationCommand: derivedMergeVerificationCommand(task.context),
+    });
+    // Aborted while verifying: the abort path already reported it.
+    if (worker.status === 'error' || worker.status === 'done') return true;
+    if (finish.status !== 'pushed') {
+      console.warn(`[Worker ${worker.id}] Derived-file merge not finished by the runner (${finish.status}) — starting the agent`);
+      worker.derivedMergeNote = (worker.derivedMergeNote ?? '') + formatDerivedFinishFallback(finish);
+      this.addMilestone(worker, {
+        type: 'status',
+        label: finish.status === 'verify_failed' ? 'Verification failed after the base merge; handing to the agent' : 'Push failed after the base merge; handing to the agent',
+        ts: Date.now(),
+      });
+      return false;
+    }
+
+    const summary = formatDerivedMergeSummary(merge, baseRef, finish);
+    this.addMilestone(worker, { type: 'status', label: 'Base merge pushed by the runner; no agent needed', ts: Date.now() });
+    try {
+      // A 409 {abort} means the row is already terminal on the server: done either way.
+      await this.buildd.updateWorker(worker.id, {
+        status: 'completed',
+        summary,
+        // Runner-authored but deliberate and factual, not a captured aside.
+        summarySource: 'agent',
+        milestones: worker.milestones,
+        ...(finish.headSha ? { lastCommitSha: finish.headSha } : {}),
+        derivedMergeFinish: {
+          baseRef,
+          regenerated: merge.regenerated,
+          verification: finish.verification,
+          ...(finish.headSha ? { headSha: finish.headSha } : {}),
+        },
+      });
+    } catch (err) {
+      // The merge is pushed; the agent only has to confirm it and complete.
+      console.warn(`[Worker ${worker.id}] Completion after the runner's base merge was refused — starting the agent: ${err instanceof Error ? err.message : String(err)}`);
+      worker.derivedMergeNote = (worker.derivedMergeNote ?? '') +
+        `\n\nThe runner already pushed this merge, but its completion was refused: ${err instanceof Error ? err.message : String(err)}. Check the PR and complete the task.`;
+      return false;
+    }
+    worker.status = 'done';
+    worker.currentAction = 'Completed by the runner (no agent)';
+    worker.hasNewActivity = true;
+    worker.completedAt = Date.now();
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+    return true;
+  }
+
+  /**
    * Feed a terminal outcome to the post-update canary (update-canary.ts). A
    * no-op unless this process booted the canary and is on probation.
    */
@@ -5745,7 +6036,7 @@ export class WorkerManager {
    * shared, dependency-free builder in terminal-attribution.ts — see its doc
    * for why this is pulled out rather than kept private to this class.
    */
-  private terminalAttributionPayload(worker: LocalWorker): { costUsd?: number; actualModel?: string } {
+  private terminalAttributionPayload(worker: LocalWorker): ReturnType<typeof buildTerminalAttributionPayload> {
     return buildTerminalAttributionPayload(worker);
   }
 
@@ -5943,6 +6234,9 @@ export class WorkerManager {
     }
 
     if (msg.type === 'assistant') {
+      // A steering message this reply answers has been read (instruction-acks.ts).
+      this.acknowledgeInstructions(worker.id, this.instructionAcks.onAssistant(worker.id, msg as any));
+
       // Surface rate_limit errors on assistant messages
       if ((msg as any).error === 'rate_limit') {
         worker.currentAction = 'Rate limited — retrying...';
@@ -5980,6 +6274,7 @@ export class WorkerManager {
             worker.phaseStart = Date.now();
             worker.phaseToolCount = 0;
             worker.phaseTools = [];
+            worker.phaseOps = [];
           }
           const lines = cleanBlockText.split('\n');
           for (const line of lines) {
@@ -6103,8 +6398,12 @@ export class WorkerManager {
             return;
           }
 
-          // Increment phase tool count
+          // Increment phase tool count, and record what the phase did so the
+          // dashboard can name it by its calls when its text was only a lead-in
+          // ("Now let me check the decision…" + get_decision → "Checked decision").
           worker.phaseToolCount++;
+          if (!worker.phaseOps) worker.phaseOps = [];
+          recordPhaseOp(worker.phaseOps, phaseOpName(toolName, rawInput));
 
           // Track notable tools in phaseTools (cap 5)
           if (['Edit', 'Write', 'Bash'].includes(toolName) && worker.phaseTools.length < 5) {
@@ -6156,10 +6455,13 @@ export class WorkerManager {
                 worker.commits.shift();
               }
               this.addMilestone(worker, { type: 'status', label: `Commit: ${message}`, ts: Date.now() });
-              this.addCheckpoint(worker, CheckpointEvent.FIRST_COMMIT);
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName.startsWith('mcp__')) {
+            // An agent that starts with MCP calls (recall, update_progress)
+            // otherwise sits on "Setting up worktree..." until its first Bash.
+            worker.currentAction = `Using ${toolName.split('__')[1] || 'a tool'}`;
           } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
             // Asks nothing (e.g. `questions: []` used to "wait" on background
             // work). Not a question: never park, abort, or notify — the
@@ -6589,12 +6891,14 @@ export class WorkerManager {
       label: extractPhaseLabel(worker.phaseText),
       toolCount: worker.phaseToolCount,
       ts: worker.phaseStart || Date.now(),
+      ...(worker.phaseOps?.length ? { ops: [...worker.phaseOps] } : {}),
     };
     this.addMilestone(worker, milestone);
     worker.phaseText = null;
     worker.phaseStart = null;
     worker.phaseToolCount = 0;
     worker.phaseTools = [];
+    worker.phaseOps = [];
   }
 
   /**
@@ -6653,6 +6957,56 @@ export class WorkerManager {
     });
   }
 
+  /**
+   * Surface the runner's own dependency install outcome. Returns the start
+   * block for a structural failure (the caller fails or aborts the worker
+   * with it), undefined otherwise.
+   *
+   * This used to be unobservable — installWorkspaceDeps returned void — so a
+   * worker could run a full budget and report `done` with an empty
+   * node_modules and nothing anywhere saying so.
+   *
+   * Fail-vs-degrade splits on whether the runner GUESSED that install
+   * mattered. `skipped` means it did not matter (no manifest, non-bun
+   * toolchain, a declared manifest the provision gate owns, or deferred) and
+   * raises nothing at all — that is the population that produced the old
+   * false-alarm noise.
+   */
+  private surfaceInstallOutcome(worker: LocalWorker, install: gitOperations.InstallOutcome | undefined): string | undefined {
+    if (install?.status !== 'failed') return undefined;
+    const where = formatInstallDir(install.dir);
+    const label = `Dependency install failed (${install.failure}) at ${where} — imports may fail`;
+    console.warn(`[Worker ${worker.id}] ${label}`);
+    this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+    this.buildd.updateWorker(worker.id, {
+      appendErrorTraces: [{
+        pattern: 'worktree_install_failed',
+        excerpt: `${install.failure} installing at ${where}: ${install.message}`,
+        source: 'git-operations',
+      }],
+    }).catch(() => {});
+
+    if (install.failure === 'registry-auth' || install.failure === 'toolchain-missing') {
+      // Structural and host-level: not fixable by the agent, and it will
+      // hit every task on this runner. Fail before a budget is spent
+      // rather than producing a `done` with broken imports. The trace
+      // above still lands, so this dedupes into one friction report per
+      // host fault instead of one per worker. Raised through the
+      // session-start boundary so it gets the same server report
+      // and worktree cleanup as any other start failure.
+      // registry-auth names host, package and the env var the repo's
+      // registry config reads, so the fix is readable off the task card.
+      return describeInstallFailure(install);
+    }
+    // Drift / timeout / unknown: proceed, but visibly. The banner goes
+    // in the prompt (see startSession; a background install that lands
+    // later tells the agent through the deps gate instead) and the flag
+    // rides the worker record so a `done` carrying it is machine-visible
+    // rather than invisible.
+    worker.envDegraded = { phase: 'install', failure: install.failure, dir: install.dir };
+    return undefined;
+  }
+
   async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
     return this.recoveryManager.abort(workerId, reason, cancelQueued);
   }
@@ -6701,7 +7055,17 @@ export class WorkerManager {
     }
   }
 
-  async sendMessage(workerId: string, message: string): Promise<boolean> {
+  /**
+   * Report served message ids as read by the agent's turn (see
+   * instruction-acks.ts). Fire-and-forget: an unreported read leaves the
+   * message Delivered, which is true, never wrong.
+   */
+  private acknowledgeInstructions(workerId: string, ids: string[]) {
+    if (ids.length === 0) return;
+    this.buildd.updateWorker(workerId, { instructionsAcknowledged: ids } as any).catch(() => {});
+  }
+
+  async sendMessage(workerId: string, message: string, ids: string[] = []): Promise<boolean> {
     let worker = this.workers.get(workerId);
 
     // If evicted from memory, try loading from disk (24h TTL) for resume
@@ -6781,6 +7145,9 @@ export class WorkerManager {
         ? worker.worktreePath
         : workspacePath;
 
+      // The message is the resumed session's prompt: its first reply reads it.
+      this.instructionAcks.register(worker.id, ids, { ackOnNextAssistant: true });
+
       // Resume session with automatic fallback: SDK resume → reconstructed context
       this.recoveryManager.resumeSession(worker, sessionCwd, message).catch(err => {
         console.error(`[Worker ${worker.id}] Resume failed:`, err);
@@ -6817,9 +7184,14 @@ export class WorkerManager {
       if (parentToolUseId) {
         console.log(`[Worker ${worker.id}] Responding to tool_use ${parentToolUseId} with sessionId=${sessionId}`);
       }
+      // An answer to a parked tool call goes in as its tool_result, which the
+      // CLI never echoes: the next top-level reply is the model reading it.
+      // Anything else gets a uuid the reply frame will echo.
+      const uuid = this.instructionAcks.register(worker.id, ids, { ackOnNextAssistant: !!parentToolUseId }) ?? undefined;
       session.inputStream.enqueue(buildUserMessage(message, {
         parentToolUseId,
         sessionId,
+        ...(uuid && !parentToolUseId ? { uuid } : {}),
       }));
       worker.hasNewActivity = true;
       worker.lastActivity = Date.now();

@@ -10,7 +10,10 @@ import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { ArtifactCodeBody } from '@/components/ArtifactCodeBody';
+import MemberRepoAccessNotice from '@/components/MemberRepoAccessNotice';
+import { memberHasRepoAccess } from '@/lib/member-repo-access';
 import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
+import { displayTaskTitle } from '@/lib/task-title';
 
 export const dynamic = 'force-dynamic';
 
@@ -92,6 +95,9 @@ export default async function ArtifactDetailPage({
     notFound();
   }
 
+  // A diff is repository code: the workspace's opt-in GitHub check applies.
+  const repoAccess = artifact.type === 'diff' ? await memberHasRepoAccess(user.id, workspaceId) : null;
+
   const metadata = artifact.metadata as Record<string, unknown> | null;
   const artifactUrl = metadata?.url as string | undefined;
   const fileMimeType = metadata?.mimeType as string | undefined;
@@ -120,8 +126,12 @@ export default async function ArtifactDetailPage({
             &larr; Back
           </Link>
         ) : (
-          <Link href="/app/artifacts" className="text-sm text-text-muted hover:text-text-secondary mb-4 block">
-            &larr; Artifacts
+          // The artifacts list is retired: back goes to the work it belongs to.
+          <Link
+            href={taskId ? `/app/tasks/${taskId}` : artifact.missionId ? `/app/missions/${artifact.missionId}` : '/app/missions'}
+            className="text-sm text-text-muted hover:text-text-secondary mb-4 block"
+          >
+            &larr; {taskId ? 'Task' : artifact.missionId ? 'Mission' : 'Missions'}
           </Link>
         )}
 
@@ -159,7 +169,7 @@ export default async function ArtifactDetailPage({
               href={`/app/tasks/${taskId}`}
               className="text-sm text-text-muted hover:text-text-secondary mt-1 inline-block"
             >
-              Task: {taskTitle}
+              Task: {displayTaskTitle(taskTitle)}
             </Link>
           )}
         </div>
@@ -194,7 +204,9 @@ export default async function ArtifactDetailPage({
             <MarkdownContent content={artifact.content} />
           )}
 
-          {(artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
+          {repoAccess && !repoAccess.allowed ? (
+            <MemberRepoAccessNotice result={repoAccess} returnTo={`/app/artifacts/${artifact.id}`} />
+          ) : (artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
             <ArtifactCodeBody type={artifact.type} content={artifact.content} />
           )}
 

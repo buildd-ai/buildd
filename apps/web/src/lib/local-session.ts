@@ -11,7 +11,8 @@ import {
 } from '@buildd/shared';
 import { INTERACTIVE_CLAIM_USER_KEY, INTERACTIVE_LIVE_STATUSES } from '@/lib/interactive-worker-liveness';
 import { priceSessionUsage } from '@buildd/core/model-prices';
-import type { LocalSessionUsage } from '@buildd/shared';
+import type { LocalSessionCostBasis, LocalSessionUsage } from '@buildd/shared';
+import { costBasisWrite, type CostBasis } from '@buildd/core/cost-basis';
 
 /**
  * Presence for a person's interactive coding session, fed by the buildd agent
@@ -145,9 +146,17 @@ export interface WorkerUsageWrite {
   requests: number;
   /** Null when any model was unpriced: nothing is written to cost. */
   costUsd: number | null;
+  /** As the hook reported it; `unknown` when it sent none. */
+  costBasis: LocalSessionCostBasis;
   /** Per-model usage for priced sessions; null when unpriced (see priceSessionUsage). */
   modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }> | null;
   totalUsage: { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number };
+  /**
+   * Per-tool counts, written as resultMeta.toolCounts: the histogram usage stats
+   * read (toolCountsForWorker), same field a runner worker fills. Null when the
+   * hook sent none.
+   */
+  toolCounts: Record<string, number> | null;
   /** Effort and provenance, kept under resultMeta.localSessionUsage. */
   effort: {
     source: 'local-session';
@@ -167,7 +176,11 @@ export interface WorkerUsageWrite {
 export const USAGE_GRACE_MS = 10 * 60 * 1000;
 
 /** Price one held worker's cumulative usage into the write the store applies. */
-export function usageWrite(w: LocalSessionUsage['workers'][number], now: Date): WorkerUsageWrite {
+export function usageWrite(
+  w: LocalSessionUsage['workers'][number],
+  now: Date,
+  costBasis: LocalSessionCostBasis = 'unknown',
+): WorkerUsageWrite {
   const priced = priceSessionUsage(w.models);
   const costUnknown = priced.costUsd === null;
   return {
@@ -176,6 +189,7 @@ export function usageWrite(w: LocalSessionUsage['workers'][number], now: Date): 
     outputTokens: priced.outputTokens,
     requests: priced.requests,
     costUsd: priced.costUsd,
+    costBasis,
     modelUsage: costUnknown ? null : Object.fromEntries(Object.entries(priced.modelUsage).map(([m, u]) => [m, { ...u, costUSD: u.costUSD ?? 0 }])),
     totalUsage: {
       inputTokens: priced.allInInputTokens,
@@ -183,6 +197,7 @@ export function usageWrite(w: LocalSessionUsage['workers'][number], now: Date): 
       cacheReadInputTokens: priced.cacheReadInputTokens,
       cacheCreationInputTokens: priced.cacheCreationInputTokens,
     },
+    toolCounts: w.toolCounts && Object.keys(w.toolCounts).length > 0 ? { ...w.toolCounts } : null,
     effort: {
       source: 'local-session',
       requests: priced.requests,
@@ -267,7 +282,7 @@ export async function handleLocalSessionEvent(
     for (const w of event.usage?.workers ?? []) {
       if (!presence.workerIds.includes(w.workerId)) continue;
       try {
-        await store.recordUsage(usageWrite(w, now));
+        await store.recordUsage(usageWrite(w, now, event.usage?.costBasis));
       } catch (err) {
         console.warn('[local-session] usage write failed:', err instanceof Error ? err.message : err);
       }
@@ -592,6 +607,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
     const meta = {
       ...(u.modelUsage ? { modelUsage: u.modelUsage } : {}),
       totalUsage: u.totalUsage,
+      ...(u.toolCounts ? { toolCounts: u.toolCounts } : {}),
       localSessionUsage: u.effort,
     };
     const rows = await db
@@ -601,6 +617,7 @@ export const drizzleLocalSessionStore: LocalSessionStore = {
         outputTokens: sql`GREATEST(${workers.outputTokens}, ${u.outputTokens})`,
         turns: sql`GREATEST(${workers.turns}, ${u.requests})`,
         ...(u.costUsd !== null ? { costUsd: sql`GREATEST(${workers.costUsd}, ${u.costUsd.toFixed(6)}::numeric)` } : {}),
+        costBasis: costBasisWrite(u.costBasis) as unknown as CostBasis,
         resultMeta: sql`COALESCE(${workers.resultMeta}, '{}'::jsonb) || ${JSON.stringify(meta)}::jsonb`,
       })
       .where(usageWriteWhere(u.workerId, graceCutoff))

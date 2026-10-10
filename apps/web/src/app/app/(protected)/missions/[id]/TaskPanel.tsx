@@ -11,7 +11,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
 import LiveWorkerActivity from './LiveWorkerActivity';
-import StatusBadge from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import PrCard from '@/components/task/PrCard';
 import type { PrDisplayState } from '@/lib/pr-presentation';
 import WorkerStats from '@/components/task/WorkerStats';
@@ -25,6 +25,7 @@ import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromCha
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
 import type { EntitlementBlock } from '@buildd/shared';
+import type { WaitingFor } from '@buildd/shared';
 
 export interface TaskPanelData {
   id: string;
@@ -58,11 +59,13 @@ export interface TaskPanelData {
     linesAdded: number | null;
     linesRemoved: number | null;
     costUsd: string | null;
+    /** Absent from older responses. */
+    costBasis?: string | null;
     inputTokens: number;
     outputTokens: number;
     startedAt: string | null;
     completedAt: string | null;
-    waitingFor: { type: string; prompt: string; options?: string[] } | null;
+    waitingFor: WaitingFor | null;
     branch: string | null;
     milestones: Array<{ type: string; label: string; ts: number; [k: string]: unknown }> | null;
     account: { authType: string } | null;
@@ -279,7 +282,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="task-header-status" data-status={displayStatus}>
-            <StatusBadge status={displayStatus} />
+            <StatusPill status={displayStatus} />
           </span>
           {data.backend && (
             <span
@@ -337,7 +340,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           milestones={(w.milestones ?? []) as never}
           onWorkerEvent={onChanged}
         />
@@ -369,7 +372,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
           costUsd={w.costUsd}
           inputTokens={w.inputTokens}
           outputTokens={w.outputTokens}
-          authType={w.account?.authType}
+          costBasis={w.costBasis ?? null}
           branch={w.branch}
         />
       )}

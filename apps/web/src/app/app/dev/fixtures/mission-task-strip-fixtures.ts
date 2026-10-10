@@ -10,17 +10,24 @@
  *   &variant=fan-in       {B, C}→D (§7.3)
  *   &variant=field        the 14-cell field case (§7.8)
  *   &variant=wide         one root, 30 dependents (§7.10)
+ *   &variant=delivery     35 tasks in a chain, 33 landed; 34 on its second
+ *                         automatic repair, 35 held behind it. The drawer's
+ *                         Build › Audit › Land row and its Audit and repair
+ *                         disclosure (`missionTaskDeliveries`).
  *   &select=<letter>      a DAG variant opens with that task selected
  *
  * Illustrative rows only (made-up ids and titles), built through the real
  * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
  */
+import * as missionHelpers from '@buildd/core/mission-helpers';
 import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel } from '@/lib/mission-board';
+import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
+import { missionTaskDeliveries, type MissionDeliveryTaskRow } from '@/app/app/(protected)/missions/[id]/mission-task-delivery';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
-export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide'] as const;
+export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide', 'delivery'] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
 export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
@@ -83,6 +90,8 @@ const TITLES = [
 export interface MissionTaskStripFixture {
   model: MissionBoardModel;
   executor: MissionExecutor;
+  /** Per-task delivery, as the page builds it; absent on the older variants. */
+  deliveries?: Record<string, TaskDeliveryDetail>;
 }
 
 export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = min(60)): MissionTaskStripFixture {
@@ -93,6 +102,7 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
       executor: 'runner',
     };
   }
+  if (variant === 'delivery') return deliveryFixture(base);
   if (isDagVariant(variant)) {
     return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
   }
@@ -120,6 +130,33 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
       tasks: TITLES.map((t, i) => (i === 8 ? task(i + 1, t) : landed(i + 1, t))),
     }),
     executor: 'local',
+  };
+}
+
+/**
+ * `?state=surface-audit-waiver`: a mission whose `[surface audit]` waits on a
+ * running builder task, the audit's drawer open. The audit is task 3.
+ */
+export const SURFACE_AUDIT_FIXTURE_TASK = stripFixtureId(3);
+export function surfaceAuditStripFixture(now = min(60)): MissionTaskStripFixture {
+  return {
+    model: buildMissionBoard({
+      now,
+      missionCreatedAt: T0,
+      missionStatus: 'active',
+      tasks: [
+        landed(1, 'feat(app): mission card layout'),
+        task(2, 'feat(app): task list polish', {
+          status: 'in_progress',
+          workers: [worker('w2', { status: 'running', completedAt: null, currentAction: 'Editing files' })],
+        }),
+        task(3, '[surface audit] Fixture mission', {
+          roleSlug: 'visual-auditor', outputRequirement: 'artifact_required', kind: 'observation',
+          dependsOn: [stripFixtureId(2)],
+        }),
+      ],
+    }),
+    executor: 'runner',
   };
 }
 
@@ -203,4 +240,62 @@ export function dagSelection(variant: MissionTaskStripVariant, q: URLSearchParam
   if (!name || !isDagVariant(variant)) return null;
   const spec: DagSpec = DAG_SPECS[variant];
   return spec.tasks.includes(name) ? dagId(spec, name) : null;
+}
+
+// ── Delivery: 35 tasks, 2 remaining (the mission-detail phase/repair design) ──
+
+/** The strip cell numbers the delivery variant is about. */
+export const DELIVERY_REPAIRING = 34;
+export const DELIVERY_HELD = 35;
+const H1 = 'a1b2c3d4e5f6a7b8';
+const H2 = 'd4e5f60718293a4b';
+
+type DeliveryWorker = BoardWorkerInput & { lastCommitSha?: string | null };
+type DeliveryRow = BoardTaskInput & MissionDeliveryTaskRow & { workers: DeliveryWorker[] };
+
+/**
+ * Rows for both readers: the Board folds the attempts under 34 (one cell), and
+ * the delivery projection reads them as 34's audit and repair evidence.
+ * Review verdicts ride on the digest, exactly as the page loads them.
+ */
+export function deliveryFixtureRows(): { rows: DeliveryRow[]; digests: Map<string, { result: unknown; context: unknown }> } {
+  const chain = (n: number) => (n > 1 ? [stripFixtureId(n - 1)] : null);
+  const rows: DeliveryRow[] = [];
+  for (let n = 1; n <= 33; n++) rows.push({ ...landed(n, `feat(billing): export step ${String(n).padStart(2, '0')}`), dependsOn: chain(n) } as DeliveryRow);
+  const pr = 400 + DELIVERY_REPAIRING;
+  const id34 = stripFixtureId(DELIVERY_REPAIRING);
+  rows.push(task(DELIVERY_REPAIRING, 'feat(billing): scheduled export email', {
+    status: 'completed', dependsOn: chain(DELIVERY_REPAIRING),
+    workers: [worker('w34', {
+      startedAt: min(30), completedAt: min(36), updatedAt: min(50),
+      prNumber: pr, prUrl: `https://github.com/example/app/pull/${pr}`, prLifecycleStatus: 'ci_failed', lastCommitSha: H1,
+    } as Partial<DeliveryWorker>)],
+  }) as DeliveryRow);
+  const attempt = (n: number, title: string, over: Partial<BoardTaskInput>) =>
+    rows.push(task(n, title, { taskClass: 'attempt', parentTaskId: id34, missionPhaseIndex: null, ...over }) as DeliveryRow);
+  attempt(101, '[reviewer #1] feat(billing): scheduled export email', {
+    status: 'completed', roleSlug: 'reviewer', workers: [worker('w101', { startedAt: min(37), completedAt: min(40), updatedAt: min(40) })],
+  });
+  attempt(102, '[builder · after review #1] feat(billing): scheduled export email', {
+    status: 'completed', workers: [worker('w102', { startedAt: min(41), completedAt: min(48), updatedAt: min(48), lastCommitSha: H2 } as Partial<DeliveryWorker>)],
+  });
+  attempt(103, '[builder · after CI #1] feat(billing): scheduled export email', {
+    status: 'in_progress', workers: [worker('w103', { status: 'running', startedAt: min(52), completedAt: null, updatedAt: min(58), currentAction: 'Fixing the failing export test' })],
+  });
+  rows.push(task(DELIVERY_HELD, 'feat(billing): export settings UI', { dependsOn: [id34] }) as DeliveryRow);
+  const digests = new Map<string, { result: unknown; context: unknown }>([
+    [stripFixtureId(101), { result: { effectiveVerdict: 'request-changes' }, context: { headSha: H1 } }],
+  ]);
+  return { rows, digests };
+}
+
+function deliveryFixture(base: { now: number; missionCreatedAt: number; missionStatus: 'active' }): MissionTaskStripFixture {
+  const { rows, digests } = deliveryFixtureRows();
+  const deliveries = missionTaskDeliveries({
+    mission: { id: stripFixtureId(900), title: 'Billing exports: CSV and scheduled email', status: 'active' },
+    tasks: rows,
+    digestOf: id => digests.get(id) ?? { result: null, context: null },
+    rules: missionHelpers,
+  });
+  return { model: buildMissionBoard({ ...base, tasks: rows }), executor: 'runner', deliveries };
 }

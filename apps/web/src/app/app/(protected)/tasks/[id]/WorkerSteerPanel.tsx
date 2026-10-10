@@ -6,13 +6,19 @@ import { INTERACTIVE_WORKER_RUNNER, LIVE_WORKER_STATUSES } from '@buildd/shared'
 import InstructWorkerForm from './InstructWorkerForm';
 import InstructionHistory from './InstructionHistory';
 import { parseErrorMessage } from './RealTimeWorkerView';
+import { messageDeliveryStatus, type InstructionHistoryEntry } from '@/lib/worker-instructions';
 
 interface Props {
   workerId: string;
   status: string;
   /** An open question is answered in the hero; /instruct is the wrong path for it. */
   hasUnansweredQuestion: boolean;
-  instructionHistory: Array<{ message: string; timestamp: number; type: 'instruction' | 'response'; deliveryState?: 'pending' | 'delivered' }>;
+  instructionHistory: InstructionHistoryEntry[];
+  /**
+   * The previous run of this task, when there is one: its messages the run
+   * ended before reading are shown here, each with Resend (to this run).
+   */
+  earlierRun?: { workerId: string; status: string; history: InstructionHistoryEntry[] } | null;
   /** `workers.runner`. 'mcp' is a local claim_task session buildd cannot stop. */
   runner?: string | null;
   /** The task already ended (completed/failed/cancelled). */
@@ -28,7 +34,7 @@ interface Props {
  * can stop it. It gets "Release slot" instead: buildd stops counting it and
  * frees its seat; the session itself keeps running.
  */
-export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false }: Props) {
+export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuestion, instructionHistory, runner, taskTerminal = false, earlierRun = null }: Props) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -60,6 +66,25 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
   }
 
   const abort = () => post(`/api/workers/${workerId}/cmd`, { action: 'abort' }, 'Failed to abort worker');
+  // Pause keeps the session: Resume (answering the pause) continues it (lib/worker-pause.ts).
+  const pause = () => post(`/api/workers/${workerId}/pause`, {}, 'Failed to pause');
+  const canPause = status === 'running';
+  // Same path and priority as the steer form: queued for this run's next turn.
+  const resend = (message: string) => post(`/api/workers/${workerId}/instruct`, { message, priority: 'urgent' }, 'Failed to resend');
+
+  const undelivered = earlierRun
+    ? earlierRun.history.filter(e => e.type === 'instruction' && messageDeliveryStatus(e, earlierRun.status).state === 'undelivered')
+    : [];
+  const earlier = undelivered.length > 0 && earlierRun && !taskTerminal && !hasUnansweredQuestion ? (
+    <InstructionHistory
+      history={undelivered}
+      workerStatus={earlierRun.status}
+      onResend={resend}
+      resending={loading}
+      title="Not delivered · the previous run ended first"
+      testId="earlier-run-undelivered"
+    />
+  ) : null;
   const release = () => post(
     `/api/workers/${workerId}/release-slot`,
     { reason: taskTerminal ? 'task already ended' : 'released from the task page' },
@@ -112,7 +137,8 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
           )}
         </div>
         {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
-        {!taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} />}
+        {earlier}
+        {!taskTerminal && !hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
       </div>
     );
   }
@@ -124,19 +150,48 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
         <div className="flex items-center justify-end gap-2">
           {confirm ? (
             <>
+              {canPause && (
+                <span data-testid="worker-stop-confirm-copy" className="mr-auto text-meta text-text-muted">
+                  Stopping loses work it hasn’t pushed. Pause keeps it.
+                </span>
+              )}
+              {canPause && (
+                <button
+                  type="button"
+                  data-testid="worker-pause-instead-btn"
+                  onClick={pause}
+                  disabled={loading}
+                  className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-text-primary text-text-primary hover:bg-surface-3 disabled:opacity-50"
+                >
+                  Pause instead
+                </button>
+              )}
               <button
                 type="button"
                 onClick={abort}
                 disabled={loading}
                 className="min-h-11 md:min-h-9 px-3 text-meta font-medium border-2 border-status-error text-status-error hover:bg-status-error/10 disabled:opacity-50"
               >
-                {loading ? 'Stopping…' : 'Confirm stop'}
+                {loading ? 'Stopping…' : 'Abort now'}
               </button>
               <button type="button" onClick={() => setConfirm(false)} className="min-h-11 md:min-h-9 px-3 text-meta text-text-muted hover:text-text-primary">
                 Cancel
               </button>
             </>
           ) : (
+            <>
+            {canPause && (
+              <button
+                type="button"
+                data-testid="worker-pause-btn"
+                onClick={pause}
+                disabled={loading}
+                title="Stops at the next safe point and keeps the session. Resume continues it."
+                className="min-h-11 md:min-h-9 px-3 text-meta font-medium border border-border-default text-text-secondary hover:border-text-primary hover:text-text-primary disabled:opacity-50"
+              >
+                {loading ? 'Pausing…' : 'Pause'}
+              </button>
+            )}
             <button
               type="button"
               data-testid="worker-abort-btn"
@@ -145,11 +200,13 @@ export default function WorkerSteerPanel({ workerId, status, hasUnansweredQuesti
             >
               Stop agent
             </button>
+            </>
           )}
         </div>
       )}
       {error && <p data-testid="worker-abort-error" className="text-sm text-status-error">{error}</p>}
-      {!hasUnansweredQuestion && <InstructionHistory history={instructionHistory} />}
+      {earlier}
+      {!hasUnansweredQuestion && <InstructionHistory history={instructionHistory} workerStatus={status} />}
     </div>
   );
 }

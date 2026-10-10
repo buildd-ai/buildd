@@ -2,7 +2,7 @@
 title: MCP Connectors & Roles
 status: active
 owner: max
-last_verified: 2026-09-05
+last_verified: 2026-10-08
 summary: Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 domain: mcp
 surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/connectors/route.ts, apps/web/src/lib/connector-status.ts, apps/web/src/lib/mcp-connector-refresh.ts]
@@ -36,11 +36,24 @@ assertions:
     type: "symbol"
     name: "mergeCatalog"
     path: "apps/web/src/lib/connector-catalog-merge.ts"
+  - id: "resolve-capability"
+    type: "route"
+    method: "GET"
+    path: "/api/connectors/capabilities"
+    file: "apps/web/src/app/api/connectors/capabilities/route.ts"
   - id: "set-catalog-policy"
     type: "route"
     method: "PUT"
     path: "/api/connectors/catalog/policy"
     file: "apps/web/src/app/api/connectors/catalog/policy/route.ts"
+  - id: "connector-block"
+    type: "symbol"
+    name: "connectorBlock"
+    path: "apps/web/src/lib/connector-access-policy.ts"
+  - id: "registration-refusal"
+    type: "symbol"
+    name: "ClientRegistrationRejectedError"
+    path: "apps/web/src/lib/mcp-oauth.ts"
 ---
 # MCP Connectors & Roles (unified model)
 
@@ -95,8 +108,9 @@ assertions:
 >   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
 >   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
 >   into the bundle is deleted; there is no role-tarball MCP path left to read.
-> - `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
->   — role "Connectors" + `McpRegistryBrowser` (243–406, 733–768)
+> - `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+>   — role "Connectors" + the registry browser, mounted by the one role editor
+>   (`TeamRoleEditor.tsx`, which owns `connectorRefs` via `setConnectorRefs`)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
 >   connector CRUD, OAuth discovery + DCR (run inline from create and update —
 >   there is no standalone probe route), OAuth callback, refresh
@@ -388,11 +402,11 @@ create (or reuse) a team `connectors` row and add its id to the role's
   installed again THEN no duplicate row is created (`409`-free reuse).
 
 **Code surface**:
-- UI: `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
-  (`McpRegistryBrowser.onInstall` is wired to `installConnector` (424–450),
-  which POSTs `/api/connectors` and appends the returned connector id to the
-  role's `connectorRefs` via `setConnectorRefs`; the editor holds no local
-  mcpServers state — see the note at RoleEditor.tsx:84).
+- UI: `apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/RoleConnectorsSection.tsx`
+  (the registry browser's Add is wired to `installConnector`, which POSTs
+  `/api/connectors` and appends the returned connector id to the role's
+  `connectorRefs`; `TeamRoleEditor.tsx` holds that list via `setConnectorRefs`
+  and saves it with the role). Test: `RoleConnectors.dom.test.tsx` beside it.
 - Route: `apps/web/src/app/api/connectors/route.ts` (create-or-reuse),
   `apps/web/src/app/api/mcp/registry/route.ts` (unchanged search).
 
@@ -412,13 +426,27 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - The catalog is static code (`CONNECTOR_CATALOG`), not a table. An entry is a
   preset (name, url, expected authMode, icon), never a second connector store.
 - An entry is listed only if its URL completes `discoverOAuthMetadata` (+ DCR)
-  or serves anonymously; servers that fail discovery stay out.
+  or serves anonymously; servers that fail discovery stay out. Exception: an
+  official server whose vendor admits only reviewed MCP clients stays listed
+  with `clientSupport: { status: 'needs_approved_client', … }` (Vercel today,
+  §5a), so the UI says why instead of omitting it.
 - Creation stays team-admin only (`manage_connectors`, §6); the catalog does
   not widen who can add a connector.
-- `connectors.iconUrl` is resolved best-effort at create time — catalog icon,
-  then MCP `serverInfo.icons` from an anonymous `initialize`, then the site's
-  `<link rel=icon>` on the server origin and its apex domain, then
-  `/favicon.ico`. Resolution never fails a create; NULL renders a letter avatar.
+- `connectors.iconUrl` is resolved best-effort — catalog icon, then MCP
+  `serverInfo.icons` (light/unthemed over dark, png/svg over ico, larger over
+  smaller), then `<link rel=icon>` and `/favicon.ico` on `serverInfo.websiteUrl`,
+  then on the server origin and its apex domain. It runs at create time
+  (anonymous `initialize`, or with the header credential), again after OAuth
+  connect with the fresh bearer, and lazily from `GET /api/connectors` for rows
+  without an inlined icon, at most once per `ICON_RECHECK_MS` per row
+  (`connectors.iconCheckedAt`). Resolution never fails a create; NULL renders a
+  letter avatar.
+- A connector's stored icon MUST be a `data:` URL of at most `MAX_ICON_BYTES`
+  of an allowlisted image type, so the dashboard never requests a third-party
+  host. Every icon fetch is https-only and re-checks each redirect hop with
+  `validatePublicEndpoint` (no private, loopback or link-local addresses). An
+  icon is only ever rendered via `<img>`, never as inline SVG markup.
+- buildd's own MCP `serverInfo` carries `icons` and `websiteUrl`.
 - `POST /api/connectors` rejects a non-http(s) url with `400 invalid_url`, and
   a discovery throw with `422 discovery_failed` + `message`, never a bare 500.
 
@@ -431,13 +459,19 @@ custom URL uses. Every http connector SHOULD carry a display icon.
   created connector's `iconUrl` is that icon.
 - AC-4: WHEN the url is `ttps://…` THEN the response is `400 invalid_url`
   and the modal shows its message.
+- AC-5: GIVEN a connector with no inlined icon WHEN the connectors list loads
+  THEN a lookup is scheduled after the response, and a remote icon that will
+  not download is cleared rather than hotlinked.
+- AC-6: WHEN an icon URL or a redirect hop resolves to a private address THEN
+  it is not fetched.
 
 **Code surface**:
 - Catalog: `apps/web/src/lib/connector-catalog.ts`, `apps/web/src/lib/connector-catalog-merge.ts`,
   `apps/web/src/lib/connector-catalog-store.ts`, `apps/web/src/lib/connector-catalog-input.ts`
 - Provisioning: `apps/web/src/lib/connector-provision.ts`
 - Data model: `packages/core/db/schema.ts` → `connectorCatalogEntries`, `connectorCatalogTeamPolicies`
-- Icon resolver: `apps/web/src/lib/connector-icon.ts`
+- Icon resolver: `apps/web/src/lib/connector-icon.ts`, `apps/web/src/lib/connector-icon-refresh.ts`,
+  `apps/web/src/lib/public-endpoint.ts`, `apps/web/src/lib/mcp-server-info.ts`
 - UI: `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx`,
   `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.tsx`,
   `apps/web/src/components/ConnectorIcon.tsx`
@@ -446,7 +480,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 **Verified by**:
 - `apps/web/src/lib/connector-catalog.test.ts`
-- `apps/web/src/lib/connector-icon.test.ts`
+- `apps/web/src/lib/connector-icon.test.ts`, `apps/web/src/lib/connector-icon-refresh.test.ts`,
+  `apps/web/src/lib/mcp-server-info.test.ts`
 - `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.dom.test.tsx`
 - `apps/web/src/app/api/connectors/route.test.ts`
 - `apps/web/src/lib/connector-catalog-merge.test.ts`, `apps/web/src/lib/connector-provision.test.ts`,
@@ -492,6 +527,109 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 
 **Out of scope**: managing platform rows from the dashboard (API key only for
 now); the agent access-request flow (task `d5a27699`).
+
+---
+
+## 5a. Catalog policy at runtime + provider compatibility
+
+**Capability statement**: A team's `blocked` catalog policy MUST deny agents
+every connector on that entry's host — including one installed and connected
+before the block — at every boundary that hands a connector to an agent,
+without deleting the connector or its provider credential. Connecting a team
+connector MUST be a team-admin act bound to that team. A provider that will
+not register buildd as an OAuth client MUST surface as `needs_approved_client`,
+never as a generic failure and never worked around.
+
+**Invariants**:
+- A connector is *blocked for a task* when its URL's host equals the host of
+  a `blocked` entry in the merged catalog of EITHER the task's workspace team
+  (consumer) OR the connector's owner team (`connectorBlock`,
+  `apps/web/src/lib/connector-access-policy.ts`). Path, scheme, port, query
+  and case do not matter: respelling the URL never escapes a block, whether
+  the team created the connector itself or another team shared it in. A
+  different host (including a sibling subdomain) is not covered. One team's
+  block never affects another team's own connectors.
+- Enforced at: the claim pre-filter and `checkConnectorRouting` (failure mode
+  `blocked_by_policy`, ordered after `never_mounted`, before
+  `expired_or_revoked`; a blocked connector is never HTTP-probed); claim-time
+  injection (never mounted; its credential never decrypted or refreshed); the
+  assertion mint (`403 blocked_by_policy`, re-checked on every mint); the
+  mounted list (`status: 'blocked'`); OAuth connect (`403`) and callback
+  (redirect `error=blocked_by_policy`, nothing stored).
+- Loading policy fails closed: a DB error fails the claim / mounts nothing.
+- Blocking never deletes. `PUT …/policy` with `blocked` returns
+  `retainedConnectorIds`; `GET /api/connectors` keeps the row with
+  `blockedByPolicy: true`. Unblocking restores access with no reconnect.
+- `preinstalled` ≠ agent permission: it creates and enables the connector per
+  workspace; only a role's `connectorRefs` (§2) mounts it for an agent.
+- `POST /api/connectors/[id]/connect` requires `manage_connectors` on the
+  connector's team (`canManageTeamConnectors`); the callback re-checks that
+  the signed-in user is the one who started the flow (`session_mismatch`),
+  still holds `manage_connectors` there (`forbidden`), and the connector is not
+  blocked — all before the code exchange.
+- The assertion mint additionally requires the connector to be owned by or
+  shared to the task's team (cross-team isolation; else 404).
+- DCR requests the `refresh_token` grant when the AS advertises it in
+  `grant_types_supported`; otherwise an AS that enforces registered grants
+  refuses the claim-time refresh at first expiry.
+- A DCR refusal that means "client not approved" (`invalid_redirect_uri`,
+  `invalid_client_metadata`, software-statement errors, 401/403) is
+  `ClientRegistrationRejectedError.needsApprovedClient`; create and preinstall
+  answer `422 needs_approved_client` with the catalog's `detail`/`actionUrl`.
+  buildd MUST NOT reuse another client's id, a global admin token, or a copied
+  credential to get past it.
+
+**Provider compatibility (live-probed 2026-10-08, buildd as client)**:
+
+| Provider | Discovery | DCR with buildd's web callback | State |
+|---|---|---|---|
+| Axiom `https://mcp.axiom.co/mcp` | RFC 9728 → `authorization.axiom.co` (S256, `refresh_token`, `offline_access`) | 201, client issued | Supported (OAuth) |
+| Vercel `https://mcp.vercel.com` | RFC 9728 → `vercel.com` (S256, DCR endpoint) | 400 `invalid_redirect_uri` ("not approved for use by this authorization server"); loopback redirects accepted | `needs_approved_client` — owner submits Vercel's client review |
+
+No supported server-side alternative exists for Vercel today: buildd's
+Operator `deploy` covers Cloudflare only, and pasting a token minted for an
+approved client would be impersonation. Re-run the probe with
+`BUILDD_LIVE_PROVIDER_PROBE=1 bun test apps/web/tests/integration/mcp-provider-discovery.test.ts`.
+
+**Acceptance criteria**:
+- AC-1: GIVEN a connected Axiom connector in a role's `connectorRefs` WHEN the
+  team blocks `axiom` THEN the next claim holds the task with
+  `blocked_by_policy` (or, advisory mode with other connectors healthy,
+  claims without Axiom mounted) AND the credential row is unchanged.
+- AC-2: WHEN the owner team of a shared connector blocks it THEN grantee
+  teams' tasks lose it too; WHEN an unrelated team blocks it THEN nothing changes.
+- AC-3: WHEN a member without `manage_connectors` calls connect THEN 403 and
+  no state cookie.
+- AC-4: WHEN Vercel is added or preinstalled THEN `422 needs_approved_client`
+  with Vercel's review link, and no connector row is created.
+
+**Code surface**:
+- Policy: `apps/web/src/lib/connector-access-policy.ts`, `apps/web/src/lib/connector-team-auth.ts`
+- Boundaries: `apps/web/src/app/api/workers/claim/connector-prefilter.ts`,
+  `apps/web/src/app/api/workers/claim/connector-gate.ts`,
+  `apps/web/src/app/api/workers/claim/mcp-connector-injection.ts`,
+  `apps/web/src/lib/connector-queries.ts`,
+  `apps/web/src/app/api/connectors/[id]/assertion/route.ts`,
+  `apps/web/src/app/api/connectors/[id]/connect/route.ts`,
+  `apps/web/src/app/api/connectors/callback/route.ts`
+- DCR: `apps/web/src/lib/mcp-oauth.ts`, `apps/web/src/lib/connector-provision.ts`
+
+**Verified by**:
+- `apps/web/src/lib/connector-access-policy.test.ts`, `apps/web/src/lib/connector-team-auth.test.ts`
+- `apps/web/src/app/api/workers/claim/connector-prefilter.test.ts`,
+  `apps/web/src/app/api/workers/claim/connector-gate.test.ts`,
+  `apps/web/src/app/api/workers/claim/mcp-connector-injection.test.ts`
+- `apps/web/src/lib/connector-queries.test.ts`
+- `apps/web/src/app/api/connectors/[id]/assertion/route.test.ts`,
+  `apps/web/src/app/api/connectors/[id]/connect/route.test.ts`,
+  `apps/web/src/app/api/connectors/callback/route.test.ts`
+- `apps/web/src/lib/mcp-oauth.test.ts`, `apps/web/src/lib/connector-provision.test.ts`
+- `apps/web/tests/integration/mcp-provider-discovery.test.ts` (opt-in, live)
+
+**Out of scope**: per-tool / per-call checks inside a running agent session
+for http connectors whose bearer token was injected at claim (the runtime
+grant work, task `d6b7501a`, consumes `status: 'blocked'` from the mounted
+list); the access-request UI (task `a35d01f0`).
 
 ---
 
@@ -624,6 +762,60 @@ reconnect. Approaching expiry is deliberately silent.
 - Refresh: `apps/web/src/lib/mcp-connector-refresh.ts`
 - Schema: `packages/core/db/schema.ts` (`secrets.expiryNotifiedAt`,
   `secrets.lastRefreshSucceededAt`)
+
+---
+
+## 6c. Capability discovery (read-only)
+
+**Contract**: An agent or the organizer MAY ask what could satisfy a semantic
+need (`resolve_capability`, `GET /api/connectors/capabilities`) before choosing
+a role. The answer is computed from the rows this spec already defines:
+connectors owned by or shared to the workspace's team, workspace enablement,
+role `connectorRefs`, credential health (§6b), the team's catalog policy (§5b)
+and, for deployment needs, the role's Operator grant. It changes nothing:
+installing, enabling, granting and connecting stay admin/human acts.
+
+- A need is `domain:verb`: domain one of `observability | deployment | database |
+  analytics | work_tracking | docs | source_control`, verb `read | query | write`.
+  A bare domain means `read`. Anything else is rejected, never guessed.
+- Provider coverage comes from a short per-catalog-slug profile
+  (`PROVIDER_PROFILES`), else the catalog entry's category. Provider tools are
+  not modelled: tool names and schemas stay the provider's own.
+- Each candidate reports, separately: `access` (`permitted | auto_grant |
+  ask_admin | forbidden | reconnect | unhealthy`), `health`, `workspace`
+  enablement, the roles that mount it, `compatibility`, `risk` and
+  `runtimeNeeds`. `auto_grant` means "route the task to a role that already
+  mounts it"; no admin action and no runtime toggle happens.
+- `availableNow` is true only when access is `permitted`, health is `ok`, and
+  the provider's compatibility is not `unknown_until_tested`. An expired token
+  awaiting refresh, an unchecked (stdio/assertion) connector, and a provider that
+  may refuse a Buildd-run client (Vercel admits only clients it has approved)
+  are never reported available.
+- "Read" does not mean read-only: mounting a connector exposes every native
+  tool. `risk.writeToolsExposed` says whether that includes writes.
+- A team catalog policy of `blocked` is `forbidden`, installed or not.
+- Runtime needs (browser, Docker, a CLI) stay with task `requiredCapabilities`;
+  a candidate lists only what its own connector needs to start (a stdio binary).
+- No credential value and no owner team id appears in the response. A per-task
+  token reaches only its task's workspace and defaults `roleSlug` to its task's role.
+
+**Acceptance criteria**:
+- AC-1: GIVEN Axiom and Vercel both connected and mounted by the role WHEN
+  `observability:query` is resolved THEN Axiom is first, `exact` and available,
+  and Vercel is `partial` (logs only).
+- AC-2: GIVEN a role that does not mount a connector another role mounts THEN
+  the candidate is `auto_grant` naming that role; GIVEN no role mounts it THEN
+  `ask_admin`.
+- AC-3: GIVEN a credential past the refresh grace, or with a failed refresh, or
+  revoked THEN `reconnect`; GIVEN one just expired THEN not available.
+- AC-4: GIVEN nothing in the team or its catalog serves the need THEN
+  `candidates` is empty and the summary says so.
+
+**Code surface**:
+- Rules: `apps/web/src/lib/connector-capabilities.ts`
+- Loader: `apps/web/src/lib/connector-capabilities-store.ts`
+- Route: `apps/web/src/app/api/connectors/capabilities/route.ts`
+- MCP: `packages/core/mcp-tools.ts` (`resolve_capability`)
 
 ---
 

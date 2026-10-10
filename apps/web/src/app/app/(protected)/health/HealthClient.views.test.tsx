@@ -170,6 +170,11 @@ const everything = {
     workerId: 'w1', workspaceName: 'ws', taskId: 't1', taskTitle: 'Task', prUrl: null, prNumber: 7,
     reason: 'gone', failureCount: 3, lastCheckedAt: ago(HOUR), prOpenedAt: ago(DAY),
   }],
+  agentAccess: {
+    windowHours: 24, granted: 4, adminGranted: 0, healthy: false,
+    grantProblems: [{ workspaceId: 'ws-1', workspaceName: 'ws', reason: 'the workspace has no linked GitHub repo', fix: 'Link a repo in workspace settings.', count: 2, lastAt: ago(HOUR) }],
+    refusals: [{ label: 'Merge PR', reason: "not this task's PR", count: 1 }],
+  },
 };
 
 describe('HealthClient — pages', () => {
@@ -192,14 +197,58 @@ describe('HealthClient — pages', () => {
     expect(html).toContain('aria-label="Window"');
   });
 
-  it('Runners & capacity shows runners, credentials and schedules, and no window picker', () => {
+  it('Runners & capacity shows only what sets capacity, and no window picker', () => {
     const html = render({ ...everything, page: 'runners' });
-    for (const id of ['health-section-runners', 'health-section-credentials', 'health-section-schedules']) {
+    for (const id of ['health-section-slot-history', 'health-section-runners', 'health-section-credentials']) {
       expect(has(html, id)).toBe(true);
     }
+    expect(has(html, 'health-section-agent-access')).toBe(false);
+    expect(has(html, 'health-section-schedules')).toBe(false);
     expect(has(html, 'health-section-problems')).toBe(false);
     expect(has(html, 'health-section-failure-analytics')).toBe(false);
     expect(html).not.toContain('aria-label="Window"');
+  });
+
+  it('Runners leads with what is running in words; the timeline and the slot history are behind disclosures', () => {
+    const fleet = {
+      runners: [{ id: 'r1', name: 'atlas', slots: [{ lane: { bars: [{ id: 'b1', start: NOW - HOUR, end: NOW - 30 * 60_000, label: 'x', color: null, state: 'done' }] } }] }],
+      live: 0, capacity: 1, window: { from: NOW - 2 * HOUR, to: NOW },
+    };
+    const html = render({ ...everything, page: 'runners', runnerLanes: { fleet, idle: [], missions: {} } });
+    const at = (id: string) => html.indexOf(`data-testid="${id}"`);
+    expect(at('health-section-running-now')).toBeGreaterThan(-1);
+    expect(at('health-section-running-now')).toBeLessThan(at('health-section-lanes'));
+    expect(at('health-section-lanes')).toBeLessThan(at('health-section-slot-history'));
+    // The timeline is folded: its chart mounts only when opened.
+    expect(has(html, 'runner-lanes-chart')).toBe(false);
+    expect(at('health-section-slot-history')).toBeLessThan(at('health-section-runners'));
+    // Collapsed by default: the history chart mounts only when opened.
+    expect(has(html, 'health-section-occupancy')).toBe(false);
+  });
+
+  it('a failing schedule on Overview links to where it is configured', () => {
+    const broken = { lastError: 'boom', consecutiveFailures: 3, lastRunAt: ago(HOUR) };
+    const html = render({ ...everything, page: 'overview', schedules: [
+      schedule({ id: 's-ws', name: 'Workspace sweep', ...broken }),
+      schedule({ id: 's-m', name: 'Mission check-in', missionId: 'm-1', missionTitle: 'M', ...broken }),
+    ] });
+    expect(html).toContain('href="/app/workspaces/ws-1/schedules"');
+    expect(html).toContain('href="/app/missions/m-1"');
+    expect(html).not.toContain('/app/schedules');
+  });
+
+  it('Overview lists an access problem under Problems, linking to Failures', () => {
+    const html = render({ ...everything, page: 'overview' });
+    expect(html).toContain('data-testid="problem-access"');
+    expect(html).toContain('ws: runs can&#x27;t get access');
+    expect(html).toContain('href="/app/health/failures"');
+  });
+
+  it('Failures carries the access problems with their fix, and the blocked actions', () => {
+    const html = render({ ...everything, page: 'failures' });
+    expect(has(html, 'health-section-agent-access')).toBe(true);
+    expect(html).toContain('ws: the workspace has no linked GitHub repo');
+    expect(html).toContain('Blocked actions');
   });
 
   it('Operator holds the internal tooling and none of the team-facing sections', () => {
@@ -213,7 +262,7 @@ describe('HealthClient — pages', () => {
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
-    const ids = ['health-section-problems', 'health-section-runners', 'health-section-credentials', 'health-section-schedules',
+    const ids = ['health-section-problems', 'health-section-slot-history', 'health-section-runners', 'health-section-credentials', 'health-section-agent-access',
       'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {
@@ -234,7 +283,11 @@ describe('HealthClient — pages', () => {
       recentFailures: [],
       failureGroups: { ...buildFailureGroups({ failures, traces: [] }), truncated: false },
     });
-    expect(html).toContain('data-testid="top-failure-groups"');
+    // One Problems row says what is failing and links to Failures; the list
+    // itself lives only there.
+    expect(html).not.toContain('data-testid="top-failure-groups"');
+    expect(html).toContain('data-testid="problem-failures"');
+    expect(html).toContain('Failures: 8 causes this week');
     expect(html).toContain('href="/app/health/failures"');
     // The old 24h signature rows and their overflow line are gone from Overview.
     expect(html).not.toContain('data-testid="problem-failure-group"');
@@ -251,6 +304,13 @@ describe('HealthClient — pages', () => {
       failureGroups: { ...buildFailureGroups({ failures: one, traces: [] }), truncated: false },
     });
     // One failure group plus "no runners connected".
-    expect(html).toContain('2 things need you.');
+    expect(html).toContain('No runners connected · 1 failure cause.');
   });
+});
+
+it('single facts on Overview and Runners have hairlines without card frames', () => {
+  const overview = render({ ...everything, page: 'overview' });
+  expect(overview).not.toMatch(/class="card[^"]*divide-y/);
+  const runners = render({ ...everything, page: 'runners' });
+  expect(runners).not.toMatch(/class="card[^"]*divide-y/);
 });

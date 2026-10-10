@@ -24,6 +24,10 @@
 #   QA_VIEWPORT      — "mobile" (390x844 touch phone) or WIDTHxHEIGHT (default: 1280x900)
 #   DISABLE_WRITES   — default "true" here, so a capture pass can't mutate the DB
 #   DATABASE_URL     — inherited from your .env; point it at a dev clone to be safe
+#   QA_NEON_BRANCH   — "1": capture against a fresh copy-on-write Neon branch of production
+#                      (scripts/qa/neon-branch.sh), deleted on exit. Real data, isolated writes.
+#   QA_NEON_MIGRATE  — "1" with QA_NEON_BRANCH: apply this checkout's migrations to the branch
+#   QA_KEEP_NEON_BRANCH — "1": keep the branch after the run (it still expires on its own)
 #
 set -euo pipefail
 
@@ -43,6 +47,20 @@ echo "[shoot] repo=$ROOT port=$QA_PORT output=$QA_OUTPUT"
 if [ -n "${QA_PLAN:-}" ]; then echo "[shoot] plan=QA_PLAN"; else echo "[shoot] routes=${QA_ROUTES:-<manifest>}"; fi
 echo "[shoot] dev user=${DEV_USER_EMAIL:-<mock dev@localhost>}"
 
+# --- database: a disposable Neon branch, or whatever DATABASE_URL already is ---
+NEON_ENV_FILE=""
+if [ "${QA_NEON_BRANCH:-}" = "1" ]; then
+  NEON_ENV_FILE="$("$ROOT/scripts/qa/neon-branch.sh" create ${QA_NEON_MIGRATE:+--migrate})"
+  # Exported into the process, so it wins over apps/web/.env.local (Next never overrides set env).
+  set -a
+  # shellcheck source=/dev/null
+  . "$NEON_ENV_FILE"
+  set +a
+  echo "[shoot] database=Neon branch $QA_NEON_BRANCH_NAME"
+elif [ -z "${DATABASE_URL:-}" ] && grep -qs '^DATABASE_URL=' apps/web/.env.local; then
+  echo "[shoot] database=apps/web/.env.local. If that is production, use QA_NEON_BRANCH=1 instead." >&2
+fi
+
 # --- start the app ---
 echo "[shoot] starting dev server…"
 NODE_ENV=development \
@@ -56,6 +74,9 @@ cleanup() {
   echo "[shoot] stopping dev server (pid $SERVER_PID)…"
   pkill -P "$SERVER_PID" 2>/dev/null || true
   kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$NEON_ENV_FILE" ] && [ "${QA_KEEP_NEON_BRANCH:-}" != "1" ]; then
+    "$ROOT/scripts/qa/neon-branch.sh" delete "$QA_NEON_BRANCH_NAME" || true
+  fi
 }
 trap cleanup EXIT
 

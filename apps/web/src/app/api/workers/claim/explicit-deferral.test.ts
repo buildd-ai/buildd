@@ -9,7 +9,8 @@ const ALL: DeferralReason[] = [
   'mission_budget', 'mission_concurrent', 'mission_paced', 'workspace_cap',
   'provider_unavailable', 'budget_paused', 'routing_paused', 'duplicate_worker',
   'runner_capability', 'codex_single_flight', 'oauth_parallelism', 'role_env_unsatisfied',
-  'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours',
+  'managed_concurrency', 'managed_runner_hours', 'hosted_runner_hours', 'no_personal_credential',
+  'tier_policy',
 ];
 
 describe('describeExplicitDeferral', () => {
@@ -28,6 +29,15 @@ describe('describeExplicitDeferral', () => {
     expect(d).toContain('50 of 50');
     expect(d).toContain('2026-11-01T00:00:00.000Z');
     expect(d).toContain('runner of your own');
+  });
+
+  it('says why a personal-keys-only task was not claimed, and what to do', () => {
+    const none = describeExplicitDeferral('no_personal_credential', { cause: 'no_requester', surface: 'agent-claude' }).detail;
+    expect(none).toContain('personal keys only');
+    expect(none).toContain('not started by a person');
+    const noKey = describeExplicitDeferral('no_personal_credential', { cause: 'requester_has_no_key', surface: 'agent-codex' }).detail;
+    expect(noKey).toContain('their own OpenAI API key');
+    expect(describeExplicitDeferral('no_personal_credential', { cause: 'runner_lacks_feature' }).detail).toContain('updated runner');
   });
 
   it('carries the numbers the loop had in hand', () => {

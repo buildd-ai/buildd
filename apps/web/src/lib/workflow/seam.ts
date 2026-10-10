@@ -9,7 +9,7 @@
  *  - returns "not mine" fast for a task or PR with no kernel delivery, so a PR
  *    that was open at cutover finishes on the legacy path unchanged;
  *  - resolves the kill switch first (authority.ts), releasing the delivery to
- *    legacy when `gitConfig.workflowKernel` is false;
+ *    legacy when the `gitConfig.workflowKernel` switch is off;
  *  - takes its own live GitHub read (R2) and carries it into the command;
  *  - drains the delivery's due effects before returning, so the common path
  *    never waits for a cron (§10.3).
@@ -19,20 +19,22 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import type { Command, CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
 import { runEffects, type DrainSummary, type EffectHandlers } from './effects';
 import { withPrFactEffects } from './pr-fact-effects';
 import { headCoverage, ledgerBudget } from './reducer';
-import { kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery } from './authority';
+import { claimLegacyHandoffSql, kernelDeliveryById, kernelDeliveryForPr, kernelEnabled, releaseToLegacy, resolveOwnerDelivery, unclaimLegacyHandoffSql } from './authority';
 import { githubReader, workspaceRepo } from './github-facts';
+import { policyValue } from '@/lib/policy-overrides';
 import { preflightMissOf } from './preflight-miss';
 import { landThroughKernel as landThroughKernelImpl, type KernelLanding, type LandingInput } from './landing';
 import { enqueueEffectSql, enqueueMissingEffects, existingEffectsSql } from './enqueue-missing';
-import { floorCandidatesSql, type FloorCandidate } from './reconcile';
+import { floorCandidatesSql, treadmillCycleCandidatesSql, type FloorCandidate, type TreadmillCycleCandidate } from './reconcile';
 
 // The worker PATCH's reading of a terminal report (S30), exported here because routes reach the kernel only through the seam.
 export { attemptEndFromPatch, taskRetryCoversAttemptEnd } from './hand-off';
-import type { Verdict } from './types';
+import type { MigrationSafety } from '@/lib/migration-safety';
+import type { PolicyOutcome, Verdict } from './types';
 import {
   UNKNOWN_CI_SIGNATURE, blockedOnResolvedSql, classifyCiFailure, openOrJoinIncidentSql, repairingCiOnBaseSql,
   resolveIncidentSql, trunkExplains, trunkRecovered, unresolvedIncidentsSql, type TrunkClassification,
@@ -80,7 +82,7 @@ export async function drainDelivery(deliveryId: string, deps: SeamDeps = {}): Pr
     for (let pass = 0; pass < 3; pass++) {
       const s = await runEffects({ handlers: kernelEffectHandlers, deliveryId, limit: 10, exec: deps.exec });
       total = total
-        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, dead: [...total.dead, ...s.dead] }
+        ? { claimed: total.claimed + s.claimed, done: total.done + s.done, skipped: total.skipped + s.skipped, failed: total.failed + s.failed, lost: total.lost + s.lost, dead: [...total.dead, ...s.dead] }
         : s;
       if (s.claimed === 0) break;
     }
@@ -115,6 +117,55 @@ export interface OpenInput {
   prNumber: number;
   installationId: number;
   source: string;
+  /** A preflight finding for the PR's head, recorded as policy evidence before the owner hand-off (T28). */
+  policy?: PolicyFinding;
+}
+
+export interface PolicyFinding { outcome: PolicyOutcome; reason: string; destructive: boolean }
+
+/**
+ * Pure: what a pre-flight escalation asks of the platform, as the policy
+ * evidence the workflow kernel records (docs/specs/workflow-state-kernel.md
+ * §6.3 T28).
+ *
+ *  - A PR that mixes safe EXPAND and CONTRACT migrations is agent work: split
+ *    it, ship the additive half first. Nobody needs to decide anything.
+ *  - Everything else the pre-flight escalated (destructive SQL, an
+ *    uninspectable migration, a deny path, a human-tier workspace policy) is a
+ *    person's decision, and `destructive` marks the migration cases that keep
+ *    the explicit human approval rail.
+ */
+export function policyFindingFor(p: {
+  reason: string;
+  migrationSafety?: MigrationSafety;
+}): PolicyFinding {
+  const ms = p.migrationSafety;
+  if (ms && !ms.safe && ms.mixedSplit === true) {
+    return { outcome: 'agent_split', reason: p.reason, destructive: false };
+  }
+  return { outcome: 'human', reason: p.reason, destructive: !!ms && !ms.safe && !ms.collision };
+}
+
+
+/**
+ * T28: import a preflight finding as policy evidence bound to the PR's LIVE head
+ * (read now, never the webhook's). CAS through the kernel, effects through the
+ * outbox; the same finding on the same head replays as a duplicate, and a head
+ * that moved meanwhile makes it stale (no escalation). Null = not the kernel's PR.
+ */
+export async function recordPolicyEvidence(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; source: string; finding: PolicyFinding;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const live = await readerFor(deps, p.installationId).readPr(p.repoFullName, p.prNumber);
+  if (!live || live.state !== 'open') return null;
+  const result = await applyCommand(
+    { type: 'PolicyEvidenceRecorded', actor: p.source, evidence: { headSha: live.headSha, ...p.finding } },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  await drainDelivery(deliveryId, deps);
+  return result;
 }
 
 /**
@@ -141,7 +192,10 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
 
   // Already owned (the other door got here first)?
   const byPr = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
-  if (byPr) return { owned: true, deliveryId: byPr };
+  if (byPr) {
+    if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, deps);
+    return { owned: true, deliveryId: byPr };
+  }
   const existing = await resolveOwnerDelivery(p.workspaceId, p.ownerTaskId, deps.exec);
   if (existing && existing.authority === 'legacy') return { owned: false, reason: 'released' };
 
@@ -172,33 +226,50 @@ export async function openKernelDelivery(p: OpenInput, deps: SeamDeps = {}): Pro
     { kind: 'head_observed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: reader },
   );
-
-  await db.update(tasks)
-    .set({ deliveryId, deliveryRole: 'owner' })
-    .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
+  // Before the late hand-off below: an ended owner attempt reads this evidence when it picks
+  // between a review round and a person.
+  if (p.policy) await recordPolicyEvidence({ ...p, finding: p.policy }, { ...deps, drain: async () => null });
 
   // The owner attempt may already have ended (the PR webhook can arrive after
-  // the worker completed). An ended attempt with nobody to hand on would leave
-  // the delivery in WORKING with no owner of the next move.
+  // the worker completed, or the completion PATCH ran while this open did its
+  // reads and saw no delivery yet). An ended attempt with nobody to hand on would
+  // leave the delivery in WORKING with no owner of the next move. The task and
+  // worker are re-read here, not taken from the read at the top (bb6a3a56).
+  const sent = await forwardOwnerEnd({ workspaceId: p.workspaceId, ownerTaskId: p.ownerTaskId, deliveryId, source: `${p.source}:late_open` }, deps);
+  if (!sent) await drainDelivery(deliveryId, deps);
+  return { owned: true, deliveryId };
+}
+
+/**
+ * bb6a3a56: the owner end the kernel is owed, rebuilt from the task and
+ * workers rows. Stamps `tasks.delivery_id` when it is missing (a crash between
+ * the open's transitions and its stamp), then, when the owner task is terminal
+ * and its latest worker ended, sends that worker's AttemptEnded. Safe to repeat:
+ * the reducer keys an end by its worker (`end:<workerId>`), so one the kernel
+ * already has answers `duplicate`. Answers whether an end was sent.
+ */
+async function forwardOwnerEnd(p: { workspaceId: string; ownerTaskId: string; deliveryId: string; source: string }, deps: SeamDeps): Promise<boolean> {
+  await db.update(tasks)
+    .set({ deliveryId: p.deliveryId, deliveryRole: 'owner' })
+    .where(and(eq(tasks.id, p.ownerTaskId), sql`${tasks.deliveryId} IS NULL`));
+  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, p.ownerTaskId), columns: { status: true, deliveryId: true, deliveryRole: true } });
+  if (!task || task.deliveryId !== p.deliveryId || task.deliveryRole !== 'owner') return false;
+  if (task.status !== 'completed' && task.status !== 'failed') return false;
   const latest = await db.query.workers.findFirst({
     where: eq(workers.taskId, p.ownerTaskId),
     columns: { id: true, status: true, lastCommitSha: true, commitCount: true },
     orderBy: [desc(workers.createdAt)],
   });
-  if (latest && (latest.status === 'completed' || latest.status === 'failed' || latest.status === 'error')
-      && (task.status === 'completed' || task.status === 'failed')) {
-    await attemptEnded({
-      task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId, deliveryRole: 'owner', context: null },
-      workerId: latest.id,
-      status: latest.status === 'completed' ? 'completed' : 'failed',
-      localHeadSha: latest.lastCommitSha ?? null,
-      commitCount: latest.commitCount ?? 0,
-      source: `${p.source}:late_open`,
-    }, deps);
-  } else {
-    await drainDelivery(deliveryId, deps);
-  }
-  return { owned: true, deliveryId };
+  if (!latest || (latest.status !== 'completed' && latest.status !== 'failed' && latest.status !== 'error')) return false;
+  await attemptEnded({
+    task: { id: p.ownerTaskId, workspaceId: p.workspaceId, deliveryId: p.deliveryId, deliveryRole: 'owner', context: null },
+    workerId: latest.id,
+    status: latest.status === 'completed' ? 'completed' : 'failed',
+    localHeadSha: latest.lastCommitSha ?? null,
+    commitCount: latest.commitCount ?? 0,
+    source: p.source,
+  }, deps);
+  return true;
 }
 
 // ── §14: one authority per delivery ─────────────────────────────────────────
@@ -277,6 +348,30 @@ export async function applyRecommendationThroughKernel(p: {
   };
 }
 
+// ── a90fc99b: the escalation gate's policy-merge rule ───────────────────────
+
+/**
+ * The policy-merge rule's verdict, executed: PolicyMergeApproved for exactly
+ * `headSha`, then the inline drain. The delivery is APPROVED on the basis
+ * `policy_rule`, and the landing doors land it under the workspace merge
+ * policy with every rail evaluated again (a refusal is the landing hand-off
+ * the gate then shows a person). Null = not the kernel's PR.
+ */
+export async function policyMergeThroughKernel(p: {
+  workspaceId: string; prNumber: number; headSha: string; reason: string; rule?: string;
+}, deps: SeamDeps = {}): Promise<CommandResult | null> {
+  const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
+  if (!repo) return null;
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, repo.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return null;
+  const result = await applyCommand(
+    { type: 'PolicyMergeApproved', actor: `rule:${p.rule ?? 'escalation_gate'}`, headSha: p.headSha, reason: p.reason },
+    { ref: { deliveryId }, exec: deps.exec },
+  );
+  if (result.result === 'applied') await drainDelivery(deliveryId, deps);
+  return result;
+}
+
 // ── T4: an attempt ended ────────────────────────────────────────────────────
 
 export interface AttemptTask {
@@ -322,7 +417,12 @@ export async function attemptEnded(p: {
   const attemptKind = p.task.deliveryRole;
   if (!p.task.deliveryId || (attemptKind !== 'owner' && !isRepairRole(attemptKind) && attemptKind !== 'review')) return { handled: false };
   const deliveryId = await kernelDeliveryById(p.task.deliveryId, deps.exec);
-  if (!deliveryId) return { handled: false };
+  if (!deliveryId) {
+    // §14: the owner's end is where the kernel would have queued round 1. A delivery the kill
+    // switch released before that has had no review from either authority: legacy files it now.
+    if (attemptKind === 'owner') await handOffToLegacy(p.task.deliveryId, deps);
+    return { handled: false };
+  }
 
   if (attemptKind === 'review') {
     // A completed reviewer is answered by its verdict (T6). One that ended
@@ -332,7 +432,7 @@ export async function attemptEnded(p: {
     const roundId = ctxOf(p.task).workflowRoundId as string | undefined;
     if (!roundId) return { handled: true };
     const result = await applyCommand(
-      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES },
+      { type: 'ReviewRoundFailed', actor: p.source, roundId, reason: p.reviewFailure ?? 'infra', maxContractRetries: REVIEW_CONTRACT_RETRIES, reviewerTaskId: p.task.id },
       { ref: { deliveryId }, exec: deps.exec },
     );
     await drainDelivery(deliveryId, deps);
@@ -344,12 +444,30 @@ export async function attemptEnded(p: {
   if (!d) return { handled: false };
   let live: LivePr | null = null;
   let proof: { liveContainsLocal: boolean } | undefined;
+  let ci: Extract<Command, { type: 'AttemptEnded' }>['ci'] = null;
+  let trunk: TrunkClassification | null = null;
   if (d.repoFullName && d.prNumber != null) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.task.workspaceId);
     if (repo) {
       const reader = readerFor(deps, repo.installationId);
       live = await reader.readPr(d.repoFullName, d.prNumber);
       proof = await liveProof(reader, d.repoFullName, p.localHeadSha, live);
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused (T10 does
+      // not move WORKING). The owner's hand-off reads the head's checks now and acts on a red.
+      if (attemptKind === 'owner' && d.state === 'WORKING' && live && live.state === 'open' && !live.merged && reader.checkRuns) {
+        const liveChecks = await reader.checkRuns(d.repoFullName, live.headSha).catch(() => null);
+        if (liveChecks) {
+          // §6.10: classified as T10 would; a trunk-caused red is handed on and then T25's.
+          const cls = liveChecks.failing.length > 0
+            ? await classifyCiFailure({ workspaceId: p.task.workspaceId, repoFullName: d.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: live.headSha, deliveryId, gitConfig: repo.gitConfig, reader, exec: deps.exec })
+            : null;
+          if (cls?.incident) trunk = cls;
+          else {
+            const configured = (repo.gitConfig as { maxCiRetries?: unknown } | null)?.maxCiRetries;
+            ci = { liveChecks, signature: cls?.signature ?? UNKNOWN_CI_SIGNATURE, maxAttempts: typeof configured === 'number' ? configured : policyValue('maxCiRetries') };
+          }
+        }
+      }
     }
   }
   const attemptId = isRepairRole(attemptKind) ? (ctxOf(p.task).workflowAttemptId as string | undefined) : undefined;
@@ -366,13 +484,69 @@ export async function attemptEnded(p: {
     ...(p.taskRetryBudgetLeft ? { taskRetryBudgetLeft: true } : {}),
     // The kernel owns only deliveries whose policy dispatched a review (§14 Slice A).
     reviewRequired: true,
+    ...(ci ? { ci } : {}),
   };
   const result = await applyCommand(cmd, { ref: { deliveryId }, exec: deps.exec });
   if (result.result !== 'applied' && result.result !== 'duplicate') {
     console.log(`[workflow] AttemptEnded(${attemptKind}) for task ${p.task.id}: ${result.result} (${result.reason})`);
   }
+  if (trunk?.incident && live && result.result === 'applied' && TRUNK_SOURCE_STATES.has(result.decision.toState)) {
+    await applyCommand(
+      { type: 'TrunkRedObserved', actor: p.source, incidentId: trunk.incident.id, signature: trunk.signature, headSha: live.headSha, thresholdMet: true },
+      { ref: { deliveryId }, exec: deps.exec },
+    );
+    if (trunk.incident.opened) {
+      await joinRepairingDeliveries({ incident: trunk.incident, workspaceId: p.task.workspaceId, repoFullName: d.repoFullName!, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+    }
+  }
   await drainDelivery(deliveryId, deps);
   return { handled: true, result };
+}
+
+// ── §14: switch-off hands a never-reviewed delivery to legacy ──────────────
+
+/**
+ * A delivery the kill switch released before its first round was queued is
+ * legacy's, and legacy files a PR's first review only when the PR opens, a
+ * moment that has passed. Run legacy's first review now (the
+ * `LEGACY_FIRST_REVIEW` slot), once per owner task, for an open PR in a
+ * workspace whose switch is still off. A delivery released for any other
+ * reason (switch on) was handed over by a legacy decision that already
+ * answered it. Never throws: answers what it did.
+ */
+export async function handOffToLegacy(deliveryId: string, deps: SeamDeps = {}): Promise<string> {
+  const exec = deps.exec ?? seamExec;
+  let claimedFor: string | null = null;
+  try {
+    const view = await loadView({ deliveryId }, deps.exec);
+    const d = view.delivery;
+    if (!d || d.authority !== 'legacy') return 'not_released';
+    if (!d.repoFullName || d.prNumber == null) return 'no_pr';
+    if (d.currentRound > 0 || view.rounds.length > 0) return 'already_reviewed';
+    if (RESOLVED_OR_CLOSED.has(d.state)) return 'closed';
+    const repo = await (deps.repoFor ?? workspaceRepo)(d.workspaceId);
+    if (!repo) return 'no_repo';
+    if (kernelEnabled(repo.gitConfig)) return 'switch_on';
+    if (((await exec(claimLegacyHandoffSql(d.ownerTaskId, deliveryId))).rows ?? []).length === 0) return 'already_handed_off';
+    claimedFor = d.ownerTaskId;
+    const live = await readerFor(deps, repo.installationId).readPr(d.repoFullName, d.prNumber);
+    if (!live) throw new Error('live_read_failed');
+    if (live.state !== 'open' || live.merged) return 'pr_not_open';
+    const { LEGACY_FIRST_REVIEW } = await import('@/modules');
+    const r = await LEGACY_FIRST_REVIEW({
+      workspaceId: d.workspaceId, deliveryId, ownerTaskId: d.ownerTaskId, repoFullName: d.repoFullName, prNumber: d.prNumber,
+      installationId: repo.installationId, headSha: live.headSha, baseRef: live.baseRef ?? d.baseRef,
+      htmlUrl: `https://github.com/${d.repoFullName}/pull/${d.prNumber}`,
+      policyEvidence: d.policyEvidence ? { headSha: d.policyEvidence.headSha, outcome: d.policyEvidence.outcome, reason: d.policyEvidence.reason } : null,
+    });
+    console.log(`[workflow] delivery ${deliveryId} handed to legacy after switch-off: ${r.outcome}`);
+    return r.outcome;
+  } catch (err) {
+    // Let the next owner end try again rather than lose the review.
+    if (claimedFor) await exec(unclaimLegacyHandoffSql(claimedFor)).catch(() => {});
+    console.error(`[workflow] legacy hand-off of delivery ${deliveryId} failed:`, err);
+    return 'error';
+  }
 }
 
 // ── §9 completion gate ──────────────────────────────────────────────────────
@@ -532,6 +706,25 @@ export async function observeHead(p: {
     // The delivery is the kernel's: a failed read is answered by the next fact
     // or the push_recovery/sweep path, never by the legacy re-dispatch.
     console.error(`[workflow] HeadObserved ${p.repoFullName}#${p.prNumber} failed:`, err);
+  }
+  await drainDelivery(deliveryId, deps);
+  return true;
+}
+
+// ── T29: the PR's base changed (webhook `edited` with `changes.base`) ────────
+
+/** Webhook `edited` with `changes.base`: T29 from a live read. `false` = not the kernel's PR. */
+export async function observeBase(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; installationId: number; hintedFromBase: string | null; source: string;
+}, deps: SeamDeps = {}): Promise<boolean> {
+  const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
+  if (!deliveryId) return false;
+  const reader = readerFor(deps, p.installationId);
+  try {
+    const live = await reader.readPr(p.repoFullName, p.prNumber);
+    if (live) await catchUpBase({ ...p, deliveryId, live }, reader, deps.exec);
+  } catch (err) {
+    console.error(`[workflow] BaseChanged ${p.repoFullName}#${p.prNumber} failed:`, err);
   }
   await drainDelivery(deliveryId, deps);
   return true;
@@ -720,6 +913,15 @@ export async function observeCiFailure(p: {
   if (!live) return { handled: true, result: { result: 'rejected', reason: 'live_read_failed', current: { state: null, version: 0, head: null, round: 0 } }, attemptTaskId: null };
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:ci`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
+  // The incident a red head joins is its base's: the base GitHub holds now, recorded first.
+  await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.source}:ci`, deliveryId, live }, reader, deps.exec);
+
+  // §6.3 T10: the hint is a pointer; whether CI is red on the head is read now.
+  // Nothing failing (re-run green, or re-running) and the reducer refuses it.
+  const liveChecks = live.headSha === p.headSha && reader.checkRuns
+    ? await reader.checkRuns(p.repoFullName, p.headSha).catch(() => null)
+    : null;
+  const notRed = !!liveChecks && liveChecks.failing.length === 0;
 
   // §6.10: classify the failure by its signature, and route a trunk-caused one
   // to its incident (T25) instead of a per-PR attempt. Only for a head the
@@ -729,10 +931,10 @@ export async function observeCiFailure(p: {
   let signature = p.signature;
   let incident: TrunkClassification['incident'] = null;
   const ciState = !!d && (TRUNK_SOURCE_STATES.has(d.state) || (d.state === 'REPAIRING' && d.stateReason === 'ci'));
-  if (d && ciState && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
+  if (d && ciState && !notRed && d.currentHeadSha === p.headSha && live.headSha === p.headSha) {
     const repo = await (deps.repoFor ?? workspaceRepo)(p.workspaceId);
     const cls = await classifyCiFailure({
-      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef, headSha: p.headSha,
+      workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef, headSha: p.headSha,
       deliveryId, gitConfig: repo?.gitConfig ?? null, reader, exec: deps.exec,
     });
     if (cls.signature !== UNKNOWN_CI_SIGNATURE) signature = cls.signature;
@@ -740,12 +942,12 @@ export async function observeCiFailure(p: {
   }
   const preflightMiss = await preflightMissFor(reader, p, deps);
   const result = await applyCommand(
-    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}) },
+    { type: 'CiFailedObserved', actor: p.source, headSha: p.headSha, signature, maxAttempts: p.maxAttempts, openTrunkIncidentId: incident?.id ?? null, ...(preflightMiss ? { preflightMiss } : {}), ...(liveChecks ? { liveChecks } : {}) },
     { ref: { deliveryId }, exec: deps.exec },
   );
   if (preflightMiss) console.log(`[workflow] preflight_miss on ${p.repoFullName}#${p.prNumber} @ ${p.headSha}: ${preflightMiss}`);
   await drainDelivery(deliveryId, deps);
-  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: d.baseRef ?? live.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
+  if (incident?.opened && d) await joinRepairingDeliveries({ incident, workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: live.baseRef ?? d.baseRef ?? '', excludeDeliveryId: deliveryId }, deps);
   return { handled: true, result, attemptTaskId: await attemptTaskOf(deliveryId, result, deps.exec) };
 }
 
@@ -762,6 +964,7 @@ async function joinRepairingDeliveries(p: {
   const rows = ((await exec(repairingCiOnBaseSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, excludeDeliveryId: p.excludeDeliveryId }))).rows ?? []) as Array<{ id: string; current_head_sha: string | null; trigger_reason: string | null }>;
   for (const r of rows) {
     if (!r.current_head_sha || !r.trigger_reason || !trunkExplains(r.trigger_reason, p.incident.signature)) continue;
+    if (!(await kernelDeliveryById(String(r.id), deps.exec))) continue;
     await exec(openOrJoinIncidentSql({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, baseRef: p.baseRef, signature: p.incident.signature, deliveryId: String(r.id) }));
     await applyCommand(
       { type: 'TrunkRedObserved', actor: 'kernel:trunk_breaker', incidentId: p.incident.id, signature: p.incident.signature, headSha: r.current_head_sha, thresholdMet: true },
@@ -807,6 +1010,8 @@ export async function reconcileTrunkIncidents(deps: SeamDeps = {}, limit = 25): 
   const blocked = ((await exec(blockedOnResolvedSql(limit * 8))).rows ?? []) as Array<{ id: string; workspace_id: string; repo_full_name: string | null; current_head_sha: string | null; trunk_incident_id: string; base_ref: string }>;
   for (const b of blocked) {
     try {
+      // The kill switch: resolving releases a switched-off delivery, and a released one is legacy's.
+      if (!(await kernelDeliveryById(String(b.id), deps.exec))) continue;
       const repo = await (deps.repoFor ?? workspaceRepo)(String(b.workspace_id));
       let predates = false;
       if (repo && b.repo_full_name && b.current_head_sha) {
@@ -882,8 +1087,19 @@ export async function reconcileKernelDeliveries(
         const r = await ingestFact(fact, { exec: deps.exec, github: once });
         if (r.result === 'applied') s.imported++;
       }
+      if (!closedNow && row.state !== 'CLOSED_UNMERGED' && await catchUpBase({ ...base, deliveryId, live }, once, deps.exec)) s.imported++;
       let enqueued = 0;
-      const view = await loadView({ deliveryId }, deps.exec);
+      let view = await loadView({ deliveryId }, deps.exec);
+      // bb6a3a56: WORKING with the owner already ended means the kernel never got that end
+      // (a completion that raced the PR open, a crash before tasks.delivery_id, a command that
+      // lost the version race twice). Re-send it from the workers row; a held end is a duplicate.
+      if (view.delivery?.state === 'WORKING') {
+        const ended = await forwardOwnerEnd({ workspaceId, ownerTaskId: view.delivery.ownerTaskId, deliveryId, source }, deps);
+        if (ended) {
+          view = await loadView({ deliveryId }, deps.exec);
+          if (view.delivery?.state !== 'WORKING') s.imported++;
+        }
+      }
       if (view.delivery) {
         const held = ((await exec(existingEffectsSql(deliveryId))).rows ?? []) as Array<{ dedupe_key: string; status?: string }>;
         const existing = new Set(held.map((e) => String(e.dedupe_key)));
@@ -901,6 +1117,65 @@ export async function reconcileKernelDeliveries(
     } catch (err) {
       s.errors++;
       console.error(`[workflow] floor reconcile of ${repoFullName}#${prNumber} failed:`, err);
+    }
+  }
+  return s;
+}
+
+export interface TreadmillCycleSummary {
+  /** Treadmill escalations past the cooldown that the pass looked at. */
+  checked: number;
+  /** Returned to APPROVED with a fresh refresh budget; the landing sweep picks them up. */
+  restarted: number;
+  /** Refused by the reducer (cycles used up, head not approved, moved since the read): stays with a person. */
+  refused: number;
+  errors: number;
+}
+
+/**
+ * S15 cycles, the kernel's half of the landing cooldown: a delivery the
+ * behind-refresh treadmill escalated gets a fresh refresh budget once
+ * `cooldownMs` has passed since that escalation, up to `MAX_TREADMILL_CYCLES`
+ * cycles (the reducer's bound). Only the treadmill cause qualifies (the SQL
+ * pins the transition that produced the current version); a merge refusal or a
+ * failed refresh stays with a person. The restart is pinned to that version, so
+ * a person's move in between wins.
+ */
+export async function restartTreadmillCycles(
+  o: { cooldownMs: number; limit?: number },
+  deps: SeamDeps & {
+    apply?: typeof applyCommand;
+    owned?: (workspaceId: string, repoFullName: string, prNumber: number) => Promise<string | null>;
+    drain?: (deliveryId: string) => Promise<unknown>;
+  } = {},
+): Promise<TreadmillCycleSummary> {
+  const exec = deps.exec ?? seamExec;
+  const apply = deps.apply ?? applyCommand;
+  const owned = deps.owned ?? ((w, r, n) => kernelDeliveryForPr(w, r, n, deps.exec));
+  const drain = deps.drain ?? ((id: string) => drainDelivery(id, deps));
+  const s: TreadmillCycleSummary = { checked: 0, restarted: 0, refused: 0, errors: 0 };
+  const rows = ((await exec(treadmillCycleCandidatesSql({ limit: o.limit ?? 20, cooldownMs: o.cooldownMs }))).rows ?? []) as TreadmillCycleCandidate[];
+  for (const row of rows) {
+    const deliveryId = String(row.id);
+    try {
+      // The kill switch: a delivery released to legacy is legacy's.
+      if ((await owned(String(row.workspace_id), String(row.repo_full_name), Number(row.pr_number))) !== deliveryId) continue;
+      s.checked++;
+      const result = await apply(
+        { type: 'TreadmillCycleRestarted', actor: 'sweep:treadmill-cycle', expectedVersion: Number(row.version) },
+        { ref: { deliveryId }, exec: deps.exec },
+      );
+      if (result.result === 'applied') {
+        s.restarted++;
+        console.log(`[workflow] treadmill cycle restarted for ${row.repo_full_name}#${row.pr_number}`);
+        await drain(deliveryId);
+      } else {
+        s.refused++;
+        console.log(`[workflow] treadmill cycle not restarted for ${row.repo_full_name}#${row.pr_number}: ${result.result} (${'reason' in result ? result.reason : 'no reason'})`);
+      }
+    } catch (err) {
+      s.errors++;
+      console.error(`[workflow] treadmill cycle restart of ${row.repo_full_name}#${row.pr_number} failed:`, err);
     }
   }
   return s;
@@ -951,6 +1226,25 @@ export function isMergeableNow(state: string | null | undefined): boolean {
   return state === 'clean' || state === 'unstable' || state === 'has_hooks' || state === 'blocked';
 }
 
+/**
+ * T12's reading of a live PR. GitHub reports `mergeable_state: behind` only
+ * under branch protection that requires an up-to-date branch; without it a PR
+ * many commits behind its base reads `clean`. So a door that saw the PR behind
+ * (landing's freshness rail, a merge refused as out of date) is answered by
+ * ancestry, not by that state: the base tip missing from the head is `behind`.
+ * `baseContained` null = not read; false = the base tip is not in the head.
+ */
+export function conflictReading(
+  state: string | null | undefined,
+  hint: 'dirty' | 'behind',
+  baseContained: boolean | null,
+): ConflictSeen['mergeable'] {
+  if (state === 'dirty') return 'dirty';
+  if (state === 'behind') return 'behind';
+  if (!isMergeableNow(state)) return 'unknown';
+  return hint === 'behind' && baseContained === false ? 'behind' : 'clean';
+}
+
 export interface ConflictSeen {
   handled: true;
   result: CommandResult;
@@ -995,7 +1289,12 @@ export async function observeConflict(p: {
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.source}:conflict`, repoFullName: p.repoFullName, prNumber: p.prNumber },
     { exec: deps.exec, github: { ...reader, readPr: async () => live } });
   const state = live.mergeableState ?? null;
-  const mergeable: ConflictSeen['mergeable'] = state === 'dirty' ? 'dirty' : state === 'behind' ? 'behind' : isMergeableNow(state) ? 'clean' : 'unknown';
+  // Only a behind-hinted door on a mergeable PR pays for the ancestry read.
+  const baseTip = p.hint === 'behind' && isMergeableNow(state) && live.baseRef && reader.branchHead && reader.contains
+    ? await reader.branchHead(p.repoFullName, live.baseRef)
+    : null;
+  const baseContained = baseTip ? await reader.contains!(p.repoFullName, baseTip, live.headSha) : null;
+  const mergeable = conflictReading(state, p.hint, baseContained);
   if (mergeable === 'clean' && !p.migrationCollision) return none('not_conflicting', 'clean');
   let maxAgent = p.maxAgentAttempts;
   if (p.humanInitiated) {

@@ -11,13 +11,18 @@ import { isSystemWorkspace } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName, RiskClassAction } from '@buildd/shared';
 import { PRESET_ACTIONS, effectivePathsForClass } from './workspace-policy';
 
-/** `warning` = legacy, should be fixed. `action` = an offer, not a problem. */
-export type HealthSeverity = 'warning' | 'action' | 'info';
+/** `warning` = legacy, should be fixed. */
+export type HealthSeverity = 'warning' | 'info';
 
-export type HealthActionKind = 'review-policy' | 'move-team';
+export type HealthActionKind = 'review-policy';
 
+/**
+ * Moving the workspace to another team is not a health item: it is the
+ * settings page's Danger zone action, and offering it here put it on the page
+ * twice.
+ */
 export interface HealthItem {
-  id: 'policy' | 'team-placement' | 'system-workspace';
+  id: 'policy' | 'system-workspace';
   severity: HealthSeverity;
   label: string;
   /** One-line consequence of taking the action, when it is not obvious. */
@@ -31,8 +36,6 @@ export interface WorkspaceHealthInput {
   configStatus: string;
   accessMode: string;
   gitConfig: Record<string, unknown> | null;
-  /** How many teams the viewing user belongs to. */
-  userTeamCount: number;
 }
 
 /**
@@ -83,15 +86,6 @@ export function checkWorkspaceHealth(input: WorkspaceHealthInput): HealthItem[] 
     });
   }
 
-  if (input.userTeamCount > 1) {
-    items.push({
-      id: 'team-placement',
-      severity: 'action',
-      label: 'Move this workspace to another of your teams',
-      action: { kind: 'move-team', label: 'Move to team…' },
-    });
-  }
-
   return items;
 }
 
@@ -104,6 +98,10 @@ const CLASS_LABELS: Record<RiskClassName, string> = {
   dependency_bump: 'Dependency bumps',
   public_api_contract: 'Public API contract',
 };
+
+export function riskClassLabel(name: RiskClassName): string {
+  return CLASS_LABELS[name] ?? name;
+}
 
 const ACTION_LABELS: Record<RiskClassAction, string> = {
   human: 'Human review',

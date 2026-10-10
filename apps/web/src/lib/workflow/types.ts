@@ -50,7 +50,8 @@ export type CloseCause = 'manual' | 'base_deleted' | 'superseded_by_policy' | 'u
  * verdict at the head: `policy` means the workspace's merge policy requires no
  * review (auto-threshold), so only T15's landing rails gate the merge.
  */
-export type ApprovalBasis = 'verdict' | 'human' | 'composition' | 'policy';
+/** `policy_rule`: the escalation gate's policy-merge rule approved exactly the heads in `approvedHeads` (PolicyMergeApproved). */
+export type ApprovalBasis = 'verdict' | 'human' | 'composition' | 'policy' | 'policy_rule';
 
 export type Verdict = 'approve' | 'request_changes' | 'escalate';
 export type RoundStatus = 'queued' | 'reviewing' | 'decided' | 'failed' | 'superseded';
@@ -62,6 +63,18 @@ export type AttemptStatus = 'queued' | 'running' | 'ended' | 'skipped' | 'cancel
 export type AttemptOutcome = 'delivered' | 'unproven' | 'failed' | 'noop';
 
 // ── Snapshots the reducer reads ─────────────────────────────────────────────
+
+/** What a preflight finding asks of the platform (§6.3 T28). */
+export type PolicyOutcome = 'human' | 'agent_split';
+
+/** Head-bound policy evidence: true for `headSha` only. */
+export interface PolicyEvidence {
+  headSha: string;
+  outcome: PolicyOutcome;
+  reason: string;
+  /** Truly destructive SQL (or an uninspectable migration): the human rail, never auto-routed. */
+  destructive: boolean;
+}
 
 export interface DeliverySnapshot {
   id: string;
@@ -93,6 +106,7 @@ export interface DeliverySnapshot {
   supersededByUrl?: string | null;
   supersededReason?: string | null;
   recordedBy?: string | null;
+  policyEvidence?: PolicyEvidence | null;
   /** §14 cutover: who decides for this delivery. Absent in fixtures = 'kernel'. */
   authority?: 'kernel' | 'legacy';
   /**
@@ -101,6 +115,10 @@ export interface DeliverySnapshot {
    * ledger row, so this is the `L` its proof is checked against.
    */
   pushPendingLocalHead?: string | null;
+  /** §9: how many times the delivery has entered AWAITING_PUSH (absent in fixtures = 0). */
+  pushEntries?: number;
+  /** §9: the version of the latest entry into AWAITING_PUSH; names a later visit's push_recovery chain. */
+  pushPendingSince?: number | null;
 }
 
 export interface RoundSnapshot {

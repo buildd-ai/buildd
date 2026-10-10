@@ -29,10 +29,13 @@ import {
 import {
   AGENT_ENDPOINT_PURPOSE,
   effectiveToolSearch,
+  isOpenRouterReference,
   mapAgentModel,
   parseAgentEndpointBlob,
   parseAppliesTo,
   resolveEndpointFromBlob,
+  resolveEndpointRefs,
+  resolveStoredOpenRouterKey,
   serializeAgentEndpoint,
   validateAgentEndpointInput,
   verifyAgentEndpoint,
@@ -41,6 +44,7 @@ import {
   type AgentEndpointKind,
   type AgentEndpointRoute,
   type AgentModelMap,
+  type CloudflareEndpointRef,
 } from '@buildd/core/agent-endpoint';
 
 export type EndpointHealth = 'healthy' | 'revoked' | 'unknown';
@@ -75,8 +79,26 @@ export interface MaskedAgentEndpoint {
   toolSearchExplicit: boolean;
   /** Last four characters of the key in use (the gateway's key for `kind: gateway`). */
   last4: string;
-  /** `kind: gateway`: whether the referenced gateway currently resolves. */
+  /** `kind: gateway`: whether the referenced gateway currently resolves. `cloudflare`: whether the team's Cloudflare credential has an AI Gateway. */
   gatewayMissing: boolean;
+  /**
+   * `kind: openrouter`: where its key comes from. `stored` = a reference to the
+   * team's (or this workspace's) OpenRouter key; `inline` = a key saved with
+   * the endpoint itself (legacy). Null for other kinds.
+   */
+  keySource: 'stored' | 'inline' | null;
+  /** `stored`: no OpenRouter key resolves for it right now. `cloudflare`: no key for its upstream resolves. */
+  storedKeyMissing: boolean;
+  /** `cloudflare`: the provider its AI Gateway forwards to. Null for other kinds. */
+  upstream: 'anthropic' | 'openrouter' | null;
+  /** `cloudflare`: an AI Gateway Run token is saved (its value never comes back). */
+  gatewayTokenSet: boolean;
+  /**
+   * The consolidation backfill found this row's inline key differs from the
+   * stored OpenRouter key at its scope: someone should pick one. Saving the
+   * row again (blank key = the stored one) clears it.
+   */
+  legacyInlineKey: boolean;
   health: EndpointHealth;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
@@ -142,21 +164,27 @@ async function agentTierModels(teamId: string): Promise<{ wanted: Array<{ model:
 /** The read-only mapping: tier models plus saved aliases, each with its wire name. */
 function mappingFor(blob: AgentEndpointBlob, wanted: Array<{ model: string; tiers: string[] }>): EndpointModelMapping[] {
   const rows = buildEndpointModelRows({ wanted, explicit: blob.models ?? {}, hints: {}, listed: null });
-  return rows.map((r) => ({ model: r.model, tiers: r.tiers, sent: mapAgentModel({ kind: blob.kind, models: blob.models }, r.model) }));
+  const upstream = blob.kind === 'cloudflare' ? blob.upstream : undefined;
+  return rows.map((r) => ({ model: r.model, tiers: r.tiers, sent: mapAgentModel({ kind: blob.kind, models: blob.models, upstream }, r.model) }));
 }
 
 /**
  * The endpoint's `/v1/models` ids (null: no list, or OpenRouter, whose names
  * follow a fixed rule instead of aliases).
  */
+/** OpenRouter names models by a fixed rule, directly or behind a Cloudflare gateway. */
+function namesByOpenRouterRule(route: Pick<AgentEndpointRoute, 'kind' | 'upstream'>): boolean {
+  return route.kind === 'openrouter' || (route.kind === 'cloudflare' && route.upstream === 'openrouter');
+}
+
 function discoverModels(route: AgentEndpointRoute, deps: VerifyDeps): Promise<string[] | null> {
-  if (route.kind === 'openrouter') return Promise.resolve(null);
+  if (namesByOpenRouterRule(route)) return Promise.resolve(null);
   return listAgentEndpointModels(route, { fetcher: deps.fetcher, lookup: deps.lookup });
 }
 
 /** The wire model Verify sends for this route and list. */
 function probeModelFor(route: AgentEndpointRoute, listed: string[] | null): string {
-  if (route.kind === 'openrouter') return mapAgentModel(route, VERIFY_MODEL);
+  if (namesByOpenRouterRule(route)) return mapAgentModel(route, VERIFY_MODEL);
   return selectProbeModel({ verifyModel: VERIFY_MODEL, aliases: route.models, listed }).model;
 }
 
@@ -167,6 +195,59 @@ const endpointRows = (teamId: string) =>
 function gatewayFor(teamId: string, workspaceId: string | null): Promise<LiteLLMGateway | null> {
   // Same scope or broader: a team-wide reference never picks up a workspace gateway.
   return resolveLiteLLMGateway({ teamId, workspaceId }, { ignoreKeyPolicy: true });
+}
+
+/**
+ * The stored OpenRouter key an `openrouter` reference at this scope routes
+ * (same scope or broader). A lookup failure reads as none.
+ */
+async function storedOpenRouterKey(teamId: string, workspaceId: string | null): Promise<string | null> {
+  try {
+    return (await resolveStoredOpenRouterKey({ teamId, workspaceId }))?.key ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A blob as a route, with whatever it references looked up at the row's scope. */
+async function routeOf(teamId: string, blob: AgentEndpointBlob | null, workspaceId: string | null): Promise<{
+  route: AgentEndpointRoute | null; gateway: LiteLLMGateway | null; cloudflare?: CloudflareEndpointRef | null;
+}> {
+  if (!blob) return { route: null, gateway: null };
+  if (blob.kind === 'cloudflare') {
+    // The shared core lookup: the team's gateway ids (never its token) and the upstream key.
+    const refs = await resolveEndpointRefs(blob, { teamId, workspaceId }).catch(() => null);
+    const cloudflare = refs?.cloudflare ?? null;
+    return { route: resolveEndpointFromBlob(blob, null, null, cloudflare), gateway: null, cloudflare };
+  }
+  const gateway = blob.kind === 'gateway' ? await gatewayFor(teamId, workspaceId) : null;
+  const openRouterKey = isOpenRouterReference(blob) ? await storedOpenRouterKey(teamId, workspaceId) : null;
+  return { route: resolveEndpointFromBlob(blob, gateway, openRouterKey), gateway };
+}
+
+/** Capabilities without the backfill's bookkeeping flag: saving a row is picking its key. */
+function withoutLegacyFlag(caps: unknown): unknown {
+  if (!caps || typeof caps !== 'object' || Array.isArray(caps)) return caps;
+  const { legacyInlineKey: _flag, ...rest } = caps as Record<string, unknown>;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+function blankKey(raw: Record<string, unknown>): boolean {
+  return raw.apiKey === undefined || raw.apiKey === null || (typeof raw.apiKey === 'string' && raw.apiKey.trim() === '');
+}
+
+/**
+ * An OpenRouter endpoint saved with no key becomes a reference to the stored
+ * OpenRouter key when one resolves at this scope: the key lives once, under
+ * Team keys, and every surface reads it there. Null when it is not that case
+ * (another kind, a typed key, or nothing stored), so the caller falls back to
+ * reusing the endpoint's own saved key as before.
+ */
+async function asOpenRouterReference(teamId: string, workspaceId: string | null, raw: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  if (raw.kind !== 'openrouter' || !blankKey(raw)) return null;
+  if (!(await storedOpenRouterKey(teamId, workspaceId))) return null;
+  const { apiKey: _blank, ...rest } = raw;
+  return rest;
 }
 
 function readBlob(encryptedValue: string): AgentEndpointBlob | null {
@@ -206,7 +287,8 @@ function sameModels(a: AgentModelMap, b: AgentModelMap): boolean {
 function sameRoute(a: AgentEndpointRoute | null, b: AgentEndpointRoute | null): boolean {
   if (!a || !b) return false;
   return a.kind === b.kind && a.baseUrl === b.baseUrl && a.apiKey === b.apiKey &&
-    a.authHeader === b.authHeader && sameModels(a.models, b.models) && a.toolSearch === b.toolSearch;
+    a.authHeader === b.authHeader && sameModels(a.models, b.models) && a.toolSearch === b.toolSearch &&
+    a.upstream === b.upstream && sameModels(a.headers ?? {}, b.headers ?? {});
 }
 
 /**
@@ -238,11 +320,10 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
   const tierModels = mine.length > 0 ? await agentTierModels(teamId) : { wanted: [], hints: {} };
   const read = await Promise.all(mine.map(async (r) => {
     const blob = readBlob(r.encryptedValue);
-    const gateway = blob?.kind === 'gateway' ? await gatewayFor(teamId, r.workspaceId) : null;
-    return { r, blob, gateway, route: blob ? resolveEndpointFromBlob(blob, gateway) : null };
+    return { r, blob, ...(await routeOf(teamId, blob, r.workspaceId)) };
   }));
   const teamRoute = read.find((x) => !x.r.workspaceId)?.route ?? null;
-  for (const { r, blob, gateway, route } of read) {
+  for (const { r, blob, gateway, route, cloudflare } of read) {
     out.push({
       id: r.id,
       scope: r.workspaceId ? 'workspace' : 'team',
@@ -258,7 +339,12 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
       toolSearch: blob ? effectiveToolSearch(blob.kind, blob.capabilities) : false,
       toolSearchExplicit: typeof blob?.capabilities?.toolSearch === 'boolean',
       last4: route ? maskKeyLast4(route.apiKey) : '',
-      gatewayMissing: blob?.kind === 'gateway' && !gateway,
+      gatewayMissing: (blob?.kind === 'gateway' && !gateway) || (blob?.kind === 'cloudflare' && !cloudflare?.gatewayId),
+      keySource: blob?.kind === 'openrouter' ? (isOpenRouterReference(blob) ? 'stored' : 'inline') : null,
+      storedKeyMissing: !!blob && ((isOpenRouterReference(blob) && !route) || (blob.kind === 'cloudflare' && !!cloudflare?.gatewayId && !cloudflare.upstreamKey)),
+      upstream: blob?.kind === 'cloudflare' ? blob.upstream : null,
+      gatewayTokenSet: blob?.kind === 'cloudflare' && !!blob.gatewayToken,
+      legacyInlineKey: blob?.kind === 'openrouter' && blob.capabilities?.legacyInlineKey === true,
       health: (r.healthStatus as EndpointHealth) ?? 'unknown',
       lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
       lastVerificationError: blob ? r.lastVerificationError ?? null : 'stored endpoint could not be read',
@@ -316,6 +402,17 @@ async function storedBlobAt(teamId: string, workspaceId: string | null): Promise
  */
 function withStoredKey(input: Record<string, unknown>, stored: AgentEndpointBlob | null): Record<string, unknown> | null {
   const raw: Record<string, unknown> = { ...input };
+  if (raw.kind === 'cloudflare') {
+    // A blank gateway token keeps the saved one; null removes it.
+    const blank = raw.gatewayToken === undefined || (typeof raw.gatewayToken === 'string' && raw.gatewayToken.trim() === '');
+    if (blank) {
+      delete raw.gatewayToken;
+      if (stored?.kind === 'cloudflare' && stored.gatewayToken) raw.gatewayToken = stored.gatewayToken;
+    } else if (raw.gatewayToken === null) {
+      delete raw.gatewayToken;
+    }
+    return raw;
+  }
   if (raw.kind !== 'anthropic-compatible' && raw.kind !== 'openrouter') return raw;
   if (typeof raw.apiKey === 'string' ? raw.apiKey.trim() !== '' : raw.apiKey !== undefined && raw.apiKey !== null) return raw;
   if (!stored || stored.kind !== raw.kind) return null;
@@ -354,15 +451,15 @@ export async function previewAgentEndpointModels(
     return { ok: false, status: 400, error: 'An endpoint needs a kind.' };
   }
   const stored = await storedBlobAt(input.teamId, scope.workspaceId);
-  const raw = withStoredKey(input.endpoint as Record<string, unknown>, stored);
+  const endpointInput = input.endpoint as Record<string, unknown>;
+  const raw = await asOpenRouterReference(input.teamId, scope.workspaceId, endpointInput) ?? withStoredKey(endpointInput, stored);
   if (!raw) return { ok: false, status: 400, error: 'Enter the key to list this endpoint\'s models.' };
   const v = validateAgentEndpointInput(raw);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
-  const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, scope.workspaceId) : null;
+  const { route, gateway } = await routeOf(input.teamId, v.blob, scope.workspaceId);
   if (v.blob.kind === 'gateway' && !gateway) {
     return { ok: false, status: 400, error: 'Connect a LiteLLM gateway first: this option uses its URL and key.' };
   }
-  const route = resolveEndpointFromBlob(v.blob, gateway);
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
   const listed = await discoverModels(route, deps);
@@ -410,7 +507,9 @@ export async function setTeamAgentEndpoint(
     } else {
       appliesTo = stored?.appliesTo;
     }
-    const filled = withStoredKey(rest, stored);
+    // OpenRouter with a blank key: the stored OpenRouter key when there is
+    // one, else the endpoint's own saved key as before.
+    const filled = await asOpenRouterReference(input.teamId, workspaceId, rest) ?? withStoredKey(rest, stored);
     if (!filled) return { ok: false, status: 400, error: 'Enter the key for this endpoint.' };
     // Capabilities: the call's when it names them (null = the kind's
     // defaults), else the saved row's for the same kind, so re-saving never
@@ -418,16 +517,26 @@ export async function setTeamAgentEndpoint(
     if (filled.capabilities === undefined && stored?.capabilities && stored.kind === filled.kind) {
       filled.capabilities = stored.capabilities;
     }
+    // Saving is picking the key, so the backfill's "two different keys" flag goes.
+    filled.capabilities = withoutLegacyFlag(filled.capabilities);
     endpoint = filled;
   }
   const v = validateAgentEndpointInput(endpoint);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
 
-  const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, workspaceId) : null;
+  const { route, gateway, cloudflare } = await routeOf(input.teamId, v.blob, workspaceId);
   if (v.blob.kind === 'gateway' && !gateway) {
     return { ok: false, status: 400, error: 'Connect a LiteLLM gateway first: this option uses its URL and key.' };
   }
-  const route = resolveEndpointFromBlob(v.blob, gateway);
+  if (v.blob.kind === 'cloudflare') {
+    if (!cloudflare?.gatewayId) {
+      return { ok: false, status: 400, error: 'Add the team\'s Cloudflare credential with an AI Gateway ID first: this option sends agents through that gateway.' };
+    }
+    if (!cloudflare.upstreamKey) {
+      const which = v.blob.upstream === 'openrouter' ? 'an OpenRouter key' : 'an Anthropic API key';
+      return { ok: false, status: 400, error: `Add ${which} for the team first: the gateway forwards to it with that key.` };
+    }
+  }
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
   // The endpoint's own list, when it has one: Verify probes a name this key
@@ -453,7 +562,7 @@ export async function setTeamAgentEndpoint(
   // the person's own (which always win).
   let blob = v.blob;
   const tierModels = await agentTierModels(input.teamId);
-  if (blob.kind !== 'openrouter' && listed) {
+  if (!namesByOpenRouterRule(route) && listed) {
     const explicit = blob.models ?? {};
     const derived = deriveModelAliases({ models: tierModels.wanted.map((w) => w.model), explicit, listed });
     if (Object.keys(derived).length > 0) blob = { ...blob, models: { ...derived, ...explicit } };
@@ -486,6 +595,11 @@ export async function setTeamAgentEndpoint(
       toolSearchExplicit: typeof blob.capabilities?.toolSearch === 'boolean',
       last4: maskKeyLast4(route.apiKey),
       gatewayMissing: false,
+      keySource: blob.kind === 'openrouter' ? (isOpenRouterReference(blob) ? 'stored' : 'inline') : null,
+      storedKeyMissing: false,
+      upstream: blob.kind === 'cloudflare' ? blob.upstream : null,
+      gatewayTokenSet: blob.kind === 'cloudflare' && !!blob.gatewayToken,
+      legacyInlineKey: false,
       health: check.health,
       lastVerifiedAt: now.toISOString(),
       lastVerificationError: check.error,
@@ -545,14 +659,12 @@ export async function setAgentEndpointAppliesTo(input: {
     .where(and(endpointRows(input.teamId), eq(secrets.id, teamRow.id)));
 
   const selected = new Set(a.appliesTo ?? [...a.names.keys()]);
-  const teamGateway = next.blob.kind === 'gateway' ? await gatewayFor(input.teamId, null) : null;
-  const teamRoute = resolveEndpointFromBlob(next.blob, teamGateway);
+  const { route: teamRoute } = await routeOf(input.teamId, next.blob, null);
   const copies: EndpointCopy[] = [];
   for (const r of rows) {
     if (!r.workspaceId || !selected.has(r.workspaceId)) continue;
-    const wsBlob = readBlob(r.encryptedValue);
-    const wsGateway = wsBlob?.kind === 'gateway' ? await gatewayFor(input.teamId, r.workspaceId) : null;
-    const matches = sameRoute(wsBlob ? resolveEndpointFromBlob(wsBlob, wsGateway) : null, teamRoute);
+    const { route: wsRoute } = await routeOf(input.teamId, readBlob(r.encryptedValue), r.workspaceId);
+    const matches = sameRoute(wsRoute, teamRoute);
     let removed = false;
     if (matches && input.consolidate === true) {
       await getSecretsProvider().delete(r.id);
@@ -588,11 +700,13 @@ export async function verifyAgentEndpointSecret(
   });
   if (!row || row.purpose !== AGENT_ENDPOINT_PURPOSE) return { health: 'unknown', error: 'Not an agent endpoint.' };
   const blob = readBlob(row.encryptedValue);
-  const gateway = blob?.kind === 'gateway' ? await gatewayFor(row.teamId, row.workspaceId) : null;
-  const route = blob ? resolveEndpointFromBlob(blob, gateway) : null;
+  const { route } = await routeOf(row.teamId, blob, row.workspaceId);
+  const missing = blob?.kind === 'gateway'
+    ? 'The team gateway this endpoint uses is not connected.'
+    : 'No OpenRouter key is stored for this endpoint.';
   const check = route
     ? await verifyAgentEndpoint(route, probeModelFor(route, await discoverModels(route, deps)), { fetcher: deps.fetcher, lookup: deps.lookup, wire: true })
-    : { health: 'unknown' as const, error: blob ? 'The team gateway this endpoint uses is not connected.' : 'Stored endpoint could not be read.' };
+    : { health: 'unknown' as const, error: blob ? missing : 'Stored endpoint could not be read.' };
   await recordHealth(row.id, check);
   return { health: check.health, error: check.error };
 }

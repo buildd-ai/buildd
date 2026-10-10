@@ -1282,6 +1282,36 @@ describe('open_pr_outpaced_by_base', () => {
     expect(countBaseDrift(s, s.workers[0])).toBe(0);
   });
 
+  // Filed as friction: a PR opened an hour ago was reported "open 34h; 126
+  // merges since it opened". The PR-opened webhook (registerLocalPr) stamps
+  // the PR onto EVERY worker on its branch, including predecessors that had
+  // failed on a usage limit a day earlier — and each such row anchored the
+  // PR's age on its own long-past completedAt.
+  it('anchors on the newest worker carrying the PR, not a failed predecessor stamped by the webhook', () => {
+    const s = snapshot({
+      workers: [
+        openPr(34 * HOUR, { id: 'w-failed-1', status: 'failed' }),
+        openPr(31 * HOUR, { id: 'w-failed-2', status: 'failed' }),
+        openPr(HOUR, { id: 'w-opener', status: 'completed', createdAt: ago(3 * HOUR) }),
+      ],
+      baseMerges: merges(PR_OUTPACED_DRIFT * 4).map((m, i) => ({ ...m, mergedAt: ago((i + 1) * 15 * MIN) })),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('reports a PR carried by several workers once, aged from the newest of them', () => {
+    const s = snapshot({
+      workers: [
+        openPr(30 * HOUR, { id: 'w-failed', status: 'failed' }),
+        openPr(10 * HOUR, { id: 'w-opener' }),
+      ],
+      baseMerges: merges(PR_OUTPACED_DRIFT).map((m, i) => ({ ...m, mergedAt: ago((i + 1) * 30 * MIN) })),
+    });
+    const violations = evaluateInvariants(s, NOW).find(r => r.key === key)!.violations;
+    expect(violations.map(v => v.entityId)).toEqual(['4242']);
+    expect(Math.round(violations[0].ageMs / HOUR)).toBe(10);
+  });
+
   it('states the PR number, its age and the drift count as evidence', () => {
     const s = snapshot({
       workers: [openPr(20 * HOUR)],

@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { workspaces as workspacesTable, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import SettingsPage from '../_components/SettingsPage';
 import { loadSettingsContext } from '../_lib/settings-context';
+import { teamIdsHolding } from '../_lib/settings-permissions';
 import WorkspacesTable from './WorkspacesTable';
 import { buildWorkspaceRows, WORKSPACE_DEFAULTS } from './rows';
 import { loadWorkspaceActivity } from '@/lib/workspace-activity';
@@ -17,7 +18,9 @@ export const dynamic = 'force-dynamic';
  * and a health hint. Policy changes live on each workspace's own settings.
  */
 export default async function WorkspacesSettingsPage() {
-  const { user, teams, workspaces } = await loadSettingsContext();
+  const { user, teams, workspaces, permsByTeam } = await loadSettingsContext();
+  // The create route takes create_workspace in the target team; a personal team counts as owned.
+  const canCreate = teamIdsHolding(permsByTeam, 'create_workspace').length > 0;
 
   const ids = workspaces.map((ws) => ws.id);
   const [configs, activity] = await Promise.all([
@@ -49,13 +52,15 @@ export default async function WorkspacesSettingsPage() {
       <section aria-labelledby="ws-list-h">
         <div className="flex items-center justify-between gap-3 mb-1 min-h-8">
           <h2 id="ws-list-h" className="section-label">Your workspaces</h2>
-          <Link href="/app/workspaces/new" className="btn btn-quiet">New workspace</Link>
+          {canCreate
+            ? <Link href="/app/settings/workspaces/new" className="btn btn-sm">New workspace</Link>
+            : <span data-testid="create-workspace-read-only" className="text-xs text-text-muted">Admins can create workspaces.</span>}
         </div>
         {rows.length === 0 ? (
-          <div className="card p-6 text-center">
-            <p className="text-sm text-text-secondary mb-3">No workspaces.</p>
-            <Link href="/app/workspaces/new" className="btn btn-primary">Create a workspace</Link>
-          </div>
+          <p className="text-sm text-text-muted" data-testid="workspaces-empty">
+            No workspaces.
+            {canCreate && <>{' '}<Link href="/app/settings/workspaces/new" className="underline text-text-primary hover:text-text-secondary">Create one</Link></>}
+          </p>
         ) : (
           <WorkspacesTable rows={rows} moveTeams={moveTeams} defaults={WORKSPACE_DEFAULTS} now={new Date().toISOString()} />
         )}

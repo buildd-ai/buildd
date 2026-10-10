@@ -122,7 +122,7 @@ describe('ModelFeatures', () => {
 
   it('does not list the built-in decision calls, or features with no call site', async () => {
     await mount();
-    expect(q('[data-testid="feature-task_classification"]')).toBeNull();
+    expect(q('[data-testid="feature-heartbeat_triage"]')).toBeNull();
     expect(q('[data-testid="feature-task_category"]')).toBeNull();
     expect(q('[data-testid="feature-visual_qa"]')).toBeNull();
     expect(q('[data-testid="feature-mission_summary"]')).toBeNull();
@@ -149,12 +149,14 @@ describe('ModelFeatures', () => {
   it('saves an override from the inline control and clears it with Auto', async () => {
     await mount();
     const row = '[data-testid="feature-criteria_grading"]';
-    expect(q(`${row} [role="radio"][data-value="default"]`)!.getAttribute('aria-checked')).toBe('true');
-    const runner = q(`${row} [role="radio"][data-value="runner"]`)!;
+    // The control is the shared Segmented: one radio per option, by its label.
+    const radio = (label: string) => [...host.querySelectorAll<HTMLElement>(`${row} [role="radio"]`)].find((r) => r.textContent === label)!;
+    expect(radio('Auto').getAttribute('aria-checked')).toBe('true');
+    const runner = radio('Runner');
     await act(async () => { runner.click(); });
     expect(patches).toEqual([{ inferenceFeatureModes: { criteria_grading: 'runner' } }]);
     expect(runner.getAttribute('aria-checked')).toBe('true');
-    const def = q(`${row} [role="radio"][data-value="default"]`)!;
+    const def = radio('Auto');
     await act(async () => { def.click(); });
     expect(patches[1]).toEqual({ inferenceFeatureModes: null });
   });

@@ -96,6 +96,13 @@ export type CoreEvent =
    */
   | { type: 'task.terminal'; taskId: string; workerId: string; workspaceId: string | null; sensitive: boolean }
   /**
+   * A task left a mission: PATCH /api/tasks/[id] changed its `missionId` away
+   * from `missionId` (unlinked, which `manage_missions unlink_task` does, or
+   * moved to another mission). A module holding per-mission state about the
+   * task drops it here (the surface audit's dependsOn).
+   */
+  | { type: 'task.left_mission'; taskId: string; missionId: string; workspaceId: string | null }
+  /**
    * A worker reported completed/failed/error and the task row is written.
    * Fires for auto-retries and loop iterations too. `status` is what the
    * worker REPORTED; `finalStatus` is the terminal status core decided (a
@@ -303,7 +310,13 @@ export type CoreEvent =
       repoFullName: string;
       pr: { number: number; headRef: string; additions: number | null; deletions: number | null };
       worker: { id: string; workspaceId: string; taskId: string };
-    };
+    }
+  /**
+   * The hourly PR merge-state pass ran (`/api/cron/pr-reconcile`, merge-state
+   * and full scopes): the floor for module backstops whose webhook is lossy.
+   * Subscribers must be bounded (the route has a 60s budget) and idempotent.
+   */
+  | { type: 'sweep.pr_hourly'; at: Date };
 
 /** The worker that owns a PR, as the webhook resolved it. */
 export interface PrOwnerFact {

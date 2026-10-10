@@ -134,11 +134,22 @@ mock.module('@buildd/core/db', () => ({
 /** Role slugs effective for the planning task's workspace (role-routing §3.1). */
 let effectiveRoles = new Set<string>();
 const resolveEffectiveRoleSlugsCalls: string[] = [];
+const resolveEffectiveRoleSlugsRequesters: Array<string | null> = [];
 mock.module('./effective-roles', () => ({
-  resolveEffectiveRoleSlugs: (workspaceId: string) => {
+  resolveEffectiveRoleSlugs: (workspaceId: string, requesterUserId: string | null = null) => {
     resolveEffectiveRoleSlugsCalls.push(workspaceId);
+    resolveEffectiveRoleSlugsRequesters.push(requesterUserId);
     return Promise.resolve(effectiveRoles);
   },
+}));
+
+// Who the planning task is for (task → parents → mission → schedule). The walk
+// is covered in packages/core; here only what approvePlan does with the answer.
+let requesterAnswer: string | null = null;
+const requesterLookups: any[] = [];
+mock.module('@buildd/core/task-requester', () => ({
+  resolveTaskRequesterUserId: async (task: any) => { requesterLookups.push(task); return requesterAnswer; },
+  requesterOf: async () => requesterAnswer,
 }));
 
 const wakeCalls: Array<{ ids: string[]; cause: string }> = [];
@@ -184,6 +195,9 @@ function reset() {
   updateCalls.length = 0;
   effectiveRoles = new Set();
   resolveEffectiveRoleSlugsCalls.length = 0;
+  resolveEffectiveRoleSlugsRequesters.length = 0;
+  requesterAnswer = null;
+  requesterLookups.length = 0;
   wakeCalls.length = 0;
   predictions.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
@@ -303,13 +317,11 @@ describe('approvePlan — Option A′ integration branch as the default base', (
     expect(insertedContext(1).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
   });
 
-  it('sets headBranch on every child to the mission working branch when opted in', async () => {
-    // For mission-branch missions, all task workers push to the same integration
-    // branch. Each worker gets its own worktree branch (falling back to
-    // <branch>-w<id> if the mission branch is already checked out), but all
-    // pushes target the shared integration branch. This is enabled by setting
-    // headBranch on the child task context so the claim route's branch-name
-    // generator returns the mission branch verbatim.
+  it('does not pin a child’s head to the integration branch: it is the base, the task gets its own head', async () => {
+    // A child whose headBranch is the integration branch would be claimed ONTO
+    // the mission branch, where its PR has head === base and every task of the
+    // mission shares one name, so create_pr cannot tell whose work a head is.
+    // The integration branch is the base; claim generates buildd/<id8>-<slug>.
     planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
     taskRows[PLANNING_TASK_ID] = planningTaskRow;
     missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: true };
@@ -317,8 +329,9 @@ describe('approvePlan — Option A′ integration branch as the default base', (
       PLANNING_TASK_ID,
       [{ ref: 'a', title: 'First' }, { ref: 'b', title: 'Second' }] as any,
     );
-    expect(insertedContext(0).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
-    expect(insertedContext(1).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
+    expect('headBranch' in insertedContext(0)).toBe(false);
+    expect('headBranch' in insertedContext(1)).toBe(false);
+    expect(insertedContext(0).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
   });
 
   it('lets an explicit stacked baseBranch still win over the integration branch', async () => {
@@ -711,6 +724,17 @@ describe('approvePlan — the planner\'s declared kind reaches the row', () => {
     expect(insertedValues[0].classifiedBy).toBe('organizer');
   });
 
+  it('normalizes a category value the organizer wrote as kind', async () => {
+    // Regression: the organizer filed steps with kind='feature' / 'test' (category
+    // values). Stored verbatim, they crashed the model router at claim time.
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', kind: 'feature' },
+      { ref: 'b', title: 'Cover it', kind: 'test' },
+      { ref: 'c', title: 'Write the guide', kind: 'docs' },
+    ] as any);
+    expect(insertedValues.map(v => v.kind)).toEqual(['engineering', 'engineering', 'writing']);
+  });
+
   it('leaves kind unset when the step declares none', async () => {
     await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Add columns' }] as any);
     expect(insertedValues[0].kind).toBeUndefined();
@@ -751,6 +775,28 @@ describe('approvePlan — a plan step\'s role reaches the row only if the worksp
     expect(resolveEffectiveRoleSlugsCalls).toEqual(['ws-1']);
     expect(insertedValues.map(v => v.roleSlug)).toEqual(['builder', 'researcher']);
     expect(insertedValues[0].context.planRoleSlugRejected).toBeUndefined();
+  });
+
+  it("resolves step roles as the planning task's requester, so the owner's private role is kept", async () => {
+    planningTaskRow.createdByUserId = 'user-owner';
+    requesterAnswer = 'user-owner';
+    effectiveRoles = new Set(['my-reviewer']);
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Review the diff', roleSlug: 'my-reviewer' }] as any);
+    expect(requesterLookups.at(-1)).toMatchObject({ id: PLANNING_TASK_ID, createdByUserId: 'user-owner' });
+    expect(resolveEffectiveRoleSlugsRequesters).toEqual(['user-owner']);
+    expect(insertedValues[0].roleSlug).toBe('my-reviewer');
+  });
+
+  it("files every child for the planning task's requester", async () => {
+    requesterAnswer = 'user-owner';
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(insertedValues.map(v => v.createdByUserId)).toEqual(['user-owner', 'user-owner']);
+  });
+
+  it('files children with no creator when the planning task has no requester', async () => {
+    requesterAnswer = null;
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(insertedValues.map(v => v.createdByUserId)).toEqual([null, null]);
   });
 
   it('files an unknown step roleSlug role-less and records the rejected slug', async () => {

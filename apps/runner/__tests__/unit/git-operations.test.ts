@@ -107,6 +107,13 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   // git rev-list --count: used by fetchBranch to verify resume candidate exists,
   // and by collectGitStats to count commits vs the base ref.
   if (cmd.includes('rev-list --count')) {
+    // A task's own branch has never been pushed: only an explicit resumeBranch
+    // is expected to exist on origin (see setupWorktree's implicit-resume probe).
+    if (/\.\.origin\/buildd\/(retry-task-branch|test-branch)"/.test(cmd)) {
+      const err: any = new Error('unknown revision or path not in the working tree');
+      err.status = 128;
+      throw err;
+    }
     if (revListBehavior === 'missing') {
       const err: any = new Error('unknown revision or path not in the working tree');
       err.status = 128;
@@ -295,9 +302,12 @@ describe('setupWorktree', () => {
 
     const addIdx = syncCalls.findIndex(c => c.cmd.includes('git worktree add'));
     expect(addIdx).toBeGreaterThanOrEqual(0);
-    // git worktree add is the last sync call; the install happens after it.
+    // Only upstream-config calls (git config) may follow the add; the install
+    // (execFileSync, tracked in fileCalls) happens after all sync calls.
     expect(fileCalls.length).toBeGreaterThan(0);
-    expect(addIdx).toBe(syncCalls.length - 1);
+    for (const c of syncCalls.slice(addIdx + 1)) {
+      expect(c.cmd).toContain('git config');
+    }
   });
 
   test('falls back to an unfrozen install when the frozen lockfile install fails', async () => {

@@ -63,7 +63,13 @@ always wins.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
-(`owner | admin | member`). Invited via `team_invitations`.
+(`owner | admin | member`). Invited via `team_invitations`; only the invited
+email may accept. Every team-role decision is a named permission in one
+registry with per-team overrides (`docs/specs/team-permissions.md`): admins move
+people between member and admin, only owners touch `owner` (assign, remove,
+transfer), any member may leave except the last owner, and a person's keys drop
+to what their new role may mint when their role drops or they leave. Members
+may create personal agent roles, private until shared.
 
 ### Account
 An API/OAuth client that claims and runs tasks. Two **auth types** with different
@@ -88,12 +94,12 @@ force claim need `admin`). Workspace-restricted tokens cannot access team-wide
 credentials or reports lacking real workspace filters, and every surface that
 picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
 by the token's list. An unrestricted token is auto-linked to open workspaces
-only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
+only; linking a token to a restricted workspace takes `manage_team_keys` (owner or admin by default). `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 A per-task token (`bldt_`) is confined to its own task's workspace. The one
 exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/token-delegation.ts`): a team owner or admin may grant the tasks
+`packages/core/token-delegation.ts`): a holder of `delegate_schedule_access` (owner or admin by default) may grant the tasks
 one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
 gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
 path, no mission, dependencies or foreign parent) on named workspaces of the same
@@ -362,10 +368,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
     runs whenever a key resolves (`teams.chatDisabled` is deprecated and
     unread). Never falls back to a runner or seat. With no key the Chat entry
     point still shows, its page says who can fix it, and the mission form stays.
-  - *Built-in* decision calls (`task_category`, `task_classification`):
+  - *Built-in* decision calls (`task_category`):
     no toggle; they run whenever a key resolves.
-  - *Server-side features* (`criteria_grading`, `heartbeat_triage`; `visual_qa`,
-    `mission_summary` declared with no call site and not shown in Settings).
+  - *Server-side features* (`criteria_grading`; `visual_qa`, `mission_summary`
+    and the retired `heartbeat_triage` keep their ids so stored overrides
+    validate, and are not shown in Settings).
     `heartbeat_triage` no longer runs: the heartbeat's stuck check
     (`isMissionStuck`) answers deterministically whether a cycle needs the
     organizer, so its cron call site was removed and its experiment concluded
@@ -403,7 +410,11 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
   `LLM_PROVIDER` still wins. Endpoint runs are metered. **Codex**: the same row
   routes Codex tasks too, when the kind has an OpenAI-compatible wire —
-  `gateway` (LiteLLM) and `openrouter` do, `anthropic-compatible` doesn't. A
+  `gateway` (LiteLLM) and `openrouter` do, `anthropic-compatible` doesn't
+  (`cloudflare` does only through an OpenRouter upstream with no gateway
+  token). A `cloudflare` endpoint sends agents through the team's Cloudflare AI
+  Gateway on its stored Anthropic or OpenRouter key; a Run-only gateway token
+  rides as a header, so only a runner that applies headers gets one. A
   Codex task ranks the endpoint against `openai_api_key` / `codex_credential`
   instead (`resolveAgentModelRoute`'s `backend: 'codex'`), and the runner
   applies it as `OPENAI_BASE_URL` + `OPENAI_API_KEY` (not the Anthropic auth
@@ -517,7 +528,7 @@ the resolved policy.
 
 | Tier | Who ends the PR |
 |------|-----------------|
-| `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (fail-closed if unverifiable), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
+| `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (every check run on every page completed `success`/`neutral`/`skipped` and every commit status `success`; anything else, or an unverifiable read, refuses), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
 | `agent-review` | A **reviewer agent**. A `reviewer`-role task is spawned on PR open and returns `{verdict, confidence, summary, feedback?, escalationReason?, recommendation?, correctedLede?}` as structured output. `approve` may merge; `request-changes` sends the PR back to the authoring agent for up to `maxIterations` (default 3); `escalate` goes to a human. |
 | `human` | A person, from the escalation inbox. No automated merge. |
 
@@ -607,6 +618,15 @@ watchers (`watched_projects`) that auto-file ops tasks + Pushover alerts.
 
 Check `authType` to know which limits apply. CLI auth via device-code flow
 (`device_codes`). MCP clients via OAuth 2.1 PKCE.
+
+**Repository access.** By default, team membership is the whole check: a member
+can see everything Buildd can see in the workspace's repository through its
+GitHub App installation, whatever their own GitHub rights. A workspace admin can
+set `gitConfig.memberRepoAccess: 'require_read'`; then a person (dashboard or
+OAuth MCP session) must also hold read or higher on the linked repo on GitHub to
+create tasks, read diff artifacts, chat over the workspace or recall its `code`
+corpus. A person with no linked GitHub account, or whom GitHub cannot confirm,
+is refused. API keys and runners are unaffected (`lib/member-repo-access.ts`).
 
 ---
 

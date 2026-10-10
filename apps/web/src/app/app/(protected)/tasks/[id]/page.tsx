@@ -1,6 +1,9 @@
+import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
+import { RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
+import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
@@ -14,10 +17,10 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
+import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
-import Spinner from '@/components/Spinner';
+import PlanningNotice from './PlanningNotice';
 import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
@@ -39,7 +42,7 @@ import TaskQuestionFeed from './TaskQuestionFeed';
 import MarkdownContent from '@/components/MarkdownContent';
 import CollapsibleDescription from './CollapsibleDescription';
 import AiFeedback from '@/components/AiFeedback';
-import StatusBadge, { STATUS_COLORS } from '@/components/StatusBadge';
+import { StatusPill } from '@/components/ui/StatePill';
 import { displayBranchName } from '@/lib/branch-display';
 import { LoopHistory, LoopStatusChip } from '@/components/LoopStatus';
 import type { LoopHistoryEntry } from '@buildd/shared';
@@ -65,7 +68,7 @@ import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSource
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
-import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure';
+import { plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
@@ -85,14 +88,14 @@ import { MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/miss
 import type { MissionCardRow } from '@/lib/mission-card-view';
 import { missionTaskHref, taskPageHref } from '@/lib/mission-task-href';
 import WorkerSteerPanel from './WorkerSteerPanel';
-import { HeaderStatusPill, FactSheet, AlsoRunning, AlsoRunningCompact, SideDescription, type FactRow, type PeerTask } from './TaskSidePanel';
+import { HeaderStatusPill, FactSheet, SideDescription, type FactRow } from './TaskSidePanel';
 import { findTaskRole } from './role-lookup';
-import { taskHeading } from './task-header';
+import { headerLifecycleState, taskHeading } from './task-header';
+import Lifecycle from '@/components/ui/Lifecycle';
+import { displayTaskTitle } from '@/lib/task-title';
 import { linkQuestionNote } from './question-hero';
 import { buildLineage } from './pr-lineage';
 import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
-import { sidePanelPeers } from './also-running';
-import { loadAlsoRunningWorkers } from './also-running-loader';
 import type { PrOutcome } from '@/components/task/PrCard';
 import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
 import { toVisualShots } from '@/lib/mission-visual-review';
@@ -109,8 +112,9 @@ import { buildErrorEvidenceItems } from './error-evidence';
 import { nonDiffActions } from './attempt-actions';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
-import { attentionCount, resolveTraceConsequences } from '@/lib/trace-consequence';
+import { resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
+import StartTimeControl from '@/components/StartTimeControl';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -120,18 +124,6 @@ const BADGED_EXIT_CAUSES = new Set(['budget_limited', 'infra_failure', 'never_st
 function missionExecutorOf(row: { executor?: string | null } | null | undefined): 'runner' | 'local' | null {
   return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
 }
-
-const CATEGORY_COLORS: Record<string, string> = {
-  bug: 'bg-cat-bug/15 text-cat-bug',
-  feature: 'bg-cat-feature/15 text-cat-feature',
-  refactor: 'bg-cat-refactor/15 text-cat-refactor',
-  chore: 'bg-cat-chore/15 text-cat-chore',
-  docs: 'bg-cat-docs/15 text-cat-docs',
-  test: 'bg-cat-test/15 text-cat-test',
-  infra: 'bg-cat-infra/15 text-cat-infra',
-  design: 'bg-cat-design/15 text-cat-design',
-  research: 'bg-cat-research/15 text-cat-research',
-};
 
 export default async function TaskDetailPage({
   params,
@@ -167,14 +159,14 @@ export default async function TaskDetailPage({
       workspace: true,
       // Explicit allowlist, like every sibling relation in this shape: the two
       // fields the page reads off an account rather than the whole row.
-      account: { columns: { name: true, authType: true } },
+      account: { columns: { name: true } },
       mission: {
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
       },
       parentTask: { columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true } },
       // taskClass/mode/title tell a subtask from an attempt at this task (D9).
-      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true } },
+      subTasks: { columns: { id: true, title: true, status: true, taskClass: true, mode: true, parentTaskId: true, createdAt: true }, orderBy: [asc(tasks.createdAt), asc(tasks.id)] },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
       creatorAccount: { columns: { id: true, name: true } },
@@ -237,7 +229,7 @@ export default async function TaskDetailPage({
               // Every worker, newest first — NOT limit 1. The gate asks whether
               // ANY worker holds an open PR, the same read the list and the
               // claim route make; the newest alone hid an older open PR.
-              orderBy: desc(workers.createdAt),
+              orderBy: [desc(workers.createdAt), desc(workers.id)],
             },
           },
         })
@@ -245,8 +237,8 @@ export default async function TaskDetailPage({
     // Workers for this task
     db.query.workers.findMany({
       where: eq(workers.taskId, id),
-      orderBy: desc(workers.createdAt),
-      with: { account: { columns: { name: true, authType: true } } },
+      orderBy: [desc(workers.createdAt), desc(workers.id)],
+      with: { account: { columns: { name: true } } },
     }),
     // Mission context bar (W6): the mission row and its tasks' light columns —
     // the same selection a Home card makes, so no result/context/artifact
@@ -258,7 +250,7 @@ export default async function TaskDetailPage({
             id: true, title: true, status: true, orchestrationMode: true, dependsOnMissionId: true,
             dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true,
             goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true,
-            integrationBranchEnabled: true,
+            integrationBranchEnabled: true, mergePolicy: true, requiresReview: true,
           },
           with: {
             tasks: {
@@ -272,11 +264,6 @@ export default async function TaskDetailPage({
   ]);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
-  // A failed run whose agent could not sign in to its model provider: the action
-  // zone says so in plain words, so the raw error chrome below steps back.
-  const authFailure = task.status === 'failed'
-    ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
-    : null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
   const missionContextDeliveryViews = missionContextRow
     ? await getDeliveryViewsForTasks(missionContextDeliveryTaskIds(missionContextRow as unknown as MissionCardRow))
@@ -313,7 +300,10 @@ export default async function TaskDetailPage({
   // resolver (it needs the release id it returns), so it stays chained inside
   // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  const prWorker = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+  // Latest / live / PR worker by (createdAt, id), never by row position: two
+  // workers created in the same instant must not trade places between renders.
+  const workerPicks = selectTaskWorkers(taskWorkers, isLiveWorkerStatus);
+  const prWorker = workerPicks.prWorker ?? null;
   // Stored evidence objects (pointers only; the text is read on demand by the
   // section). Best-effort: a failed lookup shows the empty list, never an error page.
   const evidenceFilesPromise = listTaskEvidenceObjects({ id: task.id, workspaceId: task.workspaceId })
@@ -341,7 +331,9 @@ export default async function TaskDetailPage({
   // Cloud runs only: its time on the hosted runner, all attempts. Started
   // here, awaited below, so it adds no round trip of its own.
   const hostedRunnerUsagePromise = taskHostedRunnerUsage(id).catch(() => null);
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+  const [evidenceReview, evidenceArtifactCount, taskArtifacts, errorTraces, ship, teamTimezone, roleRow, ciAttemptRows, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw, accessItems, failureKindRaw] = await Promise.all([
+    prWorker?.prNumber ? RUN_PROGRESS_READERS.review({ workspaceId: task.workspaceId, prNumber: prWorker.prNumber }).catch(() => null) : Promise.resolve(null),
+    taskWorkers.find(w => isLiveWorkerStatus(w.status)) ? getWorkerDeliverableArtifactCount(taskWorkers.find(w => isLiveWorkerStatus(w.status))!.id) : Promise.resolve(0),
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -378,10 +370,6 @@ export default async function TaskDetailPage({
     getTeamTimezoneSetting((task.workspace as any)?.teamId as string | undefined),
     // Role name/colour come from the workspace's role row, never a local map.
     findTaskRole({ workspaceId: task.workspaceId, teamId: (task.workspace as any)?.teamId, slug: task.roleSlug }),
-    // Other live agents in this workspace — "Also running" / "While you decide".
-    // The task's own lineage (its CI-fix/review attempts, the task it is
-    // fixing) is this work, not a peer, and is dropped by the loader.
-    loadAlsoRunningWorkers({ task, liveStatuses: LIVE_WORKER_STATUSES }),
     // CI-retry attempts at this task's PR: each is a fresh worker handed the
     // failure excerpt, on the same branch. They make "How it landed".
     prWorker?.prNumber
@@ -391,11 +379,11 @@ export default async function TaskDetailPage({
           with: {
             // Full rows, same shape as taskWorkers: Worker history lists them.
             workers: {
-              orderBy: desc(workers.createdAt),
-              with: { account: { columns: { name: true, authType: true } } },
+              orderBy: [desc(workers.createdAt), desc(workers.id)],
+              with: { account: { columns: { name: true } } },
             },
           },
-          orderBy: asc(tasks.createdAt),
+          orderBy: [asc(tasks.createdAt), asc(tasks.id)],
         })
       : Promise.resolve([]),
     // What this task unblocks, once it has landed.
@@ -434,6 +422,9 @@ export default async function TaskDetailPage({
     // joined here rather than awaited after the phase is derived.
     loadTaskFailureKind({ id: task.id, title: task.title, status: task.status, missionId: task.missionId ?? null }).catch(() => null),
   ]);
+  // CI-retry attempts numbered by (createdAt, id): "attempt N" never swaps.
+  const ciAttemptTasks = oldestFirst(ciAttemptRows, compareTasksChrono)
+    .map(t => ({ ...t, workers: newestFirst(t.workers, compareWorkersChrono) }));
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
   const runnerName = runnerDisplayResolver(runnerHeartbeats);
@@ -524,7 +515,7 @@ export default async function TaskDetailPage({
     const chainBase = await db.query.tasks.findMany({
       where: eq(tasks.parentTaskId, planParentId),
       columns: { id: true, title: true, status: true, roleSlug: true, taskClass: true, mode: true, parentTaskId: true, context: true },
-      orderBy: asc(tasks.createdAt),
+      orderBy: [asc(tasks.createdAt), asc(tasks.id)],
     });
 
     if (chainBase.length > 0) {
@@ -546,7 +537,7 @@ export default async function TaskDetailPage({
         ? await db.query.workers.findMany({
             where: inArray(workers.taskId, chainIds),
             columns: { id: true, taskId: true, prUrl: true, prNumber: true, turns: true, branch: true, status: true, mergedAt: true, prLifecycleStatus: true, runner: true, localUiUrl: true },
-            orderBy: desc(workers.createdAt),
+            orderBy: [desc(workers.createdAt), desc(workers.id)],
           })
         : [];
       const latestWorker = new Map<string, typeof chainWorkers[0]>();
@@ -613,7 +604,7 @@ export default async function TaskDetailPage({
 
   // Never revive an ended worker merely because it retained a question.
   const activeWorkerRow = !isTerminalTaskStatus(task.status)
-    ? taskWorkers.find(w => isLiveWorkerStatus(w.status)) : undefined;
+    ? workerPicks.activeWorker : undefined;
   const activeWorker = activeWorkerRow?.waitingFor && !isOpenAsk(task.status, activeWorkerRow.status)
     ? { ...activeWorkerRow, waitingFor: null } : activeWorkerRow;
 
@@ -624,7 +615,7 @@ export default async function TaskDetailPage({
   // or PR-less tasks get null and keep today's status.
   const deliveryView = (await getDeliveryViewsForTasks([task.id])).get(task.id) ?? null;
   const deliveryPill: DeliveryPillState | null = deliveryView
-    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState }
+    ? { headline: deliveryView.headline, owner: deliveryView.owner, needsYou: deliveryView.needsYou, stage: deliveryView.stage, detail: deliveryView.detail, prState: deliveryView.prState, state: deliveryView.state }
     : null;
 
   // Derive canonical display status from task + active worker state.
@@ -688,7 +679,7 @@ export default async function TaskDetailPage({
   }
 
   // Most recent worker that created a PR — surfaced prominently in the header
-  const workerWithPr = taskWorkers.find(w => w.prUrl && w.prNumber) ?? null;
+  const workerWithPr = prWorker;
 
   // Whether the latest worker has an open PR — keeps Pusher subscription alive for
   // completed tasks until CI resolves (prevents stale badge after task finishes).
@@ -794,24 +785,12 @@ export default async function TaskDetailPage({
     modelUsage: (attributedWorker?.resultMeta as any)?.modelUsage ?? null,
   });
 
-  // The next step in the execution plan — "what happens after this?" — surfaced as
-  // a CTA when this task is done. The chain is the durable thread across workers.
-  const currentChainIdx = planChain.findIndex(t => t.id === id);
-  const nextChainTask =
-    currentChainIdx >= 0 && currentChainIdx < planChain.length - 1
-      ? planChain[currentChainIdx + 1]
-      : null;
-
   // --- Side panel + outcome data ---
   const roleName = roleRow?.name ?? null;
+  const headerLifecycle = headerLifecycleState(deliveryView?.stage);
   const heading = taskHeading({ title: task.title, label: (task as { label?: string | null }).label ?? null }, roleName);
   const questionNote = activeWorker?.waitingFor ? linkQuestionNote(openQuestionRows, activeWorker.id) : null;
 
-  // A task listed under "Unblocked by this" is not repeated under "Also running".
-  const peers: PeerTask[] = sidePanelPeers(peerWorkers, {
-    missionId: task.missionId ?? null,
-    excludeTaskIds: new Set(dependentTasks.map(d => d.id)),
-  });
 
   let prOutcome: PrOutcome | null = null;
   if (prWorker) {
@@ -894,7 +873,6 @@ export default async function TaskDetailPage({
     traceOutcomeOf(rulesVerdict, task.status),
     storedVerdictDecision?.traceClasses,
   );
-  const attentionErrorCount = attentionCount(traceConsequences);
   const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
   const attemptLabelByWorker = new Map<string, string>(
     lineageWorkerHistory(taskWorkers, ciAttemptTasks).map(({ worker, attemptLabel }, i, all) => [worker.id, attemptLabel ?? (all.length > 1 ? `Attempt ${all.length - i}` : 'This run')]),
@@ -973,9 +951,9 @@ export default async function TaskDetailPage({
               {[prWorker, ...ciAttemptWorkers].map((w, i) => (
                 // One line each: the runner, then its attempt number. "(retry)"
                 // is what "attempt 2" already says, and it wrapped on its own.
-                <li key={i} className="flex min-w-0 items-baseline gap-2">
+                <li key={w.id} className="flex min-w-0 min-h-11 md:min-h-0 items-center md:items-baseline gap-2">
                   <span className="min-w-0 truncate">{runnerLabel(w)}</span>
-                  <span className="shrink-0 text-text-muted">attempt {i + 1}</span>
+                  <span className="shrink-0 whitespace-nowrap text-text-muted">attempt {i + 1}</span>
                 </li>
               ))}
             </ul>
@@ -1002,7 +980,7 @@ export default async function TaskDetailPage({
                     <span className={ok ? 'text-status-success' : stalled ? 'text-status-warning' : 'text-text-muted'} aria-label={ok ? 'resolved' : dep.status}>
                       {ok ? '✓' : stalled ? '!' : '○'}
                     </span>
-                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{dep.title}</Link>
+                    <Link href={taskPageHref({ taskId: dep.id })} className="min-w-0 truncate hover:underline" title={dep.title}>{displayTaskTitle(dep.title)}</Link>
                     {stalled && <span className="shrink-0 text-[11px] text-status-warning">infra stalled</span>}
                   </li>
                 );
@@ -1032,7 +1010,7 @@ export default async function TaskDetailPage({
                   {originLinkCards(origin.links).map(card => {
                     const body = (
                       <>
-                        <span className="block text-eyebrow uppercase text-text-muted">{card.kind}</span>
+                        <span className="block text-eyebrow text-text-muted">{card.kind}</span>
                         <span className="block truncate text-text-primary" title={card.title}>{card.title}{card.external ? ' ↗' : ''}</span>
                       </>
                     );
@@ -1102,7 +1080,7 @@ export default async function TaskDetailPage({
 
   const workerHistorySection = workerHistory.length > 0 ? (
           <div data-testid="task-worker-history">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6">
+            <div className="section-label pb-2 border-b border-border-default mb-6">
               Worker History
             </div>
             <div className="border border-border-default overflow-hidden">
@@ -1112,14 +1090,15 @@ export default async function TaskDetailPage({
                   // Below md the badge + PR link wrap onto their own line under the
                   // text (the text column takes the rest of the first line, and
                   // pl-11 = icon w-7 + gap-4 lines them up with it).
-                  <div key={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
+                  <div key={worker.id} data-worker-id={worker.id} className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-2 min-h-11 px-3 py-3 md:px-4 md:py-3.5 border-b border-border-default/40 last:border-b-0 hover:bg-surface-3">
                     <div className={`w-7 h-7 flex items-center justify-center text-[13px] flex-shrink-0 ${iconStyle.bg} ${iconStyle.text}`}>
                       {iconStyle.icon}
                     </div>
                     <div className="flex-1 min-w-0 basis-[calc(100%-2.75rem)] md:basis-0">
-                      <div className="text-[13px] font-medium text-text-primary truncate" title={worker.name}>
-                        {runnerLabel(worker) ?? worker.name}
-                        {attemptLabel && <span className="font-normal text-text-muted"> · {attemptLabel}</span>}
+                      {/* One line: the runner name truncates first, the attempt label never wraps or cuts. */}
+                      <div className="flex min-w-0 text-body font-medium" title={worker.name}>
+                        <span className="min-w-0 truncate text-text-primary">{runnerLabel(worker) ?? worker.name}</span>
+                        {attemptLabel && <span className="shrink-0 whitespace-nowrap font-normal text-text-muted">&nbsp;· {attemptLabel}</span>}
                       </div>
                       <div className="font-mono text-[11px] text-text-muted truncate">
                         {/* Generated names are capped mid-slug; cut at a token, full name on hover. */}
@@ -1165,7 +1144,7 @@ export default async function TaskDetailPage({
                         };
                         return (
                           <div className="mt-1 border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
-                            <p className="font-mono text-[11px] md:text-[10px] uppercase tracking-wide text-status-warning">
+                            <p className="text-meta font-semibold text-status-warning">
                               ⚠ Deliverable rejected
                               {rejected.reason ? ` (${rejected.reason})` : ''}
                             </p>
@@ -1181,14 +1160,17 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
-                        {worker.account?.authType === 'oauth'
-                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
-                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
-                            )
-                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
-                              <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
-                            )
-                        }
+                        {((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                          <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                        )}
+                        {/* The worker's own basis, not the account's authType
+                            (docs/specs/real-and-virtual-cost.md). */}
+                        {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                          <span>
+                            ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}
+                            {(worker as { costBasis?: string | null }).costBasis === 'virtual' ? ' list price' : ''}
+                          </span>
+                        )}
                         {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
                           <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
                         )}
@@ -1239,7 +1221,7 @@ export default async function TaskDetailPage({
                       )}
                     </div>
                     <div data-testid="worker-history-meta" className="flex items-center gap-2 pl-11 md:pl-0 shrink-0">
-                      <StatusBadge status={
+                      <StatusPill status={
                         worker.status === 'failed' && worker.exitCause && BADGED_EXIT_CAUSES.has(worker.exitCause)
                           ? worker.exitCause
                           : worker.status
@@ -1300,24 +1282,15 @@ export default async function TaskDetailPage({
         {missionContextBar ? (
           <MissionContextBar bar={missionContextBar} />
         ) : (
-          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-4">
-            {task.mission ? (
-              <Link
-                href={missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' })}
-                className="hover:text-text-primary inline-flex items-center gap-1"
-              >
-                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                {task.mission.title}
-              </Link>
-            ) : (
-              <Link href="/app/tasks" className="hover:text-text-primary inline-flex items-center gap-1">
-                <svg className="w-4 h-4 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                Tasks
-              </Link>
-            )}
-            {/* Mobile shows only the back link — the title is the h1 right below. */}
-            <span className="mx-2 hidden md:inline" aria-hidden="true">/</span>
-            <span className="text-text-primary hidden md:inline">{task.title}</span>
+          // Back only: the title is the h1 right below.
+          <nav aria-label="Breadcrumb" className="text-sm text-text-secondary mb-2">
+            <Link
+              href={task.mission ? missionTaskHref({ missionId: task.mission.id, taskId: task.id, mode: 'focus' }) : '/app/tasks'}
+              data-testid="task-back"
+              className="inline-flex min-h-11 items-center hover:text-text-primary"
+            >
+              ‹ {task.mission ? task.mission.title : 'Activity'}
+            </Link>
           </nav>
         )}
 
@@ -1334,12 +1307,7 @@ export default async function TaskDetailPage({
               </div>
             ) : (
             <div className="min-w-0 flex-1">
-              {heading.eyebrow.length > 0 && (
-                <p data-testid="task-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted font-medium">
-                  {heading.eyebrow.join(' · ')}
-                </p>
-              )}
-              <h1 className="mt-1.5 text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
+              <h1 className="text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
             </div>
             )}
             <div className={`flex items-center gap-2 shrink-0 md:mt-0.5 ${shippedView ? 'justify-end' : 'justify-between md:justify-start'}`}>
@@ -1369,6 +1337,12 @@ export default async function TaskDetailPage({
                     backend: (task.backend as 'claude' | 'codex' | null) ?? null,
                   }}
                 />
+                <StartTimeControl
+                  taskId={task.id}
+                  status={task.status}
+                  claimedBy={task.claimedBy ?? null}
+                  startAt={task.startAt?.toISOString() ?? null}
+                />
                 {canReassign && <ReassignButton taskId={task.id} taskStatus={task.status} currentBackend={(task.backend as 'claude' | 'codex' | null) ?? null} />}
                 {task.externalUrl && (
                   <a
@@ -1384,9 +1358,13 @@ export default async function TaskDetailPage({
               </TaskOverflowMenu>
             </div>
           </div>
-          <div className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
+          {/* One mono sub-line: type · scope · role, the workspace, loop and ship
+              state, the PR. Created, category, project and the error count live
+              in Details and the evidence below, not here. */}
+          <div data-testid="task-subline" className="mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap text-[12px] text-text-muted font-mono">
             <span>
-              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created <ZonedTime value={task.createdAt} format="date" />
+              {heading.eyebrow.length > 0 && <span data-testid="task-eyebrow">{heading.eyebrow.join(' · ')} · </span>}
+              {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'}
             </span>
             {task.loopConfig && (
               <LoopStatusChip
@@ -1395,33 +1373,6 @@ export default async function TaskDetailPage({
                 loopState={task.loopState}
                 startAt={task.startAt?.toISOString() ?? null}
               />
-            )}
-            {/* Only errors the record says still matter are counted. Exploration
-                noise and recovered failures stay inspectable below, never red. */}
-            {attentionErrorCount > 0 && !terminalSucceeded && !authFailure && (
-              <a
-                href="#agent-error-traces"
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
-                title="Agent errors that affected the outcome"
-                data-testid="task-error-count"
-              >
-                {attentionErrorCount} {attentionErrorCount === 1 ? 'error' : 'errors'}
-              </a>
-            )}
-            {task.mode === 'planning' && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-border-default text-text-secondary">
-                Planning
-              </span>
-            )}
-            {task.category && (
-              <span className={`px-2 py-0.5 text-xs font-medium ${CATEGORY_COLORS[task.category] || 'bg-cat-chore/15 text-cat-chore'}`}>
-                {task.category}
-              </span>
-            )}
-            {task.project && (
-              <span className="px-2 py-0.5 text-xs font-medium bg-primary/10 text-accent-text">
-                {task.project}
-              </span>
             )}
             <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
             {workerWithPr && !prOutcome && (
@@ -1435,6 +1386,8 @@ export default async function TaskDetailPage({
               </a>
             )}
           </div>
+          {/* The one track. A live run's own view leads with it, so it is drawn here only between runs. */}
+          {headerLifecycle && !activeWorker && <Lifecycle state={headerLifecycle} className="mt-3" />}
         </div>
 
         {/* Action first (W6): the phase's one decision, before anything to read.
@@ -1556,8 +1509,8 @@ export default async function TaskDetailPage({
                       >
                         {w.prNumber ? `Merge PR #${w.prNumber}` : 'PR open'} ↗
                       </a>
-                      <span className="text-[12px] text-text-muted">
-                        {dep.title}
+                      <span className="text-[12px] text-text-muted" title={dep.title}>
+                        {displayTaskTitle(dep.title)}
                       </span>
                     </div>
                   );
@@ -1568,11 +1521,9 @@ export default async function TaskDetailPage({
                       href={taskPageHref({ taskId: dep.id })}
                       className="text-sm text-text-secondary hover:underline"
                     >
-                      {dep.title}
+                      {displayTaskTitle(dep.title)}
                     </Link>
-                    <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[dep.status] || STATUS_COLORS.pending}`}>
-                      {dep.status}
-                    </span>
+                    <StatusPill status={deriveDisplayStatus(dep.status)} />
                   </div>
                 ))}
               </div>
@@ -1642,27 +1593,27 @@ export default async function TaskDetailPage({
         {/* Agent errors: every captured trace, sorted by what it means for the
             outcome (needs attention / unclear / recovered / exploration noise).
             Any row opens the complete redacted evidence. */}
-        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={task.title} terminalSucceeded={terminalSucceeded} />
+        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} />
 
         {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
         {planChain.length > 0 ? (
           !shippedView && planChainView
         ) : hasRelatedTasks && (
           <div className="mb-6">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="section-label pb-2 border-b border-border-default mb-4">
               Related Tasks
             </div>
             <div className="card p-4 space-y-3">
               {task.parentTask && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="w-full md:w-auto font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
+                  <span className="w-full md:w-auto text-meta text-text-muted">{isAttempt ? 'Attempt at:' : 'Parent:'}</span>
                   <Link
                     href={taskPageHref({ taskId: task.parentTask.id, missionId: task.missionId })}
                     className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                   >
-                    {task.parentTask.title}
+                    {displayTaskTitle(task.parentTask.title)}
                   </Link>
-                  <StatusBadge status={deriveDisplayStatus(task.parentTask.status)} />
+                  <StatusPill status={deriveDisplayStatus(task.parentTask.status)} />
                 </div>
               )}
               {([
@@ -1670,7 +1621,7 @@ export default async function TaskDetailPage({
                 ['Attempts', relatedAttempts],
               ] as const).map(([label, list]) => list.length > 0 && (
                 <div key={label} data-testid={`task-related-${label.toLowerCase()}`}>
-                  <span className="font-mono text-[11px] md:text-[10px] text-text-muted uppercase tracking-[1px]">{label} ({list.length}):</span>
+                  <span className="text-meta text-text-muted">{label} ({list.length}):</span>
                   <div className="mt-2 space-y-1 ml-2 md:ml-4">
                     {list.map((sub) => (
                       <div key={sub.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1678,9 +1629,9 @@ export default async function TaskDetailPage({
                           href={taskPageHref({ taskId: sub.id, missionId: task.missionId })}
                           className="min-w-0 text-sm text-primary-400 hover:underline [overflow-wrap:anywhere]"
                         >
-                          {sub.title}
+                          {displayTaskTitle(sub.title)}
                         </Link>
-                        <StatusBadge status={deriveDisplayStatus(sub.status)} />
+                        <StatusPill status={deriveDisplayStatus(sub.status)} />
                       </div>
                     ))}
                   </div>
@@ -1693,7 +1644,7 @@ export default async function TaskDetailPage({
         {/* Attachments */}
         {attachments && attachments.length > 0 && (
           <div className="mb-6">
-            <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+            <div className="section-label pb-2 border-b border-border-default mb-4">
               Attachments
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1716,52 +1667,11 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Planning Mode Lifecycle */}
-        {task.mode === 'planning' && (() => {
-          const hasSubTasks = task.subTasks && task.subTasks.length > 0;
-
-          if (hasSubTasks) {
-            // Plan was approved and child tasks created
-            return (
-              <div className="bg-status-success/10 border border-status-success/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-success font-medium text-sm">
-                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Plan approved · {task.subTasks.length} child task{task.subTasks.length !== 1 ? 's' : ''} created
-                </div>
-              </div>
-            );
-          }
-
+        {/* Planning mode: where the plan stands (not a delivery, so a Notice) */}
+        {task.mode === 'planning' && (
           // task.status is never 'running' — liveness is the worker's.
-          if (baseDisplayStatus === 'running') {
-            return (
-              <div className="bg-status-running/10 border border-status-running/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-running font-medium text-sm">
-                  <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  The agent is writing a plan…
-                </div>
-              </div>
-            );
-          }
-
-          if (task.status === 'pending' || task.status === 'assigned') {
-            return (
-              <div className="bg-status-info/10 border border-status-info/20 p-4 mb-6">
-                <div className="flex items-center gap-2 text-status-info font-medium text-sm">
-                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                  </svg>
-                  A planning agent will write a plan for your review
-                </div>
-              </div>
-            );
-          }
-
-          // completed state with plan is handled by PlanReviewPanel
-          return null;
-        })()}
+          <PlanningNotice subTaskCount={task.subTasks?.length ?? 0} running={baseDisplayStatus === 'running'} status={task.status} />
+        )}
 
         {/* Plan Review — shown for completed planning tasks */}
         <PlanReviewPanel
@@ -1777,6 +1687,10 @@ export default async function TaskDetailPage({
           <div className="mb-8 order-first" data-testid="task-active-worker">
             <RealTimeWorkerView
               delivery={deliveryPill}
+              outputRequirement={task.outputRequirement}
+              deliverableArtifactCount={evidenceArtifactCount}
+              usesReviewer={RUN_PROGRESS_READERS.usesReviewer(task.workspace, missionContextRow, task, { baseRef: activeWorker.prBaseRef })}
+              reviewState={evidenceReview?.state}
               taskStatus={task.status}
               taskId={task.id}
               initialWorker={{
@@ -1790,6 +1704,11 @@ export default async function TaskDetailPage({
                 costUsd: activeWorker.costUsd?.toString() || null,
                 inputTokens: activeWorker.inputTokens,
                 outputTokens: activeWorker.outputTokens,
+                createdAt: activeWorker.createdAt?.toISOString() || null,
+                mergedAt: activeWorker.mergedAt?.toISOString() || null,
+                dirtyWorktree: activeWorker.dirtyWorktree,
+                observedTouches: activeWorker.observedTouches,
+                prIsDraft: activeWorker.prIsDraft,
                 startedAt: activeWorker.startedAt?.toISOString() || null,
                 prUrl: activeWorker.prUrl,
                 prNumber: activeWorker.prNumber,
@@ -1805,14 +1724,12 @@ export default async function TaskDetailPage({
                 instructionHistory: (activeWorker.instructionHistory as any[]) || [],
                 pendingInstructions: activeWorker.pendingInstructions,
                 updatedAt: activeWorker.updatedAt?.toISOString() || null,
-                account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
                 resultMeta: activeWorker.resultMeta as any,
               }}
               modelTier={modelSummary.tierLabel}
               questionNote={questionNote}
               roleName={roleName}
             />
-            <AlsoRunningCompact count={peers.length} href="/app/home" />
           </div>
         )}
 
@@ -1868,22 +1785,6 @@ export default async function TaskDetailPage({
           </div>
         )}
 
-        {/* Next step — where the plan goes after this task. Shown on completion so the
-            operator can follow the thread forward instead of hunting the chain. */}
-        {phase === 'completed' && nextChainTask && !missionContextBar && (
-          <Link
-            href={taskPageHref({ taskId: nextChainTask.id })}
-            className="group mb-8 flex items-center gap-3 p-4 border border-border-default bg-surface-2 hover:bg-surface-3 transition-colors"
-          >
-            <span className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted shrink-0">Next</span>
-            <span className="text-sm font-medium text-text-primary truncate flex-1">{nextChainTask.title}</span>
-            <span className={`px-2 py-0.5 text-xs ${STATUS_COLORS[nextChainTask.status] || STATUS_COLORS.pending}`}>
-              {nextChainTask.status}
-            </span>
-            <span className="text-accent-text group-hover:translate-x-0.5 transition-transform" aria-hidden="true">&rarr;</span>
-          </Link>
-        )}
-
         {/* Deliverables */}
         {(task.result as any) && !shippedView && (
           (() => {
@@ -1893,14 +1794,14 @@ export default async function TaskDetailPage({
             // The PR outcome card already carries the code deliverables and summary.
             if (prOutcome && hasCodeDeliverables && !result.structuredOutput) return null;
             const fallbackChip = (
-              <span className="font-mono text-[11px] md:text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+              <span className="font-mono text-chip border border-border-default rounded-[var(--radius-pill)] text-text-muted px-1 py-px shrink-0">
                 unauthored · last message
               </span>
             );
 
             return (
               <div className="mb-8">
-                <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+                <div className="section-label pb-2 border-b border-border-default mb-4">
                   Deliverables
                 </div>
 
@@ -1983,7 +1884,7 @@ export default async function TaskDetailPage({
                 {/* Structured Output */}
                 {result.structuredOutput && (
                   <div className="mt-4">
-                    <div className="font-mono text-[11px] md:text-[10px] uppercase tracking-[1.5px] text-text-muted mb-2">
+                    <div className="section-label mb-2">
                       Structured Output
                     </div>
                     <pre className="p-4 bg-surface-2 border border-border-default overflow-x-auto text-sm font-mono text-text-primary">
@@ -2047,13 +1948,12 @@ export default async function TaskDetailPage({
               instructionHistory={(activeWorker.instructionHistory as any[]) || []}
               runner={activeWorker.runner}
               taskTerminal={isTerminal}
+              earlierRun={(() => {
+                // The run before this one, for the messages it ended before reading.
+                const prev = workerPicks.ordered.find(w => w.id !== activeWorker.id && compareWorkersChrono(w, activeWorker) < 0);
+                return prev ? { workerId: prev.id, status: prev.status, history: (prev.instructionHistory as any[]) || [] } : null;
+              })()}
             />
-          )}
-
-          {activeWorker?.waitingFor && (
-            <div className="hidden lg:block">
-              <AlsoRunning title={`While you decide · ${peers.length} still running`} peers={peers} testId="task-while-you-decide" />
-            </div>
           )}
 
           <FactSheet rows={factRows} />
@@ -2067,12 +1967,6 @@ export default async function TaskDetailPage({
 
           <SpecSourceBlock specSource={specSource} />
 
-          {!activeWorker?.waitingFor && (
-            <div className="hidden lg:block">
-              <AlsoRunning title={`Also running · ${peers.length}`} peers={peers} />
-            </div>
-          )}
-
           {dependentTasks.length > 0 && (
             <section data-testid="task-unblocked">
               <div className="section-label border-b border-border-default pb-2 mb-1">Unblocked by this</div>
@@ -2081,7 +1975,7 @@ export default async function TaskDetailPage({
                   <li key={d.id} className="border-b border-border-default">
                     <Link href={taskPageHref({ taskId: d.id, missionId: task.missionId })} className="flex items-center gap-3 min-h-12 hover:bg-surface-2">
                       <span className={`w-[9px] h-[9px] shrink-0 ${d.status === 'pending' ? 'border-2 border-accent' : 'bg-accent'}`} aria-hidden="true" />
-                      <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{d.title}</span>
+                      <span className="flex-1 min-w-0 truncate font-mono text-[13px] text-text-primary">{displayTaskTitle(d.title)}</span>
                       <span className={`shrink-0 font-mono text-[12px] ${d.status === 'completed' ? 'text-status-success' : d.status === 'pending' ? 'text-text-muted' : 'text-accent-text'}`}>
                         {d.status === 'pending' ? 'queued' : d.status === 'in_progress' || d.status === 'assigned' ? 'claimed' : d.status}
                       </span>
@@ -2096,21 +1990,21 @@ export default async function TaskDetailPage({
               cards. Kept one tap away for when it's actually needed (billing, routing,
               debugging) without letting it crowd out the phase-relevant content. */}
           <details className="group">
-            <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 min-h-11 border-b border-border-default font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary">
+            <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-3 min-h-11 border-b border-border-default text-meta font-semibold text-text-secondary hover:text-text-primary">
               <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
               Details
             </summary>
             <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[13px]">
-              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
-              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
-              {task.backend && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
+              <div><dt className="text-meta text-text-muted">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
+              <div><dt className="text-meta text-text-muted">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
+              {task.backend && <div><dt className="text-meta text-text-muted">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
               <TaskModelCell summary={modelSummary} />
-              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
-              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
-              <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
-              {task.category && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
-              {task.project && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
-              <div className="col-span-2"><dt className="text-text-muted text-[11px] uppercase tracking-wider">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
+              <div><dt className="text-meta text-text-muted">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
+              <div><dt className="text-meta text-text-muted">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
+              <div><dt className="text-meta text-text-muted">Created</dt><dd className="text-text-primary"><ZonedTime value={task.createdAt} format="date" /></dd></div>
+              {task.category && <div><dt className="text-meta text-text-muted">Category</dt><dd className="text-text-primary">{task.category}</dd></div>}
+              {task.project && <div><dt className="text-meta text-text-muted">Project</dt><dd className="text-text-primary">{task.project}</dd></div>}
+              <div className="col-span-2"><dt className="text-meta text-text-muted">Task ID</dt><dd className="text-text-primary font-mono text-[11px] break-all">{task.id}</dd></div>
             </dl>
           </details>
         </aside>

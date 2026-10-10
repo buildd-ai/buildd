@@ -60,6 +60,8 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   if (cmd.includes('rev-list --count')) {
     // Stale-branch guard probe (HEAD..origin/<default>) — always fresh here.
     if (cmd.includes('HEAD..origin/')) return '0';
+    // Fresh task branches are not on origin (implicit-resume probe finds nothing).
+    if (/\.\.origin\/buildd\/task-/.test(cmd)) fail('unknown revision', 128);
     return '5'; // fetchBranch probe: candidate exists, not diverged
   }
 
@@ -152,6 +154,14 @@ describe('setupWorktree — shared/default branch guard', () => {
 
     // The default branch is still held only by the main checkout.
     expect(worktrees.get(DEFAULT_BRANCH)).toBe(MAIN_WORKTREE);
+  });
+
+  test('points the new branch upstream at its own remote branch, not the base', async () => {
+    await setupWorktree(MAIN_WORKTREE, 'buildd/task-a', DEFAULT_BRANCH, 'worker-a', { baseBranch: DEFAULT_BRANCH });
+
+    const cmds = syncCalls.map(c => c.cmd);
+    expect(cmds).toContain('git config "branch.buildd/task-a.remote" origin');
+    expect(cmds).toContain('git config "branch.buildd/task-a.merge" "refs/heads/buildd/task-a"');
   });
 
   test('never runs `git worktree add -b <default-branch>` or deletes the default branch', async () => {

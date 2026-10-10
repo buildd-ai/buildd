@@ -15,7 +15,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { EffectSpec } from './commands';
-import { PUSH_RECOVERY_BACKOFF_MS } from './reducer';
+import { currentPushEntry, PUSH_RECOVERY_BACKOFF_MS, pushChainId } from './reducer';
 import type { KernelView, RoundSnapshot } from './types';
 
 const OPEN_ATTEMPT = new Set(['queued', 'running']);
@@ -55,21 +55,39 @@ export function enqueueMissingEffects(view: KernelView, existing: ReadonlySet<st
       // A queued round at the current head has a dispatch_review (startRound's key).
       if (!current || current.status !== 'queued' || current.headSha !== d.currentHeadSha) break;
       const prior = lastDecidedBefore(current.round)?.round ?? null;
-      owed.push({
-        kind: 'dispatch_review', dedupeKey: `dispatch_review:${d.id}:${current.round}`,
-        payload: { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null },
-      });
+      const payload = { roundId: current.id, round: current.round, headSha: current.headSha, kind: current.kind, priorRound: prior, scope: current.scope ?? null };
+      const base = `dispatch_review:${d.id}:${current.round}`;
+      if (!existing.has(base)) {
+        owed.push({ kind: 'dispatch_review', dedupeKey: base, payload });
+        break;
+      }
+      // a6cbd241: the round's dispatches all finished and none asked a reviewer (one acked
+      // `skipped:superseded` because the delivery was briefly elsewhere, then came back to this
+      // round). A finished key still holds its own slot, so the round owes a fresh one. Only
+      // when every dispatch for the round is known `done`: a live one is the round's exit, a
+      // dead one is EffectDead's business, and an unread status proves nothing.
+      if (current.reviewerTaskId) break;
+      const keys = [...existing].filter((k) => k === base || k.startsWith(`${base}:`));
+      if (!keys.every((k) => status.get(k) === 'done')) break;
+      owed.push({ kind: 'dispatch_review', dedupeKey: `${base}:floor:v${d.version}`, payload });
       break;
     }
     case 'AWAITING_PUSH': {
-      // A push_recovery chain for the pending local head; any try of it that did not go dead counts.
+      // A push_recovery try still to run owns the next move: pending or delivering, in any chain of
+      // this delivery (the attempt's end keys its chain by the L it reported, which need not be the
+      // head this sweep reads, so a chain under another L still counts). A key whose status the
+      // caller did not read counts as live.
       const local = view.attempts.find((a) => a.id === d.boundAttemptId)?.reportedShas.at(-1) ?? d.pushPendingLocalHead ?? null;
-      const prefix = `push_recovery:${d.id}:${local ?? 'none'}:`;
-      const chain = [...existing].filter((k) => k.startsWith(prefix));
-      if (chain.some((k) => !isDead(k))) break;
+      // The chain of this visit (10658a4c): a later visit at the same L is its own chain.
+      const prefix = `push_recovery:${d.id}:${pushChainId(local, currentPushEntry(d))}:`;
+      const tries = [...existing].filter((k) => k.startsWith(`push_recovery:${d.id}:`));
+      if (tries.some((k) => !status.has(k) || isLive(k))) break;
+      const chain = tries.filter((k) => k.startsWith(prefix));
       const maxTries = PUSH_RECOVERY_BACKOFF_MS.length;
       // 67d34094: a chain that died owes its last try, which re-reads GitHub and, with the head
       // still unmoved, is T22 (ESCALATED(push_undeliverable)). A dead key never blocks it.
+      // 9e27996d: so does a chain that ended with no try left to run and no exit taken (every try
+      // done, the delivery still here): AWAITING_PUSH is never left without an owner (§4).
       owed.push(chain.length === 0
         ? { kind: 'push_recovery', dedupeKey: `${prefix}1`, payload: { localHeadSha: local, try: 1, maxTries } }
         : { kind: 'push_recovery', dedupeKey: `${prefix}final`, payload: { localHeadSha: local, try: maxTries, maxTries } });

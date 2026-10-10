@@ -1,4 +1,3 @@
-import { needsYouHeadline } from './home-needs-you';
 
 /**
  * Health → Overview, as plain data: the one status sentence at the top, and the
@@ -19,6 +18,8 @@ export interface OverviewAttention {
   strandedBackends: number;
   failingSchedules: number;
   failureGroups: number;
+  /** Runs that could not get the access they need, by workspace and cause. */
+  accessProblems?: number;
 }
 
 export interface OverviewState {
@@ -45,13 +46,21 @@ const RUNNERS_HREF = '/app/health/runners';
 
 export function attentionCount(a: OverviewAttention): number {
   return (a.noRunners ? 1 : 0) + a.offlineRunners + a.unsandboxedRunners + a.brokenCredentials
-    + a.strandedBackends + a.failingSchedules + a.failureGroups;
+    + a.strandedBackends + a.failingSchedules + a.failureGroups + (a.accessProblems ?? 0);
 }
 
 export function overviewHeadline(a: OverviewAttention): { tone: 'ok' | 'attention'; count: number; text: string } {
   const count = attentionCount(a);
   if (count === 0) return { tone: 'ok', count, text: 'All good.' };
-  return { tone: 'attention', count, text: needsYouHeadline(count) };
+  const fact = (n: number, label: string) => n ? `${n} ${label}${n === 1 ? '' : 's'}` : null;
+  const facts = [
+    a.noRunners ? 'No runners connected' : null,
+    fact(a.offlineRunners, 'offline runner'), fact(a.unsandboxedRunners, 'unsandboxed runner'),
+    fact(a.brokenCredentials, 'broken credential'), fact(a.strandedBackends, 'backend without a credential'),
+    fact(a.failingSchedules, 'failing schedule'), fact(a.accessProblems ?? 0, 'access problem'),
+    fact(a.failureGroups, 'failure cause'),
+  ].filter(Boolean);
+  return { tone: 'attention', count, text: `${facts.join(' · ')}.` };
 }
 
 function usd(n: number): string {
@@ -94,9 +103,9 @@ export function overviewStatusRows(s: OverviewState): OverviewStatusRow[] {
           label: 'Budget',
           value: `${usd(budget.monthly.spentUsd)} of ${usd(budget.monthly.budgetUsd)} this month`,
           tone: budget.monthly.pctUsed >= 90 ? 'error' : budget.monthly.pctUsed >= 70 ? 'warning' : 'ok',
-          href: RUNNERS_HREF,
+          href: '/app/health/usage',
         }
-      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: RUNNERS_HREF };
+      : { key: 'budget', label: 'Budget', value: 'No monthly limit set', tone: 'muted', href: '/app/health/usage' };
 
   return [runnerRow, credentialRow, budgetRow];
 }

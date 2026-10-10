@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { CLOUD_RUNNER_DEPLOY_COMMAND, cloudflareState } from './_lib/cloudflare-state';
 import { useCloudflareCredential } from './_lib/use-cloudflare-credential';
+import CloudflareGatewayTokens from './CloudflareGatewayTokens';
 
 interface Team {
   id: string;
@@ -17,6 +18,11 @@ interface Props {
   teams: Team[];
   /** The team shown first; the active team on the page. Defaults to the first team. */
   defaultTeamId?: string | null;
+  /**
+   * Teams where the person may set the token (`manage_team_model_keys`). For
+   * any other team the row shows the token's status only. Omitted = every team.
+   */
+  manageableTeamIds?: string[];
 }
 
 /**
@@ -30,7 +36,7 @@ interface Props {
  * Deploy, which shows the deploy.ts command. The controls fold underneath and
  * open from `#cloudflare` (the fleet's cloud-runner row links there).
  */
-export default function CloudflareSection({ teams, defaultTeamId }: Props) {
+export default function CloudflareSection({ teams, defaultTeamId, manageableTeamIds }: Props) {
   const { confirm, confirmDialog } = useConfirm();
   const [selectedTeamId, setSelectedTeamId] = useState<string>(
     (defaultTeamId && teams.some((t) => t.id === defaultTeamId) ? defaultTeamId : teams[0]?.id) || '',
@@ -134,6 +140,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
 
   if (teams.length === 0) return null;
 
+  const canManage = !manageableTeamIds || manageableTeamIds.includes(selectedTeamId);
   const state = cloudflareState(cred);
   const showForm = !cred || replacing;
   const teamName = teams.length > 1 ? teams.find((t) => t.id === selectedTeamId)?.name : null;
@@ -147,7 +154,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
 
   const meta = cred ? (
     <span data-testid="cloudflare-credential">
-      {teamName ? `${teamName} · ` : ''}Account {cred.accountId ?? '?'} · token {cred.tokenHint ?? '?'}
+      {teamName ? `${teamName} · ` : ''}Account <span className="font-mono">{cred.accountId ?? '?'}</span> · token <span className="font-mono">{cred.tokenHint ?? '?'}</span>
     </span>
   ) : (
     <>{teamName ? `${teamName} · ` : ''}Cloud runner account</>
@@ -162,12 +169,12 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
       meta={meta}
       open={open}
       onToggle={() => setOpen((v) => !v)}
-      action={loading && !cred ? undefined : (
+      action={(loading && !cred) || !canManage ? undefined : (
         <button
           onClick={nextStep}
           disabled={busy}
           data-testid="cloudflare-next"
-          className={`btn ${state.tone === 'err' || state.tone === 'warn' ? 'btn-accent' : ''}`}
+          className="btn"
         >
           {busy ? 'Working…' : state.next}
         </button>
@@ -212,7 +219,8 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
               <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-2">
+          {state.kind === 'verified' && <CloudflareGatewayTokens teamId={selectedTeamId} />}
+          {canManage && <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => verify(cred.id)} disabled={busy} className={`btn ${state.kind === 'verified' ? '' : 'btn-primary'}`}>
               {busy ? 'Working…' : 'Verify'}
             </button>
@@ -224,11 +232,15 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
             <button onClick={() => remove(cred.id)} disabled={busy} className="btn btn-danger">
               Delete
             </button>
-          </div>
+          </div>}
         </div>
       ) : null}
 
-      {showForm && !(loading && !cred) && (
+      {!canManage && (
+        <p data-testid="cloudflare-read-only" className="text-xs text-text-muted">Admins can change this.</p>
+      )}
+
+      {canManage && showForm && !(loading && !cred) && (
         <div className={`space-y-2 ${cred ? 'border-t border-border-default pt-4' : ''}`}>
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium text-text-primary">{cred ? 'Replace the token' : 'Add a token'}</div>

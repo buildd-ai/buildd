@@ -5,9 +5,11 @@ import { eq } from 'drizzle-orm';
 import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorker, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { assertMemberRepoAccess, memberRepoAccessSubject } from '@/lib/member-repo-access';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { isAuditStorageKey } from '@/lib/storage-keys';
+import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { triggerEvent, channels } from '@/lib/pusher';
 import { artifactMetadataMergeSql, isJsonObject } from '@/lib/artifact-metadata-merge';
 
@@ -75,15 +77,37 @@ export async function GET(
     }
   }
 
+  // A diff is repository code: with the workspace's opt-in GitHub check on, a
+  // person must hold read on the repo (lib/member-repo-access.ts). Keys skip it.
+  if (artifact.type === 'diff') {
+    const refusal = await assertMemberRepoAccess(
+      memberRepoAccessSubject(account, sessionUser),
+      artifact.workspaceId ?? artifact.worker?.workspaceId ?? null,
+    );
+    if (refusal) return refusal;
+  }
+
   // A token only addresses a live share while the artifact is public.
   const shareUrl = artifact.shareToken && artifact.visibility === 'public'
     ? `${appBaseUrl()}/share/${artifact.shareToken}`
     : null;
 
+  // A file artifact has no inline content; hand back a short-lived presigned
+  // URL under the same access check as above so a key-only caller (an agent
+  // that may not use credentials from disk) can still read the bytes.
+  let downloadUrl: string | null = null;
+  if (artifact.storageKey && isStorageConfigured()) {
+    try {
+      downloadUrl = await generateDownloadUrl(artifact.storageKey);
+    } catch {
+      downloadUrl = null;
+    }
+  }
+
   // Return full artifact without the worker relation
   const { worker: _worker, ...artifactData } = artifact;
   return NextResponse.json({
-    artifact: { ...artifactData, shareUrl },
+    artifact: { ...artifactData, shareUrl, downloadUrl },
   });
 }
 

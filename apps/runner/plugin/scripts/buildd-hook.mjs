@@ -16,7 +16,9 @@
 // four token counts, the timestamp and how many tool_use blocks it had. Message
 // text, tool inputs and outputs are never kept or sent. The cumulative counts
 // per claimed task ride on the touch/end request. BUILDD_HOOK_USAGE=0 turns
-// this off.
+// this off. With the usage goes how it was charged (`costBasis`: real, virtual
+// or unknown), read from the client's own environment and config the way the
+// client picks its credential; only that one word is sent.
 //
 // It never breaks the agent loop: every failure (no key, buildd down, non-2xx,
 // bad payload, timeout) is swallowed and the script exits 0. MCP stays the
@@ -113,17 +115,24 @@ function normalizeClaudeLike(client, p, env) {
     case 'SessionStart':
       return { ...base, event: 'start', interactive: attended(client, env) };
     case 'UserPromptSubmit':
+      // Every event that can create the presence carries the flag: a session
+      // outside a workspace repo sends no start, so its first event is a bind
+      // (or a touch healing a missed start).
+      return { ...base, event: 'touch', interactive: attended(client, env) };
+    // The end of the agent's turn: the last chance to hand it a waiting
+    // message this turn, so it is never throttled.
     case 'Stop':
-      return { ...base, event: 'touch' };
+      return { ...base, event: 'touch', force: true, interactive: attended(client, env) };
     case 'PostToolUse': {
-      if (!isBuilddTool(p.tool_name)) return null;
-      const workerId = claimedWorkerId(p.tool_input, p.tool_response);
-      if (!workerId) return null;
+      // A successful buildd claim binds. Any other tool call is a turn
+      // boundary: a (throttled) touch, whose answer says whether a message waits.
+      const workerId = isBuilddTool(p.tool_name) ? claimedWorkerId(p.tool_input, p.tool_response) : null;
+      if (!workerId) return { ...base, event: 'touch' };
       // A subagent's tool call carries its agent_id (and the parent's session_id):
       // kept in this machine's session state to know which subagent holds which
       // claim. Never sent.
       const agentId = typeof p.agent_id === 'string' && /^[\w-]{1,64}$/.test(p.agent_id) ? p.agent_id : null;
-      return { ...base, event: 'bind', workerId, ...(agentId ? { agentId } : {}) };
+      return { ...base, event: 'bind', workerId, interactive: attended(client, env), ...(agentId ? { agentId } : {}) };
     }
     case 'SessionEnd': {
       // Claude: clear | resume | logout | prompt_input_exit | other. Codex: always other.
@@ -327,9 +336,9 @@ function writeState(file, state) {
   } catch { /* throttling degrades to server-side coalescing */ }
 }
 
-/** Whether to skip a touch because one went out this minute. Start/bind/end always go. */
-export function shouldSkip(event, state, now = Date.now()) {
-  return event === 'touch' && typeof state.lastSentAt === 'number' && now - state.lastSentAt < TOUCH_INTERVAL_MS;
+/** Whether to skip a touch because one went out this minute. Start/bind/end and forced touches (Stop) always go. */
+export function shouldSkip(event, state, now = Date.now(), force = false) {
+  return !force && event === 'touch' && typeof state.lastSentAt === 'number' && now - state.lastSentAt < TOUCH_INTERVAL_MS;
 }
 
 /** The exact body POSTed. Built from the normalized event only. */
@@ -347,12 +356,101 @@ export function buildBody(client, n, repo, usage = null) {
   };
 }
 
+// ── Cost basis ───────────────────────────────────────────────────────────────
+//
+// How the session's usage was charged (docs/specs/real-and-virtual-cost.md):
+// `real` (per token: an API key, a bearer token, a cloud provider, a gateway),
+// `virtual` (a subscription login, valued at list price) or `unknown`. The
+// transcript does not record the credential, so this walks Claude Code's own
+// authentication precedence (code.claude.com/docs/en/authentication) and stops
+// at the first credential the client would use. Only the resulting word leaves
+// this machine; no key, token or config value is read into the body or logged.
+
+const truthy = (v) => typeof v === 'string' && v !== '' && v !== '0' && v.toLowerCase() !== 'false';
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function anthropicHost(url) {
+  try { return new URL(url).hostname.endsWith('anthropic.com'); } catch { return false; }
+}
+
+/**
+ * Pure: the basis for these inputs.
+ * - `globalConfig`: the client's `.claude.json` (login and API-key approvals)
+ * - `settings` / `managedSettings`: parsed settings files, any order
+ * - `profilePresent`: an active Anthropic profile file exists
+ */
+export function costBasisFor({ env = {}, globalConfig = null, settings = [], managedSettings = [], profilePresent = false }) {
+  const cfg = isObj(globalConfig) ? globalConfig : {};
+  const managed = managedSettings.filter(isObj);
+  const all = [...settings.filter(isObj), ...managed];
+  // A required gateway sign-in outranks every other source; it routes to a cloud provider.
+  if (managed.some(m => m.forceLoginMethod === 'gateway' || typeof m.forceLoginGatewayUrl === 'string')) return 'real';
+  if (['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some(k => truthy(env[k]))) return 'real';
+  if (truthy(env.ANTHROPIC_AUTH_TOKEN)) return 'real';
+  if (truthy(env.ANTHROPIC_API_KEY)) {
+    // Non-interactive (-p, SDK) sessions always use the key. An interactive
+    // one asks once and remembers the key's last 20 characters.
+    if (typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' && env.CLAUDE_CODE_ENTRYPOINT.startsWith('sdk')) return 'real';
+    const tail = env.ANTHROPIC_API_KEY.slice(-20);
+    const r = isObj(cfg.customApiKeyResponses) ? cfg.customApiKeyResponses : {};
+    if (Array.isArray(r.approved) && r.approved.includes(tail)) return 'real';
+    if (!(Array.isArray(r.rejected) && r.rejected.includes(tail))) return 'unknown';
+  }
+  if (all.some(s => typeof s.apiKeyHelper === 'string' && s.apiKeyHelper !== '')) return 'real';
+  let basis;
+  if (truthy(env.CLAUDE_CODE_OAUTH_TOKEN)) basis = 'virtual';
+  else if (truthy(env.ANTHROPIC_PROFILE) || (truthy(env.ANTHROPIC_FEDERATION_RULE_ID) && truthy(env.ANTHROPIC_ORGANIZATION_ID))) return 'real';
+  else if (profilePresent) return 'unknown';
+  else if (typeof cfg.primaryApiKey === 'string' && cfg.primaryApiKey !== '') return 'real';
+  else if (isObj(cfg.oauthAccount)) basis = 'virtual';
+  else return 'unknown';
+  // A subscription credential sent somewhere other than Anthropic: the hook
+  // cannot tell how that endpoint charges.
+  if (truthy(env.ANTHROPIC_BASE_URL) && !anthropicHost(env.ANTHROPIC_BASE_URL)) return 'unknown';
+  return basis;
+}
+
+/** Managed settings locations (code.claude.com/docs/en/settings). */
+export const MANAGED_SETTINGS_PATHS = [
+  '/Library/Application Support/ClaudeCode/managed-settings.json',
+  '/etc/claude-code/managed-settings.json',
+  'C:\\Program Files\\ClaudeCode\\managed-settings.json',
+];
+
+function readJson(path) {
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/** Reads the client's config once and classifies it. Any error is `unknown`. */
+export function sessionCostBasis(env = process.env, home = homedir(), cwd = process.cwd(), managedPaths = MANAGED_SETTINGS_PATHS) {
+  try {
+    const configDir = env.CLAUDE_CONFIG_DIR || join(home, '.claude');
+    const globalConfig = readJson(env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, '.claude.json') : join(home, '.claude.json'));
+    const root = gitRoot(cwd) ?? cwd;
+    const settings = [
+      join(configDir, 'settings.json'),
+      join(root, '.claude', 'settings.json'),
+      join(root, '.claude', 'settings.local.json'),
+    ].map(readJson).filter(Boolean);
+    const managedSettings = managedPaths.map(p => { try { return readJson(p); } catch { return null; } }).filter(Boolean);
+    const anthropicDir = env.ANTHROPIC_CONFIG_DIR || join(home, '.config', 'anthropic');
+    const profilePresent = existsSync(join(anthropicDir, 'active_config')) || existsSync(join(anthropicDir, 'configs', 'default'));
+    return costBasisFor({ env, globalConfig, settings, managedSettings, profilePresent });
+  } catch (err) {
+    debug('cost basis unreadable', err?.message ?? err);
+    return 'unknown';
+  }
+}
+
 // ── Session usage ────────────────────────────────────────────────────────────
 
 /** At most this much new transcript is read per file per hook run; the rest next time. */
 export const USAGE_READ_CAP = 8 * 1024 * 1024;
 const SEEN_CAP = 5000;
 const MODEL_ID_RE = /^[A-Za-z0-9._:/@\[\]-]{1,100}$/;
+/** A tool name as sent (`Bash`, `mcp__buildd__buildd`); anything else counts as `other`. */
+export const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** A session's transcript and each of its subagents' (Claude Code's layout). */
 export function sessionTranscriptFiles(transcriptPath) {
@@ -420,7 +518,14 @@ export function usageRecord(line) {
     cacheWrite5m: w5m + Math.max(0, written - w1h - w5m),
     cacheWrite1h: w1h,
     output: count(u.output_tokens),
-    toolCalls: Array.isArray(m.content) ? m.content.filter(b => b?.type === 'tool_use').length : 0,
+    // Tool names only (`Bash`, `mcp__buildd__buildd`), never inputs or results;
+    // a block's own id dedupes a record Claude Code writes more than once.
+    tools: Array.isArray(m.content)
+      ? m.content.filter(b => b?.type === 'tool_use').map(b => ({
+          id: typeof b.id === 'string' ? b.id : null,
+          name: typeof b.name === 'string' && TOOL_NAME_RE.test(b.name) ? b.name : 'other',
+        }))
+      : [],
     at: Number.isFinite(at) ? at : null,
   };
 }
@@ -457,10 +562,18 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
       const rec = usageRecord(line);
       if (!rec) continue;
       if (!claimedBySubagent && rec.at !== null && rec.at < earliest) continue;
-      const t = (usage.perWorker[worker] ??= { models: {}, toolCalls: 0, agents: [], firstAt: null, lastAt: null });
-      // One API call is written once per content block: its tool calls add up,
-      // its usage is the same on every copy and counts once.
-      t.toolCalls += rec.toolCalls;
+      const t = (usage.perWorker[worker] ??= { models: {}, toolCalls: 0, toolCounts: {}, agents: [], firstAt: null, lastAt: null });
+      t.toolCounts ??= {};
+      // One API call is written once per content block: each tool_use block
+      // counts once (by its own id), its usage is the same on every copy and
+      // counts once (by the message id, below).
+      for (const tool of rec.tools) {
+        const toolKey = tool.id ? `t:${f.agentId ?? ''}:${tool.id}` : null;
+        if (toolKey && seen.has(toolKey)) continue;
+        if (toolKey) { seen.add(toolKey); usage.seen.push(toolKey); }
+        t.toolCalls += 1;
+        t.toolCounts[tool.name] = (t.toolCounts[tool.name] ?? 0) + 1;
+      }
       if (f.agentId && !t.agents.includes(f.agentId)) t.agents.push(f.agentId);
       if (rec.at !== null) {
         t.firstAt = t.firstAt === null ? rec.at : Math.min(t.firstAt, rec.at);
@@ -482,6 +595,7 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
       workerId,
       models: Object.entries(t.models).map(([model, b]) => ({ model, ...b })),
       toolCalls: t.toolCalls,
+      toolCounts: { ...(t.toolCounts ?? {}) },
       subagents: t.agents.length,
       ...(t.firstAt !== null ? { firstAt: new Date(t.firstAt).toISOString() } : {}),
       ...(t.lastAt !== null ? { lastAt: new Date(t.lastAt).toISOString() } : {}),
@@ -489,16 +603,30 @@ export function collectUsage(prev, transcriptPath, claims, claimedAt) {
   return { usage, report };
 }
 
-/** Hook stdout for the client, or '' for none. Only a nudge toward the existing delivery path. */
-export function hookOutput(client, hookEventName, result) {
+/**
+ * Hook stdout for the client, or '' for none. Only a nudge toward the MCP
+ * (`receive_messages`): the message text itself never travels through a hook,
+ * and only the boolean `pendingInstructions` is read from buildd's answer.
+ *
+ * At every turn boundary the client exposes: a prompt (UserPromptSubmit), a
+ * tool call (PostToolUse, context for the next model call) and the end of the
+ * turn (Stop: block once so the agent collects it before stopping, never
+ * again while `stop_hook_active`, so it cannot loop). Cursor stays queued-only.
+ */
+export function hookOutput(client, hookEventName, result, payload = null) {
   if (client === 'cursor') return hookEventName === 'sessionStart' ? '{}' : '';
-  if (!result?.pendingInstructions || hookEventName !== 'UserPromptSubmit') return '';
-  return JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: `Buildd has an unread message for the task this session claimed${result.taskId ? ` (${result.taskId.slice(0, 8)})` : ''}. Call buildd update_progress to receive it.`,
-    },
-  });
+  if (!result?.pendingInstructions) return '';
+  const nudge = `Buildd has an unread message for the task this session claimed${typeof result.taskId === 'string' ? ` (${result.taskId.slice(0, 8)})` : ''}. Call buildd receive_messages to read it.`;
+  switch (hookEventName) {
+    case 'UserPromptSubmit':
+    case 'PostToolUse':
+      return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: nudge } });
+    case 'Stop':
+      if (payload?.stop_hook_active === true) return '';
+      return JSON.stringify({ decision: 'block', reason: nudge });
+    default:
+      return '';
+  }
 }
 
 async function readStdin() {
@@ -525,7 +653,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
 
   const file = statePath(stateDir(env), client, n.clientSessionId);
   const state = readState(file);
-  if (shouldSkip(n.event, state, now)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
+  if (shouldSkip(n.event, state, now, n.force === true)) return { sent: false, why: 'throttled', output: hookOutput(client, hookEventName, null) };
 
   // Scope. A claim is explicit buildd work, so bind always goes and the session
   // is in scope from then on. Otherwise the folder decides, once per session
@@ -557,7 +685,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     try {
       const c = collectUsage(state.usage, payload?.transcript_path, claimsNow, state.claimedAt);
       usageState = c.usage;
-      if (c.report.length > 0) usageReport = { workers: c.report };
+      if (c.report.length > 0) usageReport = { workers: c.report, costBasis: sessionCostBasis(env, homedir(), n.cwd) };
     } catch (err) {
       debug('usage read failed', err?.message ?? err);
     }
@@ -586,7 +714,7 @@ export async function run({ client, stdin, env = process.env, fetchImpl = global
     ...(claimedAt ? { claimedAt } : {}),
     ...(usageState ? { usage: usageState } : {}),
   });
-  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result) };
+  return { sent: true, ok: !!result, body, output: hookOutput(client, hookEventName, result, payload) };
 }
 
 async function main() {

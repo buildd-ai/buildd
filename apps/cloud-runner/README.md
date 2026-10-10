@@ -566,10 +566,25 @@ restore and dependency cache. One task at a time per container, always.
   first, then any idle one, and records it (`leasedTo`); GET, kill and resume
   reach the lease through it. Every slot busy: the task runs in its own agent
   as before. `task.scheduled` wakes run in the task's own agent.
+- **Tail wait.** A next task is often dispatched the moment buildd sees the
+  previous one complete, while its run is still in its tail (the runner's last
+  reports and exit; `BUILDD_PHASE=run_end` marks it). Such a lease answers
+  `tail`, and the task agent waits for it to go warm, at most 30 s
+  (`LEASE_TAIL_WAIT_MS`), before it takes an idle slot or runs the task itself:
+  a fresh container costs far more than that. The webhook is answered at once
+  (buildd needs a fast 2xx); the held dispatch is routed in the background,
+  and at once if the agent restarts meanwhile (`routePending`).
 - **Warm window.** After a run that ended `done` or `failed` the lease keeps
   the container for `CONTAINER_REUSE_WINDOW_MS`, then destroys it. Never after
   a park (the lease holds the parked run for its resume), a crash or anything
-  else.
+  else. The container is free the moment its run ends: a lease run
+  (`BUILDD_WARM_UPLOAD_DEFER=1`) records the warm snapshot upload it is due
+  instead of making it. When the next task takes the container, its reset
+  wipes the record and the upload is never made (the kept container is the
+  warm state). When the window ends untaken, the lease runs
+  `buildd-once --upload-warm` (no task token; the snapshot host is authorised
+  by the lease's workspace) and only then destroys the container; the lease
+  is busy meanwhile.
 - **Reset.** Before the next task, `buildd-once --reset-container`
   (`apps/runner/src/container-reset.ts`) runs with no task token and before
   the new task's egress is installed. It kills every process but the
@@ -580,7 +595,10 @@ restore and dependency cache. One task at a time per container, always.
   the kept packs: shallow boundary first, then `git index-pack` (re-hashes
   every object, so an index the previous task wrote is never trusted; the same
   work a warm restore does on its bundle, without the download), a fetch of
-  its refs from origin and `git fsck --connectivity-only`. No snapshot
+  its refs from origin and `git fsck --connectivity-only`. The fetch
+  negotiates with the kept commits (temporary refs, only commits whose
+  objects are all kept), so origin sends only what it added; when
+  `git ls-remote` shows origin's tip is already kept, no fetch runs at all. No snapshot
   restore and no cache restore: the kept cache is the cache (bun and pnpm
   check what they take from it). If the kept packs cannot be used it restores
   or clones as usual, still without downloading the cache over the kept one.
@@ -588,13 +606,18 @@ restore and dependency cache. One task at a time per container, always.
   reset that does not verify clean destroys the container and the task starts
   in a fresh one: it never runs dirty.
 - **Report.** `reusedContainer: { fromTaskId, idleMs, resetMs, prepMs,
-  baselinePrepMs, savedMs }`, or `{ fromTaskId, idleMs, fallback:
+  baselinePrepMs, savedMs, uploadSkipped? }`, or `{ fromTaskId, idleMs, fallback:
   'reset_failed', resetMs }`. Measured, not estimated: `prepMs` is this run's
-  dispatch to claim plus getting the repo ready (clone, warm restore with its
-  cache restore and fetch, or `restoreReuse`, the seed from kept packs);
-  `baselinePrepMs` is the same measure for the fresh run that started the
-  container; `savedMs = baselinePrepMs - prepMs`, negative when reuse was
-  slower. `repo.source` is `reuse` when the clone came from the kept packs.
+  tail wait (`durationsMs.leaseWait`) plus dispatch to claim. Getting the repo
+  ready (clone, warm restore with its cache restore and fetch, or
+  `restoreReuse`, the seed from kept packs) happens inside dispatch to claim
+  and is not added again. `baselinePrepMs` is the same measure for the fresh
+  run that started the container; `savedMs = baselinePrepMs - prepMs`,
+  negative when reuse was slower. `repo.source` is `reuse` when the clone came
+  from the kept packs, with `repo.bytes.reuseFetch` (what the seed fetched) and
+  `repo.reuseFetchSkipped`. `repo.warmUploadDeferred`: this run left its
+  upload to the lease; `uploadSkipped`: this run took over a container whose
+  deferred upload was then not needed.
 
 ### Resumable runs
 
@@ -606,6 +629,14 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   `park/<workspaceId>/<workerId>`), calls `POST /api/workers/[id]/park` and
   exits 4. The agent records `outcome: parked`, sends no crash report and
   destroys the container.
+- **Park on a pause.** A person pausing a running agent (POST
+  `/api/workers/[id]/pause`, or Pause on the task page) is served to the runner
+  on its next worker PATCH (`pauseRequested`). Once no tool is executing it
+  stops the session and reports `waiting_input` with `waitingFor.type: 'pause'`,
+  and the park above follows. Resume is answering it, so the resume below is
+  the same. With `RESUMABLE_RUNS` off the runner refuses the pause and says so
+  in the run's activity (it would otherwise hold the container until its max
+  wait and fail).
 - **Resume.** The answer queues on the same worker, and buildd sends
   `task.resume` with `workerId`. The agent accepts it only when its last
   attempt parked that worker. It starts a container and execs
@@ -626,7 +657,7 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
   orphan park (still `running`, nothing queued) is reported `failed`.
 - **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
   mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
-- **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.
+- **Local smoke.** `bun run smoke:resume` covers three paths: a question, a person's pause (same Claude Code session id before and after), and a mid-run agent restart. The host runner's pause has its own: `bun run --cwd apps/runner smoke:pause`.
 
 ### Model routes
 

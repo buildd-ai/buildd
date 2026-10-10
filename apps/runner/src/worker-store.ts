@@ -53,10 +53,12 @@ const PERSISTED_FIELDS = [
   // So a resume after a runner restart keeps the model the session ran on.
   'sessionModel',
   'messages', 'milestones', 'toolCalls', 'commits',
-  'output', 'teamState', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
+  'output', 'worktreePath', 'promptSuggestions', 'lastAssistantMessage',
   // Read by history-store's backfill so an archived session keeps its usage,
   // model and PR URL. Not restored onto live workers by loadAllWorkers.
   'resultMeta', 'prUrl', 'reportedModel',
+  // So a restored worker's reconciliation report keeps its cost basis.
+  'costBasis',
   // Enforce-mode path claims: the collision a deferral was based on, kept with
   // the record so the local history shows why the session ended.
   'pathClaimMode', 'pathCollision',
@@ -284,7 +286,6 @@ export function loadAllWorkers(): LocalWorker[] {
         toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
         commits: (data.commits as LocalWorker['commits']) || [],
         output: (data.output as LocalWorker['output']) || [],
-        teamState: data.teamState as LocalWorker['teamState'],
         worktreePath: data.worktreePath as string | undefined,
         worktreeBaseRef: data.worktreeBaseRef as string | undefined,
         prBaseRef: data.prBaseRef as string | undefined,
@@ -356,7 +357,6 @@ export function loadWorker(workerId: string): LocalWorker | null {
       toolCalls: (data.toolCalls as LocalWorker['toolCalls']) || [],
       commits: (data.commits as LocalWorker['commits']) || [],
       output: (data.output as LocalWorker['output']) || [],
-      teamState: data.teamState as LocalWorker['teamState'],
       worktreePath: data.worktreePath as string | undefined,
       worktreeBaseRef: data.worktreeBaseRef as string | undefined,
       prBaseRef: data.prBaseRef as string | undefined,

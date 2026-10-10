@@ -34,6 +34,12 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
   `DISABLE_WRITES=true` and your `DEV_USER_EMAIL`, captures, then tears down.
 - **It needs a `DATABASE_URL`.** Point it at a dev database or a Neon dev branch,
   never prod. Keep it in your shell or an ignored env file, and never commit env files.
+- **Real data without touching prod:** `QA_NEON_BRANCH=1` makes `shoot.sh` create a
+  copy-on-write Neon branch of production (`scripts/qa/neon-branch.sh`, expires in 3h),
+  capture against it and delete it on exit. Needs `npx neonctl@latest auth` once.
+  `QA_NEON_MIGRATE=1` applies your checkout's migrations to the branch first. The
+  branch is unscrubbed real data: for your own review only; never upload its shots.
+  Do not rely on `apps/web/.env.local`: on some machines it points at production.
 - `QA_VIEWPORT`: `mobile` = 390x844 touch phone at 3x; `WxH` for anything else
   (below 768px wide it also emulates touch); unset = 1280x900 desktop. Shoot both
   when the change is layout-sensitive.
@@ -136,6 +142,11 @@ don't turn it on by habit.
 - Each dispatch gets its own Neon branch and concurrency group, so parallel
   dispatches don't collide or cancel each other. Leaked `ci/visual-qa-*` branches
   older than 2h are swept at the start of every run.
+- A mission branch boots even when its own migration sits below prod's journal
+  mark: the clone applies migrations whose DDL is wholly absent
+  (`MIGRATION_CI_CLONE_APPLY_ABSENT`). The ref must contain that change, so a
+  branch cut before it needs a dev sync first. A red `Run migrations` saying
+  "partially present" needs a reconciliation migration on the branch.
 - A red `Guard scrubbed clone` step means the scrub missed something. No app, no
   shots, no artifact. The error names `table.column` only; fix the scrub, don't
   work around the guard.
@@ -161,6 +172,9 @@ file, or the JSON itself. Spec: `docs/specs/qa-capture-steps.md`.
   viewport shot, id `<route-id>--<key>`, `state` in `captures.json`).
 - Actions (closed list): `click`, `hover`, `fill` (`value`), `press` (`key`),
   `select` (`value`), `waitFor` (`state: visible | hidden`), `waitMs` (`ms`, max 5000).
+  `assertLayout` (optional scope `selector`, `minTarget` px) fails the run (exit 4) on sideways
+  scroll, or below 768px on a tap target under 44px. The run-detail regression plan is
+  `scripts/qa/plans/run-activity.json`: dispatch it with `-f viewport=360x780` and `-f viewport=desktop`.
   Selectors: `testid:<id>`, `role:<role>[name=<name>]`, `text:<text>`, `css:<css>`.
 - **Steps never commit.** Open, reveal, type; never confirm, submit or save. A step that
   sends a write needs `commit: true`, honoured only with `QA_PAGE_SOURCE=sandbox`; a
@@ -223,8 +237,8 @@ neither.
   scrolling? Headers, banners and filters that push it below the fold are a finding.
 - **Tap targets.** Roughly 44px or more, not crowded, nothing that only works on hover.
 - **Overflow.** No horizontal scroll, no clipped text, no table forced wider than the viewport.
-- **Both themes, if the change touches colour.** Capture has no theme switch, so
-  check the other theme by hand, or say you didn't.
+- **Both themes, if the change touches colour.** `QA_THEME=light` (or `dark`) sets the
+  theme before the page loads; shoot both. `QA_TEAM_ID=<team uuid>` renders as that team.
 - **Redirects and error states.** If a shot is the login page or an error boundary,
   you didn't review the page.
 

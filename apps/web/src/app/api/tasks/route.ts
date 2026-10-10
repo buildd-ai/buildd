@@ -8,6 +8,10 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { assertMemberRepoAccess, memberRepoAccessSubject, resolveMemberRepoAccessMode } from '@/lib/member-repo-access';
+import { stampLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
+import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
@@ -38,6 +42,7 @@ import {
 import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
 import { resolveSubjectPolicy, isIdentifyingSubjectKeyType } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
+import { resolvePrReachGrant, withoutPrReachGrant, type PrReachFiler } from '@/lib/pr-reach-grant';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
@@ -52,9 +57,13 @@ import {
 // From `model-tier-defaults`, not `model-tier-registry`: the registry imports
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
-import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
+import { TIERS, bundledTierEntry, type Tier } from '@buildd/core/model-tier-defaults';
 import { inferRouting, computeRoutingPreview } from '@buildd/core/task-routing-preview';
-import { pickRoleRowForTask, countRoleInferenceCandidates } from '@buildd/core/role-model-routing';
+import { pickRoleRowForTask, countRoleInferenceCandidates, isExactRoleModel, roleFloorTier } from '@buildd/core/role-model-routing';
+import { pickVisibleRoleRow, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
+import { checkStatedRole } from '@/lib/stated-role';
+import { resolveTaskRequesterUserId } from '@buildd/core/task-requester';
+import { loadRequestCeiling, previewUnderCeiling, rejectOverCeiling } from '@/lib/tier-ceiling-check';
 import { terminalAuditFields } from './audit-fields';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
@@ -419,7 +428,7 @@ export async function POST(req: NextRequest) {
       // Connector IDs (subset of role's connectorRefs) this task requires at claim time.
       requiredConnectors: rawRequiredConnectors,
       // Incoming context (from MCP or API callers — baseBranch, iteration, failureContext, etc.)
-      context: incomingContext,
+      context: rawIncomingContext,
       // Release override: 'true' | 'false' | 'inherit' (default inherit)
       release: rawRelease,
       // Agent backend that executes this task: 'claude' | 'codex'
@@ -447,6 +456,18 @@ export async function POST(req: NextRequest) {
     let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
+
+    // The landing escape hatch's grant (context.landingOverride) is a person's call: only a
+    // dashboard/chat session or an OAuth MCP session may set it, and the server stamps who.
+    const grantPerson = requestingPerson(user, apiAccount);
+    const stampedGrant = stampLandingOverrideGrant(rawIncomingContext, grantPerson);
+    if (!stampedGrant.ok) {
+      return NextResponse.json({ error: stampedGrant.error }, { status: stampedGrant.status });
+    }
+    // The keys that make a task a dispatched review are the review system's to write (verdict-provenance.ts).
+    // context.prReach is the server's to write (lib/pr-reach-grant.ts): a caller's value is dropped
+    // here and the link this filing earns is stamped just before the insert.
+    const incomingContext = withoutPrReachGrant(withoutReviewDispatchContext(stampedGrant.context)) as typeof rawIncomingContext;
 
     // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
     // Never opens `mode` itself as a public parameter (that would let any task,
@@ -592,7 +613,12 @@ export async function POST(req: NextRequest) {
     // A per-task token files work only onto its own task's mission, never
     // another mission on the team, whatever its level.
     if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
-      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+      return NextResponse.json(
+        {
+          error: "A task token may create tasks only in its own task's mission. This mission exists on your team but is outside your token's scope; ask a person or an organizer to file the task.",
+        },
+        { status: 403 },
+      );
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);
 
@@ -606,6 +632,11 @@ export async function POST(req: NextRequest) {
         );
       }
     }
+    // Opt-in GitHub repo check for people (lib/member-repo-access.ts); keys and runners skip it.
+    const repoAccessRefusal = resolveMemberRepoAccessMode(targetWorkspace.gitConfig) === 'off'
+      ? null
+      : await assertMemberRepoAccess(memberRepoAccessSubject(apiAccount, user), workspaceId);
+    if (repoAccessRefusal) return repoAccessRefusal;
 
     // Validate and normalize pathManifest
     let pathManifest: string[] | null =
@@ -774,10 +805,11 @@ export async function POST(req: NextRequest) {
 
     // Path-overlap serialization against in-flight tasks (regression: PRs
     // #1126/#1129), split into HARD and SOFT by `partitionOverlapEdges`:
-    //  - hard (a stored dependsOn edge): the same file on both sides, a
-    //    migration/schema path, or a workspace serialized surface;
+    //  - hard (a stored dependsOn edge): a migration/schema path, a workspace
+    //    serialized surface, or the same file when it is generated or an
+    //    explicit hotspot (lib/hard-overlap-surfaces.ts);
     //  - soft (scheduling evidence on pathDeclaration.softOverlaps, never an
-    //    edge): directory-prefix-only overlap. The claim route holds on it
+    //    edge): any other same-file or directory-prefix overlap. The claim route holds on it
     //    while the other task is in flight unless HOLD/START says START, and
     //    live path leases still stop simultaneous edits.
     // Turning every prefix overlap into an edge queued honest broad scope
@@ -806,7 +838,7 @@ export async function POST(req: NextRequest) {
         inFlightTasks.map(t => ({ id: t.id, pathManifest: t.pathManifest as string[] | null })),
         {
           skip: (id) => existingDepsSet.has(id),
-          isSerialized: (paths) => overlapTouchesSerializedSurface(paths, overlapGitConfig),
+          isSerialized: (paths, kind) => overlapTouchesSerializedSurface(paths, overlapGitConfig, kind),
         },
       );
       for (const id of split.hard) {
@@ -826,6 +858,28 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
     const creationSource = creatorContext.creationSource ?? 'api';
+
+    // The PRs this task may act on beyond its own worker's: a person's filing
+    // links the PRs it names; an agent run's links only PRs its own task
+    // already reaches (lib/pr-reach-grant.ts). Text alone never grants it later.
+    let prReachFiler: PrReachFiler = { kind: 'none' };
+    if (grantPerson) {
+      prReachFiler = { kind: 'person', personId: grantPerson };
+    } else if (apiAccount?.taskScope) {
+      prReachFiler = { kind: 'task', taskId: apiAccount.taskScope.taskId };
+    } else if (apiAccount && creatorContext.createdByWorkerId) {
+      const filerWorker = await db.query.workers.findFirst({
+        where: eq(workers.id, creatorContext.createdByWorkerId),
+        columns: { taskId: true },
+      });
+      if (filerWorker?.taskId) prReachFiler = { kind: 'task', taskId: filerWorker.taskId };
+    }
+    const prReach = await resolvePrReachGrant({ title, description, context: incomingContext, workspaceId }, prReachFiler)
+      .catch((err) => {
+        console.warn('[tasks] PR link lookup failed; none stamped:', (err as Error)?.message ?? err);
+        return null;
+      });
+    const prReachCtx = prReach ? { prReach } : {};
 
     // Decomposition re-check gate. `runMission()` detects pre-filed sibling
     // tasks exactly ONCE, when the mission's planning task is created — but
@@ -885,7 +939,11 @@ export async function POST(req: NextRequest) {
             columns: { id: true },
             limit: 20,
           });
-          if (preFiled.length > 0) {
+          // `decomposition: "none"` at creation sets the flag before any
+          // sibling exists, so a creator who files tasks "right after" has
+          // not yet landed them when the organizer's first pass runs. The
+          // flag alone means coordinate-only: refuse regardless of siblings.
+          if (preFiled.length > 0 || missionRow.decompositionSkipped) {
             const preFiledTaskIds = preFiled.map(t => t.id);
             if (!missionRow.decompositionSkipped) {
               await db.update(missions)
@@ -901,7 +959,9 @@ export async function POST(req: NextRequest) {
               });
             }
             const error =
-              `Decomposition refused: ${preFiled.length} task(s) were already filed against this mission after your planning task started (${preFiledTaskIds.join(', ')}). ` +
+              (preFiled.length > 0
+                ? `Decomposition refused: ${preFiled.length} task(s) were already filed against this mission after your planning task started (${preFiledTaskIds.join(', ')}). `
+                : 'Decomposition refused: this mission is coordinate-only (decomposition "none"). ') +
               'Switch to coordinate-only mode: coordinate/retry the existing tasks instead of creating new build tasks. ' +
               'A retry child is still allowed — pass parentTaskId naming the failing task explicitly.';
             const frictionSignature = fireGateEvent({
@@ -1267,11 +1327,36 @@ export async function POST(req: NextRequest) {
       loopConfig = parseLoopConfig({ exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }, undefined);
     }
 
+    // Who the task is for (resolveTaskRequesterUserId): decides which personal
+    // roles it may run under. Resolved at most once, and only when a personal
+    // role is actually in play.
+    let requesterPromise: Promise<string | null> | null = null;
+    const requesterUserId = () => (requesterPromise ??= resolveTaskRequesterUserId({
+      createdByUserId: creatorContext.createdByUserId,
+      parentTaskId: creatorContext.parentTaskId,
+      missionId: missionId ?? null,
+    }).catch(() => null));
+
+    // A stated role must be one this task may run under: naming another
+    // member's private role is refused rather than silently filed role-less
+    // (role-visibility.ts). Shared personal roles and team roles pass.
+    const statedRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
+    const statedRole = await checkStatedRole(statedRoleSlug, {
+      teamId: targetWorkspace.teamId,
+      workspaceId,
+      requesterUserId,
+    });
+    if (statedRole.refused) {
+      return NextResponse.json(statedRole.refused, { status: 400 });
+    }
+    const statedRoleRows = statedRole.rows;
+
     // Validate and resolve requiredConnectors (team-scoped role lookup).
     const requiredConnectorsCheck = await validateRequiredConnectors(rawRequiredConnectors, {
       roleSlug: typeof roleSlug === 'string' ? roleSlug : null,
       workspaceId,
       teamId: targetWorkspace.teamId ?? null,
+      requesterUserId: slugHasPersonalRows(statedRoleRows, statedRoleSlug) ? await requesterUserId() : null,
     });
     if (!requiredConnectorsCheck.ok) {
       return NextResponse.json({ error: requiredConnectorsCheck.error }, { status: 400 });
@@ -1279,16 +1364,15 @@ export async function POST(req: NextRequest) {
     const resolvedRequiredConnectors = requiredConnectorsCheck.value;
 
     // Fall back to the role's defaultBackend hint, then the workspace default.
-    if (!resolvedBackend && roleSlug && typeof roleSlug === 'string') {
-      const role = await db.query.workspaceSkills.findFirst({
-        where: and(
-          eq(workspaceSkills.workspaceId, workspaceId),
-          eq(workspaceSkills.slug, roleSlug),
-          eq(workspaceSkills.enabled, true),
-        ),
-        columns: { defaultBackend: true },
+    // The role row is the one the claim will run: override > own personal >
+    // shared personal > team default (it used to read the override only).
+    if (!resolvedBackend && statedRoleSlug && targetWorkspace.teamId) {
+      const role = pickVisibleRoleRow(statedRoleRows, statedRoleSlug, {
+        teamId: targetWorkspace.teamId,
+        workspaceId,
+        requesterUserId: slugHasPersonalRows(statedRoleRows, statedRoleSlug) ? await requesterUserId() : null,
       });
-      if (role?.defaultBackend) resolvedBackend = role.defaultBackend;
+      if (role?.enabled && role.defaultBackend) resolvedBackend = role.defaultBackend;
     }
     if (!resolvedBackend) {
       const ws = await db.query.workspaces.findFirst({
@@ -1372,23 +1456,29 @@ export async function POST(req: NextRequest) {
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
           ),
           columns: {
-            slug: true, name: true, model: true, workspaceId: true, teamId: true, metadata: true,
+            ...ROLE_VISIBILITY_COLUMNS, name: true, model: true, metadata: true,
             enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
           },
         });
+        // Personal rows are in roleRows; who the task is for decides which count.
+        const previewRequester = roleRows.some(r => r.ownerUserId != null) ? await requesterUserId() : null;
         if (previewRoleSlug) {
           const row = pickRoleRowForTask(roleRows, {
             roleSlug: previewRoleSlug, workspaceId, teamId: targetWorkspace.teamId,
+            requesterUserId: previewRequester,
           });
           previewRoleModel = row ? (row.model ?? 'inherit') : null;
         } else {
-          roleMayBeInferred = countRoleInferenceCandidates(roleRows, workspaceId) >= 2;
+          roleMayBeInferred = countRoleInferenceCandidates(roleRows, {
+            teamId: targetWorkspace.teamId, workspaceId, requesterUserId: previewRequester,
+          }) >= 2;
           const kindCandidates = kindDefaultCandidates(roleRows, {
             workspaceId,
             backend: resolvedBackend ?? null,
             outputRequirement: outputRequirement ?? null,
             pathManifestIsConcrete,
             emitsPlan: !!emitsPlan,
+            requesterUserId: previewRequester,
           });
           kindDefaultCandidateCount = kindCandidates.length;
           kindDefaultSlug = kindDefaultRole({
@@ -1402,7 +1492,7 @@ export async function POST(req: NextRequest) {
         console.warn('[tasks] role lookup for routing preview failed:', err);
       }
     }
-    const routingPreview = computeRoutingPreview({
+    let routingPreview = computeRoutingPreview({
       roleSlug: previewRoleSlug,
       roleModel: previewRoleModel,
       roleMayBeInferred,
@@ -1416,6 +1506,27 @@ export async function POST(req: NextRequest) {
       pathManifestIsConcrete,
       emitsPlan,
     });
+
+    // Model-tier ceiling: refuse an explicit tier, model pin or stated role
+    // model above the effective maximum now, with the policy_denied body,
+    // instead of filing a task that would only sit held at claim. The claim
+    // route still re-checks on every claim (docs/specs/model-tier-ceilings.md).
+    const ceilingSubject = { teamId: targetWorkspace.teamId, workspaceId, userId: requesterUserId };
+    const createCeiling = await loadRequestCeiling(ceilingSubject, 'agent');
+    const ceilingRejection = await rejectOverCeiling({
+      subject: ceilingSubject,
+      ceiling: createCeiling,
+      surface: 'agent',
+      request: {
+        tier: rawTier,
+        model: explicitPreviewModel,
+        roleTier: previewRoleSlug ? roleFloorTier(previewRoleModel) : null,
+        roleExactModel: previewRoleSlug && isExactRoleModel(previewRoleModel) && previewRoleModel !== 'inherit' ? previewRoleModel : null,
+      },
+      gate: { surface: 'POST /api/tasks', workspaceId, callerOrigin: gateCaller },
+    });
+    if (ceilingRejection) return ceilingRejection;
+    routingPreview = previewUnderCeiling(routingPreview, createCeiling, (t) => bundledTierEntry(t).model);
 
     const createTaskRow = async (subjectOverrides: {
       id: string;
@@ -1447,6 +1558,7 @@ export async function POST(req: NextRequest) {
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence
+          ...prReachCtx,
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1506,6 +1618,7 @@ export async function POST(req: NextRequest) {
         ...(deferredStart.resolution ? {
           context: {
             ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
+            ...prReachCtx,
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
@@ -1662,6 +1775,8 @@ export async function POST(req: NextRequest) {
           backend: task.backend ?? null,
           emitsPlan: !!emitsPlan,
           dataClass: targetWorkspace.gitConfig?.dataClass ?? null,
+          // Inference may pick the requester's own private role, never another member's.
+          requesterUserId: await requesterUserId(),
         }, after);
       } catch (err) {
         console.error('[task-create] role shadow scheduling failed (non-fatal):', err);
