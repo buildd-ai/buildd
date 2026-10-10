@@ -22,7 +22,7 @@
   ],
   "vars": {
     // shadow: pass everything through to the web app. own: serve the execution routes here.
-    "EXECUTION_MODE": "shadow",
+    "EXECUTION_MODE": "own",
     "CONTROL_PLANE_HOST": "control-plane.buildd.dev",
     "NODE_ENV": "production",
     "VERCEL_ENV": "production",
