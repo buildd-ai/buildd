@@ -5,7 +5,7 @@
  * with an existing remediation offers Run/Repair instead of a second fix (S37).
  */
 import { describe, expect, test } from 'bun:test';
-import { attemptFailureCounts, attemptLine, deriveDeliveryView, ownerOfNextMove, type DeliveryViewInput } from './projections';
+import { attemptFailureCounts, attemptLine, deriveDeliveryView, landingEscalationCopy, ownerOfNextMove, type DeliveryViewInput } from './projections';
 import { replacedFailedTaskIds } from './delivery-display';
 
 describe('attemptLine (§5.7 rule 4)', () => {
@@ -276,5 +276,28 @@ describe('policy evidence (T28) in the view', () => {
     const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'migration', boundAttemptId: 'a1' }), [], [A({ family: 'migration', status: 'running' })]) });
     expect(v.owner).not.toBe('human');
     expect(v.needsYou).toBe(false);
+  });
+});
+
+describe('landing_needs_human says which refusal it was (88318f31)', () => {
+  const t = (command: string, evidence: Record<string, unknown>) => ({ command, fromState: 'APPROVED', toState: 'ESCALATED', evidence, createdAt: '2026-10-09T00:00:00Z' });
+
+  test('the base keeps changing what the PR changes: names the files', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_unsafe', files: ['src/a.ts', 'bun.lock'] })))
+      .toEqual({ headline: 'Landing held: the base keeps changing what this PR changes', detail: 'the base changed src/a.ts, bun.lock' });
+  });
+
+  test('the base only kept moving: the refresh count and the gap', () => {
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3, cause: 'refresh_exhausted', behindBy: 25 })))
+      .toEqual({ headline: 'Landing held: the base kept moving faster than CI', detail: 'refreshed 3 times, 25 commits behind' });
+    // An escalation recorded before the base delta was read is the same kind.
+    expect(landingEscalationCopy(t('ConflictObserved', { treadmill: true, refreshes: 3 })).headline).toBe('Landing held: the base kept moving faster than CI');
+  });
+
+  test('GitHub refusing the merge and a refresh that kept failing are each named', () => {
+    expect(landingEscalationCopy(t('MergeCallResult', { outcome: 'refused', detail: 'Required review missing' })))
+      .toEqual({ headline: 'GitHub refused the merge; a person has to land it', detail: 'Required review missing' });
+    expect(landingEscalationCopy(t('MechanicalRepairFailed', { reason: 'update-branch: 422' })).headline).toBe('Updating the branch kept failing; a person has to land it');
+    expect(landingEscalationCopy(null).headline).toBe('Merge refused; a person has to land it');
   });
 });

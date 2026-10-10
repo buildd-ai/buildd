@@ -11,6 +11,7 @@ import { isBaseDiffEquivalent, isContentEquivalentHead } from '@/lib/pr-content-
 import { FAILING_CONCLUSIONS, PASSING_CONCLUSIONS, listAllCheckRuns } from '@/lib/ci-verdict';
 import type { LivePr } from './commands';
 import type { GithubFactReader } from './facts';
+import type { BaseDeltaFact } from './base-delta';
 
 interface GithubPull {
   state?: string;
@@ -131,6 +132,9 @@ export function githubReader(installationId: number, api: typeof githubApi = git
         return false;
       }
     },
+    async baseDelta(repoFullName, prNumber, headSha, baseRef) {
+      return readBaseDelta((path) => api(installationId, path), repoFullName, prNumber, headSha, baseRef);
+    },
     async contentEquivalent(repoFullName, baseRef, fromSha, toSha) {
       // isContentEquivalentHead fails closed: an unreadable compare is "not equivalent".
       const r = await isContentEquivalentHead({ installationId, repoFullName, baseRef, fromSha, toSha, api });
@@ -141,6 +145,40 @@ export function githubReader(installationId: number, api: typeof githubApi = git
       return r.equivalent;
     },
   };
+}
+
+/** The compare API lists at most this many files; a list that long may be cut. */
+const COMPARE_FILE_LIMIT = 300;
+const PR_FILES_PAGE = 100;
+const PR_FILES_MAX_PAGES = 3;
+
+const names = (files: unknown): string[] | null => (Array.isArray(files)
+  ? files.map((f) => (f as { filename?: unknown })?.filename).filter((n): n is string => typeof n === 'string')
+  : null);
+
+/**
+ * S15's base delta (base-delta.ts), read live: `compare/{head}...{base}` gives the
+ * commits the base gained since the head's merge-base (`ahead_by`) and the files
+ * they changed; the PR's own files come from `pulls/{n}/files`. A list that may
+ * be truncated, or a read that fails, is null on that side.
+ */
+export async function readBaseDelta(
+  get: (path: string) => Promise<unknown>,
+  repoFullName: string, prNumber: number, headSha: string, baseRef: string,
+): Promise<BaseDeltaFact> {
+  const cmp = await get(`/repos/${repoFullName}/compare/${headSha}...${encodeURIComponent(baseRef)}`).catch(() => null) as { ahead_by?: number; files?: unknown } | null;
+  const baseCommits = typeof cmp?.ahead_by === 'number' ? cmp.ahead_by : null;
+  let baseFiles = names(cmp?.files);
+  if (baseFiles && baseFiles.length >= COMPARE_FILE_LIMIT) baseFiles = null;
+  const prFiles: string[] = [];
+  for (let page = 1; page <= PR_FILES_MAX_PAGES; page++) {
+    const batch = names(await get(`/repos/${repoFullName}/pulls/${prNumber}/files?per_page=${PR_FILES_PAGE}&page=${page}`).catch(() => null));
+    if (!batch) return { baseCommits, baseFiles, prFiles: null };
+    prFiles.push(...batch);
+    if (batch.length < PR_FILES_PAGE) return { baseCommits, baseFiles, prFiles };
+  }
+  // Every page was full: there may be more than we read.
+  return { baseCommits, baseFiles, prFiles: null };
 }
 
 export interface WorkspaceRepo {
