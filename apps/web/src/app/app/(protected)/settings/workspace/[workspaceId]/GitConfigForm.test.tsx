@@ -50,3 +50,21 @@ describe('GitConfigForm without settings permission', () => {
     expect(html).toContain('data-testid="git-config-merge-policy"');
   });
 });
+
+// Goal grading is Auto everywhere. The control is gone; gitConfig.criteriaGrader
+// is still read by the evaluator and set from the admin app, so a save must not
+// overwrite it.
+describe('GitConfigForm goal grading', () => {
+  it('has no grading control, editable or read-only', () => {
+    for (const canEdit of [true, false]) {
+      const html = render({ ...base, criteriaGrader: 'runner' }, canEdit);
+      expect(html).not.toMatch(/criteria grading|goal grading/i);
+      expect(html).not.toContain('API key');
+    }
+  });
+
+  it('does not send criteriaGrader when saving', async () => {
+    const src = await Bun.file(new URL('./GitConfigForm.tsx', import.meta.url)).text();
+    expect(src).not.toContain('criteriaGrader');
+  });
+});

@@ -118,7 +118,7 @@ describe('Needs You card contract', () => {
       [{ chip: 'QUESTION', question: 'Which direction?' }, 'Answer', 'answer'],
       [{ chip: 'DECIDE', missionId: 'm1', escalationReason: 'Pick a rollout order' }, 'Choose…', 'decide'],
       [{ chip: 'APPROVE' }, 'Approve…', 'approve'],
-      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connectors' }, 'Reconnect', 'reconnect'],
+      [{ chip: 'RECONNECT', connectorName: 'Source host', fixHref: '/app/settings/connections' }, 'Reconnect', 'reconnect'],
       [{ chip: 'DISCREPANCY', direction: 'spec_ahead', specPath: 'docs/specs/a.md' }, 'Resolve…', 'resolve'],
       [{ chip: 'BLOCKED', escalationReason: 'Needs a rollout choice' }, 'Resolve…', 'resolve'],
       [{ chip: 'STALE', prUrl: 'https://example.test/pull/1' }, 'Check PR', 'check'],

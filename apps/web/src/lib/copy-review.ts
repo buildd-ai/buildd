@@ -15,7 +15,14 @@
  * (tolerant of partial code) and only strings on added lines count. Same
  * idea and same exclusions as scripts/copy-check.ts, which scans whole files.
  */
-import * as ts from 'typescript';
+import type * as TS from 'typescript';
+
+// The TypeScript compiler is loaded only when a PR has copy to read: it is most
+// of the execution path's bundle, and copy review is opt-in per workspace.
+let ts: typeof TS;
+async function loadTs(): Promise<void> {
+  ts ??= (await import('typescript')) as typeof TS;
+}
 import type { CopyReviewConfig, CopyReviewMode } from '@buildd/shared';
 import { copyViolations } from '@buildd/core/copy-rules';
 import type { GithubPrFile } from './reviewer-patch';
@@ -67,8 +74,8 @@ export function isCopyPath(path: string, config: Pick<CopyReviewConfig, 'paths'>
 const NON_COPY_ATTR = /^(className|class|style|href|src|id|key|type|htmlFor|name|role|rel|target|method|action|autoComplete|inputMode|pattern|data-[\w-]+|testId|variant|tone|size|as|viewBox|d|fill|stroke|xmlns)$/;
 const NON_COPY_CALL = /^(console\.\w+|cn|clsx|cx|twMerge|fetch|require|import|router\.(push|replace)|redirect|URLSearchParams|JSON\.parse|encodeURIComponent|\w+\.(startsWith|endsWith|includes|split|replace|match|test|get|set|has))$/;
 
-function isNonCopyContext(n: ts.Node): boolean {
-  for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+function isNonCopyContext(n: TS.Node): boolean {
+  for (let p: TS.Node | undefined = n.parent; p; p = p.parent) {
     if (ts.isJsxAttribute(p)) return NON_COPY_ATTR.test(p.name.getText());
     if (ts.isImportDeclaration(p) || ts.isExportDeclaration(p)) return true;
     if (ts.isCallExpression(p) || ts.isNewExpression(p)) {
@@ -124,12 +131,12 @@ function stringsFromHunk(path: string, hunk: Hunk): Array<{ line: number; text: 
   }
 
   const sf = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const push = (n: ts.Node, text: string) => {
+  const push = (n: TS.Node, text: string) => {
     const line = hunk.startLine + sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
     const t = text.replace(/\s+/g, ' ').trim();
     if (addedLines.has(line) && isCopy(t)) out.push({ line, text: t });
   };
-  const visit = (n: ts.Node) => {
+  const visit = (n: TS.Node) => {
     if (ts.isJsxText(n)) { push(n, n.text); return; }
     if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && !isNonCopyContext(n)) {
       // A bare string literal is copy only when it reads as prose.
@@ -143,10 +150,11 @@ function stringsFromHunk(path: string, hunk: Hunk): Array<{ line: number; text: 
 }
 
 /** The user-facing strings a PR adds, in file order. */
-export function changedCopyStrings(
+export async function changedCopyStrings(
   files: Array<Pick<GithubPrFile, 'filename' | 'patch' | 'status'>>,
   config: Pick<CopyReviewConfig, 'paths'>,
-): ChangedCopyString[] {
+): Promise<ChangedCopyString[]> {
+  if (files.some((f) => f.status !== 'removed' && f.patch && isCopyPath(f.filename, config))) await loadTs();
   const out: ChangedCopyString[] = [];
   for (const f of files) {
     if (f.status === 'removed' || !f.patch || !isCopyPath(f.filename, config)) continue;
