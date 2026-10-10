@@ -200,7 +200,7 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
         </div>
       ) : (
         <p className="mt-3 text-meta text-text-muted" data-testid="team-limit-readonly">
-          {policy.team.all || policy.team.agent || policy.team.chat ? 'The team maximum is set by a team admin.' : 'Your team has not set a maximum.'}
+          {teamMaxText(policy.team)}
         </p>
       )}
 
@@ -249,6 +249,15 @@ export default function TierLimitSection({ teamId, isAdmin }: { teamId: string; 
       )}
     </section>
   );
+}
+
+/** The team maximum as a sentence, for someone who reads it and does not set it. */
+function teamMaxText(team: SurfaceCeilings): string {
+  const parts = [
+    team.all && `Team maximum: ${TIER_LABEL[team.all]}.`,
+    ...SURFACES.map((s) => team[s] && `${SURFACE_TITLE[s]} only: ${TIER_LABEL[team[s]!]}.`),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : 'Your team has not set a maximum.';
 }
 
 const LIMITS_LOAD_ERROR = "Couldn't load the tier maximums.";

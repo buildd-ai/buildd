@@ -772,7 +772,7 @@ Settings › Connected apps. Every change applies on the app's next request.
   resolving on its next request and every refresh token is refused.
 - Legacy per-workspace connections are listed, not edited, with a hint to
   move to the one account-level connection.
-- The page lives in Settings under "You and your team", apart from MCP
+- The page lives in Settings under "You", apart from MCP
   connectors (the outside tools agents call). The workspace picker reuses
   the consent page's state model and reducer (`applyNav`,
   `filteredWorkspaces`, `CONSENT_PAGE_SIZE`).

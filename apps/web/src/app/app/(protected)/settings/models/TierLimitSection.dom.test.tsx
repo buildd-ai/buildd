@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: TierLimitSection } = await import('./TierLimitSection');
+const { formControls } = await import('../_lib/form-controls');
 
 type Eff = { max: string | null; binding: unknown; layers: { source: string; tier: string }[]; identified: boolean; overCapAuto: string; explanation: string };
 const eff = (layers: { source: string; tier: string }[]): Eff => {
@@ -117,6 +118,22 @@ describe('TierLimitSection', () => {
     expect(q('workspace-limits')).toBeNull();
     expect(q('member-limits')).toBeNull();
     expect(q('team-limit-readonly')).not.toBeNull();
+  });
+
+  it('a member reads the team maximum as text; their own maximum is the only control', async () => {
+    state.canManage = false;
+    state.team = { all: 'premium', chat: 'standard' };
+    await mount(false);
+    expect(q('team-limit-readonly')!.textContent).toBe('Team maximum: Premium. Chat only: Standard.');
+    expect(formControls(host).map((el) => el.getAttribute('data-testid'))).toEqual(['self-all']);
+    expect(text()).not.toMatch(/Admins can change|Only a team owner|can change this|set by a team admin/);
+  });
+
+  it('a member of a team with no maximum is told so', async () => {
+    state.canManage = false;
+    state.team = {};
+    await mount(false);
+    expect(q('team-limit-readonly')!.textContent).toBe('Your team has not set a maximum.');
   });
 
   it('an admin sets the team maximum; the read model is refetched after', async () => {

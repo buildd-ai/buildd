@@ -6,8 +6,8 @@ import { chatKeySummary, type ProviderKeysView } from '@/lib/provider-keys-clien
 import { listProviderKeys } from '@/lib/provider-keys-api';
 import { chatKeyLine, ownKeyProviders } from './chat-key-line';
 
-/** Where your own keys are managed: the Models page, at your scope. */
-export const MY_KEYS_HREF = '/app/settings/models?scope=mine';
+/** Where your own keys are managed: Settings › You › Keys. */
+export const MY_KEYS_HREF = '/app/settings/keys';
 
 /**
  * Profile → "Your keys": one row saying what chat runs on for you, with a

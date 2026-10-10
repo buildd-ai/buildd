@@ -15,6 +15,7 @@ const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: CloudflareSection } = await import('./CloudflareSection');
 const { default: CloudRunnerRow } = await import('./runners/CloudRunnerRow');
+const { describeControls } = await import('./_lib/form-controls');
 
 const TOKEN = 'cf_test_token_not_real_000000000000000000';
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
@@ -53,14 +54,14 @@ function installFetch(state: { stored: boolean; health?: Health; readable?: bool
   return calls;
 }
 
-async function mount(withFleetRow = false, manageableTeamIds?: string[]) {
+async function mount(withFleetRow = false, manageableTeamIds?: string[], fleetCanManage?: boolean) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   await act(async () => {
     root.render(
       <>
-        {withFleetRow && <ul><CloudRunnerRow teamId="t1" /></ul>}
+        {withFleetRow && <ul><CloudRunnerRow teamId="t1" canManage={fleetCanManage} /></ul>}
         <CloudflareSection teams={[{ id: 't1', name: 'Team 1' }]} manageableTeamIds={manageableTeamIds} />
       </>,
     );
@@ -178,7 +179,20 @@ describe('CloudflareSection: read-only without manage_team_model_keys', () => {
     const labels = [...host.querySelectorAll('button')].map((b) => b.textContent);
     for (const l of ['Verify', 'Replace', 'Delete', 'Store and verify']) expect(labels).not.toContain(l);
     expect(host.querySelector('input')).toBeNull();
-    expect(host.querySelector('[data-testid="cloudflare-read-only"]')!.textContent).toBe('Admins can change this.');
+    expect(host.querySelector('[data-testid="cloudflare-read-only"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can|Only a team owner|can change this|Owners and admins only/);
+  });
+
+  it('member with no token: the row reads Not set up, with no control at all', async () => {
+    installFetch({ stored: false });
+    await mount(true, [], false);
+    expect(chip()).toBe('Not set up');
+    // The fleet row's next step is a link to the Cloudflare row's controls, so a member gets none.
+    expect(host.querySelector('[data-testid="fleet-cloud-row"]')!.getAttribute('data-state')).toBe('empty');
+    expect(describeControls(host)).toEqual([]);
+    await click(host.querySelector<HTMLButtonElement>('[data-testid="cloudflare-row"] button[aria-expanded]')!);
+    expect(describeControls(host)).toEqual([]);
+    expect(host.textContent).not.toMatch(/Admins can|can change this/);
   });
 
   it('admin: the next step is offered', async () => {

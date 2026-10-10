@@ -101,7 +101,9 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
  * Settings → Storage: where the team's run evidence is written. One row per
  * backend (team default first, then workspace ones), each with its status,
  * last error and last check, and the lifecycle rule to paste into the bucket.
- * Admins and owners can add, edit, verify and remove; everyone else reads.
+ * With manage_evidence_backends (the API's `canManage`, team overrides
+ * applied) a person adds, edits, verifies and removes; without it each row
+ * reads as text, and the page says who manages it.
  *
  * What the browser holds is the DTO from /api/evidence-backends, rendered
  * field by field. A credential is only ever "set" or "not set".
@@ -259,9 +261,6 @@ export default function StorageSection({ workspaces, fixture }: {
       onClick={() => { setAdding(true); setMessage(null); }}>
       Add backend
     </button>
-  ) : !canManage && !loading && !loadError ? (
-    // The API answers canManage from manage_evidence_backends with the team's overrides.
-    <span data-testid="storage-read-only" className="text-xs text-text-muted">Admins can change this.</span>
   ) : undefined;
 
   return (
