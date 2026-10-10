@@ -35,7 +35,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, isConflictRetryContext, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2420,16 +2420,19 @@ export class WorkerManager {
         if (derivedRules.length > 0 || gitConfig?.mergiraf === true) {
           try {
             registerMergeDrivers(setupResult.path, derivedRules, { mergiraf: gitConfig?.mergiraf === true });
-            if (derivedRules.length > 0 && worker.prBaseRef && isConflictRetryContext(fullTask.context)) {
-              const merged = mergeBaseWithDerivedFiles(setupResult.path, worker.prBaseRef, derivedRules);
-              console.log(`[Worker ${worker.id}] Pre-merged ${worker.prBaseRef}: ${merged.status}` +
+            const plan = derivedRules.length > 0
+              ? planPreMerge(fullTask.context, worker.prBaseRef, gitConfig?.targetBranch || defaultBranch)
+              : null;
+            if (plan) {
+              const merged = mergeBaseWithDerivedFiles(setupResult.path, plan.ref, derivedRules);
+              console.log(`[Worker ${worker.id}] Pre-merged ${plan.ref} (${plan.kind}): ${merged.status}` +
                 (merged.conflicted.length ? ` (${merged.conflicted.length} real conflict(s))` : '') +
                 (merged.structurallyResolved.length ? ` (mergiraf resolved ${merged.structurallyResolved.length}: ${merged.structurallyResolved.join(', ')})` : '') +
                 (merged.error ? ` — ${merged.error}` : ''));
-              worker.derivedMergeNote = formatDerivedMergeNote(merged, worker.prBaseRef) ?? undefined;
-              if (canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: worker.prBaseRef };
+              worker.derivedMergeNote = formatDerivedMergeNote(merged, plan.ref) ?? undefined;
+              if (plan.mayFinishWithoutAgent && canFinishWithoutAgent(merged)) derivedMerge = { result: merged, baseRef: plan.ref };
               // Synced to the server, so the outcome (and what mergiraf did) is
-              // readable from get_task without access to the runner's log.
+              // readable from the task record without access to the runner's log.
               this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
           } catch (err) {
