@@ -35,28 +35,32 @@ the `.sql` files have different generated names so they merge cleanly; only
 `meta/_journal.json` and the snapshot conflict. A collision can survive a
 clean-looking merge and only show up as a failed deploy.
 
-**Check immediately before every push that touches `drizzle/`:**
+**Check immediately before every push that touches `drizzle/`** (CI runs the
+same check on every PR, step "Check migration indices are free on the base"):
 
 ```bash
 git fetch -q origin dev
-git show origin/dev:packages/core/drizzle/meta/_journal.json | python3 -c \
-  "import json,sys;e=json.load(sys.stdin)['entries'];print(e[-1]['idx'],e[-1]['tag'],e[-1]['when'])"
-python3 -c \
-  "import json;e=json.load(open('packages/core/drizzle/meta/_journal.json'))['entries'];print(e[-1]['idx'],e[-1]['tag'],e[-1]['when'])"
+bun run migrations:index-check --base=origin/dev
+# ✖ 0280_tense_donald_blake.sql: index 0280 is already taken on the base by
+#   0280_failure_incidents.sql. Next free index: 0281.
 ```
 
-If dev's newest `idx` is **>= yours**, fix it before pushing:
+If it fails, merge dev in and let the tool regenerate:
 
 ```bash
-git rebase origin/dev                    # resolve non-drizzle conflicts normally
-# take dev's migration state wholesale:
-git checkout origin/dev -- packages/core/drizzle/meta/_journal.json \
-                           packages/core/drizzle/meta/<theirs>_snapshot.json \
-                           packages/core/drizzle/<theirs>.sql
-rm packages/core/drizzle/<yours>.sql     # drop your colliding one
-git add -A packages/core/drizzle && git rebase --continue
-cd packages/core && bun db:generate      # regenerate on top of dev
+git merge origin/dev                     # resolve non-drizzle conflicts; leave drizzle ones
+bun run migrations:renumber --base=origin/dev
 ```
+
+`migrations:renumber` resets `packages/core/drizzle/` to dev's exact state
+(journal, snapshots, SQL), re-runs `drizzle-kit generate` with your migration's
+name, and stages the result. A hand-written `--custom` migration is re-minted at
+the new index with its SQL carried verbatim. Exit 3 means the regenerated SQL
+differs from what it replaced: read both before committing. Colliding with an
+**open** PR whose migration is not on dev yet? Add `--min-index=<its index + 1>`;
+once that PR lands, merging dev and re-running without the flag closes the gap.
+`packages/core/db/migration-index.ts`; proof in
+`packages/core/__tests__/migration-index.test.ts`.
 
 **Regenerate rather than renumber by hand.** Regeneration re-diffs your
 `schema.ts` against dev's *newest* snapshot, so a column another session added in
@@ -168,7 +172,7 @@ against it exits immediately and looks like success. Poll `vercel inspect`.
 
 - [ ] `schema.ts` edited, `bun db:generate` run, emitted SQL read
 - [ ] `schema.ts` and `drizzle/` committed together
-- [ ] journal compared against `origin/dev` immediately before pushing
+- [ ] `bun run migrations:index-check --base=origin/dev` passes immediately before pushing
 - [ ] newest `when` strictly greater than its predecessor
 - [ ] anything dropped: code checked by accessor, prod rows counted, numbers in the PR
 - [ ] no `db:push`, no hand-edited journal/snapshot/SQL

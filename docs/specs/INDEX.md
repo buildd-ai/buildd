@@ -76,7 +76,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### releases (4)
 
-- [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
+- [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-10-10
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 - [DB Migration Execution](./migration-execution.md) · @max — verified 2026-10-06
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
