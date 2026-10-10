@@ -317,6 +317,30 @@ describe('inspectPullRequestMigrations', () => {
       });
     });
 
+    it('queues behind an earlier open PR minting the same slot (migration lane)', async () => {
+      const peer = `${DIR}/0275_peer_feature.sql`;
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE, [peer]: SAFE },
+        baseDir: ['0274_older.sql', '0275_landed_first.sql'],
+        peers: [{ number: 40, files: [{ filename: peer, status: 'added' }] }],
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.collision?.queuedBehind).toBe(40);
+    });
+
+    it('does not queue behind a later-numbered open PR', async () => {
+      const peer = `${DIR}/0275_peer_feature.sql`;
+      github({
+        files: [{ filename: own, status: 'added' }],
+        head: { [own]: SAFE, [peer]: SAFE },
+        baseDir: ['0274_older.sql', '0275_landed_first.sql'],
+        peers: [{ number: 9999, files: [{ filename: peer, status: 'added' }] }],
+      });
+      const result = await inspect('dev');
+      expect(!result.safe && result.collision?.queuedBehind).toBeUndefined();
+    });
+
     it('names the base’s newest migration when the base has moved past this number', async () => {
       github({
         files: [{ filename: own, status: 'added' }],
