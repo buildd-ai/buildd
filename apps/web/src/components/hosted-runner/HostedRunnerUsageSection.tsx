@@ -1,11 +1,11 @@
 /**
- * Usage page: the team's month on the hosted (cloud) runner. A meter against
+ * Settings → Billing and budgets: the team's month on the hosted (cloud) runner. A meter against
  * the allowance, the month-end pace, and one row per workspace by counted
  * hours. Hours only, never compute dollars: model spend is on the team's own
  * key and is not part of this.
  *
  * Presentational and server-safe; the page loads the numbers
- * (lib/hosted-runner-usage-store.ts) and shapes them (lib/hosted-runner-usage.ts).
+ * (loadHostedRunnerMonth in lib/hosted-runner-usage-store.ts) and shapes them (lib/hosted-runner-usage.ts).
  */
 import Section from '@/components/ui/Section';
 import { formatRunnerHours, type HostedRunnerMeterView, type UsageSize } from '@/lib/hosted-runner-usage';

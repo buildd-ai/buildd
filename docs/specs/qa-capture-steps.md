@@ -171,7 +171,8 @@ committing step MUST NOT run against a preview.
   page (`/app/teams/[id]`) with an owner, an admin and a member, seen as each: role selects,
   Remove, Transfer ownership, the last-owner Leave gate and admin-vs-member gating. No DB; it
   never writes.
-  `/app/health/insights?state=sample|empty|not-admin` covers the chart.
+  `/app/health/insights?state=sample|empty|not-admin` covers the chart (platform owner only:
+  anyone else gets a 404, so capture it signed in as an operator).
   `/app/health/runners?state=sample` draws the slots-busy chart from a synthetic fleet (every
   window), without worker rows.
   `/app/health/insights/tasks?state=sample|large` (optionally `&band=<key>`) renders a
