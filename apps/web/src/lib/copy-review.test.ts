@@ -30,13 +30,13 @@ const files = [
 ];
 
 describe('copy review config', () => {
-  it('is off unless the workspace sets it', () => {
+  it('is off unless the workspace sets it', async () => {
     expect(copyReviewConfigOf(undefined)).toBeNull();
     expect(copyReviewConfigOf({})).toBeNull();
     expect(copyReviewConfigOf({ copyReview: null })).toBeNull();
   });
 
-  it('accepts review and gate, and needs a voice guide', () => {
+  it('accepts review and gate, and needs a voice guide', async () => {
     expect(parseCopyReviewConfig(CONFIG)).toEqual({ ok: true, config: CONFIG });
     expect(parseCopyReviewConfig({ voiceGuide: 'VOICE.md', mode: 'review' }).ok).toBe(true);
     expect(parseCopyReviewConfig({ mode: 'gate' }).ok).toBe(false);
@@ -44,14 +44,14 @@ describe('copy review config', () => {
     expect(parseCopyReviewConfig({ voiceGuide: 'VOICE.md', mode: 'gate', extra: 1 }).ok).toBe(false);
   });
 
-  it('a malformed stored config reads as off, never as gate', () => {
+  it('a malformed stored config reads as off, never as gate', async () => {
     expect(copyReviewConfigOf({ copyReview: { mode: 'gate' } })).toBeNull();
   });
 });
 
 describe('changedCopyStrings', () => {
-  it('returns only the strings a PR adds to a UI file', () => {
-    const strings = changedCopyStrings(files, CONFIG);
+  it('returns only the strings a PR adds to a UI file', async () => {
+    const strings = await changedCopyStrings(files, CONFIG);
     const texts = strings.map((s) => s.text);
     expect(texts).toContain('Not chat: A subscription seat signs in a runner; the server never spends a seat.');
     expect(texts).toContain('All set!');
@@ -62,24 +62,24 @@ describe('changedCopyStrings', () => {
     expect(strings.every((s) => !s.path.includes('/api/'))).toBe(true);
   });
 
-  it('carries the new-side line number of each string', () => {
-    const s = changedCopyStrings(files, CONFIG).find((x) => x.text === 'All set!');
+  it('carries the new-side line number of each string', async () => {
+    const s = (await changedCopyStrings(files, CONFIG)).find((x) => x.text === 'All set!');
     expect(s?.line).toBe(13);
   });
 
-  it('honours the workspace paths when set', () => {
-    expect(changedCopyStrings(files, { ...CONFIG, paths: ['src/ui/**'] })).toEqual([]);
+  it('honours the workspace paths when set', async () => {
+    expect(await changedCopyStrings(files, { ...CONFIG, paths: ['src/ui/**'] })).toEqual([]);
   });
 
-  it('flags the strings the copy rules already catch', () => {
-    const s = changedCopyStrings(files, CONFIG).find((x) => x.text === 'All set!');
+  it('flags the strings the copy rules already catch', async () => {
+    const s = (await changedCopyStrings(files, CONFIG)).find((x) => x.text === 'All set!');
     expect(s?.ruleHits.length).toBeGreaterThan(0);
   });
 });
 
 describe('renderCopyReviewSection', () => {
-  it('names the voice guide, the lint command and every changed string', () => {
-    const strings = changedCopyStrings(files, CONFIG);
+  it('names the voice guide, the lint command and every changed string', async () => {
+    const strings = await changedCopyStrings(files, CONFIG);
     const section = renderCopyReviewSection({ config: CONFIG, strings, instructions: '# Copy Editor\nLabels are nouns.' });
     expect(section).toContain('docs/design/design-system.md');
     expect(section).toContain('bun run copy:check');
@@ -88,13 +88,13 @@ describe('renderCopyReviewSection', () => {
     expect(section).toContain('Labels are nouns.');
   });
 
-  it('is empty when the PR changes no copy', () => {
+  it('is empty when the PR changes no copy', async () => {
     expect(renderCopyReviewSection({ config: CONFIG, strings: [], instructions: '' })).toBe('');
   });
 });
 
 describe('reviewer output schema', () => {
-  it('accepts copyFindings', () => {
+  it('accepts copyFindings', async () => {
     expect((REVIEWER_TASK_OUTPUT_SCHEMA.properties as Record<string, unknown>).copyFindings).toBeDefined();
   });
 });
@@ -105,7 +105,7 @@ describe('applyCopyReviewGate', () => {
     { path: 'a.tsx', line: 15, text: 'Replace', verdict: 'ok' },
   ]);
 
-  it('gate: an approval with copy to rewrite becomes request-changes with the rewrites', () => {
+  it('gate: an approval with copy to rewrite becomes request-changes with the rewrites', async () => {
     const r = applyCopyReviewGate({ verdict: 'approve', mode: 'gate', findings, feedback: undefined });
     expect(r.verdict).toBe('request-changes');
     expect(r.feedback).toContain('Used by Claude agents on your runners.');
@@ -113,36 +113,36 @@ describe('applyCopyReviewGate', () => {
     expect(r.reason).toContain('copy');
   });
 
-  it('gate: request-changes keeps its verdict and gains the rewrites', () => {
+  it('gate: request-changes keeps its verdict and gains the rewrites', async () => {
     const r = applyCopyReviewGate({ verdict: 'request-changes', mode: 'gate', findings, feedback: 'Fix the test.' });
     expect(r.verdict).toBe('request-changes');
     expect(r.feedback).toContain('Fix the test.');
     expect(r.feedback).toContain('Used by Claude agents on your runners.');
   });
 
-  it('gate: escalate stays escalate', () => {
+  it('gate: escalate stays escalate', async () => {
     expect(applyCopyReviewGate({ verdict: 'escalate', mode: 'gate', findings, feedback: undefined }).verdict).toBe('escalate');
   });
 
-  it('gate: nothing to rewrite changes nothing', () => {
+  it('gate: nothing to rewrite changes nothing', async () => {
     const ok = parseCopyFindings([{ path: 'a.tsx', text: 'Replace', verdict: 'ok' }]);
     const r = applyCopyReviewGate({ verdict: 'approve', mode: 'gate', findings: ok, feedback: undefined });
     expect(r).toEqual({ verdict: 'approve', feedback: undefined, reason: null, note: null });
   });
 
-  it('review: never blocks, and returns a note for the PR', () => {
+  it('review: never blocks, and returns a note for the PR', async () => {
     const r = applyCopyReviewGate({ verdict: 'approve', mode: 'review', findings, feedback: undefined });
     expect(r.verdict).toBe('approve');
     expect(r.reason).toBeNull();
     expect(r.note).toContain('Used by Claude agents on your runners.');
   });
 
-  it('off: no config, no change', () => {
+  it('off: no config, no change', async () => {
     const r = applyCopyReviewGate({ verdict: 'approve', mode: null, findings, feedback: undefined });
     expect(r).toEqual({ verdict: 'approve', feedback: undefined, reason: null, note: null });
   });
 
-  it('drops malformed findings instead of trusting them', () => {
+  it('drops malformed findings instead of trusting them', async () => {
     expect(parseCopyFindings([{ verdict: 'rewrite' }, 'x', null])).toEqual([]);
     expect(parseCopyFindings('nope')).toEqual([]);
   });
