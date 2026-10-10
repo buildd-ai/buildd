@@ -2,7 +2,8 @@
  * The task page's first block: one verdict, from the record (lib/task-verdict.ts).
  * State, one-sentence headline, the fact behind it (a failing check shows its
  * name and first error line inline), up to three actions, and a "Why this?"
- * disclosure naming the rule and any decision-ledger rows behind the wording.
+ * disclosure naming the rule (and, for the platform owner, the decision-ledger
+ * rows behind the wording; the ledger moved to the admin app).
  *
  * Nothing below this block restates the state: the shipped header's chips,
  * "Your move" and "already handled" row are gone.
@@ -38,12 +39,15 @@ export default function TaskVerdictBlock({
   verdict,
   decision,
   displayStatus,
+  showDecisionRows = false,
 }: {
   verdict: TaskVerdict;
   /** The cached decision on the task, as stored (applied or not). */
   decision: StoredVerdictDecision | null;
   /** The page's derived status, kept on the e2e hook. */
   displayStatus: string;
+  /** List the decision-ledger rows behind the wording: the platform owner only. */
+  showDecisionRows?: boolean;
 }) {
   const s = STATE[verdict.state];
   const decisionCurrent = !!decision && decision.state === verdict.state && decision.causeKey === verdict.causeKey;
@@ -119,7 +123,7 @@ export default function TaskVerdictBlock({
             {decision && !decisionCurrent && (
               <p>The last model decision was made for an earlier state; it is not used.</p>
             )}
-            {decision && decision.decisionIds.length > 0 && (
+            {showDecisionRows && decision && decision.decisionIds.length > 0 && (
               <ul data-testid="task-verdict-decisions" className="font-mono">
                 {decision.decisionIds.map(d => (
                   <li key={d.id} className="[overflow-wrap:anywhere]">

@@ -135,6 +135,7 @@ don't turn it on by habit.
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
 | `theme` | `QA_THEME` | `light` or `dark`. Emulates `prefers-color-scheme` and seeds buildd's own `buildd-theme` key; recorded per capture as `theme`. Empty = app default, no theme recorded. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
+| `viewer` | `BUILDD_OPERATOR_USER_EMAILS` | `operator` makes the CI user a platform operator, for the owner-only Health pages and Settings → Models → Features. Empty = an ordinary team owner. |
 | `judge` | (step gate) | Default `false`. `true` = CI verdict on the team OAuth seat (see above). |
 
 - The data is a scrubbed prod clone, so the ids in your routes must exist there.

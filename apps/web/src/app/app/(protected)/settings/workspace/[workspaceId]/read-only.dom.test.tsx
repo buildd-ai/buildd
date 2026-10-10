@@ -90,9 +90,11 @@ describe('workspace settings, read by a member', () => {
     );
     expectReadOnly();
     const text = host.textContent ?? '';
-    for (const v of ['dev', 'GitFlow', 'Conventional Commits', 'staging', 'Run the linter first.', 'High', 'Runner']) {
+    for (const v of ['dev', 'GitFlow', 'Conventional Commits', 'staging', 'Run the linter first.', 'High']) {
       expect(text).toContain(v);
     }
+    // Goal grading left the UI; a stored value stays in gitConfig.
+    expect(text).not.toMatch(/criteria grading|goal grading/i);
     expect(host.querySelector('[data-testid="git-config-merge-policy"]')).not.toBeNull();
   });
 
