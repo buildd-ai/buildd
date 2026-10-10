@@ -166,6 +166,28 @@ function replyAfterApproval(root: Element, approvalId: string, before: ReadonlyS
   return textsAfterApproval(root, approvalId).find(t => !before.has(t)) ?? null;
 }
 
+/** Regions of a turn that hold the reader's place more finely than its message (kit `compose="turn"`). */
+const NESTED_BLOCK = /\bkit-(phase|phase-results|turn-work)\b/;
+
+/**
+ * The block the reader is on: the first message reaching below the
+ * scroller's top edge, then the first of its regions that does, down through
+ * a turn's phases and results. Null before the thread has any.
+ */
+function readerBlock(root: Element | null, top: number): Element | null {
+  const thread = root?.querySelector('.kit-thread');
+  const first = (parent: Element) => [...parent.children].find(c => c.getBoundingClientRect().bottom > top) ?? null;
+  let block = thread ? first(thread) : null;
+  let inner = block?.classList.contains('kit-msg') ? block : null;
+  while (inner) {
+    const next = first(inner);
+    if (!next) break;
+    block = next;
+    inner = NESTED_BLOCK.test(String(next.className)) ? next : null;
+  }
+  return block;
+}
+
 /** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
 const isDesktop = () => typeof window !== 'undefined' && window.matchMedia?.('(min-width: 1024px)').matches;
 
@@ -292,9 +314,29 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     const target = f.mode === 'anchor' ? f.find() : null;
     return target ? Math.max(0, el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - ANCHOR_GAP) : null;
   };
+  // Free: the block the reader is on and its offset from the scroller's top.
+  // Growth above it (a card loading, a line folding) is paid back in scrollTop.
+  const held = useRef<{ el: Element; offset: number } | null>(null);
+  const holdReader = (el: HTMLElement) => {
+    const top = el.getBoundingClientRect().top;
+    const block = readerBlock(content.current, top);
+    held.current = block ? { el: block, offset: block.getBoundingClientRect().top - top } : null;
+  };
   const settle = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
+    if (follow.current.mode === 'free') {
+      const h = held.current;
+      if (h && h.el.isConnected) {
+        const drift = h.el.getBoundingClientRect().top - el.getBoundingClientRect().top - h.offset;
+        if (Math.abs(drift) >= 1) {
+          el.scrollTop += drift;
+          ourTop.current = el.scrollTop;
+        }
+      }
+      holdReader(el);
+      return;
+    }
     const top = follow.current.mode === 'bottom' ? el.scrollHeight : anchorTop(el);
     if (top === null) return;
     el.scrollTop = top;
@@ -339,6 +381,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     ourTop.current = null;
     // The reader scrolled: back at the bottom it follows again; anywhere else it stays put.
     follow.current = { mode: el.scrollHeight - el.scrollTop - el.clientHeight < 80 ? 'bottom' : 'free' };
+    if (follow.current.mode === 'free') holdReader(el);
   };
 
   // Confirm or Discard: what to read next is the reply that follows the card,
@@ -594,7 +637,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
         ref={scroller}
         onScroll={onScroll}
         data-testid="chat-scroller"
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [mask-image:linear-gradient(to_bottom,transparent,#000_28px)]"
       >
         <div ref={content} data-testid="chat-voice-column" className={`mx-auto px-4 py-6 ${anchoredPhone && !missionEmpty ? 'max-lg:flex max-lg:min-h-full max-lg:flex-col' : ''} ${anchoredDesk && !missionEmpty ? 'lg:flex lg:min-h-full lg:flex-col' : ''} ${overlay ? 'lg:px-6' : 'max-w-[820px] lg:max-w-[720px] lg:px-0'}`}>
           {missionEmpty && missionSheet ? (
