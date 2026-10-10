@@ -317,13 +317,13 @@ export interface IncidentAlert {
 export type IncidentAlertSender = (alert: IncidentAlert) => Promise<boolean>;
 
 /**
- * The default sender: the escalation gate (lib/incident-escalation.ts). The
+ * The default sender: the escalation gate (lib/failure-incident-escalation.ts). The
  * owner is paged only when the gate's rules say the incident is theirs; the
  * verdict is stored either way.
  */
 export function defaultIncidentSender(): IncidentAlertSender {
   return async alert => {
-    const { createGatedIncidentSender, createDbIncidentGateDeps } = await import('./incident-escalation');
+    const { createGatedIncidentSender, createDbIncidentGateDeps } = await import('./failure-incident-escalation');
     return createGatedIncidentSender(createDbIncidentGateDeps())(alert);
   };
 }

@@ -17,7 +17,19 @@
  * state it was made on (severity, status, recurrences, scope tier, fix task
  * running). A replay of the same state reuses the stored verdict and does not
  * ping again; a worse severity, a recurrence, a wider scope or a fix task
- * ending is a new look. Never silences: a failed read or write pages.
+ * ending is a new look. Never silences: a failed read pages, and an owner
+ * verdict is stored only after the page went out, so a failed page is tried
+ * again on the next replay instead of being remembered as sent.
+ *
+ * Home, the Needs You badge and the push read the same stored row: the push is
+ * sent at the moment the verdict is made, and Home lists every unresolved
+ * incident whose newest stored verdict is the owner's (`incidentNeedsYouItems`),
+ * with no model call on the page path.
+ *
+ * Jev: the `judge` slot is where a concern no rule answers would go (a high
+ * incident nothing is fixing). It is not wired yet: the Sentinel files a fix
+ * task before paging whenever it can, so a high incident with no fix task has
+ * no machine step for Jev to hand it to, and it goes to the owner by rule.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -30,6 +42,7 @@ import {
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
 import type { FailureIncidentSeverity, FailureIncidentStatus } from '@buildd/shared';
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import type { WaitingOnYouRawItem } from './action-queue';
 import {
   impactScope,
   incidentDeepLink,
@@ -128,20 +141,112 @@ export function createGatedIncidentSender(deps: IncidentGateDeps): IncidentAlert
       verdict = (await deps.judge(s).catch(() => null)) ?? verdict;
     }
     const code = verdictCode(verdict);
-    await deps.record({
+    const record = () => deps.record({
       teamId, workspaceId: inc.workspaceId, capability: ESCALATION_GATE_CAPABILITY, fingerprint,
       promptVersion: ESCALATION_GATE_PROMPT_VERSION, subjectType: INCIDENT_SUBJECT_TYPE, subjectId: s.key,
       ruleAnswer: code, appliedAnswer: code, applied: true, status: 'applied',
       reason: verdict.owner === 'person' ? `rule:${verdict.rail ?? 'person'}` : `rule:${verdict.action}`,
     }).catch(() => {});
 
-    if (verdict.owner !== 'person') return false;
+    if (verdict.owner !== 'person') {
+      await record();
+      return false;
+    }
+    // Page first. A page that throws is not recorded, so the next replay of
+    // this state pages again rather than finding a "sent" row.
     await deps.notify(teamId, {
       title: alert.title, message: alert.message, url: incidentDeepLink(inc.id), urlTitle: 'Open incident',
       priority: alert.priority,
     });
+    await record();
     return true;
   };
+}
+
+/** An incident as Home reads it. */
+export interface IncidentNeedsYouRow {
+  id: string;
+  workspaceId: string | null;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  lastSeenAt: Date;
+}
+
+/**
+ * Pure. The Needs You items for unresolved incidents whose newest stored
+ * verdict is the owner's. No stored verdict, a Buildd verdict, or a resolved
+ * incident: not listed. `baseUrl` '' gives in-app links.
+ */
+export function incidentNeedsYouItems(
+  rows: readonly IncidentNeedsYouRow[],
+  verdicts: ReadonlyMap<string, EscalationVerdict>,
+  baseUrl = '',
+  workspaceNameById: ReadonlyMap<string, string> = new Map(),
+): WaitingOnYouRawItem[] {
+  const items: WaitingOnYouRawItem[] = [];
+  for (const r of rows) {
+    if (r.status === 'resolved') continue;
+    const v = verdicts.get(r.id);
+    if (!v || v.owner !== 'person') continue;
+    items.push({
+      kind: 'incident',
+      incidentId: r.id,
+      incidentTitle: r.title,
+      workspaceId: r.workspaceId ?? undefined,
+      workspaceName: r.workspaceId ? workspaceNameById.get(r.workspaceId) ?? null : null,
+      failureMessage: v.reason,
+      fixHref: incidentDeepLink(r.id, baseUrl),
+      fixLabel: 'Open incident',
+    });
+  }
+  return items;
+}
+
+/**
+ * Home's read: unresolved high and critical incidents in these workspaces,
+ * joined to their stored verdicts. One query for the incidents, one per team
+ * for the verdicts. Never throws (Home keeps every other card).
+ */
+export async function loadIncidentNeedsYou(workspaceIds: readonly string[]): Promise<WaitingOnYouRawItem[]> {
+  if (workspaceIds.length === 0) return [];
+  try {
+    const [{ db }, { failureIncidents, workspaces: workspacesTable }, { and, inArray, ne }] = await Promise.all([
+      import('@buildd/core/db'), import('@buildd/core/db/schema'), import('drizzle-orm'),
+    ]);
+    const workspaces = await db
+      .select({ id: workspacesTable.id, teamId: workspacesTable.teamId, name: workspacesTable.name })
+      .from(workspacesTable)
+      .where(inArray(workspacesTable.id, [...workspaceIds]));
+    if (workspaces.length === 0) return [];
+    const rows = await db
+      .select({
+        id: failureIncidents.id, workspaceId: failureIncidents.workspaceId, title: failureIncidents.title,
+        severity: failureIncidents.severity, status: failureIncidents.status, lastSeenAt: failureIncidents.lastSeenAt,
+      })
+      .from(failureIncidents)
+      .where(and(
+        inArray(failureIncidents.workspaceId, workspaces.map(w => w.id)),
+        ne(failureIncidents.status, 'resolved'),
+        inArray(failureIncidents.severity, ['high', 'critical']),
+      ))
+      .limit(50);
+    if (rows.length === 0) return [];
+    const teamByWs = new Map(workspaces.map(w => [w.id, w.teamId]));
+    const byTeam = new Map<string, string[]>();
+    for (const r of rows) {
+      const team = r.workspaceId ? teamByWs.get(r.workspaceId) : null;
+      if (team) byTeam.set(team, [...(byTeam.get(team) ?? []), r.id]);
+    }
+    const verdicts = new Map<string, EscalationVerdict>();
+    for (const [teamId, ids] of byTeam) {
+      for (const [id, v] of await loadIncidentVerdicts(teamId, ids)) verdicts.set(id, v);
+    }
+    return incidentNeedsYouItems(rows, verdicts, '', new Map(workspaces.map(w => [w.id, w.name])));
+  } catch (err) {
+    console.warn('[failure-incident-escalation] Home incident read failed (non-fatal):', (err as Error)?.message ?? err);
+    return [];
+  }
 }
 
 /** Stored incident verdicts for one team, as Home, the badge and pushes read them. Never throws. */
@@ -167,7 +272,7 @@ export async function loadIncidentVerdicts(teamId: string, incidentIds: string[]
       if (r.subjectId && v && !out.has(r.subjectId)) out.set(r.subjectId.slice(INCIDENT_SUBJECT_TYPE.length + 1), v);
     }
   } catch (err) {
-    console.warn('[incident-escalation] stored verdict read failed (non-fatal):', (err as Error)?.message ?? err);
+    console.warn('[failure-incident-escalation] stored verdict read failed (non-fatal):', (err as Error)?.message ?? err);
   }
   return out;
 }
