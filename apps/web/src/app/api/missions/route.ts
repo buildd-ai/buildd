@@ -9,6 +9,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { resolveWorkspaceAccess } from '@/lib/workspace-access';
+import { checkContextArtifactIds } from '@/lib/context-artifact-ids';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
 import {
@@ -360,6 +361,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const contextArtifacts = await checkContextArtifactIds(
+      contextArtifactIds,
+      apiAccount ? { account: apiAccount } : { userId: user!.id },
+      teamId,
+    );
+    if (!contextArtifacts.ok) {
+      return NextResponse.json({ error: contextArtifacts.error }, { status: 400 });
+    }
+
     const [mission] = await db
       .insert(missions)
       .values({
@@ -371,7 +381,7 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         parentMissionId: parentMissionId || null,
         initiativeId: initiativeId || null,
-        contextArtifactIds: contextArtifactIds || [],
+        contextArtifactIds: contextArtifacts.ids,
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
