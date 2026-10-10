@@ -11,6 +11,7 @@ import {
   claimCustodySql,
   parseAppliedReceipts,
   fallBackToInAppSql,
+  mergeIntoPendingSql,
   selectForRepublishSql,
   selectOrphanCandidatesSql,
   terminalReceiptFor,
@@ -139,6 +140,15 @@ describe('orphan reconcile builders', () => {
     }
     const flip = render(fallBackToInAppSql([A])).sql;
     expect(flip).toContain("status = 'pending', transport = 'in_app', handed_off_at = NULL");
+  });
+
+  test('mergeIntoPendingSql closes only handed-off rows that have a pending twin, without LATERAL on the target', () => {
+    const { sql, params } = render(mergeIntoPendingSql([A, 'nope', B]));
+    expect(JSON.parse(String(params[0]))).toEqual([A, B]);
+    expect(sql).toContain("o.status = 'handed_off'");
+    expect(sql).toContain("delivered_via = 'merged_into_pending'");
+    expect(sql).toContain("p.status = 'pending'");
+    expect(sql).not.toContain('LATERAL');
   });
 
   test('terminalReceiptFor maps each terminal state and refuses open or unprojectable ones', () => {
