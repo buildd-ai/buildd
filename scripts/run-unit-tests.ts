@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
@@ -486,6 +486,8 @@ export async function runTestFile(
     }
     throw err;
   }
+  const buildHome = join(testHome, 'home');
+  mkdirSync(buildHome);
   const startedAt = performance.now();
   const elapsed = (): number => Math.round(performance.now() - startedAt);
   try {
@@ -493,10 +495,11 @@ export async function runTestFile(
     const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
       stdout: 'pipe',
       stderr: 'pipe',
-      // TMPDIR inside the home: whatever the file mkdtemp()s and forgets to
-      // remove (test workspaces, agent homes) is deleted with the home instead
-      // of accumulating in the shared /tmp across runs.
-      env: { ...process.env, BUILDD_HOME: testHome, TMPDIR: testHome },
+      // TMPDIR is the throwaway dir and BUILDD_HOME a child of it (the home
+      // guard requires BUILDD_HOME strictly inside tmpdir()). Whatever the file
+      // mkdtemp()s and forgets to remove is deleted with testHome instead of
+      // accumulating in the shared /tmp across runs.
+      env: { ...process.env, BUILDD_HOME: buildHome, TMPDIR: testHome },
     });
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
