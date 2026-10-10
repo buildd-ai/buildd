@@ -23,6 +23,32 @@ assertions:
     type: symbol
     name: normalizeDerivedFiles
     path: packages/shared/src/derived-files.ts
+  - id: workspace-patch-enforces-derived-files
+    type: symbol_reachable
+    symbol: normalizeDerivedFiles
+    entry: apps/web/src/app/api/workspaces/[id]/route.ts
+    as: call
+  - id: plan-merge-drivers
+    type: symbol
+    name: planMergeDrivers
+    path: apps/runner/src/merge-drivers.ts
+  - id: plan-pre-merge
+    type: symbol
+    name: planPreMerge
+    path: apps/runner/src/merge-drivers.ts
+  - id: runner-pre-merges-with-derived-files
+    type: symbol_reachable
+    symbol: mergeBaseWithDerivedFiles
+    entry: apps/runner/src/workers.ts
+    as: call
+  - id: read-mergiraf-ledger
+    type: symbol
+    name: readMergirafLedger
+    path: apps/runner/src/merge-drivers.ts
+  - id: no-agent-finish-rule
+    type: symbol
+    name: canFinishWithoutAgent
+    path: apps/runner/src/merge-drivers.ts
   - id: merge-drivers-tests
     type: test_file
     path: apps/runner/__tests__/unit/merge-drivers.test.ts
