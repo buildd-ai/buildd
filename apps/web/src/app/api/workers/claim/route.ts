@@ -27,6 +27,8 @@ import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
+import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
 import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
@@ -1251,6 +1253,7 @@ export async function POST(req: NextRequest) {
     managed_runner_hours: 0,
     hosted_runner_hours: 0,
     no_personal_credential: 0,
+    provider_not_allowed: 0,
     tier_policy: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
@@ -1265,6 +1268,10 @@ export async function POST(req: NextRequest) {
   const personalCredentialDeps = perRequestPersonalCredentialDeps();
   // Model-tier ceilings, read once per (team, workspace[, requester]) per claim.
   const loadClaimCeiling = tierCeilingLoader();
+  // Coding provider/payment-source policy (packages/core/coding-policy.ts), and
+  // the tasks it pinned to the runner's own login (no server-held model credential).
+  const loadCodingPolicyFor = codingPolicyLoader();
+  const nativeSourceTasks = new Set<string>();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
   // deferred in the dispatch loop below. It already passed every SQL-level
@@ -2705,6 +2712,36 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Coding provider policy: a restriction, not a redirect. The backend is
+    // final here (failover and toggles ran above), so a failover target is
+    // checked like a stored one. Denied ⇒ held with a structured error; it is
+    // never moved to another provider and never billed to a stored key.
+    // No restriction saved ⇒ allow, and everything below is unchanged.
+    if (taskTeamId) {
+      let codingPolicy;
+      try {
+        codingPolicy = await loadCodingPolicyFor({ teamId: taskTeamId, workspaceId: task.workspaceId, userId: lazyRequester(task) });
+      } catch (err) {
+        console.error(`[claim] task ${task.id}: coding policy unreadable, holding the task`, err);
+        deferTask(task, 'provider_not_allowed', { code: 'policy_unavailable' });
+        continue;
+      }
+      if (codingPolicy.restricted) {
+        const verdict = decideCodingPolicy({
+          policy: codingPolicy,
+          backend: (task as any).backend as AgentBackend,
+          claudeRoute: (task as any).backend === 'codex' ? null : await claudeRouteFor(taskTeamId, task.workspaceId),
+          cloud: cloudExecutor,
+        });
+        console.log(`[claim] ${codingPolicyAudit(task.id, (task as any).backend as AgentBackend, verdict)}`);
+        if (verdict.kind === 'refuse') {
+          deferTask(task, 'provider_not_allowed', { ...verdict.denied });
+          continue;
+        }
+        if (verdict.source === 'runner_native') nativeSourceTasks.add(task.id);
+      }
+    }
+
     // Credential policy (provider parity): a team that set personal_only runs
     // a task only on its requester's own key, so a task this claim cannot give
     // one is held here, before a worker exists, with the reason named. The
@@ -2721,6 +2758,12 @@ export async function POST(req: NextRequest) {
       }, personalCredentialDeps);
       if (credentialDecision.kind === 'refuse') {
         deferTask(task, 'no_personal_credential', { ...credentialDecision.detail });
+        continue;
+      }
+      // A requester's own API key is a metered route: it cannot pay for a run
+      // the Coding policy pinned to the runner's own login.
+      if (credentialDecision.kind === 'personal' && nativeSourceTasks.has(task.id)) {
+        deferTask(task, 'provider_not_allowed', { code: 'payment_source_not_allowed', source: 'metered', backend: (task as any).backend });
         continue;
       }
       personalCredentialDecisions.set(task.id, credentialDecision);
@@ -3443,18 +3486,21 @@ export async function POST(req: NextRequest) {
   const personalWorkers = cloudExecutor
     ? new Set<string>()
     : attachPersonalCredentials(claimedWorkers, personalCredentialDecisions);
+  // Workers the Coding policy pinned to the runner's own login: no endpoint, no
+  // stored key, no stored Codex/Claude credential is delivered for them.
+  const nativeWorkers = new Set(claimedWorkers.filter(cw => nativeSourceTasks.has(cw.taskId)).map(cw => cw.id));
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id)), filteredTasks, account.id, {
+    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id) && !nativeWorkers.has(cw.id)), filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
         runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
-  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0
+  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0 && nativeWorkers.size === 0
     ? endpointWorkers
-    : new Set([...endpointWorkers, ...personalWorkers]);
+    : new Set([...endpointWorkers, ...personalWorkers, ...nativeWorkers]);
   if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, modelCredentialDecided);
 
