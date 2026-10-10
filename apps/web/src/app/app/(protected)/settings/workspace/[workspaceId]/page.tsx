@@ -179,6 +179,7 @@ export default async function WorkspaceSettingsPage({
     <SettingsPage
       title={workspace.name}
       titleOnMobile
+      readOnly={!canManageSettings}
       description={
         <>
           {workspace.repo
@@ -216,6 +217,7 @@ export default async function WorkspaceSettingsPage({
             workspaceId={workspace.id}
             workspaceName={workspace.name}
             initialConfig={gitConfig}
+            canEdit={canManageSettings}
           />
           <MemberRepoAccessSection
             workspaceId={workspaceId}
@@ -243,6 +245,7 @@ export default async function WorkspaceSettingsPage({
             workspaceId={workspace.id}
             effectiveBranchStrategy={resolveBranchStrategy(gitConfig)}
             defaultBranch={gitConfig?.defaultBranch || 'main'}
+            canEdit={canManageSettings}
           />
           <WarmHandoverSection workspaceId={workspace.id} teamId={workspace.teamId} initial={gitConfig?.warmHandover ?? null} canEdit={canManageSettings} />
           <CiRetrySection
@@ -261,10 +264,12 @@ export default async function WorkspaceSettingsPage({
             initialReleaseConfig={workspace.releaseConfig as WorkspaceReleaseConfig | null}
             effectiveTrigger={resolveReleaseTrigger(workspace.releaseConfig as WorkspaceReleaseConfig | null)}
             hasRepo={Boolean(workspace.repo)}
+            canEdit={canManageSettings}
           />
           <SubjectPolicySection
             workspaceId={workspace.id}
             initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
+            canEdit={canManageSettings}
           />
         </div>
       </Section>
@@ -276,6 +281,7 @@ export default async function WorkspaceSettingsPage({
             explicit={isWorkspaceExecutor(storedExecutor) ? storedExecutor : null}
             effective={executor.executor}
             source={executor.source}
+            canEdit={canManageSettings}
           />
           {runnerSize && (
             <RunnerSizeSection
@@ -285,6 +291,7 @@ export default async function WorkspaceSettingsPage({
               source={runnerSize.source}
               reason={runnerSize.reason}
               monthLine={runnerMonth && runnerMonth.wallSeconds > 0 ? workspaceRunnerMonthLine(runnerMonth) : null}
+              canEdit={canManageSettings}
             />
           )}
           <ConcurrencySection
@@ -302,6 +309,7 @@ export default async function WorkspaceSettingsPage({
         <WorkTrackerSection
           workspaceId={workspace.id}
           initialWorkTrackerConfig={workspace.workTrackerConfig as WorkspaceWorkTrackerConfig | null}
+          canEdit={canManageSettings}
         />
       </Section>
 

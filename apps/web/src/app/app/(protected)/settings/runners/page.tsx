@@ -11,7 +11,8 @@ import type { FleetSnapshot } from '@buildd/shared';
 import FleetOverview from './FleetOverview';
 import CloudRunnerRow from './CloudRunnerRow';
 import SignInsAnchorRedirect from './SignInsAnchorRedirect';
-import { teamIdsHolding } from '../_lib/settings-permissions';
+import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
+import { settingsReadOnly } from '@/lib/settings-nav';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,7 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
  * Models), then runner tokens (how a runner reaches buildd).
  */
 export default async function RunnersSettingsPage() {
-  const { teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
+  const { user, teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
   const [accounts, fleet, hasSignIn] = await Promise.all([
@@ -44,22 +45,23 @@ export default async function RunnersSettingsPage() {
   // manage_team_keys, the Cloudflare token manage_team_model_keys.
   const adminTeamIds = new Set(teamIdsHolding(permsByTeam, 'manage_team_keys'));
   const cloudflareTeamIds = teamIdsHolding(permsByTeam, 'manage_team_model_keys');
-  const tokens = accounts.map((a) => ({
+  // Who minted a key stays on the server: the client gets only what it may do.
+  const tokens = accounts.map(({ createdByUserId, ...a }) => ({
     ...a,
     lastSeenAt: lastSeen[a.id] ?? null,
     canManageHostRunner: adminTeamIds.has(a.teamId),
+    // DELETE /api/accounts/[id]: your own key, or manage_team_keys in its team.
+    canDelete: adminTeamIds.has(a.teamId) || (createdByUserId != null && createdByUserId === user.id),
   }));
   const cloudTeams = teams.map((t) => ({ id: t.id, name: t.name }));
 
   return (
-    <SettingsPage
-      title="Runners"
-    >
+    <SettingsPage title="Runners" readOnly={settingsReadOnly('runners', permsInAnyTeam(permsByTeam))}>
       <SignInsAnchorRedirect />
       <FleetOverview
         fleet={fleet}
         teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}
-        cloud={teamId ? <CloudRunnerRow teamId={teamId} /> : undefined}
+        cloud={teamId ? <CloudRunnerRow teamId={teamId} canManage={cloudflareTeamIds.includes(teamId)} /> : undefined}
       />
       <SettingsSection title="Connections" bare>
         <div data-testid="runners-connections" className="border-y border-border-default divide-y divide-border-default">

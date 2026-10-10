@@ -35,7 +35,7 @@ import { setupWorktree, removeWorktreeIfUnowned, removeWorktreeIfUnownedSync, co
 // Namespace, not named: many tests mock.module('./git-operations') with a fixed
 // export list, and a named import missing from it fails the whole file.
 import * as gitOperations from './git-operations';
-import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, type DerivedMergeResult } from './merge-drivers';
+import { normalizeDerivedFiles, registerMergeDrivers, mergeBaseWithDerivedFiles, planPreMerge, formatDerivedMergeNote, formatDerivedFilesGuidance, finishDerivedMerge, derivedMergeVerificationCommand, formatDerivedMergeSummary, formatDerivedFinishFallback, canFinishWithoutAgent, formatPreMergeMilestone, readMergirafLedger, reportAgentMerges, type DerivedMergeResult } from './merge-drivers';
 import { describeInstallFailure, formatInstallDir } from './install-diagnosis';
 import { buildRetryContinuitySection, shouldPreserveWorktreeOnSessionEnd } from './worktree-utils';
 import { reapSession } from './session-teardown';
@@ -2435,6 +2435,10 @@ export class WorkerManager {
               // readable from the task record without access to the runner's log.
               this.addMilestone(worker, { type: 'status', label: formatPreMergeMilestone(merged), ts: Date.now() });
             }
+            // Agent merges are reported from here on: entries already in the
+            // ledger (the pre-merge's, or a retained worktree's earlier session)
+            // are not the agent's.
+            worker.mergirafLedgerOffset = readMergirafLedger(setupResult.path, 0).offset;
           } catch (err) {
             console.warn(`[Worker ${worker.id}] Derived-file merge drivers skipped: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -4745,6 +4749,7 @@ export class WorkerManager {
         ],
         PostToolUse: [
           { hooks: [this.hookFactory.createToolActivityHook(worker)] },
+          { hooks: [this.hookFactory.createMergeLedgerHook(worker)] },
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
@@ -5064,6 +5069,14 @@ export class WorkerManager {
       if (currentSession?.reapedAt !== undefined) {
         sessionLog(worker.id, 'info', 'post_completion_reap_settled', `status=${worker.status} (post-loop)`, worker.taskId);
         return;
+      }
+
+      // Whatever mergiraf did in merges the hook did not see (a command it
+      // did not recognise, a Codex session with no hooks) is recorded now.
+      try {
+        reportAgentMerges(worker, (label) => this.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] mergiraf ledger sweep failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // inputAsRetry: AskUserQuestion triggered an abort. The worker is

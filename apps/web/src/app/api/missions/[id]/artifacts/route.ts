@@ -115,6 +115,7 @@ export async function POST(
         .set({
           title,
           content: upsertedContent(existing.content, content),
+          contentAuthor: apiAccount ? `account:${apiAccount.id}` : `user:${user!.id}`,
           metadata: artifactMetadata,
           type,
           missionId: id,
@@ -151,6 +152,7 @@ export async function POST(
       type,
       title,
       content: content || null,
+      contentAuthor: apiAccount ? `account:${apiAccount.id}` : `user:${user!.id}`,
       shareToken: null,
       visibility: 'private',
       metadata: artifactMetadata,

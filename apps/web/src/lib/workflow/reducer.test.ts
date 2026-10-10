@@ -1629,6 +1629,22 @@ describe('S15 disjoint-delta rule (88318f31, #4283): an approved head on a busy 
     expectResult(land(approved(spent, { approvedHeads: ['H0'] })), 'rejected', 'head_not_approved');
   });
 
+  test('a behind refresh records the verdict it went ahead on (landing lane step 0)', () => {
+    // A gap the ordinary bound does not tolerate: the cause and the size, no files.
+    const big = applied(behind(approved(oneRefresh), delta({ baseCommits: 4 })));
+    expect(big.toState).toBe('REPAIRING');
+    expect(big.evidence.freshness).toEqual({ tolerated: false, cause: 'refresh_exhausted', reason: expect.stringContaining('4 commits'), behindBy: 4, baseFileCount: 2 });
+    // A risky base file is named.
+    const risky = applied(behind(approved(oneRefresh), delta({ baseCommits: 1, baseFiles: ['bun.lock'] })));
+    expect(risky.evidence.freshness).toMatchObject({ tolerated: false, cause: 'refresh_unsafe', files: ['bun.lock'], behindBy: 1 });
+    // No base delta read: said so, not left out.
+    expect(applied(behind(approved(oneRefresh), null)).evidence.freshness).toEqual({ tolerated: false, cause: 'unread' });
+    // Tolerated, but not from APPROVED (a LANDING delivery's merge came back behind): refreshed, and the record says so.
+    const landing = applied(behind(V(D({ state: 'LANDING', approvedHeads: ['H0', 'H1'], approvalBasis: 'verdict' }), [], oneRefresh), delta({ baseCommits: 2 })));
+    expect(landing.toState).toBe('REPAIRING');
+    expect(landing.evidence.freshness).toEqual({ tolerated: true, rule: 'bounded', state: 'LANDING', behindBy: 2, baseFileCount: 2 });
+  });
+
   test('without the base-delta fact both transitions decide as before (recorded commands replay unchanged)', () => {
     const esc = applied(behind(approved(spent), null));
     expect(esc.evidence).toEqual({ actor: 'door:conflict', repairKind: 'behind', headSha: 'H1', refreshes: 3, treadmill: true, cycle: 1 });

@@ -55,7 +55,7 @@ describe('GET /api/github/install', () => {
     expect(response.status).toBe(307);
     expect(response.headers.get('content-type') ?? '').not.toContain('application/json');
     const location = new URL(response.headers.get('location')!);
-    expect(location.pathname).toBe('/app/settings/github');
+    expect(location.pathname).toBe('/app/settings/integrations');
     expect(location.searchParams.get('github')).toBe('unavailable');
   });
 

@@ -1,7 +1,6 @@
 import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { getCurrentUser } from '@/lib/auth-helpers';
+import { requirePlatformOperator } from '@/lib/operator-page';
 import { resolveActiveTeamId } from '@/lib/team-access';
 import { can } from '@/lib/permissions';
 import { isFlowWindow, type FlowWindow } from '@/lib/insights-flow';
@@ -16,7 +15,8 @@ export const dynamic = 'force-dynamic';
  *
  * For team roles holding `view_team_usage` (admins and owners by default),
  * because it shows every member's work. Anyone else gets a plain explanation,
- * not an empty chart.
+ * not an empty chart. Platform owner only (it moved to the admin app);
+ * everyone else gets a 404.
  */
 export default async function InsightsPage({
   searchParams,
@@ -26,8 +26,7 @@ export default async function InsightsPage({
   const { window: rawWindow, state } = await searchParams;
   const window: FlowWindow = isFlowWindow(rawWindow) ? rawWindow : '7d';
 
-  const user = await getCurrentUser();
-  if (!user) redirect('/api/auth/signin');
+  const user = await requirePlatformOperator();
 
   const cookieStore = await cookies();
   const teamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);

@@ -236,10 +236,6 @@ export default function CloudflareSection({ teams, defaultTeamId, manageableTeam
         </div>
       ) : null}
 
-      {!canManage && (
-        <p data-testid="cloudflare-read-only" className="text-xs text-text-muted">Admins can change this.</p>
-      )}
-
       {canManage && showForm && !(loading && !cred) && (
         <div className={`space-y-2 ${cred ? 'border-t border-border-default pt-4' : ''}`}>
           <div className="flex items-center justify-between">

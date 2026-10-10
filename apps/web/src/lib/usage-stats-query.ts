@@ -5,8 +5,8 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray, lt } from 'drizzle-orm';
+import { tasks, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
 import type { UsageWorkerRow } from './usage-stats';
 
 /** Cap on worker rows scanned per request. Keeps a 30d team-wide window bounded. */
@@ -33,6 +33,8 @@ export async function fetchUsageRows(opts: {
    */
   windowEnd?: Date;
   limit?: number;
+  /** Only the work on tasks this person started (`tasks.createdByUserId`): a member's own usage. */
+  forUserId?: string;
 }): Promise<UsageWorkerRow[]> {
   if (opts.workspaceIds.length === 0) return [];
 
@@ -41,6 +43,9 @@ export async function fetchUsageRows(opts: {
       inArray(workers.workspaceId, opts.workspaceIds),
       gte(workers.completedAt, opts.windowStart),
       opts.windowEnd ? lt(workers.completedAt, opts.windowEnd) : undefined,
+      opts.forUserId
+        ? inArray(workers.taskId, db.select({ id: tasks.id }).from(tasks).where(eq(tasks.createdByUserId, opts.forUserId)))
+        : undefined,
     ),
     columns: {
       id: true,

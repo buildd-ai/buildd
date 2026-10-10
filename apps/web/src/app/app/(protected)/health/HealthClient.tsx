@@ -247,6 +247,12 @@ const VIEW_TITLE: Record<HealthView, string> = {
 interface Props {
   /** Which page is rendering; defaults to every section. */
   page?: HealthView;
+  /**
+   * The viewer is a platform operator. Only they reach Failures (it moved to
+   * the admin app), so Overview links everyone else to where they act:
+   * the workspace's settings, or Activity's History.
+   */
+  operator?: boolean;
   /** Rendered under the page header (Runners: the workspace pause control). */
   top?: React.ReactNode;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
@@ -327,6 +333,7 @@ export function HealthClient({
   runnerLanes = null,
   now,
   page = 'all',
+  operator = false,
   top = null,
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
@@ -455,8 +462,10 @@ export function HealthClient({
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
   // Access problems stop runs before they start, so Overview counts them; the
-  // full list (with blocked actions) is on Failures.
+  // full list (with blocked actions) is on Failures, for the operator.
   const accessProblems = agentAccess?.grantProblems ?? [];
+  const failuresHref = operator ? '/app/health/failures' : '/app/tasks?view=history';
+  const accessHref = (workspaceId: string) => operator ? '/app/health/failures' : `/app/settings/workspace/${workspaceId}`;
   // On Overview the failures come from the merged failure groups (the same ones
   // the Problems row counts), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
@@ -665,7 +674,7 @@ export function HealthClient({
 
             {/* Schedules with errors */}
             {page === 'overview' && accessProblems.map((p) => (
-              <a key={`access-${p.workspaceId}-${p.reason}`} href="/app/health/failures" data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
+              <a key={`access-${p.workspaceId}-${p.reason}`} href={accessHref(p.workspaceId)} data-testid="problem-access" className="block px-4 py-3 hover:bg-surface-2">
                 <p className="text-sm font-medium text-text-primary">{p.workspaceName}: runs can&apos;t get access</p>
                 <p className="text-xs text-text-muted mt-0.5">{p.reason} ({p.count}×){p.fix ? `. ${p.fix}` : ''}</p>
               </a>
@@ -725,9 +734,10 @@ export function HealthClient({
               );
             })}
 
-            {/* Overview names what is failing in one row; the list is on Failures. */}
+            {/* Overview names what is failing in one row; the list is on Failures
+                for the operator, and the failed work in Activity for everyone. */}
             {page === 'overview' && failureGroupsView && failureGroupsView.groups.length > 0 && (
-              <a href="/app/health/failures" data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
+              <a href={failuresHref} data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
                 <span className="text-sm text-text-primary">{failureProblemLine(failureGroupsView, activeWindow)}</span>
                 <span aria-hidden="true" className="text-text-muted">›</span>
               </a>

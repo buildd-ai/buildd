@@ -268,6 +268,20 @@
       "when": 1791651678452,
       "tag": "0288_cooing_agent_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1791651679082,
+      "tag": "0289_artifact_revisions_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1791656376294,
+      "tag": "0290_fat_hemingway",
+      "breakpoints": true
     }
   ]
 }

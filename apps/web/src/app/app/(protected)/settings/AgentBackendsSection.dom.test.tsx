@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: AgentBackendsSection } = await import('./AgentBackendsSection');
+const { describeControls } = await import('./_lib/form-controls');
 
 let host: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -245,10 +246,52 @@ describe('read-only for a member without manage_team_credentials', () => {
       expect(row(id).getAttribute('data-readonly')).toBe('true');
       expect(row(id).querySelectorAll('button, input').length).toBe(0);
     }
-    const note = host.querySelector('[data-testid="credentials-read-only"]')!;
-    expect(note.textContent).toContain('Admins can change these.');
-    // Your own key is under Keys on the same page (scope Mine): no second link here.
-    expect(note.querySelector('a')).toBeNull();
+    // The page says once who manages it; no per-section line here.
+    expect(host.querySelector('[data-testid="credentials-read-only"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change these|can change this/);
+    expect(describeControls(host)).toEqual([]);
+  });
+
+  async function mountEmbedded(props: { canManage?: boolean; canManageRouting?: boolean }) {
+    window.location.hash = '';
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <AgentBackendsSection workspaces={[{ id: 'w1', name: 'Workspace 1', teamId: 't1' }]} currentTeamId="t1" scope="team" workspaceId={null} {...props}>
+          {(slots) => (
+            <>
+              <div data-testid="slot-claude">{slots.claude}</div>
+              <div data-testid="slot-openai">{slots.openai}</div>
+              <div data-testid="slot-routing">{slots.routing}</div>
+            </>
+          )}
+        </AgentBackendsSection>,
+      );
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+
+  it('member, folded into the provider rows: each sign-in is a status line with no control', async () => {
+    installFetch({ claude: true, codex: false });
+    await mountEmbedded({ canManage: false, canManageRouting: false });
+    expect(row('slot-claude').textContent).toContain('Connected');
+    expect(row('slot-claude').textContent).toContain('Subscription sign-in');
+    expect(row('slot-openai').textContent).toContain('Not connected');
+    expect(row('slot-openai').textContent).toContain('ChatGPT sign-in');
+    expect(row('slot-routing').textContent).toContain('Both on');
+    expect(describeControls(host)).toEqual([]);
+    // Not even the disclosure to the subscription sign-in: what it opens is all controls.
+    expect(host.querySelector('button')).toBeNull();
+    expect(host.textContent).not.toMatch(/Admins can change|Only a team owner|can change these|can change this/);
+  });
+
+  it('admin, folded into the provider rows: the sign-in controls are there', async () => {
+    installFetch({ claude: false, codex: false });
+    await mountEmbedded({ canManage: true, canManageRouting: true });
+    expect(row('slot-claude').querySelector('button[aria-expanded]')).not.toBeNull();
+    expect([...row('slot-openai').querySelectorAll('button')].some((b) => b.textContent === 'Sign in with device code')).toBe(true);
   });
 
   it('#agent-key does not open a read-only Claude row', async () => {

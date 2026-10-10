@@ -16,6 +16,7 @@ import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { isPlatformOperator } from '@/lib/platform-operator';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { parseCredentialBlock, CREDENTIAL_BLOCK_CONTEXT_KEY } from '@/lib/credential-block-copy';
 import { displayWorkspaceName, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
@@ -1413,7 +1414,7 @@ export default async function TaskDetailPage({
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
         {verdict && (
-          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} />
+          <TaskVerdictBlock verdict={verdict} decision={storedVerdictDecision} displayStatus={displayStatus} showDecisionRows={isPlatformOperator(user)} />
         )}
 
         {runnerReach && (

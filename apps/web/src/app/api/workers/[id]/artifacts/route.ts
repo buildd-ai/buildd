@@ -128,6 +128,37 @@ export async function POST(
       ),
     });
 
+    // A key is unique per workspace, so the upsert can land on any artifact
+    // there. A task token may take over a worker artifact of its own task, of
+    // its own schedule (each run is a new task updating the same key) or of its
+    // own mission; never another's, and never a mission-, initiative- or
+    // workspace-level artifact (those routes apply their own rule).
+    if (existing && account.taskScope && existing.workerId !== id) {
+      const owner = existing.workerId
+        ? await db.query.workers.findFirst({
+          where: eq(workers.id, existing.workerId),
+          columns: { taskId: true },
+          with: { task: { columns: { scheduleId: true, missionId: true } } },
+        })
+        : null;
+      const mine = worker.task as { scheduleId?: string | null; missionId?: string | null } | null;
+      const related = !!owner && !!worker.taskId && (
+        owner.taskId === worker.taskId
+        || (!!mine?.scheduleId && owner.task?.scheduleId === mine.scheduleId)
+        || (!!mine?.missionId && owner.task?.missionId === mine.missionId)
+      );
+      if (!related) {
+        return NextResponse.json(
+          {
+            error: existing.workerId
+              ? "That key belongs to another task's artifact (not this task, its schedule or its mission). Use another key."
+              : 'That key belongs to a mission, initiative or workspace artifact. Write it through the mission artifact action (create_artifact with missionId).',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     if (existing) {
       // Update existing artifact, preserve shareToken
       // Sensitive: never store content prose; storageKey is also blocked (no R2 upload)

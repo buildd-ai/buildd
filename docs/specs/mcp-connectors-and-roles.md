@@ -70,7 +70,7 @@ assertions:
 > |---|---|---|
 > | Storage | `workspace_skills.mcpServers` + `requiredEnvVars` | `connectors` + `connector_workspaces` |
 > | Auth | env-var secrets (`mcp_credential`) | `none`/`header`/`oauth` (`mcp_connector_credential`) |
-> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → MCP connectors (`/app/settings/connectors`) |
+> | UI | RoleEditor "Connectors" + "Browse Registry" | Settings → Connected apps (`/app/settings/connections`) |
 > | Injection | R2 role tarball → `.mcp.json` | claim route → `cw.mcpConnectors` |
 > | Scope | per role | per workspace (role-blind, all workers) |
 >
@@ -472,8 +472,8 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - Data model: `packages/core/db/schema.ts` → `connectorCatalogEntries`, `connectorCatalogTeamPolicies`
 - Icon resolver: `apps/web/src/lib/connector-icon.ts`, `apps/web/src/lib/connector-icon-refresh.ts`,
   `apps/web/src/lib/public-endpoint.ts`, `apps/web/src/lib/mcp-server-info.ts`
-- UI: `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.tsx`,
-  `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.tsx`,
+- UI: `apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.tsx`,
+  `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.tsx`,
   `apps/web/src/components/ConnectorIcon.tsx`
 - Route: `apps/web/src/app/api/connectors/route.ts`, `apps/web/src/app/api/connectors/catalog/route.ts`,
   `apps/web/src/app/api/connectors/catalog/policy/route.ts`, `apps/web/src/app/api/admin/connector-catalog/route.ts`
@@ -482,13 +482,13 @@ custom URL uses. Every http connector SHOULD carry a display icon.
 - `apps/web/src/lib/connector-catalog.test.ts`
 - `apps/web/src/lib/connector-icon.test.ts`, `apps/web/src/lib/connector-icon-refresh.test.ts`,
   `apps/web/src/lib/mcp-server-info.test.ts`
-- `apps/web/src/app/app/(protected)/settings/connectors/AddConnectionModal.dom.test.tsx`
+- `apps/web/src/app/app/(protected)/settings/connections/connectors/AddConnectionModal.dom.test.tsx`
 - `apps/web/src/app/api/connectors/route.test.ts`
 - `apps/web/src/lib/connector-catalog-merge.test.ts`, `apps/web/src/lib/connector-provision.test.ts`,
   `apps/web/src/lib/connector-catalog-input.test.ts`
 - `apps/web/src/app/api/connectors/catalog/route.test.ts`, `apps/web/src/app/api/connectors/catalog/policy/route.test.ts`,
   `apps/web/src/app/api/admin/connector-catalog/route.test.ts`
-- `apps/web/src/app/app/(protected)/settings/connectors/CatalogSection.dom.test.tsx`
+- `apps/web/src/app/app/(protected)/settings/connections/connectors/CatalogSection.dom.test.tsx`
 - `apps/web/tests/db/connector-catalog.test.ts` (partial unique indexes, real Postgres)
 
 **Catalog layers (DB, team policy, preinstall)**:
@@ -723,7 +723,7 @@ reconnect. Approaching expiry is deliberately silent.
 
 1. Settings → MCP connectors — `Connected` / `Expired` badge + `Reconnect`.
 2. Home action queue — a `RECONNECT` chip per connector where
-   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/connectors`.
+   `needsReconnect()`, ranked above `REVIEW`, linking to `/app/settings/connections`.
 3. Push — `/api/cron/connector-block-notify` fires
    `notifyTeam(…, 'connectorBlocked')` once per broken episode, deduped by
    `secrets.expiryNotifiedAt`, cleared by the reconnect and refresh-success paths.

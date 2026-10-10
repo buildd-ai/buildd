@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import type { WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { Select } from '@/components/ui/Select';
 import { TonePill } from '@/components/ui/StatePill';
+import { ReadOnlyFacts } from './ReadOnlyFacts';
 
 interface Connector {
   id: string;
@@ -17,6 +18,8 @@ interface Connector {
 interface Props {
   workspaceId: string;
   initialWorkTrackerConfig: WorkspaceWorkTrackerConfig | null;
+  /** Holds manage_workspace_settings. False: the linked tracker as text, no controls. */
+  canEdit: boolean;
 }
 
 function detectProvider(url: string): string {
@@ -38,7 +41,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 // Selection sentinel for "GitHub via the workspace's existing App" (no connector).
 const GITHUB_APP = 'github-app';
 
-export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConfig }: Props) {
+export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConfig, canEdit }: Props) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [config, setConfig] = useState<WorkspaceWorkTrackerConfig | null>(initialWorkTrackerConfig);
   // Selection: '' (none) | GITHUB_APP | a connector id.
@@ -125,7 +128,19 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
         PR merges, and an issue labeled with your trigger label opens a linked task.
       </p>
 
-      {config && activeLabel && (
+      {!canEdit && (
+        <ReadOnlyFacts
+          facts={[
+            { label: 'Tracker', value: config && activeLabel ? activeLabel : 'None', testId: 'work-tracker-value' },
+            ...(config ? [{ label: 'Provider', value: PROVIDER_LABELS[config.provider] ?? config.provider }] : []),
+            ...(config?.provider === 'github'
+              ? [{ label: 'Inbound trigger label', value: <code className="font-mono">{config.inboundLabel || 'buildd'}</code> }]
+              : []),
+          ]}
+        />
+      )}
+
+      {canEdit && config && activeLabel && (
         <p className="mb-3 text-xs text-text-secondary" data-testid="work-tracker-active">
           <span className="text-text-primary">{activeLabel}</span>
           <span className="text-text-muted"> · {PROVIDER_LABELS[config.provider] ?? config.provider}</span>
@@ -137,51 +152,55 @@ export default function WorkTrackerSection({ workspaceId, initialWorkTrackerConf
         </p>
       )}
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex-1 min-w-0">
-          <label className="block text-sm text-text-primary mb-1" htmlFor="work-tracker-select">
-            Tracker
-          </label>
-          <Select
-            id="work-tracker-select"
-            value={selection}
-            onChange={setSelection}
-            options={[
-              { value: '', label: 'None', description: 'Work tracker off' },
-              { value: GITHUB_APP, label: 'GitHub', description: "This repo's App" },
-              ...connectors.map(c => ({ value: c.id, label: c.name, description: detectProvider(c.url) })),
-            ]}
-          />
-        </div>
+      {canEdit && (
+        <>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex-1 min-w-0">
+              <label className="block text-sm text-text-primary mb-1" htmlFor="work-tracker-select">
+                Tracker
+              </label>
+              <Select
+                id="work-tracker-select"
+                value={selection}
+                onChange={setSelection}
+                options={[
+                  { value: '', label: 'None', description: 'Work tracker off' },
+                  { value: GITHUB_APP, label: 'GitHub', description: "This repo's App" },
+                  ...connectors.map(c => ({ value: c.id, label: c.name, description: detectProvider(c.url) })),
+                ]}
+              />
+            </div>
 
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="btn min-h-11"
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-      </div>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="btn min-h-11"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
 
-      {selection === GITHUB_APP && (
-        <div className="mt-3">
-          <label className="block text-sm text-text-primary mb-1" htmlFor="work-tracker-label">
-            Inbound trigger label
-          </label>
-          <input
-            id="work-tracker-label"
-            type="text"
-            className="w-full border border-border-default px-3 py-2 bg-surface-1 font-mono text-base md:text-sm"
-            placeholder="buildd"
-            value={inboundLabel}
-            onChange={e => setInboundLabel(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-text-muted">
-            Labeling a GitHub issue with this opens a linked task. Closing the issue cancels the open
-            task. Leave blank to use <code className="font-mono">buildd</code>.
-          </p>
-        </div>
+          {selection === GITHUB_APP && (
+            <div className="mt-3">
+              <label className="block text-sm text-text-primary mb-1" htmlFor="work-tracker-label">
+                Inbound trigger label
+              </label>
+              <input
+                id="work-tracker-label"
+                type="text"
+                className="w-full border border-border-default px-3 py-2 bg-surface-1 font-mono text-base md:text-sm"
+                placeholder="buildd"
+                value={inboundLabel}
+                onChange={e => setInboundLabel(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                Labeling a GitHub issue with this opens a linked task. Closing the issue cancels the open
+                task. Leave blank to use <code className="font-mono">buildd</code>.
+              </p>
+            </div>
+          )}
+        </>
       )}
 
       {message && (
