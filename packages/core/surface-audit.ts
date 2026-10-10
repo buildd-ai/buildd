@@ -243,11 +243,78 @@ export function planSurfaceFixFollowUp(
  */
 const SURFACE_AUDIT_CHECKLIST_ITEMS = [
   '390pt and 320pt viewport walk of every route/component in scope',
+  'Both themes: capture every required route in light AND dark (capture.ts `QA_THEME=light|dark` emulates prefers-color-scheme, so any app\'s own theme switch follows) and record `qa.theme` on each shot. A route is covered only with a shot in both themes',
+  'First screen at 390: what the page is for (its title and its main content or action) is visible without scrolling on the 390x844 viewport',
   'Exercise the CTA set derived from LIVE server state for every state this mission introduced — dead/no-op CTAs are the recurring defect this audit exists to catch',
   'For each modal, menu, confirm or gated state in scope, write a QA_PLAN state (capture.ts steps: click, hover, fill, press, select, waitFor, waitMs) and capture it, rather than marking it unsure. Steps open, reveal and type but never commit: a write needs `commit: true`, which only the sandbox honours',
   'Empty, error, and loading rendering for every surface in scope',
-  'No duplicate chrome titles (page heading and header both rendering the same text)',
+  'Nothing shown twice on one page: the same fact, count or action in two places, and no duplicate chrome titles (page heading and header both rendering the same text)',
+  'Before/after: when get_page_source returns `captureRef.source: "mission_integration"`, also capture the same routes from the trunk the mission merges into, and say in each finding what changed. Keep those before shots local: upload only shots from `captureRef.ref` (a shot from another branch reads as a capture gap)',
 ] as const;
+
+/** The two themes every required route is captured in (`metadata.qa.theme`). */
+export const SURFACE_AUDIT_THEMES = ['light', 'dark'] as const;
+export type SurfaceAuditTheme = (typeof SURFACE_AUDIT_THEMES)[number];
+
+/** `qa.theme`, trimmed and lowercased, or null when it is not one of SURFACE_AUDIT_THEMES. */
+export function parseSurfaceAuditTheme(v: unknown): SurfaceAuditTheme | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim().toLowerCase();
+  return (SURFACE_AUDIT_THEMES as readonly string[]).includes(t) ? (t as SurfaceAuditTheme) : null;
+}
+
+/**
+ * `<route> @ <theme> theme` for each route with no shot in that theme, in
+ * route order then SURFACE_AUDIT_THEMES order. A shot with no theme covers
+ * neither. `covers(pattern, shotRoute)` is the caller's route match (a
+ * concrete URL satisfies its `:param` pattern); default is equality.
+ */
+export function missingThemeCells(
+  routes: readonly string[],
+  shots: ReadonlyArray<{ route: string; theme?: string | null }>,
+  covers: (pattern: string, route: string) => boolean = (a, b) => a === b,
+): string[] {
+  const missing: string[] = [];
+  for (const route of routes) {
+    for (const theme of SURFACE_AUDIT_THEMES) {
+      if (!shots.some((s) => parseSurfaceAuditTheme(s.theme) === theme && covers(route, s.route))) {
+        missing.push(`${route} @ ${theme} theme`);
+      }
+    }
+  }
+  return missing;
+}
+
+/**
+ * The workspace's optional visual-QA inputs (`gitConfig.visualQa`, resolved by
+ * `resolveVisualQaConfig`). Both are off when absent, so nothing one
+ * workspace configures leaks into another's audit.
+ */
+export interface SurfaceAuditVisualQa {
+  /** Repo path to the design rules every shot is checked against. */
+  designRules?: string | null;
+  /** Artifact id or http(s) URL of an approved design reference. */
+  reference?: string | null;
+}
+
+function workspaceChecklistItems(vq: SurfaceAuditVisualQa | undefined): string[] {
+  const items: string[] = [];
+  if (vq?.designRules) {
+    items.push(`Design rules: check each shot against \`${vq.designRules}\` and name the rule in any finding that breaks one`);
+  }
+  if (vq?.reference) {
+    const where = /^https?:\/\//i.test(vq.reference)
+      ? `the approved design reference at ${vq.reference}`
+      : `the approved design reference, artifact \`${vq.reference}\` (read it with get_artifact)`;
+    items.push(`Design reference: compare each shot with ${where}, and say in the finding where the page departs from it`);
+  }
+  return items;
+}
+
+function workspaceInputs(vq: SurfaceAuditVisualQa | undefined): string[] {
+  if (!vq?.designRules) return [];
+  return [`Read \`${vq.designRules}\` (this workspace's design rules, \`gitConfig.visualQa.designRules\`) before judging any shot.`, ''];
+}
 
 export function buildSurfaceAuditDescription(opts: {
   missionTitle: string;
@@ -262,15 +329,18 @@ export function buildSurfaceAuditDescription(opts: {
   round?: number;
   /** Who opened the round. A human round was asked for in the visual review. */
   trigger?: SurfaceAuditTrigger;
+  /** The workspace's design rules and reference; each adds a checklist item only when set. */
+  visualQa?: SurfaceAuditVisualQa;
 }): string {
-  const { missionTitle, scopedPaths, requiredRoutes = [], round = 1, trigger = 'auto' } = opts;
+  const { missionTitle, scopedPaths, requiredRoutes = [], round = 1, trigger = 'auto', visualQa } = opts;
   const scopeList = scopedPaths.length > 0
     ? scopedPaths.map(p => `- \`${p}\``).join('\n')
     : "- (no concrete paths declared by this mission's builder tasks — audit the UI-facing routes/components named in their descriptions)";
   const routeList = requiredRoutes.length > 0
     ? requiredRoutes.map(r => `- \`${r}\``).join('\n')
     : '- (no required routes derived: no changed page/layout file. Pick the routes that render the scoped paths and capture those.)';
-  const checklist = SURFACE_AUDIT_CHECKLIST_ITEMS.map(item => `- [ ] ${item}`).join('\n');
+  const checklist = [...SURFACE_AUDIT_CHECKLIST_ITEMS, ...workspaceChecklistItems(visualQa)]
+    .map(item => `- [ ] ${item}`).join('\n');
   const resolution =
     'Start each finding with "Resolved:" or "Still there:" for the previous round\'s finding on that route and viewport, then say what you saw.';
   const roundNote = round > 1
@@ -288,7 +358,8 @@ export function buildSurfaceAuditDescription(opts: {
     `Auto-appended surface audit for mission "${missionTitle}" — reuses the Weekly mobile UI audit's checklist, scoped to this mission's own routes/components instead of the whole app.`,
     '',
     ...roundNote,
-    'Required routes (each at mobile AND desktop; you may add routes, never drop one):',
+    ...workspaceInputs(visualQa),
+    'Required routes (each at mobile AND desktop, in light AND dark; you may add routes, never drop one):',
     routeList,
     '',
     "Scope (paths declared by this mission's builder tasks):",
@@ -297,7 +368,7 @@ export function buildSurfaceAuditDescription(opts: {
     'Checklist:',
     checklist,
     '',
-    'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict: ok | issue | unsure }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
+    'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, theme: light | dark, finding, verdict: ok | issue | unsure }). Completion is refused until every required route has a mobile and a desktop shot from you and a shot in both themes, each with a non-empty finding.',
     '',
     'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot with update_artifact metadata { qa: { fixTaskId } } (the server merges it into the shot\'s qa). `unsure` is only for a state the available data cannot produce (a real provider failure, say): record it with verdict unsure, then file a `[surface fix] <route>: add a ?state= fixture for <state>` task in this mission and link it on the shot (qa.fixTaskId). An unsure shot with no follow-up task is not done. Post no note: the human review queue asks about it.',
   ].join('\n');

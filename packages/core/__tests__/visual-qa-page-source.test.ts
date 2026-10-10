@@ -61,6 +61,30 @@ describe('resolveVisualQaConfig', () => {
     expect(resolveVisualQaConfig({ previewWaitSeconds: 99999 }).previewWaitSeconds).toBe(1800);
     expect(resolveVisualQaConfig({ previewWaitSeconds: -5 }).previewWaitSeconds).toBe(600);
   });
+
+  it('design rules and reference are off unless the workspace sets them', () => {
+    expect(resolveVisualQaConfig(undefined).designRules).toBeNull();
+    expect(resolveVisualQaConfig({}).reference).toBeNull();
+    expect(resolveVisualQaConfig({ designRules: '  docs/design/rules.md ', reference: 'https://example.com/ref' })).toMatchObject({
+      designRules: 'docs/design/rules.md',
+      reference: 'https://example.com/ref',
+    });
+  });
+
+  it('a design-rules path must stay inside the repo', () => {
+    for (const bad of ['/etc/passwd', '../secrets.md', 'docs/../../x.md', '', '   ', 42]) {
+      expect(resolveVisualQaConfig({ designRules: bad }).designRules).toBeNull();
+    }
+    expect(resolveVisualQaConfig({ designRules: './docs/rules.md' }).designRules).toBe('docs/rules.md');
+  });
+
+  it('a reference is an artifact id or an http(s) URL, nothing else', () => {
+    expect(resolveVisualQaConfig({ reference: '0f0e0d0c-0b0a-4908-8706-050403020100' }).reference).toBe('0f0e0d0c-0b0a-4908-8706-050403020100');
+    expect(resolveVisualQaConfig({ reference: 'refined-ui-prototype' }).reference).toBe('refined-ui-prototype');
+    for (const bad of ['javascript:alert(1)', 'has spaces in it', '', 7]) {
+      expect(resolveVisualQaConfig({ reference: bad }).reference).toBeNull();
+    }
+  });
 });
 
 describe('resolvePreviewUrl (deployment status -> preview URL)', () => {
