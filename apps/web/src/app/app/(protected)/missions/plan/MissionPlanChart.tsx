@@ -54,7 +54,7 @@ export default function MissionPlanChart({ rows, axis, cuts, now }: { rows: read
         <div className="relative h-4">
           {axis.days.map(d => (
             (!sparse || d.label === 'Mon') && (
-              <span key={d.at} className="absolute font-mono text-[10px] text-text-muted" style={{ left: pct(axis.at(d.at)) }}>{d.label} {d.date}</span>
+              <span key={d.at} className="absolute font-mono text-[11px] md:text-[10px] text-text-muted" style={{ left: pct(axis.at(d.at)) }}>{d.label} {d.date}</span>
             )
           ))}
         </div>
