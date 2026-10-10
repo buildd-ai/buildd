@@ -21,6 +21,7 @@ import ConnectionsFixture from './ConnectionsFixture';
 import OperatorAccessFixture from './OperatorAccessFixture';
 import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
+import TaskErrorEvidenceFixture from './TaskErrorEvidenceFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
@@ -61,6 +62,7 @@ import {
     GOAL_CRITERIA_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
+    TASK_ERROR_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
@@ -134,6 +136,10 @@ export default function DevFixturesPage() {
 
     if (state === TASK_EVIDENCE_FIXTURE_STATE) {
         return <TaskEvidenceFilesFixture />;
+    }
+
+    if (state === TASK_ERROR_EVIDENCE_FIXTURE_STATE) {
+        return <TaskErrorEvidenceFixture />;
     }
 
     if (state === TASK_SHIPPED_FIXTURE_STATE) {

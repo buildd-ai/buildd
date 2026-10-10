@@ -114,7 +114,7 @@ import { bookkeepingAttemptRetry } from './bookkeeping-attempt';
 import BookkeepingAttemptRow from './BookkeepingAttemptRow';
 import { applyVerdictDecision, deriveTaskVerdict, parseStoredVerdictDecision } from '@/lib/task-verdict';
 import { buildVerdictInput, traceOutcomeOf } from '@/lib/task-verdict-facts';
-import { resolveTraceConsequences } from '@/lib/trace-consequence';
+import { priorAttemptFactsOf, resolveTraceConsequences } from '@/lib/trace-consequence';
 import type { WorkerMilestone } from '@buildd/core/db/schema';
 import StartTimeControl from '@/components/StartTimeControl';
 
@@ -872,12 +872,12 @@ export default async function TaskDetailPage({
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.
+  const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
   const traceConsequences = resolveTraceConsequences(
     errorTraces,
-    traceOutcomeOf(rulesVerdict, task.status),
+    traceOutcomeOf(rulesVerdict, task.status, priorAttemptFactsOf(traceWorkers)),
     storedVerdictDecision?.traceClasses,
   );
-  const traceWorkers = [...taskWorkers, ...ciAttemptTasks.flatMap(t => t.workers)];
   const attemptLabelByWorker = new Map<string, string>(
     lineageWorkerHistory(taskWorkers, ciAttemptTasks).map(({ worker, attemptLabel }, i, all) => [worker.id, attemptLabel ?? (all.length > 1 ? `Attempt ${all.length - i}` : 'This run')]),
   );
@@ -1609,7 +1609,7 @@ export default async function TaskDetailPage({
         {/* Agent errors: every captured trace, sorted by what it means for the
             outcome (needs attention / unclear / recovered / exploration noise).
             Any row opens the complete redacted evidence. */}
-        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} />
+        <TaskErrorEvidence items={errorEvidenceItems} taskTitle={displayTaskTitle(task.title)} terminalSucceeded={terminalSucceeded} taskState={verdict?.headline ?? null} />
 
         {/* Execution Plan Chain (replaces Related Tasks when chain data available) */}
         {planChain.length > 0 ? (
