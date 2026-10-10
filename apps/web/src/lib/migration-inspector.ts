@@ -321,5 +321,14 @@ async function inspectOnce(params: {
   // Destructive SQL, a mixed PR or unreadable SQL outranks a slot already
   // taken on the base: those still need their own handling.
   if (!verdict.safe && verdict.kind !== 'collision') return verdict;
+  if (baseCollision && !baseCollision.safe && baseCollision.collision) {
+    // Migration lane: an earlier open PR minting the same slot lands first, so
+    // this renumber waits for it instead of racing it to the next index.
+    const mine = numberOf(baseCollision.collision.file);
+    const ahead = openPullRequestMigrations
+      .filter((m) => m.prNumber < params.prNumber && numberOf(m.path) === mine)
+      .sort((a, b) => a.prNumber - b.prNumber)[0];
+    if (ahead) baseCollision.collision.queuedBehind = ahead.prNumber;
+  }
   return baseCollision ?? verdict;
 }

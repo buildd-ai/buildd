@@ -27,7 +27,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
-import { findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
+import { classifyManifestOverlap, findBlockingPr, isAdvisoryManifest, isDownstreamOf, partitionOverlapEdges, type SoftOverlapEdge } from '@buildd/core/path-overlap';
 import { overlapTouchesSerializedSurface } from '@/lib/change-intent';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
@@ -378,6 +378,7 @@ function buildConflictDescription(
    git merge origin/dev   # or origin/main — use the PR's actual base branch
    \`\`\`
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
+   A conflict in a Drizzle \`meta/_journal.json\` or snapshot is a migration-index collision, not text to merge: resolve the rest, then regenerate this branch's migration at the next free index — \`bun run migrations:renumber --base=origin/<the PR base branch>\` where the repo defines it, otherwise take the base's journal and snapshots, delete this branch's migration and re-run \`drizzle-kit generate\`.
 4. Run the test suite and verify correctness before pushing.
 5. ${pushStep}
 
@@ -480,30 +481,35 @@ function buildMigrationCollisionDescription(
   const opening = onBase
     ? `PR #${worker.prNumber} for "${task.title}" adds \`${collision.file}\`, but its base already has \`${collision.otherFile}\` at or above that number — the base merged a migration after this branch forked. This is a mechanical renumber, not a decision.`
     : `PR #${worker.prNumber} for "${task.title}" has a migration-number collision with open PR #${collision.otherPrNumber} (${otherPrUrl}) — both minted the same slot: \`${collision.file}\` here vs \`${collision.otherFile}\` there. This is a mechanical fix, not a real merge conflict — do not just "merge the base in", the migration index namespace is invisible to git.`;
-  const regenerateStep = onBase
-    ? `4. Regenerate at an index past the base's newest migration (\`${collision.otherFile}\` or later):`
-    : `4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):`;
+  const baseRef = prRefs?.baseRef ?? 'dev';
+  // Regenerating against the base alone would mint an open PR's slot again,
+  // so start past it until that PR lands.
+  const otherIndex = Number(/^(\d{4,})_/.exec(collision.otherFile)?.[1]);
+  const minIndex = !onBase && Number.isFinite(otherIndex) ? ` --min-index=${otherIndex + 1}` : '';
 
   return `${opening}${lineageNote}
 
 **Attempt ${iteration} of ${maxIterations}.**
 
-## Instructions (schema-change skill renumber recipe)
+## Instructions
+
+\`migrations:renumber\` does the whole renumber: it resets \`packages/core/drizzle/\` to the base's exact state and re-runs \`drizzle-kit generate\`, so this branch's schema change lands at the next free index with a fresh name, journal entry and snapshot. Do NOT hand-edit the journal, a snapshot or a migration's number.
 
 1. You are on branch \`${worker.branch}\`. Your worktree is based on the previous attempt's work.
-2. Merge the base branch in (do NOT rebase):
+2. Merge the base branch in (do NOT rebase). Resolve any conflicts OUTSIDE \`packages/core/drizzle/\` on the merits; leave the drizzle ones, the next step resolves them:
    \`\`\`bash
    git fetch origin
-   git merge origin/dev   # or the PR's actual base branch
+   git merge origin/${baseRef}
    \`\`\`
-3. Take dev's \`packages/core/drizzle/meta/_journal.json\` and snapshots wholesale, then drop this PR's colliding \`${collision.file}\` (and its snapshot). Do NOT hand-edit the journal or a snapshot.
-${regenerateStep}
+3. Renumber:
    \`\`\`bash
-   cd packages/core && bun db:generate
+   bun run migrations:renumber --base=origin/${baseRef}${minIndex}
    \`\`\`
-5. Confirm \`bun db:generate\` reports no pending schema changes (the regenerated SQL matches your original intent — read it), and that \`_journal.json\` entries are sequential with strictly increasing \`when\` timestamps. Delete any spurious extra migration \`db:generate\` mints.
-6. Change nothing else — this is a migration-file-only fix, same doctrine as any conflict-retry.
-7. ${pushStep}
+   (No \`migrations:renumber\` script in this repo? Do it by hand the same way: \`git checkout origin/${baseRef} -- packages/core/drizzle\`, delete this branch's \`${collision.file}\`, then \`cd packages/core && bun db:generate\`.)
+   Exit 0: staged and clean. Exit 3: the regenerated SQL differs from the SQL it replaced — read both; re-add any hand-written statement the old file had (via \`bun db:generate --custom\`, never by editing an existing file). Any other exit: read the message, it names what to fix.
+4. Verify: \`bun run migrations:index-check --base=origin/${baseRef}\` passes and \`cd packages/core && bun db:generate\` reports no schema changes.
+5. Commit (completing the merge) — change nothing else; this is a migration-file-only fix, same doctrine as any conflict-retry.
+6. ${pushStep}
 
 PR: ${prUrl}
 ${otherPrUrl ? `Colliding PR: ${otherPrUrl}` : `Colliding migration on the base: \`${collision.otherFile}\``}
@@ -1246,6 +1252,17 @@ export async function dispatchConflictRetry(
           // repair wait on something that is itself waiting on the repair's own
           // subject, a structural deadlock rather than real serialization.
           if (isDownstreamOf(t.id, taskId, dependsOnById)) return true;
+          // A collision repair edits only its own PR's branch, so a migration/schema-only
+          // overlap with work that has not started is not real serialization — every
+          // schema-touching task overlaps `drizzle/**`, and waiting on them all meant a
+          // mechanical renumber never ran. Admitted (running) work keeps its edge: it can
+          // land first and move the free index. Also kept: the PR it collides with, and
+          // workspace-declared serialized surfaces.
+          const collidingPr = migrationCollision?.otherPrNumber;
+          if (migrationCollision && t.status === 'pending' && (collidingPr == null || (t.subjectPrNumber !== collidingPr && t.conflictRetryPrNumber !== collidingPr))) {
+            const overlap = classifyManifestOverlap(retryTask.pathManifest!, t.pathManifest as string[] | null);
+            if (overlap.kind === 'migration' && !overlapTouchesSerializedSurface(overlap.paths, gitConfig, overlap.kind)) return true;
+          }
           // Pending work with no stored edge can still wait on this PR through
           // the claim route's open-PR backstop. Reuse that exact predicate before
           // storing either a hard edge or soft evidence in the reverse direction.

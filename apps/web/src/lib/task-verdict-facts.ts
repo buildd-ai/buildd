@@ -7,7 +7,7 @@
 import type { TaskEvidence, TaskMismatch } from '@buildd/shared';
 import { isLiveWorkerStatus } from '@buildd/shared';
 import type { CheckSource, TaskVerdict, VerdictCheck, VerdictInput, VerdictOpenAttempt } from './task-verdict';
-import type { TraceOutcomeContext } from './trace-consequence';
+import type { PriorAttemptFact, TraceOutcomeContext, TraceSettledAs } from './trace-consequence';
 import { latestChecks } from './task-verdict';
 import { parseTaskShippedRecord } from './task-shipped';
 import { prListStatus, type PrDisplayState } from './pr-presentation';
@@ -163,10 +163,20 @@ export function buildVerdictInput(input: VerdictFactsInput): VerdictInput {
  * outcome, read off the verdict so the two never disagree: a shipped, done or
  * green-and-waiting task succeeded; a blocked-by-checks one has a red gate.
  */
-export function traceOutcomeOf(verdict: TaskVerdict | null, taskStatus: string): TraceOutcomeContext {
+export function traceOutcomeOf(
+  verdict: TaskVerdict | null,
+  taskStatus: string,
+  priorAttempts?: readonly PriorAttemptFact[],
+): TraceOutcomeContext {
+  const settledAs: TraceSettledAs | null = verdict?.state === 'shipped' ? 'shipped'
+    : verdict?.state === 'done' ? 'done'
+    : verdict?.causeKey === 'needs_you:merge' ? 'ready_to_merge'
+    : null;
   return {
-    succeeded: verdict?.state === 'shipped' || verdict?.state === 'done' || verdict?.causeKey === 'needs_you:merge',
+    succeeded: settledAs != null,
     failed: taskStatus === 'failed' || verdict?.state === 'failed',
     gatingCheckRed: verdict?.state === 'blocked' && verdict.causeKey.startsWith('blocked:check'),
+    settledAs,
+    ...(priorAttempts ? { priorAttempts } : {}),
   };
 }

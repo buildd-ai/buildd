@@ -4,6 +4,7 @@ import {
   classifyTracesByRule,
   isExplorationNoise,
   isReadOnlyCommand,
+  priorAttemptFactsOf,
   resolveTraceConsequences,
   type ConsequenceTrace,
 } from './trace-consequence';
@@ -83,6 +84,16 @@ describe('classifyTracesByRule', () => {
     expect(attentionCount(c)).toBe(1);
   });
 
+  it('words a success by what it was: a merge landed, a finished task or a ready PR did not', () => {
+    const t = [{ id: 'x', pattern: 'git_fatal', excerpt: 'fatal: bad', ts: new Date(2) }];
+    const reason = (settledAs: 'shipped' | 'done' | 'ready_to_merge' | null) =>
+      classifyTracesByRule(t, { succeeded: true, failed: false, gatingCheckRed: false, settledAs }).get('x')!.reason;
+    expect(reason('shipped')).toBe('The work merged; this did not stop it.');
+    expect(reason('done')).toBe('The task finished; this did not stop it.');
+    expect(reason('ready_to_merge')).toBe('The PR is ready to merge; this did not block it.');
+    for (const s of ['done', 'ready_to_merge'] as const) expect(reason(s)).not.toMatch(/landed|merged/);
+  });
+
   it('once the work landed, unrecovered history is recovered, not current', () => {
     const c = classifyTracesByRule([
       bash('t', 'bun test a.test.ts', 1, 1),
@@ -123,5 +134,63 @@ describe('resolveTraceConsequences', () => {
     expect(c.get('u')).toMatchObject({ presentation: 'noise', decidedBy: 'model' });
     // The rule said noise; the model cannot overrule it.
     expect(c.get('g')).toMatchObject({ presentation: 'noise', decidedBy: 'rule' });
+  });
+});
+
+describe('resume branch fallback', () => {
+  const BRANCH = 'buildd/6f9a5b05-recon-specs';
+  const fallback = (workerId = 'w2', reason: 'missing' | 'diverged' = 'missing'): ConsequenceTrace => ({
+    id: 'f', workerId, pattern: 'resume_branch_fallback', source: 'git-operations', ts: new Date(10_000),
+    excerpt: `Branch "${BRANCH}" was ${reason} on remote — starting fresh from "dev".`,
+  });
+  const worker = (over: Record<string, unknown> = {}) => ({
+    id: 'w1', branch: BRANCH, createdAt: new Date(1_000), startedAt: null, exitCause: 'never_started',
+    commitCount: 0, mergedAt: null, ...over,
+  });
+  const second = { id: 'w2', branch: BRANCH, createdAt: new Date(9_000), startedAt: new Date(9_500), exitCause: null, commitCount: 0, mergedAt: null };
+  const DONE = { succeeded: true, failed: false, gatingCheckRed: false, settledAs: 'done' as const };
+
+  it('after a session that never began, is routine setup: diagnostic, not a recovered incident', () => {
+    const c = classifyTracesByRule([fallback()], { ...DONE, priorAttempts: priorAttemptFactsOf([second, worker()]) }).get('f')!;
+    expect(c.presentation).toBe('noise');
+    expect(c.headline).toBe('Started fresh after the previous session never began');
+    expect(c.reason).toBe('It made no commits, so nothing was lost.');
+    expect(`${c.headline} ${c.reason}`).not.toMatch(/\bPR\b|landed/);
+  });
+
+  it('is routine on a still-running task too: the outcome is not what decides it', () => {
+    const c = classifyTracesByRule([fallback()], { succeeded: false, failed: false, gatingCheckRed: false, priorAttempts: priorAttemptFactsOf([second, worker()]) });
+    expect(c.get('f')!.presentation).toBe('noise');
+    expect(attentionCount(c)).toBe(0);
+  });
+
+  it('after a session that ran but pushed nothing, is routine too', () => {
+    const c = classifyTracesByRule([fallback()], { ...DONE, priorAttempts: priorAttemptFactsOf([second, worker({ startedAt: new Date(1_500), exitCause: 'code_failure' })]) }).get('f')!;
+    expect(c.presentation).toBe('noise');
+    expect(c.headline).toBe('Started fresh; the previous attempt had pushed nothing');
+  });
+
+  it('when the prior attempt made commits that never merged, needs attention, even once the task succeeded', () => {
+    const c = classifyTracesByRule([fallback()], { ...DONE, priorAttempts: priorAttemptFactsOf([second, worker({ startedAt: new Date(1_500), exitCause: 'code_failure', commitCount: 3 })]) });
+    expect(c.get('f')).toMatchObject({ presentation: 'needs_attention', headline: "A previous attempt's commits were not on the remote" });
+    expect(attentionCount(c)).toBe(1);
+  });
+
+  it('when the prior attempt\'s PR merged, the gone branch lost nothing', () => {
+    const c = classifyTracesByRule([fallback()], { ...DONE, priorAttempts: priorAttemptFactsOf([second, worker({ startedAt: new Date(1_500), commitCount: 3, mergedAt: new Date(2_000) })]) });
+    expect(c.get('f')!.presentation).toBe('noise');
+  });
+
+  it('abstains with no prior attempt on record, or for a diverged branch', () => {
+    const none = classifyTracesByRule([fallback()], { ...DONE, priorAttempts: priorAttemptFactsOf([second]) }).get('f')!;
+    expect(none.headline).toBeUndefined();
+    expect(none.presentation).toBe('recovered');
+    const diverged = classifyTracesByRule([fallback('w2', 'diverged')], { ...DONE, priorAttempts: priorAttemptFactsOf([second, worker()]) }).get('f')!;
+    expect(diverged.headline).toBeUndefined();
+  });
+
+  it('a model answer cannot overrule it', () => {
+    const c = resolveTraceConsequences([fallback()], { ...RUNNING, priorAttempts: priorAttemptFactsOf([second, worker()]) }, { f: 'real' });
+    expect(c.get('f')).toMatchObject({ presentation: 'noise', decidedBy: 'rule' });
   });
 });

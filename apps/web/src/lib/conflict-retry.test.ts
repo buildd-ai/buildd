@@ -414,7 +414,7 @@ describe('buildConflictRetryTask', () => {
       }));
       expect(result!.title).toBe('[builder · migration collision #1] feat: add dark mode');
       expect(result!.description).toContain('its base already has `0093_landed.sql`');
-      expect(result!.description).toContain("past the base's newest migration");
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev');
       expect(result!.description).not.toContain('PR #null');
       expect(result!.description).not.toContain('/pull/null');
       expect((result!.context.failureContext as any).summary).toContain('already on its base');
@@ -450,6 +450,31 @@ describe('buildConflictRetryTask', () => {
       const result = buildConflictRetryTask(makeInput({ migrationCollision: collision }));
       expect(result!.description).not.toContain('Bound PR lineage');
       expect(result!.description).toContain('Push to the existing branch');
+    });
+
+    it('runs the renumber command past the open PR slot instead of a hand recipe', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: collision,
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'dev' },
+      }));
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/dev --min-index=94');
+      expect(result!.description).toContain('bun run migrations:index-check --base=origin/dev');
+    });
+
+    it('renumbers a base collision against the PR base with no index floor', () => {
+      const result = buildConflictRetryTask(makeInput({
+        migrationCollision: { file: '0093_safe.sql', otherFile: '0093_landed.sql', otherPrNumber: null, against: 'base' },
+        prRefs: { headRef: 'feat/dark-mode', baseRef: 'main' },
+      }));
+      expect(result!.description).toContain('git merge origin/main');
+      expect(result!.description).toContain('bun run migrations:renumber --base=origin/main\n');
+      expect(result!.description).not.toContain('--min-index');
+    });
+
+    it('tells a plain conflict retry to regenerate drizzle metadata conflicts, not merge them', () => {
+      const result = buildConflictRetryTask(makeInput({}));
+      expect(result!.description).toContain('migrations:renumber');
+      expect(result!.description).toContain('migration-index collision, not text to merge');
     });
 
     it('sets errorType to migration_collision in failureContext', () => {
@@ -987,6 +1012,21 @@ describe('dispatchConflictRetry', () => {
     });
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
+  });
+
+  it('a migration-only overlap with a not-yet-started task on another branch is not a dependsOn edge', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { status: 'pending', id: 'schema-feature', pathManifest: ['packages/core/db/schema.ts'], subjectPrNumber: null },
+      { status: 'in_progress', id: 'colliding-pr-task', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['colliding-pr-task']);
   });
 
   it('a prefix-only overlap with a sibling is soft evidence, never a dependsOn edge', async () => {

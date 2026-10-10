@@ -30,7 +30,7 @@ import {
   type StepData,
 } from '@builddai/ai-kit/chat/contract';
 import { ApprovalCard, ApprovalRowsCard, HandoffCard, ThinkingPanel } from './cards';
-import { approvalRowGroup, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary } from './model';
+import { THINKING_TAIL_ID, approvalRowGroup, composeTurn, isApprovalPart, thinkingSteps, toolRowLabel, toolRowState, toolSummary, type TurnPhase } from './model';
 import { ToolCallGroup } from './ToolCalls';
 import type { ToolCallOptions } from './tool-calls';
 
@@ -130,6 +130,27 @@ export interface ChatThreadProps {
    * `aria-busy` while live so a screen reader reads the settled answer once.
    */
   answer?: 'append' | 'replace';
+  /**
+   * How an assistant turn is laid out (0.22.0). `parts` (default): in the
+   * order the parts arrived, as before. `turn`: fixed regions that never trade
+   * places while the turn streams (`composeTurn`): the work line, the turn's
+   * tool rows under it, then each phase: its answer slot (`replace` within the
+   * phase), its hand-offs and custom rows, the approval card that closed it,
+   * and its results (`renderPhaseResults`, once the phase is settled). The
+   * reply to a decision is the next phase's answer, a new node below the card;
+   * the rationale above the card stays where it was. Phases carry
+   * `class="kit-phase"`, `data-phase` and `data-closed`; results
+   * `class="kit-phase-results"`.
+   */
+  compose?: 'parts' | 'turn';
+  /**
+   * `compose="turn"`: what a settled phase's calls produced, drawn after its
+   * answer and card (0.22.0), e.g. the objects a write created and the ones the
+   * answer cites. Called only once the phase is settled, so a result never
+   * mounts above prose still streaming. Default with `toolRows="rich"` and
+   * `renderObject`: the phase's calls' objects.
+   */
+  renderPhaseResults?(message: ChatMessage, phase: TurnPhase, ctx: ThreadMessageContext): ReactNode;
   /** The person's name, for "Approved by …". */
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
@@ -173,23 +194,33 @@ export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
   renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
   renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold, answer = 'append',
-  viewerName = null, empty, error, label = 'Conversation', className,
+  compose = 'parts', renderPhaseResults: appPhaseResults, viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
   const live = status === 'submitted' || status === 'streaming';
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
   const waitingForFirstChunk = status === 'submitted' && messages.at(-1)?.role === 'user';
   const lastHasTurnError = !!messages.at(-1)?.parts.some(isTurnErrorPart);
+  const turnMode = compose === 'turn';
+  const objectsOf = (parts: readonly ChatToolPart[]) => (renderObject ? parts.flatMap(p => {
+    const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
+    return Array.isArray(objects) ? objects.map((o, j) => <div key={`${p.toolCallId}:${o.kind}:${o.id}:${j}`}>{renderObject(o, p)}</div>) : [];
+  }) : []);
   const renderToolGroup = appToolGroup ?? (toolRows === 'rich'
     ? (parts: readonly ChatToolPart[]) => (
       <>
         <ToolCallGroup calls={parts} {...toolCallOptions} />
-        {renderObject && parts.flatMap(p => {
-          const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
-          return Array.isArray(objects) ? objects.map((o, j) => <div key={`${p.toolCallId}:${o.kind}:${o.id}:${j}`}>{renderObject(o, p)}</div>) : [];
-        })}
+        {/* `turn`: what the calls returned is the phase's results, after its answer. */}
+        {!turnMode && objectsOf(parts)}
       </>
     )
+    : undefined);
+  const renderPhaseResults = appPhaseResults ?? (turnMode && toolRows === 'rich' && renderObject
+    ? (m: ChatMessage, phase: TurnPhase) => {
+      const calls = m.parts.slice(phase.from, phase.to).filter(isToolPart).filter(p => !isApprovalPart(p));
+      const nodes = objectsOf(calls);
+      return nodes.length > 0 ? nodes : null;
+    }
     : undefined);
 
   if (messages.length === 0 && empty) return <div className={`kit-chat${className ? ` ${className}` : ''}`}>{empty}</div>;
@@ -313,6 +344,94 @@ export function ChatThread({
     return out;
   };
 
+  // `compose="turn"` (0.22.0): the work's rows under the line, then each phase
+  // in its own keyed frame: answer, blocks, the card that closed it, results.
+  const turnOf = (m: ChatMessage, ctx: ThreadMessageContext, folded: boolean): ReactNode[] => {
+    const { phases } = composeTurn(m.parts, { streaming: ctx.streaming });
+    const rows = approvalRowGroup(m.parts);
+    const inRows = new Set([...(rows?.rows ?? []), ...(rows?.held ?? [])].map(p => p.toolCallId));
+    let rowsDrawn = false;
+    const card = (p: ChatToolPart, key: string): ReactNode => {
+      if (rows && inRows.has(p.toolCallId)) {
+        if (rowsDrawn) return null;
+        rowsDrawn = true;
+        return <ApprovalRowsCard key={key} parts={rows.rows} held={rows.held} onRespond={onApprovalResponse ?? (() => {})} approverName={viewerName} />;
+      }
+      return onApprovalResponse
+        ? <ApprovalCard key={key} part={p} onRespond={onApprovalResponse} onEdit={onEditApproval} approverName={viewerName} />
+        : <ApprovalCard key={key} part={p} onRespond={() => {}} approverName={viewerName} />;
+    };
+    const work: ReactNode[] = [];
+    const errors: ReactNode[] = [];
+    const frames = phases.map(ph => {
+      const calls: ChatToolPart[] = [];
+      let callsAt = -1;
+      const blocks: ReactNode[] = [];
+      const closing: ReactNode[] = [];
+      let opener: ReactNode = null;
+      for (let i = ph.from; i < ph.to; i++) {
+        const p = m.parts[i];
+        const key = `${m.id}:${i}`;
+        if (isToolPart(p)) {
+          const into = ph.closer?.kind === 'approval' && ph.closer.at.includes(i) ? closing : blocks;
+          const custom = renderTool?.(p, m);
+          if (custom === null) continue;
+          if (custom !== undefined) { into.push(<div key={key}>{custom}</div>); continue; }
+          if (isApprovalPart(p)) { const node = card(p, key); if (node) into.push(node); continue; }
+          if (callsAt === -1) callsAt = i;
+          calls.push(p);
+          continue;
+        }
+        if (isHandoffPart(p)) {
+          const data = handoffs.get(p.data.taskId) ?? p.data;
+          blocks.push(<div key={key}>{renderHandoff ? renderHandoff(data) : <HandoffCard data={data} />}</div>);
+        } else if (isTurnErrorPart(p)) {
+          errors.push(<div key={key} className="kit-error" role="alert" data-turn-error={p.data.code}>{p.data.message}</div>);
+        } else if (isSteerPart(p)) {
+          const note = (
+            <p key={key} className="kit-steer-note" data-steer-state={p.data.state}>
+              {p.data.state === 'deferred' ? 'Sending next: ' : 'You added: '}{p.data.text}
+            </p>
+          );
+          if (ph.opener?.kind === 'steer' && ph.opener.at === i) opener = note; else blocks.push(note);
+        }
+      }
+      if (calls.length > 0 && !folded) {
+        const node = renderToolGroup
+          ? renderToolGroup(calls, m, ctx)
+          : calls.map(p => (
+            <div key={p.toolCallId} className="kit-tool" data-state={toolRowState(p)} data-tool-call-id={p.toolCallId}>
+              <span aria-hidden="true">{toolRowState(p) === 'done' ? '✓' : toolRowState(p) === 'failed' ? '!' : '·'}</span>
+              <span>{toolRowLabel(p, m.parts)}</span>
+              {toolSummary(p) && <span className="kit-tool-summary">· {toolSummary(p)}</span>}
+            </div>
+          ));
+        if (node != null && node !== false) work.push(<div key={`${m.id}:g${callsAt}`}>{node}</div>);
+      }
+      const text = ph.answerAt >= 0 ? m.parts[ph.answerAt] as ChatTextPart : null;
+      const live = ctx.streaming && !ph.settled;
+      const results = ph.settled ? renderPhaseResults?.(m, ph, ctx) : null;
+      return (
+        <div key={`${m.id}:${ph.key}`} className="kit-phase" data-phase={ph.key} data-closed={ph.closer?.kind}>
+          {opener}
+          {text && (
+            <div key="answer" className="kit-answer" data-testid="kit-answer" data-answer={live ? 'live' : 'settled'} aria-busy={live || undefined}>
+              {renderText(text.text, m, text)}
+            </div>
+          )}
+          {blocks}
+          {closing}
+          {results != null && results !== false && <div key="results" className="kit-phase-results">{results}</div>}
+        </div>
+      );
+    });
+    return [
+      ...(work.length > 0 ? [<div key={`${m.id}:work`} className="kit-turn-work">{work}</div>] : []),
+      ...frames,
+      ...errors,
+    ];
+  };
+
   return (
     <div className={`kit-chat kit-thread${className ? ` ${className}` : ''}`} role="log" aria-label={label} aria-live="polite" aria-busy={live || undefined} data-testid="kit-thread">
       {messages.map((m, index) => {
@@ -336,8 +455,9 @@ export function ChatThread({
         const foldOpen = foldLine != null && turnFold!.isOpen(m);
         // An app checklist with no steps while the answer streams: nothing left to show working.
         const answering = streaming && steps.length === 0 && m.parts.some(p => isTextPart(p) && !!p.text.trim());
+        const folded = foldLine != null && !foldOpen;
         return (
-          <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined} data-folded={(foldLine != null && !foldOpen) || undefined}>
+          <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined} data-folded={folded || undefined} data-compose={turnMode && m.role === 'assistant' ? 'turn' : undefined}>
             {head(m, ctx)}
             {m.role === 'assistant' && (foldLine != null
               ? <ThinkingPanel steps={steps} streaming={false} summary={foldLine} open={foldOpen} onToggle={open => turnFold!.onToggle(m, open)} />
@@ -347,9 +467,11 @@ export function ChatThread({
                   streaming={streaming}
                   name={thinkingName}
                   renderPinned={renderPinnedStep ? s => renderPinnedStep(s, m) : undefined}
+                  // `turn`: a turn with steps keeps its line through the answer, so the line it folds to is already there.
+                  holdLine={turnMode && steps.some(s => s.id !== THINKING_TAIL_ID)}
                 />
               ))}
-            {partsOf(m, ctx, foldLine != null && !foldOpen)}
+            {turnMode && m.role === 'assistant' ? turnOf(m, ctx, folded) : partsOf(m, ctx, folded)}
             {foot(m, ctx)}
           </div>
         );

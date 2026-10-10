@@ -38,6 +38,10 @@ import {
   type PickerRow,
   type PickerValue,
   type RouteGroup,
+  type PickerTarget,
+  routeUnsupported,
+  targetOf,
+  rowWarning,
 } from '@/lib/model-picker';
 import { VendorMark } from './VendorMark';
 
@@ -54,6 +58,8 @@ interface BaseProps {
   triggerClassName?: string;
   /** Replace the trigger's content. */
   triggerLabel?: ReactNode;
+  /** What the pick will run: routes that can't serve it are disabled, and OpenAI models warn. */
+  target?: PickerTarget | ((routeId: string) => PickerTarget | undefined);
   /** Badge text for current rows. Default "current". */
   currentLabel?: string;
   className?: string;
@@ -118,7 +124,7 @@ function Price({ row }: { row: PickerRow }) {
 
 export function CatalogModelPicker(props: CatalogModelPickerProps) {
   const {
-    tier, routes, models, loading = false, disabled = false, 'aria-label': ariaLabel, testId = 'model-picker-trigger',
+    tier, routes, models, target, loading = false, disabled = false, 'aria-label': ariaLabel, testId = 'model-picker-trigger',
     triggerClassName, triggerLabel, currentLabel = 'current', className = '',
   } = props;
   const multi = props.mode === 'multi';
@@ -204,6 +210,8 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
       setExpanded((s) => new Set(s).add(it.id));
       return;
     }
+    const spec = routes.find((r) => r.id === it.row.route);
+    if (spec && routeUnsupported(spec, targetOf(target, spec.id)) && !it.row.badges.includes('current')) return;
     if (multi) { toggle(it.row); return; }
     const sp = props as SingleProps;
     if (!sp.value || pickerKey(sp.value) !== it.row.key) sp.onChange({ route: it.row.route, model: it.row.model });
@@ -335,12 +343,16 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
     </ol>
   );
 
+  const routeById = new Map(routes.map((r) => [r.id, r]));
+
   function renderRow(row: PickerRow) {
     const i = itemIndex.get(row.key)!;
     const isActive = i === active;
     const isLocked = multi && lockedKeys.has(row.key);
     const checked = multi ? isLocked || draftKeys.has(row.key) : row.badges.includes('current');
-    const blocked = multi && !checked && full;
+    const unsupported = routeUnsupported(routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, targetOf(target, row.route));
+    const warning = rowWarning(row, routeById.get(row.route) ?? { id: row.route, catalog: 'anthropic' }, targetOf(target, row.route));
+    const blocked = (multi && !checked && full) || (!!unsupported && !checked);
     return (
       <div
         key={row.key}
@@ -348,6 +360,7 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
         role="option"
         aria-selected={checked}
         aria-disabled={isLocked || blocked || undefined}
+        title={unsupported ?? undefined}
         data-key={row.key}
         data-testid="model-picker-row"
         onMouseDown={(e) => e.preventDefault()}
@@ -364,6 +377,7 @@ export function CatalogModelPicker(props: CatalogModelPickerProps) {
               {row.route.includes('openrouter') || row.model.includes('/') ? row.short : row.model}
             </span>
             {!row.listed && <span className="block text-[11px] text-status-warning">not in the catalog</span>}
+            {warning && <span className="block text-[11px] text-status-warning" data-testid="model-picker-warning">{warning}</span>}
             {row.hidden && row.listed && showHidden && <span className="block text-[11px] text-text-muted">{row.hidden}</span>}
           </span>
           {!isMobile && (
