@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | 'account'
   | 'team'
   | 'roles'
+  | 'connections'
   | 'budgets'
   | 'billing'
   | 'workspaces'
@@ -62,6 +63,12 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         label: 'Roles',
         href: '/app/settings/roles',
         description: 'The agents on the team: what each one does, its model and its tools.',
+      },
+      {
+        id: 'connections',
+        label: 'Connected apps',
+        href: '/app/settings/connections',
+        description: 'Apps you connected to buildd over MCP: what each one reaches, and whether it acts as you.',
       },
       {
         id: 'budgets',

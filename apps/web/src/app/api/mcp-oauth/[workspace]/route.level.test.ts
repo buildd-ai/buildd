@@ -161,3 +161,46 @@ describe('mcp-oauth route: interactive worker liveness', () => {
     expect(mockTouchInteractiveWorkers.mock.calls[1][0]).toMatchObject({ sessionKey: sid!.split('.')[1] });
   });
 });
+
+// Task 11fe4d38: the internal REST calls carry the caller's bearer, so they go
+// to this server's own configured origin, never a hardcoded host.
+describe('mcp-oauth route: self-call origin', () => {
+  const KEYS = ['VERCEL_URL', 'NEXTAUTH_URL', 'AUTH_URL', 'NODE_ENV'] as const;
+  let saved: Record<string, string | undefined>;
+  let realFetch: typeof fetch;
+  let urls: string[];
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
+    realFetch = globalThis.fetch;
+    urls = [];
+    globalThis.fetch = (async (url: any) => { urls.push(String(url)); return new Response('{"tasks":[]}', { status: 200 }); }) as any;
+    mockAuthenticateApiKey.mockReset();
+    sessionAt('admin');
+  });
+  const restore = () => {
+    globalThis.fetch = realFetch;
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  };
+
+  it('refuses with a 500 config error and makes no outbound call when no origin is configured', async () => {
+    try {
+      process.env.NODE_ENV = 'production';
+      const { status, body } = await callTool('buildd', { action: 'list_tasks', params: {} });
+      expect(status).toBe(500);
+      expect(body.error).toBe('self_origin_unconfigured');
+      expect(urls).toEqual([]);
+    } finally { restore(); }
+  });
+
+  it('calls the NEXTAUTH_URL origin when it is set', async () => {
+    try {
+      process.env.NODE_ENV = 'production';
+      process.env.NEXTAUTH_URL = 'https://self.example';
+      const { status } = await callTool('buildd', { action: 'list_tasks', params: {} });
+      expect(status).toBe(200);
+      expect(urls.length).toBeGreaterThan(0);
+      for (const u of urls) expect(u.startsWith('https://self.example/api/')).toBe(true);
+    } finally { restore(); }
+  });
+});

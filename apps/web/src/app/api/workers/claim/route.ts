@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -12,6 +13,7 @@ import { checkHostedRunnerAllowance } from '@/lib/hosted-runner-usage-store';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_RUNNER, INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
+import { claimingUserId } from '@/lib/worker-owner';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
@@ -211,6 +213,8 @@ export async function POST(req: NextRequest) {
 
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
+  // An explicit opt-in means the literal boolean, never a truthy stand-in.
+  claimAcrossAccessible = claimAcrossAccessible === true;
 
   // A per-task token claims its own task and nothing else.
   if (account.taskScope) {
@@ -286,6 +290,14 @@ export async function POST(req: NextRequest) {
   let claimableWorkspaceIdsMemo: Promise<string[]> | null = null;
   const resolveClaimableWorkspaceIds = (): Promise<string[]> => {
     claimableWorkspaceIdsMemo ??= (async () => {
+      // A grant session claims only inside its granted workspaces (grant ∩
+      // current membership, this request), whatever the shared team account's
+      // open workspaces or links would allow, and a restricted workspace it was
+      // granted is claimable without a link (lib/grant-scope.ts).
+      if (isGrantSession(account)) {
+        return constrainToGranted(account, account.workspaceIds ?? [], 'write')
+          .filter((id) => !workspaceId || id === workspaceId);
+      }
       // Get workspaces this account can claim from
       // 1. Open workspaces of the account's own team ("open" = open within the team)
       // 2. Any workspace where the account has an explicit canClaim link
@@ -496,7 +508,20 @@ export async function POST(req: NextRequest) {
   // pending task across all of them (ranked/picked below). That is declared
   // intent, not the accidental ambiguity the guard targets — so allow it while
   // still rejecting silent multi-workspace claims (e.g. a misconfigured MCP).
-  if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
+  if (isGrantSession(account) && !workspaceId && !claimAcrossAccessible) {
+    // The same guard for a grant session, counted over what it was granted.
+    const granted = constrainToGranted(account, account.workspaceIds ?? [], 'write');
+    if (granted.length > 1) {
+      return NextResponse.json(
+        {
+          error: 'workspaceId required for OAuth tokens with access to multiple workspaces',
+          accessibleWorkspaces: granted.length,
+          hint: 'Pass workspaceId in the request body, or claimAcrossAccessible: true to claim across your granted workspaces only.',
+        },
+        { status: 400 },
+      );
+    }
+  } else if (account.authType === 'oauth' && !workspaceId && !claimAcrossAccessible) {
     const permissions = await getAccountWorkspacePermissions(account.id);
     const accessibleWorkspaceIds = new Set(permissions.filter((p) => p.canClaim).map((p) => p.workspaceId));
     // Also count open workspaces of the account's own team — those are
@@ -2944,8 +2969,11 @@ export async function POST(req: NextRequest) {
     // The authenticated OAuth session user, never the client-relayed session
     // marker: an OAuth session acts as its team's shared account, so this is
     // what PATCH /api/workers/[id] matches to let only the claimer act as the
-    // worker (lib/worker-owner.ts). NULL for a bld_ key.
-    const claimedByUserId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+    // worker (lib/worker-owner.ts). An account-level 'agent' grant records
+    // the user who connected it: every grant session in a team shares one
+    // account, so this is what keeps one member's agent off another's claim.
+    // NULL for a bld_ key.
+    const claimedByUserId = claimingUserId(account);
     // Same rule as the pre-check: a session is not limited, and a runner's
     // count leaves the person's own sessions out.
     const accountSlotPredicate = interactiveSession
