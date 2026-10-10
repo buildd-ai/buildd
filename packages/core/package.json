@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.315.0",
+  "version": "0.316.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -11,6 +11,7 @@
   "exports": {
     "./db": "./db/index.ts",
     "./run-evidence": "./run-evidence.ts",
+    "./artifact-redaction": "./artifact-redaction.ts",
     "./db/*": "./db/*.ts",
     "./config": "./config.ts",
     "./token-scopes": "./token-scopes.ts",
