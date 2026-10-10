@@ -37,6 +37,19 @@ describe('SettingsPage', () => {
     expect(h1![1].split(/\s+/)).not.toContain('hidden');
   });
 
+  it('says once, at the top, that a team page is managed by the team admins', () => {
+    const html = renderToStaticMarkup(<SettingsPage title="Storage" readOnly><p>x</p></SettingsPage>);
+    expect(html.match(/Managed by your team admins\./g)).toHaveLength(1);
+    expect(html).toContain('data-testid="settings-read-only"');
+    // On a phone too: the header must not be desktop-only when it carries the line.
+    expect(headerClass(html).split(/\s+/)).not.toContain('hidden');
+  });
+
+  it('says nothing about admins when the viewer can change the page', () => {
+    const html = renderToStaticMarkup(<SettingsPage title="Storage"><p>x</p></SettingsPage>);
+    expect(html).not.toContain('Managed by');
+  });
+
   it('keeps the h1 desktop-only by default', () => {
     const html = renderToStaticMarkup(<SettingsPage title="Billing" description="d"><p>x</p></SettingsPage>);
     expect(html).toMatch(/<h1 class="hidden md:block[^"]*">Billing<\/h1>/);

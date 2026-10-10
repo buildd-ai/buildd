@@ -12,6 +12,7 @@ import { describe, expect, it } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: CatalogSection } = await import('./CatalogSection');
+const { describeControls } = await import('../_lib/form-controls');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -57,6 +58,7 @@ describe('CatalogSection', () => {
     stubFetch({ catalog: { canManage: false, entries: [entry('vercel')] } });
     const { el, unmount } = await mount();
     expect(el.textContent).toBe('');
+    expect(describeControls(el)).toEqual([]);
     await unmount();
   });
 

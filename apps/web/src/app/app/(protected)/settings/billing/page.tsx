@@ -55,7 +55,7 @@ export default async function BillingSettingsPage({
   const canManage = roleHas(currentTeam.role, 'manage_billing', null) || currentTeam.slug === `personal-${user.id}`;
 
   return (
-    <SettingsPage title="Billing">
+    <SettingsPage title="Billing" readOnly={!canManage}>
       {checkout === 'success' && (
         <p className="notice notice-ok text-sm" data-testid="billing-checkout-success">
           Payment received. Your plan updates here in a moment.
@@ -107,9 +107,6 @@ export default async function BillingSettingsPage({
               </li>
             ))}
           </ul>
-          {!canManage && (
-            <p className="text-meta text-text-muted mt-3">Only team owners and admins can change the plan.</p>
-          )}
         </section>
       )}
     </SettingsPage>

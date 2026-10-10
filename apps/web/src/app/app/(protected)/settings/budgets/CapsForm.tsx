@@ -78,20 +78,29 @@ export default function CapsForm({
   ) => (
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 py-3">
       <span>
-        <label htmlFor={id} className="block text-sm text-text-primary">{label}</label>
+        {canManage
+          ? <label htmlFor={id} className="block text-sm text-text-primary">{label}</label>
+          : <span className="block text-sm text-text-primary">{label}</span>}
         <span className="block text-xs text-text-muted" data-testid={`${id}-default`}>{fallback}</span>
       </span>
-      <div className="sm:text-right">
-        <input
-          id={id}
-          inputMode="decimal"
-          value={value}
-          onChange={(e) => set(e.target.value)}
-          disabled={!canManage || !loaded}
-          className="w-full sm:w-36 h-11 sm:h-9 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm text-text-primary sm:text-right disabled:opacity-100 disabled:cursor-default"
-        />
-        {!parsed.ok && <p className="text-xs text-status-error mt-1">{parsed.error}</p>}
-      </div>
+      {canManage ? (
+        <div className="sm:text-right">
+          <input
+            id={id}
+            inputMode="decimal"
+            value={value}
+            onChange={(e) => set(e.target.value)}
+            disabled={!loaded}
+            className="w-full sm:w-36 h-11 sm:h-9 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-sm text-text-primary sm:text-right disabled:opacity-100 disabled:cursor-default"
+          />
+          {!parsed.ok && <p className="text-xs text-status-error mt-1">{parsed.error}</p>}
+        </div>
+      ) : (
+        // Read-only: the cap someone set, or the default it falls back to.
+        <span id={id} data-testid={`${id}-value`} className="font-mono text-sm text-text-primary sm:text-right">
+          {loaded ? (value || fallback) : '…'}
+        </span>
+      )}
     </div>
   );
 
@@ -102,15 +111,13 @@ export default function CapsForm({
         {!own && field('cap-team', 'Team', team, setTeam, `Default ${perDay(defaultTeamUsd)}`, teamParsed)}
         {field('cap-user', 'Each person', user, setUser, own ? 'No cap' : `Default ${perDay(effectiveTeam * defaultUserShare)}`, userParsed)}
       </div>
-      {canManage ? (
+      {canManage && (
         <div className="flex flex-wrap items-center gap-2">
           <button className="btn btn-primary" data-testid="caps-save" onClick={save} disabled={busy || !loaded || !ok}>
             {busy ? 'Saving…' : 'Save caps'}
           </button>
           {msg && <span role="status" className={`text-xs ${msg.tone === 'ok' ? 'text-status-success' : 'text-status-error'}`}>{msg.text}</span>}
         </div>
-      ) : (
-        <p className="text-xs text-text-muted">Admins can change this.</p>
       )}
     </div>
   );
