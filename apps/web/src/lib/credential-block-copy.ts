@@ -24,7 +24,7 @@ export function credentialBlockFromDeferral(reason: string, detail: Record<strin
     const route = typeof detail.surface === 'string' ? SURFACE_ROUTE[detail.surface] : undefined;
     return route ? { route, scope: 'personal' } : null;
   }
-  if (reason === 'provider_unavailable' && detail.attemptedBackend === 'codex') return { route: 'codex', scope: 'team' };
+  if (reason === 'provider_unavailable' && detail.attemptedBackend === 'codex' && detail.flipFailure === 'no_credential') return { route: 'codex', scope: 'team' };
   return null;
 }
 

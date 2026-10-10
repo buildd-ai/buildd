@@ -11,8 +11,17 @@ describe('credentialBlockFromDeferral', () => {
     expect(credentialBlockFromDeferral('no_personal_credential', { surface: 'cloud-egress', policy: 'personal_only' })?.route).toBe('cloud');
   });
   it('treats a Codex task with no Codex credential as a team-key need', () => {
-    expect(credentialBlockFromDeferral('provider_unavailable', { attemptedBackend: 'codex' }))
+    expect(credentialBlockFromDeferral('provider_unavailable', { attemptedBackend: 'codex', flipFailure: 'no_credential' }))
       .toEqual({ route: 'codex', scope: 'team' });
+  });
+  it('states no key when Codex is paused or its slot is taken', () => {
+    expect(credentialBlockFromDeferral('provider_unavailable', { attemptedBackend: 'codex', flipFailure: 'paused' })).toBeNull();
+    expect(credentialBlockFromDeferral('provider_unavailable', { attemptedBackend: 'codex', flipFailure: 'slot_taken' })).toBeNull();
+    expect(credentialBlockFromDeferral('provider_unavailable', { attemptedBackend: 'codex' })).toBeNull();
+  });
+  it('clears the stamp key on claim', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '../app/api/workers/claim/route.ts'), 'utf8');
+    expect(src).toContain('delete (patchedContext as Record<string, unknown>)[CREDENTIAL_BLOCK_CONTEXT_KEY]');
   });
   it('ignores unrelated deferrals', () => {
     expect(credentialBlockFromDeferral('workspace_cap', {})).toBeNull();

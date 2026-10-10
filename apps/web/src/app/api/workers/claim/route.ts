@@ -1388,9 +1388,14 @@ export async function POST(req: NextRequest) {
   // (codexAuthReachesRunner — the same predicate as the capability filter), the
   // ≤1-Codex-per-workspace throttle, and an active Codex rate-limit. Shared by
   // the provider toggle and budget failover. Returns true if the flip happened.
+  // Why the last tryFlipToCodex returned false: only `no_credential` is a missing key.
+  let codexFlipFailure: 'paused' | 'slot_taken' | 'no_credential' | undefined;
   const tryFlipToCodex = async (task: any, teamId: string | undefined, wsId: string | undefined, reason: ClaimRoutingReason): Promise<boolean> => {
     const codexFree = !!wsId && !codexBusyWorkspaces.has(wsId) && !codexFlippedWorkspaces.has(wsId);
-    if (teamId && (await teamPauses(teamId)).has('codex')) return false;
+    codexFlipFailure = undefined;
+    if (teamId && (await teamPauses(teamId)).has('codex')) { codexFlipFailure = 'paused'; return false; }
+    if (!codexFree) { codexFlipFailure = 'slot_taken'; return false; }
+    codexFlipFailure = 'no_credential';
     if (wsId && teamId && codexFree && await codexAuthReachesRunner({ teamId, workspaceId: wsId })) {
       noteRouting(task, (task.backend || 'claude') as AgentBackend, 'codex', reason);
       task.backend = 'codex';
@@ -2245,7 +2250,7 @@ export async function POST(req: NextRequest) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
-        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_disabled'))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex' }); continue; }
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId, 'claude_disabled'))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex', flipFailure: codexFlipFailure }); continue; }
         console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
       } else {
         // Codex disabled team-wide → run on Claude.
