@@ -31,7 +31,7 @@ export default async function MissionPlanPage({ searchParams }: { searchParams: 
     <Link href="/app/missions" className="text-meta text-text-muted hover:text-text-secondary">‹ Missions</Link>
   );
   const shell = (children: React.ReactNode) => (
-    <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
+    <div className="px-4 sm:px-7 md:px-10 pt-6 md:pt-8 pb-10 max-w-[1180px]">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h1 data-testid="plan-headline" className="sr-only md:not-sr-only text-heading font-semibold text-text-primary">Plan</h1>
         {back}
