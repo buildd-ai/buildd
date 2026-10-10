@@ -61,6 +61,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_decision_stats: 'workers',
   list_connectors: 'workers',
   resolve_capability: 'workers',
+  request_capability: 'workers',
   list_runners: 'workers',
   read_evidence: 'workers',
   // PRs, reviews, releases
@@ -256,6 +257,7 @@ export const ACTION_LISTING: Record<BuilddAction, 'listed' | 'more'> = {
   suggest_schedule_update: 'more',
   list_connectors: 'more',
   resolve_capability: 'more',
+  request_capability: 'more',
   trace_schedule: 'more',
   create_schedule: 'more',
   update_schedule: 'more',
@@ -348,7 +350,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   runners: {
     parts: [
-      { text: 'connectors', actions: ['list_connectors', 'resolve_capability'] },
+      { text: 'connectors', actions: ['list_connectors', 'resolve_capability', 'request_capability'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -420,6 +422,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_decision_stats: 'decision-shadow counts',
   list_connectors: 'connector health',
   resolve_capability: 'who serves a need',
+  request_capability: 'ask for access',
   list_runners: 'slots, branch, build, heartbeat',
   read_evidence: 'stored run logs',
   get_pr: 'PR state, CI, reviews',
@@ -480,7 +483,10 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  // Token, cost and diff counters are runner telemetry; help lists them.
+  update_progress: '{workerId?, progress?, message?, plan?, kind?, …}',
   resolve_capability: '{capability?, …}',
+  request_capability: '{capability, …}',
   register_skill: '{name, content, slug?, personal?, workspaceId?, description?, isRole?, model?, allowedTools?, …}',
   update_skill: '{slug, personal?, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
@@ -668,6 +674,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors', 'resolve_capability'] }]),
+    param('capability', str, [{ text: 'Need as domain:verb, e.g. observability:query', actions: ['resolve_capability', 'request_capability'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
     param('message', str, [{ text: 'Steering message for the running agent', actions: ['send_agent_message'] }]),
   ],

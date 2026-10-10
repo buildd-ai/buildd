@@ -616,6 +616,10 @@ export const workerActions = [
   // opt-in, catalog policy and Operator grant. Worker level: the organizer
   // choosing a role and the agent missing a tool are the ones asking.
   'resolve_capability',
+  // Ask for a capability for this run. Worker level: the agent missing the
+  // access is the one asking; a person decides on the request page, and no
+  // key, however high, can approve it.
+  'request_capability',
   'list_releases',
   'get_release',
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
@@ -1003,6 +1007,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
     resolve_capability: '{ capability?, roleSlug?, workspaceId? } — what could satisfy a semantic need in this workspace, before choosing a role. capability is domain:verb, domain one of observability|deployment|database|analytics|work_tracking|docs|source_control, verb read|query|write (e.g. "observability:query", "deployment:read"); omit it to list every need something here serves, with what is available now. Returns ranked candidates: provider (catalog slug), installed connector or null, match exact|partial|category, access permitted|auto_grant (route to a role in roles.withAccess)|ask_admin|forbidden (team blocked it)|reconnect|unhealthy, availableNow, health, workspace enablement, compatibility (unknown_until_tested = the provider may refuse a Buildd-run client), risk (writeToolsExposed: mounting exposes every native tool, so read does not mean read-only), runtimeNeeds, nextSteps. Plus operator (Operator deploy grant, deployment needs only) and unclassifiedConnectors. roleSlug defaults to your own task\'s role under a per-task token. Read-only: installing, enabling or granting stays a team admin act. Native tool names and schemas are untouched.',
+    request_capability: '{ capability, provider?, tool?, resource?, environment?, risk?, ttlSeconds?, reason?, workerId? } — ask for access this run needs, by need not by connector: capability is domain:verb (as in resolve_capability) or model.inference (then provider openrouter|litellm, models[], budget). Never pass a connector id or credential. Returns outcome: existing (your role already has it, or a live grant covers it), auto_granted (team policy granted it now, for ttlSeconds), pending_approval (a team admin decides; asking again returns the same request), denied (a person denied this exact ask for this run), forbidden (team blocked it; not appealable here), need_connection / need_reauth / unhealthy (someone must (re)connect the provider), unavailable (nothing serves it) — plus nextSteps and alternatives (e.g. a role that already mounts it). Writes (risk write/admin) always need a person. A grant is bound to this worker, task and role and ends with them; it is re-checked on every use, so a revoke stops the next call. Credentials stay server-side.',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10), sinceDays? } — list releases for a workspace or mission, newest first: version, state, deploy time, head SHA, id, and the tasks/PRs each shipped. "What shipped this week" = sinceDays: 7. get_release has the full record.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -5490,6 +5495,17 @@ export async function handleBuilddAction(
       if (typeof params.capability === 'string' && params.capability.trim()) q.set('capability', params.capability.trim());
       if (typeof params.roleSlug === 'string' && params.roleSlug.trim()) q.set('roleSlug', params.roleSlug.trim());
       const data = await api(`/api/connectors/capabilities?${q.toString()}`);
+      return text(JSON.stringify(data, null, 2));
+    }
+
+    case 'request_capability': {
+      const workerId = resolveWorkerId(params.workerId, ctx);
+      if (typeof params.capability !== 'string' || !params.capability.trim()) throw new Error('capability is required (e.g. observability:query)');
+      const { workerId: _w, ...ask } = params as Record<string, unknown>;
+      const data = await api('/api/agent-capabilities/requests', {
+        method: 'POST',
+        body: JSON.stringify({ ...ask, workerId }),
+      });
       return text(JSON.stringify(data, null, 2));
     }
 
