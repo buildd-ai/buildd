@@ -108,7 +108,7 @@ export type EscalationAction =
 export const JEV_ACTIONS = ['re_review', 'address_review', 'ci_fix', 'conflict_fix'] as const;
 export type JevAction = (typeof JEV_ACTIONS)[number];
 
-export type EscalationRail = 'protected_path' | 'data_migration' | 'security' | 'mission_ship_escalation' | 'irreversible' | 'no_next_step';
+export type EscalationRail = 'protected_path' | 'data_migration' | 'security' | 'mission_ship_escalation' | 'irreversible' | 'no_next_step' | 'critical_incident';
 
 export type EscalationVerdict =
   | { owner: 'person'; by: 'rule' | 'jev' | 'fallback'; rail?: EscalationRail; reason: string }
@@ -143,6 +143,7 @@ const RAIL_WORDS: Record<EscalationRail, string> = {
   security: 'The reviewer raised a security concern, so a person decides.',
   mission_ship_escalation: 'The reviewer escalated the mission\'s ship PR, the one human gate for this mission.',
   irreversible: 'It names an action that can\'t be undone.',
+  critical_incident: 'A critical platform incident: the owner is told once, whatever else is running.',
   no_next_step: 'Buildd has no next step of its own for it and the reviewer raised nothing to weigh, so it comes to you.',
 };
 

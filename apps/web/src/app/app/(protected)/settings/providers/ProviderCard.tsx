@@ -1,7 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
+import { useState, type ReactNode } from 'react';
 import type {
   ListProvidersResponse,
   ProviderApiScope,
@@ -12,7 +11,6 @@ import ConnectOpenRouterButton from '@/components/settings/ConnectOpenRouterButt
 import { formatCheckedAgo } from '@/lib/provider-keys-client';
 import {
   ADVANCED_ANCHOR,
-  SEAT_CONNECT_HREF,
   SHAPE_NOUN,
   cardView,
   detectPaste,
@@ -30,7 +28,7 @@ const TONE = { error: 'text-status-error', success: 'text-status-success', muted
  * Everything else opens inline on tap. Values are write-only: a row shows its
  * last four characters.
  */
-export default function ProviderRow({ group, scope, data, workspaceId, onChanged, open, onToggle }: {
+export default function ProviderRow({ group, scope, data, workspaceId, onChanged, open, onToggle, signIn = null }: {
   group: ProviderGroup;
   scope: ProviderApiScope;
   data: ListProvidersResponse;
@@ -38,6 +36,8 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   onChanged: () => Promise<void>;
   open: boolean;
   onToggle: (open: boolean) => void;
+  /** The provider's subscription and runner sign-ins, drawn in the opened detail under the keys. */
+  signIn?: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
   const views = group.members.map((p) => ({ p, v: cardView(p, scope, data) }));
@@ -48,7 +48,6 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
   const readOnly = views.find(({ v }) => v.readOnly)?.v.readOnly ?? null;
   const paste = views.filter(({ v }) => v.edit.kind === 'paste');
   const form = views.find(({ v }) => v.edit.kind === 'form');
-  const browser = views.find(({ p, v }) => v.connectInBrowser && !v.closed && p.shapes.some((s) => s.connectInBrowser && s.writesTo[scope]));
   const state = rowState(rows, inherited, closed);
   const grouped = group.members.length > 1;
 
@@ -108,18 +107,13 @@ export default function ProviderRow({ group, scope, data, workspaceId, onChanged
           {editing && group.id === 'openrouter' && rows.length === 0 && scope !== 'workspace' && (
             <ConnectOpenRouterButton scope={scope === 'mine' ? 'user' : 'team'} teamId={data.teamId} returnTo="/app/settings/models" />
           )}
-          {browser && (
-            <p className="text-meta">
-              <Link href={SEAT_CONNECT_HREF} className="underline text-text-secondary hover:text-text-primary" data-testid="provider-connect-seat">
-                Sign in with a {browser.p.label} subscription
-              </Link>
-            </p>
-          )}
           {form && (
             <p className="text-meta"><a href={`#${ADVANCED_ANCHOR}`} className="underline text-text-secondary hover:text-text-primary">Edit under Routing</a></p>
           )}
         </div>
       )}
+      {/* Mounted while the row is shut: a device-code sign-in in progress survives a collapse. */}
+      {signIn && <div hidden={!open} data-testid="provider-sign-in" className="pb-3 space-y-3">{signIn}</div>}
     </li>
   );
 }
