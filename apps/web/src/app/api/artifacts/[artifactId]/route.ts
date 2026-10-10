@@ -99,7 +99,10 @@ export async function GET(
   }
   const revisionNumber = requestedRevision ?? artifact.currentRevision;
   const revision = revisionNumber > 0 ? await getArtifactRevision(artifact.id, revisionNumber) : null;
-  if (requestedRevision !== null && !revision) {
+  // A body written before revisions existed (current_revision 0) is its own
+  // revision 1 until its first change snapshots it.
+  const legacyFirst = requestedRevision === 1 && artifact.currentRevision === 0 && (artifact.content !== null || artifact.storageKey !== null);
+  if (requestedRevision !== null && !revision && !legacyFirst) {
     return NextResponse.json(
       { error: `Artifact has no revision ${requestedRevision} (current revision is ${artifact.currentRevision})` },
       { status: 404 },

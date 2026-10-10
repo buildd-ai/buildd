@@ -767,6 +767,16 @@ describe('artifact revisions on /api/artifacts/[artifactId]', () => {
     expect(artifact.revision).toMatchObject({ revision: 2, contentHash: 'h2' });
   });
 
+  it('GET ?revision=1 of a body from before revisions existed returns that body', async () => {
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindFirst.mockResolvedValue({ ...ownArtifact, currentRevision: 0, content: 'legacy body' });
+    selectRows = [];
+    const req = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=1`, { headers: { authorization: 'Bearer bld_test' } });
+    const res = await GET(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    expect((await res.json()).artifact.content).toBe('legacy body');
+  });
+
   it('GET of a revision that does not exist is a 404, and a malformed one a 400', async () => {
     selectRows = [];
     const missing = new NextRequest(`http://localhost:3000/api/artifacts/${ARTIFACT_ID}?revision=9`, { headers: { authorization: 'Bearer bld_test' } });
