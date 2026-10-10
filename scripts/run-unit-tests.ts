@@ -493,7 +493,10 @@ export async function runTestFile(
     const child = spawn([process.execPath, 'test', '--preload', storeGuardPath(), '--timeout', String(timeoutMs), file], {
       stdout: 'pipe',
       stderr: 'pipe',
-      env: { ...process.env, BUILDD_HOME: testHome },
+      // TMPDIR inside the home: whatever the file mkdtemp()s and forgets to
+      // remove (test workspaces, agent homes) is deleted with the home instead
+      // of accumulating in the shared /tmp across runs.
+      env: { ...process.env, BUILDD_HOME: testHome, TMPDIR: testHome },
     });
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
