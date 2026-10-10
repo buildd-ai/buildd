@@ -264,6 +264,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           merged_at: string | null;
           mergeable_state: string | null;
           head: { sha: string };
+          base?: { ref?: string };
         };
 
         const now = new Date();
@@ -392,6 +393,8 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
             prNumber: worker.prNumber,
           },
           headSha,
+          // The runner's pre-merge reads it (context.prBase).
+          prBase: pr.base?.ref ?? null,
           repoFullName: repo,
         });
 
