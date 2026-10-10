@@ -53,7 +53,7 @@ export async function GET(
   if (mission.workspaceId) {
     const reaches = user
       ? (await verifyWorkspaceAccess(user.id, mission.workspaceId)) !== null
-      : await verifyAccountWorkspaceAccess(apiAccount!.id, mission.workspaceId);
+      : await verifyAccountWorkspaceAccess(apiAccount!, mission.workspaceId);
     if (!reaches) return notFound();
   }
 

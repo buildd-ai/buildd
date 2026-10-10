@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
+import { constrainToGranted, type GrantScopedAccount } from '@/lib/grant-scope';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -19,12 +20,14 @@ import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
  * `status` as a text column (`'idle'`, `'running'`, …).
  */
 export async function resolveWorkerByPrNumber(
-  account: { teamId: string },
+  account: { teamId: string } & GrantScopedAccount,
   prNumber: number,
   workspaceId: string | null | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
-  return resolveWorkerByPrNumberInWorkspaces(await getTeamWorkspaceIds(account.teamId), prNumber, workspaceId);
+  // A grant session or a workspace-restricted key resolves a PR number only
+  // among the workspaces it may reach, never across its whole team.
+  return resolveWorkerByPrNumberInWorkspaces(constrainToGranted(account, await getTeamWorkspaceIds(account.teamId)), prNumber, workspaceId);
 }
 
 /**

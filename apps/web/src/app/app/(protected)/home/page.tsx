@@ -37,7 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ESCALATION_GATE_READ_DEPS } from '@/modules';
+import { ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -1802,6 +1802,13 @@ export default async function HomePage({
             waitingOnYou.push(...discrepancyItems);
             discrepancyOverflowCount = overflowCount;
           }
+        }
+
+        // 7. Sentinel incidents the escalation gate gave to the owner: the
+        // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
+        // through the composition root).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d

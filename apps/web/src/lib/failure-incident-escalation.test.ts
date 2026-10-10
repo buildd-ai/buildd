@@ -3,9 +3,10 @@ import {
   incidentEscalationRule,
   incidentFingerprint,
   createGatedIncidentSender,
+  incidentNeedsYouItems,
   type IncidentSubject,
   type IncidentGateDeps,
-} from './incident-escalation';
+} from './failure-incident-escalation';
 import type { IncidentAlert } from './failure-incident-actions';
 import type { StoredIncident } from './failure-incident-store';
 
@@ -135,3 +136,52 @@ describe('gated incident sender', () => {
     expect(asked).toBe(1); // critical is a rule
   });
 });
+
+describe('gated incident sender: a failed page is not remembered', () => {
+  it('does not store the verdict when the page fails, so the next replay pages again', async () => {
+    let fail = true;
+    const h = harness({ notify: async () => { if (fail) throw new Error('push down'); } });
+    const send = createGatedIncidentSender(h.deps);
+    await expect(send(alert())).rejects.toThrow('push down');
+    expect(h.records).toHaveLength(0);
+    fail = false;
+    expect(await send(alert())).toBe(true);
+    expect(h.records).toHaveLength(1);
+  });
+
+  it('stores the verdict only after the page went out', async () => {
+    const order: string[] = [];
+    const h = harness({
+      notify: async () => { order.push('notify'); },
+      record: async () => { order.push('record'); return 'r'; },
+    });
+    await createGatedIncidentSender(h.deps)(alert({}, incident({ severity: 'critical' })));
+    expect(order).toEqual(['notify', 'record']);
+  });
+});
+
+describe('incidentNeedsYouItems: Home and the badge read the stored verdict', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'i1', workspaceId: 'w1', title: 'Retry forks across 3 tasks', severity: 'high' as const, status: 'open' as const,
+    lastSeenAt: new Date('2026-10-09T20:00:00Z'), ...over,
+  });
+  const person = { owner: 'person' as const, by: 'rule' as const, rail: 'critical_incident' as const, reason: 'A critical platform incident: the owner is told once, whatever else is running.' };
+  const buildd = { owner: 'buildd' as const, by: 'rule' as const, action: 'wait_machine' as const, reason: 'Buildd is fixing it (task abcdef12).' };
+
+  it('lists an open incident whose stored verdict is the owner, with the incident link', () => {
+    const items = incidentNeedsYouItems([row()], new Map([['i1', person]]), 'https://x.test');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: 'incident', incidentId: 'i1', incidentTitle: 'Retry forks across 3 tasks', fixHref: 'https://x.test/app/incidents/i1', fixLabel: 'Open incident' });
+    expect(items[0].failureMessage).toBe(person.reason);
+  });
+
+  it('leaves out an incident Buildd owns, one with no stored verdict, and a resolved one', () => {
+    const items = incidentNeedsYouItems(
+      [row({ id: 'a' }), row({ id: 'b' }), row({ id: 'c', status: 'resolved' })],
+      new Map([['a', buildd], ['c', person]]),
+      'https://x.test',
+    );
+    expect(items).toEqual([]);
+  });
+});
+
