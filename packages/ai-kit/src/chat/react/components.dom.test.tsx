@@ -180,6 +180,25 @@ describe('ChatComposer', () => {
     expect($('[data-testid="kit-send"]')!.getAttribute('aria-disabled')).toBe('true');
   });
 
+  it('maxLength: a count near the cap, and past it Send does nothing and the draft stays', async () => {
+    const sent: string[] = [];
+    await render(h(kit.ChatComposer, { onSend: (t: string) => sent.push(t), maxLength: 100 }));
+    const box = $<HTMLTextAreaElement>('[data-testid="kit-composer-input"]')!;
+    await type(box, 'x'.repeat(89));
+    expect($('[data-testid="kit-composer-count"]')).toBeNull();
+    await type(box, 'x'.repeat(90));
+    expect($('[data-testid="kit-composer-count"]')!.textContent).toBe('90 / 100 characters');
+    await type(box, 'x'.repeat(101));
+    expect($('[data-testid="kit-composer-count"]')!.hasAttribute('data-over')).toBe(true);
+    expect($('[data-testid="kit-send"]')!.getAttribute('aria-disabled')).toBe('true');
+    await key(box, 'Enter');
+    expect(sent).toEqual([]);
+    expect(box.value).toBe('x'.repeat(101));
+    await type(box, 'x'.repeat(100));
+    await key(box, 'Enter');
+    expect(sent).toEqual(['x'.repeat(100)]);
+  });
+
   it('busy: Send becomes Stop, Enter holds the draft', async () => {
     const sent: string[] = [];
     let stopped = 0;
