@@ -264,7 +264,7 @@ function TierName({ tier, routes, blocked, onOpen }: { tier: Tier; routes: boole
       {tag && <span className="font-mono text-meta text-text-muted">{tag}</span>}
       {blocked && blocked.length > 0 && (
         <span className="text-meta text-text-muted" data-testid={`tier-blocked-${tier}`}>
-          Over the maximum{blocked.length < SURFACES.length ? ` for ${blocked.map((b) => SURFACE_TITLE[b]).join(', ')}` : ''}. Can be set, not served.
+          Over the maximum{blocked.length < SURFACES.length ? ` for ${blocked.map((b) => SURFACE_TITLE[b]).join(', ')}` : ''}. Won&apos;t be used until the maximum is raised.
         </span>
       )}
     </div>
