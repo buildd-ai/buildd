@@ -22,7 +22,7 @@ async function errorText(res: Response): Promise<string> {
 
 const COPY: Record<Scope, { title: string; what: string }> = {
   personal: { title: 'Your token', what: 'Decision calls made for you spend it, so Cloudflare shows your usage on its own.' },
-  team: { title: 'Agents token', what: 'Agent runs through the AI Gateway send it, and team decision calls spend it.' },
+  team: { title: 'Agents token', what: 'Agents using the AI Gateway send it. Team decision calls spend it.' },
 };
 
 export default function CloudflareGatewayTokens({ teamId }: { teamId: string }) {

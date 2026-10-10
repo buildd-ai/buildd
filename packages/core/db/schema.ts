@@ -171,6 +171,12 @@ export const teams = pgTable('teams', {
   // docs/specs/model-tier-ceilings.md.
   modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').TeamTierCeilingPolicy | null>(),
 
+  // Enforceable Coding provider / payment-source restrictions (team layer and
+  // per-workspace layers). NULL = unrestricted, which is every existing team.
+  // A denial is a refusal, never a redirect (unlike enabledBackends). Read
+  // through packages/core/coding-policy-store.ts; rule in coding-policy.ts.
+  codingPolicy: jsonb('coding_policy').$type<import('../coding-policy').TeamCodingPolicy | null>(),
+
   // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
   // gate — read packages/core/entitlements.ts entitlements(team), which also
   // honours the BILLING_ENFORCED switch (off = unlimited for everyone). An unknown
@@ -220,6 +226,9 @@ export const teamMembers = pgTable('team_members', {
   // admin, the member cannot lift it) and `self` (their own, only lowers).
   // NULL = none. See teams.modelTierCeilings.
   modelTierCeilings: jsonb('model_tier_ceilings').$type<import('@buildd/shared').MemberTierCeilings | null>(),
+  // This person's own Coding provider restriction. It can only narrow what the
+  // team and workspace allow, and applies only to tasks they requested.
+  codingPolicy: jsonb('coding_policy').$type<import('../coding-policy').CodingPolicyLayer | null>(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.teamId, t.userId] }),
   teamIdx: index('team_members_team_idx').on(t.teamId),

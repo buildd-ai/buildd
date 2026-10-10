@@ -120,8 +120,7 @@ describe('AgentEndpointSection', () => {
     expect(text('agent-endpoint-mapping-summary')).toBe('1 model sent as is, 1 → claude-haiku-4-5');
     expect(host.querySelector('[data-testid="endpoint-mapping-row"]')).toBeNull();
     await click(host.querySelector('[data-testid="agent-endpoint-mapping-summary"]')!.closest('button'));
-    expect(text('agent-endpoint-metered')).toMatch(/metered/);
-    expect(text('agent-endpoint-metered')).toMatch(/not a Claude seat/);
+    expect(text('agent-endpoint-metered')).toBe("Billed to the endpoint's key. The per-task dollar cap applies.");
     expect(host.querySelector('[data-testid="agent-endpoint-metered"]')!.className).not.toMatch(/notice/);
     const mapped = [...host.querySelectorAll<HTMLElement>('[data-testid="endpoint-mapping-row"]')];
     expect(mapped.map((r) => r.dataset.model)).toEqual(['claude-sonnet-5', 'claude-haiku-4-5-20251001']);

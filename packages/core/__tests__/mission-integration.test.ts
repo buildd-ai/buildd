@@ -323,6 +323,27 @@ describe('isStackedPhaseBase', () => {
 describe('resolveTaskPrBase', () => {
   const TRUNK_FALLBACKS = ['dev', 'main'];
 
+  it('ignores a baseBranch that equals resumeBranch: a retry continues the prior branch, it does not target it', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Retry', taskClass: 'work', context: { baseBranch: 'buildd/prior-task', resumeBranch: 'buildd/prior-task' } },
+      head: 'buildd/new-retry-branch',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('dev');
+    expect(got.source).toBe('workspace');
+  });
+
+  it('still honours a baseBranch that differs from resumeBranch', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Stacked', taskClass: 'work', context: { baseBranch: 'buildd/pred', resumeBranch: 'buildd/other' } },
+      head: 'buildd/new',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('buildd/pred');
+  });
+
   it('is the mission integration branch for an ordinary mission task', () => {
     const got = resolveTaskPrBase({
       mission: OPTED_IN,

@@ -1,5 +1,5 @@
 {
-  "id": "357810f0-eda9-4101-bb52-ab92b45803ee",
+  "id": "af23db34-1a0e-471d-a679-7cd68cff0a44",
   "prevId": "003647d1-e6cb-45e0-b032-199a72261b87",
   "version": "7",
   "dialect": "postgresql",
@@ -17105,337 +17105,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.task_estimate_actuals": {
-      "name": "task_estimate_actuals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_minutes": {
-          "name": "agent_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tokens": {
-          "name": "tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repairs": {
-          "name": "repairs",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "worker_count": {
-          "name": "worker_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "first_started_at": {
-          "name": "first_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_minutes": {
-          "name": "wall_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wall_basis": {
-          "name": "wall_basis",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimate_actuals_task_idx": {
-          "name": "task_estimate_actuals_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimate_actuals_team_idx": {
-          "name": "task_estimate_actuals_team_idx",
-          "columns": [
-            {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimate_actuals_team_id_teams_id_fk": {
-          "name": "task_estimate_actuals_team_id_teams_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_workspace_id_workspaces_id_fk": {
-          "name": "task_estimate_actuals_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimate_actuals_task_id_tasks_id_fk": {
-          "name": "task_estimate_actuals_task_id_tasks_id_fk",
-          "tableFrom": "task_estimate_actuals",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_estimates": {
-      "name": "task_estimates",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "estimator_version": {
-          "name": "estimator_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_minutes": {
-          "name": "p50_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_minutes": {
-          "name": "p80_minutes",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p50_tokens": {
-          "name": "p50_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p80_tokens": {
-          "name": "p80_tokens",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_repairs": {
-          "name": "expected_repairs",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "explanation": {
-          "name": "explanation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "task_estimates_task_version_idx": {
-          "name": "task_estimates_task_version_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "estimator_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "task_estimates_workspace_created_idx": {
-          "name": "task_estimates_workspace_created_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_estimates_team_id_teams_id_fk": {
-          "name": "task_estimates_team_id_teams_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_workspace_id_workspaces_id_fk": {
-          "name": "task_estimates_workspace_id_workspaces_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_estimates_task_id_tasks_id_fk": {
-          "name": "task_estimates_task_id_tasks_id_fk",
-          "tableFrom": "task_estimates",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.task_outcomes": {
       "name": "task_outcomes",
       "schema": "",
@@ -19496,6 +19165,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "coding_policy": {
+          "name": "coding_policy",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -19754,14 +19429,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "task_estimates": {
-          "name": "task_estimates",
+        "model_tier_ceilings": {
+          "name": "model_tier_ceilings",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "model_tier_ceilings": {
-          "name": "model_tier_ceilings",
+        "coding_policy": {
+          "name": "coding_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

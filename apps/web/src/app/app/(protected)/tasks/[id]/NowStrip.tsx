@@ -108,7 +108,7 @@ function Headline({ text }: { text: string }) {
       </p>
       {(clipped || full) && (
         <button type="button" onClick={() => setFull(f => !f)} aria-expanded={full} data-testid="worker-now-headline-more"
-          className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:mt-1 text-left font-mono text-chip uppercase tracking-[1.5px] text-text-secondary hover:text-text-primary">
+          className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:mt-1 text-left font-mono text-chip text-text-secondary hover:text-text-primary">
           {full ? 'less' : 'more'}
         </button>
       )}
@@ -128,11 +128,11 @@ export default function NowStrip({ now, nowMs }: { now: NowState; nowMs: number 
       <span aria-hidden="true" className="absolute left-0 top-0 bottom-0 w-[6px] bg-accent" />
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1" data-testid="worker-current-action">
-          <div className="flex items-center gap-2 font-mono text-chip uppercase tracking-[2px] font-semibold text-accent-text">
+          <div className="flex items-center gap-2 font-mono text-chip font-semibold text-accent-text">
             <span className="w-[9px] h-[9px] bg-accent animate-status-pulse" aria-hidden="true" />
             Now
             {now.updatedTs != null && (
-              <span className="font-normal tracking-[1px] text-text-muted" suppressHydrationWarning>
+              <span className="font-normal text-text-muted" suppressHydrationWarning>
                 · updated {ageLabel(nowMs - now.updatedTs)} ago
               </span>
             )}
@@ -157,10 +157,10 @@ export function PausedBar({ evidence, elapsed, turns, tokens, nowMs }: { evidenc
   return (
     <div data-testid="worker-paused-bar" className="border-2 border-border-default bg-surface-2 px-4 py-3 md:px-6 md:py-4">
       <div className="flex flex-wrap md:flex-nowrap items-center gap-x-4 gap-y-3">
-        <span className="font-mono text-chip uppercase tracking-[2px] text-text-muted whitespace-nowrap">
+        <span className="font-mono text-chip text-text-muted whitespace-nowrap">
           Paused
         </span>
-        <span className="ml-auto font-mono text-chip uppercase tracking-[1.5px] text-text-muted whitespace-nowrap tabular-nums">
+        <span className="ml-auto font-mono text-chip text-text-muted whitespace-nowrap tabular-nums">
           {elapsed && <><b className="text-text-primary font-semibold">{elapsed}</b> · </>}
           {turns} turns
           {tokens && <span className="hidden md:inline"> · {tokens} tok</span>}

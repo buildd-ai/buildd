@@ -20,7 +20,11 @@ export type CopyRuleId =
   | 'justification'
   | 'needs-you'
   | 'exclamation'
-  | 'long-copy';
+  | 'long-copy'
+  | 'not-this-its-that'
+  | 'internal-jargon'
+  | 'warning-instead-of-default'
+  | 'duplicate-explanation';
 
 export interface CopyRule {
   id: CopyRuleId;
@@ -30,7 +34,15 @@ export interface CopyRule {
   why: string;
   bad: string;
   good: string;
+  /**
+   * Judged over a whole file, not one string (`scripts/copy-check.ts` counts
+   * it); `test` never fires on its own.
+   */
+  fileLevel?: true;
 }
+
+/** An explanation this long or longer counts when it renders twice in one file. */
+export const DUPLICATE_MIN_WORDS = 6;
 
 /** A string longer than this is an explanation, not UI copy. */
 export const LONG_COPY_WORDS = 30;
@@ -101,6 +113,39 @@ export const COPY_RULES: CopyRule[] = [
     why: `Over ${LONG_COPY_WORDS} words is a help article. Keep the one fact that changes what the reader does; link docs for the rest.`,
     bad: 'Chat follows these in every reply, and only you can see or change this list. When chat files a task or mission for you, the rules that apply are attached to it, so people in that workspace can see them on the task.',
     good: 'Chat follows these in every reply. Only you can edit them.',
+  },
+  {
+    id: 'not-this-its-that',
+    name: 'Not this, it’s that',
+    test: re(/^not [a-z][\w’' -]{0,30}:\s+\S|, not (?:a |an |the |your |its |their )?[a-z]\w*/i),
+    why: 'Listing what something does not do, each with a reason, is the clearest AI tell. Say what it does, once. If a limit matters, show it where someone acts, as a fact ("Needs an API key").',
+    bad: 'Not codex runs: A Claude subscription signs in Claude Code; the Codex CLI cannot use it.',
+    good: 'Used by Claude agents on your runners.',
+  },
+  {
+    id: 'internal-jargon',
+    name: 'Internal words in UI copy',
+    test: re(/\bwire\b|\bCLI\b|\bcontainers?\b|\bseats?\b|\b(?:claude|codex|cloud|agent|endpoint) runs\b/i),
+    why: 'The reader is not inside the implementation. Name what they see: "Claude agents", "your runners", not wires, seats, containers or "runs".',
+    bad: 'Serves Chat · claude runs · cloud runs',
+    good: 'Used for chat and Claude agents.',
+  },
+  {
+    id: 'warning-instead-of-default',
+    name: 'Warning where a default would do',
+    test: re(/\bno [\w ]{1,24} (?:chosen|selected|picked)\b|\b(?:pick|choose|select) one to\b/i),
+    why: 'If the system already behaves one way, show that option as chosen. A prompt to pick one reads as an error.',
+    bad: 'No policy chosen: agents use team keys. Pick one to apply it to agent runs.',
+    good: 'Team key',
+  },
+  {
+    id: 'duplicate-explanation',
+    name: 'Same explanation twice',
+    test: () => false,
+    fileLevel: true,
+    why: 'A card and its disclosure saying the same sentence. Keep it once, where the reader looks first.',
+    bad: 'Uses your team key for every agent you start. (card) … Uses your team key for every agent you start. (details)',
+    good: 'Uses your team key for every agent you start. (once)',
   },
 ];
 

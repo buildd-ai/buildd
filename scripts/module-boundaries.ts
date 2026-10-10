@@ -63,6 +63,9 @@ const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
   // and every provider (packages/core/providers/policy.ts), not just decision
   // and inference calls, so `inference-(…policy…)` misfiles it.
   'packages/core/inference-key-policy.ts',
+  // Load escalation gate verdicts for missions: server-side core logic that
+  // matches the mission module naming pattern but is core coordination.
+  'packages/core/mission-verdicts.ts',
   // Model-credential storage and resolution for every surface (provider
   // registry, packages/core/providers): the chat-key resolver, and the LiteLLM
   // gateway credential and its settings. `inference-(…key…)` and `litellm`

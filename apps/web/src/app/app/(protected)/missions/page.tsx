@@ -14,6 +14,7 @@ import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card
 import { projectMissionDelivery } from '@/lib/delivery-projection';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
+import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
   buildActiveMissionsQueryArgs,
@@ -109,6 +110,23 @@ export default async function MissionsPage({
   ) as unknown as { items: typeof completedRowsPage; nextCursor: string | null };
 
   const allMissions = [...activeRows, ...completedRows] as any[];
+
+  // Load escalation gate verdicts for missions with mission PRs to determine
+  // if they should count as needs-you. Only read stored verdicts, no model calls.
+  const prKeys: string[] = [];
+  const missionByKey = new Map<string, any>();
+  for (const m of allMissions) {
+    if (m.primaryPrNumber && m.workspaceId) {
+      const key = `pr:${m.workspaceId}:${m.primaryPrNumber}`;
+      prKeys.push(key);
+      missionByKey.set(key, m);
+    }
+  }
+  const verdicts = prKeys.length > 0 ? await loadMissionVerdicts(activeTeamId, prKeys) : new Map();
+  for (const [key, verdict] of verdicts) {
+    const mission = missionByKey.get(key);
+    if (mission) mission.escalationGateVerdict = verdict;
+  }
 
   // One row per mission from the shared delivery projection — the same one
   // Home reads (lib/delivery-projection.ts), so a mission's chip, landed n/m

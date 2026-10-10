@@ -494,6 +494,63 @@ export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
   return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
 }
 
+/**
+ * A workspace's copy review (`gitConfig.copyReview`; absent = off). When a PR
+ * changes user-facing strings, the reviewer judges just those strings against
+ * the workspace's voice guide. 'review' posts the findings; 'gate' turns an
+ * approval with strings to rewrite into request-changes carrying the rewrites.
+ */
+export type CopyReviewMode = 'review' | 'gate';
+export interface CopyReviewConfig {
+  /** Repo path of the voice guide the strings are judged against. */
+  voiceGuide: string;
+  /** Optional lint the reviewer runs in its checkout (e.g. `bun run copy:check`). */
+  lintCommand?: string;
+  /** Globs of UI files whose strings count. Default: UI-looking files under app/components/pages. */
+  paths?: string[];
+  mode: CopyReviewMode;
+}
+const COPY_REVIEW_MODES: CopyReviewMode[] = ['review', 'gate'];
+const COPY_REVIEW_KEYS = new Set(['voiceGuide', 'lintCommand', 'paths', 'mode']);
+
+export type CopyReviewParseResult =
+  | { ok: true; config: CopyReviewConfig }
+  | { ok: false; error: string; field?: string };
+
+/** Shape-check a copy review config for the write path. */
+export function parseCopyReviewConfig(val: unknown): CopyReviewParseResult {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return { ok: false, error: 'copyReview must be an object' };
+  const o = val as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (!COPY_REVIEW_KEYS.has(key)) return { ok: false, error: `copyReview has unknown field: ${key}`, field: key };
+  }
+  if (typeof o.voiceGuide !== 'string' || !o.voiceGuide.trim()) {
+    return { ok: false, error: 'copyReview.voiceGuide must name the voice guide file', field: 'voiceGuide' };
+  }
+  if (!COPY_REVIEW_MODES.includes(o.mode as CopyReviewMode)) {
+    return { ok: false, error: `copyReview.mode must be one of: ${COPY_REVIEW_MODES.join(', ')}`, field: 'mode' };
+  }
+  if (o.lintCommand !== undefined && (typeof o.lintCommand !== 'string' || !o.lintCommand.trim())) {
+    return { ok: false, error: 'copyReview.lintCommand must be a command', field: 'lintCommand' };
+  }
+  if (o.paths !== undefined && (!Array.isArray(o.paths) || !o.paths.every((p) => typeof p === 'string' && p.trim()))) {
+    return { ok: false, error: 'copyReview.paths must be a list of globs', field: 'paths' };
+  }
+  const config: CopyReviewConfig = { voiceGuide: o.voiceGuide.trim(), mode: o.mode as CopyReviewMode };
+  if (typeof o.lintCommand === 'string') config.lintCommand = o.lintCommand.trim();
+  if (Array.isArray(o.paths)) config.paths = o.paths as string[];
+  return { ok: true, config };
+}
+
+/** The copy review a stored gitConfig asks for, or null (off). A malformed config reads as off. */
+export function copyReviewConfigOf(gitConfig: unknown): CopyReviewConfig | null {
+  if (!gitConfig || typeof gitConfig !== 'object') return null;
+  const raw = (gitConfig as { copyReview?: unknown }).copyReview;
+  if (raw == null) return null;
+  const parsed = parseCopyReviewConfig(raw);
+  return parsed.ok ? parsed.config : null;
+}
+
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
 const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
@@ -1575,6 +1632,17 @@ export type ClaimTaskExclusionCode =
   | 'rate_limited'
   | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
+/** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
+export interface ClaimBudgetWall {
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  backend: AgentBackend;
+  resetsAt: string | null;
+}
+
+/** Why the account refused a claim outright (HTTP 429), named for the caller. */
+export type ClaimAccountLimitCode = 'max_concurrent_workers' | 'daily_cost_limit' | 'max_concurrent_sessions';
+
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
   /** One human sentence, including the override when there is one. */
@@ -1603,6 +1671,12 @@ export interface ClaimDiagnostics {
    * all_candidates_deferred and race_lost responses.
    */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
+  /**
+   * The budget and rate-limit walls this claim was held by, set on a
+   * budget_exhausted refusal: which wall, on which provider, and when it lifts.
+   * `summary` is the same thing as one or two sentences for a person.
+   */
+  budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
@@ -1682,6 +1756,14 @@ export interface ClaimDiagnostics {
      * without the personal-credential feature.
      */
     no_personal_credential?: number;
+    /**
+     * The Coding provider policy (team / workspace / requester) does not allow
+     * this task's backend or the payment source its run would use. Held, not
+     * failed, and never redirected to another provider. The gate event's detail
+     * is the structured `provider_not_allowed` / `payment_source_not_allowed` /
+     * `no_model_credential` error. See packages/core/coding-policy.ts.
+     */
+    provider_not_allowed?: number;
     /**
      * The task's tier or model is above the effective model-tier ceiling for
      * its team / workspace / requester (docs/specs/model-tier-ceilings.md).

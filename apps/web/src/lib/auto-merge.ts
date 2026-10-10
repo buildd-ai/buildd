@@ -944,8 +944,22 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'refresh_unsafe' | 'semantic_unverified' | null;
 } {
+  if (res.behindTolerated) {
+    return {
+      refreshOutcome: 'behind_tolerated',
+      reason: 'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the landing door lands it without another refresh',
+      page: null,
+    };
+  }
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined && res.refreshUnsafe) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base keeps changing what this PR changes after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_unsafe',
+    };
+  }
   if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
     return {
       refreshOutcome: 'refresh_exhausted',
