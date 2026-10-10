@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-let pathname = '/app/settings/connectors';
+let pathname = '/app/settings/connections';
 mock.module('next/navigation', () => ({
   usePathname: () => pathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
@@ -34,7 +34,7 @@ describe('MobilePageHeader', () => {
   it('places the team switcher in the title cluster, left of the account avatar', () => {
     const html = render({ teams: TEAMS, currentTeamId: 't1', userInitial: 'M' });
     expect(html.indexOf('Cue')).toBeLessThan(html.lastIndexOf('M'));
-    expect(html).toContain('MCP connectors');
+    expect(html).toContain('Connected apps');
   });
 
   it('keeps the title truncatable so the row cannot overflow at 320pt', () => {
@@ -56,13 +56,13 @@ describe('MobilePageHeader', () => {
       expect(html).toContain('Settings');
       expect(html).not.toContain('aria-label="Back');
     } finally {
-      pathname = '/app/settings/connectors';
+      pathname = '/app/settings/connections';
     }
   });
 
   it('renders the title alone when the user has no teams', () => {
     const html = render({ userInitial: 'M' });
-    expect(html).toContain('MCP connectors');
+    expect(html).toContain('Connected apps');
     expect(html).not.toContain('·');
   });
 });
@@ -84,7 +84,7 @@ describe('MobilePageHeader', () => {
     expect(html).toContain('All workspaces</span>');
     // Ensure the icon and chevron structure is present for mobile
     expect(html).toContain('md:hidden');
-    pathname = '/app/settings/connectors';
+    pathname = '/app/settings/connections';
   });
 
   it('omits the WorkspaceSwitcher on pages that ignore ?workspace=', () => {
@@ -96,7 +96,7 @@ describe('MobilePageHeader', () => {
         'Filter by workspace',
       );
     } finally {
-      pathname = '/app/settings/connectors';
+      pathname = '/app/settings/connections';
     }
   });
 
@@ -141,7 +141,7 @@ describe('MobilePageHeader banner stack', () => {
       expect(html).not.toContain('mobile-page-header');
       expect(html).not.toContain('fixed');
     } finally {
-      pathname = '/app/settings/connectors';
+      pathname = '/app/settings/connections';
     }
   });
 });

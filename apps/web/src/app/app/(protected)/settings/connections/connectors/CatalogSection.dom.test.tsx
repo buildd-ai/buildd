@@ -4,7 +4,7 @@
  * Runs in its own process (scripts/run-unit-tests.ts), so the globals stay here.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register({ url: 'http://localhost/app/settings/connectors' });
+GlobalRegistrator.register({ url: 'http://localhost/app/settings/connections' });
 
 import { describe, expect, it } from 'bun:test';
 
@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: CatalogSection } = await import('./CatalogSection');
-const { describeControls } = await import('../_lib/form-controls');
+const { describeControls } = await import('../../_lib/form-controls');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

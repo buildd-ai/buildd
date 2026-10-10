@@ -31,8 +31,7 @@ describe('SETTINGS_NAV', () => {
 
   it('lists everything the team shares under Team, Members first', () => {
     expect(ids('Team')).toEqual([
-      'team', 'roles', 'budgets', 'billing', 'models', 'workspaces', 'runners',
-      'alerts', 'github', 'connectors', 'storage',
+      'team', 'roles', 'billing', 'models', 'workspaces', 'runners', 'alerts', 'integrations',
     ]);
     expect(SETTINGS_ITEMS.find((i) => i.id === 'team')?.label).toBe('Members');
   });
@@ -82,14 +81,18 @@ describe('SETTINGS_NAV', () => {
 describe('settingsNavFor', () => {
   const ids = (billing: boolean) => settingsNavFor({ billing }).flatMap((g) => g.items.map((i) => i.id));
 
-  it('hides Billing entirely while billing is off', () => {
-    expect(ids(false)).not.toContain('billing');
-    expect(ids(false)).toHaveLength(SETTINGS_ITEMS.length - 1);
+  const billing = (on: boolean) => settingsNavFor({ billing: on }).flatMap((g) => g.items).find((i) => i.id === 'billing')!;
+
+  it('lists every section either way: budgets live on the billing page', () => {
+    expect(ids(false)).toEqual(ids(true));
+    expect(ids(false)).toHaveLength(SETTINGS_ITEMS.length);
   });
 
-  it('lists Billing after Budgets while billing is on', () => {
-    const team = settingsNavFor({ billing: true })[1].items.map((i) => i.id);
-    expect(team.slice(0, 4)).toEqual(['team', 'roles', 'budgets', 'billing']);
+  it('names the page Billing and budgets while billing is on, and Budgets while it is off', () => {
+    expect(billing(true).label).toBe('Billing and budgets');
+    expect(billing(false).label).toBe('Budgets');
+    expect(billing(false).description).not.toMatch(/plan|invoice/i);
+    expect(billing(false).href).toBe(billing(true).href);
   });
 });
 
@@ -113,9 +116,9 @@ describe('settingsReadOnly', () => {
   });
 
   it('follows the team\'s overrides: a member granted a section\'s permission can change it', () => {
-    const granted = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', { manage_connectors: ['owner', 'admin', 'member'] });
-    expect(settingsReadOnly('connectors', granted)).toBe(false);
-    expect(settingsReadOnly('storage', granted)).toBe(true);
+    const granted = settingsPermissions({ role: 'member', slug: 'acme' }, 'u1', { manage_team_notifications: ['owner', 'admin', 'member'] });
+    expect(settingsReadOnly('alerts', granted)).toBe(false);
+    expect(settingsReadOnly('integrations', granted)).toBe(true);
   });
 
   it('says who manages it in one plain line', () => {
@@ -156,7 +159,9 @@ describe('legacy settings links', () => {
     expect(legacySettingsTarget('#agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('agent-backends')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#inference-spending')).toBe('/app/settings/models');
-    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connectors');
+    expect(legacySettingsTarget('#connectors')).toBe('/app/settings/connections');
+    expect(legacySettingsTarget('#github')).toBe('/app/settings/integrations');
+    expect(legacySettingsTarget('#vercel')).toBe('/app/settings/integrations');
     expect(legacySettingsTarget('#provider-keys')).toBe('/app/settings/models');
     expect(legacySettingsTarget('#notifications')).toBe('/app/settings/notifications');
     expect(legacySettingsTarget('#nope')).toBeNull();
@@ -166,7 +171,7 @@ describe('legacy settings links', () => {
   it('redirects the retired top-level pages in next.config', () => {
     const cfg = readFileSync(resolve(import.meta.dir, '../../next.config.mjs'), 'utf8');
     expect(cfg).toMatch(/source: '\/app\/you',\s*destination: '\/app\/settings\/account'/);
-    expect(cfg).toMatch(/source: '\/app\/connections',\s*destination: '\/app\/settings\/connectors'/);
+    expect(cfg).toMatch(/source: '\/app\/connections',\s*destination: '\/app\/settings\/connections'/);
     // A page.tsx at the old path would shadow nothing (config redirects run
     // first) but would be dead code that looks live.
     expect(existsSync(resolve(PROTECTED, 'you/page.tsx'))).toBe(false);

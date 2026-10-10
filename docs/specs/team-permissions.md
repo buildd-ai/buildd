@@ -381,9 +381,9 @@ session-only or rejects keys. Line numbers are as of this spec's
 | `apps/web/src/app/app/(protected)/home/home-view.ts:118` | UI: operator Home | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/api/insights/flow/route.ts:42` | team flow insights | owner, admin | — | `view_team_usage` |
 | `apps/web/src/app/app/(protected)/health/insights/page.tsx:45` | UI: insights | owner, admin | — | `view_team_usage` |
-| `apps/web/src/app/app/(protected)/settings/budgets/page.tsx:61` | UI: per-person spend | owner, admin | — | `view_team_usage` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:102` | UI: per-person spend | owner, admin | — | `view_team_usage` |
 | `apps/web/src/lib/billing/team-billing-access.ts:64` | open Checkout / the billing portal / change seats | owner, admin | — | `manage_billing` |
-| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:55` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
+| `apps/web/src/app/app/(protected)/settings/billing/page.tsx:76` | UI: billing actions | owner, admin, personal team | — | `manage_billing` |
 
 ### API keys and runners
 
