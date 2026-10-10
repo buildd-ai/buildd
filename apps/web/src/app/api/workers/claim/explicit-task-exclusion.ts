@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { VISUAL_AUDITOR_ROLE_SLUG, type ClaimTaskExclusion, type ClaimTaskExclusionCode, type WorkerEnvironment } from '@buildd/shared';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { dependencySatisfied } from './deps-gate';
@@ -42,7 +42,8 @@ export type ExplicitTaskGateName =
   | 'role'
   | 'runnerCooldown'
   | 'workspaceCap'
-  | 'workspaceExecutor';
+  | 'workspaceExecutor'
+  | 'workspacePaused';
 
 export type ExplicitTaskGates = Partial<Record<ExplicitTaskGateName, SQL>>;
 
@@ -57,6 +58,8 @@ export interface ExplicitTaskProbe {
    * `null` value is a FAILED gate: SQL NULL in a WHERE excludes the row.
    */
   gates: Partial<Record<ExplicitTaskGateName, boolean | null>>;
+  /** When the task's workspace resumes new starts, if it is pausing them. */
+  workspacePausedUntil?: Date | string | null;
 }
 
 /** Appended to every exclusion an admin may override from claim_task. */
@@ -77,6 +80,7 @@ const GATE_ORDER: Array<[ExplicitTaskGateName, ClaimTaskExclusionCode, string]> 
   ['role', 'role_mismatch', 'The task\'s role needs an explicit skill match this caller does not advertise.'],
   ['runnerCooldown', 'runner_cooldown', 'A worker from this runner failed on this task in the last minute; the per-runner cooldown is in effect. Retry in a minute.'],
   ['workspaceCap', 'workspace_cap', `The workspace is at its concurrent-task cap (active workers on its other tasks). ${FORCE_HINT}`],
+  ['workspacePaused', 'workspace_paused', `The workspace has paused new starts until a set time; running work carries on and it resumes on its own. Resume it early from Health > Runners, claim it from an interactive session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}`],
   ['workspaceExecutor', 'workspace_executor', `The workspace runs its work on a different executor (cloud or host, set by gitConfig.executor or derived from its cloud dispatch webhook) than this caller. Change it on the workspace config page, or an admin can claim it anyway with claim_task force: true.`],
 ];
 
@@ -105,6 +109,12 @@ export function classifyExplicitTaskExclusion(probe: ExplicitTaskProbe | null, n
   }
   for (const [gate, code, detail] of GATE_ORDER) {
     const v = probe.gates[gate];
+    if ((v === false || v === null) && gate === 'workspacePaused') {
+      const until = toDate(probe.workspacePausedUntil ?? null);
+      if (until && until > now) {
+        return { code, detail: `New starts in this workspace are paused until ${until.toISOString()}. Running work carries on. Resume early from Health > Runners, claim it from your own session, or ${FORCE_HINT.charAt(0).toLowerCase()}${FORCE_HINT.slice(1)}` };
+      }
+    }
     if (v === false || v === null) return { code, detail: gate === 'role' && probe.roleSlug === VISUAL_AUDITOR_ROLE_SLUG
       ? 'This visual task requires the browser capability. This runner has no working browser provider and does not advertise the visual-auditor role. Check its browser provider probe; cloud-only workspaces cannot fall back to a host runner.'
       : detail };
@@ -203,6 +213,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
         workspaceId: tasks.workspaceId,
         dependsOn: tasks.dependsOn,
         pathManifest: tasks.pathManifest,
+        workspacePausedUntil: sql<string | null>`(SELECT ws_pu.new_starts_paused_until FROM ${workspaces} ws_pu WHERE ws_pu.id = ${tasks.workspaceId})`,
         ...gateColumns,
       })
       .from(tasks)
@@ -220,7 +231,7 @@ export async function diagnoseExplicitTaskExclusion(opts: {
       else if (v === false || v === 'f' || v === 'false' || v === null) gates[name] = false;
     }
     const exclusion = classifyExplicitTaskExclusion(
-      { status: row.status ?? null, roleSlug: row.roleSlug ?? null, claimedBy: row.claimedBy ?? null, expiresAt: row.expiresAt ?? null, startAt: row.startAt ?? null, gates },
+      { status: row.status ?? null, roleSlug: row.roleSlug ?? null, claimedBy: row.claimedBy ?? null, expiresAt: row.expiresAt ?? null, startAt: row.startAt ?? null, gates, workspacePausedUntil: row.workspacePausedUntil ?? null },
       opts.now,
     );
     if (exclusion.code === 'deps_blocked') {
@@ -274,7 +285,7 @@ export function explicitExclusionGateEvent(opts: {
 }
 
 /** Force-claim audit names for the SQL gates a force claim lifts. */
-export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'startAt';
+export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'workspacePaused' | 'startAt';
 const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
   deps: 'deps_blocked',
   missionHeld: 'mission_held',
@@ -282,6 +293,7 @@ const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
   subject: 'subject_dead',
   workspaceCap: 'workspace_cap',
   workspaceExecutor: 'workspace_executor',
+  workspacePaused: 'workspace_paused',
   startAt: 'deferred',
 };
 

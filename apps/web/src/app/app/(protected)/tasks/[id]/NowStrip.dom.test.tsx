@@ -36,3 +36,21 @@ describe('headline more toggle', () => {
     el.remove();
   });
 });
+
+describe('run evidence disclosure', () => {
+  it('opens the labelled phase list with provenance', async () => {
+    const { default: NowStrip } = await import('./NowStrip');
+    const now = deriveNow([{ type:'status', progress:70, label:'Checking changes', ts:10 } as never], { status:'running', currentAction:null, startMs:0, nowMs:20, prUrl:null, filesChanged:2 } as never);
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    await act(async () => { root.render(<NowStrip now={now} nowMs={20} />); });
+    const toggle = el.querySelector<HTMLButtonElement>('[data-testid="run-evidence-rail"] button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    const items = el.querySelectorAll('[data-testid="run-evidence-list"] li[data-phase]');
+    expect(items.length).toBe(now.evidence.phases.filter(p => p.state !== 'skipped').length);
+    expect(el.querySelector('[data-source="reported"]')?.getAttribute('aria-label')).toBe('Changes, done, reported');
+    await act(async () => root.unmount());
+    el.remove();
+  });
+});

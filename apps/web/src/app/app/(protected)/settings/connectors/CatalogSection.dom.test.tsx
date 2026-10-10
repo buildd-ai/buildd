@@ -66,7 +66,11 @@ describe('CatalogSection', () => {
     expect(q(el, 'catalog-policy-vercel-preinstalled')!.getAttribute('aria-checked')).toBe('true');
     expect(q(el, 'catalog-policy-vercel-available')!.getAttribute('aria-checked')).toBe('false');
     expect(q(el, 'catalog-entry-vercel')!.textContent).toContain('Roles still choose');
-    expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Your team');
+    // Only team entries carry a source tag; built-in rows carry none.
+    expect(q(el, 'catalog-entry-internal')!.textContent).toContain('Team');
+    expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('Built-in');
+    // The URL is a detail, folded away until asked for.
+    expect(q(el, 'catalog-entry-vercel')!.textContent).not.toContain('https://mcp.vercel.example/mcp');
     expect(q(el, 'catalog-remove-internal')).not.toBeNull();
     expect(q(el, 'catalog-remove-vercel')).toBeNull();
     await unmount();

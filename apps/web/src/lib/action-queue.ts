@@ -40,7 +40,7 @@ import { isMissionPrTask } from '@buildd/core/mission-integration';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
+  | 'INCIDENT' | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'FAILED' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'REVIEW_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
@@ -127,6 +127,21 @@ function describeReviewMachineState(item: EscalationRawItem, now: Date): string 
   if (item.ciGate?.kind === 'fixing') return item.ciGate.fixKind === 'review' ? 'Review fix queued' : 'CI fix queued';
   if (item.ciGate?.kind === 'blocked' || item.prLifecycleStatus === 'ci_failed') return 'CI failing';
   return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
+}
+
+/**
+ * Buildd is still acting on a PR that also waits on a human review: a conflict
+ * repair is live, a CI or review fix is in flight, checks or a reviewer agent
+ * are running. The review waits for that to settle; Home names it in its quiet
+ * "also in progress" line instead of asking for it now. A repair that gave up,
+ * a plain conflict or red CI with no fix running is the person's again.
+ */
+export function reviewMachineActing(item: Pick<EscalationRawItem, 'deadZoneExhausted' | 'conflictRetryTaskId' | 'ciGate' | 'reviewInFlight' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt'>, now: Date): boolean {
+  if (item.deadZoneExhausted) return false;
+  if (item.conflictRetryTaskId) return true;
+  if (item.ciGate?.kind === 'fixing' || item.ciGate?.kind === 'running') return true;
+  if (item.reviewInFlight) return true;
+  return pendingCiState({ ...item, now }) === 'running';
 }
 
 function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
@@ -239,7 +254,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy' | 'failed' | 'incident';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -255,8 +270,11 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
-  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). */
+  /** kind === 'failed' — why it failed and the fix, in plain words (buildFailedTaskItems). kind === 'incident' — the gate's reason. */
   failureMessage?: string;
+  /** kind === 'incident' — a Sentinel incident the escalation gate gave to the owner (lib/failure-incident-escalation.ts). */
+  incidentId?: string;
+  incidentTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
@@ -339,7 +357,20 @@ export interface WaitingOnYouRawItem {
   workspaceName?: string | null;
 }
 
+/** The escalation gate's verdict on a PR (lib/escalation-gate-check.ts), as a card reads it. */
+export interface EscalationGateMark {
+  owner: 'person' | 'buildd';
+  /** One line: the rail that makes it the person's, or the step Buildd is taking. */
+  reason: string;
+  /** The rail that made it the person's (a policy rail batches into a digest). */
+  rail?: string | null;
+  /** The tenant the verdict was read for; a digest never spans two. */
+  teamId?: string | null;
+}
+
 export interface EscalationRawItem {
+  /** The escalation gate's verdict: a Buildd-owned PR is never a Needs You card. */
+  gate?: EscalationGateMark | null;
   /** Canonical current-head reviewer approval; a review action still takes precedence. */
   reviewApproved?: boolean;
   humanReview?: HumanPrReview | null;
@@ -466,6 +497,10 @@ export interface EscalationRawItem {
 export interface ActionQueueItem {
   humanReview?: HumanPrReview | null;
   machineStatus?: string | null;
+  /** A human review whose PR Buildd is still repairing or checking (`reviewMachineActing`). */
+  machineActing?: boolean;
+  /** The escalation gate's verdict, when the PR went through it. */
+  gate?: EscalationGateMark | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -540,8 +575,11 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
-  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. */
+  /** Set when chip === 'FAILED' — the plain cause and the setting that fixes it. INCIDENT: the gate's reason. */
   failureMessage?: string;
+  /** Set when chip === 'INCIDENT' — the incident and its title. */
+  incidentId?: string;
+  incidentTitle?: string;
   fixHref?: string;
   fixLabel?: string;
   /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
@@ -643,8 +681,10 @@ export interface ActionQueueItem {
 // dies must not take the finding with it — but never counts as actionable.
 // FAILED sits with RECONNECT: both are a credential the owner has to supply
 // before anything else can run.
+// INCIDENT leads: the escalation gate hands a Sentinel incident to the owner
+// only when it is critical, or nothing is fixing it.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
+  'INCIDENT', 'MERGE', 'BLOCKED', 'RECONNECT', 'FAILED', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'REVIEW_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
@@ -1384,6 +1424,8 @@ export function buildActionQueue(
       subjectKey: key,
       humanReview: item.humanReview,
       machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
+      machineActing: item.humanReview ? reviewMachineActing(item, now) : false,
+      gate: item.gate ?? null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
@@ -1507,6 +1549,20 @@ export function buildActionQueue(
           chip: 'RECONNECT',
           connectorId: item.connectorId,
           connectorName: item.connectorName,
+        });
+      }
+    } else if (item.kind === 'incident') {
+      const key = `incident:${item.incidentId}`;
+      if (item.incidentId && !map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'INCIDENT',
+          incidentId: item.incidentId,
+          incidentTitle: item.incidentTitle,
+          workspaceName: item.workspaceName ?? undefined,
+          failureMessage: item.failureMessage,
+          fixHref: item.fixHref,
+          fixLabel: item.fixLabel,
         });
       }
     } else if (item.kind === 'failed') {

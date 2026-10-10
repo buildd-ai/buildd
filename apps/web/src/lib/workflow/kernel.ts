@@ -200,6 +200,8 @@ export function transitionSql(decision: ApplyDecision, ref: { deliveryId?: strin
     ];
     const where: SQL[] = [
       sql`id = ${ref.deliveryId}::uuid`,
+      // A release that lands between the read and this write wins (§14).
+      sql`authority = 'kernel'`,
       sql`version = ${d.guard.version}::bigint`,
       sql`state IN (SELECT jsonb_array_elements_text(${jsonb(d.guard.states)}))`,
     ];
@@ -273,7 +275,13 @@ export function loadViewSql(ref: DeliveryRef): SQL {
 SELECT to_jsonb(d.*) || jsonb_build_object('push_pending_local_head', (
     SELECT t.evidence->>'localHeadSha' FROM workflow_transitions t
     WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH'
-    ORDER BY t.to_version DESC LIMIT 1)) AS delivery,
+    ORDER BY t.to_version DESC LIMIT 1),
+  'push_entries', (
+    SELECT count(*) FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH'),
+  'push_pending_since', (
+    SELECT max(t.to_version) FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_state = 'AWAITING_PUSH' AND t.from_state IS DISTINCT FROM 'AWAITING_PUSH')) AS delivery,
   COALESCE((SELECT jsonb_agg(to_jsonb(r.*) ORDER BY r.round) FROM workflow_review_rounds r WHERE r.delivery_id = d.id), '[]'::jsonb) AS rounds,
   COALESCE((SELECT jsonb_agg(to_jsonb(a.*) ORDER BY a.family, a.mode, a.attempt_no) FROM workflow_attempts a WHERE a.delivery_id = d.id), '[]'::jsonb) AS attempts
 FROM workflow_deliveries d
@@ -327,6 +335,8 @@ export function toDeliverySnapshot(r: J): DeliverySnapshot {
     policyEvidence: (r.policy_evidence as DeliverySnapshot['policyEvidence']) ?? null,
     authority: r.authority === 'legacy' ? 'legacy' : 'kernel',
     pushPendingLocalHead: s(r.push_pending_local_head),
+    pushEntries: Number(r.push_entries ?? 0),
+    pushPendingSince: r.push_pending_since == null ? null : Number(r.push_pending_since),
   };
 }
 
@@ -404,6 +414,9 @@ export async function applyCommand(
 
   for (let pass = 0; pass < 2; pass++) {
     const d = view.delivery;
+    // §14: a delivery released to legacy is never decided by the kernel again,
+    // whoever asks (a draining effect's report, a sweep, a door that raced the release).
+    if (d?.authority === 'legacy') return { result: 'rejected', reason: 'legacy_owns', current: currentOf(view) };
     const key = stableIdempotencyKey(cmd, d);
     if (d && key) {
       const hit = ((await exec(findTransitionSql(d.id, key))).rows ?? [])[0] as { id: string } | undefined;

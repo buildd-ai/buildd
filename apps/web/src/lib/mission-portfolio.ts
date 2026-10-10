@@ -8,6 +8,7 @@
  */
 import type { StateKey } from '@/components/ui/states';
 import { deliveryCounts, type DeliveryCounts, type DeliveryKind, type MissionDelivery } from './delivery-projection';
+import { sectionOf, type MissionSectionKey } from './mission-sections';
 
 /** One portfolio row: the projection plus the list's own sort and filter facts. */
 export interface PortfolioRow {
@@ -80,25 +81,23 @@ export function sortPortfolio(rows: readonly PortfolioRow[], sort: PortfolioSort
 
 // ── Filter ──────────────────────────────────────────────────────────────────
 
-export type PortfolioStatusFilter = 'all' | 'executing' | 'exceptions' | 'moving' | 'waiting';
+/** The list's filters are its sections, so a chip shows exactly one section. */
+export type PortfolioStatusFilter = 'all' | MissionSectionKey;
 
 export const PORTFOLIO_STATUS_FILTERS: ReadonlyArray<{ key: PortfolioStatusFilter; label: string; title: string }> = [
-  { key: 'all', label: 'Open', title: 'Every open mission' },
-  { key: 'executing', label: 'Executing', title: 'An agent is working on it right now' },
-  { key: 'exceptions', label: 'Exceptions', title: 'Needs input, did not land, or its audit cannot run' },
-  { key: 'moving', label: 'Moving', title: 'Building, in audit, repairing or landing — with or without an agent' },
+  { key: 'all', label: 'All', title: 'Every open mission' },
+  { key: 'needs', label: 'Needs you', title: 'A decision only a person can make' },
+  { key: 'motion', label: 'In motion', title: 'Buildd is building, auditing, repairing or landing it' },
   { key: 'waiting', label: 'Waiting', title: 'Waiting on capacity or earlier work, held, or not planned yet' },
+  { key: 'landed', label: 'On dev', title: 'Every task landed on dev; a goal criterion has not passed yet' },
 ];
-
-const EXCEPTION_KINDS: ReadonlySet<DeliveryKind> = new Set(['needs', 'notlanded', 'unavailable']);
-const WAITING_KINDS: ReadonlySet<DeliveryKind> = new Set(['waiting', 'held', 'planning']);
 
 const MATCH: Record<PortfolioStatusFilter, (r: PortfolioRow) => boolean> = {
   all: () => true,
-  executing: r => r.liveAgents > 0,
-  exceptions: r => EXCEPTION_KINDS.has(r.delivery.kind),
-  moving: r => STAGE[r.delivery.kind] != null,
-  waiting: r => WAITING_KINDS.has(r.delivery.kind),
+  needs: r => sectionOf(r) === 'needs',
+  motion: r => sectionOf(r) === 'motion',
+  waiting: r => sectionOf(r) === 'waiting',
+  landed: r => sectionOf(r) === 'landed',
 };
 
 export interface PortfolioFilter {
@@ -118,7 +117,7 @@ export function filterPortfolio(rows: readonly PortfolioRow[], f: PortfolioFilte
 }
 
 export function portfolioFilterCounts(rows: readonly PortfolioRow[]): Record<PortfolioStatusFilter, number> {
-  const out = { all: 0, executing: 0, exceptions: 0, moving: 0, waiting: 0 } as Record<PortfolioStatusFilter, number>;
+  const out = { all: 0, needs: 0, motion: 0, waiting: 0, landed: 0 } as Record<PortfolioStatusFilter, number>;
   for (const r of rows) for (const { key } of PORTFOLIO_STATUS_FILTERS) if (MATCH[key](r)) out[key]++;
   return out;
 }

@@ -240,7 +240,7 @@ const DEFERRED_TASK_EXCLUSION_CODES = new Set<string>([
   'path_overlap', 'connector_mismatch', 'role_env_unsatisfied',
   // personal_only and the requester has no key yet (or this runner is too
   // old to receive one): queued until they add a key or the runner updates.
-  'no_personal_credential',
+  'no_personal_credential', 'provider_not_allowed',
   // Commercial entitlement on a managed runner: queued until capacity frees.
   'managed_concurrency', 'managed_runner_hours',
   // The team's hosted runner allowance: queued until it refills or grows.
@@ -614,6 +614,8 @@ export async function runOnceFromCli(opts: {
 
   // ── Parking (resumable runs; BUILDD_ONCE_PARK=1 from the cloud Worker) ──
   const parking = park.parkingEnabled(opts.env);
+  // A pause parks the run when resumable runs are on; otherwise it is refused (pause.ts).
+  config.pauseMode = parking ? 'park' : 'none';
   const snapshots = curlTransport(opts.env.BUILDD_SNAPSHOT_URL ?? '');
   const parkPaths = {
     builddHome: opts.builddHome,

@@ -45,7 +45,9 @@ export type InferenceCapability =
   | 'scout_probe_selection'
   | 'endpoint_model_match'
   | 'question_gate'
+  | 'escalation_gate'
   | 'post_session_triage'
+  | 'failure_incident_triage'
   | 'task_verdict'
   | 'early_release'
   | 'merge_readiness'
@@ -209,6 +211,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'Before an agent\'s question reaches you, a decision model checks that it can be answered with no other context and sends unclear ones back to the agent. It may also answer from the listed options itself, or hold the question until it has waited unanswered.',
     costHint: '~$0.00003 per question',
   },
+  // Escalation gate (packages/core/escalation-gate.ts). Unconditional, like the
+  // question gate: runs on every stuck PR no rule decides, whenever a key resolves.
+  escalation_gate: {
+    id: 'escalation_gate',
+    kind: 'built_in',
+    label: 'Escalation review',
+    description: 'Before a stuck pull request is sent to you, a decision model checks whether Buildd can move it on itself (a fresh review, a fix, a retry) or should wait. Only what needs your judgment reaches you.',
+    costHint: '~$0.00003 per stuck PR, once per state',
+  },
   // Post-session quality triage (packages/core/post-session-triage.ts). Runs
   // in the background after a session ends, on bounded facts only; a
   // workspace turns the whole loop off with gitConfig.postSessionQuality.mode.
@@ -218,6 +229,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Session quality triage',
     description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
     costHint: '~$0.00005 per session',
+  },
+  // Failure Pattern Sentinel triage (packages/core/decision-kind-failure-incident-triage.ts).
+  // Opt-in: asked only when an incident below critical opens or changes. It can
+  // raise an incident's severity, never lower the rule engine's floor.
+  failure_incident_triage: {
+    id: 'failure_incident_triage',
+    kind: 'opt_in',
+    label: 'Failure incident triage',
+    description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
+    costHint: '~$0.00003 per incident change',
   },
   // Task verdict (apps/web/src/lib/task-verdict-decision.ts). Runs on a task
   // state change only (CI result, attempt end, PR event, worker terminal),

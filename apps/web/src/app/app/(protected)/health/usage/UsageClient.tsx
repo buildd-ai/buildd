@@ -2,7 +2,11 @@
 
 import { useTransition } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+import { MonthlySpend } from './MonthlySpend';
+import { RoleUsage, type RoleUsageData } from './RoleUsage';
+import type { MonthlyBudgetForecast } from '@/lib/budget-forecast';
 import { MetricStat, Stat } from '@/components/StatTile';
+import Segmented from '@/components/ui/Segmented';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
 import { scanCaveat } from '@/lib/model-presentation';
 import { countOf } from '@/lib/plural';
@@ -12,7 +16,6 @@ import {
   formatRate,
   formatTokens,
   formatUsd,
-  healthHref,
   shortToolName,
   type DrilldownWindow,
   type UsageDrilldownView,
@@ -38,6 +41,8 @@ interface Props {
   wsFilter: string | null;
   /** The active team's month on the hosted runner; null hides the section. */
   hostedRunner?: HostedRunnerProps | null;
+  roleUsage?: RoleUsageData | null;
+  monthly?: MonthlyBudgetForecast | null;
 }
 
 /**
@@ -46,7 +51,7 @@ interface Props {
  * TASK-KEYED throughout, which is what the header denominator claims and what
  * every section below honours.
  */
-export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
+export function UsageClient({ view, hostedRunner = null, roleUsage = null, monthly = null }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
   const caveat = scanCaveat(scan, observedAgo(scan.completeSince, Date.now()) ?? 'the window start');
 
@@ -60,18 +65,8 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
       <div className="mb-6">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            {/* Back to Health at the window it was left on — 24h included. The
-                clamp below is this route's decision and does not follow you out. */}
-            <a
-              data-testid="usage-back-link"
-              href={healthHref({ window: view.requestedWindow, workspaceId: wsFilter })}
-              className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-            >
-              ← Health
-            </a>
-            <h1 className="hidden md:block text-2xl font-bold">Usage</h1>
-          </div>
+          {/* No back link: the Health sub-nav is one tap away on both widths. */}
+          <h1 className="hidden md:block text-2xl font-bold">Usage</h1>
           <div className="flex items-center gap-2 ml-auto">
             <DrilldownWindowPicker window={window} />
           </div>
@@ -99,9 +94,6 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
         )}
       </div>
 
-      {/* Hosted runner time: month-scoped, not the window above. */}
-      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
-
       {tasks === 0 ? (
         <div data-testid="usage-empty" className="card px-4 py-3">
           <p className="text-sm text-text-secondary">
@@ -113,7 +105,7 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
           {/* 1. What a task costs. */}
           <section data-testid="usage-section-per-task" className="mb-6">
             <h2 className="section-label mb-3">Per task</h2>
-            <div className="card p-4">
+            <div className="border-y border-border-default py-4">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <MetricStat<Distribution>
                   label="Tokens / task"
@@ -160,6 +152,13 @@ export function UsageClient({ view, wsFilter, hostedRunner = null }: Props) {
           <CostBasisSection byBasis={view.byBasis} />
         </>
       )}
+
+      {roleUsage && <RoleUsage {...roleUsage} window={window} />}
+      {monthly && <MonthlySpend monthly={monthly} />}
+
+      {/* Hosted runner time is month-scoped, so it follows the windowed figures
+          instead of sitting between the window control and what it controls. */}
+      {hostedRunner && <HostedRunnerUsageSection meter={hostedRunner.meter} rows={hostedRunner.rows} />}
     </div>
   );
 }
@@ -430,27 +429,8 @@ function DrilldownWindowPicker({ window: current }: { window: DrilldownWindow })
   };
 
   return (
-    <div
-      role="group"
-      aria-label="Window"
-      data-testid="usage-window-picker"
-      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
-    >
-      {DRILLDOWN_WINDOWS.map((value) => (
-        <button
-          key={value}
-          type="button"
-          onClick={() => select(value)}
-          aria-pressed={current === value}
-          className={`px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
-            current === value
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'
-          }`}
-        >
-          {value}
-        </button>
-      ))}
+    <div data-testid="usage-window-picker" className={pending ? 'opacity-60' : ''}>
+      <Segmented label="Window" items={DRILLDOWN_WINDOWS.map(value => ({ value, label: value }))} value={current} onChange={select} />
     </div>
   );
 }
@@ -571,7 +551,7 @@ function CostBasisSection({ byBasis }: { byBasis: UsageStats['byBasis'] }) {
   return (
     <section data-testid="usage-cost-basis" className="mb-6">
       <h2 className="section-label mb-3">Cost</h2>
-      <div className="card p-4 text-sm">
+      <div className="border-y border-border-default py-4 text-body">
         <div className={`${cols} text-[11px] text-text-muted`}>
           <span />
           <span className="text-right">Runners</span>

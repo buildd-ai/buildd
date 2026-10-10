@@ -47,7 +47,8 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
+import { copyReviewConfigOf } from '@buildd/shared';
 import {
   checkDispatch,
   guardDispatchedTask,
@@ -78,6 +79,8 @@ import { derivedMergeGateEvent } from '@/lib/derived-merge-gate';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
+import { resolveDispatchedReview } from '@/lib/verdict-provenance';
+import { kernelDeliveryForPr } from '@/lib/workflow/authority';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -115,6 +118,7 @@ import { queueSystemInstruction } from '@/lib/system-instruction-queue';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsAcknowledged, markInstructionsDelivered, pendingInstructionIds } from '@/lib/worker-instructions';
+import { pauseServed } from '@/lib/worker-pause-policy';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
@@ -1294,6 +1298,10 @@ export async function PATCH(
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
+  // A pause request is spent once the worker parks or ends (lib/worker-pause.ts).
+  if (status === 'waiting_input' || status === 'completed' || status === 'failed' || status === 'error') {
+    updates.pauseRequestedAt = null;
+  }
   // A permission prompt dies with its session: the runner resolves the blocked
   // PermissionRequest hook as deny when it aborts, but reports only the terminal
   // status. Left in place, the ended worker renders a live "Allow once / Deny"
@@ -1379,6 +1387,16 @@ export async function PATCH(
   // Handle status transitions
   if (status === 'running' && !worker.startedAt) {
     updates.startedAt = new Date();
+  }
+  // Leaving a park: a paused or question-parked worker (waiting_input, with
+  // the runner's `paused:` / `needs_input:` marker in `error`) resuming to
+  // running is no longer parked, so the marker goes. Otherwise a finished run
+  // keeps showing "paused: ..." as its error line.
+  if (
+    status === 'running' && error === undefined && worker.status === 'waiting_input'
+    && typeof worker.error === 'string' && /^(paused:|needs_input)/.test(worker.error)
+  ) {
+    updates.error = null;
   }
   // Reactivation: clear completion state when worker resumes from completed/failed/error
   if (status === 'running' && (worker.status === 'completed' || worker.status === 'failed' || worker.status === 'error')) {
@@ -2003,7 +2021,9 @@ export async function PATCH(
               effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
-              // Named by the task, so it is owned unless its head is a
+              // Owned only if the task's own records link it (a retry's
+              // subject, or a PR link stamped when the task was filed; the
+              // text above only proposes candidates) and its head is not a
               // protected branch; it still needs the linked repo and the
               // mission base, like every other door.
               if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
@@ -5150,6 +5170,9 @@ export async function PATCH(
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    // A person paused this run: the runner stops at its next safe point. Served
+    // on every PATCH until the worker parks, so a missed push still lands.
+    ...(pauseServed(updated) ? { pauseRequested: true } : {}),
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
@@ -5217,14 +5240,21 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true, deliveryId: true },
+    columns: { id: true, workspaceId: true, category: true, context: true, parentTaskId: true, missionId: true, title: true, createdAt: true, deliveryId: true },
   });
 
   if (!reviewerTask) return;
   const ctx = (reviewerTask.context ?? {}) as Record<string, unknown>;
 
-  // Only process tasks that are reviewer tasks (category='review' + reviewerFor in context)
+  // Only a review the review system dispatched, for a task of this workspace,
+  // acts — and only through this workspace's own repo and installation, read
+  // from its github_repos link, never from the task's context.
   if (reviewerTask.category !== 'review' || !ctx.reviewerFor) return;
+  const dispatched = await resolveDispatchedReview(reviewerTask, workspaceId);
+  if (!dispatched.ok) {
+    console.warn(`[reviewer] Task ${reviewerTaskId}: verdict not acted on (${dispatched.reason})`);
+    return;
+  }
 
   // Backstop for the contract guard in PATCH, which already failed/requeued a
   // malformed verdict: nothing below may act on one, and nothing below has to
@@ -5236,12 +5266,9 @@ async function handleReviewerOutcomeIfNeeded(
   }
   const output: ReviewerTaskOutput = parsed.output;
 
-  const originalTaskId = ctx.reviewerFor as string;
-  const prNumber = ctx.prNumber as number;
+  const { originalTaskId, prNumber, repoFullName, installationId } = dispatched;
   const prUrl = ctx.prUrl as string;
   const headSha = ctx.headSha as string;
-  const repoFullName = ctx.repoFullName as string;
-  const installationId = ctx.installationId as number;
   const workerBranch = ctx.workerBranch as string;
   const missionId = reviewerTask.missionId;
 
@@ -5361,6 +5388,46 @@ async function handleReviewerOutcomeIfNeeded(
     serverOverrideSource = 'confidence';
   }
 
+  // Copy review (gitConfig.copyReview, lib/copy-review.ts). Applied after the
+  // escalation and confidence gates, so a PR they send to a person keeps that
+  // verdict; under mode 'gate' an approval with strings to rewrite becomes
+  // request-changes carrying the rewrites, which the fix attempt applies. The
+  // feedback is persisted on the round's structured output because the kernel
+  // reads the fix brief from there, not from this handler's memory.
+  const copyReview = copyReviewConfigOf(workspace?.gitConfig);
+  const copyGate = applyCopyReviewGate({
+    verdict: effectiveVerdict,
+    mode: copyReview?.mode ?? null,
+    findings: parseCopyFindings((output as { copyFindings?: unknown }).copyFindings),
+    feedback: output.feedback,
+  });
+  if (copyGate.feedback !== output.feedback || copyGate.verdict !== effectiveVerdict) {
+    output.feedback = copyGate.feedback;
+    if (copyGate.verdict !== effectiveVerdict) {
+      console.log(`[reviewer] PR #${prNumber}: copy review turned ${effectiveVerdict} into ${copyGate.verdict}`);
+      effectiveVerdict = copyGate.verdict;
+    }
+    await db
+      .update(tasks)
+      .set({
+        result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${copyGate.reason ?? 'copy review'}::text), '{structuredOutput,feedback}', to_jsonb(${copyGate.feedback ?? ''}::text), true)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, reviewerTaskId))
+      .catch((err: unknown) =>
+        console.error(`[reviewer] could not persist the copy review for PR #${prNumber}:`, err),
+      );
+  }
+  if (copyGate.note) {
+    void appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'copy_review', detail: copyReview?.mode === 'gate' ? 'required' : 'advice', note: copyGate.note },
+      workspaceId,
+    }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
+  }
+
   if (serverOverrideReason) {
     console.warn(
       `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
@@ -5407,6 +5474,24 @@ async function handleReviewerOutcomeIfNeeded(
       kernelOwnsVerdict = false; // released to legacy (kill switch): the legacy path below decides
     } else if (kv.result.result !== 'applied') {
       console.log(`[reviewer] PR #${prNumber}: verdict ${output.verdict} at ${headSha.slice(0, 7)} ${kv.result.result} (${kv.result.reason}) — recorded, not applied`);
+      return;
+    }
+  }
+
+  // One authority per delivery (§14): a PR the kernel owns takes verdicts only
+  // from its own rounds, above. A reviewer outside them posts no review and
+  // lands nothing; an unreadable authority is treated as the kernel's.
+  if (!kernelOwnsVerdict) {
+    const authority = await kernelDeliveryForPr(workspaceId, repoFullName, prNumber).then(
+      (deliveryId) => ({ deliveryId }),
+      (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+    );
+    if ('error' in authority) {
+      console.error(`[reviewer] PR #${prNumber}: could not read the delivery authority, verdict not acted on: ${authority.error}`);
+      return;
+    }
+    if (authority.deliveryId) {
+      console.log(`[reviewer] PR #${prNumber}: the workflow kernel owns this PR (delivery ${authority.deliveryId}); a verdict outside its rounds is not acted on`);
       return;
     }
   }

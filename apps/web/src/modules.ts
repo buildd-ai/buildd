@@ -15,6 +15,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import { loadIncidentNeedsYou, loadIncidentVerdicts } from '@/lib/failure-incident-escalation';
 import type { CompletionPolicies } from '@/lib/completion-policy';
 import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
 import { loopPolicy } from '@/lib/loop-dispatcher-policy';
@@ -33,8 +34,11 @@ import { withTrunkEffects } from '@/lib/workflow/ci-red-trunk-effects';
 import { withConflictEffects } from '@/lib/workflow/conflict-retry-effects';
 import { withLandingEffects } from '@/lib/workflow/pr-landing-effects';
 import { withSupersessionEffects } from '@/lib/workflow/supersession-effects';
+import type { LegacyFirstReview } from '@/lib/workflow/legacy-handoff';
+import { legacyFirstReview } from '@/lib/workflow/review-handoff';
 import type { QuestionCheckDeps } from '@/lib/question-gate-check';
 import { fileRecoverableBlockerRepair } from '@/lib/recoverable-blocker-repair';
+import { escalationGateDeps, escalationGateReadDeps } from '@/lib/escalation-decision';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { earlyReleaseSubscribers } from '@/lib/early-release-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
@@ -44,6 +48,7 @@ import { connectorCatalogSubscribers } from '@/lib/connector-catalog-subscribers
 import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
+import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -66,6 +71,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...routingAnalyticsSubscribers,
   // task.left_mission: the surface audit lets go of a task that left its mission.
   ...surfaceAuditSubscribers,
+  // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
+  ...failurePatternSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
@@ -88,6 +95,13 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
  * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
  */
 export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
+
+/**
+ * The kill-switch hand-off slot (lib/workflow/legacy-handoff.ts): a delivery
+ * the switch released before its first kernel round gets legacy's first
+ * review from the reviews module, so the PR is never left with no reviewer.
+ */
+export const LEGACY_FIRST_REVIEW: LegacyFirstReview = legacyFirstReview;
 
 /** Review-backed read hooks for core's run-progress projection. */
 export const RUN_PROGRESS_READERS: RunProgressReaders = {
@@ -128,3 +142,19 @@ export function workflowEffectHandlers(): EffectHandlers {
  * blocker an agent tried to ask about is filed as a repair task instead.
  */
 export const RECOVERABLE_BLOCKER_REPAIR: NonNullable<QuestionCheckDeps['fileRepair']> = fileRecoverableBlockerRepair;
+
+/**
+ * The escalation gate's slots (lib/escalation-gate-check.ts): Jev, the ledger
+ * and the repair filer, for a core caller such as Home that gates PRs.
+ */
+export const ESCALATION_GATE_DEPS = escalationGateDeps;
+/** What a page passes: stored verdicts and rules, the rest looked at after the response. */
+export const ESCALATION_GATE_READ_DEPS = escalationGateReadDeps;
+
+/**
+ * The Failure Pattern Sentinel's slots for core pages (lib/failure-incident-escalation.ts):
+ * Home's Needs You rows for incidents the escalation gate gave to the owner, and the
+ * stored verdict the incident page shows. Both read the ledger; neither calls a model.
+ */
+export const INCIDENT_NEEDS_YOU = loadIncidentNeedsYou;
+export const INCIDENT_VERDICTS = loadIncidentVerdicts;

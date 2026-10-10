@@ -85,4 +85,36 @@ describe('RecoveryManager carries the session model into restarted sessions', ()
 
     expect(resolveSessionModel(calls[0].task.context, RUNNER_DEFAULT, true)).toBe(RUNNER_DEFAULT);
   });
+
+  // Found live (task 4b2b30a9): a task that budget failover moved to Codex was
+  // paused, then resumed down the Claude path ("No conversation found with
+  // session ID <codex thread id>"), because the stub task carried no backend and
+  // startSession defaults a missing backend to Claude.
+  test('a Codex worker resumes on Codex, with its thread id (layer 1)', async () => {
+    const { deps, calls } = makeDeps();
+    const mgr = new RecoveryManager(deps);
+    await mgr.resumeSession(makeWorker({ taskBackend: 'codex', codexThreadId: 'thread-1' }), '/tmp/x', 'Resume');
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].resumeId).toBe('thread-1');
+    expect(calls[0].task.backend).toBe('codex');
+  });
+
+  test('the reconstructed-context fallback (layer 2) stays on Codex too', async () => {
+    const { deps, calls } = makeDeps({ failFirst: true });
+    const mgr = new RecoveryManager(deps);
+    await mgr.resumeSession(makeWorker({ taskBackend: 'codex', codexThreadId: 'thread-1' }), '/tmp/x', 'Resume');
+
+    expect(calls.length).toBe(2);
+    expect(calls[1].task.backend).toBe('codex');
+  });
+
+  test('a Claude worker stays on Claude', async () => {
+    const { deps, calls } = makeDeps();
+    const mgr = new RecoveryManager(deps);
+    await mgr.resumeSession(makeWorker({ taskBackend: 'claude' }), '/tmp/x', 'Resume');
+
+    expect(calls[0].resumeId).toBe('sess-1');
+    expect(calls[0].task.backend ?? 'claude').toBe('claude');
+  });
 });

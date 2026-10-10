@@ -4,6 +4,7 @@
  * is carried IN the command as evidence, so the reducer stays a pure function
  * of (view, command); the caller (fact ingestion, a route) does the read.
  */
+import type { BaseDeltaFact } from './base-delta';
 import type {
   Actor,
   AttemptFamily,
@@ -31,8 +32,10 @@ export interface LivePr {
   mergedAt?: string | null;
   mergeCommitSha?: string | null;
   updatedAt?: string | null;
-  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `unknown`, ...). */
+  /** GitHub's `mergeable_state` at read time (`clean`, `dirty`, `behind`, `blocked`, `unstable`, `draft`, `unknown`, ...). */
   mergeableState?: string | null;
+  /** A draft PR (GitHub refuses to merge it); present only when true. */
+  draft?: boolean;
 }
 
 interface Base {
@@ -84,6 +87,13 @@ export type Command =
       taskRetryBudgetLeft?: boolean;
       /** Whether this workspace's policy wants a review round once a head exists. */
       reviewRequired?: boolean;
+      /**
+       * §6.5 row 1 (e9f1674b): the check runs on the live head, read when the owner attempt
+       * ended. A red head is handed on to `REPAIRING(ci)` by T10's ledger rather than to a
+       * review round, because a failure hint that arrived while `WORKING` was refused there.
+       * Absent or null (unreadable) hands on exactly as before.
+       */
+      ci?: { liveChecks: { complete: boolean; failing: string[] }; signature: string; maxAttempts: number } | null;
     })
   | (Base & { type: 'ReviewRequested'; headSha: string; live: LivePr; forced?: boolean })
   | (Base & {
@@ -176,6 +186,16 @@ export type Command =
       refusal?: Record<string, unknown> | null;
       /** The repair's subject, carried on its effects (e.g. the migration collision: file, otherFile, otherPrNumber). */
       detail?: Record<string, unknown> | null;
+      /**
+       * S15, behind only: what the base gained since this head, read live by the seam
+       * (`observeConflict`). With it, an approved head whose base delta passes the
+       * disjoint-delta rule (base-delta.ts) is not refreshed or escalated:
+       * `rejected(behind_tolerated)` and a door lands it (T15 checks the same fact
+       * again at merge time). Absent: the treadmill as before.
+       */
+      baseDelta?: BaseDeltaFact | null;
+      /** The ordinary commit bound for a platform-refreshed head (`treadmillMaxBaseCommits`). */
+      maxBaseCommits?: number;
     })
   | (Base & {
       /**
@@ -201,6 +221,21 @@ export type Command =
     })
   | (Base & { type: 'HumanApproved'; reviewId: string; commitId: string; hasMergePermission: boolean })
   | (Base & {
+      /**
+       * The escalation gate's `policy_merge` rule (@buildd/core/escalation-gate
+       * `isPolicyMerge`): a review escalation that was the policy's alone, with
+       * CI green on the reviewed head, not a draft, not XL, and only the risk
+       * classes that landed cleanly in the backtest. It approves exactly
+       * `headSha` (a later push is not covered) on the basis `policy_rule`, and
+       * the normal landing doors then land it under the workspace merge policy
+       * with every rail (deny paths, size cap, migration inspector) evaluated
+       * again. Rule-only: the actor is `rule:<name>`, never a model.
+       */
+      type: 'PolicyMergeApproved';
+      headSha: string;
+      reason: string;
+    })
+  | (Base & {
       type: 'LandingRequested';
       door: string;
       headSha: string;
@@ -218,6 +253,15 @@ export type Command =
       override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
       /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
       mergeMethod?: 'merge' | 'squash' | 'rebase';
+      /**
+       * S15: the door saw the head behind its base and asks to land it anyway
+       * under the disjoint-delta rule. The base delta read live at landing time;
+       * T15 lands only if the rule still holds (`rejected(behind_not_tolerated)`
+       * otherwise, and the door refreshes). Absent: the door's own freshness rail
+       * decided, as before. A freshness override skips it.
+       */
+      baseDelta?: BaseDeltaFact | null;
+      maxBaseCommits?: number;
     })
   | (Base & {
       type: 'MergeCallResult';
@@ -232,10 +276,23 @@ export type Command =
       detail?: string;
       /** The version T15 left the delivery at: one landing request, so a re-landing at the same head after a refusal is a new key. */
       landingVersion?: number;
+      /** A transient answer (rate limit, 5xx): when GitHub said to call again (ISO). The landing sweep waits until then. */
+      retryAt?: string;
     })
   | (Base & { type: 'PrMerged'; live: LivePr })
   | (Base & { type: 'PrClosedUnmerged'; live: LivePr; closeCause: CloseCause })
   | (Base & { type: 'PrReopened'; live: LivePr })
+  | (Base & {
+      /**
+       * The PR's base branch changed (`pull_request.edited` with `changes.base`, or a live read
+       * that disagrees with `delivery.baseRef`, e.g. GitHub's retarget of a stacked PR). The head
+       * did not move, but the diff did (24e1cfad).
+       */
+      type: 'BaseChanged';
+      live: LivePr;
+      /** The PR's diff against the new base equals its diff against the old one (§8.3 evidence). */
+      diffEquivalent?: boolean;
+    })
   | (Base & {
       type: 'SupersessionRecorded';
       target: { repoFullName: string; prNumber: number; merged: boolean; url: string | null };

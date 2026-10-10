@@ -1,7 +1,7 @@
 import { canonicalToolName } from '@buildd/shared';
 import { isFileAreaTool, fileAreaOf, filePathInput, recordFileArea } from './file-area';
 import { query, type HookCallback, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
@@ -61,7 +61,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
-import { toolActionMilestone, appendMilestone } from './tool-milestones';
+import { toolActionMilestone, appendMilestone, phaseOpName, recordPhaseOp } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_MATCHER, withBuilddActionTools } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
@@ -579,6 +579,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
+import { PAUSED_ERROR, PAUSED_ERROR_PREFIX, PAUSE_UNAVAILABLE_CODEX_MESSAGE, PAUSE_UNAVAILABLE_MESSAGE, decidePause, holdsRunnerSlot, isParkedAbortError, pausedWaitingFor, type PauseMode } from './pause.js';
 import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
@@ -824,6 +825,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       emitCommand: (workerId, command) => this.emitCommand(workerId, command),
       abort: (workerId, cancelQueued) => this.abort(workerId, undefined, cancelQueued),
+      pause: (workerId) => this.pauseWorker(workerId),
       sendMessage: (workerId, text) => this.sendMessage(workerId, text),
       syncWorker: (workerId) => this.workerSync.requestSync(workerId),
       rollback: (workerId, uuid) => this.rollback(workerId, uuid),
@@ -869,6 +871,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       abort: (workerId, reason) => this.abort(workerId, reason),
       sendMessage: (workerId, message, ids) => this.sendMessage(workerId, message, ids),
+      onPauseRequested: (worker) => { void this.pauseWorker(worker.id); },
       getAdaptiveStaleTimeout: () => this.adaptiveStaleTimeout,
       setAdaptiveStaleTimeout: (ms) => { this.adaptiveStaleTimeout = ms; },
       recentCycleTimes: this.recentCycleTimes,
@@ -1136,9 +1139,8 @@ export class WorkerManager {
   // Send heartbeat to server announcing this runner instance is alive and ready
   private async sendHeartbeat() {
     try {
-      const activeCount = Array.from(this.workers.values()).filter(
-        w => w.status === 'working' || w.status === 'waiting'
-      ).length;
+      // A paused worker holds no slot (pause.ts); a question still does.
+      const activeCount = Array.from(this.workers.values()).filter(holdsRunnerSlot).length;
       // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
       // liveness while a worker sits inside one long silent tool call — the case
       // where `updatedAt` freezes and the server could not tell a busy worker
@@ -1406,6 +1408,87 @@ export class WorkerManager {
     return this.sessions.has(id);
   }
 
+  /** How this runner can pause a run (pause.ts): set by --once from its parking config. */
+  private pauseMode(): PauseMode {
+    return this.config.pauseMode ?? (this.config.singleTask ? 'none' : 'session');
+  }
+
+  /**
+   * A person paused this run (POST /api/workers/[id]/pause). Stops the session
+   * once no tool is executing, keeps the worktree and session id, and reports
+   * waiting_input with waitingFor.type 'pause' so answering it resumes the same
+   * session. Refused, with a milestone saying why, where it could not resume.
+   */
+  async pauseWorker(workerId: string): Promise<'apply' | 'defer' | 'refuse'> {
+    const worker = this.workers.get(workerId);
+    if (!worker) return 'refuse';
+    // Already stopping: the session is being torn down (the server repeats the
+    // request on every sync until it sees the park).
+    if (worker.status === 'working' && worker.error?.startsWith(PAUSED_ERROR_PREFIX)) return 'apply';
+    const decide = () => decidePause({
+      mode: this.pauseMode(),
+      status: worker.status,
+      hasLiveSession: this.sessions.has(workerId),
+      toolInFlight: !!worker.toolInFlight,
+      waitingFor: worker.waitingFor,
+      backend: worker.taskBackend,
+    });
+    const decision = decide();
+    if (decision.action === 'refuse') {
+      console.log(`[Worker ${workerId}] Pause refused: ${decision.reason}`);
+      const lastLabel = (worker.milestones[worker.milestones.length - 1] as { label?: string } | undefined)?.label;
+      const unavailable = decision.reason === 'unavailable' ? PAUSE_UNAVAILABLE_MESSAGE
+        : decision.reason === 'unavailable_backend' ? PAUSE_UNAVAILABLE_CODEX_MESSAGE
+        : null;
+      if (unavailable && lastLabel !== unavailable) {
+        this.addMilestone(worker, { type: 'status', label: unavailable, ts: Date.now() });
+        this.buildd.updateWorker(worker.id, { currentAction: unavailable, milestones: worker.milestones }).catch(() => {});
+        this.emit({ type: 'worker_update', worker });
+      }
+      return 'refuse';
+    }
+    if (decision.action === 'defer') {
+      if (worker.pauseRequestedAt) return 'defer';
+      worker.pauseRequestedAt = Date.now();
+      worker.currentAction = 'Pausing after the current step';
+      this.addMilestone(worker, { type: 'status', label: 'Pause requested: stopping after the current step', ts: Date.now() });
+      this.emit({ type: 'worker_update', worker });
+      const timer = setInterval(() => {
+        if (!worker.pauseRequestedAt) { clearInterval(timer); return; }
+        const next = decide();
+        if (next.action === 'defer') return;
+        clearInterval(timer);
+        worker.pauseRequestedAt = undefined;
+        if (next.action === 'apply') void this.applyPause(worker);
+      }, 1000);
+      (timer as { unref?: () => void }).unref?.();
+      return 'defer';
+    }
+    await this.applyPause(worker);
+    return 'apply';
+  }
+
+  /** Same shape as parkQuestion's inputAsRetry branch: report the park, then abort; the catch path parks it. */
+  private async applyPause(worker: LocalWorker): Promise<void> {
+    worker.pauseRequestedAt = undefined;
+    worker.error = PAUSED_ERROR;
+    worker.waitingFor = pausedWaitingFor();
+    worker.currentAction = 'Paused';
+    this.addMilestone(worker, { type: 'status', label: 'Paused', ts: Date.now() });
+    sessionLog(worker.id, 'info', 'paused', 'session stopped between tool calls; resumable by session id', worker.taskId);
+    try {
+      await this.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: worker.waitingFor as any,
+      });
+    } catch (err) {
+      console.warn(`[Worker ${worker.id}] pause sync failed:`, err);
+    }
+    storeSaveWorker(worker);
+    this.sessions.get(worker.id)?.abortController.abort();
+  }
+
   /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
   persistWorker(id: string): void {
     const worker = this.workers.get(id);
@@ -1539,7 +1622,10 @@ export class WorkerManager {
         const now = Date.now();
         const resetMs = new Date(budgetResetsAt).getTime();
         const delayMs = Math.max(0, resetMs - now);
-        console.warn(`[WorkerManager] Account OAuth budget exhausted — resets at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
+        // The server names the wall when it knows it (task e7e8740a): the
+        // account seat, a team rate limit, or a tenant budget.
+        const wallSummary = diagnostics?.budgetBlock?.summary;
+        console.warn(`[WorkerManager] ${wallSummary ?? 'Account OAuth budget exhausted.'} Next claim at ${budgetResetsAt} (${Math.round(delayMs / 60_000)} min)`);
         this.emit({ type: 'budget_exhausted', budgetResetsAt, delayMs });
         // Wake up to poll the instant the budget resets. Without this the runner
         // only recovered on its hourly fallback poll (RUNNER_HEARTBEAT_INTERVAL_MS)
@@ -3013,13 +3099,14 @@ export class WorkerManager {
   private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
     console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
     sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
-    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    // No TASK_ERROR checkpoint: a parked question or a pause is not a failure,
+    // and a "Task failed" milestone right after "Paused" read as one.
     const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
     // Mirrors the sibling non-abort branch's local 'waiting' state — the
     // session is gone here, but 'waiting' + no live session is already a
     // recognized local state elsewhere in this file.
     worker.status = 'waiting';
-    worker.currentAction = 'Needs input';
+    worker.currentAction = worker.waitingFor?.type === 'pause' ? 'Paused' : 'Needs input';
     worker.hasNewActivity = true;
     // Not terminal — no completedAt. The worker is still open.
     // Re-send waitingFor so the dashboard can render the answer UI even
@@ -3285,6 +3372,8 @@ export class WorkerManager {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
+    } else if (agentBuilddAuth.source === 'none') {
+      sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=none reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
       sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.detail ?? 'unknown'}`, task.id);
     }
@@ -3963,8 +4052,6 @@ export class WorkerManager {
         );
       }
 
-      // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
-      cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
       // Keep task-tracking tools available on newer Claude models.
       cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
       // Nothing re-invokes a session after its turn ends, so background work
@@ -4170,6 +4257,12 @@ export class WorkerManager {
       // becomes the task summary instead of actual results. Agents should not use
       // run_in_background; they should poll synchronously or wait for results.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
+
+      // Narration policy: a text block right before a tool call becomes an
+      // Activity milestone, so "Now let me check X…" filler stacked up as rows.
+      // The dashboard names such phases by their calls (milestone-log.ts) — that
+      // is the durable fix; this only cuts the noise at the source.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Narration Policy\nCall tools directly. Do not narrate an imminent tool call with filler such as "Let me…", "Now I\'ll…" or "I\'m going to check…" — the call itself shows what you are doing. Write text when it carries a finding, a decision, a warning or a result.';
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
@@ -4556,8 +4649,8 @@ export class WorkerManager {
         : null;
 
       // Attach permission hook (blocks dangerous commands, allows safe bash),
-      // team tracking hook (captures TeamCreate, SendMessage, Task events),
-      // and agent team lifecycle hooks (TeammateIdle, TaskCompleted, SubagentStart, SubagentStop).
+      // tool activity hook (clears toolInFlight after each tool),
+      // and lifecycle hooks (TaskCompleted, SubagentStart, SubagentStop).
       queryOptions.hooks = {
         PreToolUse: [
           ...(readJailPrefixes
@@ -4634,13 +4727,12 @@ export class WorkerManager {
           }) as unknown as Array<{ timeout: number; hooks: HookCallback[] }>,
         ],
         PostToolUse: [
-          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          { hooks: [this.hookFactory.createToolActivityHook(worker)] },
         ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
         PermissionRequest: [{ hooks: [this.hookFactory.createPermissionRequestHook(worker)] }],
-        TeammateIdle: [{ hooks: [this.hookFactory.createTeammateIdleHook(worker)] }],
         TaskCompleted: [{ hooks: [this.hookFactory.createTaskCompletedHook(worker)] }],
         SubagentStart: [{ hooks: [this.hookFactory.createSubagentStartHook(worker)] }],
         SubagentStop: [{ hooks: [this.hookFactory.createSubagentStopHook(worker)] }],
@@ -4967,7 +5059,7 @@ export class WorkerManager {
       // 'waiting_input' phase. See docs/specs/human-in-the-loop-protocol.md.
       // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
       // (answer, or timeout after 4h/24h) — this path only parks.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }
@@ -5482,7 +5574,7 @@ export class WorkerManager {
       // reporting status:'failed' here fed the mission auto-retry gate and
       // classifyReportedFailure's code_failure default. See
       // docs/specs/human-in-the-loop-protocol.md.
-      if (worker.error?.startsWith('needs_input')) {
+      if (isParkedAbortError(worker.error)) {
         await this.parkNeedsInputAbort(worker);
         return;
       }
@@ -6185,6 +6277,7 @@ export class WorkerManager {
             worker.phaseStart = Date.now();
             worker.phaseToolCount = 0;
             worker.phaseTools = [];
+            worker.phaseOps = [];
           }
           const lines = cleanBlockText.split('\n');
           for (const line of lines) {
@@ -6308,8 +6401,12 @@ export class WorkerManager {
             return;
           }
 
-          // Increment phase tool count
+          // Increment phase tool count, and record what the phase did so the
+          // dashboard can name it by its calls when its text was only a lead-in
+          // ("Now let me check the decision…" + get_decision → "Checked decision").
           worker.phaseToolCount++;
+          if (!worker.phaseOps) worker.phaseOps = [];
+          recordPhaseOp(worker.phaseOps, phaseOpName(toolName, rawInput));
 
           // Track notable tools in phaseTools (cap 5)
           if (['Edit', 'Write', 'Bash'].includes(toolName) && worker.phaseTools.length < 5) {
@@ -6364,6 +6461,10 @@ export class WorkerManager {
             }
           } else if (toolName === 'Glob' || toolName === 'Grep') {
             worker.currentAction = `Searching...`;
+          } else if (toolName.startsWith('mcp__')) {
+            // An agent that starts with MCP calls (recall, update_progress)
+            // otherwise sits on "Setting up worktree..." until its first Bash.
+            worker.currentAction = `Using ${toolName.split('__')[1] || 'a tool'}`;
           } else if (toolName === 'AskUserQuestion' && !asksAQuestion(input)) {
             // Asks nothing (e.g. `questions: []` used to "wait" on background
             // work). Not a question: never park, abort, or notify — the
@@ -6793,12 +6894,14 @@ export class WorkerManager {
       label: extractPhaseLabel(worker.phaseText),
       toolCount: worker.phaseToolCount,
       ts: worker.phaseStart || Date.now(),
+      ...(worker.phaseOps?.length ? { ops: [...worker.phaseOps] } : {}),
     };
     this.addMilestone(worker, milestone);
     worker.phaseText = null;
     worker.phaseStart = null;
     worker.phaseToolCount = 0;
     worker.phaseTools = [];
+    worker.phaseOps = [];
   }
 
   /**

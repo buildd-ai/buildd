@@ -51,7 +51,7 @@ import {
   type DispatchConflictRetryResult,
 } from '@/lib/conflict-retry';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
-import { isGeneratedMigrationPath } from '@/lib/migration-safety';
+import { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, judgeBaseDelta } from '@/lib/workflow/base-delta';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { ChecksState, LandingAlertInput } from '@/lib/pr-landing-alert';
@@ -75,6 +75,8 @@ import { LANDING_CYCLE_COOLDOWN_MS } from '@/lib/pr-landing-sweep';
 import { refreshCause } from '@/lib/refresh-cause';
 import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { resolveMergeMethod } from '@/lib/integration-refresh';
+import { isFailingCheckRun } from '@/lib/ci-verdict';
+import { dispatchLandingFix, type LandingFixDispatchDeps } from '@/lib/pr-landing-fix-dispatch';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -216,6 +218,13 @@ export interface LandPrDeps {
    */
   dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string; /** Nothing was filed, and why. */ skipped?: string } | null>;
   /**
+   * With no `dispatchFix` wired (every door today), red CI and a migration
+   * collision still get their fix: lib/pr-landing-fix-dispatch.ts hands them to
+   * the CI retry and the collision renumber that already decide those. These
+   * are its dependencies, for tests.
+   */
+  landingFix?: LandingFixDispatchDeps;
+  /**
    * Sends a reviewer for a stale approval (the diff changed after the approve,
    * so carry-forward could not keep it). Used for the `re_review` fix of a
    * `stale_approval` block when no `dispatchFix` is wired. Defaults to the
@@ -260,16 +269,12 @@ export const TREADMILL_MAX_REFRESHES = POLICY_DEFAULTS.treadmillMaxRefreshes;
 /**
  * Once a cycle's refreshes are spent, a head our refresh produced may land
  * across a base gap of up to this many commits — still only when the moved
- * files are listable, disjoint from the PR's and free of migrations, schema and
- * lockfiles. This is what stops a busy base from starving a clean PR: the
- * refresh treadmill ends in a merge, not in a page.
+ * files are listable, disjoint from the PR's and free of risky paths
+ * (`isRiskyLandingPath`). This is what stops a busy base from starving a clean
+ * PR: the refresh treadmill ends in a merge, not in a page. One constant with
+ * the kernel's S15 rule (workflow/base-delta.ts).
  */
-export const TREADMILL_EXHAUSTED_MAX_BASE_COMMITS = 20;
-
-const LOCKFILE = /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.lock$/;
-const SCHEMA_FILE = 'packages/core/db/schema.ts';
-
-const isRiskyPath = (path: string) => isGeneratedMigrationPath(path) || path === SCHEMA_FILE || LOCKFILE.test(path);
+export { TREADMILL_EXHAUSTED_MAX_BASE_COMMITS };
 
 export type TreadmillVerdict =
   | { accepted: true }
@@ -304,11 +309,8 @@ export function evaluateTreadmillBound(input: {
   if (!baseFiles || !prFiles) {
     return { accepted: false, reason: 'could not list the files on one side of the gap' };
   }
-  const risky = [...baseFiles, ...prFiles].find(isRiskyPath);
-  if (risky) return { accepted: false, unsafe: true, reason: `the gap involves a migration, schema or lockfile (${risky})` };
-  const mine = new Set(prFiles);
-  const overlap = baseFiles.find((f) => mine.has(f));
-  if (overlap) return { accepted: false, unsafe: true, reason: `the base changed a file this PR changes (${overlap})` };
+  const verdict = judgeBaseDelta({ baseCommits: baseCommitsSince, baseFiles, prFiles }, maxBaseCommits);
+  if (!verdict.tolerated) return { accepted: false, unsafe: verdict.cause === 'refresh_unsafe', reason: verdict.reason };
   return { accepted: true };
 }
 
@@ -593,8 +595,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   let marker: LandingMarker | null = null;
   // Set once the verdict and CI rails have passed: from here on the PR is "approved and green".
   let approvedGreenAtMs: number | null = null;
-  // Set when a behind head lands under the spent-cycle freshness rule rather than the ordinary bound.
-  let freshnessRule: 'spent_cycle' | null = null;
+  // Set when a behind head lands under the spent-cycle freshness rule rather than the ordinary bound,
+  // or (a kernel-owned PR) under the kernel's disjoint-delta rule.
+  let freshnessRule: 'spent_cycle' | 'disjoint_delta' | null = null;
+  // A kernel-owned PR the kernel tolerated behind its base: T15 re-reads the base delta at merge time.
+  let landBehind = false;
 
   const done = (outcome: LandingOutcome, reason: string, extra: Record<string, unknown> = {}): LandingOutcome => {
     if (input.mode === 'off') return outcome;
@@ -645,6 +650,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       detail: { prNumber, headSha, repoFullName, ...detail },
     });
   };
+
+  // a90fc99b: what a door with no `dispatchFix` of its own files for red CI and a collision.
+  const defaultFix: NonNullable<LandPrDeps['dispatchFix']> = (fi) => dispatchLandingFix(fi, deps.landingFix);
 
   const needsFix = async (
     fix: Exclude<FixKind, 'conflict'>,
@@ -773,6 +781,11 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     ? { ...policy, threshold: { ...policy.threshold, maxLines: Number.MAX_SAFE_INTEGER } as MergePolicy['threshold'] }
     : policy;
   const observed: { baseRef?: string | null; mergeableState?: string | null; checkRuns?: CheckRunState[] } = {};
+  let kernelViewPromise: ReturnType<typeof import('@/lib/workflow/seam').kernelLandingView> | null = null;
+  const kernelStatus = () => (kernelViewPromise ??= (async () => {
+    const read = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
+    return read(workspaceId, repoFullName, prNumber).catch(() => null);
+  })());
   const runSafety = (bound: ModelApproveBound | undefined) =>
     evaluateAutoMergeSafety(installationId, repoFullName, prNumber, liveHead, effectivePolicy, {
       mission,
@@ -811,8 +824,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     switch (refusal) {
       case 'ci': {
-        const red = (observed.checkRuns ?? []).some((r) => r.conclusion === 'failure');
-        return red ? needsFix('ci_fix', reason) : waiting(reason);
+        // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
+        // unfinished run, or a non-passing commit status, is a wait.
+        const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
+        return red ? needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix) : waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
@@ -820,8 +835,22 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'deny_path':
         return human('deny_path', reason);
       case 'migration':
-        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason);
-        return /^could not /.test(reason) ? waiting(reason) : human('migration', reason);
+        if (/^migration number collision:/.test(reason)) return needsFix('renumber_migration', reason, deps.dispatchFix ?? defaultFix);
+        if (/^could not /.test(reason)) return waiting(reason);
+        // Human authorization gates landing, not technical review. A repaired
+        // head can earn its review while the migration decision is outstanding.
+        // Use the existing reviewer dispatcher/dedupe; never file another repair.
+        if (act && policy.tier === 'agent-review' && !(await kernelStatus())) {
+          const status = await reviewStatus();
+          const stale = status?.verdict === 'approve' && status.reviewHeadSha && status.reviewHeadSha !== liveHead;
+          if (status?.state === 'not_requested' || stale) {
+            const send = deps.dispatchFix ?? reReviewVia(stale ? 'migration approval pending on a repaired head' : undefined, !stale);
+            await send({ kind: 're_review', workspaceId, installationId, repoFullName, prNumber,
+              headSha: liveHead, owner, reason: `technical review while human migration approval is pending: ${reason}`,
+            }).catch(err => console.warn('[pr-landing] technical review dispatch failed:', err));
+          }
+        }
+        return human('migration', reason);
       case 'size':
         return human('size_cap', reason);
       case 'conflict':
@@ -843,8 +872,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  const readKernelView = deps.kernelLandingView ?? (await import('@/lib/workflow/seam')).kernelLandingView;
-  const kernelView = await readKernelView(workspaceId, repoFullName, prNumber).catch(() => null);
+  const kernelView = await kernelStatus();
   if (kernelView) {
     const { state, head } = kernelView.current;
     const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };
@@ -860,7 +888,12 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       const next = t.cycle < t.maxCycles
         ? `Next: landing opens a fresh refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m (cycle ${t.cycle} of ${t.maxCycles}); a person can merge it now with a freshness override`
         : `Next: every refresh cycle is used (${t.maxCycles}), so a person lands it: merge it with a freshness override, or wait for a quiet base and retry`;
-      return human('refresh_exhausted', `the base kept moving after ${t.refreshes} refreshes. ${next}`, { ...extra, treadmillCycle: t.cycle });
+      if (t.cause?.kind === 'refresh_unsafe') {
+        const files = t.cause.files.length ? ` (${t.cause.files.join(', ')})` : '';
+        return human('refresh_unsafe', `after ${t.refreshes} refreshes the base still changes what this PR changes${files}, so a green on an older base is not proof. ${next}`, { ...extra, treadmillCycle: t.cycle, files: t.cause.files });
+      }
+      const gapNote = t.cause?.reason ? ` (${t.cause.reason})` : '';
+      return human('refresh_exhausted', `the base kept moving after ${t.refreshes} refreshes${gapNote}. ${next}`, { ...extra, treadmillCycle: t.cycle });
     }
     if (state !== 'APPROVED' && !overridable) {
       // ESCALATED is terminal for the kernel: no event moves it back to APPROVED on its own.
@@ -955,6 +988,14 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       const gap = `PR is ${behindBy ? `${behindBy} commit${behindBy === 1 ? '' : 's'}` : 'behind'} behind ${baseRef}`;
       if (override.freshness) {
         bypass(GATE_SLUGS.MERGE_BASE_FRESHNESS, `${gap}; a person merged it anyway`, { baseRef, behindBy });
+      } else if (kernelView && act) {
+        // S15 is the kernel's for its PRs: T12 reads the base delta and either refreshes, escalates
+        // with the precise cause, or tolerates a small, disjoint, risk-free delta on an approved
+        // head. Tolerated, the merge below asks T15 to land it behind, which checks the rule again.
+        const r = await refreshOrTolerate(gap, baseRef);
+        if (r !== 'tolerated') return r;
+        landBehind = true;
+        freshnessRule = 'disjoint_delta';
       } else {
         const spent = refreshCycleCount(marker, liveHead, now()) >= policyValue('treadmillMaxRefreshes');
         const tolerated = await treadmillAccepts(baseRef, spent);
@@ -1002,6 +1043,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       mergeMethod,
       ...(kernelOverride ? { override: kernelOverride } : {}),
       ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}),
+      ...(landBehind ? { behind: { maxBaseCommits: policyValue('treadmillMaxBaseCommits') } } : {}),
     });
     return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, liveHead) };
   });
@@ -1034,6 +1076,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       case 'behind': return done({ kind: 'updating_branch', newHeadSha: liveHead }, `the kernel is refreshing the branch: ${k.message}`, extra);
       case 'conflict': return done({ kind: 'needs_fix', fix: 'conflict', reason: k.message }, k.message, { ...extra, fix: 'conflict', fixDispatched: true });
       case 'refused': return human('merge_failed', k.message, extra);
+      // The base moved again between T12's tolerance and the merge: back to T12, which refreshes or escalates.
+      case 'rejected':
+        if (k.reason === 'behind_not_tolerated' && baseRef) return refresh(k.message, baseRef);
+        return waiting(k.message, extra);
       // A lost answer is verified by the kernel before anything re-calls GitHub; a moved head or
       // a stale screen is re-read; a delivery not ready to land is the kernel's to move on.
       default: return waiting(k.message, extra);
@@ -1152,9 +1198,16 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
    * after the cooldown — and the page says so.
    */
   async function refresh(why: string, base: string, unsafe = false): Promise<LandingOutcome> {
+    const r = await refreshOrTolerate(why, base, unsafe);
+    // A tolerated delta found after a refused merge: the next pass lands it from the top.
+    return r === 'tolerated' ? waiting(`the kernel tolerates this head behind ${base}; landing re-reads (${why})`, { refresh: 'tolerated' }) : r;
+  }
+
+  async function refreshOrTolerate(why: string, base: string, unsafe = false): Promise<LandingOutcome | 'tolerated'> {
     const stored = marker?.refreshCount ?? 0;
     const count = refreshCycleCount(marker, liveHead, now());
-    if (count >= policyValue('treadmillMaxRefreshes')) {
+    // A kernel-owned PR's refresh budget is the kernel's (S15): its own ledger decides, not the legacy marker.
+    if (!kernelView && count >= policyValue('treadmillMaxRefreshes')) {
       const next = `Next: landing starts a new refresh cycle within ${Math.round(LANDING_CYCLE_COOLDOWN_MS / 60_000)}m and lands it in the first quiet window; a person can merge it now with a freshness override`;
       return unsafe
         ? human('refresh_unsafe', `after ${count} refreshes the base still changes what this PR changes (${why}), so a green on an older base is not proof. ${next}`, { refreshCount: count })
@@ -1172,6 +1225,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     } catch (err) {
       return human('merge_failed', `could not refresh the branch: ${errMessage(err)}`);
     }
+    if (res.behindTolerated) return 'tolerated';
     if (res.branchUpdated) {
       const after = await readLivePr(installationId, repoFullName, prNumber).catch(() => null);
       const newHead = after?.headSha ?? liveHead;
@@ -1244,6 +1298,9 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
     if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
     if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
+    if (res.refreshExhausted && res.refreshTreadmill !== undefined && res.refreshUnsafe) {
+      return human('refresh_unsafe', `the base keeps changing what this PR changes after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
+    }
     if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
       return human('refresh_exhausted', `the base kept moving after ${res.refreshTreadmill} refreshes (${refreshCause(res)}; ${reason})`, { refreshCount: res.refreshTreadmill });
     }

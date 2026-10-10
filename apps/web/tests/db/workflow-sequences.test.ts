@@ -82,6 +82,8 @@ export type Act =
   | { t: 'fixClaim' }
   | { t: 'fixEnds'; outcome: Outcome; push: boolean }
   | { t: 'land' }
+  /** The landing door's freshness rail (pr-landing.ts §6): a head behind its base asks T15 to land it under the S15 disjoint-delta rule. */
+  | { t: 'landBehind' }
   | { t: 'conflictDoor'; hint: 'dirty' | 'behind' }
   | { t: 'humanMerge' }
   | { t: 'humanClose' }
@@ -108,6 +110,7 @@ const actArb: fc.Arbitrary<Act> = fc.oneof(
   { weight: 12, arbitrary: fc.constant<Act>({ t: 'fixClaim' }) },
   { weight: 12, arbitrary: fc.record({ t: fc.constant('fixEnds' as const), outcome: outcomeArb, push: fc.boolean() }) },
   { weight: 16, arbitrary: fc.constant<Act>({ t: 'land' }) },
+  { weight: 4, arbitrary: fc.constant<Act>({ t: 'landBehind' }) },
   { weight: 4, arbitrary: fc.record({ t: fc.constant('conflictDoor' as const), hint: fc.constantFrom('dirty' as const, 'behind' as const) }) },
   { weight: 1, arbitrary: fc.constant<Act>({ t: 'humanMerge' }) },
   { weight: 1, arbitrary: fc.constant<Act>({ t: 'humanClose' }) },
@@ -380,6 +383,15 @@ async function checkInvariants(ctx: Ctx): Promise<void> {
     if (!ctx.gh.isAncestor(ctx.repo, pr.mergeCommitSha!, BASE)) fail(s, 'merge commit is not on the base branch');
   }
   if (tr.filter((t) => t.command === 'PrMerged').length > 1) fail(s, 'PrMerged applied twice');
+  // No unattended landing without an approval covering the head (S15 included): a landing past
+  // the base's freshness is recorded as the disjoint-delta rule it landed under, never silently.
+  const landings = await q<{ evidence: Record<string, any>; bypass: unknown }>(sql`SELECT evidence, bypass FROM workflow_transitions
+    WHERE delivery_id = ${ctx.deliveryId}::uuid AND command = 'LandingRequested'`);
+  for (const l of landings) {
+    if (l.bypass == null && l.evidence?.coverage === 'none') fail(s, 'LandingRequested at a head no approval covers, without a bypass');
+    const f = l.evidence?.freshness;
+    if (f && (f.optimistic !== true || !['bounded', 'spent_cycle'].includes(f.rule) || typeof f.behindBy !== 'number')) fail(s, `landing past freshness without the rule recorded: ${JSON.stringify(f)}`);
+  }
 
   // The kernel's head is one GitHub actually held for this PR (set only from live reads).
   const heads = [...pr.previousHeads, pr.headSha];
@@ -535,6 +547,15 @@ async function step(ctx: Ctx, a: Act, i: number): Promise<void> {
       const head = pr.headSha;
       if (!(await ciGreenNow(ctx, head))) return;
       await guardedSeam(ctx, 'land', () => seam.landThroughKernel({ ...base, headSha: head, door: 'auto_merge', actor: 'system:auto_merge' }));
+      return;
+    }
+    case 'landBehind': {
+      if (!open) return;
+      const head = pr.headSha;
+      if (!(await ciGreenNow(ctx, head))) return;
+      const tip = gh.branchHead(ctx.repo, BASE);
+      const behind = !!tip && !gh.isAncestor(ctx.repo, tip, head);
+      await guardedSeam(ctx, 'landBehind', () => seam.landThroughKernel({ ...base, headSha: head, door: 'land_pr:sweep', actor: 'system:sweep', ...(behind ? { behind: {} } : {}) }));
       return;
     }
     case 'conflictDoor':
@@ -716,6 +737,11 @@ export const REGRESSIONS: Array<{ name: string; spec: RunSpec; skip?: string }> 
     // The check was re-run green before its failure hint arrived; the redelivered hint flaps the delivery again.
     name: 'a stale CI-failure hint does not leave APPROVED while CI is green',
     spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [owner(), { t: 'ci', ok: false }, { t: 'ci', ok: true }, { t: 'verdict', v: 'approve', oldest: false }] },
+  },
+  {
+    // e9f1674b: the failure hint lands while WORKING (refused there); the owner's hand-off acts on it.
+    name: 'a CI failure during the owner run is repaired when the run ends',
+    spec: { seed: 1, faults: NO_FAULTS, strict: false, acts: [{ t: 'ci', ok: false }, { t: 'deliver' }, owner(), { t: 'drain' }] },
   },
 ];
 

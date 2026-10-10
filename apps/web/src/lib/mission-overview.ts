@@ -55,9 +55,9 @@ export function overviewSelection(model: Model, order: readonly string[], select
   return { marks: sel.marks, reason: null };
 }
 
-/** `2 of 7 merged · 1 of 4 criteria`: the header's counts. */
-export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>): string {
-  const parts = [`${model.landed.done} of ${model.landed.total} merged`];
-  if (model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
+/** `2 of 7 merged · 1 of 4 criteria`; `{ criteria: false }` leaves the criteria to the Verified pill. */
+export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>, opts: { criteria?: boolean } = {}): string {
+  const parts = [model.landed.total === 0 ? 'No tasks yet' : `${model.landed.done} of ${model.landed.total} merged`];
+  if (opts.criteria !== false && model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
   return parts.join(' · ');
 }

@@ -9,6 +9,10 @@ const cells: TaskStripCell[] = (['landed', 'landed', 'review', 'running', 'block
 function cellTags(html: string): string[] {
   return html.match(/<button[^>]*>/g) ?? [];
 }
+/** Each cell's fill span, opening tag through its content. */
+function fills(html: string): string[] {
+  return html.match(/<span[^>]*data-testid="task-strip-fill"[^>]*>[^<]*<\/span>/g) ?? [];
+}
 function ticks(html: string): string[] {
   const row = html.slice(html.indexOf('data-testid="task-strip-ticks"'));
   return row.match(/<span[^>]*>[^<]*<\/span>/g) ?? [];
@@ -54,9 +58,34 @@ describe('TaskStrip lg', () => {
 
   it('flat-fill states draw their glyph inside the cell', () => {
     const html = renderToStaticMarkup(<TaskStrip cells={[{ id: 'a', state: 'needs_you' }, { id: 'b', state: 'landed' }]} />);
-    const [needs, landed] = cellTags(html).map(t => html.slice(html.indexOf(t) + t.length, html.indexOf('</button>', html.indexOf(t))));
-    expect(needs).toContain('!');
-    expect(landed).toBe('');
+    const [needs, landed] = fills(html);
+    expect(needs).toMatch(/>!<\/span>$/);
+    expect(landed).toMatch(/><\/span>$/);
+  });
+
+  it('below md a cell is a slim bar in a 44px target, never a tall framed column', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t5" />);
+    for (const tag of cellTags(html)) {
+      expect(tag).toContain('h-11');
+      expect(tag).toContain('md:h-16');
+      expect(tag).not.toContain('outline');
+    }
+    for (const f of fills(html)) {
+      expect(f).toContain('state-cell');
+      expect(f).toContain(' h-4 ');
+      expect(f).toContain('md:h-full');
+    }
+  });
+
+  it('the selection is a separate marker below md and a ring from md, on the selected cell only', () => {
+    const html = renderToStaticMarkup(<TaskStrip cells={cells} selectedId="t5" />);
+    const markers = html.match(/<span[^>]*data-testid="task-strip-marker"[^>]*>/g) ?? [];
+    expect(markers).toHaveLength(7);
+    expect(markers.filter(m => m.includes('bg-text-primary'))).toHaveLength(1);
+    expect(markers[4]).toContain('bg-text-primary');
+    const rings = fills(html).filter(f => f.includes('md:[outline:2px_solid_var(--text-primary)]'));
+    expect(rings).toHaveLength(1);
+    expect(fills(html)[4]).toContain('md:[outline');
   });
 
   it('past 12 cells unmarked ticks go quiet and marks become bars', () => {

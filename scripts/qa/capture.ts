@@ -36,6 +36,9 @@
  *                                     aborted in the browser. Not combinable with QA_ROUTES. A failed
  *                                     assertLayout (overflow, a tap target under 44px below md) exits 4
  *                                     after every shot is written.
+ *                                     A route whose document is 5xx or whose page threw a module-load
+ *                                     error (the app did not boot) is a FAIL, recorded as `bootFailure`,
+ *                                     and exits 5 after every shot is written.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -52,6 +55,7 @@
  *   QA_SIGN_IN_PATHS                — comma-separated app sign-in paths (default: /login,/signin,…)
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
+ *   QA_TEAM_ID                      — render as this team (sets the `buildd-team` cookie)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
  */
 
@@ -61,6 +65,7 @@ import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { resolveViewport } from './viewport';
+import { bootFailure, isModuleLoadError } from './boot';
 import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
 import {
   classifyPageLoad,
@@ -239,14 +244,23 @@ if (QA_THEME) {
   await context.addInitScript((t) => localStorage.setItem('buildd-theme', t), QA_THEME);
   console.log(`[capture] theme ${QA_THEME}`);
 }
+// QA_TEAM_ID renders as that team: the same `buildd-team` cookie the team switcher
+// sets (lib/active-team-client.ts). Unset keeps the user's default team.
+const QA_TEAM_ID = process.env.QA_TEAM_ID?.trim();
+if (QA_TEAM_ID) {
+  await context.addCookies([{ name: 'buildd-team', value: encodeURIComponent(QA_TEAM_ID), url: BASE_URL }]);
+  console.log('[capture] team set from QA_TEAM_ID');
+}
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot
 // that looks fine but threw on load (React #418) is still visible.
 // Counted per route as well (reset before each navigation) and recorded on the
 // capture, so a consumer can tell "rendered" from "rendered but threw".
 let pageErrors = 0;
+let moduleErrors: string[] = [];
 page.on('pageerror', (err) => {
   pageErrors++;
+  if (isModuleLoadError(err.message)) moduleErrors.push(err.message);
   console.warn(`[capture] page error on ${page.url()}: ${err.message}`);
 });
 page.on('console', (msg) => {
@@ -311,6 +325,8 @@ type Capture = {
   status?: number | null;
   /** Uncaught page errors between navigation and the shot. */
   pageErrors?: number;
+  /** Why the app did not boot (5xx document, module-load error): the shot is blank. */
+  bootFailure?: string;
   screenshotFile?: string;
   a11yFile?: string;
   redirected?: boolean;
@@ -359,6 +375,7 @@ for (const route of routes) {
   let guard: Awaited<ReturnType<typeof guardWrites>> | null = null;
   try {
     pageErrors = 0;
+    moduleErrors = [];
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
     const navStatus = response?.status() ?? null;
 
@@ -453,6 +470,7 @@ for (const route of routes) {
     );
 
     const finalUrl = page.url();
+    const boot = bootFailure(navStatus, moduleErrors);
     captures.push({
       source: PAGE_SOURCE,
       ...stateField,
@@ -462,6 +480,7 @@ for (const route of routes) {
       finalUrl,
       status: navStatus,
       pageErrors,
+      ...(boot ? { bootFailure: boot } : {}),
       screenshotFile,
       a11yFile,
       redirected: finalUrl !== url && !finalUrl.startsWith(url),
@@ -470,7 +489,8 @@ for (const route of routes) {
       ...(guard?.blocked.length ? { blockedWrites: [...guard.blocked] } : {}),
       capturedAt: new Date().toISOString(),
     });
-    console.log(`[capture] OK    ${route.id} → ${finalUrl}${devOverlay ? ' [dev-overlay hidden]' : ''}`);
+    if (boot) console.error(`[capture] FAIL  ${route.id}: app did not boot (${boot})`);
+    else console.log(`[capture] OK    ${route.id} → ${finalUrl}${devOverlay ? ' [dev-overlay hidden]' : ''}`);
   } catch (err) {
     console.error(`[capture] FAIL  ${route.id}: ${(err as Error).message}`);
     captures.push({
@@ -507,6 +527,16 @@ const layoutFailures = captures.filter((c) => c.stepFailed?.assertion);
 if (layoutFailures.length > 0) {
   for (const c of layoutFailures) console.error(`[capture] LAYOUT FAILED ${c.id}: ${c.stepFailed!.error}`);
   process.exit(4);
+}
+
+// The app never booted on these routes: the shots are blank pages. Fail the
+// run (shots and metadata are already written) instead of passing silently.
+const bootFailures = captures.filter((c) => c.bootFailure);
+if (bootFailures.length > 0) {
+  for (const c of bootFailures) console.error(`[capture] BOOT FAILED ${c.id}: ${c.bootFailure}`);
+  // Annotation, so the boot failure shows on the run even where the step is report-only.
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=Visual QA: app did not boot::${bootFailures.map((c) => c.id).join(", ")}`);
+  process.exit(5);
 }
 
 if (captures.some(c => c.providerError)) process.exit(1);

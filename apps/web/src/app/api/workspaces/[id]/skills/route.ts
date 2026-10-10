@@ -82,7 +82,7 @@ export async function GET(
         const access = await verifyWorkspaceAccess(auth.user.id, id);
         if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
-        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
@@ -160,7 +160,7 @@ export async function POST(
         sessionAccess = await verifyWorkspaceAccess(auth.user.id, id);
         if (!sessionAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     } else if (auth.type === 'api') {
-        const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
+        const hasAccess = await verifyAccountWorkspaceAccess(auth.account, id);
         if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
@@ -206,11 +206,11 @@ export async function POST(
             );
         }
 
-        // `/app/team/new` is a static route, so a role with this slug could
+        // `/app/settings/roles/new` is a static route, so a role with this slug could
         // never reach its own detail page. See lib/reserved-slugs.ts.
         if (isReservedRoleSlug(slug)) {
             return NextResponse.json(
-                { error: `"${slug}" is reserved because /app/team/${slug} is a built-in page. Pick a different slug.` },
+                { error: `"${slug}" is reserved because /app/settings/roles/${slug} is a built-in page. Pick a different slug.` },
                 { status: 400 }
             );
         }

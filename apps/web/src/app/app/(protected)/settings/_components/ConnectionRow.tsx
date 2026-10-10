@@ -1,11 +1,25 @@
-import type { ReactNode } from 'react';
+'use client';
+
+import { createContext, useContext, type ReactNode } from 'react';
+import { TonePill } from '@/components/ui/StatePill';
+import type { StateTone } from '@/components/ui/states';
 
 export type ChipTone = 'ok' | 'warn' | 'err' | 'idle';
 
-/** The square status chip every connection row carries. */
+/** Connection health in the shared state tones: a warning needs a decision, not a fire. */
+const CHIP_TONE: Record<ChipTone, StateTone> = { ok: 'ok', warn: 'dec', err: 'bad', idle: 'q' };
+
+/** The status chip every connection row carries, drawn as a TonePill. */
 export function StatusChip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
-  return <span className={`status-pill status-pill-${tone}`}>{children}</span>;
+  return <TonePill tone={CHIP_TONE[tone]}>{children}</TonePill>;
 }
+
+/**
+ * Inside a provider row (Settings → Models) a connection has no row of its own:
+ * the provider's row is the one row, and the connection's controls are its
+ * opened detail. Under this context ConnectionRow draws only its children.
+ */
+export const EmbeddedConnectionContext = createContext(false);
 
 /**
  * One connection on Settings → Runners: name, status chip and one line of
@@ -32,13 +46,17 @@ export default function ConnectionRow({
   id?: string;
   readOnly?: boolean;
 }) {
+  const embedded = useContext(EmbeddedConnectionContext);
+  if (embedded) {
+    return <div id={id} data-testid={testId} data-embedded="true" className="space-y-3">{children}</div>;
+  }
   const heading = (
     <span className="min-w-0 flex-1">
       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <span className="font-mono text-[13px] font-semibold text-text-primary">{title}</span>
+        <span className="text-sm font-semibold text-text-primary">{title}</span>
         {chip}
       </span>
-      {meta && <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">{meta}</span>}
+      {meta && <span className="mt-1 block truncate text-meta text-text-muted">{meta}</span>}
     </span>
   );
   if (readOnly) {

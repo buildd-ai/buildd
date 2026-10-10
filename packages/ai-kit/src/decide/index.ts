@@ -22,6 +22,9 @@
  *   System One host via `baseURL`) or `chat` (any model behind an
  *   OpenAI-compatible API: a LiteLLM proxy, vLLM, Ollama, an open-weights
  *   model), with any model id. See `./chat-transport`.
+ * - `workers-ai`: Cloudflare's Clef decision models on Workers AI, directly or
+ *   through an AI Gateway. Same questions and answers as Jev; the key is a
+ *   Cloudflare API token. See `./workers-ai-transport`.
  *
  * The caller passes its key; the kit never reads env vars.
  *
@@ -36,6 +39,8 @@
 // loads without it, and only `decide` fails, with `sdk_missing`.
 import type { TypeSafeClient, Fetch } from '@typesafe-ai/sdk';
 import { decideViaChat, validateChatQuestions } from './chat-transport';
+import { CLEF_MODEL, decideViaWorkersAi } from './workers-ai-transport';
+export { CLEF_MODEL, CLEF_FLASH_MODEL, CLEF_MODELS, isClefModel, clefModelIds, type ClefModel } from './workers-ai-transport';
 
 // ══ Types ═════════════════════════════════════════════════════════════════════
 
@@ -328,14 +333,17 @@ export function gateChoice<L extends string>(
  * is structural, and a test asserts it stays assignable.
  */
 
-/** Who is paid for a decision: `/models`' providers, restated so `/decide` needs no import from it. */
-export type DecisionProvider = 'anthropic' | 'openai' | 'openrouter';
+/** `/models`' providers, restated so `/decide` needs no import from it. */
+export type ModelsProvider = 'anthropic' | 'openai' | 'openrouter';
+
+/** Who is paid for a decision: a `/models` provider, or Cloudflare for Clef on Workers AI. */
+export type DecisionProvider = ModelsProvider | 'cloudflare';
 
 export interface DecisionReceipt {
   kind: 'decision';
   /** `defineDecision` id, or null for a bare `decide` call. */
   decisionId: string | null;
-  /** `openrouter` for Jev; for a `chat` endpoint, the endpoint's `provider`. */
+  /** `openrouter` for Jev; `cloudflare` for Clef; for a `chat` endpoint, the endpoint's `provider`. */
   provider: DecisionProvider;
   /** Set by the kit (0.7.0+). Absent reads as `systemone`. */
   endpoint?: DecisionEndpointKind;
@@ -376,7 +384,7 @@ export interface ModelsUsageInput {
     planId: string | null;
     planSource: 'registry' | 'pool' | 'catalog' | 'default' | 'cached' | 'fallback';
     model: string;
-    provider: DecisionProvider;
+    provider: ModelsProvider;
     /** Only when the app asked for one; Jev has no tier. */
     tier?: ModelsTier;
   };
@@ -395,11 +403,19 @@ export interface ModelsUsageInput {
  * rather than as budget-tier chat. Jev is not a tier and has no buildd plan,
  * so the receipt says `planId: null` and `planSource: 'fallback'` (buildd
  * issued no plan) and carries no tier unless `opts.tier` names one.
+ *
+ * Throws on a `cloudflare` receipt (Clef on Workers AI): `/models` has no
+ * Cloudflare provider to price it under. A receipt sink that calls this runs
+ * fire-and-forget, so the decision itself is unaffected; record Clef spend
+ * from the receipt directly.
  */
 export function toModelsUsage(
   receipt: DecisionReceipt,
   opts: { tier?: ModelsTier; planId?: string | null } = {},
 ): ModelsUsageInput {
+  if (receipt.provider === 'cloudflare') {
+    throw new Error('toModelsUsage: /models has no cloudflare provider; record a Clef receipt directly');
+  }
   return {
     plan: {
       planId: opts.planId ?? null,
@@ -478,7 +494,7 @@ export function isRetryableStatus(status: number): boolean {
 /** The SDK's fetch shape; the global `fetch` fits it. */
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
-export type DecisionEndpointKind = 'systemone' | 'chat';
+export type DecisionEndpointKind = 'systemone' | 'chat' | 'workers-ai';
 
 /**
  * Where a decision is answered.
@@ -491,21 +507,36 @@ export type DecisionEndpointKind = 'systemone' | 'chat';
  *   root (e.g. `https://litellm.example.com/v1`) and `model` is required.
  *   `provider` is who is paid, for the receipt (default: `openrouter` on
  *   openrouter.ai, else `openai`).
+ * - `workers-ai`: Cloudflare's Clef models. `baseURL` is the Workers AI root
+ *   (`https://api.cloudflare.com/client/v4/accounts/<id>/ai/run`) or an AI
+ *   Gateway's (`https://gateway.ai.cloudflare.com/v1/<id>/<gateway>/workers-ai`);
+ *   the key is a Cloudflare API token. Default model `CLEF_MODEL`.
+ *
+ * `headers` are sent on every request, after the caller's: an authenticated
+ * AI Gateway's `cf-aig-authorization`, for one. Jev through an AI Gateway is
+ * `systemone` with the gateway's OpenRouter `baseURL` and that header.
  *
  * `baseURL` must be https, except for localhost.
  */
 export type DecisionEndpoint =
-  | { kind: 'systemone'; baseURL?: string }
-  | { kind: 'chat'; baseURL: string; provider?: DecisionProvider };
+  | { kind: 'systemone'; baseURL?: string; headers?: Record<string, string> }
+  | { kind: 'chat'; baseURL: string; provider?: DecisionProvider; headers?: Record<string, string> }
+  | { kind: 'workers-ai'; baseURL: string; headers?: Record<string, string> };
 
-/** Endpoint → base URL, receipt provider; or why it is refused. Pure. */
+/** The model an endpoint answers with when the caller names none: Jev, Clef, or none for `chat`. */
+export function defaultDecisionModel(kind: DecisionEndpointKind | undefined): string {
+  if (kind === 'chat') return '';
+  return kind === 'workers-ai' ? CLEF_MODEL : JEV_MODEL;
+}
+
+/** Endpoint → base URL, receipt provider, extra headers; or why it is refused. Pure. */
 export function resolveDecisionEndpoint(
   endpoint: DecisionEndpoint | undefined,
-): { ok: true; kind: DecisionEndpointKind; baseURL: string; provider: DecisionProvider } | { ok: false; message: string } {
+): { ok: true; kind: DecisionEndpointKind; baseURL: string; provider: DecisionProvider; headers: Record<string, string> } | { ok: false; message: string } {
   const kind = endpoint?.kind ?? 'systemone';
-  if (kind !== 'systemone' && kind !== 'chat') return { ok: false, message: `unknown endpoint kind '${String(kind)}'` };
+  if (kind !== 'systemone' && kind !== 'chat' && kind !== 'workers-ai') return { ok: false, message: `unknown endpoint kind '${String(kind)}'` };
   const raw = endpoint?.baseURL ?? (kind === 'systemone' ? DECIDE_BASE_URL : '');
-  if (!raw) return { ok: false, message: 'a chat endpoint needs a baseURL' };
+  if (!raw) return { ok: false, message: `a ${kind} endpoint needs a baseURL` };
   let url: URL;
   try {
     url = new URL(raw);
@@ -517,10 +548,10 @@ export function resolveDecisionEndpoint(
     return { ok: false, message: 'baseURL must be https (http only for localhost)' };
   }
   const onOpenRouter = /(^|\.)openrouter\.ai$/.test(url.hostname);
-  const provider = kind === 'chat'
+  const provider: DecisionProvider = kind === 'chat'
     ? (endpoint as { provider?: DecisionProvider }).provider ?? (onOpenRouter ? 'openrouter' : 'openai')
-    : 'openrouter';
-  return { ok: true, kind, baseURL: raw.replace(/\/+$/, ''), provider };
+    : kind === 'workers-ai' ? 'cloudflare' : 'openrouter';
+  return { ok: true, kind, baseURL: raw.replace(/\/+$/, ''), provider, headers: { ...(endpoint?.headers ?? {}) } };
 }
 
 export interface DecideParams<Q extends DecisionQuestions> {
@@ -650,7 +681,8 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
   const backoff = params.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
   const minRetryBudget = params.minRetryBudgetMs ?? DEFAULT_MIN_RETRY_BUDGET_MS;
   const ep = resolveDecisionEndpoint(params.endpoint);
-  const model = params.model?.trim() || (ep.ok && ep.kind === 'chat' ? '' : JEV_MODEL);
+  const model = params.model?.trim() || defaultDecisionModel(ep.ok ? ep.kind : undefined);
+  const headers = { ...(params.headers ?? {}), ...(ep.ok ? ep.headers : {}) };
 
   const finish = (result: DecideResult<Q>): DecideResult<Q> => {
     if (result.attempts > 0 && ep.ok) {
@@ -672,8 +704,20 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
   if (ep.kind === 'chat') {
     const r = await decideViaChat<Q>({
       baseURL: ep.baseURL, apiKey: params.apiKey, model, state: params.state, questions: params.questions,
-      headers: params.headers ?? {}, fetch: fetcher, now, sleep, started, timeoutMs,
+      headers, fetch: fetcher, now, sleep, started, timeoutMs,
       attemptTimeoutMs: params.attemptTimeoutMs, maxAttempts, retryable, backoff, minRetryBudget,
+    });
+    return r.ok
+      ? finish({ ok: true, answers: r.answers, model: r.model, usage: r.usage, latencyMs: now() - started, attempts: r.attempts })
+      : fail(r.error, r.attempts);
+  }
+
+  if (ep.kind === 'workers-ai') {
+    const r = await decideViaWorkersAi<Q>({
+      baseURL: ep.baseURL, apiKey: params.apiKey, model, state: params.state, questions: params.questions,
+      headers, fetch: fetcher, now, sleep, started, timeoutMs,
+      attemptTimeoutMs: params.attemptTimeoutMs, maxAttempts, retryable, backoff, minRetryBudget,
+      parse: parseDecisionAnswers,
     });
     return r.ok
       ? finish({ ok: true, answers: r.answers, model: r.model, usage: r.usage, latencyMs: now() - started, attempts: r.attempts })
@@ -689,7 +733,7 @@ export async function decide<Q extends DecisionQuestions>(params: DecideParams<Q
 
   let client: TypeSafeClient;
   try {
-    client = makeClient(sdk, params.apiKey, model, fetcher, params.headers ?? {}, ep.baseURL);
+    client = makeClient(sdk, params.apiKey, model, fetcher, headers, ep.baseURL);
   } catch (e) {
     return fail({ kind: 'transport', message: e instanceof Error ? e.message : String(e) }, 0);
   }
@@ -956,7 +1000,7 @@ export async function runDecisionPool<T, R>(
  */
 
 /** This package's version. `define.test.ts` asserts it matches package.json. Metadata, not identity. */
-export const KIT_VERSION = '0.20.0';
+export const KIT_VERSION = '0.21.0';
 
 /**
  * The version of the kit logic that turns a decision's definition into
@@ -1149,11 +1193,12 @@ export function decisionFingerprint<Q extends DecisionQuestions>(
   // so every fingerprint pinned before them is unchanged. An engine bump
   // changes every fingerprint, so a pin that checks only the fingerprint still
   // fails on it.
-  const endpoint = config.endpoint?.kind === 'chat' ? 'chat' : undefined;
+  const kind = config.endpoint?.kind;
+  const endpoint = kind && kind !== 'systemone' ? kind : undefined;
   return shortHash(canonicalJson({
     questions: config.questions,
     policies,
-    model: config.model ?? JEV_MODEL,
+    model: config.model ?? defaultDecisionModel(kind),
     endpoint,
     engine: engine === 1 ? undefined : engine,
   }));
@@ -1231,7 +1276,7 @@ export function defineDecision<const Q extends DecisionQuestions>(config: Decisi
     const tooMany = validateChatQuestions(config.questions);
     if (tooMany) throw new Error(`decision '${config.id}': ${tooMany}`);
   }
-  const model = config.model ?? JEV_MODEL;
+  const model = config.model ?? defaultDecisionModel(config.endpoint?.kind);
   const engine = DECIDE_ENGINE_VERSION;
   const version = `${config.promptVersion}|${model}|engine-${engine}`;
   const policyOf = (name: keyof Q & string) => resolvePolicy(config, name);

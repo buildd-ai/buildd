@@ -114,9 +114,9 @@ function BackendStatusRow({ status, backend }: { status: BackendStatusState; bac
     <div className="flex items-center gap-1.5 mt-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-text-muted shrink-0" />
       <span className="text-xs text-text-muted">
-        Not configured:{' '}
+        No credentials.{' '}
         <Link href="/app/settings/runners" className="underline hover:text-text-secondary">
-          add credentials in Settings, Runners
+          Add them in Settings, Runners
         </Link>
       </span>
     </div>
@@ -738,7 +738,7 @@ export default function NewMissionForm({
 
         <p className="mt-8 text-xs text-text-muted text-center border-t border-border-default pt-4">
           To create an individual task, use the{' '}
-          <Link href="/app/tasks/new" className="underline hover:text-text-secondary">New Task</Link>
+          <Link href="/app/chat?new=task" className="underline hover:text-text-secondary">New Task</Link>
           {' '}form.
         </p>
       </div>

@@ -287,6 +287,8 @@ export async function runPromptEval(input: PromptEvalInput, deps: PromptEvalDeps
         ...(deps.decide ? { decide: deps.decide } : {}),
         missingKeyProblem: decisionConfig?.via === 'litellm'
           ? 'the team has no LiteLLM gateway, so no decision call can be made'
+          : decisionConfig?.via === 'cloudflare'
+          ? 'the team has no usable Cloudflare credential (and, for Jev, no AI Gateway or OpenRouter key), so no decision call can be made'
           : 'no OpenRouter key resolves for the team (a decision_key or an inference_key labelled openrouter), so no decision call can be made',
       }));
     } catch (err) {

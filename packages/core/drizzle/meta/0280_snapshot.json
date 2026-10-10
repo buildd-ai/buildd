@@ -1,5 +1,5 @@
 {
-  "id": "389531ef-a18b-4189-8ee1-4f0e41645e75",
+  "id": "ab4cc5cc-71ab-4304-a332-5a564e33753b",
   "prevId": "239b0996-2b2d-44e2-93f1-73dddbc9f359",
   "version": "7",
   "dialect": "postgresql",
@@ -8135,12 +8135,6 @@
         "end_reason": {
           "name": "end_reason",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "busy_since": {
-          "name": "busy_since",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -23899,6 +23893,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": 3
+        },
+        "new_starts_paused_until": {
+          "name": "new_starts_paused_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "new_starts_paused_by": {
+          "name": "new_starts_paused_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "git_config": {
           "name": "git_config",

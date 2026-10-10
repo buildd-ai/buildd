@@ -36,8 +36,12 @@ import {
   hookCommand,
   parseCliArgs,
   runCli,
+  builddMcpActsAs,
+  builddMcpAuthKind,
+  ACT_AS_PERSON_SCOPE,
   type InstallContext,
 } from '../../src/agent-plugin-install';
+import { refreshBuilddMcpEntries } from '../../src/claude-json-mcp';
 import { normalizeRepoSlug } from '@buildd/shared';
 
 const PLUGIN_DIR = resolve(import.meta.dir, '../../plugin');
@@ -874,7 +878,7 @@ describe('installer', () => {
     expect('error' in parseCliArgs(['--force'])).toBe(true);
     expect('error' in parseCliArgs(['--everywhere'])).toBe(true);
     expect('error' in parseCliArgs(['--global', '--here'])).toBe(true);
-    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'], mcp: null, oauth: false });
+    expect(parseCliArgs(['--uninstall', '--global', '--client=claude'])).toEqual({ mode: 'uninstall', scope: 'global', clients: ['claude'], mcp: null, oauth: false, asAgent: false });
     expect(parseCliArgs(['--global'])).toMatchObject({ mcp: 'workspaces' });
     expect(parseCliArgs(['--global', '--everywhere'])).toMatchObject({ mcp: 'everywhere' });
     expect((await runCli([], { home, cwd: project })).code).toBe(1);
@@ -1025,6 +1029,139 @@ describe('installer', () => {
     expect(out).toMatch(/every session\s+key/);
     expect(out).not.toContain('~/other');
     expect(out).not.toContain('bld_x');
+  });
+
+  /**
+   * A server whose canonical /api/mcp answers an unauthenticated request with an
+   * OAuth challenge (RFC 9728) naming its protected-resource metadata: the one
+   * connection across workspaces. Everything else is answered as `login` does.
+   */
+  const withCanonical = (l: ReturnType<typeof login>, opts: { resource?: string } = {}) => {
+    const inner = l.fetchImpl;
+    const fetchImpl = (async (url: string, init?: any) => {
+      if (url === 'https://b.test/api/mcp') {
+        l.urls.push(url);
+        expect(init?.headers?.Authorization).toBeUndefined(); // the probe never sends the key
+        return new Response('{}', { status: 401, headers: { 'WWW-Authenticate': 'Bearer realm="buildd", resource_metadata="https://b.test/.well-known/oauth-protected-resource/api/mcp"' } });
+      }
+      if (url === 'https://b.test/.well-known/oauth-protected-resource/api/mcp') {
+        l.urls.push(url);
+        return Response.json({ resource: opts.resource ?? 'https://b.test/api/mcp', authorization_servers: ['https://b.test'], scopes_supported: ['mcp', 'buildd:read', 'buildd:write'] });
+      }
+      return inner(url, init);
+    }) as any;
+    return { ...l, fetchImpl };
+  };
+  const asYou = { type: 'http', url: 'https://b.test/api/mcp', oauth: { scopes: `buildd:read buildd:write ${ACT_AS_PERSON_SCOPE}` } };
+  const asAgent = { type: 'http', url: 'https://b.test/api/mcp' };
+
+  it('--oauth on a server with the one connection asks Claude Code to sign in as you, by pinning the person scope', async () => {
+    const ws = join(home, 'code', 'widget');
+    const api = join(home, 'code', 'api');
+    checkout(ws, 'acme/widget');
+    checkout(api, 'acme/api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: { mcpServers: { buildd: keyEntry } }, [api]: {} } }));
+    const l = withCanonical(login(['acme/widget', 'acme/api']));
+    const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const raw = readFileSync(join(home, '.claude.json'), 'utf8');
+    expect(raw).not.toContain('bld_');
+    const cfg = JSON.parse(raw);
+    expect(cfg.projects[ws].mcpServers.buildd).toEqual(asYou);
+    expect(cfg.projects[api].mcpServers.buildd).toEqual(asYou);
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/widget\s+acme\/widget\s+as you/);
+    expect(out).toContain('acts as you');
+    expect(out).toContain('--as-agent');
+  });
+
+  it('--as-agent writes the same connection without the person scope, so it acts as your agent', async () => {
+    const ws = join(home, 'code', 'widget');
+    checkout(ws, 'acme/widget');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    const l = withCanonical(login(['acme/widget']));
+    const r = await runCli(['--global', '--as-agent', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    expect(cfg.projects[ws].mcpServers.buildd).toEqual(asAgent);
+    expect(JSON.stringify(cfg)).not.toContain(ACT_AS_PERSON_SCOPE);
+    expect(r.lines.join('\n')).toMatch(/~\/code\/widget\s+acme\/widget\s+as your agent/);
+    // --as-agent is an --oauth install, with the same limits.
+    expect(parseCliArgs(['--global', '--as-agent'])).toMatchObject({ oauth: true, asAgent: true });
+    expect(parseCliArgs(['--here', '--oauth', '--as-agent'])).toMatchObject({ oauth: true, asAgent: true, mcp: 'here' });
+    expect('error' in parseCliArgs(['--global', '--everywhere', '--as-agent'])).toBe(true);
+    expect('error' in parseCliArgs(['--as-agent'])).toBe(true);
+  });
+
+  it('--here --oauth uses the one connection even in a folder that is not a workspace yet', async () => {
+    const fresh = join(home, 'new-idea');
+    mkdirSync(fresh, { recursive: true });
+    const l = withCanonical(login([]));
+    const r = await runCli(['--here', '--oauth'], { home, cwd: fresh, ...l });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[fresh].mcpServers.buildd).toEqual(asYou);
+    const out = r.lines.join('\n');
+    expect(out).toContain('signing in as you');
+    expect(out).not.toContain('not a workspace yet');
+  });
+
+  it('an older server without the one connection keeps the per-workspace OAuth entry, and says who it acts as is decided at sign-in', async () => {
+    const ws = join(home, 'code', 'widget');
+    checkout(ws, 'acme/widget');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    // `login` answers /api/mcp with 200: no OAuth challenge, so no canonical connection.
+    const l = login(['acme/widget']);
+    const r = await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[ws].mcpServers.buildd).toEqual({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1-acme-widget' });
+    expect(r.lines.join('\n')).toContain("doesn't offer one connection across workspaces yet");
+  });
+
+  it('a challenge whose metadata names another resource is not the one connection', async () => {
+    const ws = join(home, 'code', 'widget');
+    checkout(ws, 'acme/widget');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [ws]: {} } }));
+    const l = withCanonical(login(['acme/widget']), { resource: 'https://elsewhere.test/api/mcp' });
+    await runCli(['--global', '--oauth', '--client=claude'], { home, cwd: home, runtime: '/usr/bin/node', ...l });
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).projects[ws].mcpServers.buildd.url).toBe('https://b.test/api/mcp-oauth/ws-1-acme-widget');
+  });
+
+  it('who each entry acts as, read from the entry alone', () => {
+    expect(builddMcpActsAs(asYou)).toBe('person');
+    expect(builddMcpActsAs(asAgent)).toBe('agent');
+    expect(builddMcpActsAs({ ...asAgent, oauth: { scopes: 'buildd:read buildd:write' } })).toBe('agent');
+    expect(builddMcpActsAs({ type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' })).toBe('unknown');
+    expect(builddMcpActsAs(keyEntry)).toBe('key');
+    expect(builddMcpActsAs({ command: 'x' })).toBeNull();
+    expect(builddMcpAuthKind(asYou)).toBe('OAuth');
+    expect(builddMcpAuthKind(asAgent)).toBe('OAuth');
+  });
+
+  it('--status --global says per folder whether it connects as you, as your agent, or is unknown until signed in', async () => {
+    const you = join(home, 'code', 'widget');
+    const agent = join(home, 'code', 'shared');
+    const legacy = join(home, 'code', 'legacy');
+    const keyed = join(home, 'code', 'api');
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: {
+      [you]: { mcpServers: { buildd: asYou } },
+      [agent]: { mcpServers: { buildd: asAgent } },
+      [legacy]: { mcpServers: { buildd: { type: 'http', url: 'https://b.test/api/mcp-oauth/ws-1' } } },
+      [keyed]: { mcpServers: { buildd: keyEntry } },
+    } }));
+    const offline = (async () => { throw new Error('status must not call the network'); }) as any;
+    const r = await runCli(['--status', '--global', '--client=claude'], { home, cwd: home, fetchImpl: offline, env: { BUILDD_HOME: join(home, '.buildd') } });
+    const out = r.lines.join('\n');
+    expect(out).toMatch(/~\/code\/widget\s+OAuth, as you\n/);
+    expect(out).toMatch(/~\/code\/shared\s+OAuth, as your agent\n/);
+    expect(out).toMatch(/~\/code\/legacy\s+OAuth, unknown until signed in\n/);
+    expect(out).toMatch(/~\/code\/api\s+key\n/);
+  });
+
+  it('buildd login re-keys key entries only: a one-connection OAuth entry is left as it is', () => {
+    const f = join(home, '.claude.json');
+    writeFileSync(f, JSON.stringify({ projects: { a: { mcpServers: { buildd: asYou } }, b: { mcpServers: { buildd: asAgent } } } }));
+    expect(refreshBuilddMcpEntries(f, 'bld_new', 'https://b.test')).toBe(0);
+    expect(JSON.parse(readFileSync(f, 'utf8')).projects.a.mcpServers.buildd).toEqual(asYou);
   });
 
   /**

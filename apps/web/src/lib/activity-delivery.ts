@@ -18,6 +18,7 @@ import {
   type MissionDelivery, type MissionTaskRules, type ReviewEvidence, type TaskDelivery,
 } from './delivery-projection';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
+import { isQuietHold, type LocalHold } from './local-session-display';
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ export interface ActivityWorker extends DeliveryWorker {
   updatedAt?: string | null;
   /** The last commit this worker pushed: the PR head after its run. */
   lastCommitSha?: string | null;
+  /** A local interactive session holds this worker, in the state Activity's session card reads. */
+  local?: LocalHold | null;
 }
 
 /** A task row as Activity loads it: roots and their attempts alike. */
@@ -73,7 +76,10 @@ export interface NowRow {
   title: string;
   href: string;
   delivery: TaskDelivery;
+  /** An agent is visibly working it: a live worker whose holder is not a quiet local session. */
   live: boolean;
+  /** No agent is live, but a local session that went quiet or ended still holds its slot. */
+  quietHold: { client: string; state: 'offline' | 'ended'; at: number } | null;
   runnerName: string | null;
   prNumber: number | null;
   /** One sentence: what is happening to it right now. */
@@ -97,6 +103,8 @@ export interface NowGroup {
   rows: NowRow[];
   /** Waiting rows past the cap, summarised as a count. */
   moreWaiting: number;
+  /** Hidden waiting rows (past the cap) for expansion. */
+  hiddenWaitingRows: NowRow[];
 }
 
 export interface ActivityNow {
@@ -127,8 +135,6 @@ export interface Episode {
   steps: EpisodeStep[];
 }
 
-export interface LatestTask { id: string; title: string; href: string; at: number }
-
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 const VERDICTS = new Set(['approve', 'request-changes', 'escalate']);
 
@@ -153,6 +159,29 @@ const LIVE: ReadonlySet<string> = new Set(LIVE_WORKER_STATUSES);
 const ms = (v: string | null | undefined): number | null => (v ? new Date(v).getTime() : null);
 const short = (sha: string | null | undefined) => (sha ? sha.trim().slice(0, 7) : null);
 const taskHref = (id: string) => `/app/tasks/${id}`;
+
+/** Relative age, as Activity prints it: `now`, `12m`, `3h`, `2d`. */
+export function age(atMs: number, nowMs: number): string {
+  const min = Math.max(0, Math.round((nowMs - atMs) / 60_000));
+  if (min < 1) return 'now';
+  if (min < 60) return `${min}m`;
+  if (min < 1440) return `${Math.round(min / 60)}h`;
+  return `${Math.round(min / 1440)}d`;
+}
+
+/**
+ * A live worker held by a local session that went quiet or ended. It still
+ * holds its slot, but nobody is working it: never an agent live.
+ */
+const quietHeld = (w: ActivityWorker) => LIVE.has(w.status) && isQuietHold(w.local);
+/** An agent is working: live, and not a quiet session's leftover hold. */
+const agentLive = (w: ActivityWorker) => LIVE.has(w.status) && !isQuietHold(w.local);
+/**
+ * When a worker last moved. A quiet session's worker moves only when its
+ * client was last heard: server writes (reaper, webhooks, usage) bump
+ * `updated_at` without anyone working it.
+ */
+const workerAt = (w: ActivityWorker) => (isQuietHold(w.local) ? ms(w.local!.seenAt) : ms(w.updatedAt ?? w.completedAt ?? w.startedAt));
 
 /** What a repair attempt was dispatched for, from its title (`[builder · after CI #1]`). */
 export function repairReasonOf(title: string): RepairReason | null {
@@ -207,7 +236,9 @@ function foldDeliveries(tasks: readonly ActivityTaskInput[], rules: MissionTaskR
  */
 function projectStandalone(d: Delivery, rules: MissionTaskRules): TaskDelivery {
   // The root stands as the deliverable even when it is an attempt whose parent is not loaded.
-  const root = { ...d.root, parentTaskId: null, taskClass: 'work' };
+  // The mission projection drops cancelled roots, so a cancelled one is projected as
+  // failed; History names it "not landed" and adds a Cancelled step.
+  const root = { ...d.root, parentTaskId: null, taskClass: 'work', status: d.root.status === 'cancelled' ? 'failed' : d.root.status };
   const rows = [root, ...d.reviews, ...d.repairs].map(t => ({ ...t, dependsOn: undefined, missionId: undefined }));
   const m = projectMissionDelivery({ id: d.root.id, title: d.root.title, status: 'active', href: '', tasks: rows }, rules);
   return m.tasks.find(t => t.id === d.root.id)!.delivery;
@@ -222,7 +253,7 @@ function prOf(d: Delivery) {
 }
 
 function latestAt(d: Delivery): number {
-  const times = [d.root, ...d.reviews, ...d.repairs].flatMap(t => [ms(t.updatedAt), ...t.workers.map(w => ms(w.updatedAt ?? w.completedAt ?? w.startedAt))]);
+  const times = [d.root, ...d.reviews, ...d.repairs].flatMap(t => [ms(t.updatedAt), ...t.workers.map(workerAt)]);
   return Math.max(0, ...times.filter((n): n is number => n != null));
 }
 
@@ -349,9 +380,9 @@ function buildEvidence(d: Delivery): EvidenceEntry[] {
 /** Attention order, the same one the mission projection uses to pick its chip. */
 const ATTENTION: readonly DeliveryKind[] = ['needs', 'notlanded', 'unavailable', 'repair', 'audit', 'landing', 'build', 'waiting', 'held', 'planning', 'landed'];
 const rank = (k: DeliveryKind | null) => (k ? ATTENTION.indexOf(k) : ATTENTION.length);
-const IN_MOTION: ReadonlySet<DeliveryKind> = new Set(['build', 'audit', 'repair', 'landing', 'unavailable', 'needs', 'notlanded']);
-/** A delivery that ended without landing stays in Now this long, then lives in History. */
-export const NOT_LANDED_NOW_WINDOW_MS = 48 * 60 * 60 * 1000;
+const IN_MOTION: ReadonlySet<DeliveryKind> = new Set(['build', 'audit', 'repair', 'landing', 'unavailable', 'needs']);
+const FINISHED: ReadonlySet<DeliveryKind> = new Set(['landed', 'notlanded']);
+const isInMotionKind = (k: DeliveryKind) => !FINISHED.has(k);
 /** Waiting rows shown per group before they fold into a count. */
 export const WAITING_ROWS_PER_GROUP = 2;
 
@@ -362,9 +393,12 @@ function currentHeadPassed(evidence: readonly EvidenceEntry[]): boolean {
   return counted.some(g => g.name === 'CI') && counted.some(g => g.name.startsWith('Code review')) && counted.every(g => g.result === 'passed');
 }
 
-function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null, evidence: readonly EvidenceEntry[]): string {
+function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, runner: string | null, evidence: readonly EvidenceEntry[], hold: NowRow['quietHold'], now: number): string {
   const pr = prNumber ? `PR #${prNumber}` : 'The PR';
   const rounds = delivery.repairRounds;
+  if (hold && (delivery.kind === 'build' || delivery.kind === 'repair')) {
+    return `A ${hold.client} session ${hold.state === 'ended' ? 'ended' : 'went quiet'} ${age(hold.at, now)} ago and still holds this task's slot. Release it from the task page.`;
+  }
   switch (delivery.kind) {
     case 'build': return runner ? `An agent is building it on ${runner}.` : 'An agent is building it.';
     case 'audit':
@@ -372,7 +406,7 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
       return delivery.verdict === 'stale' ? `${pr} is open. A verdict arrived for an older head; review runs again on the latest.` : `${pr} is open; review and CI have not both passed on its latest revision.`;
     case 'repair': {
       const why = delivery.repairReason ? { ci: 'CI failed', conflict: 'The branch conflicts with its base', review: 'Review asked for changes' }[delivery.repairReason] : 'An audit failed';
-      return `${why}. An automatic fix ${d.workers.some(w => LIVE.has(w.status)) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
+      return `${why}. An automatic fix ${d.workers.some(agentLive) ? 'is running' : 'is queued'}${rounds > 0 ? ` (round ${rounds})` : ''}.`;
     }
     case 'landing': return 'Approved and green on its latest revision. Merging.';
     case 'unavailable': return 'The audit could not run. It retries on its own.';
@@ -383,21 +417,24 @@ function lineFor(d: Delivery, delivery: TaskDelivery, prNumber: number | null, r
   }
 }
 
-function toRow(d: Delivery, delivery: TaskDelivery): NowRow {
+function toRow(d: Delivery, delivery: TaskDelivery, now: number): NowRow {
   const { owner } = prOf(d);
-  const liveWorker = d.workers.find(w => LIVE.has(w.status)) ?? null;
+  const liveWorker = d.workers.find(agentLive) ?? null;
   const runnerName = liveWorker?.name ?? null;
   const prNumber = owner?.prNumber ?? null;
   const evidence = buildEvidence(d);
+  const held = liveWorker ? null : d.workers.find(quietHeld) ?? null;
+  const quietHold = held?.local ? { client: held.local.client, state: held.local.state as 'offline' | 'ended', at: workerAt(held) ?? 0 } : null;
   return {
     id: d.root.id,
     title: d.root.title,
     href: taskHref(d.root.id),
     delivery,
     live: !!liveWorker,
+    quietHold,
     runnerName,
     prNumber,
-    line: lineFor(d, delivery, prNumber, runnerName, evidence),
+    line: lineFor(d, delivery, prNumber, runnerName, evidence, quietHold, now),
     updatedAt: latestAt(d),
     evidence,
   };
@@ -415,16 +452,20 @@ export function buildActivityNow(input: {
   let liveAgents = 0;
 
   for (const d of foldDeliveries(input.tasks, input.rules)) {
-    liveAgents += d.workers.filter(w => LIVE.has(w.status)).length;
+    // A cancelled delivery is nobody's work, whatever its workers still read.
     if (d.root.status === 'cancelled') continue;
+    liveAgents += d.workers.filter(agentLive).length;
     const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
     // A mission task reads the mission's own task projection, never a second one.
     const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
-    if (!delivery.open || delivery.kind === 'landed') continue;
-    if (delivery.kind === 'notlanded' && input.now - latestAt(d) > NOT_LANDED_NOW_WINDOW_MS) continue;
-    const key = d.root.missionId;
-    const g = groups.get(key) ?? { rows: [], title: d.root.missionTitle ?? null };
-    g.rows.push(toRow(d, delivery));
+    // Now is work in motion. A finished delivery, landed or not, is History's.
+    if (!isInMotionKind(delivery.kind)) continue;
+    // Open tasks of a completed mission are regrouped as standalone.
+    const isMissionCompleted = mission?.kind === 'landed';
+    const key = isMissionCompleted ? null : d.root.missionId;
+    const title = isMissionCompleted ? null : (d.root.missionTitle ?? null);
+    const g = groups.get(key) ?? { rows: [], title };
+    g.rows.push(toRow(d, delivery, input.now));
     groups.set(key, g);
   }
 
@@ -444,6 +485,7 @@ export function buildActivityNow(input: {
       next: m?.next ?? null,
       rows: [...moving, ...waiting.slice(0, WAITING_ROWS_PER_GROUP)],
       moreWaiting: Math.max(0, waiting.length - WAITING_ROWS_PER_GROUP),
+      hiddenWaitingRows: waiting.slice(WAITING_ROWS_PER_GROUP),
     };
   });
   // Missions by their chip's attention, then id: an order that only changes when a state does.
@@ -590,24 +632,29 @@ export function buildActivityHistory(input: {
 }): Episode[] {
   const missionById = new Map(input.missions.map(m => [m.id, m]));
   return foldDeliveries(input.tasks, input.rules)
-    .map(d => {
+    .flatMap(d => {
       const mission = d.root.missionId ? missionById.get(d.root.missionId) : undefined;
       const delivery = mission?.tasks.find(t => t.id === d.root.id)?.delivery ?? projectStandalone(d, input.rules);
+      const kind = d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind;
+      // History is finished work only; in-flight deliveries are Now's.
+      if (!FINISHED.has(kind)) return [];
       const steps = stepsFor(d, delivery);
-      return {
+      return [{
         id: d.root.id,
         title: d.root.title,
         href: taskHref(d.root.id),
         missionId: d.root.missionId,
         missionTitle: mission?.title ?? d.root.missionTitle ?? null,
-        kind: d.root.status === 'cancelled' ? 'notlanded' as const : delivery.kind,
+        kind,
         repairRounds: delivery.repairRounds,
         at: steps[steps.length - 1]?.at ?? 0,
         steps,
-      };
+      }];
     })
     .sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
 }
+
+export interface LatestTask { id: string; title: string; href: string; at: number }
 
 /** The task touched most recently: one tap from the top of either view. */
 export function latestTask(tasks: readonly ActivityTaskInput[], rules: MissionTaskRules): LatestTask | null {
@@ -622,7 +669,8 @@ export function latestTask(tasks: readonly ActivityTaskInput[], rules: MissionTa
 // ── Filters (client) ────────────────────────────────────────────────────────
 
 export type ActivityScope = 'all' | 'missions' | 'tasks';
-export type ActivityOutcome = 'any' | 'landed' | 'retries' | 'exceptions';
+/** `you`: deliveries that came to a person (History's "Sent to you"). */
+export type ActivityOutcome = 'any' | 'landed' | 'retries' | 'exceptions' | 'you';
 
 const EXCEPTION: ReadonlySet<DeliveryKind> = new Set(['notlanded', 'unavailable', 'needs']);
 
@@ -635,7 +683,7 @@ export function filterNow(now: ActivityNow, f: { scope: ActivityScope; outcome: 
     .map(g => {
       if (f.outcome === 'any') return g;
       const rows = g.rows.filter(r => (f.outcome === 'retries' ? r.delivery.repairRounds > 0 : f.outcome === 'exceptions' ? EXCEPTION.has(r.delivery.kind) : r.delivery.kind === 'landed'));
-      return { ...g, rows, moreWaiting: 0 };
+      return { ...g, rows, hiddenWaitingRows: [], moreWaiting: 0 };
     })
     .filter(g => g.rows.length > 0);
 }
@@ -647,5 +695,21 @@ export function filterEpisodes(episodes: readonly Episode[], f: { scope: Activit
     && (f.outcome === 'any'
       || (f.outcome === 'landed' && e.kind === 'landed')
       || (f.outcome === 'retries' && e.repairRounds > 0)
-      || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))));
+      || (f.outcome === 'exceptions' && EXCEPTION.has(e.kind))
+      || (f.outcome === 'you' && e.kind === 'needs')));
+}
+
+// ── Paging (client) ─────────────────────────────────────────────────────────
+
+/** Episodes per History page. */
+export const HISTORY_PAGE_SIZE = 20;
+
+/**
+ * One page of an already filtered list: the newest `pages * HISTORY_PAGE_SIZE`.
+ * Filters run before the slice, so a page is never empty while a match exists
+ * further down the list.
+ */
+export function pageEpisodes(episodes: readonly Episode[], pages: number): { shown: Episode[]; remaining: number } {
+  const n = Math.max(1, pages) * HISTORY_PAGE_SIZE;
+  return { shown: episodes.slice(0, n), remaining: Math.max(0, episodes.length - n) };
 }

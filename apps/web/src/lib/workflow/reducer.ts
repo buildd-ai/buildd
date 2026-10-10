@@ -38,6 +38,13 @@ import {
   type RoundKind,
   type RoundSnapshot,
 } from './types';
+import {
+  DEFAULT_TREADMILL_MAX_BASE_COMMITS,
+  TREADMILL_EXHAUSTED_MAX_BASE_COMMITS,
+  judgeBaseDelta,
+  type BaseDeltaFact,
+  type BaseDeltaVerdict,
+} from './base-delta';
 
 export interface ReduceOptions {
   newId?: () => string;
@@ -73,6 +80,31 @@ export const DEAD_EFFECT_OWED_IN: Partial<Record<EffectSpec['kind'], DeliverySta
   dispatch_review: ['AWAITING_REVIEW'],
   post_review: 'any',
 };
+
+/** An escalation a further review round answers (T5 from ESCALATED without a person). */
+export function isReviewEscalation(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && reason.startsWith('review_');
+}
+
+/**
+ * An escalation a machine repair may still move first (task a90fc99b): a
+ * reviewer's or the policy's call on the change. A person can't merge a PR
+ * whose CI is red or whose migration number collides, so the repair runs
+ * first and the person decides on a mergeable head. Not a landing hand-off or
+ * a spent budget: those already are the person's next move.
+ */
+export function isRepairableEscalation(reason: string | null | undefined): boolean {
+  return isReviewEscalation(reason) || reason === 'policy_human';
+}
+
+/**
+ * Attempts that ended `unproven` (reported success, nothing provable on
+ * GitHub: no diff, no push) that a family may absorb before they count toward
+ * its cap. A false success is not a try at the fix, so it does not spend the
+ * budget; the allowance keeps an agent that always claims success from
+ * looping forever.
+ */
+export const UNPROVEN_ATTEMPT_ALLOWANCE = 2;
 
 /** `push_recovery` backoff (§9): 2m, 10m, 30m, then T22. */
 export const PUSH_RECOVERY_BACKOFF_MS = [120_000, 600_000, 1_800_000] as const;
@@ -122,7 +154,9 @@ export function headCoverage(d: Pick<DeliverySnapshot, 'approvedHeads' | 'approv
  */
 export function ledgerBudget(attempts: AttemptSnapshot[], family: AttemptFamily, configuredMax: number, mode: AttemptMode = 'agent'): { spent: number; max: number } {
   const rows = attempts.filter((a) => a.family === family && a.mode === mode);
-  const spent = rows.filter((a) => a.status !== 'skipped').length;
+  const dispatched = rows.filter((a) => a.status !== 'skipped');
+  const unproven = dispatched.filter((a) => a.outcome === 'unproven').length;
+  const spent = dispatched.length - Math.min(unproven, UNPROVEN_ATTEMPT_ALLOWANCE);
   const extended = rows.filter((a) => a.trigger === 'human').reduce((m, a) => Math.max(m, a.maxAttempts), 0);
   return { spent, max: Math.max(configuredMax, extended) };
 }
@@ -196,6 +230,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'ReviewVerdictRecorded': return `verdict:${cmd.roundId}`;
     case 'FixClaimed': return `claim:${cmd.attemptId}`;
     case 'HumanApproved': return pr ? `approve:${pr}:${cmd.reviewId}` : null;
+    case 'PolicyMergeApproved': return pr ? `policymerge:${pr}:${cmd.headSha}` : null;
     // One landing request per (head, version): a replay is a duplicate, while a person re-landing
     // the same head after a refusal (the delivery moved on since) is a new request.
     case 'LandingRequested': return pr && d ? landingKey(pr, cmd.headSha, d.version) : null;
@@ -203,6 +238,7 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'PrMerged': return pr ? `merged:${pr}` : null;
     case 'PrClosedUnmerged': return pr ? `closed:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
     case 'PrReopened': return pr ? `reopen:${pr}:${cmd.live.updatedAt ?? 'unknown'}` : null;
+    case 'BaseChanged': return pr && d && cmd.live.baseRef ? baseChangeKey(pr, d.baseRef, cmd.live.baseRef, d.version) : null;
     // The target is part of the key: a second, different target must reach the reducer and be refused (edge_exists).
     case 'SupersessionRecorded': return pr ? `supersede:${pr}:${cmd.target.repoFullName}#${cmd.target.prNumber}` : null;
     case 'RepairNotNeeded': return `notneeded:${cmd.attemptId}`;
@@ -214,7 +250,9 @@ export function stableIdempotencyKey(cmd: Command, d: DeliverySnapshot | null): 
     case 'TrunkRedObserved': return d ? `trunk:${cmd.incidentId}:${d.id}` : null;
     case 'TrunkRecovered': return d ? `trunkok:${cmd.incidentId}:${d.id}` : null;
     case 'CompositionAttested': return d ? `compose:${d.id}:${cmd.attestation.aggregateHeadSha}` : null;
-    case 'PolicyEvidenceRecorded': return d ? `policy:${d.id}:${cmd.evidence.headSha}:${cmd.evidence.outcome}` : null;
+    // The version it was read at: a replay is answered by the finding the delivery already holds
+    // (T28's `evidence_recorded`), and the same finding after the delivery dropped it applies again.
+    case 'PolicyEvidenceRecorded': return d ? policyKey(d.id, cmd.evidence, d.version) : null;
     // One failure per reviewer: a repeated report (a retried PATCH, the reaper) is a duplicate.
     case 'ReviewRoundFailed': return cmd.reviewerTaskId ? roundFailKey(cmd.roundId, cmd.reviewerTaskId) : null;
     default: return null;
@@ -232,9 +270,40 @@ export function headObservationKey(pr: string, fromHead: string | null, toHead: 
   return `head:${pr}:${fromHead ?? 'none'}->${toHead}@v${version}`;
 }
 
+/** A base retarget's key names the move (from → to) and the version it was read at, like T3's. */
+export function baseChangeKey(pr: string, fromBase: string | null, toBase: string, version: number): string {
+  return `base:${pr}:${fromBase ?? 'none'}->${toBase}@v${version}`;
+}
+
 /** T27's key for a reviewer's failure: the reviewer task, never the round's running count. */
 export function roundFailKey(roundId: string, reviewerTaskId: string): string {
   return `roundfail:${roundId}:${reviewerTaskId}`;
+}
+
+/**
+ * T28's key (10658a4c): the finding, and the version it was read at. Keyed on the
+ * head and outcome alone, the key was spent for good, so the same finding could
+ * never apply again at that head even after the delivery dropped it (a base
+ * retarget). A replay is still a duplicate: the delivery holds that finding.
+ */
+export function policyKey(deliveryId: string, ev: { headSha: string; outcome: string }, version: number): string {
+  return `policy:${deliveryId}:${ev.headSha}:${ev.outcome}@v${version}`;
+}
+
+/**
+ * §9 (10658a4c): one push_recovery chain per visit to AWAITING_PUSH. The first
+ * visit keeps the bare local head, as every chain did before; a later visit (a
+ * person resolved the escalation and the work came back unpushed at the same
+ * L) adds the version it entered at, so its tries and its T22 are never the
+ * first visit's spent keys.
+ */
+export function pushChainId(local: string | null, entryVersion: number | null): string {
+  return `${local ?? 'none'}${entryVersion != null ? `@v${entryVersion}` : ''}`;
+}
+
+/** The chain of the visit to AWAITING_PUSH the delivery is in now (null: the first visit, or not in it). */
+export function currentPushEntry(d: Pick<DeliverySnapshot, 'pushEntries' | 'pushPendingSince'>): number | null {
+  return (d.pushEntries ?? 0) > 1 ? d.pushPendingSince ?? null : null;
 }
 
 function landingKey(pr: string, headSha: string, version: number): string {
@@ -356,10 +425,18 @@ class Ctx {
     };
   }
 
+  /** The chain id for `local`: the visit the delivery is in, or the one this transition starts. */
+  pushChain(local: string | null): string {
+    const d = this.d;
+    if (!d) return pushChainId(local, null);
+    if (d.state === 'AWAITING_PUSH') return pushChainId(local, currentPushEntry(d));
+    return pushChainId(local, (d.pushEntries ?? 0) >= 1 ? d.version + 1 : null);
+  }
+
   pushRecovery(local: string | null, tryNo = 1): EffectSpec {
     return {
       kind: 'push_recovery',
-      dedupeKey: `push_recovery:${this.did}:${local ?? 'none'}:${tryNo}`,
+      dedupeKey: `push_recovery:${this.did}:${this.pushChain(local)}:${tryNo}`,
       payload: { localHeadSha: local, try: tryNo, maxTries: PUSH_RECOVERY_BACKOFF_MS.length },
       delayMs: PUSH_RECOVERY_BACKOFF_MS[Math.min(tryNo, PUSH_RECOVERY_BACKOFF_MS.length) - 1],
     };
@@ -431,7 +508,13 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state === 'WORKING' && dd.prNumber == null) return c.rejected('pr_not_bound');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.rejected('round_head_not_current');
       if (c.openRoundAt(cmd.headSha)) return c.rejected('review_in_flight');
-      if (cmd.forced && !(isHumanActor(cmd.actor) || cmd.actor === 'force')) return c.rejected('force_requires_human');
+      // A forced round (a second look at a head that already has a verdict) is a person's call.
+      if (cmd.forced && !isHumanActor(cmd.actor)) return c.rejected('force_requires_human');
+      // ESCALATED is a person's (§4). Anyone may ask again after a review escalation; every
+      // other reason (unpushed work, a policy finding, a dead effect, landing) waits for a person.
+      if (dd.state === 'ESCALATED' && !isHumanActor(cmd.actor) && !isReviewEscalation(dd.stateReason)) {
+        return c.rejected('escalation_needs_human');
+      }
       if (c.decidedAt(cmd.headSha) && !cmd.forced) return c.rejected('head_already_reviewed');
       const r = c.startRound(cmd.headSha);
       const attempts: AttemptOp[] = dd.state === 'CHANGES_REQUESTED' ? [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }] : [];
@@ -462,10 +545,6 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
         set: { status: 'superseded', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
       };
-      if (dd.state !== 'AWAITING_REVIEW' || round.headSha !== dd.currentHeadSha || round.round !== dd.currentRound) {
-        // A verdict for a superseded head/round: kept for audit, never applied.
-        return c.stale('round_superseded', { rounds: [keep], attempts: [] });
-      }
       const decide: RoundOp = {
         op: 'update', roundId: round.id, whenStatus: ['queued', 'reviewing'],
         set: { status: 'decided', verdict: cmd.verdict, effectiveVerdict: cmd.effectiveVerdict, confidence: cmd.confidence ?? null, decided: true },
@@ -475,6 +554,26 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const postReview = (event: 'APPROVE' | 'REQUEST_CHANGES'): EffectSpec => ({
         kind: 'post_review', dedupeKey: `post_review:${dd.id}:${round.id}`, payload: { commitId: round.headSha, event, roundId: round.id },
       });
+      const current = round.headSha === dd.currentHeadSha && round.round === dd.currentRound;
+      if (current && (dd.state === 'REPAIRING' || dd.state === 'BLOCKED_ON_TRUNK')) {
+        // b666505e: a verdict for the CURRENT head while a repair or a red trunk holds the
+        // delivery. It is the verdict on this head: the round is decided now, the state does
+        // not move, and leaving the hold re-enters it (resumeAfterRepair / T26 / T4 via
+        // reenterVerdict). A head move before then supersedes it like any other verdict.
+        // Never superseded here, or the resume would start a second round at the same head.
+        const ev = cmd.effectiveVerdict === 'approve' ? 'APPROVE' : cmd.effectiveVerdict === 'request_changes' ? 'REQUEST_CHANGES' : null;
+        return c.apply(key, dd.state, {
+          ...common,
+          evidence: { ...common.evidence, heldBy: dd.state, deferred: true },
+          rounds: [decide],
+          // The GitHub review is the reviewer's word on this commit; the kernel still gates landing.
+          effects: ev && round.scope?.composition !== true ? [postReview(ev)] : [],
+        });
+      }
+      if (dd.state !== 'AWAITING_REVIEW' || !current) {
+        // A verdict for a superseded head/round: kept for audit, never applied.
+        return c.stale('round_superseded', { rounds: [keep], attempts: [] });
+      }
       if (cmd.effectiveVerdict === 'approve' && round.scope?.composition === true) {
         // §5.9 / S33: the delta round of a composition reviewed only the novel
         // paths; every other change rests on its own constituent's verdict. The
@@ -516,7 +615,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           ...common,
           patch: { stateReason: 'review_exhausted' },
           rounds: [decide],
-          effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}`, payload: { family: 'review_fix', rounds: dd.currentRound } }],
+          effects: [postReview('REQUEST_CHANGES'), { kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${round.headSha}@v${dd.version}`, payload: { family: 'review_fix', rounds: dd.currentRound } }],
         });
       }
       return c.apply(key, 'CHANGES_REQUESTED', {
@@ -535,9 +634,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       if (dd.state !== 'CHANGES_REQUESTED' && dd.state !== 'FIXING') return c.stale('state_moved');
       if (dd.currentRound < dd.maxRounds) return c.rejected('budget_not_exhausted');
-      return c.apply(`exhaust:${dd.id}:${dd.currentHeadSha}`, 'ESCALATED', {
+      // The version it was read at (10658a4c): a person who resolves back to this head and
+      // sees it exhaust again is a second escalation, not a replay of the first.
+      const key = `exhaust:${dd.id}:${dd.currentHeadSha}@v${dd.version}`;
+      return c.apply(key, 'ESCALATED', {
         patch: { stateReason: 'review_exhausted', boundAttemptId: null },
-        effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:${dd.currentHeadSha}`, payload: { family: 'review_fix', rounds: dd.currentRound } }],
+        effects: [{ kind: 'escalate_exhaustion', dedupeKey: key, payload: { family: 'review_fix', rounds: dd.currentRound } }],
       });
     }
 
@@ -615,7 +717,9 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       // §6.10: a delivery already repairing this CI joins the incident too; its
       // queued per-PR attempt is skipped (spends nothing) and T25 decides.
       const repairingCi = dd.state === 'REPAIRING' && dd.stateReason === 'ci';
-      if (!allowed.includes(dd.state) && !reopen && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
+      // a90fc99b: a review or policy escalation with red CI gets its CI fix first.
+      const escalatedRed = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason);
+      if (!allowed.includes(dd.state) && !reopen && !escalatedRed && !(repairingCi && cmd.openTrunkIncidentId)) return c.stale('state_not_allowed');
       // §6.3 T10 guard "live check-suite read": a stale or redelivered hint for a
       // head that is not red now (re-run green, or re-running) moves nothing.
       if (cmd.liveChecks && cmd.liveChecks.failing.length === 0) return c.rejected('ci_not_red');
@@ -638,9 +742,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (spent >= max) {
         // A person past the cap extends the budget explicitly (BudgetExtended), never as "iteration 0".
         if (human) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
+        // Already a person's: a spent CI budget does not replace why it escalated.
+        if (escalatedRed) return c.rejected('budget_exhausted', { missing: [`ci ${spent} of ${max}`] });
         return c.apply(`${key}:exhausted`, 'ESCALATED', {
           guardHead: true, patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
-          effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
+          effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${dd.id}:ci:${cmd.headSha}@v${dd.version}`, payload: { family: 'ci', attempts: spent, max, headSha: cmd.headSha, signature: cmd.signature } }],
           evidence: { signature: cmd.signature, spent, max, ...miss },
         });
       }
@@ -705,7 +811,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const dd = d!;
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const allowed: DeliveryState[] = ['AWAITING_REVIEW', 'APPROVED', 'LANDING', 'CHANGES_REQUESTED', 'REPAIRING'];
-      if (!allowed.includes(dd.state)) return c.stale('state_not_allowed');
+      // a90fc99b: a review or policy escalation that conflicts or collides is repaired first. A
+      // behind-only refresh is not: nothing lands an escalated PR, so keeping it fresh buys nothing.
+      const escalatedRepair = dd.state === 'ESCALATED' && isRepairableEscalation(dd.stateReason)
+        && (cmd.migrationCollision === true || cmd.mergeable !== 'behind');
+      if (!allowed.includes(dd.state) && !escalatedRepair) return c.stale('state_not_allowed');
       if (dd.state === 'REPAIRING' && !cmd.mechanicalRefused) return c.rejected('fix_in_flight');
       if (cmd.isDependencyBot) return c.rejected('dependency_bot_pr');
       const kind = cmd.migrationCollision ? 'migration' : cmd.mergeable === 'behind' ? 'behind' : 'conflict';
@@ -717,6 +827,8 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         patch: { mergeable: cmd.mergeable, mergeableHeadSha: cmd.headSha },
         refusal: cmd.refusal ?? null,
         detail: cmd.detail ?? null,
+        baseDelta: kind === 'behind' ? cmd.baseDelta ?? null : null,
+        maxBaseCommits: cmd.maxBaseCommits,
       });
     }
 
@@ -769,6 +881,24 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
     }
 
+    // a90fc99b: the escalation gate's policy-merge rule (rule-only, never a model).
+    case 'PolicyMergeApproved': {
+      const dd = d!;
+      if (!cmd.actor.startsWith('rule:')) return c.rejected('rule_actor_required');
+      if (dd.state !== 'ESCALATED') return c.stale('state_not_allowed');
+      if (!isRepairableEscalation(dd.stateReason)) return c.rejected('escalation_not_policy_mergeable');
+      if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
+      // A destructive migration is a person's whatever the paths say.
+      if (dd.policyEvidence?.destructive) return c.rejected('destructive_migration');
+      return c.apply(`policymerge:${c.prKey}:${cmd.headSha}`, 'APPROVED', {
+        guardHead: true,
+        patch: { approvedHeads: [...dd.approvedHeads.filter((h) => h !== cmd.headSha), cmd.headSha], approvalBasis: 'policy_rule', stateReason: null },
+        attempts: [{ op: 'cancel_open', families: ['review_fix'], status: 'cancelled' }],
+        evidence: { headSha: cmd.headSha, rule: cmd.actor, reason: cmd.reason, fromReason: dd.stateReason },
+        bypass: { actor: cmd.actor, reason: cmd.reason, overrodeState: dd.state, overrodeReason: dd.stateReason },
+      });
+    }
+
     // T15
     case 'LandingRequested': {
       const dd = d!;
@@ -776,6 +906,12 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state === 'LANDING' && dd.currentHeadSha === cmd.headSha) return c.duplicate('landing_in_flight');
       if (cmd.headSha !== dd.currentHeadSha || cmd.live.headSha !== cmd.headSha) return c.stale('head_moved');
       if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
+      // e89035b6: GitHub refuses to merge a draft. Holding a PR as a draft is a wait, not a
+      // refusal: no merge call, the approval stands, and a door lands it once it is ready.
+      if (cmd.live.draft || cmd.live.mergeableState === 'draft') return c.rejected('pr_is_draft');
+      // 24e1cfad: the live read targets another base than the delivery knows; the base-change
+      // fact decides the approval first (the door records it before asking).
+      if (cmd.live.baseRef && dd.baseRef && cmd.live.baseRef !== dd.baseRef) return c.stale('base_moved');
       // The override door: a person merging past a rail (the dashboard's "Merge anyway"), or
       // an agent run under a grant a person put on its task (recorded as grantedBy).
       const ov = cmd.override ?? null;
@@ -791,6 +927,15 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (!cmd.rails.passed && !overrideDoor) return c.rejected('rails_failed', { missing: cmd.rails.reasons });
       const coverage = headCoverage(dd, cmd.headSha);
       if (dd.state === 'APPROVED' && coverage === 'none' && !overrideDoor) return c.rejected('head_not_approved');
+      // S15: a door landing a head that is behind its base, under the disjoint-delta rule. The base
+      // delta was read now, so the rule is checked again at merge time; a freshness override skips it.
+      let freshness: Record<string, unknown> | null = null;
+      if (cmd.baseDelta && !(overrideDoor && ov?.kinds?.includes('freshness')) && cmd.baseDelta.baseCommits !== 0) {
+        const fact: BaseDeltaFact = { ...cmd.baseDelta, requiresUpToDate: cmd.baseDelta.requiresUpToDate === true || cmd.live.mergeableState === 'behind' };
+        const v = behindTolerance(dd, c.ledger('conflict', 'mechanical'), cmd.headSha, fact, cmd.maxBaseCommits);
+        if (!v.tolerated) return c.rejected('behind_not_tolerated', { missing: [v.reason] });
+        freshness = { optimistic: true, behindBy: v.baseCommits, baseFiles: v.baseFileCount, rule: v.rule };
+      }
       const landingVersion = dd.version + 1;
       return c.apply(landingKey(c.prKey, cmd.headSha, dd.version), 'LANDING', {
         guardHead: true,
@@ -800,7 +945,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
           kind: 'merge_call', dedupeKey: `merge_call:${dd.id}:${cmd.headSha}:v${landingVersion}`,
           payload: { headSha: cmd.headSha, door: cmd.door, mergeMethod: cmd.mergeMethod ?? 'squash', landingVersion },
         }],
-        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state },
+        evidence: { door: cmd.door, coverage, rails: cmd.rails, fromState: dd.state, ...(freshness ? { freshness } : {}) },
         bypass: overrideDoor
           ? { door: cmd.door, reason: ov!.reason, actor: cmd.actor, overrodeState: dd.state, ...(ov!.kinds ? { kinds: ov!.kinds } : {}), ...(ov!.grantedBy ? { grantedBy: ov!.grantedBy } : {}) }
           : null,
@@ -813,14 +958,14 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (dd.state !== 'LANDING') return c.stale('state_moved');
       if (cmd.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const key = mergeResultKey(c.prKey, cmd);
-      const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null };
+      const evidence = { outcome: cmd.outcome, detail: cmd.detail ?? null, landingVersion: cmd.landingVersion ?? null, ...(cmd.retryAt ? { retryAt: cmd.retryAt } : {}) };
       if (cmd.outcome === 'merged' || cmd.outcome === 'indeterminate') {
         // The merged fact comes from a live read (verify_merge → PrMerged), never from this response.
         return c.apply(key, 'LANDING', {
           guardHead: true,
           effects: [{
             kind: 'verify_merge', dedupeKey: `verify_merge:${dd.id}:${cmd.headSha}:${cmd.landingVersion ?? 'x'}:${cmd.outcome}`,
-            payload: { headSha: cmd.headSha, outcome: cmd.outcome, landingVersion: cmd.landingVersion ?? null },
+            payload: { headSha: cmd.headSha, outcome: cmd.outcome, landingVersion: cmd.landingVersion ?? null, ...(cmd.retryAt ? { retryAt: cmd.retryAt } : {}) },
           }],
           evidence,
         });
@@ -893,6 +1038,49 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       });
     }
 
+    // T29 — §6.4 base row (24e1cfad)
+    case 'BaseChanged': {
+      const dd = d!;
+      if (isTerminal(dd.state)) return c.stale('terminal');
+      if (!livePrOpen(cmd.live)) return c.rejected('pr_not_open');
+      const to = cmd.live.baseRef;
+      if (!to || to === dd.baseRef) return c.duplicate('base_unchanged');
+      const key = baseChangeKey(c.prKey, dd.baseRef, to, dd.version);
+      const evidence = { live: cmd.live, fromBase: dd.baseRef, toBase: to, diffEquivalent: cmd.diffEquivalent === true };
+      // GitHub keeps the head and recomputes the diff: the delivery follows the base it lands on.
+      if (cmd.diffEquivalent === true) return c.apply(key, dd.state, { patch: { baseRef: to }, evidence });
+      const head = dd.currentHeadSha;
+      // Every verdict so far reviewed the diff against the old base. None covers the new diff:
+      // approvals are dropped and the rounds decided at this head stop counting as its review.
+      const patch: DeliveryPatch = { baseRef: to, approvedHeads: [], compositionHeads: [], approvalBasis: null, policyEvidence: null };
+      const retire: RoundOp[] = head
+        ? c.view.rounds.filter((r) => r.headSha === head && r.status === 'decided')
+          .map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['decided'], set: { status: 'superseded' } }))
+        : [];
+      const review = (extra: { attempts?: AttemptOp[]; effects?: EffectSpec[] } = {}): Decision => {
+        const r = c.startRound(head!);
+        return c.apply(key, 'AWAITING_REVIEW', {
+          patch: { ...patch, ...r.patch, stateReason: null }, rounds: [...retire, ...r.rounds],
+          attempts: extra.attempts, effects: [...r.effects, ...(extra.effects ?? [])], evidence,
+        });
+      };
+      switch (dd.state) {
+        case 'APPROVED':
+        case 'LANDING': // the queued merge call skips once the delivery leaves LANDING
+        case 'AWAITING_REVIEW':
+          if (head) return review();
+          return c.apply(key, dd.state, { patch, rounds: retire, evidence });
+        case 'BLOCKED_ON_TRUNK':
+          return c.apply(key, dd.state, {
+            patch: { ...patch, ...(dd.resumeState === 'APPROVED' ? { resumeState: 'AWAITING_REVIEW' as const } : {}) }, rounds: retire, evidence,
+          });
+        default:
+          // WORKING, AWAITING_PUSH, CHANGES_REQUESTED, FIXING, REPAIRING, ESCALATED, CLOSED_UNMERGED:
+          // the state's owner keeps the next move; leaving it reviews the head against the new base.
+          return c.apply(key, dd.state, { patch, rounds: retire, evidence });
+      }
+    }
+
     // T20
     case 'SupersessionRecorded': {
       const dd = d!;
@@ -937,9 +1125,11 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
     case 'PushRecoveryExhausted': {
       const dd = d!;
       if (dd.state !== 'AWAITING_PUSH') return c.stale('state_moved');
-      return c.apply(`pushdead:${dd.id}:${cmd.localHeadSha ?? 'none'}`, 'ESCALATED', {
+      // One per visit (10658a4c): a second visit at the same L escalates under its own key.
+      const chain = pushChainId(cmd.localHeadSha, currentPushEntry(dd));
+      return c.apply(`pushdead:${dd.id}:${chain}`, 'ESCALATED', {
         patch: { stateReason: 'push_undeliverable' },
-        effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:pushdead:${cmd.localHeadSha ?? 'none'}`, payload: { event: 'push_undeliverable', localHeadSha: cmd.localHeadSha, baseRef: dd.baseRef } }],
+        effects: [{ kind: 'notify', dedupeKey: `notify:${dd.id}:pushdead:${chain}`, payload: { event: 'push_undeliverable', localHeadSha: cmd.localHeadSha, baseRef: dd.baseRef } }],
       });
     }
 
@@ -951,14 +1141,23 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       const owedIn = DEAD_EFFECT_OWED_IN[cmd.effectKind];
       if (!owedIn) return c.rejected('not_critical');
       if (owedIn !== 'any' && !owedIn.includes(dd.state)) return c.stale('state_moved');
+      // A dead dispatch_review is the round not being served, T27's outcome: `review_unavailable`,
+      // which anyone may ask again (T5). Every other dead effect waits for a person.
       const reason = cmd.effectKind === 'push_recovery' ? 'push_undeliverable'
-        : cmd.effectKind === 'merge_call' || cmd.effectKind === 'verify_merge' ? 'landing_needs_human' : 'effect_dead';
+        : cmd.effectKind === 'merge_call' || cmd.effectKind === 'verify_merge' ? 'landing_needs_human'
+          : cmd.effectKind === 'dispatch_review' ? 'review_unavailable' : 'effect_dead';
       const local = dd.pushPendingLocalHead ?? null;
       const notice: EffectSpec = reason === 'push_undeliverable'
         ? { kind: 'notify', dedupeKey: `notify:${dd.id}:effectdead:${cmd.effectId}`, payload: { event: 'push_undeliverable', localHeadSha: local, baseRef: dd.baseRef } }
         : { kind: 'notify', dedupeKey: `notify:${dd.id}:effectdead:${cmd.effectId}`, payload: { event: 'effect_dead', effectKind: cmd.effectKind, reason, fromState: dd.state } };
+      // The round that dispatch was serving is not being served: close it as T27 does, or the
+      // next request for this head would read it as a review in flight.
+      const rounds: RoundOp[] = cmd.effectKind === 'dispatch_review'
+        ? c.openRounds().map((r) => ({ op: 'update', roundId: r.id, whenStatus: ['queued', 'reviewing'], set: { status: 'failed' } }))
+        : [];
       return c.apply(`effectdead:${cmd.effectId}`, 'ESCALATED', {
         patch: { stateReason: reason, boundAttemptId: null },
+        rounds,
         effects: [notice],
         evidence: { effectId: cmd.effectId, effectKind: cmd.effectKind, dedupeKey: cmd.dedupeKey, lastError: cmd.lastError ?? null, fromState: dd.state, reason },
       });
@@ -1053,11 +1252,25 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
         : [];
       let patch: DeliveryPatch = { resumeState: null, trunkIncidentId: null, stateReason: null, ci: null, ciHeadSha: null };
       let rounds: RoundOp[] = [];
-      if (resume === 'AWAITING_REVIEW' && head && !c.openRoundAt(head) && !c.decidedAt(head)) {
+      const key = `trunkok:${cmd.incidentId}:${dd.id}`;
+      const evidence = { incidentId: cmd.incidentId };
+      // 47be5f6c: re-enter at the CURRENT head. APPROVED is a resume only while a verdict
+      // (or carried evidence) covers that head; a head pushed while blocked that nothing
+      // covers is owed a review, exactly as §6.4's APPROVED row would have owed one.
+      const uncovered = !!head && dd.approvalBasis !== 'policy' && headCoverage(dd, head) === 'none';
+      if (head && uncovered && (resume === 'AWAITING_REVIEW' || resume === 'APPROVED')) {
+        if (c.openRoundAt(head)) return c.apply(key, 'AWAITING_REVIEW', { patch, effects, evidence });
+        const decided = c.decidedAt(head);
+        if (decided) {
+          // b666505e: the verdict that landed while blocked is applied now, never re-asked.
+          const r = reenterVerdict(c, key, decided, head, evidence);
+          return r.result === 'apply' ? { ...r, patch: { ...patch, ...r.patch }, effects: [...effects, ...r.effects] } : r;
+        }
         const r = c.startRound(head);
         patch = { ...patch, ...r.patch }; rounds = r.rounds; effects.push(...r.effects);
+        return c.apply(key, 'AWAITING_REVIEW', { patch, rounds, effects, evidence: { ...evidence, ...(resume === 'APPROVED' ? { approvalNotCovering: head } : {}) } });
       }
-      return c.apply(`trunkok:${cmd.incidentId}:${dd.id}`, resume, { patch, rounds, effects, evidence: { incidentId: cmd.incidentId } });
+      return c.apply(key, resume, { patch, rounds, effects, evidence });
     }
 
     // T27
@@ -1101,7 +1314,7 @@ export function reduce(view: KernelView, cmd: Command, opts: ReduceOptions = {})
       if (ev.headSha !== dd.currentHeadSha) return c.stale('head_not_current');
       const prior = dd.policyEvidence;
       if (prior && prior.headSha === ev.headSha && prior.outcome === ev.outcome) return c.duplicate('evidence_recorded');
-      const key = `policy:${dd.id}:${ev.headSha}:${ev.outcome}`;
+      const key = policyKey(dd.id, ev, dd.version);
       // Only a delivery waiting on nobody's work can act on it now. Everywhere else the platform
       // (a running owner, an open repair, a queued fix, a landing) already owns the PR: record the
       // finding on the head and let that work's own hand-off apply it (WORKING), or let the head
@@ -1201,7 +1414,7 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         if (d.state === 'ESCALATED') return record();
         // Record the head, stay, and re-arm recovery from this head: the push that
         // arrived is not the work, so the next try re-reads and re-asks (§6.4).
-        const next: EffectSpec = { ...c.pushRecovery(local, 1), dedupeKey: `push_recovery:${d.id}:${local ?? 'none'}:head:${h}` };
+        const next: EffectSpec = { ...c.pushRecovery(local, 1), dedupeKey: `push_recovery:${d.id}:${c.pushChain(local)}:head:${h}` };
         return c.apply(key, 'AWAITING_PUSH', { patch: { currentHeadSha: h }, effects: [next], evidence: { ...evidence, proof } });
       }
       const attempts: AttemptOp[] = a ? [{ op: 'update', attemptId: a.id, whenStatus: ['queued', 'running', 'ended'], set: { outcome: 'delivered', pushedHeadSha: h } }] : [];
@@ -1288,8 +1501,17 @@ function headObserved(c: Ctx, cmd: Extract<Command, { type: 'HeadObserved' }>): 
         return c.apply(key, 'APPROVED', { patch: { currentHeadSha: h }, evidence: { ...evidence, policy: 'no_review', landingAborted: true } });
       }
       return carry() ?? toReview();
+    case 'BLOCKED_ON_TRUNK': {
+      // §6.4 BLOCKED_ON_TRUNK row (47be5f6c): stay blocked, T26 decides. A resume of
+      // APPROVED survives the new head only on carry-forward evidence; otherwise the
+      // resume becomes AWAITING_REVIEW, so recovery reviews the head instead of landing it.
+      if (d.approvalBasis === 'policy' || d.resumeState !== 'APPROVED') return record();
+      const cf = carry();
+      if (cf && cf.result === 'apply') return { ...cf, toState: 'BLOCKED_ON_TRUNK', patch: { ...cf.patch, stateReason: d.stateReason } };
+      return c.apply(key, 'BLOCKED_ON_TRUNK', { patch: { currentHeadSha: h, resumeState: 'AWAITING_REVIEW' }, evidence: { ...evidence, approvalNotCarried: true } });
+    }
     default:
-      // BLOCKED_ON_TRUNK, CLOSED_UNMERGED: record the head; T26 / T19 re-evaluate.
+      // CLOSED_UNMERGED: record the head; T19 re-evaluates.
       return record();
   }
 }
@@ -1312,7 +1534,7 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   if (!['WORKING', 'FIXING', 'REPAIRING'].includes(d.state)) return unbound();
   const L = cmd.localHeadSha;
   const live = cmd.live;
-  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live };
+  const evidence = { outcome: cmd.outcome, localHeadSha: L, commitCount: cmd.commitCount, live, ...(cmd.ci ? { liveChecks: cmd.ci.liveChecks } : {}) };
 
   if (d.state === 'WORKING') {
     if (cmd.taskId !== d.ownerTaskId) return c.stale('attempt_not_bound');
@@ -1328,6 +1550,12 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
       // T28: a finding recorded for exactly this head while the owner worked decides the hand-off.
       if (d.policyEvidence && d.policyEvidence.headSha === h) {
         return policyDecision(c, key, d.policyEvidence, { currentHeadSha: h }, evidence);
+      }
+      // e9f1674b: a CI failure hint that arrived while the owner worked was refused by T10
+      // (state_not_allowed). The hand-off is where the platform takes the move, so a head the
+      // live read shows red goes to REPAIRING(ci) through T10's ledger, never to a reviewer.
+      if (cmd.ci && cmd.ci.liveChecks.failing.length > 0 && !c.decidedAt(h) && !c.openAttempt(['ci'])) {
+        return ciRepairAtHandOff(c, key, h, cmd.ci, cmd.reviewRequired === false ? { approvalBasis: 'policy' } : {}, evidence);
       }
       if (cmd.reviewRequired === false) {
         // The policy needs no review: approved BY POLICY. No round, no verdict,
@@ -1473,6 +1701,36 @@ function attemptEnded(c: Ctx, cmd: Extract<Command, { type: 'AttemptEnded' }>): 
   });
 }
 
+/**
+ * §6.5 row 1 with a red head (e9f1674b): T10's outcome, taken by the owner's hand-off.
+ * The same ledger row, dispatch key and exhaustion as T10, under the hand-off's own key.
+ * No round is started: resuming from the repair starts one (resumeAfterRepair, T11).
+ */
+function ciRepairAtHandOff(
+  c: Ctx, key: string, h: string, ci: NonNullable<Extract<Command, { type: 'AttemptEnded' }>['ci']>,
+  patch: DeliveryPatch, evidence: Record<string, unknown>,
+): Decision {
+  const d = c.d!;
+  const ciPatch: DeliveryPatch = { ...patch, currentHeadSha: h, ci: 'red', ciHeadSha: h };
+  const ev = { ...evidence, signature: ci.signature };
+  const { spent, max } = c.budget('ci', ci.maxAttempts);
+  if (spent >= max) {
+    return c.apply(key, 'ESCALATED', {
+      patch: { ...ciPatch, stateReason: 'ci_exhausted', boundAttemptId: null },
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:ci:${h}@v${d.version}`, payload: { family: 'ci', attempts: spent, max, headSha: h, signature: ci.signature } }],
+      evidence: { ...ev, spent, max },
+    });
+  }
+  const n = c.nextNo('ci', 'agent');
+  const id = c.newId();
+  return c.apply(key, 'REPAIRING', {
+    patch: { ...ciPatch, stateReason: 'ci', boundAttemptId: id },
+    attempts: [{ op: 'insert', id, family: 'ci', attemptNo: n, mode: 'agent', boundHeadSha: h, triggerReason: ci.signature, triggerFactId: null, taskId: null, trigger: 'automatic', status: 'queued', maxAttempts: max }],
+    effects: [{ kind: 'dispatch_ci_fix', dedupeKey: `dispatch_ci_fix:${d.id}:${h}:${n}`, payload: { attemptId: id, attemptNo: n, maxAttempts: max, headSha: h, signature: ci.signature, trigger: 'automatic' } }],
+    evidence: { ...ev, attemptNo: n, spent: spent + 1, max },
+  });
+}
+
 const QUIESCENT_FOR_POLICY = new Set<DeliveryState>(['AWAITING_REVIEW', 'APPROVED']);
 const POLICY_MAX_SPLIT_ATTEMPTS = 2;
 
@@ -1531,7 +1789,7 @@ function reenterVerdict(c: Ctx, key: string, round: RoundSnapshot, h: string, ev
     if (round.round >= d.maxRounds) {
       return c.apply(key, 'ESCALATED', {
         patch: { ...base, stateReason: 'review_exhausted' }, evidence: ev,
-        effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}`, payload: { family: 'review_fix', rounds: round.round } }],
+        effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${h}@v${d.version}`, payload: { family: 'review_fix', rounds: round.round } }],
       });
     }
     const fixOpen = c.view.attempts.some((a) => a.family === 'review_fix' && a.triggerReason === round.id && OPEN_ATTEMPT.has(a.status));
@@ -1558,10 +1816,39 @@ export function treadmillCycle(mechanical: AttemptSnapshot[]): { cycle: number; 
   return { cycle: markers.length + 1, refreshes };
 }
 
+/**
+ * S15's disjoint-delta rule over one delivery (base-delta.ts): may `head` land
+ * although its base moved? Only an approved head (any coverage: an exact-head
+ * verdict, a person, a composition, or a platform own_refresh carry). Before
+ * the cycle's refresh budget is spent, only a head the platform's own refresh
+ * produced, within the ordinary bound; once it is spent, any covered head,
+ * within the wider `TREADMILL_EXHAUSTED_MAX_BASE_COMMITS`. Either way only a
+ * listable, disjoint, risk-free base delta, and never on a base that requires
+ * an up-to-date branch.
+ */
+export function behindTolerance(
+  d: Pick<DeliverySnapshot, 'approvedHeads' | 'approvalBasis' | 'compositionHeads' | 'currentHeadSha'>,
+  mechanical: AttemptSnapshot[],
+  head: string,
+  fact: BaseDeltaFact,
+  ordinaryMax: number = DEFAULT_TREADMILL_MAX_BASE_COMMITS,
+  maxRefreshes: number = DEFAULT_MAX_BEHIND_REFRESHES,
+): BaseDeltaVerdict & { rule?: 'bounded' | 'spent_cycle' } {
+  if (headCoverage(d, head) === 'none') return { tolerated: false, cause: 'refresh_exhausted', reason: 'no approval covers this head' };
+  const spent = treadmillCycle(mechanical).refreshes >= maxRefreshes;
+  const refreshed = mechanical.some((a) => a.family === 'conflict' && a.mode === 'mechanical' && a.reportedShas.includes(head));
+  if (!spent && !refreshed) return { tolerated: false, cause: 'refresh_exhausted', reason: 'this head was not produced by a platform refresh' };
+  const v = judgeBaseDelta(fact, spent ? Math.max(TREADMILL_EXHAUSTED_MAX_BASE_COMMITS, ordinaryMax) : ordinaryMax);
+  return v.tolerated ? { ...v, rule: spent ? 'spent_cycle' : 'bounded' } : v;
+}
+
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
   refusal?: Record<string, unknown> | null;
   detail?: Record<string, unknown> | null;
+  /** Behind only: the live base delta (S15 disjoint-delta rule). */
+  baseDelta?: BaseDeltaFact | null;
+  maxBaseCommits?: number;
 }): Decision {
   const d = c.d!;
   const family: AttemptFamily = kind === 'migration' ? 'migration' : 'conflict';
@@ -1574,19 +1861,35 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
   }
   const evidence = { repairKind: kind, headSha: head };
   if (kind === 'behind' && !o.mechanicalRefused) {
+    const mechanical = c.ledger(family, 'mechanical');
+    const maxRefreshes = o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES;
+    // S15 disjoint-delta rule: an approved head whose base gained only small, disjoint,
+    // risk-free changes is not refreshed again (and never escalated for a moving base). Nothing
+    // is recorded here: the door lands it through T15, which checks the same rule at merge time.
+    const tolerance = o.baseDelta ? behindTolerance(d, mechanical, head, o.baseDelta, o.maxBaseCommits, maxRefreshes) : null;
+    if (tolerance?.tolerated && d.state === 'APPROVED') return c.rejected('behind_tolerated');
     // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across
     // heads per cycle; a spent cycle escalates, and the landing sweep opens a new one after
     // the cooldown (TreadmillCycleRestarted) until MAX_TREADMILL_CYCLES are used.
-    const { refreshes, cycle } = treadmillCycle(c.ledger(family, 'mechanical'));
-    if (refreshes >= (o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES)) {
+    const { refreshes, cycle } = treadmillCycle(mechanical);
+    if (refreshes >= maxRefreshes) {
       const finalCycle = cycle >= MAX_TREADMILL_CYCLES;
+      // With the base delta read, the escalation says which: the base keeps changing what this
+      // PR changes (refresh_unsafe, naming the files), or it only kept moving (refresh_exhausted).
+      const why = tolerance && !tolerance.tolerated ? tolerance : null;
+      const because = why ? (why.cause === 'refresh_unsafe' ? `; ${why.reason}, so a green on an older base is not proof` : `; ${why.reason}`) : '';
       const detail = finalCycle
-        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
-        : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES}); landing retries with a fresh refresh budget after the cooldown`;
+        ? `base moved ${refreshes} times under the approved PR, in each of ${cycle} refresh cycles${because}; a person has to land it (merge anyway past freshness, or wait for a quiet base)`
+        : `base moved ${refreshes} times under the approved PR (refresh cycle ${cycle} of ${MAX_TREADMILL_CYCLES})${because}; landing retries with a fresh refresh budget after the cooldown`;
       return c.apply(o.key + ':treadmill', 'ESCALATED', {
         guardHead: true, patch: { ...o.patch, stateReason: 'landing_needs_human', boundAttemptId: null }, attempts,
-        effects: [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail } }],
-        evidence: { ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}) },
+        // a90fc99b: a cycle the landing sweep restarts after the cooldown is Buildd's wait, not a
+        // page. Only the last cycle, which nothing restarts, tells a person.
+        effects: finalCycle ? [{ kind: 'notify', dedupeKey: `notify:${d.id}:treadmill:${head}`, payload: { event: 'landing_needs_human', detail, ...(why ? { cause: why.cause } : {}) } }] : [],
+        evidence: {
+          ...evidence, refreshes, treadmill: true, cycle, ...(finalCycle ? { finalCycle: true } : {}),
+          ...(why ? { cause: why.cause, reason: detail, deltaReason: why.reason, ...(why.files ? { files: why.files } : {}), ...(o.baseDelta?.baseCommits != null ? { behindBy: o.baseDelta.baseCommits } : {}) } : {}),
+        },
       });
     }
   }
@@ -1608,7 +1911,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
   if (n > o.maxAgent) {
     return c.apply(o.key + ':exhausted', 'ESCALATED', {
       guardHead: true, patch: { ...o.patch, stateReason: 'conflict_exhausted', boundAttemptId: null }, attempts,
-      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${family}:${head}`, payload: { family, attempts: n - 1 } }],
+      effects: [{ kind: 'escalate_exhaustion', dedupeKey: `exhaust:${d.id}:${family}:${head}@v${d.version}`, payload: { family, attempts: n - 1 } }],
       evidence,
     });
   }

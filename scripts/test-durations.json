@@ -23,7 +23,7 @@
     "apps/runner/__tests__/unit/setup-worktree-narrow-clone.test.ts": 15100,
     "apps/runner/__tests__/unit/setup-worktree-release-lineage-held-branch.test.ts": 17400,
     "apps/runner/__tests__/unit/task-shape-contract.test.ts": 10300,
-    "apps/runner/__tests__/unit/team-tracking-hook.test.ts": 4100,
+    "apps/runner/__tests__/unit/tool-activity-hook.test.ts": 4100,
     "apps/runner/__tests__/unit/terminal-metrics-patch.test.ts": 2600,
     "apps/runner/__tests__/unit/terminal-worktree-sweep.test.ts": 14500,
     "apps/runner/__tests__/unit/terminate-hydrate.test.ts": 6500,

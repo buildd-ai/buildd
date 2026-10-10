@@ -39,7 +39,8 @@ const freshGh = (): Gh => ({
 });
 
 const mockGithubApi = mock(async (_installationId: number, path: string): Promise<any> => {
-  if (/\/commits\/[^/]+\/check-runs$/.test(path)) return { check_runs: gh.checkRuns };
+  if (/\/commits\/[^/]+\/check-runs(\?|$)/.test(path)) return { check_runs: gh.checkRuns };
+  if (/\/commits\/[^/]+\/status(\?|$)/.test(path)) return { total_count: 0, statuses: [] };
   if (/\/pulls\/42\/files/.test(path)) {
     return gh.prFiles.map((filename) => ({ filename, additions: 5, deletions: 1 }));
   }

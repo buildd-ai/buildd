@@ -27,11 +27,14 @@ Buildd is a **task coordination system** for AI agents:
 
 ## Auth Model
 
-Dual auth with different billing strategies:
-- **API key** (`bld_xxx`): Pay-per-token, cost-limited
-- **OAuth token**: Seat-based, session-limited
+A runner account's `authType` says how its **model** usage is paid, and so which claim limits apply:
+- **`api`**: an API key, pay-per-token, bounded by `maxCostPerDay`.
+- **`oauth`**: a subscription login on the runner's **own machine** (`claude login`, `CLAUDE_CODE_OAUTH_TOKEN`), bounded by sessions and plan walls.
 
-Check `authType` field to know which limits apply.
+buildd coordinates the agent; it does not provide model access. A subscription login stays on the machine
+or interactive session that owns it. Do not add code that stores, refreshes or hands out subscription
+logins server-side: that path is being removed (`knowledge-base: buildd/plans/seat-custody-removal.md`).
+The `bld_xxx` key authenticates to buildd itself and is unrelated to model billing.
 
 ## Database
 
@@ -124,7 +127,7 @@ Roles are skills with `isRole: true` on the `workspaceSkills` table. They define
 - **Task routing**: `tasks.roleSlug` → claim route filters by runner's `availableSkills`
 - **Config packaging**: `apps/web/src/lib/role-config.ts` bundles CLAUDE.md + .mcp.json + env mapping → R2
 - **API**: `GET /api/roles`, skill CRUD at `/api/workspaces/[id]/skills`
-- **Team page**: `apps/web/src/app/app/(protected)/team/page.tsx`
+- **Roles page**: `apps/web/src/app/app/(protected)/settings/roles/page.tsx` (the old `/app/team` redirects here)
 
 ## Issues & Friction
 

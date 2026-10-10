@@ -39,10 +39,15 @@ export type Changes = Record<string, string | null>;
 
 interface Commit { sha: string; parents: string[]; tree: Tree; message: string; date: string }
 
-export type CheckStatus = 'queued' | 'in_progress' | 'completed';
+/** waiting / requested / pending are GitHub Actions only: a job held by an environment rule or a concurrency group. */
+export type CheckStatus = 'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'pending';
+/** A commit status (the Statuses API), latest per context. */
+export type CommitStatusState = 'success' | 'failure' | 'error' | 'pending';
 export type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | 'startup_failure' | null;
 
 interface CheckRun { id: number; name: string; headSha: string; status: CheckStatus; conclusion: CheckConclusion; suiteId: number; workflow: string; startedAt: string; completedAt: string | null }
+
+interface CommitStatus { context: string; sha: string; state: CommitStatusState; description: string; updatedAt: string }
 
 interface Review { id: number; user: string; state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED'; commitId: string; body: string; submittedAt: string }
 
@@ -76,6 +81,7 @@ interface Repo {
   commits: Map<string, Commit>;
   pulls: Map<number, Pr>;
   checkRuns: CheckRun[];
+  statuses: CommitStatus[];
   comments: Map<number, IssueComment>;
   protection: Map<string, Protection>;
 }
@@ -187,7 +193,7 @@ export class FakeGithub {
   private faults: Faults;
   private seed: number;
   private streams = new Map<FaultName, () => number>();
-  private oneShots: Array<{ match: RegExp; status: number; message: string }> = [];
+  private oneShots: Array<{ match: RegExp; status: number; message: string; headers?: Record<string, string> }> = [];
   private seq = 0;
   private clock: number;
 
@@ -207,9 +213,12 @@ export class FakeGithub {
     this.streams.clear();
   }
 
-  /** The next call matching `match` (against `METHOD /path`) answers `status` with `message`, before anything applies. */
-  failNext(match: RegExp, status: number, message = 'injected'): void {
-    this.oneShots.push({ match, status, message });
+  /**
+   * The next call matching `match` (against `METHOD /path`) answers `status` with `message`, before
+   * anything applies. `headers` ride along, e.g. a rate limit's `retry-after` or `x-ratelimit-reset`.
+   */
+  failNext(match: RegExp, status: number, message = 'injected', headers?: Record<string, string>): void {
+    this.oneShots.push({ match, status, message, ...(headers ? { headers } : {}) });
   }
 
   private fires(name: FaultName): boolean {
@@ -244,7 +253,7 @@ export class FakeGithub {
     const defaultBranch = opts.defaultBranch ?? 'main';
     const repo: Repo = {
       fullName, id: this.nextId(), owner, name, defaultBranch,
-      branches: new Map(), commits: new Map(), pulls: new Map(), checkRuns: [], comments: new Map(), protection: new Map(),
+      branches: new Map(), commits: new Map(), pulls: new Map(), checkRuns: [], statuses: [], comments: new Map(), protection: new Map(),
     };
     this.repos.set(fullName, repo);
     const root = this.makeCommit(repo, [], new Map(), opts.files ?? { 'README.md': `# ${name}\n` }, 'initial commit');
@@ -298,10 +307,24 @@ export class FakeGithub {
     if (!was) throw new HttpError(422, 'Reference does not exist');
     repo.branches.delete(branch);
     this.emitPush(repo, branch, was, '0'.repeat(40), { deleted: true, forced: false, pusher: 'dev' });
-    // GitHub closes PRs whose base branch is deleted.
+    // GitHub retargets PRs stacked on the head branch of a merged PR to that PR's base
+    // (pull_request.edited, changes.base); any other PR whose base is deleted is closed.
+    const merged = [...repo.pulls.values()].find((p) => p.merged && p.headRef === branch);
     for (const pr of repo.pulls.values()) {
-      if (pr.state === 'open' && pr.baseRef === branch) this.closeInternal(repo, pr, 'dev');
+      if (pr.state !== 'open' || pr.baseRef !== branch) continue;
+      if (merged && repo.branches.has(merged.baseRef)) this.retargetInternal(repo, pr, merged.baseRef, 'dev');
+      else this.closeInternal(repo, pr, 'dev');
     }
+  }
+
+  /** Change a PR's base: the head stays, the diff is recomputed, `edited` carries `changes.base`. */
+  private retargetInternal(repo: Repo, pr: Pr, base: string, by: string): void {
+    if (pr.baseRef === base) return;
+    const snap = this.prJson(repo, pr, false);
+    const from = { ref: pr.baseRef, sha: repo.branches.get(pr.baseRef) ?? null };
+    pr.baseRef = base;
+    pr.updatedAt = this.tick();
+    this.emitPr(repo, pr, 'edited', snap, { changes: { base: { ref: { from: from.ref }, sha: { from: from.sha } } } }, by);
   }
 
   /** A fast-forward push of one commit to `branch` (created from the default branch if missing). */
@@ -464,6 +487,21 @@ export class FakeGithub {
     this.emitPr(repo, pr, 'reopened', snap, {}, by);
   }
 
+  /**
+   * A person converts the PR to draft, or marks it ready for review (GitHub does this through
+   * GraphQL or the UI only; REST has no field for it). Sends `converted_to_draft` / `ready_for_review`.
+   */
+  setDraft(repoName: string, number: number, draft: boolean, by = 'dev'): void {
+    const repo = this.repo(repoName);
+    const pr = this.pullOf(repo, number);
+    if (pr.state !== 'open') throw new HttpError(422, 'Validation Failed: pull request is closed');
+    if (pr.draft === draft) return;
+    const snap = this.prJson(repo, pr, false);
+    pr.draft = draft;
+    pr.updatedAt = this.tick();
+    this.emitPr(repo, pr, draft ? 'converted_to_draft' : 'ready_for_review', snap, {}, by);
+  }
+
   /** A person merges in the GitHub UI: same rules as the API, no pinned sha. */
   mergePr(repoName: string, number: number, o: { method?: 'merge' | 'squash' | 'rebase'; by?: string } = {}): string {
     const repo = this.repo(repoName);
@@ -508,6 +546,15 @@ export class FakeGithub {
     if (status === 'completed' && suite.every((r) => r.status === 'completed')) {
       this.enqueue(repo, 'check_suite', { action: 'completed', check_suite: this.suiteJson(repo, run.suiteId) }, 'github-actions[bot]');
     }
+  }
+
+  /** Post a commit status (Statuses API) on `sha`; replaces the earlier status for the same context. Sends no webhook (buildd handles no `status` event). */
+  setStatus(repoName: string, sha: string, context: string, state: CommitStatusState, description = ''): void {
+    const repo = this.repo(repoName);
+    const head = this.resolve(repo, sha);
+    repo.statuses = repo.statuses.filter((x) => !(x.sha === head && x.context === context));
+    const st: CommitStatus = { context, sha: head, state, description, updatedAt: this.tick() };
+    repo.statuses.push(st);
   }
 
   /** Every named check green on `sha`, in one suite. */
@@ -587,6 +634,7 @@ export class FakeGithub {
     }
     if (prot.strict && !this.ancestors(repo, pr.headSha).has(baseTip)) return { state: 'behind', mergeable: true };
     if (runs.some((r) => r.status !== 'completed' || !['success', 'neutral', 'skipped'].includes(String(r.conclusion)))) return { state: 'unstable', mergeable: true };
+    if (repo.statuses.some((x) => x.sha === pr.headSha && x.state !== 'success')) return { state: 'unstable', mergeable: true };
     return { state: 'clean', mergeable: true };
   }
 
@@ -803,7 +851,7 @@ export class FakeGithub {
     let res: FakeResponse;
     if (shot >= 0) {
       const o = this.oneShots.splice(shot, 1)[0];
-      res = { status: o.status, body: { message: o.message } };
+      res = { status: o.status, body: { message: o.message }, ...(o.headers ? { headers: o.headers } : {}) };
     } else if (callFault && this.fires('rateLimit')) {
       res = { status: 403, body: { message: `API rate limit exceeded for installation ID ${this.installationId}.`, documentation_url: 'https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting' }, headers: { 'x-ratelimit-remaining': '0' } };
     } else if (callFault && this.fires('serverError')) {
@@ -896,7 +944,7 @@ export class FakeGithub {
         else if (b.state === 'open') this.reopenPr(repo.fullName, pr.number, this.appLogin);
         if (typeof b.title === 'string') pr.title = b.title;
         if (typeof b.body === 'string') pr.body = b.body;
-        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); pr.baseRef = b.base; pr.updatedAt = this.tick(); }
+        if (typeof b.base === 'string') { if (!repo.branches.has(b.base)) throw new HttpError(422, 'Validation Failed'); this.retargetInternal(repo, pr, b.base, this.appLogin); }
         return { body: this.prJson(repo, pr, false) };
       }
       if (c === 'merge' && method === 'PUT') {
@@ -937,12 +985,23 @@ export class FakeGithub {
       const sha = this.resolve(repo, b1);
       if (!c && method === 'GET') return { body: this.commitJson(repo, this.commit(repo, sha)) };
       const runs = this.latestRuns(repo, this.checkSha(repo, sha));
-      if (c === 'check-runs' && method === 'GET') return { body: { total_count: runs.length, check_runs: runs.map((r) => this.checkRunJson(repo, r)) } };
+      // GitHub pages lists at per_page (default 30, max 100); total_count is the whole list.
+      const per = Math.min(Number(query.get('per_page') ?? 30) || 30, 100);
+      const page = Math.max(Number(query.get('page') ?? 1) || 1, 1);
+      const slice = <T>(xs: T[]): T[] => xs.slice((page - 1) * per, page * per);
+      if (c === 'check-runs' && method === 'GET') return { body: { total_count: runs.length, check_runs: slice(runs).map((r) => this.checkRunJson(repo, r)) } };
       if (c === 'check-suites' && method === 'GET') {
         const suites = [...new Set(runs.map((r) => r.suiteId))].map((id) => this.suiteJson(repo, id));
         return { body: { total_count: suites.length, check_suites: suites } };
       }
-      if (c === 'status' && method === 'GET') return { body: { state: runs.length ? 'success' : 'pending', sha, total_count: 0, statuses: [] } };
+      if (c === 'status' && method === 'GET') {
+        // Combined status: latest per context; state is pending with no statuses at all.
+        const sts = repo.statuses.filter((x) => x.sha === sha);
+        const state = sts.length === 0 ? (runs.length ? 'success' : 'pending')
+          : sts.some((x) => x.state === 'failure' || x.state === 'error') ? 'failure'
+          : sts.some((x) => x.state === 'pending') ? 'pending' : 'success';
+        return { body: { state, sha, total_count: sts.length, statuses: slice(sts).map((x) => ({ context: x.context, state: x.state, description: x.description, updated_at: x.updatedAt })) } };
+      }
       return this.unsupportedRoute(method, fullPath);
     }
 

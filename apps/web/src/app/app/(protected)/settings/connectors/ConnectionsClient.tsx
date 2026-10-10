@@ -6,6 +6,9 @@ import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
 import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 import { ConnectorIcon } from '@/components/ConnectorIcon';
+import Notice from '@/components/ui/Notice';
+import Disclosure from '@/components/ui/Disclosure';
+import { TonePill } from '@/components/ui/StatePill';
 
 interface Connector {
   id: string;
@@ -43,38 +46,12 @@ interface ConnectorShare {
   createdAt?: string;
 }
 
+/** One state vocabulary for a connector's credential. Expired needs a person, so it is the live tone. */
 function StatusBadge({ authMode, status }: { authMode: Connector['authMode']; status: Connector['status'] }) {
-  if (authMode === 'none') {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded font-mono bg-status-info/10 text-status-info border border-status-info/30">
-        No auth
-      </span>
-    );
-  }
-  if (status === 'connected') {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded font-mono bg-status-success/10 text-status-success border border-status-success/30">
-        Connected
-      </span>
-    );
-  }
-  if (status === 'expired') {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded font-mono bg-status-warning/10 text-status-warning border border-status-warning/30">
-        Expired
-      </span>
-    );
-  }
-  return (
-    <span className="text-xs px-2 py-0.5 rounded font-mono bg-surface-3 text-text-muted border border-border-default">
-      Not connected
-    </span>
-  );
-}
-
-function truncateUrl(url: string, maxLen = 48): string {
-  if (url.length <= maxLen) return url;
-  return url.slice(0, maxLen) + '…';
+  if (authMode === 'none') return <TonePill tone="q">No auth</TonePill>;
+  if (status === 'connected') return <TonePill tone="ok">Connected</TonePill>;
+  if (status === 'expired') return <TonePill tone="act">Expired</TonePill>;
+  return <TonePill tone="q">Not connected</TonePill>;
 }
 
 export default function ConnectionsClient({
@@ -401,33 +378,21 @@ export default function ConnectionsClient({
       </div>
 
       {message && (
-        <div className={`mb-4 p-3 rounded-lg text-sm ${
-          message.type === 'success'
-            ? 'bg-status-success/10 text-status-success border border-status-success/30'
-            : 'bg-status-error/10 text-status-error border border-status-error/30'
-        }`}>
+        <Notice tone={message.type === 'success' ? 'ok' : 'err'} className="mb-4">
           {message.text}
-        </div>
+        </Notice>
       )}
 
       {loading ? (
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
-        <div className="card p-10 text-center">
-          <p className={`text-text-muted text-sm ${canManage ? 'mb-4' : ''}`}>No connectors.</p>
-          {canManage && (
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="btn"
-            >
-              Add connector
-            </button>
-          )}
-        </div>
+        <p className="text-sm text-text-muted" data-testid="connectors-empty">
+          No connectors.{canManage && ' Add one to give your agents an outside tool.'}
+        </p>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <ul className="divide-y divide-border-default">
           {connectors.map((connector) => (
-            <div key={connector.id} className="p-4">
+            <li key={connector.id} className="py-3">
               {/* Stack on mobile: the action cluster's intrinsic width (~300px)
                   otherwise squeezes the info column to ~40% of a phone viewport,
                   breaking the URL mid-token and reflowing the reach line. */}
@@ -435,38 +400,33 @@ export default function ConnectionsClient({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
                     <ConnectorIcon name={connector.name} iconUrl={connector.iconUrl} size={18} />
-                    <span className="font-medium text-text-primary">{connector.name}</span>
+                    <span className="text-sm font-medium text-text-primary">{connector.name}</span>
                     <StatusBadge authMode={connector.authMode} status={connector.status} />
                     {connector.blockedByPolicy && (
-                      <span
-                        className="text-xs px-2 py-0.5 rounded font-mono bg-status-error/10 text-status-error border border-status-error/30"
-                        data-testid={`connector-blocked-${connector.id}`}
-                      >
-                        Blocked
+                      <span data-testid={`connector-blocked-${connector.id}`}>
+                        <TonePill tone="bad">Blocked</TonePill>
                       </span>
                     )}
                     {connector.shared && (
-                      <span className="text-xs px-2 py-0.5 rounded font-mono bg-primary/10 text-primary border border-primary/30">
-                        Shared by {connector.ownerTeamName || 'another team'}
-                      </span>
+                      <TonePill tone="q">Shared by {connector.ownerTeamName || 'another team'}</TonePill>
                     )}
-                  </div>
-                  <div className="text-xs text-text-secondary font-mono break-all">
-                    {truncateUrl(connector.url)}
                   </div>
                   {/* Reach — make scope visible at a glance instead of hidden behind "Sharing".
                       Owned connectors are available to all workspaces in the owning team;
                       cross-team access is granted explicitly via the Sharing panel. */}
                   {connector.blockedByPolicy && (
-                    <div className="text-[11px] text-status-error mt-1">
+                    <div className="text-xs text-status-error mt-1">
                       Blocked by team policy. Agents can&apos;t use it; the saved connection is kept. A team admin can unblock it under Catalog.
                     </div>
                   )}
                   {!connector.shared && (
-                    <div className="text-[11px] text-text-muted mt-1">
-                      Available to all workspaces in this team · share with other teams via Sharing
+                    <div className="text-xs text-text-secondary mt-1">
+                      Available to all workspaces in this team. Share with other teams via Sharing.
                     </div>
                   )}
+                  <Disclosure summary={<span className="text-xs">Details</span>} className="mt-1">
+                    <p className="pb-1 text-xs text-text-muted font-mono break-all">{connector.url}</p>
+                  </Disclosure>
                 </div>
                 {/* Grantees only enable per workspace / opt roles in — no config,
                     credential, or sharing controls on a shared-in connector (spec §1b).
@@ -476,7 +436,7 @@ export default function ConnectionsClient({
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
-                      className="px-3 py-1.5 text-sm bg-status-warning/10 text-status-warning border border-status-warning/30 rounded-md hover:bg-status-warning/20 disabled:opacity-50 transition-colors"
+                      className="btn btn-sm"
                     >
                       {connecting === connector.id ? 'Redirecting…' : 'Reconnect'}
                     </button>
@@ -485,7 +445,7 @@ export default function ConnectionsClient({
                     <button
                       onClick={() => handleConnect(connector)}
                       disabled={connecting === connector.id}
-                      className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50 transition-colors"
+                      className="btn btn-sm"
                     >
                       {connecting === connector.id ? 'Redirecting…' : 'Connect'}
                     </button>
@@ -493,7 +453,7 @@ export default function ConnectionsClient({
                   {!connector.shared && connector.authMode === 'header' && connector.status === 'not_connected' && (
                     <button
                       onClick={() => { setEditingHeaderConnector(connector); setHeaderKeyValue(''); }}
-                      className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 transition-colors"
+                      className="btn btn-sm"
                     >
                       Set key
                     </button>
@@ -501,7 +461,7 @@ export default function ConnectionsClient({
                   {!connector.shared && (connector.status === 'connected' || connector.status === 'expired') && connector.authMode !== 'none' && (
                     <button
                       onClick={() => setDisconnecting(connector)}
-                      className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
+                      className="btn btn-sm btn-quiet"
                     >
                       Disconnect
                     </button>
@@ -509,7 +469,7 @@ export default function ConnectionsClient({
                   {!connector.shared && (
                     <button
                       onClick={() => openSharing(connector)}
-                      className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 transition-colors"
+                      className="btn btn-sm"
                       title="Share with other teams"
                     >
                       Sharing
@@ -518,7 +478,7 @@ export default function ConnectionsClient({
                   {!connector.shared && (
                     <button
                       onClick={() => setDeleting(connector)}
-                      className="px-3 py-1.5 text-sm text-text-muted hover:text-status-error rounded-md transition-colors"
+                      className="btn btn-sm btn-quiet"
                       title="Delete connector"
                     >
                       Delete
@@ -526,9 +486,9 @@ export default function ConnectionsClient({
                   )}
                 </div>}
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       {canManage && showAddModal && (
@@ -567,7 +527,7 @@ export default function ConnectionsClient({
               <button
                 onClick={handleSaveHeaderKey}
                 disabled={savingKey || !headerKeyValue.trim()}
-                className="flex-1 px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                className="flex-1 btn btn-primary"
               >
                 {savingKey ? 'Saving…' : 'Save'}
               </button>
@@ -606,7 +566,7 @@ export default function ConnectionsClient({
               </div>
             )}
 
-            <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+            <div className="section-label mb-2">
               Shared with
             </div>
             {sharesLoading ? (
@@ -630,7 +590,7 @@ export default function ConnectionsClient({
               </ul>
             )}
 
-            <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+            <div className="section-label mb-2">
               Share with team…
             </div>
             <div className="flex gap-2 mb-5">
@@ -645,14 +605,14 @@ export default function ConnectionsClient({
               <button
                 onClick={handleShare}
                 disabled={shareSaving || !shareTeamId}
-                className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                className="btn btn-primary"
               >
                 {shareSaving ? 'Sharing…' : 'Share'}
               </button>
             </div>
 
             <div className="border-t border-border-default pt-4">
-              <div className="text-xs font-mono uppercase tracking-wide text-text-muted mb-2">
+              <div className="section-label mb-2">
                 Transfer ownership…
               </div>
               <div className="flex gap-2">

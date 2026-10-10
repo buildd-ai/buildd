@@ -104,6 +104,19 @@ describe('projectTaskDelivery: today\'s worker/PR fields', () => {
     expect(projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersededByPrNumber: 9 }] }).kind).toBe('landed');
   });
 
+  it('a closed PR stops reconciling once its scan ran: a suggestion needs a person, none is not landed', () => {
+    const w = (supersessionScan: any) => [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan }];
+    expect(projectTaskDelivery({ status: 'completed', workers: w(null) }).reconciling).toBe(true);
+    const none = projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-09-30T00:00:00Z', suggestion: null }) });
+    expect(none.kind).toBe('notlanded');
+    expect(none.reconciling).toBe(false);
+    const sug = projectTaskDelivery({ status: 'completed', workers: w({ scannedAt: '2026-09-30T00:00:00Z', suggestion: { prNumber: 42 } }) });
+    expect(sug.kind).toBe('needs');
+    expect(sug.needsHuman).toBe(true);
+    expect(sug.reconciling).toBe(false);
+    expect(sug.confirmPrNumber).toBe(42);
+  });
+
   it('a closed PR is reconciling; an abandoned PR and a failed task are not', () => {
     const closedPr = projectTaskDelivery({ status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
     expect(closedPr.reconciling).toBe(true);
@@ -234,6 +247,64 @@ describe('projectMissionDelivery', () => {
     expect(m.open).toBe(true);
   });
 
+  it('a surface audit that did not finish is not a deliverable: not counted, not Needs you', () => {
+    const audit = task({ title: '[surface audit] round 2: Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), merged('Two'), audit] }));
+    expect(m.total).toBe(2);
+    expect(m.landed).toBe(2);
+    expect(m.kind).toBe('landed');
+    expect(m.tasks.map(t => t.title)).not.toContain(audit.title);
+    expect(m.exception?.text).not.toContain('did not land');
+    expect(m.visual?.text).toBe('Visual audit could not run');
+  });
+
+  it('a failed branch refresh followed by a landed one is not a deliverable: not counted, not Needs you', () => {
+    const failed = task({ title: 'chore(mission): merge dev into the branch', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-08T10:00:00Z' });
+    const landed = task({ title: 'chore(mission): merge dev into the branch', status: 'completed', isIntegrationRefresh: true, createdAt: '2026-10-09T00:20:00Z', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'merged', mergedAt: '2026-10-09T01:00:00Z' }] });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), failed, landed] }));
+    expect(m.tasks.map(x => x.id)).not.toContain(failed.id);
+    expect(m.kind).not.toBe('notlanded');
+    expect(m.exception?.text ?? '').not.toContain('did not land');
+  });
+
+  it('a failed branch refresh with no later success is the platform\'s recovery, not a decision', () => {
+    const failed = task({ title: 'chore(mission): merge dev into the branch', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-08T10:00:00Z' });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), failed] }));
+    expect(m.kind).toBe('notlanded');
+    expect(m.reconciling).toBe(true);
+    expect(m.exception?.text).toContain('refresh');
+    expect(m.exception?.text).not.toContain('needs your decision');
+    expect(m.next).not.toContain('retry or drop');
+  });
+
+  it('a refresh that failed after the last landed one is not hidden', () => {
+    const landed = task({ title: 'refresh', status: 'completed', isIntegrationRefresh: true, createdAt: '2026-10-08T00:00:00Z', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'merged', mergedAt: '2026-10-08T01:00:00Z' }] });
+    const failed = task({ title: 'refresh', status: 'failed', workers: [], isIntegrationRefresh: true, createdAt: '2026-10-09T00:00:00Z' });
+    const m = projectMissionDelivery(mission({ tasks: [merged('One'), landed, failed] }));
+    expect(m.tasks.map(x => x.id)).toContain(failed.id);
+  });
+
+  it('a failed visual audit with findings reads as the mission\'s Visual state', () => {
+    const audit = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ visualFindings: 2, tasks: [merged('One'), audit] }));
+    expect(m.visual?.text).toBe('Visual audit: 2 findings');
+    expect(m.exception?.text).toBe('Visual audit: 2 findings');
+  });
+
+  it('a later passing audit round clears the Visual state', () => {
+    const r1 = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const r2 = task({ title: '[surface audit] round 2: Sentinel', status: 'completed', workers: [] });
+    expect(projectMissionDelivery(mission({ tasks: [merged('One'), r1, r2] })).visual).toBeNull();
+  });
+
+  it('an unmerged deliverable with no carrier still needs a person alongside an audit', () => {
+    const abandoned = task({ title: 'Real work', status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', abandonedAt: '2026-10-01T00:00:00Z' }] });
+    const audit = task({ title: '[surface audit] Sentinel', status: 'failed', workers: [] });
+    const m = projectMissionDelivery(mission({ tasks: [abandoned, audit] }));
+    expect(m.kind).toBe('notlanded');
+    expect(m.exception?.text).toContain('Real work did not land');
+  });
+
   it('landed is not mission complete, and complete is not released', () => {
     const m = projectMissionDelivery(mission({ tasks: [merged('One')], status: 'active' }));
     expect(m.milestones.allLanded).toBe(true);
@@ -360,5 +431,13 @@ describe('deliveryCounts: running missions vs live agents vs slots', () => {
     expect(c.openMissions).toBe(0);
     expect(c.executingMissions).toBe(0);
     expect(c.liveAgents).toBe(1);
+  });
+});
+
+describe('focusPhrase', () => {
+  it('a mission refresh task reads as "the update from dev", not the mission repeated', async () => {
+    const { focusPhrase } = await import('./delivery-projection');
+    expect(focusPhrase('chore(mission): merge dev into the Task estimates: a model integration branch')).toBe('The update from dev');
+    expect(focusPhrase('fix(api): retry the claim')).toBe('Retry the claim');
   });
 });

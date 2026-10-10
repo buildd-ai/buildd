@@ -36,23 +36,62 @@ const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown
 
 type MergeOutcome = Extract<Command, { type: 'MergeCallResult' }>['outcome'];
 
+type MergeAnswer = Pick<MergePullRequestResult, 'merged' | 'message' | 'indeterminate' | 'status' | 'retryAfterMs'>;
+
 /**
- * GitHub's answer to a pinned merge call, as the T16 outcome it is. Only a
- * definite answer is a refusal; anything GitHub did not clearly say is
- * `indeterminate` and verified by a live read before anything acts on it.
+ * A rate limit: 429, or a 403 GitHub sent as one (its message, or reset
+ * headers). GitHub refuses these before it looks at the PR, so nothing landed.
+ * https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
  */
-export function classifyMergeCall(res: Pick<MergePullRequestResult, 'merged' | 'message' | 'indeterminate'>): MergeOutcome {
+function rateLimited(res: MergeAnswer): boolean {
+  if (res.status === 429) return true;
+  return res.status === 403 && (/rate limit/i.test(res.message ?? '') || res.retryAfterMs != null);
+}
+
+/**
+ * GitHub's answer to a pinned merge call, as the T16 outcome it is. Classified
+ * by status first: a rate limit is `not_merged` (nothing landed, landing may be
+ * asked again), and a 5xx is GitHub failing rather than answering, so it is
+ * `indeterminate` and verified by a live read. Only a definite answer is a
+ * refusal; anything GitHub did not clearly say is `indeterminate` too.
+ */
+export function classifyMergeCall(res: MergeAnswer): MergeOutcome {
   if (res.merged) return 'merged';
   if (res.indeterminate) return 'indeterminate';
+  if (rateLimited(res)) return 'not_merged';
+  if (res.status != null && res.status >= 500) return 'indeterminate';
   const m = res.message ?? '';
   // The head moved under the pinned call: nothing landed; the new head has its own fact.
   if (/head branch was modified/i.test(m)) return 'not_merged';
+  // A draft waits for ready_for_review (the kernel refuses to land one; this is a draft made between the read and the call).
+  if (/\bdraft\b/i.test(m)) return 'not_merged';
   // Branch protection wants an up-to-date branch, or the base moved during the call: refresh.
   if (/base branch was modified|(is|was) (out of date|not up to date)/i.test(m)) return 'behind';
   if (classifyMergeFailure(m) === 'conflict') return 'conflict';
   // "not mergeable" is also what GitHub says to a PR that merged a moment ago: read before deciding.
   if (/not mergeable/i.test(m)) return 'indeterminate';
   return 'refused';
+}
+
+/** A rate limit sent without a reset: GitHub's docs say wait at least a minute. */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
+/** Primary limits reset hourly; never park a landing longer than that on one answer. */
+const MAX_MERGE_RETRY_WAIT_MS = 3_600_000;
+
+/**
+ * When the landing sweep may call again after a transient answer (a rate limit
+ * or a 5xx), honouring `retry-after` / `x-ratelimit-reset`; null when GitHub
+ * asked for no wait. Recorded on the MergeCallResult; `listApprovedKernelPrs`
+ * skips the delivery until then.
+ */
+export function mergeRetryAt(res: MergeAnswer, now = Date.now()): string | null {
+  if (res.merged) return null;
+  const limited = rateLimited(res);
+  const failing = res.status != null && res.status >= 500;
+  if (!limited && !failing) return null;
+  const wait = res.retryAfterMs ?? (limited ? RATE_LIMIT_DEFAULT_WAIT_MS : null);
+  if (wait == null) return null;
+  return new Date(now + Math.min(Math.max(0, wait), MAX_MERGE_RETRY_WAIT_MS)).toISOString();
 }
 
 // ── merge_call ──────────────────────────────────────────────────────────────
@@ -68,9 +107,10 @@ const mergeCall: EffectHandler = async (e) => {
   // Pinned to the head T15 approved: a replay at the same head is a no-op or a clean refusal.
   const res = await mergePullRequest(repo.installationId, d.repoFullName, d.prNumber, method, headSha);
   const outcome = classifyMergeCall(res);
+  const retryAt = mergeRetryAt(res);
   const landingVersion = typeof e.payload.landingVersion === 'number' ? e.payload.landingVersion : undefined;
   const r = await applyCommand(
-    { type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome, detail: res.message, ...(landingVersion !== undefined ? { landingVersion } : {}) },
+    { type: 'MergeCallResult', actor: 'effect:merge_call', headSha, outcome, detail: res.message, ...(landingVersion !== undefined ? { landingVersion } : {}), ...(retryAt ? { retryAt } : {}) },
     { ref: { deliveryId: d.id }, exec: dbExec },
   );
   return { outcome: `ok:${outcome}:${r.result}` };
@@ -104,8 +144,10 @@ const verifyMerge: EffectHandler = async (e) => {
   }
   if (d.state !== 'LANDING') return { outcome: `skipped:state_${d.state}` };
   const landingVersion = typeof e.payload.landingVersion === 'number' ? e.payload.landingVersion : undefined;
+  // A 5xx's retry-after, carried from the merge call through this read.
+  const retryAt = typeof e.payload.retryAt === 'string' ? e.payload.retryAt : undefined;
   const r = await applyCommand(
-    { type: 'MergeCallResult', actor: 'effect:verify_merge', headSha, outcome: 'not_merged', detail: 'GitHub shows the PR still open and unmerged after the merge call', ...(landingVersion !== undefined ? { landingVersion } : {}) },
+    { type: 'MergeCallResult', actor: 'effect:verify_merge', headSha, outcome: 'not_merged', detail: 'GitHub shows the PR still open and unmerged after the merge call', ...(landingVersion !== undefined ? { landingVersion } : {}), ...(retryAt ? { retryAt } : {}) },
     { ref: { deliveryId: d.id }, exec: dbExec },
   );
   return { outcome: `ok:not_merged:${r.result}` };
@@ -128,7 +170,7 @@ const emitPrMerged: EffectHandler = async (e) => {
   const repo = await workspaceRepo(d.workspaceId);
   const task = owner.task;
   await runMergedPrWork({
-    worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null },
+    worker: { id: owner.id, workspaceId: owner.workspaceId, taskId: owner.taskId ?? null, runner: owner.runner },
     task: task
       ? {
           id: task.id, status: task.status, workspaceId: task.workspaceId, missionId: task.missionId ?? null,

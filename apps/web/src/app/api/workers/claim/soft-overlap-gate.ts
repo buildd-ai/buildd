@@ -20,7 +20,7 @@
  * deterministic HOLD: fail closed. Pure: no DB. The route reads the holders.
  */
 import { isTerminalTaskStatus } from '@buildd/shared';
-import { classifyManifestOverlap, isHardOverlapKind, readSoftOverlaps, type ManifestOverlapKind } from '@buildd/core/path-overlap';
+import { findBlockingPr, classifyManifestOverlap, isHardOverlapKind, readSoftOverlaps, type ManifestOverlapKind } from '@buildd/core/path-overlap';
 
 export { readSoftOverlaps };
 
@@ -54,7 +54,7 @@ export function softOverlapHolderIds(candidates: ReadonlyArray<{ id: string; pat
 export function evaluateSoftOverlaps(
   task: { id: string; pathManifest: string[] | null | undefined; pathDeclaration?: unknown },
   holders: ReadonlyMap<string, SoftHolderRow> | null,
-  opts: { isHardSurface: (paths: string[], kind: ManifestOverlapKind) => boolean },
+  opts: { isHardSurface: (paths: string[], kind: ManifestOverlapKind) => boolean; repairSubjectPrs?: Array<{ pathManifest?: string[] | null; prNumber?: number | null }> },
 ): SoftOverlapVerdict[] {
   const out: SoftOverlapVerdict[] = [];
   for (const e of readSoftOverlaps(task.pathDeclaration)) {
@@ -65,6 +65,9 @@ export function evaluateSoftOverlaps(
     }
     const h = holders.get(e.taskId);
     if (!h || isTerminalTaskStatus(h.status)) continue;
+    // Converted legacy edges still pass through the migration mutex below.
+    // Exclude the inverse open-PR wait first, exactly as repair dispatch does.
+    if (h.status === 'pending' && findBlockingPr(h.pathManifest ?? [], opts.repairSubjectPrs ?? [])) continue;
     const overlap = classifyManifestOverlap(task.pathManifest ?? null, h.pathManifest);
     if (overlap.kind === 'none') continue;
     if (isHardOverlapKind(overlap.kind)) {

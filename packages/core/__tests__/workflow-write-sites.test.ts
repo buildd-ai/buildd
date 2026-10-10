@@ -43,7 +43,9 @@ const ALLOWED = new Set<string>();
 // Slice D adds `delivery-ship`: mission completion's input, a SELECT like `delivery-view`.
 // Slice E adds `delivery-display`: the pure, serialisable slice of the read model that
 // list surfaces carry to the client. No SQL, no command, so it cannot assign a state.
-const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display']);
+// `base-delta` is the S15 disjoint-delta rule as pure functions (no I/O, no kernel table): the legacy
+// landing door shares it with the reducer so the two cannot drift.
+const KERNEL_ENTRY_POINTS = new Set(['seam', 'authority', 'github-facts', 'projections', 'delivery-view', 'pr-activity-effects', 'delivery-ship', 'delivery-display', 'base-delta']);
 const COMPOSITION_ROOT = 'apps/web/src/modules.ts';
 const KERNEL_IMPORT = /(?:from\s+|import\()\s*['"](?:@\/lib\/workflow|(?:\.\.?\/)+(?:lib\/)?workflow)\/([a-z-]+)['"]/g;
 

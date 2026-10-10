@@ -56,6 +56,31 @@ describe('buildFleetSnapshot', () => {
     expect(atlas.slots[1].worker).toBeNull();
   });
 
+  it('each bar says how its run stands or ended, and carries its task id', () => {
+    const s = buildFleetSnapshot(
+      [hb('h1', 'http://atlas.local:8766', 3)],
+      [
+        worker('live', 'http://atlas.local:8766'),
+        worker('stopped', 'http://atlas.local:8766', {
+          status: 'failed', startedAt: min(50), completedAt: min(45),
+          error: "You've hit your session limit [work preserved: origin/x@1]", taskMergedPr: 4235,
+        }),
+        worker('merged', 'http://atlas.local:8766', { status: 'completed', startedAt: min(40), completedAt: min(30), prNumber: 9, mergedAt: min(29) }),
+      ],
+      { now: NOW },
+    );
+    const bars = s.runners[0].slots.flatMap(sl => sl.lane.bars);
+    const by = (id: string) => bars.find(b => b.id === id)!;
+    expect(by('live').endReason).toBe('Working');
+    expect(by('stopped').endReason).toBe('Stopped: session limit · work kept · merged as #4235');
+    expect(by('merged').endReason).toBe('Done · merged as #9');
+    expect(by('merged').taskId).toBe('t-merged');
+  });
+
+  it('each bar carries its task\'s mission, so the lanes chart can light a mission up', () => {
+    expect(snap.runners[0].slots[0].lane.bars.map(b => b.missionId)).toEqual(['m1', 'm1']);
+  });
+
   it('never gives an adopted PR\'s placeholder worker a slot or a role-less bar', () => {
     // role-routing §1 row 7: the adopted row is bookkeeping with no role. Its
     // worker ran on no buildd runner, so it must not surface as a `?` agent.

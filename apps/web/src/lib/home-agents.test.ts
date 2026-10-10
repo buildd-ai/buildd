@@ -21,6 +21,13 @@ describe('buildAgentsModel', () => {
     expect(m.lines[0]).toMatchObject({ name: 'db', mission: 'Ship it', elapsedMs: 40 * 60_000 });
   });
 
+  test('a run named by a machine identifier reads as its title in words, never "open_pr_outp pull_request 4191"', () => {
+    const m = buildAgentsModel(fleet([slot(0, worker('a', {
+      label: 'open_pr_outp', rest: 'pull_request 4191', title: '[friction] open_pr_outpaced_by_base: pull_request 4191',
+    }))], 1), 0);
+    expect(m.lines[0]).toMatchObject({ name: 'Open PR outpaced by base: PR #4191', rest: '' });
+  });
+
   test('capacity beyond the drawn slots stays free', () => {
     expect(buildAgentsModel(fleet([slot(0, null)], 3), 0).squares).toEqual(['free', 'free', 'free']);
   });
@@ -39,9 +46,23 @@ describe('copy', () => {
     expect(homeHeadlineSentence(0)).toBe('All clear. Nothing needs you.');
     expect(homeSubline(0, 0)).toBe('No other action needed.');
     expect(homeSubline(0, 1)).toBe('1 automatic repair is running.');
+    expect(homeSubline(2, 3)).toBe('3 automatic repairs are running.');
+  });
+  // The voice review flagged "Everything else is moving on its own." as narration.
+  test('the sub-line with decisions open is the same plain line', () => {
+    expect(homeSubline(2, 0)).toBe('No other action needed.');
   });
   test('elapsed', () => {
     expect(elapsedLabel(38 * 60_000)).toBe('38m');
     expect(elapsedLabel(65 * 60_000)).toBe('1h 05m');
+  });
+});
+
+describe('buildAgentsModel names', () => {
+  test('draws one name per line when the worker carries one, never name plus rest', () => {
+    const w = worker('n', { label: 'polish', rest: 'polish(mission-detail', name: 'Compact phone header' });
+    const line = buildAgentsModel(fleet([slot(0, w)], 1), 0).lines[0];
+    expect(line.name).toBe('Compact phone header');
+    expect(line.rest).toBe('');
   });
 });

@@ -353,3 +353,67 @@ describe('/api/mcp per-task token', () => {
     expect(ctx.workspaceId).toBe(OWN_WS);
   });
 });
+
+// Task 11fe4d38: every internal REST call forwards the caller's bearer, so it
+// goes to this server's own configured origin, never a hardcoded host. With no
+// origin configured the route refuses before any outbound call.
+describe('/api/mcp self-call origin', () => {
+  const KEYS = ['VERCEL_URL', 'NEXTAUTH_URL', 'AUTH_URL', 'NODE_ENV'] as const;
+  let saved: Record<string, string | undefined>;
+  let realFetch: typeof fetch;
+  let urls: string[];
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
+    realFetch = globalThis.fetch;
+    urls = [];
+    globalThis.fetch = (async (url: any) => { urls.push(String(url)); return new Response('{}', { status: 200 }); }) as any;
+    mockHandleBuilddAction.mockClear();
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  });
+
+  const listTasks = (origin: string) => new Request(`${origin}/api/mcp?workspace=${OWN_WS}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer bld_test' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'buildd', arguments: { action: 'list_tasks', params: {} } } }),
+  });
+  async function selfCallUrl(res: Response): Promise<string> {
+    expect(res.status).toBe(200);
+    const api = (mockHandleBuilddAction.mock.calls[0] as any[])[0];
+    await api('/api/tasks', {});
+    return urls[0];
+  }
+
+  it('refuses with a 500 config error and makes no outbound call when no origin is configured', async () => {
+    process.env.NODE_ENV = 'production';
+    const res = await POST(listTasks('https://buildd.dev'));
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe('self_origin_unconfigured');
+    expect(mockHandleBuilddAction).not.toHaveBeenCalled();
+    expect(urls).toEqual([]);
+  });
+
+  it('calls the NEXTAUTH_URL origin when it is set, whatever host the request named', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.NEXTAUTH_URL = 'https://self.example';
+    expect(await selfCallUrl(await POST(listTasks('https://attacker.example')))).toBe('https://self.example/api/tasks');
+  });
+
+  it('calls the Vercel deployment host on Vercel', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.VERCEL_URL = 'proj-abc.vercel.app';
+    expect(await selfCallUrl(await POST(listTasks('https://buildd.dev')))).toBe('https://proj-abc.vercel.app/api/tasks');
+  });
+
+  it("uses the request's own origin only for a loopback host outside production", async () => {
+    process.env.NODE_ENV = 'development';
+    expect(await selfCallUrl(await POST(listTasks('http://localhost:3999')))).toBe('http://localhost:3999/api/tasks');
+    mockHandleBuilddAction.mockClear();
+    const foreign = await POST(listTasks('https://attacker.example'));
+    expect(foreign.status).toBe(500);
+    expect(mockHandleBuilddAction).not.toHaveBeenCalled();
+  });
+});

@@ -14,7 +14,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
@@ -27,6 +27,12 @@ import {
   type CheckRunState,
   type ModelApproveBound,
 } from '@/lib/auto-merge-bound';
+import {
+  isPassingCheckRun,
+  isPassingStatus,
+  listAllCheckRuns,
+  listAllCommitStatuses,
+} from '@/lib/ci-verdict';
 import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
@@ -174,7 +180,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations'>,
   // One options bag, because the bound now needs the mission row too: the
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
@@ -211,22 +217,44 @@ export async function evaluateAutoMergeSafety(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
 
-  // CI completeness check — verify no check runs are still pending or failing.
+  // CI completeness check (ci-verdict.ts): every check run on every page, and
+  // every commit status, must have finished and passed. Allow-list, fail closed:
+  // only success/neutral/skipped pass; timed_out, cancelled, startup_failure,
+  // action_required, an unfinished run (queued, in_progress, waiting,
+  // requested, pending) or a status that is not `success` all refuse.
   try {
-    const checkRunsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/commits/${headSha}/check-runs`,
-    );
-    checkRuns = latestRunPerName(checkRunsData?.check_runs ?? []);
+    const read = await listAllCheckRuns<CheckRunState>(githubApi, installationId, repoFullName, headSha);
+    checkRuns = latestRunPerName(read.items);
     if (opts?.observed) opts.observed.checkRuns = checkRuns;
+    if (!read.complete) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: could not read every check run (${read.items.length} read)`,
+      };
+    }
 
-    const pendingOrFailed = checkRuns.filter(
-      (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
-    );
+    const pendingOrFailed = checkRuns.filter((r) => !isPassingCheckRun(r));
     if (pendingOrFailed.length > 0) {
       return {
         ok: false,
-        reason: `CI checks still pending or failed: ${pendingOrFailed.map((r) => r.name).join(', ')}`,
+        reason: `CI checks still pending or failed: ${pendingOrFailed
+          .map((r) => `${r.name} (${r.status === 'completed' ? r.conclusion ?? 'no conclusion' : r.status})`)
+          .join(', ')}`,
+      };
+    }
+
+    // CI that reports through the Statuses API (Jenkins, CircleCI, Buildkite,
+    // Vercel contexts) never creates check runs.
+    const statuses = await listAllCommitStatuses(githubApi, installationId, repoFullName, headSha);
+    const notPassing = statuses.items.filter((st) => !isPassingStatus(st));
+    if (!statuses.complete || notPassing.length > 0) {
+      return {
+        ok: false,
+        reason: `CI checks still pending or failed: ${
+          statuses.complete
+            ? notPassing.map((st) => `${st.context ?? 'unnamed status'} (${st.state ?? 'unknown'})`).join(', ')
+            : `could not read every commit status (${statuses.items.length} read)`
+        }`,
       };
     }
 
@@ -247,10 +275,10 @@ export async function evaluateAutoMergeSafety(
     // merge when it fails means a GitHub API blip silently becomes a merge with
     // no CI verification at all. Refusing parks the PR for a human instead,
     // which is recoverable — an unverified merge into dev is not.
-    console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+    console.warn(`Could not verify check runs / commit statuses for ${repoFullName}@${headSha}:`, err);
     return {
       ok: false,
-      reason: `could not verify CI status — GitHub check-runs lookup failed: ${
+      reason: `could not verify CI status — GitHub check-runs or commit-status lookup failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
     };
@@ -344,7 +372,10 @@ export async function evaluateAutoMergeSafety(
       files,
       ...(deltaBase ? { deltaBase } : {}),
     });
-    if (!migrationSafety.safe) {
+    // A data migration is a person's call unless the workspace lets the
+    // reviewer agent decide it (mergePolicy.dataMigrations, agent-review tier
+    // only); then the approval that got the PR here is the decision.
+    if (!migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
       return { ok: false, reason: migrationSafety.reason };
     }
   }
@@ -913,8 +944,22 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'refresh_unsafe' | 'semantic_unverified' | null;
 } {
+  if (res.behindTolerated) {
+    return {
+      refreshOutcome: 'behind_tolerated',
+      reason: 'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the landing door lands it without another refresh',
+      page: null,
+    };
+  }
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined && res.refreshUnsafe) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base keeps changing what this PR changes after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_unsafe',
+    };
+  }
   if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
     return {
       refreshOutcome: 'refresh_exhausted',
@@ -1125,7 +1170,7 @@ export async function escalateConflictExhaustion(
   }
 
   // Fire Pushover regardless of mission membership
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: conflict retries exhausted`,
     message: `${task.title}\n${maxIterations} attempt${maxIterations === 1 ? '' : 's'} failed — still has merge conflicts.\nResolve, close as superseded, or abandon.`,
     url: taskUrl,
@@ -1198,7 +1243,7 @@ export async function escalateReviewerExhaustion(
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber }, 'needsAttention', {
     title: `PR #${prNumber}: reviewer retries exhausted`,
     message: `${task.title}\n${maxIterations} reviewer fix attempt${maxIterations === 1 ? '' : 's'} failed — human review required.`,
     url: taskUrl,
@@ -1282,7 +1327,7 @@ export async function escalateReviewContractFailure(params: {
     });
   }
 
-  void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
+  void notifyTeamOf({ taskId: task.id, prNumber: prNumber ?? null }, 'needsAttention', {
     title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
     message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
     url: taskUrl,

@@ -12,13 +12,15 @@
  * (scripts/module-boundaries.test.ts), as they do for the projection.
  */
 import { db } from '@buildd/core/db';
-import { missions, workers } from '@buildd/core/db/schema';
-import { and, desc, inArray, ne } from 'drizzle-orm';
+import { missions, tasks as tasksTable, workers } from '@buildd/core/db/schema';
+import { and, desc, eq, inArray, isNull, ne, notInArray } from 'drizzle-orm';
+import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { projectMissionDelivery, type MissionDelivery, type MissionTaskRules } from '@/lib/delivery-projection';
 import {
-  buildActivityHistory, buildActivityNow, latestTask, reviewOf,
-  type ActivityNow, type ActivityTaskInput, type Episode, type LatestTask,
+  buildActivityHistory, buildActivityNow, reviewOf,
+  type ActivityNow, type ActivityTaskInput, type Episode,
 } from '@/lib/activity-delivery';
+import type { LocalHold } from '@/lib/local-session-display';
 
 export interface ActivityTaskRow {
   id: string;
@@ -37,10 +39,48 @@ export interface ActivityTaskRow {
 export interface ActivityData {
   now: ActivityNow;
   history: Episode[];
-  latest: LatestTask | null;
 }
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
+
+/** Recent roots: the History window. Live work outside it is added by `loadLiveRootIds`. */
+export const ACTIVITY_WINDOW_DAYS = 30;
+export const ACTIVITY_ROOT_LIMIT = 200;
+/** Open or agent-held roots, however old. Bounded so a backlog cannot stall the page. */
+export const ACTIVITY_LIVE_ROOT_LIMIT = 500;
+/** Attempts for the loaded roots, newest first: a cap drops the oldest retries, never the live one. */
+export const ACTIVITY_CHILD_LIMIT = 2000;
+
+/**
+ * The root each live task belongs to: an open root, or the parent of an
+ * attempt an agent is running. Deduplicated, first seen first.
+ */
+export function liveRootIdsOf(openRootIds: readonly string[], liveTasks: ReadonlyArray<{ id: string; parentTaskId: string | null }>): string[] {
+  return [...new Set([...openRootIds, ...liveTasks.map(t => t.parentTaskId ?? t.id)])];
+}
+
+/**
+ * Roots that belong in Now however long ago they were last touched: not
+ * terminal, or with an agent live on them or on one of their attempts.
+ * The recent window (newest `ACTIVITY_ROOT_LIMIT` in `ACTIVITY_WINDOW_DAYS`)
+ * alone starves these on a busy workspace: a root's `updatedAt` does not move
+ * while a repair attempt runs, so fresh completed work pushes it out.
+ */
+export async function loadLiveRootIds(workspaceIds: readonly string[]): Promise<string[]> {
+  if (workspaceIds.length === 0) return [];
+  const ws = [...workspaceIds];
+  const [open, live] = await Promise.all([
+    db.select({ id: tasksTable.id }).from(tasksTable)
+      .where(and(inArray(tasksTable.workspaceId, ws), isNull(tasksTable.parentTaskId), notInArray(tasksTable.status, [...TERMINAL_TASK_STATUSES])))
+      .orderBy(desc(tasksTable.updatedAt))
+      .limit(ACTIVITY_LIVE_ROOT_LIMIT),
+    db.select({ id: tasksTable.id, parentTaskId: tasksTable.parentTaskId }).from(workers)
+      .innerJoin(tasksTable, eq(workers.taskId, tasksTable.id))
+      .where(and(inArray(workers.workspaceId, ws), inArray(tasksTable.workspaceId, ws), inArray(workers.status, [...LIVE_WORKER_STATUSES])))
+      .limit(ACTIVITY_LIVE_ROOT_LIMIT),
+  ]);
+  return liveRootIdsOf(open.map(r => r.id), live);
+}
 
 /**
  * The mission projection exactly as the Missions page builds it
@@ -57,8 +97,11 @@ export function missionDeliveryOf(obj: { id: string; title: string; status: stri
 export async function loadActivity(input: {
   tasks: readonly ActivityTaskRow[];
   missionTitles: ReadonlyMap<string, string>;
-  /** Live task id → `<client> · local`, for work a local session is doing. */
-  localClientByTaskId: ReadonlyMap<string, string>;
+  /**
+   * Worker id → the local session holding it (`localHoldsByWorker`). Names the
+   * client, and a quiet or ended session's worker reads as a held slot, not an agent live.
+   */
+  localHolds: ReadonlyMap<string, LocalHold>;
   now: number;
   /** `@buildd/core/mission-helpers`, passed by the page. */
   rules: MissionTaskRules;
@@ -71,7 +114,7 @@ export async function loadActivity(input: {
     ids.length === 0 ? [] : db.query.workers.findMany({
       where: inArray(workers.taskId, ids),
       columns: {
-        taskId: true, status: true, name: true, startedAt: true, completedAt: true, updatedAt: true,
+        id: true, taskId: true, status: true, name: true, startedAt: true, completedAt: true, updatedAt: true,
         prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true,
         abandonedAt: true, lastCommitSha: true, waitingFor: true,
       },
@@ -105,7 +148,6 @@ export async function loadActivity(input: {
     const type = rules.deriveTaskType(t);
     const isReview = type === 'review' || type === 'review-retry';
     const waiting = ws.find(w => w.status === 'waiting_input')?.waitingFor;
-    const local = input.localClientByTaskId.get(t.id);
     return {
       id: t.id,
       title: t.title,
@@ -119,9 +161,10 @@ export async function loadActivity(input: {
       updatedAt: t.updatedAt.toISOString(),
       waitingPrompt: waiting ? waiting.prompt || 'Needs input' : null,
       review: isReview ? reviewOf(t.result, t.context) : null,
-      workers: ws.map((w, i) => ({
+      workers: ws.map(w => ({
         status: w.status,
-        name: i === 0 && local ? local : w.name,
+        name: input.localHolds.get(w.id)?.client ?? w.name,
+        local: input.localHolds.get(w.id) ?? null,
         startedAt: iso(w.startedAt),
         completedAt: iso(w.completedAt),
         updatedAt: iso(w.updatedAt),
@@ -140,6 +183,5 @@ export async function loadActivity(input: {
   return {
     now: buildActivityNow({ ...args, now: input.now }),
     history: buildActivityHistory(args),
-    latest: latestTask(tasks, rules),
   };
 }

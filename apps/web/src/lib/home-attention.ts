@@ -5,7 +5,7 @@ import type { StrandCta } from './mission-list-card';
 import type { WorkerWaitingFor } from '@buildd/core/db/schema';
 import { unifyWorkerQuestion, type UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 
-export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start';
+export type AttentionActionType = 'merge' | 'review' | 'answer' | 'decide' | 'approve' | 'reconnect' | 'resolve' | 'fix' | 'check' | 'view' | 'stranded' | 'start' | 'incident';
 export interface AttentionLink { label: string; href: string }
 
 export interface HomeAttentionItem {
@@ -36,13 +36,30 @@ export interface HomeAttentionItem {
 }
 
 /**
+ * THE "Buildd owns the next move, so this is not a decision" rule for Home,
+ * the badge and the headline. The escalation gate's verdict decides
+ * (lib/escalation-gate-check.ts, `gate`): Buildd's own next step, or what Jev
+ * judged Buildd can do itself, is never a card. Without a verdict (the gate
+ * did not run), a human review on a PR Buildd is still repairing or checking
+ * (`machineActing`, from `reviewMachineActing` in action-queue.ts) waits too.
+ */
+export function waitsOnBuildd(i: Pick<ActionQueueItem, 'humanReview' | 'machineActing' | 'prLifecycleStatus' | 'gate'>): boolean {
+  if (i.prLifecycleStatus === 'merged' || i.prLifecycleStatus === 'closed') return false;
+  if (i.gate) return i.gate.owner === 'buildd';
+  return !!i.humanReview && !!i.machineActing;
+}
+
+/**
  * Work the platform is already recovering on its own: an agent-handled chip, a
  * fix or CI run in flight, or a conflict retry with attempts left. It is never
- * a Needs you card. A human review is exempt: protected paths need a person
- * whatever CI is doing.
+ * a Needs you card. A human review waits too while Buildd is still repairing or
+ * checking its PR (`machineActing`): reviewing a diff that is about to change is
+ * wasted. Once that settles, a protected-path review needs a person whatever CI says.
  */
 export function isAutoRecovering(i: ActionQueueItem, isActionable: (chip: ActionQueueItem['chip']) => boolean): boolean {
   if (!isActionable(i.chip)) return true;
+  // A review on a PR Buildd is still repairing or checking waits for that to settle.
+  if (waitsOnBuildd(i)) return true;
   if (i.humanReview || i.chip !== 'BLOCKED') return false;
   if (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running') return true;
   return !!i.conflictRetryTaskId && !i.deadZoneExhausted;
@@ -168,6 +185,9 @@ export function resolveQueueAttention(i: ActionQueueItem): Resolved | null {
     }
     case 'STALE':
       return make({ label: 'check needed', tone: 'warning', title: subject, sentence: pr ? 'The last known tests and review are out of date. Check the PR before deciding.' : null, actionType: 'check', primary: { label: 'Check PR', href: pr ?? '' } });
+    case 'INCIDENT':
+      // The stored escalation-gate verdict (lib/failure-incident-escalation.ts) put it here; its reason is the sentence.
+      return make({ label: 'incident', tone: 'error', title: text(i.incidentTitle), sentence: text(i.failureMessage), actionType: 'incident', primary: { label: text(i.fixLabel) ?? 'Open incident', href: text(i.fixHref) ?? '' } });
     case 'FAILED':
       return make({ label: 'failed', tone: 'error', title: subject, sentence: text(i.failureMessage), actionType: 'view', primary: { label: 'View task', href: taskHref ?? subjectHref ?? '' } });
     default:
@@ -274,7 +294,13 @@ const ACTION_NOUN: Record<AttentionActionType, [string, string]> = {
   merge: ['merge', 'merges'], review: ['review', 'reviews'], answer: ['question', 'questions'], decide: ['decision', 'decisions'],
   approve: ['approval', 'approvals'], reconnect: ['reconnect', 'reconnects'], resolve: ['blocker', 'blockers'], fix: ['failing PR', 'failing PRs'],
   check: ['check', 'checks'], view: ['failed task', 'failed tasks'], stranded: ['stranded mission', 'stranded missions'], start: ['mission to start', 'missions to start'],
+  incident: ['incident', 'incidents'],
 };
+
+/** "review" / "reviews", the same nouns the headline sub-line uses. */
+export function actionNoun(type: AttentionActionType, n: number): string {
+  return ACTION_NOUN[type][n === 1 ? 0 : 1];
+}
 
 /**
  * `runnerConnected: false` (a team with no runner yet) changes only the empty

@@ -27,6 +27,7 @@
 
 import { checkDispatch } from '@/lib/supersession';
 import { after } from 'next/server';
+import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, or, sql } from 'drizzle-orm';
@@ -50,7 +51,7 @@ import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { CI_RED_ESCALATED_KEY, scheduleCiRedLook } from '@/lib/ci-red-queue';
 
 /** Which door asked. Recorded as the gate row's `surface`. */
-export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red';
+export type CiRetrySurface = 'webhook:check_suite' | 'cron:ci-red' | 'landing';
 
 /** How long after a skipped retry the sweep looks again. One gated tick past a normal CI run. */
 export const CI_RED_LOOK_AGAIN_MS = 30 * 60_000;
@@ -219,6 +220,9 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
     entry: { kind: 'ci_exhausted', note: input.detail, url: input.runUrl ?? undefined },
     workspaceId: input.task.workspaceId,
   });
+  // Bounded, deferred — retries exhausting on one PR is exactly the kind of
+  // terminal retry transition the retry-fork / lineage rules watch for.
+  scheduleFailurePatternSentinel(input.task.workspaceId);
   return true;
 }
 

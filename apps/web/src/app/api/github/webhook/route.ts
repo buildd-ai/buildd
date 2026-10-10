@@ -41,11 +41,11 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { recordPrFact } from '@buildd/core/pr-facts';
 import { authorsFromPushCommits, changedFilesFromPush, isPossibleBaseRef, type BaseAdvanceInput, type BaseResolver } from '@/lib/base-advance-notice';
-import { changedFilesForCompare, changedFilesForPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
+import { changedFilesForCompare, changedFilesForPr, isReleaseRollupPr, runBaseAdvanceNotice } from '@/lib/base-advance-notice-store';
 import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
 import { runPromptEval } from '@/lib/prompt-evals/run';
 import { promptEvalDeps } from '@/lib/prompt-evals/store';
-import { observePrState } from '@/lib/workflow/seam';
+import { observeBase, observePrState } from '@/lib/workflow/seam';
 
 // A push to the prompts repo runs the prompt eval in after() (up to ~240s).
 export const maxDuration = 300;
@@ -798,6 +798,14 @@ async function handlePullRequestEvent(event: {
       ) {
         await emit({ type: 'pr.base_changed', workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase: settledBaseRef });
       }
+      // A retarget the workflow kernel owns: T29 from a live read (24e1cfad). The
+      // approval reviewed the old diff, so it no longer covers the PR.
+      if (action === 'edited' && typeof retargetFrom === 'string' && retargetFrom && event.installation && intentWorkspaceId && !pr.merged) {
+        await observeBase({
+          workspaceId: intentWorkspaceId, repoFullName: repository.full_name, prNumber: pr.number,
+          installationId: event.installation.id, hintedFromBase: retargetFrom, source: 'webhook:edited',
+        }).catch((err) => console.error(`[webhook] workflow kernel base fact failed for PR #${pr.number}:`, err));
+      }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
       // next pull_request event for this PR, and a null/stale value degrades to
@@ -1020,15 +1028,22 @@ async function handlePullRequestEvent(event: {
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
   // The releases module also records a merge into a prod branch here, whether
   // or not a worker owns the PR, on every delivery (idempotent on headSha).
+  // Exclude release PRs from base-advance notices: they merge between distinct
+  // branches (e.g. dev → main) and would incorrectly notify workers on the
+  // source branch about changes to the dest branch.
   if (pr.merged && pr.base?.ref && event.installation) {
-    const installationId = event.installation.id;
-    const baseRef = pr.base.ref;
-    scheduleBaseAdvanceNotice(`PR #${pr.number} ${repository.full_name}`, async () => ({
-      repoFullName: repository.full_name, baseRef, defaultBranch: repository.default_branch ?? null,
-      files: await changedFilesForPr(installationId, repository.full_name, pr.number),
-      source: 'pull_request',
-      change: { prNumber: pr.number, title: pr.title ?? null, sha: pr.merge_commit_sha ?? pr.head.sha, authorBranch: pr.head.ref },
-    }));
+    const isReleasePr = await isReleaseRollupPr(repository.full_name, pr.head.ref, pr.base.ref);
+
+    if (!isReleasePr) {
+      const installationId = event.installation.id;
+      const baseRef = pr.base.ref;
+      scheduleBaseAdvanceNotice(`PR #${pr.number} ${repository.full_name}`, async () => ({
+        repoFullName: repository.full_name, baseRef, defaultBranch: repository.default_branch ?? null,
+        files: await changedFilesForPr(installationId, repository.full_name, pr.number),
+        source: 'pull_request',
+        change: { prNumber: pr.number, title: pr.title ?? null, sha: pr.merge_commit_sha ?? pr.head.sha, authorBranch: pr.head.ref },
+      }));
+    }
   }
 
   if (pr.merged) {
@@ -1075,7 +1090,7 @@ async function handlePullRequestEvent(event: {
     // A kernel-owned merge's work already ran (or is durably owed) as effects of T17.
     if (!kernelOwned) {
       await runMergedPrWork({
-        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null },
+        worker: { id: worker.id, workspaceId: worker.workspaceId, taskId: worker.taskId ?? null, runner: worker.runner },
         task: worker.task
           ? {
               id: worker.task.id,

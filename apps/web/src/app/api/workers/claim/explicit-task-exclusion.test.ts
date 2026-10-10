@@ -128,6 +128,7 @@ describe('classifyExplicitTaskExclusion', () => {
       ['runnerCooldown', 'runner_cooldown'],
       ['workspaceCap', 'workspace_cap'],
       ['workspaceExecutor', 'workspace_executor'],
+      ['workspacePaused', 'workspace_paused'],
     ];
     for (const [gate, code] of cases) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).code).toBe(code as any);
@@ -147,6 +148,23 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.code).toBe('workspace_executor');
     expect(r.detail).toContain('gitConfig.executor');
     expect(r.detail).toContain('force: true');
+  });
+
+  it('a workspace pausing new starts → workspace_paused, saying it resumes on its own and where to resume it', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { workspacePaused: false } }), NOW);
+    expect(r.code).toBe('workspace_paused');
+    expect(r.detail).toContain('paused new starts');
+    expect(r.detail).toContain('Health');
+  });
+
+  it('a workspace pause with a known end says until when', () => {
+    const r = classifyExplicitTaskExclusion(
+      probe({ gates: { workspacePaused: false }, workspacePausedUntil: new Date(NOW.getTime() + 2 * 60 * 60 * 1000) }),
+      NOW,
+    );
+    expect(r.code).toBe('workspace_paused');
+    expect(r.detail).toContain(`New starts in this workspace are paused until ${new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString()}.`);
+    expect(r.detail).toContain('Health');
   });
 
   it('a held mission outranks the local executor (held is the pause)', () => {

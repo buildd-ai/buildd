@@ -196,7 +196,7 @@ const { buildActionQueue, isActionableChip } = await import('../../src/lib/actio
 const { dispatchConflictRetry } = await import('../../src/lib/conflict-retry');
 const { recordPrSupersession, recordPrAbandonment } = await import('../../src/lib/pr-supersession');
 const { canCompleteMission } = await import('../../src/lib/mission-completion');
-const { taskScopeTaskNamesPr } = await import('../../src/lib/task-token-auth');
+const { taskScopeTaskLinksPr } = await import('../../src/lib/task-token-auth');
 const { HeaderStatusPill } = await import('../../src/app/app/(protected)/tasks/[id]/TaskSidePanel');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
@@ -264,8 +264,16 @@ async function open(): Promise<Delivery> {
 async function openAndHandOn(): Promise<Delivery> {
   const o = await open();
   const workerId = await seedWorker(o.ownerTaskId, { status: 'completed', lastCommitSha: 'H1', prNumber: o.prNumber, commitCount: 1 });
-  const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
-  expect(ended.handled).toBe(true);
+  // The checks a test sets are the ones T10 reads after the hand-off: CI has not reported when the
+  // owner ends here (a red already on the head at the hand-off is e9f1674b's, workflow-scenarios-ci).
+  const checks = gh.checks;
+  gh.checks = undefined;
+  try {
+    const ended = await seam.attemptEnded({ task: ownerTask(o), workerId, status: 'completed', localHeadSha: 'H1', commitCount: 1, source: 'runner' }, deps);
+    expect(ended.handled).toBe(true);
+  } finally {
+    gh.checks = checks;
+  }
   return o;
 }
 
@@ -1267,7 +1275,7 @@ describe('S16–S21', () => {
     const blocked = await canCompleteMission(m2, { evaluateCriteria: false });
     expect(blocked).toMatchObject({ ok: false, code: 'awaiting_merge' });
     expect(blocked.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
-    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com' })).toEqual({ ok: true });
+    expect(await recordPrAbandonment({ workerId: await prWorkerOf(closed), reason: 'plan changed', recordedBy: 'owner@example.com', actor: 'human:owner@example.com' })).toEqual({ ok: true });
     expect(await delivery(closed.deliveryId)).toMatchObject({ state: 'ABANDONED', stateReason: 'plan changed' });
     expect((await transitions(closed.deliveryId)).at(-1)!.evidence.actor).toBe('human:owner@example.com');
     expect((await prRows(closed)).every((r) => r.abandoned_reason === 'plan changed' && r.abandoned_recorded_by === 'owner@example.com')).toBe(true);
@@ -1571,24 +1579,31 @@ describe('S16–S21', () => {
   // §17.1 on real rows: who may record T20 is decided on the CALLER's own task. The routes apply
   // this rule (apps/web/src/app/api/github/pr/supersede/route.test.ts and .../pr/review/route.test.ts
   // run the full matrix: owner, caller-names-PR, sibling, other workspace, a person, other team).
-  test('S21: the caller\'s own task decides (owner, names it, retry subject, sibling, other workspace); T20 records the caller', async () => {
+  test('S21: the caller\'s own task decides (owner, linked, retry subject, text-only, sibling, other workspace); T20 records the caller', async () => {
     const o = await openAndHandOn();
     await q(sql`UPDATE tasks SET description = ${`Opens #${o.prNumber}.`} WHERE id = ${o.ownerTaskId}::uuid`);
     const names = await seedTask(workspaceId, { status: 'in_progress', title: `friction: #${o.prNumber} shipped elsewhere` });
+    await q(sql`UPDATE tasks SET context = ${JSON.stringify({ prReach: { prNumbers: [o.prNumber], grantedBy: 'human:owner', grantedAt: 'x' } })}::jsonb WHERE id = ${names}::uuid`);
+    // Names the PR in its title, description and context, with no server-stamped link.
+    const textOnly = await seedTask(workspaceId, { status: 'in_progress', title: `land #${o.prNumber}` });
+    await q(sql`UPDATE tasks SET description = ${`merge #${o.prNumber}`}, context = ${JSON.stringify({ prNumber: o.prNumber })}::jsonb WHERE id = ${textOnly}::uuid`);
     const retry = await seedTask(workspaceId, { status: 'in_progress', title: 'fix review' });
     await q(sql`UPDATE tasks SET reviewer_retry_pr_number = ${o.prNumber} WHERE id = ${retry}::uuid`);
     const sibling = await seedTask(workspaceId, { status: 'in_progress', title: 'sibling work on the same files' });
     const elsewhere = (await seedWorkspace()).workspaceId;
     const foreign = await seedTask(elsewhere, { status: 'in_progress', title: `see #${o.prNumber}` });
-    const may = (taskId: string, ws = workspaceId) => taskScopeTaskNamesPr({ taskScope: { taskId, workspaceId: ws, expiresAt: Date.now() + 60_000 } }, { workspaceId, prNumber: o.prNumber });
+    const may = (taskId: string, ws = workspaceId) => taskScopeTaskLinksPr({ taskScope: { taskId, workspaceId: ws, expiresAt: Date.now() + 60_000 } }, { workspaceId, prNumber: o.prNumber });
 
-    expect(await may(o.ownerTaskId)).toBe(true);
+    // The owner reaches its PR through its own worker (taskScopeAllowsWorkerPr at the route);
+    // its description naming the PR adds nothing.
+    expect(await may(o.ownerTaskId)).toBe(false);
     expect(await may(names)).toBe(true);
     expect(await may(retry)).toBe(true);
+    expect(await may(textOnly)).toBe(false);
     // The owner's task names the PR; that gives the sibling nothing.
     expect(await may(sibling)).toBe(false);
     expect(await may(foreign, elsewhere)).toBe(false);
-    expect(await taskScopeTaskNamesPr({}, { workspaceId, prNumber: o.prNumber })).toBe(false);
+    expect(await taskScopeTaskLinksPr({}, { workspaceId, prNumber: o.prNumber })).toBe(false);
 
     gh.state = 'closed'; gh.updatedAt = 'u-closed';
     await stampPrUrl(o);

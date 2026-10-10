@@ -17,6 +17,7 @@ import MissionCheckInsFixture from './MissionCheckInsFixture';
 import GoalCriteriaFixture from './GoalCriteriaFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
+import ConnectionsFixture from './ConnectionsFixture';
 import OperatorAccessFixture from './OperatorAccessFixture';
 import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
@@ -39,9 +40,12 @@ import SurfaceAuditWaiverFixture from './SurfaceAuditWaiverFixture';
 import TeamMembersFixture from './TeamMembersFixture';
 import RefinedComponentsFixture from './RefinedComponentsFixture';
 import MissionFlowFixture from './MissionFlowFixture';
+import MissionDetailCompactFixture from './MissionDetailCompactFixture';
+import HomeCardsFixture from './HomeCardsFixture';
 import {
     ACTIVITY_DELIVERY_FIXTURE_STATE,
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    MCP_CONNECTIONS_FIXTURE_STATE,
     OPERATOR_ACCESS_FIXTURE_STATE,
     RUNNER_SIZE_FIXTURE_STATE,
     WORKSPACES_LIST_FIXTURE_STATE,
@@ -69,6 +73,8 @@ import {
     TEAM_MEMBERS_FIXTURE_STATE,
     REFINED_COMPONENTS_FIXTURE_STATE,
     MISSION_FLOW_FIXTURE_STATE,
+    MISSION_DETAIL_COMPACT_FIXTURE_STATE,
+    HOME_CARDS_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
     visualReviewFixtureLinks,
@@ -175,6 +181,9 @@ export default function DevFixturesPage() {
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
     }
+    if (state === MCP_CONNECTIONS_FIXTURE_STATE) {
+        return <ConnectionsFixture />;
+    }
     if (state === INTERACTIVE_SESSIONS_FIXTURE_STATE) {
         return <InteractiveSessionsFixture />;
     }
@@ -208,8 +217,16 @@ export default function DevFixturesPage() {
         return <RefinedComponentsFixture />;
     }
 
+    if (state === HOME_CARDS_FIXTURE_STATE) {
+        return <HomeCardsFixture />;
+    }
+
     if (state === MISSION_FLOW_FIXTURE_STATE) {
         return <MissionFlowFixture />;
+    }
+
+    if (state === MISSION_DETAIL_COMPACT_FIXTURE_STATE) {
+        return <MissionDetailCompactFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {

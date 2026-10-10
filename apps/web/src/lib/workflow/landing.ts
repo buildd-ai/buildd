@@ -23,8 +23,8 @@ import { sql, type Column, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { CurrentView, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type Exec } from './kernel';
-import { ingestFact, type GithubFactReader } from './facts';
-import { kernelDeliveryForPr } from './authority';
+import { catchUpBase, ingestFact, type GithubFactReader } from './facts';
+import { kernelDeliveryForPr, kernelOnSql } from './authority';
 import { DEFAULT_MAX_BEHIND_REFRESHES, MAX_TREADMILL_CYCLES, treadmillCycle } from './reducer';
 import { githubReader } from './github-facts';
 import type { DrainSummary } from './effects';
@@ -54,6 +54,12 @@ export interface LandingInput {
   override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
   /** The delivery version the caller saw (human and agent callers, §7.2). */
   expectedVersion?: number;
+  /**
+   * S15: the door saw this head behind its base and lands it under the disjoint-delta
+   * rule. The base delta is read here, at merge time, and T15 lands only if the rule
+   * still holds (`rejected(behind_not_tolerated)` otherwise: the door refreshes).
+   */
+  behind?: { maxBaseCommits?: number };
 }
 
 export type LandingOutcome =
@@ -100,6 +106,13 @@ export interface KernelLandingTreadmill {
   refreshes: number;
   /** The current cycle's budget is spent: an ESCALATED(landing_needs_human) delivery escalated on the treadmill. */
   spent: boolean;
+  /**
+   * Why the spent treadmill escalated, when T12 had the base delta: the base keeps
+   * changing what this PR changes (`refresh_unsafe`, with the files) or it only kept
+   * moving (`refresh_exhausted`); `reason` is the rule's own words. Null: an
+   * escalation recorded without the delta.
+   */
+  cause?: { kind: 'refresh_unsafe' | 'refresh_exhausted'; reason: string | null; files: string[]; behindBy: number | null } | null;
 }
 
 export async function kernelLandingView(workspaceId: string, repoFullName: string, prNumber: number, exec: Exec = dbExec): Promise<{
@@ -116,7 +129,24 @@ export async function kernelLandingView(workspaceId: string, repoFullName: strin
     deliveryId,
     current: { state: d.state, version: d.version, head: d.currentHeadSha, round: d.currentRound },
     stateReason: d.stateReason,
-    treadmill: { cycle: t.cycle, maxCycles: MAX_TREADMILL_CYCLES, refreshes: t.refreshes, spent },
+    treadmill: { cycle: t.cycle, maxCycles: MAX_TREADMILL_CYCLES, refreshes: t.refreshes, spent, cause: spent ? await treadmillCause(deliveryId, d.version, exec) : null },
+  };
+}
+
+/** The cause the transition that produced `version` recorded, when it was the spent treadmill. */
+async function treadmillCause(deliveryId: string, version: number, exec: Exec): Promise<KernelLandingTreadmill['cause']> {
+  const row = ((await exec(sql`-- workflow:treadmill_cause
+SELECT evidence FROM workflow_transitions
+WHERE delivery_id = ${deliveryId}::uuid AND to_version = ${version} AND command = 'ConflictObserved'
+LIMIT 1`)).rows ?? [])[0] as { evidence?: Record<string, unknown> | null } | undefined;
+  const ev = row?.evidence;
+  const kind = ev?.cause;
+  if (!ev || ev.treadmill !== true || (kind !== 'refresh_unsafe' && kind !== 'refresh_exhausted')) return null;
+  return {
+    kind,
+    reason: typeof ev.deltaReason === 'string' ? ev.deltaReason : null,
+    files: Array.isArray(ev.files) ? ev.files.filter((f): f is string => typeof f === 'string') : [],
+    behindBy: typeof ev.behindBy === 'number' ? ev.behindBy : null,
   };
 }
 
@@ -130,7 +160,7 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
   return sql`NOT EXISTS (
     SELECT 1 FROM workflow_deliveries kd JOIN workspaces kw ON kw.id = kd.workspace_id
     WHERE kd.workspace_id = ${workspaceIdCol} AND kd.pr_number = ${prNumberCol} AND kd.authority = 'kernel'
-      AND COALESCE(kw.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+      AND ${kernelOnSql(sql`kw.git_config`)}
   )`;
 }
 
@@ -139,13 +169,22 @@ export function notKernelOwnedPr(workspaceIdCol: SQL | Column, prNumberCol: SQL 
  * unattended source state) in workspaces whose landing mode is `enforce` and whose
  * kill switch is on. The landing sweep's floor for kernel PRs, which may have no
  * legacy reviewer row at all (composition or human approval).
+ *
+ * A delivery that came back to APPROVED on a transient merge answer (a rate
+ * limit or a 5xx, 9bfe0d23) waits out the `retryAt` GitHub gave it: calling
+ * again before its reset is another strike against the same limit.
  */
 export async function listApprovedKernelPrs(limit: number, exec: Exec = dbExec): Promise<Array<{ workspaceId: string; prNumber: number }>> {
   const rows = ((await exec(sql`-- workflow:approved_for_landing
 SELECT d.workspace_id, d.pr_number FROM workflow_deliveries d JOIN workspaces w ON w.id = d.workspace_id
 WHERE d.authority = 'kernel' AND d.state = 'APPROVED' AND d.pr_number IS NOT NULL
   AND w.git_config->'landing'->>'mode' = 'enforce'
-  AND COALESCE(w.git_config->>'workflowKernel', '') NOT IN ('false', 'off')
+  AND ${kernelOnSql(sql`w.git_config`)}
+  AND NOT EXISTS (
+    SELECT 1 FROM workflow_transitions t
+    WHERE t.delivery_id = d.id AND t.to_version = d.version AND t.command = 'MergeCallResult'
+      AND (t.evidence->>'retryAt')::timestamptz > now()
+  )
 ORDER BY d.updated_at
 LIMIT ${limit}`)).rows ?? []) as Array<{ workspace_id: string; pr_number: number }>;
   return rows.map((r) => ({ workspaceId: r.workspace_id, prNumber: Number(r.pr_number) }));
@@ -223,7 +262,13 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     };
   }
   await ingestFact({ kind: 'head_observed', workspaceId: p.workspaceId, source: `${p.door}:landing`, repoFullName: p.repoFullName, prNumber: p.prNumber }, { exec, github: pinned });
+  // 24e1cfad: a retarget the webhook has not delivered is recorded before the merge is asked
+  // for; it drops an approval that reviewed the old diff, and the landing below is refused.
+  if (await catchUpBase({ workspaceId: p.workspaceId, repoFullName: p.repoFullName, prNumber: p.prNumber, source: `${p.door}:landing`, deliveryId, live }, pinned, exec)) await settle();
 
+  const baseDelta = p.behind && live.baseRef && reader.baseDelta
+    ? (await reader.baseDelta(p.repoFullName, p.prNumber, live.headSha, live.baseRef)) ?? { baseCommits: null, baseFiles: null, prFiles: null }
+    : null;
   const result = await applyCommand({
     type: 'LandingRequested',
     actor: p.actor,
@@ -236,12 +281,17 @@ export async function landThroughKernel(p: LandingInput, deps: LandingDeps): Pro
     ...(p.override ? { override: p.override } : {}),
     ...(p.mergeMethod ? { mergeMethod: p.mergeMethod } : {}),
     ...(p.expectedVersion !== undefined ? { expectedVersion: p.expectedVersion } : {}),
+    ...(baseDelta ? { baseDelta, ...(p.behind?.maxBaseCommits !== undefined ? { maxBaseCommits: p.behind.maxBaseCommits } : {}) } : {}),
   }, { ref: { deliveryId }, exec });
 
   if (result.result === 'stale' || result.result === 'rejected') {
     const message = result.result === 'stale'
       ? `This PR changed since you looked at it (${result.reason}); nothing was merged. Reload and try again.`
-      : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
+      : result.reason === 'pr_is_draft'
+        ? 'The PR is a draft; nothing was merged. It lands once it is marked ready for review.'
+        : result.reason === 'behind_not_tolerated'
+          ? `The PR is behind its base and the base moved too much to land it as is (${'missing' in result && result.missing?.length ? result.missing.join(', ') : 'base delta not tolerated'}); nothing was merged.`
+        : `The workflow refused to land this PR (${result.reason}${'missing' in result && result.missing?.length ? `: ${result.missing.join(', ')}` : ''}); nothing was merged.`;
     return { merged: false, outcome: result.result, reason: result.reason, message, mergeCommitSha: null, current: result.current, result };
   }
 

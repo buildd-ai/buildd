@@ -1,4 +1,5 @@
 import type { ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
+import { describeBudgetWall } from './claim-limits';
 
 /**
  * The reason an explicitly requested task (claim with `taskId`) was deferred
@@ -78,6 +79,10 @@ export function describeExplicitDeferral(
     case 'budget_paused': {
       const backend = str(detail.backend) ?? 'its provider';
       const at = str(detail.resetsAt);
+      const wall = str(detail.wall);
+      if ((wall === 'account_seat' || wall === 'provider_pause' || wall === 'tenant_budget') && (backend === 'claude' || backend === 'codex')) {
+        return { code: reason, detail: `${describeBudgetWall({ kind: wall, backend, resetsAt: at })} There's no provider to fail over to.` };
+      }
       return { code: reason, detail: `The ${backend} budget or rate limit is exhausted${at ? ` until ${at}` : ''}, with no provider to fail over to.` };
     }
     case 'routing_paused':
@@ -150,6 +155,14 @@ export function describeExplicitDeferral(
       return {
         code: reason,
         detail: `The team's credential policy is personal keys only, and ${(cause && why[cause]) || 'no personal key can be used for it'}. Add a personal ${backendKey} key under Settings, or have an admin change the team's credential policy.`,
+      };
+    }
+    case 'provider_not_allowed': {
+      const message = str(detail.message);
+      const remedy = str(detail.remedy);
+      return {
+        code: reason,
+        detail: `${message ?? 'The Coding provider policy does not allow this run.'} ${remedy ?? 'Ask a team admin to change the Coding provider policy.'} It stays queued and is re-checked on every claim.`,
       };
     }
     case 'tier_policy': {

@@ -26,8 +26,12 @@ mock.module('@/lib/pushover', () => ({ notifyOperator: mock(() => undefined) }))
 
 const mockGithubApi = mock(() => Promise.resolve({ check_runs: [] }) as Promise<unknown>);
 const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'merged' }) as Promise<any>);
+// The combined commit status read (ci-verdict.ts) is routed to its own mock, so
+// the ordered mockResolvedValueOnce sequences below stay about check-runs/files/PR.
+const mockStatusApi = mock(async (..._a: any[]): Promise<unknown> => ({ total_count: 0, statuses: [] }));
 mock.module('@/lib/github', () => ({
-  githubApi: mockGithubApi,
+  githubApi: (...args: any[]) =>
+    /\/commits\/[^/]+\/status(\?|$)/.test(String(args[1])) ? mockStatusApi(...args) : (mockGithubApi as any)(...args),
   mergePullRequest: mockMergePullRequest,
 }));
 
@@ -201,6 +205,106 @@ describe('evaluateAutoMergeSafety CI verification', () => {
       reason: expect.stringContaining('integration'),
     });
   });
+
+  // Allow-list (ci-verdict.ts): only completed + success/neutral/skipped pass.
+  for (const conclusion of ['timed_out', 'cancelled', 'startup_failure', 'action_required', 'stale', null]) {
+    it(`refuses a completed run concluded ${conclusion}`, async () => {
+      mockGithubApi.mockResolvedValueOnce({
+        total_count: 2,
+        check_runs: [
+          { name: 'build', status: 'completed', conclusion: 'success' },
+          { name: 'test', status: 'completed', conclusion },
+        ],
+      });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: test (${conclusion ?? 'no conclusion'})`,
+      });
+    });
+  }
+
+  for (const status of ['waiting', 'requested', 'pending']) {
+    it(`refuses a run that has not started (${status})`, async () => {
+      mockGithubApi.mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'deploy', status, conclusion: null }] });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: deploy (${status})`,
+      });
+    });
+  }
+
+  it('lets neutral and skipped through to the later rails', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({
+        total_count: 2,
+        check_runs: [
+          { name: 'build', status: 'completed', conclusion: 'neutral' },
+          { name: 'test', status: 'completed', conclusion: 'skipped' },
+        ],
+      })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('reads check runs 100 per page and follows total_count to page 2', async () => {
+    const green = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `m-${i}`, status: 'completed', conclusion: 'success' }));
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 101, check_runs: green })
+      .mockResolvedValueOnce({ total_count: 101, check_runs: [{ id: 500, name: 'e2e', status: 'completed', conclusion: 'failure' }] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: 'CI checks still pending or failed: e2e (failure)',
+    });
+    const paths = mockGithubApi.mock.calls.map((c: any[]) => c[1]);
+    expect(paths[0]).toContain('per_page=100&page=1');
+    expect(paths[1]).toContain('per_page=100&page=2');
+  });
+
+  it('refuses when GitHub returns fewer check runs than its total_count', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 150, check_runs: Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `m-${i}`, status: 'completed', conclusion: 'success' })) })
+      .mockResolvedValueOnce({ total_count: 150, check_runs: [] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not read every check run'),
+    });
+  });
+
+  for (const state of ['failure', 'error', 'pending']) {
+    it(`refuses on a ${state} commit status even with no check runs`, async () => {
+      mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
+      mockStatusApi.mockResolvedValueOnce({ state, total_count: 1, statuses: [{ context: 'ci/jenkins', state }] });
+      await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+        ok: false,
+        reason: `CI checks still pending or failed: ci/jenkins (${state})`,
+      });
+    });
+  }
+
+  it('ignores the combined state "pending" GitHub reports when there are no statuses at all', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } });
+    mockStatusApi.mockResolvedValueOnce({ state: 'pending', total_count: 0, statuses: [] });
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('dirty'),
+    });
+  });
+
+  it('refuses when the commit-status read fails', async () => {
+    mockGithubApi.mockResolvedValueOnce({ total_count: 0, check_runs: [] });
+    mockStatusApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+    await expect(evaluateAutoMergeSafety(...params, autoThresholdPolicy)).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify CI status'),
+    });
+  });
 });
 
 describe('evaluateAutoMergeSafety superseded check runs', () => {
@@ -253,7 +357,7 @@ describe('evaluateAutoMergeSafety superseded check runs', () => {
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
-    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: check' });
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: check (failure)' });
   });
 
   it('keeps a failing run that cannot be ordered against a same-name run', async () => {
@@ -279,7 +383,7 @@ describe('evaluateAutoMergeSafety superseded check runs', () => {
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
-    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: build' });
+    ).resolves.toEqual({ ok: false, reason: 'CI checks still pending or failed: build (failure)' });
   });
 });
 
@@ -569,6 +673,50 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
   });
 });
 
+describe('evaluateAutoMergeSafety data migrations (mergePolicy.dataMigrations)', () => {
+  const dataVerdict = { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' } as const;
+  const arm = (verdict: unknown) => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0300_backfill.sql', additions: 1, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue(verdict);
+  };
+  const agentReview = (dataMigrations?: 'person' | 'agent-review'): MergePolicy => ({
+    tier: 'agent-review',
+    agentReview: { reviewerRole: 'reviewer' },
+    ...(dataMigrations ? { dataMigrations } : {}),
+  });
+
+  it('refuses a data migration by default (a person decides)', async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview())).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("refuses it under dataMigrations: 'person'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('person'))).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("lets it through under agent-review with dataMigrations: 'agent-review'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: true });
+  });
+
+  it('still refuses it under auto-threshold even with the setting on (no reviewer there)', async () => {
+    arm(dataVerdict);
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] }, dataMigrations: 'agent-review' };
+    await expect(evaluateAutoMergeSafety(...params, policy)).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it('still refuses destructive DDL with the setting on', async () => {
+    arm({ safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' });
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: false, reason: 'drops column tasks.legacy' });
+  });
+});
+
 describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   // Read-only fallback release: legacy stored paths still block.
   it('blocks on a legacy stored escalateToPaths for agent-review tier (fallback release)', async () => {
@@ -821,7 +969,7 @@ describe('escalateConflictExhaustion', () => {
     await escalateConflictExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA);
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add dark mode');
@@ -913,7 +1061,7 @@ describe('escalateReviewerExhaustion', () => {
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, 'Fix the handler');
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const call = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(call.priority).toBe(0);
     expect(call.title).toContain(`PR #${PR_NUMBER}`);
     expect(call.message).toContain('feat: add search');
@@ -1011,7 +1159,7 @@ describe('escalateReviewContractFailure', () => {
     await call();
     expect(mockNotify).toHaveBeenCalledTimes(1);
     const notifyCall = mockNotify.mock.calls[0][0] as any;
-    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID }, 'needsAttention');
+    expect(mockNotifySubject).toHaveBeenCalledWith({ taskId: TASK_ID, prNumber: PR_NUMBER }, 'needsAttention');
     expect(notifyCall.title).toContain(`PR #${PR_NUMBER}`);
     expect(notifyCall.message).toContain('[reviewer] feat: add search');
   });
@@ -2791,6 +2939,13 @@ describe('describeUnfiledRefreshOutcome — the cause, never a bare "unknown"', 
     const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR' });
     expect(d.page).toBe('refresh_exhausted');
     expect(d.reason).toMatch(/base kept moving after 3 refreshes/);
+  });
+  it('S15: a tolerated behind head is not a dedup and pages nobody; the base changing the PR\'s own files pages refresh_unsafe', () => {
+    const t = describeUnfiledRefreshOutcome({ dispatched: false, behindTolerated: true });
+    expect(t).toMatchObject({ refreshOutcome: 'behind_tolerated', page: null });
+    const u = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshUnsafe: true, refreshReason: 'the base changed files this PR changes (src/a.ts)' });
+    expect(u.page).toBe('refresh_unsafe');
+    expect(u.reason).toContain('src/a.ts');
   });
   it('an exhausted refresh with only a reason carries the reason', () => {
     const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)' });

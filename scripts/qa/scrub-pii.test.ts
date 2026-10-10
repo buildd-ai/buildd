@@ -166,12 +166,15 @@ const SAFE: Record<string, string[]> = {
     'plan', 'billing_status', // fixed vocabularies (packages/core/entitlements.ts); stripe ids are wiped
     'managed_runner_plan', // { plan: fixed plan id, numeric limits, 'block'|'allow' } (lib/entitlements/plans.ts)
     'model_upgrade_policy', // { mode: fixed vocabulary, soakHours, ISO times, setBy: a row id } (packages/core/model-upgrade-policy.ts)
-    'model_tier_ceilings'], // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
+    'model_tier_ceilings', // tier names keyed by fixed surfaces and workspace ids, a fixed overCapAuto, audit of ISO times + user/account ids (@buildd/shared model-tier-ceiling.ts)
+    'coding_policy'], // backend ids and payment sources from fixed sets, keyed by workspace id, one boolean (packages/core/coding-policy.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs', // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
-    'model_tier_ceilings'], // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
+    'model_tier_ceilings', // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
+    'coding_policy'], // { allowedBackends, allowedSources } from fixed sets (packages/core/coding-policy.ts)
   users: ['timezone'],
-  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
+  workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
+    'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
@@ -332,6 +335,24 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(re.test(`${MISSION_PR_TASK_PREFIX}Task 12: lorem ipsum`)).toBe(true);
     expect(re.test('Task 12: lorem ipsum')).toBe(true);
     expect(re.test('Ship mission: Real mission title')).toBe(false);
+  });
+
+  // `hasMemberScopedDeps` recognises surface audits by their title prefix.
+  // A scrub that loses the prefix makes platform operator missions appear
+  // as needing a decision on the clone when they actually don't.
+  test('tasks.title keeps the [surface audit] prefix, and the guard accepts it', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain("[surface audit]");
+    expect(titleExpr).toContain("LIKE '[surface audit] %'");
+    const guard = readFileSync(join(__dirname, 'scrub-guard.sql'), 'utf8');
+    const pattern = /\('tasks', 'title', '([^']*)'\)/.exec(guard)?.[1];
+    expect(pattern).toBeDefined();
+    const re = new RegExp(pattern!);
+    expect(re.test('[surface audit] Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 1: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] round 2: Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('[surface audit] Real audit name')).toBe(false);
+    expect(re.test('Task 12: lorem ipsum')).toBe(true);
   });
 
   test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {

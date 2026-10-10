@@ -234,6 +234,23 @@ export async function touchInteractiveWorkers(opts: {
 }
 
 /**
+ * True when a JSON-RPC body is (or, for a batch, contains only) `initialize`.
+ * Every new MCP session opens with one, and it is always keyless, so it proves
+ * nothing about which claims the caller owns. A fleet opening sessions
+ * on an account every minute would otherwise keep every keyless claim alive.
+ * Unparseable bodies are not initialize (the touch proceeds as before).
+ */
+export async function isInitializeOnlyRequest(req: Request): Promise<boolean> {
+  try {
+    const body = await req.clone().json();
+    const msgs = Array.isArray(body) ? body : [body];
+    return msgs.length > 0 && msgs.every((m) => m?.method === 'initialize');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What the MCP routes call on every authenticated request: gate on the session
  * level, then run the touch after the response is sent so the MCP call never
  * waits on it. Outside a request scope (tests, scripts) it runs immediately.
@@ -243,7 +260,10 @@ export function scheduleInteractiveTouch(opts: {
   userId?: string | null;
   sessionKey?: string | null;
   level: string | null | undefined;
+  /** An `initialize`-only request: keyless by construction, never a touch. */
+  initializeOnly?: boolean;
 }): void {
+  if (opts.initializeOnly) return;
   if (!opts.accountId || !opts.level || !LIVENESS_LEVELS.has(opts.level)) return;
   const run = () => touchInteractiveWorkers({ accountId: opts.accountId, userId: opts.userId ?? null, sessionKey: opts.sessionKey ?? null });
   try {

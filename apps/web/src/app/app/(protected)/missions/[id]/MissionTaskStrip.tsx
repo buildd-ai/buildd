@@ -36,6 +36,7 @@
  *   revisions, gates and repair rounds: attempts and review runs are evidence
  *   inside their task's drawer, never cells or cards of their own.
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { SurfaceAuditWaiverTile } from './MissionSurfaceAuditWaiver';
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
@@ -54,7 +55,9 @@ import {
   type BoardLinkContext,
 } from './MissionBoardParts';
 import TaskActionZone from './TaskActionZone';
-import { DeliveryEvidence, DeliveryStages } from '@/components/delivery/DeliveryParts';
+import { DeliveryEvidence } from '@/components/delivery/DeliveryParts';
+import { lifecycleState } from '@/components/delivery/lifecycle-state';
+import Lifecycle from '@/components/ui/Lifecycle';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
 
 /** The situation block's task, handed to the drawer (its reason is the accessor's sentence). */
@@ -288,7 +291,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             </span>
           )}
         </div>
-        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`}>{t.title}</p>
+        <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-lede' : 'text-lede'}`} title={t.title}>{displayTaskTitle(t.title)}</p>
         {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
         {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
         <p className="font-mono text-meta text-text-muted">{meta}</p>
@@ -343,6 +346,7 @@ export function StripTaskActions({ task: t, state, link, workspaceId, executor, 
             roleSlug={t.roleSlug}
             missionExecutor={executor}
             hideQueuedNote={!!why}
+            framed={false}
             onChanged={onChanged}
           />
         )}
@@ -388,7 +392,12 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
  * by default; it starts open while the task is repairing, which is when the
  * evidence is the point. Re-keyed per task, so it never carries over.
  */
-export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
+/**
+ * `stages={false}`: the caller already draws where the task is on Build ›
+ * Audit › Land (the Overview's focus card has its Lifecycle line), so only
+ * the Audit and repair evidence is left to show.
+ */
+export function DrawerDelivery({ delivery, stages = true }: { delivery: TaskDeliveryDetail; stages?: boolean }) {
   const [open, setOpen] = useState(delivery.kind === 'repair');
   const id = useId();
   const summary = [
@@ -397,8 +406,12 @@ export function DrawerDelivery({ delivery }: { delivery: TaskDeliveryDetail }) {
   ].filter(Boolean).join(' · ');
   return (
     <div data-testid="landed-strip-drawer-delivery" className="flex flex-col gap-1.5">
-      <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
-      <DeliveryStages kind={delivery.kind} stages={delivery.stages} />
+      {stages && (
+        <>
+          <span className="font-mono text-eyebrow uppercase tracking-[1.4px] text-text-muted">This task</span>
+          <Lifecycle state={lifecycleState(delivery.kind)} repairs={delivery.repairs} notes={[delivery.stages.build, delivery.stages.audit, delivery.stages.land]} />
+        </>
+      )}
       {delivery.evidence.length > 0 && (
         <>
           <button

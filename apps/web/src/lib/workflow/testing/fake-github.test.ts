@@ -122,6 +122,40 @@ describe('reads through the production githubReader', () => {
   });
 });
 
+describe('base retarget (24e1cfad)', () => {
+  test('PATCH base keeps the head and sends pull_request.edited with changes.base', async () => {
+    const { gh, pr, h1 } = world();
+    gh.createBranch(REPO, 'release');
+    gh.discardWebhooks();
+    await gh.request('PATCH', `/repos/${REPO}/pulls/${pr}`, { base: 'release' });
+    expect(await gh.reader().readPr(REPO, pr)).toMatchObject({ baseRef: 'release', headSha: h1, state: 'open' });
+    const edited = gh.pendingWebhooks().find((d) => d.name === 'pull_request' && (d.payload as { action?: string }).action === 'edited');
+    expect((edited?.payload as { changes?: unknown })?.changes).toMatchObject({ base: { ref: { from: 'dev' } } });
+  });
+
+  test('deleting a merged PR\'s head branch retargets the PRs stacked on it to that PR\'s base, not closes them', async () => {
+    const { gh, pr } = world();
+    gh.createBranch(REPO, 'feat/top', 'feat/x');
+    const hb = gh.push(REPO, 'feat/top', { 'c.ts': 'c1' });
+    const top = gh.openPr(REPO, { head: 'feat/top', base: 'feat/x' });
+    gh.mergePr(REPO, pr, { method: 'squash' });
+    gh.deleteBranch(REPO, 'feat/x');
+    expect(await gh.reader().readPr(REPO, top)).toMatchObject({ state: 'open', baseRef: 'dev', headSha: hb });
+  });
+
+  test('baseDiffEquivalent: a squash-landed parent leaves a stacked change equivalent; a base missing the parent does not', async () => {
+    const { gh, pr } = world();
+    gh.createBranch(REPO, 'release'); // the original dev: it lacks feat/x's change
+    gh.createBranch(REPO, 'feat/top', 'feat/x');
+    const head = gh.push(REPO, 'feat/top', { 'c.ts': 'c1' });
+    gh.mergePr(REPO, pr, { method: 'squash' });
+    const r = gh.reader();
+    expect(await r.baseDiffEquivalent!(REPO, 'feat/x', 'dev', head)).toBe(true);
+    expect(await r.baseDiffEquivalent!(REPO, 'feat/x', 'release', head)).toBe(false);
+    expect(await r.baseDiffEquivalent!(REPO, 'gone', 'dev', head)).toBe(false);
+  });
+});
+
 describe('writes through the production callers', () => {
   test('a pinned merge lands: the base advances to the merge commit and the PR reads merged', async () => {
     const { gh, h1, pr } = world();
@@ -191,6 +225,43 @@ describe('writes through the production callers', () => {
     once.gh.failNext(/^GET .*\/pulls\/\d+$/, 503, 'Service Unavailable');
     expect(await once.gh.reader().readPr(REPO, once.pr)).toBeNull();
     expect(await once.gh.reader().readPr(REPO, once.pr)).not.toBeNull();
+  });
+
+  test('a rate-limited merge: 429 / 403 with retry-after or x-ratelimit-reset, nothing applied, and the caller learns when to come back', async () => {
+    const { gh, h1, pr } = world();
+    current = gh;
+    gh.failNext(/^PUT .*\/merge$/, 429, 'You have exceeded a secondary rate limit.', { 'retry-after': '90' });
+    const secondary = await mergePullRequest(1, REPO, pr, 'squash', h1);
+    expect(secondary).toMatchObject({ merged: false, status: 429, retryAfterMs: 90_000 });
+    expect(classifyMergeCall(secondary)).toBe('not_merged');
+    const reset = Math.floor(Date.now() / 1000) + 300;
+    gh.failNext(/^PUT .*\/merge$/, 403, 'API rate limit exceeded for installation ID 1.', { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) });
+    const primary = await mergePullRequest(1, REPO, pr, 'squash', h1);
+    expect(primary.status).toBe(403);
+    expect(primary.retryAfterMs).toBeGreaterThan(290_000);
+    expect(primary.retryAfterMs).toBeLessThanOrEqual(300_000);
+    expect(classifyMergeCall(primary)).toBe('not_merged');
+    expect(gh.pr(REPO, pr).merged).toBe(false);
+    expect(classifyMergeCall(await mergePullRequest(1, REPO, pr, 'squash', h1))).toBe('merged');
+  });
+
+  test('draft: converted_to_draft / ready_for_review webhooks, the read says draft, and the merge is refused until ready', async () => {
+    const { gh, h1, pr } = world();
+    current = gh;
+    const actions: string[] = [];
+    gh.onWebhook((d) => { if (d.name === 'pull_request') actions.push(String(d.payload.action)); });
+    gh.greenCi(REPO, h1);
+    gh.setDraft(REPO, pr, true);
+    gh.setDraft(REPO, pr, true); // already a draft: no event
+    expect(await gh.reader().readPr(REPO, pr)).toMatchObject({ draft: true });
+    const refused = await mergePullRequest(1, REPO, pr, 'squash', h1);
+    expect(refused).toMatchObject({ merged: false, status: 405 });
+    expect(classifyMergeCall(refused)).toBe('not_merged');
+    gh.setDraft(REPO, pr, false);
+    expect((await gh.reader().readPr(REPO, pr))?.draft).toBeFalsy();
+    await gh.deliverWebhooks();
+    expect(actions.filter((a) => a !== 'opened' && a !== 'synchronize')).toEqual(['converted_to_draft', 'ready_for_review']);
+    expect(classifyMergeCall(await mergePullRequest(1, REPO, pr, 'squash', h1))).toBe('merged');
   });
 
   test('check runs reported for the previous head', async () => {

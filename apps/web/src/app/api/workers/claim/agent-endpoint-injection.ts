@@ -26,11 +26,19 @@
  * apply `modelEndpoint`, so it must keep the credentials the endpoint replaces.
  */
 import type { ClaimModelEndpoint, ClaimTasksResponse } from '@buildd/shared';
-import { AGENT_ENDPOINT_RUNNER_FEATURE, resolveAgentModelRoute, type AgentModelDecision } from '@buildd/core/agent-endpoint';
+import {
+  AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, resolveAgentModelRoute, routeNeedsHeaders,
+  type AgentModelDecision,
+} from '@buildd/core/agent-endpoint';
 
 /** True when the claim request declares AGENT_ENDPOINT_RUNNER_FEATURE. */
 export function runnerSupportsAgentEndpoint(runnerFeatures: unknown): boolean {
   return Array.isArray(runnerFeatures) && runnerFeatures.includes(AGENT_ENDPOINT_RUNNER_FEATURE);
+}
+
+/** True when the claim request declares AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE (it applies `modelEndpoint.headers`). */
+export function runnerSupportsEndpointHeaders(runnerFeatures: unknown): boolean {
+  return Array.isArray(runnerFeatures) && runnerFeatures.includes(AGENT_ENDPOINT_HEADERS_RUNNER_FEATURE);
 }
 
 type ClaimedTask = { id: string; workspaceId: string };
@@ -43,7 +51,7 @@ export async function attachAgentEndpoints(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   accountId: string,
-  opts: { llmProviderOverride: boolean; codexBaseUrlOverride?: boolean; runnerSupportsEndpoint: boolean },
+  opts: { llmProviderOverride: boolean; codexBaseUrlOverride?: boolean; runnerSupportsEndpoint: boolean; runnerSupportsHeaders?: boolean },
   deps: AgentEndpointDeps = { resolve: resolveAgentModelRoute },
 ): Promise<Set<string>> {
   const won = new Set<string>();
@@ -61,6 +69,12 @@ export async function attachAgentEndpoints(
       if (!decision) continue;
       if (decision.winner !== 'endpoint') {
         console.log(`[claim] agent endpoint not used for worker ${cw.id}: a ${decision.beatenBy}-scoped credential is more specific`);
+        continue;
+      }
+      if (!isCodexTask && routeNeedsHeaders(decision.endpoint) && !opts.runnerSupportsHeaders) {
+        // The gateway would refuse every call without its header. This runner
+        // gets the claim an endpoint-unaware runner gets: its own credentials.
+        console.log(`[claim] agent endpoint (${decision.endpoint.kind}) not used for worker ${cw.id}: it needs request headers this runner does not apply`);
         continue;
       }
       won.add(cw.id);
@@ -84,6 +98,9 @@ export async function attachAgentEndpoints(
       w.modelEndpoint = {
         kind: e.kind, baseUrl: e.baseUrl, authToken: e.apiKey, authHeader: e.authHeader, models: e.models,
         ...(e.openAiBaseUrl ? { openAiBaseUrl: e.openAiBaseUrl } : {}),
+        ...(e.upstream ? { upstream: e.upstream } : {}),
+        // Claude only: Codex runs never get a route that needs headers (no openAiBaseUrl).
+        ...(!isCodexTask && e.headers ? { headers: e.headers } : {}),
         // The winning row's own capability, so a workspace row and the team
         // row can differ. Meaningless to Codex, so not sent for it.
         ...(!isCodexTask && e.toolSearch ? { toolSearch: true } : {}),

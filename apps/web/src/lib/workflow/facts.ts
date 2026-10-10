@@ -5,18 +5,20 @@
  * it maps to does, and only if the transition table allows it.
  *
  * Fact kinds: `delivery_opened`, `pr_bound`, `head_observed`, `pr_closed`
- * (merged or closed unmerged, decided by the live read), plus
+ * (merged or closed unmerged, decided by the live read), `base_changed`
+ * (the PR was retargeted; the live read says to which base), plus
  * `composition_attested` (evidence that a composed PR's head is built from
  * already-reviewed changes). R2: for PR facts the kernel takes its own GitHub
  * read after the hint arrived and acts on that, never on the hint's payload.
  *
  * Routes reach this through seam.ts.
  */
+import type { BaseDeltaFact } from './base-delta';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import type { Command, LivePr } from './commands';
 import { applyCommand, loadView, type CommandResult, type DeliveryRef, type Exec } from './kernel';
-import { headCoverage, headObservationKey } from './reducer';
+import { baseChangeKey, headCoverage, headObservationKey } from './reducer';
 import type { CloseCause, CompositionAttestation, ConstituentEvidence, DeliverySnapshot, KernelView } from './types';
 
 const dbExec: Exec = (q) => db.execute(q) as unknown as Promise<{ rows?: unknown[] }>;
@@ -51,11 +53,22 @@ export interface GithubFactReader {
    */
   contentEquivalent?(repoFullName: string, baseRef: string, fromSha: string, toSha: string): Promise<boolean | null>;
   /**
+   * A retarget's evidence (24e1cfad): is the PR's diff at `headSha` against `toBase` the same
+   * change as against `fromBase`? null = could not tell; never read as equivalent.
+   */
+  baseDiffEquivalent?(repoFullName: string, fromBase: string, toBase: string, headSha: string): Promise<boolean | null>;
+  /**
    * Does branch `ref` exist in `repoFullName` now? A PR GitHub closed because
    * its base branch was deleted is `CLOSED_UNMERGED(base_deleted)` (§4).
    * null = unreadable; never read as "deleted".
    */
   branchExists?(repoFullName: string, ref: string): Promise<boolean | null>;
+  /**
+   * S15's base delta: the commits the base `baseRef` has that `headSha` does not,
+   * the files they changed, and the files the PR changes. A side that cannot be
+   * read or listed in full is null; never read as "nothing changed".
+   */
+  baseDelta?(repoFullName: string, prNumber: number, headSha: string, baseRef: string): Promise<BaseDeltaFact | null>;
 }
 
 export type FactInput =
@@ -74,6 +87,7 @@ export type FactInput =
       kind: 'head_observed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedHeadSha?: string | null;
     }
   | { kind: 'pr_closed'; workspaceId: string; source: string; repoFullName: string; prNumber: number }
+  | { kind: 'base_changed'; workspaceId: string; source: string; repoFullName: string; prNumber: number; hintedFromBase?: string | null }
   | { kind: 'composition_attested'; workspaceId: string; source: string; attestation: CompositionAttestation };
 
 export type FactKind = FactInput['kind'];
@@ -135,7 +149,7 @@ WHERE d.workspace_id = ${workspaceId}::uuid
  * observation is keyed on the move it records (§6.3 T3): the head the delivery
  * `held` and its version when the fact was read, so A→B→A is three facts.
  */
-export function factKeyFor(f: FactInput, live?: LivePr | null, held?: { headSha: string | null; version: number } | null): string {
+export function factKeyFor(f: FactInput, live?: LivePr | null, held?: { headSha: string | null; version: number; baseRef?: string | null } | null): string {
   switch (f.kind) {
     case 'delivery_opened': return `open:${f.ownerTaskId}`;
     case 'pr_bound': return `bind:${f.repoFullName}#${f.prNumber}`;
@@ -146,6 +160,8 @@ export function factKeyFor(f: FactInput, live?: LivePr | null, held?: { headSha:
       return live?.merged ? `merged:${f.repoFullName}#${f.prNumber}`
         : live?.state === 'open' ? `reopen:${f.repoFullName}#${f.prNumber}:${live?.updatedAt ?? 'unknown'}`
           : `closed:${f.repoFullName}#${f.prNumber}:${live?.updatedAt ?? 'unknown'}`;
+    case 'base_changed':
+      return baseChangeKey(`${f.repoFullName}#${f.prNumber}`, held?.baseRef ?? null, live?.baseRef ?? 'unknown', held?.version ?? 0);
     case 'composition_attested': return `compose:${f.attestation.repoFullName}#${f.attestation.prNumber}:${f.attestation.aggregateHeadSha}`;
   }
 }
@@ -165,7 +181,7 @@ export interface IngestDeps {
 export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promise<IngestResult> {
   const exec = deps.exec ?? dbExec;
   let live: LivePr | null = null;
-  if (fact.kind === 'pr_bound' || fact.kind === 'head_observed' || fact.kind === 'pr_closed') {
+  if (fact.kind === 'pr_bound' || fact.kind === 'head_observed' || fact.kind === 'pr_closed' || fact.kind === 'base_changed') {
     if (!deps.github) throw new Error(`ingestFact(${fact.kind}): a GitHub reader is required (R2: act on a live read)`);
     live = await deps.github.readPr(fact.repoFullName, fact.prNumber);
     if (!live) return { factId: null, factKey: null, firstSeen: false, result: 'rejected', reason: 'live_read_failed', current: null };
@@ -218,6 +234,26 @@ export async function ingestFact(fact: FactInput, deps: IngestDeps = {}): Promis
 }
 
 /**
+ * 24e1cfad: record a retarget the live read shows (`delivery.baseRef` differs from
+ * GitHub's base). Every door that acts on a live read calls this first, so a lost
+ * `edited` webhook (or GitHub's silent retarget of a stacked PR) is caught up.
+ * No-op, and no fact row, while the bases agree.
+ */
+export async function catchUpBase(p: {
+  workspaceId: string; repoFullName: string; prNumber: number; source: string; deliveryId: string; live: LivePr; hintedFromBase?: string | null;
+}, reader: GithubFactReader, exec: Exec = dbExec): Promise<boolean> {
+  if (!p.live.baseRef || p.live.state !== 'open' || p.live.merged) return false;
+  const d = (await loadView({ deliveryId: p.deliveryId }, exec)).delivery;
+  if (!d || d.baseRef === p.live.baseRef) return false;
+  const res = await ingestFact(
+    { kind: 'base_changed', workspaceId: p.workspaceId, source: p.source, repoFullName: p.repoFullName, prNumber: p.prNumber, hintedFromBase: p.hintedFromBase ?? null },
+    { exec, github: { ...reader, readPr: async () => p.live } },
+  );
+  if (res.result !== 'applied') console.log(`[workflow] BaseChanged ${p.repoFullName}#${p.prNumber}: ${res.result} (${'reason' in res ? res.reason : ''})`);
+  return res.result === 'applied';
+}
+
+/**
  * §8.3 / T13 evidence for a head that moved under an approval, decided from
  * the delivery itself: the previous head must be one the delivery's approval
  * covers (`approved_heads` or `composition_heads`, whatever the basis), and
@@ -231,7 +267,9 @@ export async function carryForwardEvidence(
 ): Promise<'content_equivalent' | 'own_refresh' | null> {
   const d = view.delivery;
   if (!d || !d.currentHeadSha || live.headSha === d.currentHeadSha) return null;
-  if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING') return null;
+  // BLOCKED_ON_TRUNK resuming APPROVED: its §6.4 row keeps the approval only on this evidence (47be5f6c).
+  const blockedApproved = d.state === 'BLOCKED_ON_TRUNK' && d.resumeState === 'APPROVED';
+  if (d.state !== 'APPROVED' && d.state !== 'LANDING' && d.state !== 'REPAIRING' && !blockedApproved) return null;
   // A policy approval is not a review; the reducer keeps it on any head without evidence.
   if (d.approvalBasis === 'policy') return null;
   const previous = d.currentHeadSha;
@@ -279,7 +317,7 @@ WHERE t.id = src.id AND NOT (COALESCE(t.context->'equivalentHeadShas', '[]'::jso
 async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, github?: GithubFactReader): Promise<{
   command: Command; ref: DeliveryRef; payload: Record<string, unknown>; repoFullName: string | null; prNumber: number | null;
   /** What the delivery held when the fact was read (head facts only). */
-  held?: { deliveryId: string; headSha: string | null; version: number; state: DeliverySnapshot['state']; round: number } | null;
+  held?: { deliveryId: string; headSha: string | null; version: number; state: DeliverySnapshot['state']; round: number; baseRef?: string | null } | null;
 }> {
   const actor = fact.source;
   switch (fact.kind) {
@@ -346,6 +384,25 @@ async function commandFor(fact: FactInput, live: LivePr | null, exec: Exec, gith
           ? { type: 'PrReopened', actor, live: live! }
           : { type: 'PrClosedUnmerged', actor, live: live!, closeCause };
       return { command, ref, payload: { live, ...(closedUnmerged ? { baseExists } : {}) }, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+    }
+    case 'base_changed': {
+      const ref: DeliveryRef = { workspaceId: fact.workspaceId, repoFullName: fact.repoFullName, prNumber: fact.prNumber };
+      const view = await loadView(ref, exec);
+      const d = view.delivery;
+      const from = d?.baseRef ?? null;
+      const to = live?.baseRef ?? null;
+      // Evidence only matters when something approved the head; fails closed (never equivalent) otherwise.
+      const covered = !!d?.currentHeadSha && headCoverage(d as DeliverySnapshot, d.currentHeadSha) !== 'none';
+      const diffEquivalent = covered && from && to && from !== to && live && github?.baseDiffEquivalent
+        ? (await github.baseDiffEquivalent(fact.repoFullName, from, to, live.headSha).catch(() => null)) === true
+        : false;
+      return {
+        command: { type: 'BaseChanged', actor, live: live!, ...(diffEquivalent ? { diffEquivalent } : {}) },
+        ref,
+        payload: { hintedFromBase: fact.hintedFromBase ?? null, live, fromBase: from, diffEquivalent },
+        repoFullName: fact.repoFullName, prNumber: fact.prNumber,
+        held: d ? { deliveryId: d.id, headSha: d.currentHeadSha, version: d.version, state: d.state, round: d.currentRound, baseRef: d.baseRef } : null,
+      };
     }
     case 'composition_attested': {
       const att = fact.attestation;

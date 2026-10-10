@@ -4,20 +4,21 @@
  * Mission · Overview: what the mission is doing and what sets its finish.
  *
  * ```
- * 2 of 7 merged · 1 of 4 criteria
+ * 2 of 7 merged
  * [■][■][▶][▦][▦][░][░]        TaskStrip (lg): one cell per task, marks on the ticks
  *  01 02 03 04 05 06 07
- * ┌ 03 · level 1 of 3 · builder ┐   FocusCard: the selected task
+ * ┌ 03 of 07 · level 1 of 3 ───┐   FocusCard: the selected task
  * │ Shared delivery projection  │
- * │ Build › Audit › Land …      │
+ * │ Build › Audit › Land        │   (once: no second stage grid)
  * └─────────────────────────────┘
- * ‹  Next open · 03  ›                           Goal · 1 of 4 criteria
+ * ‹ ›                                           Goal · 1 of 4 criteria
  * ```
  *
  * On arrival the task setting the finish is selected (`finishSettingTaskId`),
  * never just the first. From 900px the main column stops at 720px and the
  * goal criteria and the agent counts sit in a right rail beside it.
  */
+import { displayTaskTitle } from '@/lib/task-title';
 import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Criteria, { type Criterion } from '@/components/ui/Criteria';
@@ -30,7 +31,7 @@ import { stepIndex, stripOrder, stripState } from '@/lib/mission-task-strip';
 import type { MissionExecutor } from '@/lib/task-actions';
 import { AskBanner, CompletionRecord, PlanningPlaceholder } from './MissionBoard';
 import { useLiveBoard, useNow, type BoardLinkContext } from './MissionBoardParts';
-import { DrawerDelivery, StripTaskActions, stripDrawerPill, stripReason, type StripFocus } from './MissionTaskStrip';
+import { DrawerDelivery, StripTaskActions, stripReason, type StripFocus } from './MissionTaskStrip';
 import CriteriaCheckNow from './CriteriaCheckNow';
 import { MissionVisualAsk, WithMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 import type { TaskDeliveryDetail } from '@/lib/activity-delivery';
@@ -78,7 +79,8 @@ function OverviewView({
     <MissionStripContext.Provider value={stripValue}>
       <div data-testid="mission-overview" className="mt-4 grid gap-x-10 gap-y-6 min-[900px]:grid-cols-[minmax(0,720px)_minmax(240px,300px)]">
         <div className="flex min-w-0 flex-col gap-4">
-          <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">{overviewCounts(model)}</p>
+          {/* Merged only: criteria are the header's Verified pill and the rail's list. */}
+          <p data-testid="overview-counts" className="font-mono text-meta text-text-muted">{overviewCounts(model, { criteria: false })}</p>
           {notice}
           {model.needsYou.filter(id => !model.tasks[id].delivery).map(id => (
             <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -136,23 +138,26 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
   const { reason } = overviewSelection(model, order, id);
   const why = state === 'landed' ? null : focusReason ?? stripReason(t, executor);
   const tick = String(i + 1).padStart(2, '0');
-  const meta = [tick, t.levels > 1 ? `level ${t.level} of ${t.levels}` : null, t.roleName?.toLowerCase() ?? null, t.pr ? `PR #${t.pr.number}` : null].filter(Boolean).join(' · ');
+  const of = `${tick} of ${String(order.length).padStart(2, '0')}`;
+  const meta = [of, t.levels > 1 ? `level ${t.level} of ${t.levels}` : null, t.roleName?.toLowerCase() ?? null, t.pr ? `PR #${t.pr.number}` : null].filter(Boolean).join(' · ');
   const needsYou = t.status === 'waiting' ? (t.waitingFor?.prompt ?? 'An answer') : t.delivery?.action?.label ?? null;
   const prev = () => onSelect(order[stepIndex(i, -1, order.length)]);
   const next = () => onSelect(order[stepIndex(i, 1, order.length)]);
 
   return (
-    <div className="flex flex-col gap-3">
+    // scroll-mb: a focused stepper or action never lands under the phone tab bar.
+    <div className="flex scroll-mb-[calc(5rem+env(safe-area-inset-bottom))] flex-col gap-2.5 [&_button]:scroll-mb-[calc(5rem+env(safe-area-inset-bottom))]">
       <FocusCard
         meta={meta}
-        title={t.title}
+        title={displayTaskTitle(t.title)}
         state={state}
+        repairs={delivery?.repairs || undefined}
         next={why ?? undefined}
         reason={reason}
         needs={needsYou ?? undefined}
         footer={
           <div className="flex min-w-0 flex-col gap-2">
-            {delivery && <DrawerDelivery key={t.id} delivery={delivery} />}
+            {delivery && delivery.evidence.length > 0 && <DrawerDelivery key={t.id} delivery={delivery} stages={false} />}
             {workspaceId && <StripTaskActions task={t} state={state} link={link} workspaceId={workspaceId} executor={executor} why={why} />}
           </div>
         }
@@ -160,7 +165,6 @@ function Focus({ model, order, id, onSelect, link, workspaceId, executor, focusR
       <div className="flex items-center gap-2" data-testid="overview-stepper">
         <button type="button" aria-label="Previous task" data-testid="overview-prev" onClick={prev} className={STEP_BTN}>‹</button>
         <button type="button" aria-label="Next task" data-testid="overview-next" onClick={next} className={STEP_BTN}>›</button>
-        <span className="font-mono text-meta text-text-muted">{`${tick} of ${String(order.length).padStart(2, '0')} · ${stripDrawerPill(t, state, executor)}`}</span>
         <span className="ml-auto hidden font-mono text-meta text-text-muted md:inline">← → to move between tasks</span>
       </div>
     </div>

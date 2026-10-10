@@ -5,12 +5,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { compactIds, expandIds, parseCorpus, readCorpus, type CorpusDelivery, type CorpusTransition } from './corpus';
+import { compactIds, expandIds, parseCorpus, readCorpus, type CorpusAttempt, type CorpusDelivery, type CorpusTransition } from './corpus';
 import { canonical, firstDivergence, normalizeForCompare, remapIds, type StepDecision } from './diff';
 import { recordedReader, UnansweredRead } from './recorded-github';
-import { buildSteps, isDecisionEffect, outOfBandEffects, outOfBandFacts, reconstructCommand } from './reconstruct';
+import { buildSteps, isDecisionEffect, outOfBandAttemptEnds, outOfBandEffects, outOfBandFacts, reconstructCommand } from './reconstruct';
 import { isProse, Pseudonymizer, REDACTED, redactProse } from './sanitize';
-import type { KernelView } from '../types';
+import type { AttemptSnapshot, KernelView } from '../types';
 
 const FIXTURE = join(import.meta.dir, 'fixtures/synthetic-corpus.jsonl');
 const SALT = Buffer.alloc(32, 7);
@@ -171,6 +171,78 @@ describe('reconstructCommand', () => {
   });
 });
 
+/**
+ * bc92e43f: a conflict repair that escalates to an agent. The head the first agent
+ * attempt pushed took the delivery out of REPAIRING; its worker ended later, unbound,
+ * which writes the attempt row and no transition. A second conflict at a new head goes
+ * REPAIRING (mechanical), the refresh is refused, and `effect:refresh_branch` records
+ * ConflictObserved REPAIRING -> REPAIRING with an agent attempt.
+ */
+describe('a conflict repair escalating to an agent', () => {
+  const att = (o: Partial<AttemptSnapshot> & Pick<AttemptSnapshot, 'id' | 'mode' | 'attemptNo' | 'status'>): AttemptSnapshot => ({
+    family: 'conflict', boundHeadSha: 'H1', triggerReason: 'conflict', taskId: null, outcome: null, maxAttempts: 3, reportedShas: [], ...o,
+  });
+  const rec = (o: Partial<CorpusAttempt> & Pick<CorpusAttempt, 'id' | 'mode' | 'attemptNo' | 'status' | 'tUs'>): CorpusAttempt => ({
+    family: 'conflict', boundHeadSha: 'H1', triggerReason: 'conflict', triggerFactId: null, taskId: null, trigger: 'automatic',
+    reportedShas: [], pushedHeadSha: null, outcome: null, maxAttempts: 3, ...o,
+  });
+  // The replay's delivery just before the escalation: REPAIRING at H2, mechanical try 2 bound.
+  const repairing = (): KernelView => {
+    const v = view('REPAIRING', 'H2');
+    v.delivery!.boundAttemptId = 'm2';
+    v.attempts = [
+      att({ id: 'm1', mode: 'mechanical', attemptNo: 1, status: 'ended', outcome: 'failed' }),
+      att({ id: 'a1', mode: 'agent', attemptNo: 1, status: 'running', outcome: 'delivered' }),
+      att({ id: 'm2', mode: 'mechanical', attemptNo: 2, status: 'queued', boundHeadSha: 'H2' }),
+    ];
+    return v;
+  };
+  const escalation = t({
+    command: 'ConflictObserved', toVersion: 9, fromState: 'REPAIRING', toState: 'REPAIRING', idempotencyKey: 'conflict:d:H2:a2', actor: 'effect:refresh_branch', tUs: 900,
+    evidence: { mode: 'agent', actor: 'effect:refresh_branch', headSha: 'H2', repairKind: 'conflict' },
+  });
+
+  test('the escalation is rebuilt as the refused mechanical repair the effect sent, whatever the replay ledger shows', () => {
+    const c = delivery({ transitions: [escalation], attempts: [rec({ id: 'a2', mode: 'agent', attemptNo: 2, status: 'queued', boundHeadSha: 'H2', tUs: escalation.tUs })] });
+    const ctx = (v: KernelView) => ({ view: v, corpus: c, factIds: new Map<string, string>() });
+    expect(reconstructCommand(escalation, ctx(repairing()))).toMatchObject({ ok: true, cmd: { type: 'ConflictObserved', mechanicalRefused: true, headSha: 'H2' } });
+    // No open mechanical try in the replay's view: the record still says who sent it.
+    const noMech = repairing();
+    noMech.attempts = noMech.attempts.filter((a) => a.id !== 'm2');
+    expect(reconstructCommand(escalation, ctx(noMech))).toMatchObject({ ok: true, cmd: { mechanicalRefused: true } });
+    // The door's own observation is never a refusal, open mechanical try or not.
+    const door = t({ ...escalation, actor: 'door:conflict', evidence: { ...escalation.evidence, actor: 'door:conflict' } });
+    expect(reconstructCommand(door, ctx(repairing()))).toMatchObject({ ok: true, cmd: { mechanicalRefused: false } });
+  });
+
+  test('an attempt the record shows ended with no transition writing it is ended before the step, at its recorded time when there is one', () => {
+    const steps = [t({ command: 'ConflictObserved', toVersion: 8, tUs: 500 }), escalation];
+    const base = { id: 'a1', mode: 'agent', attemptNo: 1, status: 'ended', outcome: 'delivered', tUs: 100 } as const;
+    const ends = (a1: CorpusAttempt, beforeUs: number, v = repairing()) =>
+      outOfBandAttemptEnds(delivery({ transitions: steps, attempts: [a1, rec({ id: 'm2', mode: 'mechanical', attemptNo: 2, status: 'ended', outcome: 'failed', boundHeadSha: 'H2', endedUs: escalation.tUs, tUs: 500 })] }), v, beforeUs);
+
+    // Timed: before the step, and no transition shares the statement.
+    expect(ends(rec({ ...base, endedUs: 300 }), escalation.tUs)).toEqual([{ attemptId: 'a1', status: 'ended', outcome: 'delivered', timed: true }]);
+    expect(ends(rec({ ...base, endedUs: 300 }), 200)).toEqual([]);
+    expect(ends(rec({ ...base, endedUs: 500 }), escalation.tUs)).toEqual([]);
+    // A corpus exported before the end time was: an unbound worker end, inferred.
+    expect(ends(rec(base), escalation.tUs)).toEqual([{ attemptId: 'a1', status: 'ended', outcome: 'delivered', timed: false }]);
+    // Untimed, it is never applied to the bound attempt, nor to a cancellation (a transition's write).
+    const bound = repairing();
+    bound.delivery!.boundAttemptId = 'a1';
+    expect(ends(rec(base), escalation.tUs, bound)).toEqual([]);
+    expect(ends(rec({ ...base, status: 'cancelled', outcome: 'noop' }), escalation.tUs)).toEqual([]);
+    // Nor to a row still waiting for its claim: a review fix is queued and unbound until FixClaimed.
+    const unclaimed = repairing();
+    unclaimed.attempts = unclaimed.attempts.map((a) => (a.id === 'a1' ? { ...a, status: 'queued' as const } : a));
+    expect(ends(rec(base), escalation.tUs, unclaimed)).toEqual([]);
+    // Already ended in the replay: nothing to do.
+    const closed = repairing();
+    closed.attempts = closed.attempts.map((a) => (a.id === 'a1' ? { ...a, status: 'ended' as const } : a));
+    expect(ends(rec(base), escalation.tUs, closed)).toEqual([]);
+  });
+});
+
 describe('recordedReader', () => {
   test('answers the PR read and the compare calls the fact recorded, and refuses the rest', async () => {
     const v = view('REPAIRING');
@@ -224,6 +296,31 @@ describe('firstDivergence', () => {
     }
     // An identical step needs no tolerance.
     expect(normalizeForCompare(now, now, redactProse).tolerated).toEqual([]);
+  });
+
+  test('10658a4c: a version-bound key is tolerated against its bare recorded key, and only that', () => {
+    const t7 = (key: string, fx: string) => dec({ command: 'ReviewBudgetExhausted', toState: 'ESCALATED', idempotencyKey: key },
+      [{ kind: 'escalate_exhaustion', dedupeKey: fx, payload: { family: 'review_fix', rounds: 3 } }]);
+    const r = normalizeForCompare(t7('exhaust:d:H', 'exhaust:d:H'), t7('exhaust:d:H@v5', 'exhaust:d:H@v5'), redactProse);
+    expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
+    expect(r.tolerated).toEqual([expect.stringContaining('10658a4c')]);
+    const policy = (key: string) => dec({ command: 'PolicyEvidenceRecorded', toState: 'ESCALATED', idempotencyKey: key });
+    const p = normalizeForCompare(policy('policy:d:H:human'), policy('policy:d:H:human@v7'), redactProse);
+    expect(firstDivergence(p.recorded, p.replayed)).toBeNull();
+    // Another head, another prefix, or a suffix the recording also had: still a divergence.
+    for (const [rec, rep] of [['exhaust:d:H', 'exhaust:d:H2@v5'], ['end:w', 'end:w@v5']] as const) {
+      const n = normalizeForCompare(policy(rec), policy(rep), redactProse);
+      expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
+    }
+  });
+
+  test('10658a4c: a dead dispatch_review recorded as effect_dead is tolerated; any other dead effect is not', () => {
+    const dead = (effectKind: string, reason: string) => dec({ command: 'EffectDead', toState: 'ESCALATED', idempotencyKey: 'effectdead:e1', evidence: { effectKind, reason } },
+      [{ kind: 'notify', dedupeKey: 'notify:d:effectdead:e1', payload: { event: 'effect_dead', effectKind, reason } }]);
+    const r = normalizeForCompare(dead('dispatch_review', 'effect_dead'), dead('dispatch_review', 'review_unavailable'), redactProse);
+    expect(firstDivergence(r.recorded, r.replayed)).toBeNull();
+    const n = normalizeForCompare(dead('dispatch_fix', 'effect_dead'), dead('dispatch_fix', 'review_unavailable'), redactProse);
+    expect(firstDivergence(n.recorded, n.replayed)).not.toBeNull();
   });
 
   test('remapIds swaps replay ids back to recorded ones at any depth', () => {

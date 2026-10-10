@@ -5,6 +5,7 @@ import {
   findRemovedPathFieldInGitConfig,
   findRemovedPathFieldInMergePolicy,
   removedPolicyPathFieldError,
+  agentReviewsDataMigrations,
 } from '@buildd/shared';
 
 describe('DEFAULT_MERGE_POLICY', () => {
@@ -426,5 +427,35 @@ describe('resolvePolicy — mission integration branch (Option A′)', () => {
       { baseRef: MISSION_BRANCH },
     );
     expect(policy.tier).toBe('auto-threshold');
+  });
+});
+
+describe('mergePolicy.dataMigrations', () => {
+  it('parseMergePolicy accepts person and agent-review, rejects anything else', () => {
+    expect(parseMergePolicy({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'agent-review' }).ok).toBe(true);
+    expect(parseMergePolicy({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'person' }).ok).toBe(true);
+    const bad = parseMergePolicy({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'auto' });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.field).toBe('dataMigrations');
+  });
+
+  it('the write schema accepts it and rejects an unknown value', () => {
+    expect(mergePolicySchema.safeParse({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'agent-review' }).success).toBe(true);
+    expect(mergePolicySchema.safeParse({ tier: 'agent-review', dataMigrations: 'yes' }).success).toBe(false);
+  });
+
+  it('resolvePolicy carries the workspace setting through', () => {
+    const policy = resolvePolicy({ gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' }, dataMigrations: 'agent-review' } } as any });
+    expect(policy.dataMigrations).toBe('agent-review');
+  });
+
+  it('agentReviewsDataMigrations is true only under tier agent-review with the setting on', () => {
+    expect(agentReviewsDataMigrations({ tier: 'agent-review', dataMigrations: 'agent-review' })).toBe(true);
+    expect(agentReviewsDataMigrations({ tier: 'agent-review' })).toBe(false);
+    expect(agentReviewsDataMigrations({ tier: 'agent-review', dataMigrations: 'person' })).toBe(false);
+    expect(agentReviewsDataMigrations({ tier: 'auto-threshold', dataMigrations: 'agent-review' })).toBe(false);
+    expect(agentReviewsDataMigrations({ tier: 'human', dataMigrations: 'agent-review' })).toBe(false);
+    expect(agentReviewsDataMigrations(null)).toBe(false);
+    expect(agentReviewsDataMigrations('agent-review')).toBe(false);
   });
 });

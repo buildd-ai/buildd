@@ -10,7 +10,6 @@
  */
 import type {
   CredentialPolicyValue,
-  ExplainProviderResponse,
   ListProvidersResponse,
   ProviderApiScope,
   ProviderCredentialSummary,
@@ -25,9 +24,17 @@ export const SURFACE_ORDER: readonly ProviderSurfaceId[] = ['chat', 'agent-claud
 
 export const SURFACE_LABEL: Record<ProviderSurfaceId, string> = {
   chat: 'Chat',
-  'agent-claude': 'Claude runs',
-  'agent-codex': 'Codex runs',
-  'cloud-egress': 'Cloud runs',
+  'agent-claude': 'Claude agents',
+  'agent-codex': 'Codex agents',
+  'cloud-egress': 'Cloud agents',
+};
+
+/** The same surfaces mid-sentence: "Used for chat and Claude agents." */
+const SURFACE_PHRASE: Record<ProviderSurfaceId, string> = {
+  chat: 'chat',
+  'agent-claude': 'Claude agents',
+  'agent-codex': 'Codex agents',
+  'cloud-egress': 'cloud agents',
 };
 
 export const SHAPE_NOUN: Record<ProviderShapeId, string> = {
@@ -44,10 +51,8 @@ export const SCOPE_TABS: readonly { id: ProviderApiScope; label: string }[] = [
   { id: 'mine', label: 'Mine' },
 ];
 
-/** Where subscription seats are connected in the browser today. */
-export const SEAT_CONNECT_HREF = '/app/settings/runners#agent-backends';
-/** The LiteLLM gateway and custom endpoint forms, further down this page. */
-export const ADVANCED_ANCHOR = 'advanced';
+/** The LiteLLM gateway and custom endpoint forms: the Routing section further down this page. */
+export const ADVANCED_ANCHOR = 'routing';
 
 export const ADMINS_ONLY = 'Admins can change this.';
 export const POLICY_BLOCKS_MINE = "Your team's policy doesn't use personal keys.";
@@ -67,7 +72,11 @@ export function writePermissionsFor(shape: Pick<ProviderListing['shapes'][number
   return shape.writesTo[scope]?.permissions ?? [];
 }
 
-/** Surfaces the provider serves, and each one it can't with the registry's reason. */
+/**
+ * Surfaces the provider serves, and each one it can't with the registry's
+ * reason. The page shows only `serves`: listing what a provider does not do
+ * is the copy rule `not-this-its-that` (packages/core/copy-rules.ts).
+ */
 export function servesLine(p: Pick<ProviderListing, 'surfaces'>): {
   serves: ProviderSurfaceId[];
   not: { surface: ProviderSurfaceId; reason: string }[];
@@ -84,7 +93,33 @@ export function servesLine(p: Pick<ProviderListing, 'surfaces'>): {
 }
 
 export function surfaceList(surfaces: readonly ProviderSurfaceId[]): string {
-  return SURFACE_ORDER.filter((s) => surfaces.includes(s)).map((s, i) => (i === 0 ? SURFACE_LABEL[s] : SURFACE_LABEL[s].toLowerCase())).join(' · ');
+  const parts = SURFACE_ORDER.filter((s) => surfaces.includes(s)).map((s) => SURFACE_PHRASE[s]);
+  return parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/** "Used for chat and Claude agents." */
+export function usedFor(surfaces: readonly ProviderSurfaceId[]): string {
+  return surfaces.length ? `Used for ${surfaceList(surfaces)}.` : 'Not used by anything.';
+}
+
+export type RowState = { word: 'Needs attention' | 'Working' | 'Set' | 'Team key' | 'Not available' | 'Not set'; tone: 'error' | 'success' | 'muted' };
+
+/** The one status word on a provider row. */
+export function rowState(rows: readonly ProviderCredentialSummary[], inherited: readonly ProviderCredentialSummary[], closed: string | null): RowState {
+  if (rows.some((r) => r.health === 'revoked' || r.lastVerificationError)) return { word: 'Needs attention', tone: 'error' };
+  if (rows.some((r) => r.health === 'healthy')) return { word: 'Working', tone: 'success' };
+  if (rows.length > 0) return { word: 'Set', tone: 'muted' };
+  if (inherited.length > 0) return { word: 'Team key', tone: 'muted' };
+  if (closed) return { word: 'Not available', tone: 'muted' };
+  return { word: 'Not set', tone: 'muted' };
+}
+
+/** What a stored credential looks like on the row: "…a1b2", "Subscription …bAAA", "Configured". */
+export function maskedValue(row: Pick<ProviderCredentialSummary, 'shape' | 'last4'>): string {
+  const tail = row.last4 ? `…${row.last4}` : '';
+  if (row.shape === 'setup_token' || row.shape === 'oauth_managed') return tail ? `Subscription ${tail}` : 'Subscription';
+  if (row.shape === 'gateway' || row.shape === 'endpoint') return 'Configured';
+  return tail || 'Set';
 }
 
 /** True when the team accepts personal credentials anywhere (chat or agent runs). */
@@ -141,57 +176,69 @@ export function cardView(p: ProviderListing, scope: ProviderApiScope, res: Pick<
 // ── Credential policy ────────────────────────────────────────────────────────
 
 export const POLICY_OPTIONS: readonly { value: CredentialPolicyValue; label: string; hint: string }[] = [
-  { value: 'team', label: 'Team key only', hint: 'Every run and chat uses team keys.' },
-  { value: 'personal_first', label: "Your key first, then the team's", hint: 'Work you start uses your own key when you have one.' },
-  { value: 'personal_only', label: 'Your key only (no team key)', hint: 'Work you start needs your own key.' },
+  { value: 'team', label: 'Team key', hint: "Everyone uses the team's key." },
+  { value: 'personal_first', label: "Mine, then the team's", hint: "Uses your key when you've added one." },
+  { value: 'personal_only', label: 'Mine only', hint: 'You need your own key to start work.' },
 ];
 
-export const POLICY_UNSET = 'No policy chosen: agents use team keys.';
-export const POLICY_UNSET_HINT = 'Pick one to apply it to agent runs.';
+/**
+ * The policy in effect. Unset behaves as team keys only, so the page shows
+ * Team key as chosen rather than a prompt to pick (copy rule
+ * `warning-instead-of-default`).
+ */
+export function effectivePolicy(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): CredentialPolicyValue {
+  return policy.credentialPolicy ?? 'team';
+}
 
-/** One sentence for whoever can't change the policy. */
+/** One line for whoever can't change the policy: "Who pays: Team key. Everyone uses the team's key." */
 export function policySentence(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
-  if (!policy.credentialPolicy) return POLICY_UNSET;
-  const opt = POLICY_OPTIONS.find((o) => o.value === policy.credentialPolicy);
-  return opt ? `Agent runs and chat: ${opt.label.charAt(0).toLowerCase()}${opt.label.slice(1)}.` : POLICY_UNSET;
-}
-
-// ── Explain ──────────────────────────────────────────────────────────────────
-
-const SOURCE_WORD: Record<string, string> = {
-  personal: 'your key',
-  mine: 'your key',
-  workspace: 'workspace key',
-  account: 'account key',
-  team: 'team key',
-  env: "buildd's key",
-};
-
-/** "Claude runs use the Anthropic API key (team key)." or the resolver's reason. */
-export function explainLine(
-  r: Pick<ExplainProviderResponse, 'surface' | 'result'>,
-  labelOf: (provider: string) => string,
-): string {
-  const surface = SURFACE_LABEL[r.surface] ?? r.surface;
-  if (!r.result.resolved) return `${surface}: ${r.result.reason}`;
-  const whose = SOURCE_WORD[r.result.source.scope] ?? SOURCE_WORD[r.result.scope] ?? r.result.scope;
-  const noun = SHAPE_NOUN[r.result.shape] ?? r.result.shape;
-  // "API key" keeps its capitals; "Setup token" reads as "setup token".
-  const nounInLine = noun.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
-  return `${surface} ${r.surface === 'chat' ? 'uses' : 'use'} ${labelOf(r.result.provider)}: ${nounInLine}, ${whose}.`;
-}
-
-/** Explain as the caller on Mine, as team work elsewhere. */
-export function explainAs(scope: ProviderApiScope, canSetMine: boolean): 'self' | 'team' {
-  return scope === 'mine' && canSetMine ? 'self' : 'team';
-}
-
-export function explainUrl(o: { teamId: string; provider: string; surface: ProviderSurfaceId; workspaceId: string | null; as: 'self' | 'team' }): string {
-  const qs = new URLSearchParams({ teamId: o.teamId, provider: o.provider, surface: o.surface, as: o.as });
-  if (o.workspaceId) qs.set('workspaceId', o.workspaceId);
-  return `/api/providers/explain?${qs}`;
+  const opt = POLICY_OPTIONS.find((o) => o.value === effectivePolicy(policy))!;
+  return `${opt.label}. ${opt.hint}`;
 }
 
 export function isScopeTab(v: string | null): v is ProviderApiScope {
   return v === 'team' || v === 'workspace' || v === 'mine';
+}
+
+// ── Rows ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Providers that are one thing to the reader: a Claude key and a Claude
+ * subscription are both "Claude". One row, one input; what was pasted decides
+ * where it's stored (`detectPaste`).
+ */
+export const PROVIDER_GROUPS: readonly { id: string; label: string; members: readonly string[] }[] = [
+  { id: 'claude', label: 'Claude', members: ['anthropic', 'claude-subscription'] },
+  { id: 'openai', label: 'OpenAI', members: ['openai', 'codex-subscription'] },
+];
+
+export interface ProviderGroup { id: string; label: string; members: ProviderListing[] }
+
+/** Registry order, grouped providers collapsed onto their first member's place. */
+export function groupProviders(providers: readonly ProviderListing[]): ProviderGroup[] {
+  const out: ProviderGroup[] = [];
+  const placed = new Set<string>();
+  for (const p of providers) {
+    if (placed.has(p.id)) continue;
+    const g = PROVIDER_GROUPS.find((x) => x.members.includes(p.id));
+    const members = g ? providers.filter((q) => g.members.includes(q.id)) : [p];
+    for (const m of members) placed.add(m.id);
+    out.push({ id: g?.id ?? p.id, label: g?.label ?? p.label, members });
+  }
+  return out;
+}
+
+/** The provider and shape a pasted value belongs to, read from its format. */
+export function detectPaste(groupId: string, value: string): { provider: string; shape: ProviderShapeId } | { error: string } {
+  const v = value.trim();
+  if (groupId === 'claude') {
+    if (/^sk-ant-oat/.test(v)) return { provider: 'claude-subscription', shape: 'setup_token' };
+    if (/^sk-ant-/.test(v)) return { provider: 'anthropic', shape: 'api_key' };
+    return { error: 'Paste a Claude API key (sk-ant-api…) or setup token (sk-ant-oat…).' };
+  }
+  if (groupId === 'openai') {
+    if (/^sk-/.test(v)) return { provider: 'openai', shape: 'api_key' };
+    return { error: 'Paste an OpenAI API key (sk-…).' };
+  }
+  return { error: 'Unknown provider.' };
 }
