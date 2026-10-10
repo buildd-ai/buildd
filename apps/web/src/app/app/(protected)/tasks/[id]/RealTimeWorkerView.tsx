@@ -396,7 +396,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
     return (
       <div data-testid="worker-view" data-state="platform-owned" className="space-y-5">
         <div data-testid="worker-platform-owned-banner" className="border border-border-strong px-4 py-3">
-          <p className="font-mono text-[11px] uppercase tracking-[1.2px] text-text-muted">Buildd is handling this</p>
+          <p className="font-mono text-[11px] text-text-muted">Buildd is handling this</p>
           <p className="mt-1 text-sm font-semibold text-text-primary">{delivery.headline}</p>
           {delivery.detail && <p className="mt-1 text-sm text-text-secondary">{delivery.detail}</p>}
         </div>
@@ -515,7 +515,7 @@ export default function RealTimeWorkerView({ initialWorker, outputRequirement, d
         <div className="mt-4">
           <button
             onClick={() => setShowMetricsDetail(!showMetricsDetail)}
-            className="flex items-center gap-1.5 min-h-11 md:min-h-0 font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary"
+            className="flex items-center gap-1.5 min-h-11 md:min-h-0 font-mono text-[11px] text-text-muted hover:text-text-secondary"
           >
             <span className={`transition-transform ${showMetricsDetail ? 'rotate-90' : ''}`} aria-hidden="true">▸</span>
             Model usage
@@ -541,7 +541,7 @@ function ContextRow({ label, summary, meta, children }: { label: string; summary
   const body = (
     <>
       <span className="w-4 shrink-0 text-text-muted group-open:rotate-90 transition-transform" aria-hidden="true">{children ? '▸' : ''}</span>
-      <span className="w-24 md:w-36 shrink-0 font-mono text-[11px] uppercase tracking-[1.5px] md:tracking-[2px] text-text-muted">{label}</span>
+      <span className="w-24 md:w-36 shrink-0 font-mono text-meta text-text-muted">{label}</span>
       <span className="flex-1 min-w-0 truncate text-[13px] md:text-[14px] text-text-primary">{summary}</span>
       {meta && <span className="shrink-0 font-mono text-[12px] text-text-muted tabular-nums">{meta}</span>}
     </>

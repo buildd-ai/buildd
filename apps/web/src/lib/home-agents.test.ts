@@ -21,6 +21,13 @@ describe('buildAgentsModel', () => {
     expect(m.lines[0]).toMatchObject({ name: 'db', mission: 'Ship it', elapsedMs: 40 * 60_000 });
   });
 
+  test('a run named by a machine identifier reads as its title in words, never "open_pr_outp pull_request 4191"', () => {
+    const m = buildAgentsModel(fleet([slot(0, worker('a', {
+      label: 'open_pr_outp', rest: 'pull_request 4191', title: '[friction] open_pr_outpaced_by_base: pull_request 4191',
+    }))], 1), 0);
+    expect(m.lines[0]).toMatchObject({ name: 'Open PR outpaced by base: PR #4191', rest: '' });
+  });
+
   test('capacity beyond the drawn slots stays free', () => {
     expect(buildAgentsModel(fleet([slot(0, null)], 3), 0).squares).toEqual(['free', 'free', 'free']);
   });

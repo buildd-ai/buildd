@@ -16,6 +16,7 @@ import { taskShortLabel } from './segment-label';
 import { taskDisplayLabel } from '@buildd/core/task-label';
 import { taskShortName } from './task-title';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { runEndReason } from './fleet-view-end-reason';
 
 type DateLike = Date | string | null | undefined;
 
@@ -49,7 +50,13 @@ export interface FleetWorkerRow {
   completedAt?: DateLike;
   updatedAt?: DateLike;
   prNumber?: number | null;
-  waitingFor?: { prompt?: string } | null;
+  waitingFor?: { prompt?: string; type?: string | null } | null;
+  /** The worker's error text, only ever read for its class (lib/fleet-view-end-reason.ts), never shown. */
+  error?: string | null;
+  /** This run's own PR merged. */
+  mergedAt?: DateLike;
+  /** A merged PR of the same task, from this run or a later one. */
+  taskMergedPr?: number | null;
   /** Latest phase supported by lifecycle evidence. */
   phase?: string | null;
   task?: {
@@ -199,13 +206,18 @@ export function buildFleetSnapshot(
       title: t?.title ?? null,
       color: role?.color ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null,
       prNumber: w.prNumber ?? null, state: barState(w.status), missionId: t?.missionId ?? null,
+      taskId: t?.id ?? null,
+      endReason: runEndReason({
+        status: w.status, error: w.error ?? null, prNumber: w.prNumber ?? null,
+        mergedAt: w.mergedAt ? new Date(w.mergedAt) : null, taskMergedPr: w.taskMergedPr ?? null, waitingFor: w.waitingFor ?? null,
+      }),
       href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
     });
     if (LIVE.has(w.status)) {
       live++;
       slot.worker = {
         workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
-        label, rest, name: t ? taskShortName(t) : undefined, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
+        label, rest, name: t ? taskShortName(t) : undefined, title: t?.title ?? null, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, phase: w.phase ?? null,
         startedAt: new Date(iv.start).toISOString(),
         question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,

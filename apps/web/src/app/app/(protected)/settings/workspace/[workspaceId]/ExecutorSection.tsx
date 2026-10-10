@@ -82,7 +82,7 @@ export default function ExecutorSection({ workspaceId, explicit, effective, sour
         testId="workspace-executor-select"
       />
       <p className="text-xs text-text-muted">
-        Cloud only: host runners never claim this workspace&apos;s tasks. Host runners only: cloud runs never do.
+        Cloud only: only the cloud runner claims tasks. Host runners only: only your own runners do.
         Automatic picks cloud when the cloud dispatch webhook is on, and any runner otherwise.
       </p>
       {saveError && <p className="text-status-error text-sm">{saveError}</p>}

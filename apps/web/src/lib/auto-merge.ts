@@ -14,7 +14,7 @@ import type { KernelLanding, LandingInput } from '@/lib/workflow/seam';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { notifyTeamOf } from '@/lib/notify';
 import type { MergePolicy } from '@buildd/shared';
-import { isGeneratedPath } from '@buildd/shared';
+import { agentReviewsDataMigrations, isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { effectiveDeltaFiles, refreshDeltaBase, resolveMergeMethod } from '@/lib/integration-refresh';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
@@ -180,7 +180,7 @@ export async function evaluateAutoMergeSafety(
   repoFullName: string,
   prNumber: number,
   headSha: string,
-  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview' | 'dataMigrations'>,
   // One options bag, because the bound now needs the mission row too: the
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
@@ -372,7 +372,10 @@ export async function evaluateAutoMergeSafety(
       files,
       ...(deltaBase ? { deltaBase } : {}),
     });
-    if (!migrationSafety.safe) {
+    // A data migration is a person's call unless the workspace lets the
+    // reviewer agent decide it (mergePolicy.dataMigrations, agent-review tier
+    // only); then the approval that got the PR here is the decision.
+    if (!migrationSafety.safe && !(migrationSafety.kind === 'data' && agentReviewsDataMigrations(policy))) {
       return { ok: false, reason: migrationSafety.reason };
     }
   }
@@ -941,8 +944,22 @@ export async function tryAutoMergeWorkerPr(params: {
 export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
   refreshOutcome: string;
   reason: string;
-  page: 'refresh_failed' | 'refresh_exhausted' | 'semantic_unverified' | null;
+  page: 'refresh_failed' | 'refresh_exhausted' | 'refresh_unsafe' | 'semantic_unverified' | null;
 } {
+  if (res.behindTolerated) {
+    return {
+      refreshOutcome: 'behind_tolerated',
+      reason: 'the head is behind its base, but the base delta is small, disjoint from this PR and risk-free (S15); the landing door lands it without another refresh',
+      page: null,
+    };
+  }
+  if (res.refreshExhausted && res.refreshTreadmill !== undefined && res.refreshUnsafe) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `the base keeps changing what this PR changes after ${res.refreshTreadmill} refreshes (${refreshCause(res)})`,
+      page: 'refresh_unsafe',
+    };
+  }
   if (res.refreshExhausted && res.refreshTreadmill !== undefined) {
     return {
       refreshOutcome: 'refresh_exhausted',

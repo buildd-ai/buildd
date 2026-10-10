@@ -52,7 +52,7 @@ export async function POST(
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   const hasAccess = apiAccount
-    ? await verifyAccountWorkspaceAccess(apiAccount.id, task.workspaceId)
+    ? await verifyAccountWorkspaceAccess(apiAccount, task.workspaceId)
     : await verifyWorkspaceAccess(user!.id, task.workspaceId);
   if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 

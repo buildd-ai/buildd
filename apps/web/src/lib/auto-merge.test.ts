@@ -673,6 +673,50 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
   });
 });
 
+describe('evaluateAutoMergeSafety data migrations (mergePolicy.dataMigrations)', () => {
+  const dataVerdict = { safe: false, operationClass: 'CONTRACT', reason: 'runs data migration UPDATE on tasks', kind: 'data' } as const;
+  const arm = (verdict: unknown) => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0300_backfill.sql', additions: 1, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue(verdict);
+  };
+  const agentReview = (dataMigrations?: 'person' | 'agent-review'): MergePolicy => ({
+    tier: 'agent-review',
+    agentReview: { reviewerRole: 'reviewer' },
+    ...(dataMigrations ? { dataMigrations } : {}),
+  });
+
+  it('refuses a data migration by default (a person decides)', async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview())).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("refuses it under dataMigrations: 'person'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('person'))).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it("lets it through under agent-review with dataMigrations: 'agent-review'", async () => {
+    arm(dataVerdict);
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: true });
+  });
+
+  it('still refuses it under auto-threshold even with the setting on (no reviewer there)', async () => {
+    arm(dataVerdict);
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] }, dataMigrations: 'agent-review' };
+    await expect(evaluateAutoMergeSafety(...params, policy)).resolves.toEqual({ ok: false, reason: 'runs data migration UPDATE on tasks' });
+  });
+
+  it('still refuses destructive DDL with the setting on', async () => {
+    arm({ safe: false, operationClass: 'CONTRACT', reason: 'drops column tasks.legacy' });
+    await expect(evaluateAutoMergeSafety(...params, agentReview('agent-review'))).resolves.toEqual({ ok: false, reason: 'drops column tasks.legacy' });
+  });
+});
+
 describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   // Read-only fallback release: legacy stored paths still block.
   it('blocks on a legacy stored escalateToPaths for agent-review tier (fallback release)', async () => {
@@ -2895,6 +2939,13 @@ describe('describeUnfiledRefreshOutcome — the cause, never a bare "unknown"', 
     const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshReason: 'base moved 3 times under the approved PR' });
     expect(d.page).toBe('refresh_exhausted');
     expect(d.reason).toMatch(/base kept moving after 3 refreshes/);
+  });
+  it('S15: a tolerated behind head is not a dedup and pages nobody; the base changing the PR\'s own files pages refresh_unsafe', () => {
+    const t = describeUnfiledRefreshOutcome({ dispatched: false, behindTolerated: true });
+    expect(t).toMatchObject({ refreshOutcome: 'behind_tolerated', page: null });
+    const u = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshTreadmill: 3, refreshUnsafe: true, refreshReason: 'the base changed files this PR changes (src/a.ts)' });
+    expect(u.page).toBe('refresh_unsafe');
+    expect(u.reason).toContain('src/a.ts');
   });
   it('an exhausted refresh with only a reason carries the reason', () => {
     const d = describeUnfiledRefreshOutcome({ dispatched: false, refreshExhausted: true, refreshReason: 'the mechanical refresh failed (landing_needs_human)' });

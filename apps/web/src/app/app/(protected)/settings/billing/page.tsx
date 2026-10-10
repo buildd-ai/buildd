@@ -84,7 +84,7 @@ export default async function BillingSettingsPage({
 
       {canManage && view.plan === 'team' && view.subscribed && view.paidSeats !== null && (
         <section aria-labelledby="billing-seats-h">
-          <h2 id="billing-seats-h" className="section-label mb-3">Seats</h2>
+          <h2 id="billing-seats-h" className="section-label mb-3">Members</h2>
           <SeatsForm teamId={currentTeam.id} paidSeats={view.paidSeats} used={view.used} />
         </section>
       )}

@@ -469,10 +469,90 @@ export interface MergePolicy {
 
   // How long a PR can sit at this tier before notifying
   stallNotifyMinutes?: number;  // default: 30 for human/agent-review, 5 for auto-threshold
+
+  /**
+   * Who decides a migration that moves data (INSERT/UPDATE/DELETE/MERGE).
+   * 'person' (default): a person merges it, as before. 'agent-review': it goes
+   * through the reviewer agent like any other PR and lands on approval. Only
+   * takes effect under tier 'agent-review' (there is no reviewer otherwise).
+   * Destructive DDL, rewritten migrations and mixed PRs are unaffected.
+   */
+  dataMigrations?: DataMigrationsPolicy;
+}
+
+export type DataMigrationsPolicy = 'person' | 'agent-review';
+const VALID_DATA_MIGRATIONS: DataMigrationsPolicy[] = ['person', 'agent-review'];
+
+/**
+ * True when the reviewer agent, not a person, decides data migrations: tier
+ * 'agent-review' and `dataMigrations: 'agent-review'`. Tolerates any stored
+ * shape (a malformed or missing policy is the default: a person decides).
+ */
+export function agentReviewsDataMigrations(mergePolicy: unknown): boolean {
+  if (!mergePolicy || typeof mergePolicy !== 'object' || Array.isArray(mergePolicy)) return false;
+  const mp = mergePolicy as Record<string, unknown>;
+  return mp.tier === 'agent-review' && mp.dataMigrations === 'agent-review';
+}
+
+/**
+ * A workspace's copy review (`gitConfig.copyReview`; absent = off). When a PR
+ * changes user-facing strings, the reviewer judges just those strings against
+ * the workspace's voice guide. 'review' posts the findings; 'gate' turns an
+ * approval with strings to rewrite into request-changes carrying the rewrites.
+ */
+export type CopyReviewMode = 'review' | 'gate';
+export interface CopyReviewConfig {
+  /** Repo path of the voice guide the strings are judged against. */
+  voiceGuide: string;
+  /** Optional lint the reviewer runs in its checkout (e.g. `bun run copy:check`). */
+  lintCommand?: string;
+  /** Globs of UI files whose strings count. Default: UI-looking files under app/components/pages. */
+  paths?: string[];
+  mode: CopyReviewMode;
+}
+const COPY_REVIEW_MODES: CopyReviewMode[] = ['review', 'gate'];
+const COPY_REVIEW_KEYS = new Set(['voiceGuide', 'lintCommand', 'paths', 'mode']);
+
+export type CopyReviewParseResult =
+  | { ok: true; config: CopyReviewConfig }
+  | { ok: false; error: string; field?: string };
+
+/** Shape-check a copy review config for the write path. */
+export function parseCopyReviewConfig(val: unknown): CopyReviewParseResult {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return { ok: false, error: 'copyReview must be an object' };
+  const o = val as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (!COPY_REVIEW_KEYS.has(key)) return { ok: false, error: `copyReview has unknown field: ${key}`, field: key };
+  }
+  if (typeof o.voiceGuide !== 'string' || !o.voiceGuide.trim()) {
+    return { ok: false, error: 'copyReview.voiceGuide must name the voice guide file', field: 'voiceGuide' };
+  }
+  if (!COPY_REVIEW_MODES.includes(o.mode as CopyReviewMode)) {
+    return { ok: false, error: `copyReview.mode must be one of: ${COPY_REVIEW_MODES.join(', ')}`, field: 'mode' };
+  }
+  if (o.lintCommand !== undefined && (typeof o.lintCommand !== 'string' || !o.lintCommand.trim())) {
+    return { ok: false, error: 'copyReview.lintCommand must be a command', field: 'lintCommand' };
+  }
+  if (o.paths !== undefined && (!Array.isArray(o.paths) || !o.paths.every((p) => typeof p === 'string' && p.trim()))) {
+    return { ok: false, error: 'copyReview.paths must be a list of globs', field: 'paths' };
+  }
+  const config: CopyReviewConfig = { voiceGuide: o.voiceGuide.trim(), mode: o.mode as CopyReviewMode };
+  if (typeof o.lintCommand === 'string') config.lintCommand = o.lintCommand.trim();
+  if (Array.isArray(o.paths)) config.paths = o.paths as string[];
+  return { ok: true, config };
+}
+
+/** The copy review a stored gitConfig asks for, or null (off). A malformed config reads as off. */
+export function copyReviewConfigOf(gitConfig: unknown): CopyReviewConfig | null {
+  if (!gitConfig || typeof gitConfig !== 'object') return null;
+  const raw = (gitConfig as { copyReview?: unknown }).copyReview;
+  if (raw == null) return null;
+  const parsed = parseCopyReviewConfig(raw);
+  return parsed.ok ? parsed.config : null;
 }
 
 const VALID_TIERS: MergePolicyTier[] = ['auto-threshold', 'agent-review', 'human'];
-const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes']);
+const KNOWN_TOP_KEYS = new Set(['tier', 'threshold', 'agentReview', 'stallNotifyMinutes', 'dataMigrations']);
 const KNOWN_THRESHOLD_KEYS = new Set(['maxLines', 'maxSourceLines', 'denyPaths']);
 const KNOWN_AGENT_REVIEW_KEYS = new Set(['reviewerRole', 'escalateToPaths', 'maxConfidenceThreshold', 'gateCondition']);
 
@@ -557,6 +637,14 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
       ok: false,
       error: `mergePolicy.tier must be one of: ${VALID_TIERS.join(', ')}`,
       field: 'tier',
+    };
+  }
+
+  if (obj.dataMigrations !== undefined && !VALID_DATA_MIGRATIONS.includes(obj.dataMigrations as DataMigrationsPolicy)) {
+    return {
+      ok: false,
+      error: `mergePolicy.dataMigrations must be one of: ${VALID_DATA_MIGRATIONS.join(', ')}`,
+      field: 'dataMigrations',
     };
   }
 
@@ -1453,7 +1541,7 @@ export interface ClaimTasksInput {
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
 export interface ClaimModelEndpoint {
-  kind: 'gateway' | 'openrouter' | 'anthropic-compatible';
+  kind: 'gateway' | 'openrouter' | 'anthropic-compatible' | 'cloudflare';
   /** Anthropic-compatible root; the agent's ANTHROPIC_BASE_URL. */
   baseUrl: string;
   authToken: string;
@@ -1477,6 +1565,15 @@ export interface ClaimModelEndpoint {
    * default. Absent/false: not set. Never applied to a Codex run.
    */
   toolSearch?: boolean;
+  /** `cloudflare` only: the provider the AI Gateway forwards to (`openrouter` ⇒ OpenRouter model names). */
+  upstream?: 'anthropic' | 'openrouter';
+  /**
+   * Extra headers every model call sends: an authenticated AI Gateway's
+   * `cf-aig-authorization` (a Run-only token). The runner sets them as
+   * ANTHROPIC_CUSTOM_HEADERS. Sent only to a runner that declares
+   * `agent_endpoint_headers`. Secret.
+   */
+  headers?: Record<string, string>;
 }
 
 export type ClaimDiagnosticReason =
@@ -1535,6 +1632,17 @@ export type ClaimTaskExclusionCode =
   | 'rate_limited'
   | keyof NonNullable<ClaimDiagnostics['deferrals']>;
 
+/** A wall that held a claim: what it is, on which provider, and when it lifts (ISO, or null when unknown). */
+export interface ClaimBudgetWall {
+  /** account_seat: the account's own OAuth session or budget; provider_pause: a rate limit or budget wall a run recorded for the team; tenant_budget: the tenant's own budget. */
+  kind: 'account_seat' | 'provider_pause' | 'tenant_budget';
+  backend: AgentBackend;
+  resetsAt: string | null;
+}
+
+/** Why the account refused a claim outright (HTTP 429), named for the caller. */
+export type ClaimAccountLimitCode = 'max_concurrent_workers' | 'daily_cost_limit' | 'max_concurrent_sessions';
+
 export interface ClaimTaskExclusion {
   code: ClaimTaskExclusionCode;
   /** One human sentence, including the override when there is one. */
@@ -1563,6 +1671,18 @@ export interface ClaimDiagnostics {
    * all_candidates_deferred and race_lost responses.
    */
   blockedByPr?: { prNumber: number | null; prUrl: string | null };
+  /**
+   * The budget and rate-limit walls this claim was held by, set on a
+   * budget_exhausted refusal: which wall, on which provider, and when it lifts.
+   * `summary` is the same thing as one or two sentences for a person.
+   * A wall is listed only where a task was actually deferred on it.
+   *
+   * Only these hard walls produce budget_exhausted. The learned forecast
+   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
+   * (hosted runner hours) never do: they hold a claim under their own
+   * deferral reason, and the forecast never holds an explicit start.
+   */
+  budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
    * Populated when reason=all_candidates_deferred: per-reason breakdown of why
    * every candidate in the window was skipped without a claim attempt.
@@ -1642,6 +1762,14 @@ export interface ClaimDiagnostics {
      * without the personal-credential feature.
      */
     no_personal_credential?: number;
+    /**
+     * The Coding provider policy (team / workspace / requester) does not allow
+     * this task's backend or the payment source its run would use. Held, not
+     * failed, and never redirected to another provider. The gate event's detail
+     * is the structured `provider_not_allowed` / `payment_source_not_allowed` /
+     * `no_model_credential` error. See packages/core/coding-policy.ts.
+     */
+    provider_not_allowed?: number;
     /**
      * The task's tier or model is above the effective model-tier ceiling for
      * its team / workspace / requester (docs/specs/model-tier-ceilings.md).
@@ -3573,6 +3701,10 @@ export interface LaneBar {
   href?: string | null;
   /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
   missionId?: string | null;
+  /** The run's task, for an explicit "Open task" link. */
+  taskId?: string | null;
+  /** How the run stands or ended, in words ("Stopped: session limit · work kept"). lib/fleet-view-end-reason.ts. */
+  endReason?: string | null;
 }
 
 export interface Lane {
@@ -3590,6 +3722,8 @@ export interface FleetSlotWorker {
   rest: string;
   /** The single display name for a narrow row: the task label or its cleaned title, never both. */
   name?: string;
+  /** The task's full title, for a readable name when the label is a machine identifier. */
+  title?: string | null;
   roleSlug: string | null;
   roleName: string | null;
   roleColor: string | null;
@@ -4299,4 +4433,68 @@ export interface DerivedFileRule {
   regenerate: string;
   /** Which side the driver keeps before regenerating. Default `theirs` (the incoming base). */
   strategy?: 'ours' | 'theirs';
+}
+
+// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
+// One row per stable systemic-failure pattern (`failure_incidents`), written by
+// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
+// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
+// events stay where they already live (workers / worker_terminal_records /
+// gate_events); an incident only carries bounded refs back to them.
+
+/** Ordered: low < medium < high < critical. */
+export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** The deterministic rule that raised an incident. Renaming one forks its history. */
+export type FailureIncidentRule =
+  | 'retry_fork'
+  | 'lineage_multi_pr'
+  | 'repeated_failure'
+  | 'stranded_gate'
+  | 'path_overlap_stall'
+  | 'provider_attribution_mismatch'
+  | 'failure_rate_spike'
+  | 'output_unmet_boundary';
+
+/** A pointer at an existing row — never a copy of it. */
+export interface FailureIncidentEvidenceRef {
+  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
+  /** Row id, or the PR number as a string for `kind: 'pr'`. */
+  id: string;
+  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
+  at: string;
+  note?: string;
+}
+
+/** Bounded (newest kept) sets of what the incident touched. */
+export interface FailureIncidentAffectedRefs {
+  taskIds: string[];
+  workerIds: string[];
+  prNumbers: number[];
+}
+
+export interface FailureIncident {
+  id: string;
+  workspaceId: string | null;
+  signature: string;
+  detectorVersion: string;
+  rule: FailureIncidentRule;
+  reasonCode: string;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  recurrenceCount: number;
+  affectedRefs: FailureIncidentAffectedRefs;
+  evidenceRefs: FailureIncidentEvidenceRef[];
+  impact: Record<string, number>;
+  lastAlertedAt: string | null;
+  lastAlertSeverity: FailureIncidentSeverity | null;
+  linkedFixTaskId: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
 }

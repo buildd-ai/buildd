@@ -68,7 +68,7 @@ export async function GET(
       const isOwner = artifact.worker?.accountId === account.id;
       if (!isOwner) {
         const hasAccess = artifact.workspaceId
-          ? await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId)
+          ? await verifyAccountWorkspaceAccess(account, artifact.workspaceId)
           : false;
         if (!hasAccess) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });

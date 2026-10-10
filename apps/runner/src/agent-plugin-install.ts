@@ -7,6 +7,8 @@
  *   buildd install                     the same, for the current repo only
  *   buildd install --uninstall [--global]
  *   buildd install --status [--global]
+ *   buildd install --global --oauth    MCP sign-in with no key on disk, acting as you
+ *   buildd install --global --as-agent the same, acting as your agent
  *   --client=claude,codex,cursor       limit to these clients
  *
  * Ownership rule: a hook handler is buildd's if and only if its command names
@@ -273,10 +275,18 @@ function installSkill(ctx: InstallContext): void {
 // regardless (e.g. to set up a new workspace); `--everywhere` keeps the old
 // user-wide entry.
 //
-// `--oauth` writes no key: each workspace folder points at that workspace's
-// OAuth MCP endpoint (/api/mcp-oauth/<workspaceId>) and Claude Code signs the
-// person in in the browser the first time the folder uses buildd. Opt-in until
-// a full Claude Code sign-in against it has been proven end to end.
+// `--oauth` writes no key. On a server that offers one connection across
+// workspaces (its /api/mcp answers with an OAuth challenge), each folder points
+// at <server>/api/mcp and Claude Code signs the person in in the browser the
+// first time; the person picks the workspaces on the consent page. The entry
+// pins Claude Code's requested scopes (`oauth.scopes`, see
+// code.claude.com/docs/en/mcp) to include `buildd:act-as-person`, so the
+// connection acts as the person; `--as-agent` leaves that scope out and the
+// connection acts as their agent (for a shared or remote machine). The server
+// never advertises the person scope, so only an entry that names it asks for it.
+// On an older server each folder points at that workspace's own OAuth endpoint
+// (/api/mcp-oauth/<workspaceId>) as before. Opt-in until a full Claude Code
+// sign-in has been proven end to end.
 //
 // The login key belongs to ONE team. The folders come from every team the
 // person is in (their presence token's list), and a folder whose workspace
@@ -307,6 +317,55 @@ export function builddOAuthMcpEntry(server: string, workspaceId: string): Json {
   return { type: 'http', url: `${server.replace(/\/+$/, '')}/api/mcp-oauth/${encodeURIComponent(workspaceId)}` };
 }
 
+/** The scope that asks the consent page for a connection that acts as the person (apps/web/src/lib/oauth/account-consent.ts). */
+export const ACT_AS_PERSON_SCOPE = 'buildd:act-as-person';
+/**
+ * What an as-you entry pins. A pinned set replaces whatever the server would
+ * have asked for, so it names read and write too.
+ */
+export const PERSON_OAUTH_SCOPES = `buildd:read buildd:write ${ACT_AS_PERSON_SCOPE}`;
+
+/**
+ * Key-free entry for the one connection across workspaces. `person` pins the
+ * scopes so Claude Code's sign-in asks to act as the person; `agent` pins
+ * nothing, so it asks for what the server advertises, which never includes
+ * the person scope.
+ */
+export function builddAccountOAuthMcpEntry(server: string, actsAs: 'person' | 'agent'): Json {
+  const entry: Json = { type: 'http', url: `${server.replace(/\/+$/, '')}/api/mcp` };
+  if (actsAs === 'person') entry.oauth = { scopes: PERSON_OAUTH_SCOPES };
+  return entry;
+}
+
+/**
+ * Whether the server offers the one connection: an unauthenticated request to
+ * <server>/api/mcp gets a 401 whose challenge names protected-resource metadata
+ * (RFC 9728) for that very resource. That is also exactly what Claude Code
+ * needs to start the sign-in. Any other answer, or no answer, means no.
+ */
+export async function probeAccountOAuth(server: string, fetchImpl: typeof fetch = globalThis.fetch): Promise<boolean> {
+  const base = server.replace(/\/+$/, '');
+  const resource = `${base}/api/mcp`;
+  try {
+    const res = await fetchImpl(resource, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'buildd-install', version: '1' } } }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.status !== 401) return false;
+    const challenge = res.headers.get('www-authenticate') ?? '';
+    const hinted = /resource_metadata="([^"]+)"/i.exec(challenge)?.[1];
+    if (!hinted) return false;
+    const meta = await fetchImpl(hinted, { signal: AbortSignal.timeout(5000) });
+    if (!meta.ok) return false;
+    const body = await meta.json() as { resource?: unknown };
+    return typeof body.resource === 'string' && body.resource.replace(/\/+$/, '') === resource;
+  } catch {
+    return false;
+  }
+}
+
 const OAUTH_MCP_URL = /\/api\/mcp-oauth\/[^/?#]+\/?$/;
 
 /** An entry named buildd pointing at a buildd MCP endpoint (key or OAuth): ours to move. */
@@ -318,8 +377,33 @@ export function isBuilddMcpEntry(entry: unknown): boolean {
 /** How a buildd entry signs in, for --status. Never returns the credential. */
 export function builddMcpAuthKind(entry: unknown): 'OAuth' | 'key' | null {
   if (!isBuilddMcpEntry(entry)) return null;
-  const e = entry as { url: string; headers?: Record<string, unknown> };
-  return OAUTH_MCP_URL.test(e.url) && !e.headers?.Authorization ? 'OAuth' : 'key';
+  const e = entry as { headers?: Record<string, unknown> };
+  // No key on the entry: Claude Code signs in with OAuth (per workspace, or the one connection).
+  return e.headers?.Authorization ? 'key' : 'OAuth';
+}
+
+/**
+ * Who a buildd entry's connection acts as, read from the entry alone:
+ * `person` (as you) when it pins the person scope, `agent` when it is the one
+ * connection without it, `unknown` for a per-workspace OAuth entry (decided at
+ * sign-in), `key` for a key entry. Null for anything not buildd's.
+ */
+export function builddMcpActsAs(entry: unknown): 'person' | 'agent' | 'unknown' | 'key' | null {
+  const kind = builddMcpAuthKind(entry);
+  if (!kind) return null;
+  if (kind === 'key') return 'key';
+  const e = entry as { url: string; oauth?: { scopes?: unknown } };
+  if (OAUTH_MCP_URL.test(e.url)) return 'unknown';
+  const scopes = typeof e.oauth?.scopes === 'string' ? e.oauth.scopes.split(/\s+/) : [];
+  return scopes.includes(ACT_AS_PERSON_SCOPE) ? 'person' : 'agent';
+}
+
+const ACTS_AS_LABEL = { person: 'as you', agent: 'as your agent', unknown: 'unknown until signed in' } as const;
+/** "OAuth, as you" and so on; a key entry is just "key". */
+function entryLabel(entry: unknown): string | null {
+  const actsAs = builddMcpActsAs(entry);
+  if (!actsAs) return null;
+  return actsAs === 'key' ? 'key' : `OAuth, ${ACTS_AS_LABEL[actsAs]}`;
 }
 
 export function planMcpRegistration(opts: {
@@ -411,7 +495,7 @@ export function mcpStatusLines(home: string, env: Record<string, string | undefi
   let cfg: Json;
   try { cfg = readJson(join(home, '.claude.json')); } catch { return ['buildd MCP server: ~/.claude.json could not be parsed.']; }
   const rows: Array<[string, string]> = [];
-  const global = builddMcpAuthKind(cfg?.mcpServers?.buildd);
+  const global = entryLabel(cfg?.mcpServers?.buildd);
   if (global) rows.push(['every session', global]);
   let hookEnv: Record<string, string | undefined> | null = null;
   let personRepos: string[] | null = null;
@@ -433,7 +517,7 @@ export function mcpStatusLines(home: string, env: Record<string, string | undefi
         note = `  its team can't reach ${repo}: run buildd install --global to switch it to OAuth`;
       }
     }
-    rows.push([tilde(path, home), kind + note]);
+    rows.push([tilde(path, home), entryLabel(entry) + note]);
   }
   if (rows.length === 0) return ['buildd MCP server: not registered in ~/.claude.json.'];
   const width = Math.max(...rows.map(([p]) => p.length));
@@ -449,6 +533,8 @@ export interface CliOptions {
   mcp: McpMode | null;
   /** Sign each workspace folder in with OAuth instead of writing the key. */
   oauth: boolean;
+  /** With oauth: the connection acts as the person's agent, not as the person. */
+  asAgent: boolean;
 }
 
 export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
@@ -457,6 +543,7 @@ export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
   let clients: AgentClient[] | null = null;
   let mcp: McpMode | null = null;
   let oauth = false;
+  let asAgent = false;
   for (const a of argv) {
     if (a === '--global') scope = 'global';
     else if (a === '--uninstall') mode = 'uninstall';
@@ -464,6 +551,7 @@ export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
     else if (a === '--everywhere') mcp = 'everywhere';
     else if (a === '--here') mcp = 'here';
     else if (a === '--oauth') oauth = true;
+    else if (a === '--as-agent') { oauth = true; asAgent = true; }
     else if (a.startsWith('--client=')) {
       const list = a.slice('--client='.length).split(',').filter(Boolean);
       const bad = list.filter(c => !(AGENT_CLIENTS as readonly string[]).includes(c));
@@ -473,12 +561,13 @@ export function parseCliArgs(argv: string[]): CliOptions | { error: string } {
   }
   if (mcp === 'everywhere' && scope !== 'global') return { error: '--everywhere only applies with --global' };
   if (mcp === 'here' && scope === 'global') return { error: '--here and --global are alternatives: pick one' };
-  if (oauth && mcp === 'everywhere') return { error: '--oauth signs in per workspace folder, so it cannot apply --everywhere' };
-  if (oauth && !(scope === 'global' || mcp === 'here')) return { error: '--oauth applies with --global or --here' };
+  const flag = asAgent ? '--as-agent' : '--oauth';
+  if (oauth && mcp === 'everywhere') return { error: `${flag} signs in per workspace folder, so it cannot apply --everywhere` };
+  if (oauth && !(scope === 'global' || mcp === 'here')) return { error: `${flag} applies with --global or --here` };
   // A global install registers the MCP server for workspace folders unless told otherwise.
   if (mode === 'install' && scope === 'global' && !mcp) mcp = 'workspaces';
-  if (mode !== 'install') { mcp = null; oauth = false; }
-  return { mode, scope, clients, mcp, oauth };
+  if (mode !== 'install') { mcp = null; oauth = false; asAgent = false; }
+  return { mode, scope, clients, mcp, oauth, asAgent };
 }
 
 export interface CliEnv {
@@ -491,7 +580,7 @@ export interface CliEnv {
 }
 
 /** Register the MCP server per --global/--here/--everywhere. Returns the lines to print. */
-async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: string, e: CliEnv): Promise<{ ok: boolean; lines: string[]; workspaceRepos: string[] | null }> {
+async function registerMcp(mode: McpMode, oauth: boolean, asAgent: boolean, home: string, cwd: string, e: CliEnv): Promise<{ ok: boolean; lines: string[]; workspaceRepos: string[] | null }> {
   const env = e.env ?? process.env;
   const { apiKey, server } = readBuilddConfig(home, env);
   if (!apiKey) return { ok: false, lines: ["Not logged in. Run 'buildd login' first."], workspaceRepos: null };
@@ -521,6 +610,11 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
   if (mode === 'workspaces' && !workspaceRepos) {
     return { ok: false, lines: [`Could not load your workspaces from ${server}. Nothing was changed; try again, or pass --everywhere.`], workspaceRepos };
   }
+  // --oauth: the one connection when the server offers it, else the per-workspace endpoints.
+  const accountEntry = oauth && await probeAccountOAuth(server, e.fetchImpl ?? globalThis.fetch)
+    ? builddAccountOAuthMcpEntry(server, asAgent ? 'agent' : 'person')
+    : null;
+  const actsAsLabel = asAgent ? 'as your agent' : 'as you';
   const file = join(home, '.claude.json');
   let claudeJson: Json;
   try { claudeJson = readJson(file); } catch (err) {
@@ -529,6 +623,8 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
   const plan = planMcpRegistration({
     claudeJson, entry: builddMcpEntry(server, apiKey), mode, cwd,
     oauthEntry: repo => {
+      // The one connection needs no workspace id, so it also covers a folder that is not a workspace yet.
+      if (accountEntry) return accountEntry;
       if (isOtherTeam(repo)) return builddOAuthMcpEntry(server, personIdByRepo.get(repo!.toLowerCase())!);
       const id = oauth && repo ? workspaceIdByRepo.get(repo.toLowerCase()) : undefined;
       return id ? builddOAuthMcpEntry(server, id) : null;
@@ -540,19 +636,43 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
   writeJson(file, plan.config);
   chmodSync(file, 0o600); // an entry may hold the key, like ~/.buildd/config.json
   const lines: string[] = [];
-  const signIn = (f: { oauth: boolean; otherTeam?: boolean }) => (f.otherTeam
+  // What an --oauth install means, in plain words.
+  const oauthNotes = (): string[] => {
+    if (!oauth) return [];
+    if (!accountEntry) {
+      return [
+        "  No key is written. This server doesn't offer one connection across workspaces yet, so Claude Code signs you in once per workspace (/mcp shows it),",
+        '  and whether that connection acts as you or as your agent is decided when you sign in.',
+      ];
+    }
+    return asAgent
+      ? [
+        '  No key is written. Claude Code signs you in once in the browser and you pick the workspaces the connection reaches.',
+        '  It acts as your agent, not as you: use this on a shared or remote machine. On your own machine, --oauth connects as you.',
+      ]
+      : [
+        '  No key is written. Claude Code signs you in once in the browser and you pick the workspaces the connection reaches.',
+        '  It acts as you: what it does there is done as you. On a shared or remote machine, use --as-agent so it acts as your agent instead.',
+      ];
+  };
+  const signIn = (f: { oauth: boolean; otherTeam?: boolean }) => (accountEntry && f.oauth
+    ? `  ${actsAsLabel} (browser sign-in on first use)`
+    : f.otherTeam
     ? "  OAuth: your login key's team can't reach it, so you sign in as yourself (browser, first use)"
     : f.oauth ? '  browser sign-in on first use' : '');
   if (mode === 'everywhere') {
     lines.push(`buildd MCP server: registered for every Claude Code session (${tilde(file, home)}).`);
   } else if (mode === 'here') {
     const f = plan.folders[0];
-    lines.push(f?.otherTeam
+    lines.push(accountEntry && f?.oauth
+      ? `buildd MCP server: registered for this folder, ${tilde(cwd, home)}, signing in ${actsAsLabel} (browser sign-in on first use).`
+      : f?.otherTeam
       ? `buildd MCP server: registered for this folder, ${tilde(cwd, home)}, signing in with OAuth: your login key's team can't reach this workspace (browser sign-in on first use).`
       : f?.oauth
         ? `buildd MCP server: registered for this folder, ${tilde(cwd, home)}, signing in with OAuth (browser sign-in on first use).`
         : `buildd MCP server: registered for this folder, ${tilde(cwd, home)}.`);
     if (oauth && f && !f.oauth) lines.push('  This folder is not a workspace yet, so it uses your key. Run buildd install --here --oauth again once it is.');
+    if (f?.oauth) lines.push(...oauthNotes());
   } else {
     if (plan.folders.length === 0 && plan.selfConfigured.length === 0) {
       lines.push('buildd MCP server: none of the folders Claude Code has opened is a checkout of one of your workspaces yet.');
@@ -570,7 +690,7 @@ async function registerMcp(mode: McpMode, oauth: boolean, home: string, cwd: str
       lines.push(`  Switched ${plan.repaired.length} folder${plan.repaired.length === 1 ? '' : 's'} from a key whose team can't reach their workspace to OAuth: ${plan.repaired.map(p => tilde(p, home)).join(', ')}`);
     }
     if (hookAuth?.kind !== 'presence') lines.push("  Only your login key's team is included. Run buildd login again to include every team you're in.");
-    if (oauth && plan.folders.some(f => f.oauth)) lines.push('  No key is written for those folders. Claude Code signs you in once per workspace (/mcp shows it).');
+    if (oauth && plan.folders.some(f => f.oauth)) lines.push(...oauthNotes());
     lines.push('  New checkout? Run buildd install --global again.');
     lines.push('  Need buildd somewhere else, e.g. to set up a new workspace? Run buildd install --here in that folder.');
   }
@@ -586,7 +706,7 @@ export async function runCli(argv: string[], e: CliEnv = {}): Promise<{ code: nu
   let workspaceRepos: string[] | null = null;
   if (parsed.mode === 'status' && parsed.scope === 'global') lines.push(...mcpStatusLines(home, e.env ?? process.env), '');
   if (parsed.mcp) {
-    const r = await registerMcp(parsed.mcp, parsed.oauth, home, cwd, e);
+    const r = await registerMcp(parsed.mcp, parsed.oauth, parsed.asAgent, home, cwd, e);
     if (!r.ok) return { code: 1, lines: r.lines };
     lines.push(...r.lines, '');
     workspaceRepos = r.workspaceRepos;

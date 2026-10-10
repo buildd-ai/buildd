@@ -124,7 +124,17 @@ Every swallowed failure gets a severity. `[notifyTeam]` / `[health-watcher]` row
 | CI red on release PR / Vercel prod down | critical | deploy pipeline broken · `[health-watcher]` (team channel of the project's workspace) |
 | **★ consecutive runner failures** | **critical** | **"all tasks failing" detector — NEW** |
 
-### Systemic-failure detector (★ new)
+### Systemic-failure detector (★ new) — superseded by the Failure Pattern Sentinel
+
+This sketch (a single consecutive-failure counter) was the first cut at "everything
+is failing and nothing said so." It has since been generalized and shipped as the
+**Failure Pattern Sentinel** — see [below](#failure-pattern-sentinel-incident-ledger--readout) —
+which covers this case (`repeated_failure`) plus seven others (retry forks, multi-PR
+retry lineages, stranded gates, path-overlap stalls, provider-attribution mismatch,
+failure-rate spikes, repeated output-unmet boundaries) through one durable incident
+ledger instead of one ad hoc counter per pattern. The sketch below is kept for
+history; new systemic-pattern work belongs in `failure-pattern-sentinel.ts`'s rule
+set, not a new counter.
 
 The class of bug that hides longest is "everything is failing and nothing said so" (cf. the open *all-tasks-failing-on-runner* diagnostic). Add a counter, not a per-task alert:
 
@@ -148,6 +158,68 @@ on task outcome:
 2. Wire `reportOps` into the 4 swallowed catches above (split `route.ts:646` first so one failure can't mask the others).
 3. Add the consecutive-failure detector at the task-outcome write path.
 4. Set `OPS_ALERTS_ENABLED=1` + `PUSHOVER_USER` / `PUSHOVER_TOKEN_ALERT` in Vercel **and** the runner env. Dark until then.
+
+## Failure Pattern Sentinel — incident ledger & readout
+
+A deterministic detector for *systemic* breakage, sitting between the per-call
+`reportOps` catches above and a human noticing a trend by eye. One durable
+`failure_incidents` row per stable pattern signature (not per occurrence), so
+the 2nd and the 200th duplicate CI retry, stranded gate, or provider mismatch
+update one row instead of paging — or filing a bug — once each.
+
+**Pipeline** (`apps/web/src/lib/failure-pattern-sweep.ts`'s `runFailurePatternSweep`,
+called by both a deferred post-transition trigger and a 30-minute cron backstop,
+so there is exactly one code path to keep idempotent):
+
+```
+collect bounded facts (worker failures, gate events, retry lineage, …)
+  → detectFailurePatterns()       pure rule engine, 8 rules, deterministic minimum severity
+  → recordIncidentCandidates()    idempotent upsert into failure_incidents (CAS, no transactions)
+  → actOnIncidentResults()        triage (rule floor, optionally raised by a model) →
+                                   at most one deduped fix task per incident →
+                                   page candidates on transition only (never per occurrence),
+                                   through the escalation gate
+```
+
+- **Who is paged: the escalation gate** (`apps/web/src/lib/failure-incident-escalation.ts`),
+  the same one that decides PR escalations. Critical and high incidents are page
+  candidates; medium and low stay on the ledger. Rules first:
+  a critical incident is the owner's even while a fix task runs; any other
+  incident whose fix task is still open is Buildd's and pages nobody; a high
+  incident nothing is fixing goes to the owner. The verdict is stored in the
+  decision ledger (subject `incident:<id>`), and only an owner verdict sends a
+  push (the team's `needsAttention` notification, priority 1 for critical),
+  linking to the incident page `/app/incidents/<id>`. Home's Needs You lists
+  every unresolved incident whose stored verdict is the owner's; the page path
+  reads the ledger and never calls a model. A push that fails is not recorded,
+  so the next replay of that state pages again. A critical floor is decided by
+  rule and can never be downgraded by the model triage step: it is not even consulted.
+- **Re-alerting** is transition-based: a severity increase, the affected scope
+  crossing an impact tier, or a resolved incident recurring. Anything else —
+  including the same pattern simply accumulating more occurrences — updates
+  the row's count/evidence without paging or filing again.
+- Noisy transient/infra and budget-exhaustion patterns (matched deterministically
+  on the failure signature) stay ledger-only: no fix task is auto-filed for them
+  unless a confident model answer names an actual platform defect.
+
+### Reading the ledger
+
+The same table is exposed read-only, API-first:
+
+- **`GET /api/health/incidents`** (`apps/web/src/app/api/health/incidents/route.ts`) —
+  team/workspace-scoped list with `status`/`severity`/`rule`/`signature` filters.
+  Each row carries severity, rule + reasonCode, first/last seen, occurrence and
+  recurrence counts, impact, representative task/worker/PR refs, alert state
+  (`lastAlertedAt`/`lastAlertSeverity`), any linked fix task, and
+  acknowledged/resolved state. `counts.bySeverity` gives the "open incidents by
+  severity" overview regardless of the row-level filters.
+- **MCP `list_incidents`** (`buildd` tool, analytics group) — same data, formatted
+  for an agent loop. Check this before filing a `[friction]` task or a manual bug
+  report for something that looks systemic; it may already be tracked, paged and
+  linked to a fix task.
+
+There is no second query implementation — both read paths select directly from
+`failure_incidents`, the same table `failure-incident-store.ts` writes.
 
 ## Diagnostic plane (dashboard, not phone)
 

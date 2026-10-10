@@ -359,7 +359,7 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
       .select({
         id: workers.id, accountId: workers.accountId, runner: workers.runner, localUiUrl: workers.localUiUrl,
         status: workers.status, startedAt: workers.startedAt, completedAt: workers.completedAt, updatedAt: workers.updatedAt,
-        prNumber: workers.prNumber,
+        prNumber: workers.prNumber, mergedAt: workers.mergedAt, waitingFor: workers.waitingFor, error: workers.error,
         taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
@@ -373,9 +373,19 @@ export async function loadRunnersFleet(input: { teamId: string | null; wsIds: st
       .limit(FLEET_WORKER_ROW_CAP),
     loadQueueHistory({ wsIds, from: windowStart, now }),
   ]);
+  // A run that stopped (a session limit, say) whose task merged later, from
+  // this run or another: the merged PR, so the run reads "merged as #N".
+  const taskIds = [...new Set(workerRows.map(r => r.taskId).filter((id): id is string => !!id))];
+  const mergedRows = taskIds.length === 0 ? [] : await db
+    .select({ taskId: workers.taskId, prNumber: workers.prNumber })
+    .from(workers)
+    .where(and(inArray(workers.taskId, taskIds), isNotNull(workers.mergedAt), isNotNull(workers.prNumber)));
+  const mergedPrByTask = new Map(mergedRows.map(r => [r.taskId, r.prNumber]));
   const rows: FleetWorkerRow[] = workerRows.map(r => ({
     id: r.id, accountId: r.accountId, runner: r.runner, localUiUrl: r.localUiUrl, status: r.status,
     startedAt: r.startedAt, completedAt: r.completedAt, updatedAt: r.updatedAt, prNumber: r.prNumber,
+    mergedAt: r.mergedAt, waitingFor: r.waitingFor as FleetWorkerRow['waitingFor'], error: r.error,
+    taskMergedPr: r.taskId ? mergedPrByTask.get(r.taskId) ?? null : null,
     task: r.taskId ? {
       id: r.taskId, title: r.taskTitle ?? '', label: r.taskLabel, mode: r.taskMode,
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,

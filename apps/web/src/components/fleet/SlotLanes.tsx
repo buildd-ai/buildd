@@ -56,6 +56,8 @@ export interface SlotLaneBar {
    * passes the mission id). A bar without one is selected on its own.
    */
   focusKey?: string;
+  /** For a folded "N short runs" tick: the ids of the runs inside it. */
+  shortIds?: readonly string[];
 }
 
 export interface SlotLane {
@@ -109,9 +111,10 @@ export interface SlotLanesProps {
   /** Spans tinted flat behind the bars, across every lane (e.g. idle while work waited). */
   shade?: ReadonlyArray<{ from: number; to: number }>;
   /**
-   * Tap to select: the first tap on a bar highlights every bar sharing its
-   * `focusKey` and dims the rest, a second tap on the same bar follows its
-   * link, and the empty track or Escape clears. Off, a tap is a plain link.
+   * Tap to select: a tap on a bar highlights every bar sharing its
+   * `focusKey` and dims the rest lightly; the empty track or Escape clears.
+   * Bars draw no links in this mode (the caller shows the selected run with
+   * an explicit link). Off, a tap is a plain link.
    */
   selectable?: boolean;
   /** The selected bar, or null when the selection clears. */
@@ -393,7 +396,7 @@ export default function SlotLanes({
               const ring = focused ? 'z-[3] outline outline-[1.5px] outline-offset-0 outline-text-primary' : isActive ? 'z-[3] outline outline-1 outline-offset-0 outline-border-strong' : '';
               // On the bar's wrapper, so its outside label, live pulse and
               // question marker dim with it.
-              const dim = focused === false ? 'opacity-25' : '';
+              const dim = focused === false ? 'opacity-60' : '';
               const content = short || claimed ? null : (
                 <>
                   <BarLabel bar={b} />
@@ -435,19 +438,19 @@ export default function SlotLanes({
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),
-                // First tap selects; a second tap on the same bar is the link.
+                // A tap selects. Nothing navigates: a selectable chart draws
+                // no links, and the caller shows the run with an explicit one.
                 onClick: selectable ? (e: MouseEvent) => {
                   e.stopPropagation();
-                  if (selected?.id === b.id) return;
                   e.preventDefault();
-                  select(b);
+                  if (selected?.id !== b.id) select(b);
                 } : undefined,
                 onFocus: () => hover(b),
                 ...(hoverCard ? { onMouseLeave: () => hover(null), onBlur: () => hover(null) } : {}),
               } as const;
               return (
                 <span key={b.id} className={dim || undefined} data-dimmed={dim ? 'true' : undefined}>
-                  {b.href ? (
+                  {b.href && !selectable ? (
                     <Link href={b.href} {...(b.linkData ?? {})} {...common}>{content}</Link>
                   ) : (
                     <span {...common}>{content}</span>

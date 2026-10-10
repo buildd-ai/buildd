@@ -433,3 +433,11 @@ describe('deliveryCounts: running missions vs live agents vs slots', () => {
     expect(c.liveAgents).toBe(1);
   });
 });
+
+describe('focusPhrase', () => {
+  it('a mission refresh task reads as "the update from dev", not the mission repeated', async () => {
+    const { focusPhrase } = await import('./delivery-projection');
+    expect(focusPhrase('chore(mission): merge dev into the Task estimates: a model integration branch')).toBe('The update from dev');
+    expect(focusPhrase('fix(api): retry the claim')).toBe('Retry the claim');
+  });
+});

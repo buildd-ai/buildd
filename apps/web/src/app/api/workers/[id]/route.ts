@@ -47,7 +47,8 @@ import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { enforceServerSideEscalation, applyCopyReviewGate, parseCopyFindings } from '@/lib/reviewer';
+import { copyReviewConfigOf } from '@buildd/shared';
 import {
   checkDispatch,
   guardDispatchedTask,
@@ -5385,6 +5386,46 @@ async function handleReviewerOutcomeIfNeeded(
     effectiveVerdict = gated.verdict;
     serverOverrideReason = gated.overrideReason;
     serverOverrideSource = 'confidence';
+  }
+
+  // Copy review (gitConfig.copyReview, lib/copy-review.ts). Applied after the
+  // escalation and confidence gates, so a PR they send to a person keeps that
+  // verdict; under mode 'gate' an approval with strings to rewrite becomes
+  // request-changes carrying the rewrites, which the fix attempt applies. The
+  // feedback is persisted on the round's structured output because the kernel
+  // reads the fix brief from there, not from this handler's memory.
+  const copyReview = copyReviewConfigOf(workspace?.gitConfig);
+  const copyGate = applyCopyReviewGate({
+    verdict: effectiveVerdict,
+    mode: copyReview?.mode ?? null,
+    findings: parseCopyFindings((output as { copyFindings?: unknown }).copyFindings),
+    feedback: output.feedback,
+  });
+  if (copyGate.feedback !== output.feedback || copyGate.verdict !== effectiveVerdict) {
+    output.feedback = copyGate.feedback;
+    if (copyGate.verdict !== effectiveVerdict) {
+      console.log(`[reviewer] PR #${prNumber}: copy review turned ${effectiveVerdict} into ${copyGate.verdict}`);
+      effectiveVerdict = copyGate.verdict;
+    }
+    await db
+      .update(tasks)
+      .set({
+        result: sql`jsonb_set(COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${copyGate.reason ?? 'copy review'}::text), '{structuredOutput,feedback}', to_jsonb(${copyGate.feedback ?? ''}::text), true)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, reviewerTaskId))
+      .catch((err: unknown) =>
+        console.error(`[reviewer] could not persist the copy review for PR #${prNumber}:`, err),
+      );
+  }
+  if (copyGate.note) {
+    void appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'copy_review', detail: copyReview?.mode === 'gate' ? 'required' : 'advice', note: copyGate.note },
+      workspaceId,
+    }).catch((err: unknown) => console.warn(`[reviewer] copy review note for PR #${prNumber} not posted:`, err));
   }
 
   if (serverOverrideReason) {

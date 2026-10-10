@@ -2,14 +2,13 @@
 
 import { useState } from 'react';
 import type { CredentialPolicyValue, ProviderPolicySummary } from '@buildd/shared';
-import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
-import { POLICY_OPTIONS, POLICY_UNSET, POLICY_UNSET_HINT, policySentence } from './providers-view';
+import Segmented from '@/components/ui/Segmented';
+import { POLICY_OPTIONS, effectivePolicy, policySentence } from './providers-view';
 
 /**
- * The team's credential policy: whose key agent runs (and chat) use. Until
- * one is picked (`credentialPolicy` null) agent runs use team keys only, so
- * picking one is what opts agent runs in. Admins pick; everyone else reads
- * one sentence.
+ * Who pays: the team's credential policy (whose key agent runs and chat use).
+ * Unset behaves as team keys only, so Team key shows as chosen; picking any
+ * option stores it. Admins switch it; everyone else reads one line.
  */
 export default function CredentialPolicySelector({ teamId, policy, canManage, onSaved }: {
   teamId: string;
@@ -20,9 +19,11 @@ export default function CredentialPolicySelector({ teamId, policy, canManage, on
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [pending, setPending] = useState<CredentialPolicyValue | null>(null);
-  const chosen = pending ?? policy.credentialPolicy;
+  const chosen = pending ?? effectivePolicy(policy);
+  const hint = POLICY_OPTIONS.find((o) => o.value === chosen)?.hint;
 
   async function save(next: CredentialPolicyValue) {
+    if (busy || (next === policy.credentialPolicy)) return;
     setPending(next);
     setBusy(true);
     setErr(null);
@@ -45,40 +46,20 @@ export default function CredentialPolicySelector({ teamId, policy, canManage, on
 
   return (
     <section aria-labelledby="credential-policy-h" data-testid="credential-policy" data-policy={policy.credentialPolicy ?? 'unset'}>
-      <h2 id="credential-policy-h" className="section-label mb-3">Whose key agent runs use</h2>
-      {!policy.credentialPolicy && (
-        <p className="flex items-start gap-3 mb-3 text-body" data-testid="credential-policy-unset">
-          {/* mt-1.5 sits the square on the first line's middle, however the text wraps. */}
-          <span aria-hidden className={`mt-1.5 w-2.5 h-2.5 shrink-0 ${STATUS_TONE_SQUARE.warning}`} />
-          <span className="min-w-0">
-            <span className="text-text-primary">{POLICY_UNSET}</span>
-            {canManage && <span className="text-text-secondary"> {POLICY_UNSET_HINT}</span>}
-          </span>
-        </p>
-      )}
-      {canManage ? (
-        <div className="card divide-y divide-border-default" role="radiogroup" aria-labelledby="credential-policy-h">
-          {POLICY_OPTIONS.map((o) => (
-            <label key={o.value} className="flex items-start gap-3 px-4 py-3 min-h-11 cursor-pointer">
-              <input
-                type="radio"
-                name="credential-policy"
-                value={o.value}
-                className="control-radio appearance-none mt-0.5"
-                checked={chosen === o.value}
-                disabled={busy}
-                onChange={() => save(o.value)}
-              />
-              <span>
-                <span className="block text-body text-text-primary">{o.label}</span>
-                <span className="block text-meta text-text-secondary mt-0.5">{o.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      ) : (
-        policy.credentialPolicy && <p className="text-body text-text-secondary" data-testid="credential-policy-line">{policySentence(policy)}</p>
-      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h2 id="credential-policy-h" className="text-body font-semibold text-text-primary">Who pays</h2>
+        {canManage ? (
+          <Segmented
+            label="Who pays"
+            items={POLICY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            value={chosen}
+            onChange={(v) => { void save(v); }}
+          />
+        ) : (
+          <p className="text-body text-text-secondary" data-testid="credential-policy-line">{policySentence(policy)}</p>
+        )}
+      </div>
+      {canManage && hint && <p className="mt-1.5 text-meta text-text-muted" data-testid="credential-policy-hint">{hint}</p>}
       {err && <p role="alert" className="text-meta text-status-error mt-2">{err}</p>}
     </section>
   );
