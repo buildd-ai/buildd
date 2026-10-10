@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
+import Notice from '@/components/ui/Notice';
 import Spinner from '@/components/Spinner';
 import { Select } from '@/components/ui/Select';
 import { humanPickableRoles, type GoalCriterion } from '@buildd/shared';
@@ -384,12 +385,8 @@ export default function MissionSettings({
   return (
     <div className="space-y-4">
       {decisionOpen && (decisionAudit || completionDecision?.criteriaUnmet) && (
-        <div
-          className="min-w-0 max-w-full rounded-lg border border-status-warning/40 bg-status-warning/5 p-3"
-          role="region"
-          aria-label="Complete mission"
-          data-testid="mission-complete-decision"
-        >
+        <div className="min-w-0 max-w-full" role="region" aria-label="Complete mission" data-testid="mission-complete-decision">
+         <Notice tone="warn">
           <p className="text-body text-text-secondary [overflow-wrap:anywhere]">
             <span className="font-semibold text-accent-text">Decision needed. </span>
             {decisionAudit
@@ -404,6 +401,7 @@ export default function MissionSettings({
             criteriaUnmet={completionDecision?.criteriaUnmet ?? false}
             surfaceAudit={decisionAudit}
           />
+         </Notice>
         </div>
       )}
 
