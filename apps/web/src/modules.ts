@@ -48,6 +48,7 @@ import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers
 import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 import { taskEstimateExperimentSubscribers } from '@/lib/task-estimate-experiment-subscribers';
+import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -72,6 +73,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...surfaceAuditSubscribers,
   // task.completed / task.pr_merged: a task's actuals, stored next to its frozen estimate.
   ...taskEstimateExperimentSubscribers,
+  // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
+  ...failurePatternSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
