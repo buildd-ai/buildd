@@ -22,7 +22,7 @@ export function MySpend({ me }: { me: SpendSummary['me'] }) {
       </thead>
       <tbody>
         {row('Interactive', me.interactive, 'interactive')}
-        {row('Agent runs', me.agent, 'agent')}
+        {row('Agents', me.agent, 'agent')}
       </tbody>
     </table></div>
   );
@@ -44,7 +44,7 @@ export function PeopleSpend({ people, unattributed }: { people: PersonSpend[]; u
         <tr className="text-xs text-text-muted">
           <th scope="col" className="px-4 py-2 text-left font-normal w-[40%]">Person</th>
           <th scope="col" className="px-4 py-2 text-right font-normal">Interactive</th>
-          <th scope="col" className="px-4 py-2 text-right font-normal">Agent runs</th>
+          <th scope="col" className="px-4 py-2 text-right font-normal">Agents</th>
         </tr>
       </thead>
       <tbody>
