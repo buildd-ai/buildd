@@ -3,7 +3,10 @@ import {
   dependencyHoldsTask,
   MAX_SURFACE_AUDIT_ROUNDS,
   MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
+  SURFACE_AUDIT_THEMES,
   SURFACE_AUDIT_TITLE_PREFIX,
+  missingThemeCells,
+  parseSurfaceAuditTheme,
   SURFACE_FIX_TITLE_PREFIX,
   buildSurfaceAuditDescription,
   isSurfaceAuditTask,
@@ -152,6 +155,101 @@ describe('buildSurfaceAuditDescription', () => {
   it('falls back to a description-scan note when no concrete paths were declared', () => {
     const desc = buildSurfaceAuditDescription({ missionTitle: 'Mobile nav redesign', scopedPaths: [] });
     expect(desc).toContain('no concrete paths declared');
+  });
+});
+
+describe('buildSurfaceAuditDescription — the standard visual checks, every workspace', () => {
+  const desc = buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], requiredRoutes: ['/app/missions'] });
+
+  it('requires both themes, by color-scheme emulation, recorded as qa.theme', () => {
+    expect(desc).toContain('light AND dark');
+    expect(desc).toContain('prefers-color-scheme');
+    expect(desc).toContain('qa.theme');
+    expect(desc).toContain('both themes');
+  });
+
+  it('checks the first screen at 390 says what the page is for', () => {
+    expect(desc).toContain('First screen at 390');
+    expect(desc).toContain('without scrolling');
+  });
+
+  it('checks nothing is shown twice, beyond duplicate chrome titles', () => {
+    expect(desc).toContain('Nothing shown twice');
+    expect(desc).toContain('same fact, count or action');
+    expect(desc).toContain('duplicate chrome titles');
+  });
+
+  it('asks for a before shot from the base ref when the mission is on a branch', () => {
+    expect(desc).toContain('Before/after');
+    expect(desc).toContain('mission_integration');
+    expect(desc).toContain('what changed');
+  });
+
+  it('says nothing about design rules or a reference when the workspace set neither', () => {
+    expect(desc).not.toContain('Design rules');
+    expect(desc).not.toContain('Design reference');
+    expect(buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], visualQa: { designRules: null, reference: null } })).toBe(
+      buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [] }),
+    );
+  });
+});
+
+describe('buildSurfaceAuditDescription — workspace-provided design rules and reference', () => {
+  it('a designRules path adds a check of every shot against it, and tells the auditor to read it', () => {
+    const desc = buildSurfaceAuditDescription({
+      missionTitle: 'M',
+      scopedPaths: [],
+      visualQa: { designRules: 'docs/design/design-system.md' },
+    });
+    expect(desc).toContain('check each shot against `docs/design/design-system.md`');
+    expect(desc).toContain('Read `docs/design/design-system.md`');
+    expect(desc).not.toContain('Design reference');
+  });
+
+  it('a reference makes findings compare against it', () => {
+    const desc = buildSurfaceAuditDescription({
+      missionTitle: 'M',
+      scopedPaths: [],
+      visualQa: { reference: 'refined-ui-prototype' },
+    });
+    expect(desc).toContain('Design reference');
+    expect(desc).toContain('`refined-ui-prototype`');
+    expect(desc).toContain('compare');
+    expect(desc).not.toContain('check each shot against');
+  });
+
+  it('a URL reference is named as a URL, an id as an artifact', () => {
+    expect(buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], visualQa: { reference: 'https://example.com/proto' } }))
+      .toContain('https://example.com/proto');
+    expect(buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], visualQa: { reference: 'abc' } }))
+      .toContain('get_artifact');
+  });
+});
+
+describe('surface audit theme coverage', () => {
+  it('parses a theme loosely and drops anything else', () => {
+    expect(SURFACE_AUDIT_THEMES).toEqual(['light', 'dark']);
+    expect(parseSurfaceAuditTheme('Dark ')).toBe('dark');
+    expect(parseSurfaceAuditTheme('light')).toBe('light');
+    expect(parseSurfaceAuditTheme('sepia')).toBeNull();
+    expect(parseSurfaceAuditTheme(undefined)).toBeNull();
+  });
+
+  it('a route is covered only with a shot in each theme', () => {
+    expect(missingThemeCells(['/a'], [{ route: '/a', theme: 'dark' }, { route: '/a', theme: 'light' }])).toEqual([]);
+    expect(missingThemeCells(['/a'], [{ route: '/a', theme: 'dark' }])).toEqual(['/a @ light theme']);
+  });
+
+  it('a shot with no theme counts toward neither', () => {
+    expect(missingThemeCells(['/a'], [{ route: '/a' }, { route: '/a', theme: null }])).toEqual(['/a @ light theme', '/a @ dark theme']);
+  });
+
+  it('matches routes with the caller\'s pattern rule', () => {
+    const covers = (pattern: string, route: string) => pattern === '/t/:id' ? route.startsWith('/t/') : pattern === route;
+    expect(missingThemeCells(['/t/:id'], [{ route: '/t/1', theme: 'light' }, { route: '/t/2', theme: 'dark' }], covers)).toEqual([]);
+    expect(missingThemeCells(['/t/:id', '/b'], [{ route: '/b', theme: 'light' }], covers)).toEqual([
+      '/t/:id @ light theme', '/t/:id @ dark theme', '/b @ dark theme',
+    ]);
   });
 });
 

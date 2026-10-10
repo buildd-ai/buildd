@@ -10,6 +10,7 @@ import { callerOwnsWorker } from '@/lib/worker-owner';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { appBaseUrl } from '@/lib/app-url';
+import { upsertedContent } from '@/lib/artifact-upsert-content';
 import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 import { isRunReportKey, recordRunnerUsageFromReport } from '@/lib/hosted-runner-usage-store';
 
@@ -134,7 +135,7 @@ export async function POST(
         .update(artifacts)
         .set({
           title,
-          content: isSensitive ? null : (content || null),
+          content: isSensitive ? null : upsertedContent(existing.content, content),
           storageKey: isSensitive ? null : (storageKey || existing.storageKey || null),
           metadata: artifactMetadata,
           workerId: id,
@@ -173,7 +174,7 @@ export async function POST(
       // For updates, only notify if content or title actually changed.
       if (worker.taskId && worker.workspaceId) {
         const shouldNotify = await shouldNotifyOnArtifact(updated, worker.taskId);
-        const newContent = isSensitive ? null : (content || null);
+        const newContent = isSensitive ? null : upsertedContent(existing.content, content);
         if (shouldNotify && (existing.content !== newContent || existing.title !== title)) {
           await notifyArtifactReady(updated, worker.taskId, worker.workspaceId);
         }
