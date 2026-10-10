@@ -85,7 +85,7 @@ function Row({ item, tone, onOpen }: { item: ErrorEvidenceItem; tone: Tone; onOp
         className="w-full min-h-11 text-left px-3 py-2 hover:bg-surface-2 transition-colors"
       >
         <span
-          className={`block font-mono text-body line-clamp-2 [overflow-wrap:anywhere] ${
+          className={`block ${item.headline ? '' : 'font-mono '}text-body line-clamp-2 [overflow-wrap:anywhere] ${
             accent ? 'text-text-primary font-semibold' : muted ? 'text-text-muted' : 'text-text-secondary'
           }`}
         >
