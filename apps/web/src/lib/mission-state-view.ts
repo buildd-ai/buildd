@@ -405,6 +405,11 @@ interface MissionStateViewBase {
   /** The one line the header and the card both render. */
   readonly situation: MissionSituation;
   readonly derivedFrom: MissionStateProvenance;
+  /**
+   * The escalation gate verdict for the mission PR, if available. Used to
+   * determine if a not-landed mission should count as needs-you.
+   */
+  readonly escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
 }
 
 /**
@@ -532,6 +537,13 @@ export interface MissionStateInput {
    * has not loaded the row omits this rather than guessing.
    */
   missionPr?: { state: 'open' | 'closed' | 'not_opened'; prNumber: number | null; prUrl: string | null } | null;
+  /**
+   * The escalation gate verdict for the mission PR, read from the decision
+   * ledger. Used to determine if the mission should be marked as needs-you
+   * even when Buildd's next step is to check something (e.g., whether another
+   * PR carries it). A caller that has not loaded the verdict omits this.
+   */
+  escalationGateVerdict?: { owner: 'person' | 'machine'; reason?: string | null } | null;
   /**
    * Open task PRs, read straight off the worker rows. For a caller that cannot
    * afford a `canCompleteMission` decision per subject — a list page renders
@@ -683,6 +695,7 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
       waitingOn: resolved.waitingOn ? resolved.source : null,
       nextAction: resolved.waitingOn ? resolved.source : null,
     },
+    escalationGateVerdict: input.escalationGateVerdict,
   };
 
   if (resolved.waitingOn === null) {
@@ -1909,9 +1922,17 @@ const OWNER_FACT_KINDS: ReadonlySet<WaitingOnDescriptor['kind']> = new Set([
  *
  * A held mission's own ask ("arm it") does not count: arming is a start, not an
  * answer (§1.1). Anything else it is waiting on you for does.
+ *
+ * For a not-landed mission (`awaiting_merge`), the stored escalation gate
+ * verdict may override the default: if the verdict says the machine owns the
+ * next step (e.g., "Checking whether another PR carries it"), the mission is
+ * not needs-you, regardless of its state. Uses stored verdicts only; no model
+ * call on the page path.
  */
 export function missionNeedsYou(view: MissionStateView): boolean {
   if (view.kind === 'complete') return false;
+  // A not-landed mission is NOT needs-you if the escalation gate says the machine owns the next step.
+  if (view.kind === 'awaiting_merge' && view.escalationGateVerdict?.owner === 'machine') return false;
   if (NEEDS_YOU_KINDS.has(view.kind)) return true;
   const holdAsk = view.kind === 'held' ? view.waitingOn : null;
   if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;

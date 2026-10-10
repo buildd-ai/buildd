@@ -50,6 +50,7 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
+import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
@@ -531,6 +532,22 @@ export default async function HomePage({
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
+
+          // Load escalation gate verdicts for missions with mission PRs.
+          const prKeys: string[] = [];
+          const missionByKey = new Map<string, any>();
+          for (const m of allMissions) {
+            if ((m as any).primaryPrNumber && m.workspaceId) {
+              const key = `pr:${m.workspaceId}:${(m as any).primaryPrNumber}`;
+              prKeys.push(key);
+              missionByKey.set(key, m);
+            }
+          }
+          const verdicts = prKeys.length > 0 && activeTeamId ? await loadMissionVerdicts(activeTeamId, prKeys) : new Map();
+          for (const [key, verdict] of verdicts) {
+            const mission = missionByKey.get(key);
+            if (mission) (mission as any).escalationGateVerdict = verdict;
+          }
 
           // Cross-mission task index: `dependsOn` crosses mission boundaries.
           const homeMissionTaskMap = new Map<string, BlockingTask>();
