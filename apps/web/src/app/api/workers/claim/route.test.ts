@@ -419,6 +419,18 @@ mock.module('@buildd/core/model-tier-ceiling-store', () => ({
     return realResolveTierCeiling({ team, workspaceId: subject.workspaceId, userId, member: userId ? ceilingTest.inputs.members?.[userId] ?? null : null }, surface);
   },
 }));
+// Coding provider policy: real resolver over inputs the test supplies. Default
+// (no layers) is unrestricted, which must leave every other test unchanged.
+const { resolveCodingPolicy: realResolveCodingPolicy } = await import('@buildd/core/coding-policy');
+const codingPolicyTest = { inputs: {} as Record<string, any>, fail: false, requesterAsked: 0 };
+mock.module('@buildd/core/coding-policy-store', () => ({
+  codingPolicyLoader: () => async (subject: any) => {
+    if (codingPolicyTest.fail) throw new Error('db down');
+    const userId = typeof subject.userId === 'function' ? await subject.userId() : subject.userId ?? null;
+    if (codingPolicyTest.inputs.member) codingPolicyTest.requesterAsked++;
+    return realResolveCodingPolicy({ ...codingPolicyTest.inputs, requesterKnown: !!userId || !codingPolicyTest.inputs.member });
+  },
+}));
 mock.module('@buildd/core/tier-pool-source', () => ({
   drawAgentPoolArm: mockDrawAgentPoolArm,
   applyAgentPoolArm: mockApplyAgentPoolArm,
@@ -2450,6 +2462,61 @@ describe('POST /api/workers/claim', () => {
         const data = await claim();
         expect(data.workers.length).toBe(0);
         expect(data.diagnostics?.deferrals?.tier_policy).toBe(1);
+      });
+    });
+
+    describe('coding provider policy', () => {
+      afterEach(() => { codingPolicyTest.inputs = {}; codingPolicyTest.fail = false; codingPolicyTest.requesterAsked = 0; });
+      const withTask = (patch: Record<string, unknown>) => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), ...patch }]);
+        return sets;
+      };
+      const claim = async () => (await (await POST(claimReq())).json()) as any;
+
+      it('no policy: claims as before', async () => {
+        const sets = withTask({});
+        expect((await claim()).workers.length).toBe(1);
+        expect(sets.find(v => v.status === 'assigned')).toBeDefined();
+      });
+
+      it('a denied Codex task is held, never rewritten onto Claude', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        const sets = withTask({ backend: 'codex' });
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(sets.find(v => v.status === 'assigned')).toBeUndefined();
+      });
+
+      it('an allowed backend still claims under a Claude-only policy', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: ['claude'] } };
+        withTask({ backend: 'claude' });
+        expect((await claim()).workers.length).toBe(1);
+      });
+
+      it('an empty allow list denies everything (fails closed)', async () => {
+        codingPolicyTest.inputs = { team: { allowedBackends: [] } };
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('an unreadable policy holds the task rather than assuming none', async () => {
+        codingPolicyTest.fail = true;
+        withTask({});
+        const data = await claim();
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
+      });
+
+      it('a cloud executor under a native-only source policy waits instead of metering', async () => {
+        codingPolicyTest.inputs = { team: { allowedSources: ['runner_native'] } };
+        withTask({});
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner', executor: 'cloud' } }));
+        const data = (await res.json()) as any;
+        expect(data.workers.length).toBe(0);
+        expect(data.diagnostics?.deferrals?.provider_not_allowed).toBe(1);
       });
     });
 
@@ -9469,6 +9536,71 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'runner-7' })).json();
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
+  // `runner: 'mcp'` with an explicit taskId runs on the caller's own seat even
+  // with no signed marker (an MCP client that never got one), so a wall hit by a
+  // runner's seat is not its wall. A runner with its own id stays walled.
+  describe('runsOnCallersSeat: explicit mcp claim without the marker', () => {
+    const exhausted = () => ({
+      ...account(),
+      authType: 'oauth',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+    });
+    const pauseClaude = () => mockBackendPausesFindMany.mockResolvedValue([
+      { backend: 'claude', resetsAt: new Date(Date.now() + 3600000), reason: 'budget' },
+    ]);
+
+    afterEach(() => mockBackendPausesFindMany.mockResolvedValue([]));
+
+    it('claims with the account budget exhausted', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.reason).not.toBe('budget_exhausted_partial');
+    });
+
+    it('claims with the account budget exhausted and forceOverride', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('claims while the team pause log walls Claude', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+      pauseClaude();
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp' })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics).toBeUndefined();
+    });
+
+    it('is still walled without a taskId', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', taskId: undefined })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a runner with its own id is still walled even with taskId and force', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhausted(), ...account('admin'), authType: 'oauth', budgetExhaustedAt: new Date().toISOString(), budgetResetsAt: new Date(Date.now() + 3600000).toISOString() });
+      mockTasksFindMany.mockResolvedValueOnce(forceTarget()).mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'runner-7', forceOverride: true })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
+
+    it('a cloud executor declaring mcp is still walled', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhausted());
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const data = await (await claim({ runner: 'mcp', executor: 'cloud' })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics.reason).toBe('budget_exhausted');
+    });
   });
 
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {

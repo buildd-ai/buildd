@@ -27,6 +27,8 @@ import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, roleFloorTier, type RoleModelRow } from '@buildd/core/role-model-routing';
+import { codingPolicyLoader } from '@buildd/core/coding-policy-store';
+import { codingPolicyAudit, decideCodingPolicy } from './coding-policy-gate';
 import { lazyRequester, ROLE_VISIBILITY_COLUMNS, slugHasPersonalRows } from '@buildd/core/role-visibility';
 import {
   describeOauthPressure,
@@ -243,6 +245,15 @@ export async function POST(req: NextRequest) {
   // client-supplied and proves nothing, so without the marker it is recorded
   // as a runner id and gets every runner rule (cooldown, reaper liveness).
   const interactiveSession = verifyInteractiveSession(req.headers.get(INTERACTIVE_SESSION_HEADER), account.id);
+
+  // Whose seat the run will use. A verified interactive session runs on its own
+  // credentials, and so does an explicit `runner: 'mcp'` claim of one named task
+  // (an MCP client that never got the marker): neither draws on the account
+  // seat's budget or on a provider wall a runner's seat hit. Read BEFORE
+  // `runner` is rewritten to 'mcp-unverified' below. A cloud executor / task
+  // token never qualifies, and a runner with its own id stays walled.
+  const runsOnCallersSeat = !!interactiveSession
+    || (runner === 'mcp' && !!taskId && !cloudExecutor);
 
   // Admin force-claim of ONE named task: the MCP equivalent of the dashboard's
   // "Start with override" (friction cad81659). Only for an admin token, only
@@ -1251,6 +1262,7 @@ export async function POST(req: NextRequest) {
     managed_runner_hours: 0,
     hosted_runner_hours: 0,
     no_personal_credential: 0,
+    provider_not_allowed: 0,
     tier_policy: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
@@ -1265,6 +1277,10 @@ export async function POST(req: NextRequest) {
   const personalCredentialDeps = perRequestPersonalCredentialDeps();
   // Model-tier ceilings, read once per (team, workspace[, requester]) per claim.
   const loadClaimCeiling = tierCeilingLoader();
+  // Coding provider/payment-source policy (packages/core/coding-policy.ts), and
+  // the tasks it pinned to the runner's own login (no server-held model credential).
+  const loadCodingPolicyFor = codingPolicyLoader();
+  const nativeSourceTasks = new Set<string>();
 
   // Set when the EXPLICITLY requested task (claim with `taskId`) is itself
   // deferred in the dispatch loop below. It already passed every SQL-level
@@ -2248,7 +2264,7 @@ export async function POST(req: NextRequest) {
     // Which walls set claudePoolBlocked, named if this task is deferred on them.
     let claudeWall: { kind: ClaimBudgetWall['kind']; resetsAt: Date | string | null } | null = null;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !runsOnCallersSeat) {
       // Account's own OAuth session/budget is exhausted. Interactive sessions
       // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
@@ -2279,7 +2295,7 @@ export async function POST(req: NextRequest) {
     // above: the wall was hit by a runner's seat, and the session runs the task
     // on its own credentials. Without this, a task whose runner just died on a
     // session limit could not be claimed (even with force) until the reset.
-    const pauses = interactiveSession ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
+    const pauses = runsOnCallersSeat ? new Map<AgentBackend, ActivePause>() : await teamPauses(taskTeamId);
     if (pauses.has('claude')) {
       claudePoolBlocked = true;
       claudeWall ??= { kind: 'provider_pause', resetsAt: pauses.get('claude')!.resetsAt };
@@ -2705,6 +2721,36 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
+    // Coding provider policy: a restriction, not a redirect. The backend is
+    // final here (failover and toggles ran above), so a failover target is
+    // checked like a stored one. Denied ⇒ held with a structured error; it is
+    // never moved to another provider and never billed to a stored key.
+    // No restriction saved ⇒ allow, and everything below is unchanged.
+    if (taskTeamId) {
+      let codingPolicy;
+      try {
+        codingPolicy = await loadCodingPolicyFor({ teamId: taskTeamId, workspaceId: task.workspaceId, userId: lazyRequester(task) });
+      } catch (err) {
+        console.error(`[claim] task ${task.id}: coding policy unreadable, holding the task`, err);
+        deferTask(task, 'provider_not_allowed', { code: 'policy_unavailable' });
+        continue;
+      }
+      if (codingPolicy.restricted) {
+        const verdict = decideCodingPolicy({
+          policy: codingPolicy,
+          backend: (task as any).backend as AgentBackend,
+          claudeRoute: (task as any).backend === 'codex' ? null : await claudeRouteFor(taskTeamId, task.workspaceId),
+          cloud: cloudExecutor,
+        });
+        console.log(`[claim] ${codingPolicyAudit(task.id, (task as any).backend as AgentBackend, verdict)}`);
+        if (verdict.kind === 'refuse') {
+          deferTask(task, 'provider_not_allowed', { ...verdict.denied });
+          continue;
+        }
+        if (verdict.source === 'runner_native') nativeSourceTasks.add(task.id);
+      }
+    }
+
     // Credential policy (provider parity): a team that set personal_only runs
     // a task only on its requester's own key, so a task this claim cannot give
     // one is held here, before a worker exists, with the reason named. The
@@ -2721,6 +2767,12 @@ export async function POST(req: NextRequest) {
       }, personalCredentialDeps);
       if (credentialDecision.kind === 'refuse') {
         deferTask(task, 'no_personal_credential', { ...credentialDecision.detail });
+        continue;
+      }
+      // A requester's own API key is a metered route: it cannot pay for a run
+      // the Coding policy pinned to the runner's own login.
+      if (credentialDecision.kind === 'personal' && nativeSourceTasks.has(task.id)) {
+        deferTask(task, 'provider_not_allowed', { code: 'payment_source_not_allowed', source: 'metered', backend: (task as any).backend });
         continue;
       }
       personalCredentialDecisions.set(task.id, credentialDecision);
@@ -3204,7 +3256,7 @@ export async function POST(req: NextRequest) {
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
     // Exception: interactive sessions have their own credentials and do not consume
     // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
-    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !runsOnCallersSeat;
     if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       if (accountBudgetBlocksBackgroundRunner && account.budgetExhaustedAt) {
         budgetWalls.add('account_seat', 'claude', effectiveBudgetResetAt(account.budgetExhaustedAt, account.budgetResetsAt));
@@ -3443,18 +3495,21 @@ export async function POST(req: NextRequest) {
   const personalWorkers = cloudExecutor
     ? new Set<string>()
     : attachPersonalCredentials(claimedWorkers, personalCredentialDecisions);
+  // Workers the Coding policy pinned to the runner's own login: no endpoint, no
+  // stored key, no stored Codex/Claude credential is delivered for them.
+  const nativeWorkers = new Set(claimedWorkers.filter(cw => nativeSourceTasks.has(cw.taskId)).map(cw => cw.id));
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id)), filteredTasks, account.id, {
+    : await attachAgentEndpoints(claimedWorkers.filter(cw => !personalWorkers.has(cw.id) && !nativeWorkers.has(cw.id)), filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
         codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
         runnerSupportsHeaders: runnerSupportsEndpointHeaders(body.runnerFeatures),
       });
   // Workers whose model credential is already decided: no team model credential for them.
-  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0
+  const modelCredentialDecided: ReadonlySet<string> = personalWorkers.size === 0 && nativeWorkers.size === 0
     ? endpointWorkers
-    : new Set([...endpointWorkers, ...personalWorkers]);
+    : new Set([...endpointWorkers, ...personalWorkers, ...nativeWorkers]);
   if (cloudExecutor) await attachCloudToolSearchHint(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, modelCredentialDecided);
 
@@ -3520,7 +3575,7 @@ export async function POST(req: NextRequest) {
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     // Only report partial budget exhaustion for background runners. Interactive sessions
     // have their own credentials and should not be told about account budget state.
-    ...(accountBudgetExhausted && !interactiveSession && {
+    ...(accountBudgetExhausted && !runsOnCallersSeat && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),

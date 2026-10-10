@@ -1675,6 +1675,12 @@ export interface ClaimDiagnostics {
    * The budget and rate-limit walls this claim was held by, set on a
    * budget_exhausted refusal: which wall, on which provider, and when it lifts.
    * `summary` is the same thing as one or two sentences for a person.
+   * A wall is listed only where a task was actually deferred on it.
+   *
+   * Only these hard walls produce budget_exhausted. The learned forecast
+   * (`deferrals.oauth_parallelism`, `budgetPressure`) and plan allowances
+   * (hosted runner hours) never do: they hold a claim under their own
+   * deferral reason, and the forecast never holds an explicit start.
    */
   budgetBlock?: { walls: ClaimBudgetWall[]; summary: string };
   /**
@@ -1756,6 +1762,14 @@ export interface ClaimDiagnostics {
      * without the personal-credential feature.
      */
     no_personal_credential?: number;
+    /**
+     * The Coding provider policy (team / workspace / requester) does not allow
+     * this task's backend or the payment source its run would use. Held, not
+     * failed, and never redirected to another provider. The gate event's detail
+     * is the structured `provider_not_allowed` / `payment_source_not_allowed` /
+     * `no_model_credential` error. See packages/core/coding-policy.ts.
+     */
+    provider_not_allowed?: number;
     /**
      * The task's tier or model is above the effective model-tier ceiling for
      * its team / workspace / requester (docs/specs/model-tier-ceilings.md).

@@ -450,4 +450,26 @@ describe('S35: the card reads the kernel delivery, not the failed predecessor', 
     ];
     expect(failedDeliverableTaskIds(rows).sort()).toEqual(['fix1', 'x']);
   });
+
+  it('a mission with an open mission PR and machine-owned escalation verdict includes the verdict in state', () => {
+    const row = mission({ 
+      primaryPrNumber: 123, 
+      primaryPrUrl: 'https://github.com/o/r/pull/123',
+      integrationBranchEnabled: true,
+      escalationGateVerdict: { owner: 'machine', reason: 'Checking whether another PR carries it' },
+    });
+    const s = summarizeMissionForCard(row, { now: NOW });
+    expect(s.state.escalationGateVerdict).toEqual({ owner: 'machine', reason: 'Checking whether another PR carries it' });
+  });
+
+  it('a mission with an open mission PR and person-owned escalation verdict includes it in state', () => {
+    const row = mission({ 
+      primaryPrNumber: 124, 
+      primaryPrUrl: 'https://github.com/o/r/pull/124',
+      integrationBranchEnabled: true,
+      escalationGateVerdict: { owner: 'person', reason: 'Merge this PR' },
+    });
+    const s = summarizeMissionForCard(row, { now: NOW });
+    expect(s.state.escalationGateVerdict).toEqual({ owner: 'person', reason: 'Merge this PR' });
+  });
 });

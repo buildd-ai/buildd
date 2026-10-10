@@ -217,6 +217,32 @@ describe('claim_task explicit taskId and empty-claim reasons', () => {
     expect(out).toContain("The account's Claude session limit is reached. It lifts at Jan 1, 20:00 UTC.");
   });
 
+  // Task 8a45f472: a recorded team rate limit is named as the wall, with its reset.
+  it('names a provider pause wall on a budget_exhausted refusal', async () => {
+    mockApi.mockResolvedValueOnce({
+      workers: [],
+      budgetResetsAt: '2099-01-01T21:30:00.000Z',
+      diagnostics: {
+        reason: 'budget_exhausted',
+        budgetBlock: {
+          walls: [{ kind: 'provider_pause', backend: 'codex', resetsAt: '2099-01-01T21:30:00.000Z' }],
+          summary: 'A run hit the Codex rate limit for this team. Codex work waits until Jan 1, 21:30 UTC.',
+        },
+      },
+    });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'claim_task', { taskId: TASK_ID }, interactive())).content[0].text;
+    expect(out).toStartWith('Nothing claimed: budget_exhausted');
+    expect(out).toContain('A run hit the Codex rate limit for this team. Codex work waits until Jan 1, 21:30 UTC.');
+  });
+
+  it('the description says which walls an explicit claim skips and that a budget refusal names its wall', () => {
+    const desc = buildParamsDescription(['claim_task']);
+    expect(desc).toMatch(/account's Claude session wall/);
+    expect(desc).toMatch(/rate-limit walls/);
+    expect(desc).toMatch(/tenant budget/);
+    expect(desc).toMatch(/budget_exhausted refusal names the wall/);
+  });
+
   it('turns an account-limit 429 into a sentence instead of a raw API error', async () => {
     mockApi.mockRejectedValueOnce(new Error('API error: 429 - ' + JSON.stringify({
       error: 'Max concurrent workers limit reached', code: 'max_concurrent_workers', limit: 2, current: 2,

@@ -37,7 +37,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { EscalationGateMark, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { gateEscalations } from '@/lib/escalation-gate-check';
 import { agentReviewsDataMigrations } from '@buildd/shared';
-import { ESCALATION_GATE_READ_DEPS } from '@/modules';
+import { ESCALATION_GATE_READ_DEPS, INCIDENT_NEEDS_YOU } from '@/modules';
 import { loadLandingStalls, prSubjectFor } from '@/lib/escalation-subjects';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -50,6 +50,7 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
+import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 
 export const dynamic = 'force-dynamic';
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
@@ -531,6 +532,22 @@ export default async function HomePage({
               workspace: { columns: { id: true, name: true } },
             },
           }) : [];
+
+          // Load escalation gate verdicts for missions with mission PRs.
+          const prKeys: string[] = [];
+          const missionByKey = new Map<string, any>();
+          for (const m of allMissions) {
+            if ((m as any).primaryPrNumber && m.workspaceId) {
+              const key = `pr:${m.workspaceId}:${(m as any).primaryPrNumber}`;
+              prKeys.push(key);
+              missionByKey.set(key, m);
+            }
+          }
+          const verdicts = prKeys.length > 0 && activeTeamId ? await loadMissionVerdicts(activeTeamId, prKeys) : new Map();
+          for (const [key, verdict] of verdicts) {
+            const mission = missionByKey.get(key);
+            if (mission) (mission as any).escalationGateVerdict = verdict;
+          }
 
           // Cross-mission task index: `dependsOn` crosses mission boundaries.
           const homeMissionTaskMap = new Map<string, BlockingTask>();
@@ -1802,6 +1819,13 @@ export default async function HomePage({
             waitingOnYou.push(...discrepancyItems);
             discrepancyOverflowCount = overflowCount;
           }
+        }
+
+        // 7. Sentinel incidents the escalation gate gave to the owner: the
+        // stored verdict, read here with no model call (lib/failure-incident-escalation.ts
+        // through the composition root).
+        if (wsIds.length > 0) {
+          waitingOnYou.push(...await INCIDENT_NEEDS_YOU(wsIds));
         }
 
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
