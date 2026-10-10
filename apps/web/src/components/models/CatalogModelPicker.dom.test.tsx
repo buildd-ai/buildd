@@ -84,6 +84,25 @@ describe('CatalogModelPicker, single', () => {
     for (const r of warned) expect(r.querySelector('[data-testid="model-picker-warning"]')).toBeTruthy();
   });
 
+  it('for chat, disables the Codex seat route with its reason and keeps the OpenAI key route pickable', async () => {
+    const OA = [{ id: 'gpt-5', provider: 'openai', inputPrice: 2, outputPrice: 10, contextLength: 400_000, created: T('2026-08-01') }, ...MODELS];
+    await mount(<CatalogModelPicker aria-label="Model" tier="standard" target="chat" routes={TIER_ROUTES} models={OA}
+      value={{ route: 'anthropic', model: 'claude-sonnet-5' }} onChange={(n) => picks.push(n)} />);
+    await click(trigger());
+    const seat = rowEls().filter((r) => r.getAttribute('data-key')?.startsWith('openai-codex::'));
+    expect(seat.length).toBeGreaterThan(0);
+    for (const r of seat) {
+      expect(r.getAttribute('aria-disabled')).toBe('true');
+      expect(r.getAttribute('title')).toMatch(/Codex only/);
+      expect(r.querySelector('[data-testid="model-picker-warning"]')?.textContent).toMatch(/Codex only/);
+      await click(r);
+    }
+    expect(picks).toEqual([]);
+    const key = rowEls().filter((r) => r.getAttribute('data-key')?.startsWith('openai::'));
+    expect(key.length).toBeGreaterThan(0);
+    for (const r of key) expect(r.getAttribute('aria-disabled')).toBeNull();
+  });
+
   it('shows the current model on a combobox trigger that controls a listbox', async () => {
     await mount(<Single />);
     expect(trigger().getAttribute('aria-haspopup')).toBe('listbox');
