@@ -1276,6 +1276,8 @@ export async function observeConflict(p: {
   /** A person asked: the agent budget is the configured cap on top of what is already spent. */
   humanInitiated?: boolean;
   source: string;
+  /** S15: the ordinary commit bound for a platform-refreshed head (`treadmillMaxBaseCommits`). */
+  maxBaseCommits?: number;
 }, deps: SeamDeps = {}): Promise<{ handled: false } | ConflictSeen> {
   const deliveryId = await kernelDeliveryForPr(p.workspaceId, p.repoFullName, p.prNumber, deps.exec);
   if (!deliveryId) return { handled: false };
@@ -1296,6 +1298,13 @@ export async function observeConflict(p: {
   const baseContained = baseTip ? await reader.contains!(p.repoFullName, baseTip, live.headSha) : null;
   const mergeable = conflictReading(state, p.hint, baseContained);
   if (mergeable === 'clean' && !p.migrationCollision) return none('not_conflicting', 'clean');
+  // S15: a behind PR carries the base delta as a fact, so T12 can apply the disjoint-delta rule
+  // (land instead of refreshing again, or say precisely why not). Read only for behind.
+  const behindRead = mergeable === 'behind' || (mergeable === 'unknown' && p.hint === 'behind');
+  const read = behindRead && !p.migrationCollision && live.baseRef && reader.baseDelta
+    ? (await reader.baseDelta(p.repoFullName, p.prNumber, live.headSha, live.baseRef)) ?? { baseCommits: null, baseFiles: null, prFiles: null }
+    : null;
+  const baseDelta = read ? { ...read, requiresUpToDate: state === 'behind' } : null;
   let maxAgent = p.maxAgentAttempts;
   if (p.humanInitiated) {
     const v0 = await loadView({ deliveryId }, deps.exec);
@@ -1308,6 +1317,7 @@ export async function observeConflict(p: {
     detail: p.migrationCollision ? { migrationCollision: p.migrationCollision } : null,
     maxAgentAttempts: maxAgent,
     isDependencyBot: p.isDependencyBot,
+    ...(baseDelta ? { baseDelta, ...(p.maxBaseCommits !== undefined ? { maxBaseCommits: p.maxBaseCommits } : {}) } : {}),
   }, { ref: { deliveryId }, exec: deps.exec });
   await drainDelivery(deliveryId, deps);
   const view = await loadView({ deliveryId }, deps.exec);
