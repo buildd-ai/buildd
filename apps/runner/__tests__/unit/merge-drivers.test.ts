@@ -18,6 +18,7 @@ import {
   canFinishWithoutAgent,
   formatPreMergeMilestone,
   dedupeImportLines,
+  planPreMerge,
 } from '../../src/merge-drivers';
 
 function git(cwd: string, ...args: string[]): string {
@@ -501,5 +502,34 @@ describe('dedupeImportLines', () => {
   });
   test('returns null-safe identity when nothing to do', () => {
     expect(dedupeImportLines('')).toBe('');
+  });
+});
+
+describe('planPreMerge: which ref the runner merges before the agent starts', () => {
+  const conflict = { errorType: 'merge_conflict' };
+  test('an ordinary conflict retry merges its PR base', () => {
+    expect(planPreMerge({ resumeBranch: 'buildd/abc-fix', failureContext: conflict }, 'origin/dev', 'dev'))
+      .toEqual({ ref: 'origin/dev', kind: 'retry', mayFinishWithoutAgent: true });
+  });
+
+  test('a retry whose PR base is its own branch (a mission ship PR) merges trunk instead of itself', () => {
+    expect(planPreMerge({ resumeBranch: 'mission/x-1234', failureContext: conflict }, 'origin/mission/x-1234', 'dev'))
+      .toEqual({ ref: 'origin/dev', kind: 'mission_pr_retry', mayFinishWithoutAgent: true });
+  });
+
+  test('a mission refresh merges its trunk into the integration branch, and always needs the agent (it opens the PR)', () => {
+    const ctx = { baseBranch: 'mission/x-1234', refreshTrunk: 'dev', failureContext: conflict };
+    expect(planPreMerge(ctx, 'origin/mission/x-1234', 'dev'))
+      .toEqual({ ref: 'origin/dev', kind: 'mission_refresh', mayFinishWithoutAgent: false });
+  });
+
+  test('nothing to pre-merge: migration collisions, non-conflict tasks, a retry with no known base', () => {
+    expect(planPreMerge({ resumeBranch: 'b', failureContext: { errorType: 'migration_collision' } }, 'origin/dev', 'dev')).toBeNull();
+    expect(planPreMerge({ refreshTrunk: 'dev', failureContext: { errorType: 'migration_collision' } }, 'origin/m', 'dev')).toBeNull();
+    expect(planPreMerge({}, 'origin/dev', 'dev')).toBeNull();
+    expect(planPreMerge(undefined, 'origin/dev', 'dev')).toBeNull();
+    expect(planPreMerge({ resumeBranch: 'b', failureContext: conflict }, undefined, 'dev')).toBeNull();
+    // A refresh names a trunk that must be a plain branch name.
+    expect(planPreMerge({ refreshTrunk: '--upload-pack=x', failureContext: conflict }, 'origin/m', 'dev')).toBeNull();
   });
 });
