@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FailureGroupsSection, TopFailureGroups } from './FailureGroups';
+import { FailureGroupsSection, failureProblemLine } from './FailureGroups';
 import { buildFailureGroups, type FailedWorkerInput } from '@/lib/health-failure-groups';
 
 const NOW = Date.parse('2026-10-05T12:00:00Z');
@@ -25,7 +25,7 @@ describe('FailureGroupsSection', () => {
     );
     expect(html).toContain('8%');
     expect(html).toContain('3 of 40 agent runs failed');
-    expect(html.match(/data-testid="failure-group"/g)?.length).toBe(2);
+    expect(html.match(/data-testid="failure-group"/g)?.length).toBe(1);
     expect(html).toContain("Hit the model provider&#x27;s usage limit");
     expect(html).toContain('Platform');
   });
@@ -41,16 +41,28 @@ describe('FailureGroupsSection', () => {
   });
 });
 
-describe('TopFailureGroups', () => {
-  it('shows at most `limit` groups and links to Failures with the remainder', () => {
-    const failures = ['a', 'b', 'c', 'd', 'e', 'f'].map(x => w(x, `${x} broke completely`));
-    const html = renderToStaticMarkup(<TopFailureGroups groups={data(failures)} limit={4} now={NOW} />);
-    expect(html.match(/data-testid="top-failure-group"/g)?.length).toBe(4);
-    expect(html).toContain('href="/app/health/failures"');
-    expect(html).toContain('2 more');
+describe('failureProblemLine', () => {
+  it('counts the causes and names the biggest one', () => {
+    const failures = [w('a', "You've hit your session limit · resets 3pm"), w('b', "You've hit your session limit · resets 4pm"), w('c', 'TypeError: x is undefined')];
+    const line = failureProblemLine(data(failures), '7d');
+    expect(line).toStartWith('Failures: 2 causes this week, mostly ');
+    expect(line).toContain("hit the model provider's usage limit");
   });
 
-  it('renders nothing when nothing failed', () => {
-    expect(renderToStaticMarkup(<TopFailureGroups groups={data([])} now={NOW} />)).toBe('');
+  it('one cause reads as one, in the window it was counted in', () => {
+    expect(failureProblemLine(data([w('a', 'TypeError: x is undefined')]), '24h')).toStartWith('Failures: 1 cause in the last day: ');
   });
 });
+
+ it('splits recurring causes and folds single occurrences without losing drill-downs', () => {
+   const html = renderToStaticMarkup(<FailureGroupsSection groups={data([
+     w('a', "You've hit your session limit"), w('b', "You've hit your session limit"),
+     w('c', 'TypeError: x is undefined'), w('d', 'TypeError: x is undefined'),
+     w('e', 'Unique failure'),
+   ])} headline={null} windowLabel="7d" now={NOW} />);
+   expect(html).toContain('data-testid="failure-kind-platform"');
+   expect(html).toContain('data-testid="failure-kind-work"');
+   expect(html).toContain('1 one-off failure');
+   expect(html.match(/data-testid="failure-group"/g)?.length).toBe(2);
+   expect(html).not.toContain('Unique failure');
+ });

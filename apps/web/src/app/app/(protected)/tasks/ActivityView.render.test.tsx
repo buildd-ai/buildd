@@ -14,13 +14,23 @@ const tag = (html: string, testId: string) => html.match(new RegExp(`<[a-z]+[^>]
 
 describe('ActivityView: Now', () => {
   const html = render(4, 'now');
+  const text = (h: string) => h.replace(/<[^>]+>/g, '');
 
-  it('has Now and History as links, Now current, and the deliveries vs agents count', () => {
+  it('has Now and History as links, Now current, and Ask on the right', () => {
     expect(tag(html, 'activity-tab-now')).toContain('aria-current="page"');
     expect(tag(html, 'activity-tab-now')).toContain('href="/app/tasks"');
     expect(tag(html, 'activity-tab-history')).toContain('href="/app/tasks?view=history"');
     expect(tag(html, 'activity-tab-history')).not.toContain('aria-current');
-    expect(html).toMatch(/data-testid="activity-counts"[^>]*>\d+ deliver(y|ies) in motion · \d+ agents? working/);
+    expect(html).toContain('href="/app/chat"');
+  });
+
+  it('leads with how many deliveries are moving and a per-state breakdown, not an agent count', () => {
+    const headline = html.slice(html.indexOf('data-testid="activity-headline"'), html.indexOf('data-testid="activity-group"'));
+    expect(text(headline)).toMatch(/\d+ deliver(y|ies) moving/);
+    expect(text(headline)).toContain('▶ 2 building');
+    expect(text(headline)).toContain('! 1 needs you');
+    expect(text(headline)).toContain("1 waiting");
+    expect(html).not.toContain('agents working');
   });
 
   it('keeps the h1 for screen readers but hides it visually at phone width, where the header already says Activity', () => {
@@ -29,8 +39,27 @@ describe('ActivityView: Now', () => {
     expect(h1).toContain('md:not-sr-only');
   });
 
-  it('the latest task is one tap away', () => {
-    expect(tag(html, 'activity-latest')).toMatch(/href="\/app\/tasks\/[^"]+"/);
+  it('Now retains repair and attention filters without restoring the Latest line', () => {
+    expect(html).toContain('data-testid="activity-filters"');
+    expect(html).toContain('Had repairs');
+    expect(html).toContain('Needs attention');
+    expect(html).not.toContain('data-testid="activity-latest"');
+  });
+
+  it('a row is title, the one Lifecycle track and one line; no separate state pill, "agent live" or PR number', () => {
+    const rows = html.split('data-testid="activity-now-row"').slice(1);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r).toContain('data-testid="lifecycle"');
+    expect(html).not.toContain('agent live');
+    expect(html).not.toMatch(/>#\d+</);
+    // The state word appears only where the track has no current step yet, and never in orange.
+    const pills = [...html.matchAll(/<span[^>]*data-testid="delivery-state"[^>]*>/g)].map(m => m[0]);
+    expect(pills.length).toBe(1);
+    for (const p of pills) expect(p).not.toContain('accent');
+  });
+
+  it('a group header is a label and its landed count, with no "Next:" line', () => {
+    expect(html).not.toContain('Next:');
   });
 
   it('groups by mission with standalone last, each header linking landed n/m', () => {
@@ -58,13 +87,10 @@ describe('ActivityView: Now', () => {
     expect(ev.slice(0, ev.indexOf('Task page'))).not.toContain('data-testid="activity-repair"');
   });
 
-  it('states are glyph + word through the shared pill, not colour alone', () => {
-    const pills = [...html.matchAll(/<span[^>]*data-testid="delivery-state"[^>]*>(.*?)<\/span>([^<]+)/g)];
-    expect(pills.length).toBeGreaterThan(0);
-    for (const m of pills) {
-      expect(m[1]).toContain('aria-hidden="true"');
-      expect(m[2].trim().length).toBeGreaterThan(0);
-    }
+  it('states are glyph + word, not colour alone', () => {
+    const current = [...html.matchAll(/<span[^>]*aria-current="step"[^>]*>([^<]+)<\/span>/g)].map(m => m[1]);
+    expect(current.length).toBeGreaterThan(0);
+    for (const c of current) expect(c).toMatch(/^\S+ \w/);
     expect(html).not.toContain('data-testid="delivery-chip"');
   });
 
@@ -82,6 +108,14 @@ describe('ActivityView: Now', () => {
 });
 
 describe('ActivityView: History', () => {
+  it('keeps the prototype outcome chips and adds the finished exception filter, with day tallies', () => {
+    const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
+    const chips = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(m => m[2]);
+    expect(chips).toEqual(['All', 'Landed', 'Had repairs', 'Sent to you', 'Not landed']);
+    expect(html).toContain('data-testid="activity-day"');
+    expect(html).not.toContain('aria-label="Mission"');
+  });
+
   it('one episode per delivery: retries and reviews are steps, never rows', () => {
     const html = render(ACTIVITY_SEQUENCE.length - 1, 'history');
     expect(count(html, '>Scheduled export email<')).toBe(1);

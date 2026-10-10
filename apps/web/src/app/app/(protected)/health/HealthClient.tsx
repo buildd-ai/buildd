@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
+import { FailureGroupsSection, failureProblemLine } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -30,12 +30,10 @@ import ToolBreakdownList from './_components/ToolBreakdownList';
 import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
   coverageLabel,
-  depletionProjection,
   failureStreak,
   freshness,
   groupFailuresBySignature,
   lifetimeRuns,
-  monthlyAnchor,
   observedAgo,
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
@@ -43,7 +41,9 @@ import {
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { OccupancyChart } from '@/components/fleet/OccupancyChart';
-import { RunnerLanes } from '@/components/fleet/runner-lanes';
+import { RunnerLanes, type LaneMission } from '@/components/fleet/runner-lanes';
+import Disclosure from '@/components/ui/Disclosure';
+import Segmented from '@/components/ui/Segmented';
 import type { FleetSnapshot } from '@buildd/shared';
 import type { IdleStretch } from '@/lib/idle-while-queued';
 import { ExperimentsSection } from './ExperimentsSection';
@@ -214,13 +214,19 @@ const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> 
   // Access problems stop runs and blocked actions are agents reaching outside
   // their task: both are things to act on, so they sit with the failures.
   failures: new Set(['agentAccess', 'failureGroups']),
-  // Only what sets capacity. Schedules live on /app/schedules.
+  // Only what sets capacity. A schedule lives where it is configured: its
+  // mission, or the workspace's schedules (`scheduleHref`).
   runners: new Set(['capacity', 'budget', 'credentials']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
 };
+
+/** Where a schedule is configured: its mission, else the workspace's schedules. */
+export function scheduleHref(s: Pick<ScheduleRow, 'workspaceId' | 'missionId'>): string {
+  return s.missionId ? `/app/missions/${s.missionId}` : `/app/workspaces/${s.workspaceId}/schedules`;
+}
 
 /** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
 const SANDBOX_PLAIN_LABEL: Record<string, string> = {
@@ -233,13 +239,15 @@ const VIEW_TITLE: Record<HealthView, string> = {
   all: 'Health',
   overview: 'Health',
   failures: 'Failures',
-  runners: 'Runners & capacity',
+  runners: 'Runners',
   operator: 'Operator',
 };
 
 interface Props {
   /** Which page is rendering; defaults to every section. */
   page?: HealthView;
+  /** Rendered under the page header (Runners: the workspace pause control). */
+  top?: React.ReactNode;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
   orphanedPrs: OrphanedPrRow[];
   runners: RunnerHeartbeat[];
@@ -265,7 +273,7 @@ interface Props {
   /** Agent runs' grants and refusals; null hides the section. */
   agentAccess?: AgentAccessReport | null;
   /** Runners page: the fleet with lane history, and the stretches every slot sat idle while work waited. */
-  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[] } | null;
+  runnerLanes?: { fleet: FleetSnapshot; idle: IdleStretch[]; missions?: Record<string, LaneMission> } | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -318,6 +326,7 @@ export function HealthClient({
   runnerLanes = null,
   now,
   page = 'all',
+  top = null,
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
@@ -448,7 +457,7 @@ export function HealthClient({
   // full list (with blocked actions) is on Failures.
   const accessProblems = agentAccess?.grantProblems ?? [];
   // On Overview the failures come from the merged failure groups (the same ones
-  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  // the Problems row counts), so the status sentence and the list can't disagree.
   const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
   const nonFailureProblems =
     brokenCredentials.length > 0 ||
@@ -505,6 +514,8 @@ export function HealthClient({
         </div>
       </div>
 
+      {top}
+
       {overview && <OverviewHeadline tone={overview.headline.tone} text={overview.headline.text} />}
 
       {/* 1. Problems now. On Overview the headline already says "All good", so an
@@ -523,14 +534,14 @@ export function HealthClient({
           )}
         </div>
         {!hasProblems ? (
-          <div className="card px-4 py-3 flex items-center gap-2">
+          <div className="border-y border-border-default px-4 py-3 flex items-center gap-2">
             <span className="glow-dot glow-dot-success" />
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
           <>
-          {(page !== 'overview' || nonFailureProblems) && (
-          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
+          {(page !== 'overview' || nonFailureProblems || overviewFailureGroups > 0) && (
+          <div className={`border-y border-border-default divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
               const purposeLabel = backendCredentialLabel(cred.purpose);
@@ -660,7 +671,7 @@ export function HealthClient({
             ))}
 
             {failedSchedules.map((s) => (
-              <div key={s.id} className="px-4 py-3">
+              <a key={s.id} href={scheduleHref(s)} data-testid="problem-schedule" className="block px-4 py-3 hover:bg-surface-2">
                 <div className="flex items-start gap-3">
                   <span className="text-status-error mt-0.5 shrink-0 text-sm">⚠</span>
                   <div className="min-w-0 flex-1">
@@ -669,7 +680,7 @@ export function HealthClient({
                     <p className="text-xs text-text-muted mt-0.5">{s.workspaceName}</p>
                   </div>
                 </div>
-              </div>
+              </a>
             ))}
 
             {/* Recent failures, grouped by error signature.
@@ -713,6 +724,14 @@ export function HealthClient({
               );
             })}
 
+            {/* Overview names what is failing in one row; the list is on Failures. */}
+            {page === 'overview' && failureGroupsView && failureGroupsView.groups.length > 0 && (
+              <a href="/app/health/failures" data-testid="problem-failures" className="flex items-baseline justify-between gap-3 px-4 py-3 hover:bg-surface-2">
+                <span className="text-sm text-text-primary">{failureProblemLine(failureGroupsView, activeWindow)}</span>
+                <span aria-hidden="true" className="text-text-muted">›</span>
+              </a>
+            )}
+
             {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
@@ -726,7 +745,6 @@ export function HealthClient({
             )}
           </div>
           )}
-          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
           </>
         )}
       </section>
@@ -743,20 +761,24 @@ export function HealthClient({
       <section data-testid="health-section-state" className="mb-6">
         {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
-      {show('capacity') && (
-        <OccupancyChart
-          capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
-          busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
-          workspaceId={wsFilter}
-        />
-      )}
-
+      {/* The lanes are this page's diagnostic, so they come first. The
+          occupancy history repeats the same busy-slot count at a coarser
+          grain; it stays one tap away for the 7- and 30-day view. */}
       {show('capacity') && runnerLanes && runnerLanes.fleet.runners.length + (runnerLanes.fleet.sessions ? 1 : 0) > 0 && (
         <div data-testid="health-section-lanes" className="mb-6">
-          <h3 className="text-xs font-medium text-text-secondary mb-3">Slots over the last hours</h3>
-          <div className="card overflow-hidden">
-            <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} />
-          </div>
+          <RunnerLanes fleet={runnerLanes.fleet} idle={runnerLanes.idle} now={now} missions={runnerLanes.missions ?? {}} />
+        </div>
+      )}
+
+      {show('capacity') && (
+        <div data-testid="health-section-slot-history" className="mb-6">
+          <Disclosure summary="Slot history over 24 hours, 7 or 30 days">
+            <OccupancyChart
+              capacityNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0)}
+              busyNow={runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0)}
+              workspaceId={wsFilter}
+            />
+          </Disclosure>
         </div>
       )}
 
@@ -768,7 +790,7 @@ export function HealthClient({
             <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
           )}
         </div>
-        <div className="card">
+        <div className="border-y border-border-default">
           {runners.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
@@ -1123,7 +1145,7 @@ function ConsumptionSection({
           </span>
         )}
       </div>
-      <div className="card p-4 space-y-4">
+      <div className="border-y border-border-default py-4 space-y-4">
         {/* The per-task cost/turn/tool-call tiles that used to sit here now live
             on the usage drill-down, whole — not copied. Publishing them in two
             places is how the same number ends up stated under two windows. */}
@@ -1305,7 +1327,7 @@ function SubagentDelegationSection({
             : sectionDenominator(0, 'sessions')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           <>
             <div className="flex items-baseline justify-between gap-3">
@@ -1372,7 +1394,7 @@ function ErrorPatternSection({
             : sectionDenominator(0, 'workers')} ({window})
         </span>
       </div>
-      <div className="card p-4 space-y-2">
+      <div className="border-y border-border-default py-4 space-y-2">
         {panel.kind === 'value' ? (
           panel.value.patterns.length === 0 ? (
             <p className="text-xs text-text-muted">No error-trace pattern fired in this window.</p>
@@ -1484,7 +1506,6 @@ function ProviderWallRow({ label, state, resetsAt, now }: {
 function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
-    forecast.monthly !== null ||
     // Wall rows only render while exhausted; an elapsed pause alone must not
     // leave an empty card.
     !!forecast.codex?.isExhausted ||
@@ -1500,11 +1521,11 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
     <div data-testid="health-section-budget-forecast" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <h3 className="text-xs font-medium text-text-secondary">Budget</h3>
-        {/* Pinned to each provider's own usage period and the calendar month,
+        {/* Pinned to each provider's own usage period,
             never to a page window; this page has no window control. */}
-        <span className="text-[11px] text-text-muted text-right">usage limits and monthly spend</span>
+        <span className="text-[11px] text-text-muted text-right">provider usage limits</span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
 
         {/* Active OAuth session rows — labeled by account name */}
         {activeSessions.map((s) => (
@@ -1556,58 +1577,6 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
               {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
             </span>
-          </div>
-        )}
-
-        {/* Monthly dollar budget */}
-        {forecast.monthly && (
-          <div className="px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
-              <span className="text-sm text-text-primary">Monthly budget</span>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
-                    labelled with that anchor rather than left to look windowed. */}
-                <span className="tabular-nums font-medium text-text-primary" title={ESTIMATED_COST_TITLE}>
-                  {formatEstimatedUsd(forecast.monthly.spentUsd)} / ${forecast.monthly.budgetUsd.toFixed(0)}
-                </span>
-                <span className="text-text-muted">·</span>
-                <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
-                <span className="text-text-muted">·</span>
-                <span>{formatReset(forecast.monthly.resetsAt, now)}</span>
-                {/* PROJECTION: the runway and the window its burn rate came from
-                    are ONE string, so the value can never be read as windowed by
-                    the page control. */}
-                {depletionProjection(forecast.monthly.daysToDepletion, '24h') && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span data-testid="budget-runway">
-                      {depletionProjection(forecast.monthly.daysToDepletion, '24h')}
-                    </span>
-                  </>
-                )}
-                {forecast.monthly.confidence !== 'low' && (
-                  <>
-                    <span className="text-text-muted">·</span>
-                    <span
-                      className={confidenceClass(forecast.monthly.confidence)}
-                      title={forecast.monthly.confidence === 'high' ? 'Burn rate estimate from recent worker costs. High confidence means a stable reading. It is not a guarantee.' : undefined}
-                    >
-                      {forecast.monthly.confidence === 'high' ? 'burn rate est.' : `confidence: ${forecast.monthly.confidence}`}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  forecast.monthly.pctUsed >= 90 ? 'bg-status-error' :
-                  forecast.monthly.pctUsed >= 70 ? 'bg-status-warning' :
-                  'bg-primary'
-                }`}
-                style={{ width: `${Math.min(100, forecast.monthly.pctUsed)}%` }}
-              />
-            </div>
           </div>
         )}
 
@@ -1704,7 +1673,7 @@ function CredentialStateSection({
           {countOf(credentials.length, 'credential')}
         </span>
       </div>
-      <div className="card divide-y divide-border-default">
+      <div className="border-y border-border-default divide-y divide-border-default">
         {credentials.map((c) => (
           <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
             <span className="text-sm text-text-primary truncate">
@@ -1764,7 +1733,7 @@ function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: Fai
           {sectionDenominator(stats.total, stats.total === 1 ? 'task' : 'tasks')} ({window})
         </span>
       </div>
-      <div className="card px-4 py-3 space-y-2">
+      <div className="border-y border-border-default px-4 py-3 space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-sm text-text-secondary">
             {stats.completed}/{stats.total} tasks completed ({window})
@@ -1855,27 +1824,8 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
   };
 
   return (
-    <div
-      role="group"
-      aria-label="Window"
-      data-testid="health-window-picker"
-      className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
-    >
-      {WINDOW_OPTIONS.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => select(o.value)}
-          aria-pressed={current === o.value}
-          className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-widest transition-colors ${
-            current === o.value
-              ? 'bg-surface-3 text-text-primary'
-              : 'text-text-muted hover:text-text-secondary'
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div data-testid="health-window-picker" className={pending ? 'opacity-60' : ''}>
+      <Segmented label="Window" items={WINDOW_OPTIONS} value={current} onChange={select} />
     </div>
   );
 }
@@ -1906,13 +1856,13 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
       </div>
 
       {totals.events === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">
             Nothing was refused, deferred, warned or bypassed in this window.
           </p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
             {([
               ['Rejected', totals.rejected, 'Requests buildd refused with a 4xx the caller had to act on.'],
@@ -1923,7 +1873,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
-                  className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  className="text-meta font-medium text-text-muted"
                   title={title}
                 >
                   {label}
@@ -1938,7 +1888,7 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
           </div>
 
           <div className="px-4 py-3">
-            <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            <p className="text-meta font-medium text-text-muted mb-2">
               By gate
             </p>
             <ul className="space-y-1.5">
@@ -1979,7 +1929,7 @@ function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
 
   return (
     <div className="px-4 py-3" data-testid="gate-claim-deferrals">
-      <p className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+      <p className="text-meta font-medium text-text-muted mb-2">
         Claim-loop deferrals by reason
       </p>
       <ul className="space-y-1.5">
@@ -2025,16 +1975,16 @@ function FailureAnalyticsSection({
       </div>
 
       {totals.started === 0 ? (
-        <div className="card px-4 py-3">
+        <div className="border-y border-border-default px-4 py-3">
           <p className="text-sm text-text-muted">No workers ran in this window.</p>
         </div>
       ) : (
-        <div className="card divide-y divide-border-default">
+        <div className="border-y border-border-default divide-y divide-border-default">
           {/* Headline stat tiles */}
           <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failed / finished workers in the window. In-flight workers are excluded."
               >
                 Failure rate
@@ -2051,7 +2001,7 @@ function FailureAnalyticsSection({
             </div>
             <div>
               <span
-                className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                className="text-meta font-medium text-text-muted"
                 title="Failures that used 2 turns or fewer at $0 cost. They took a slot and produced nothing. A high count points at a platform bug."
               >
                 Died early
@@ -2073,7 +2023,7 @@ function FailureAnalyticsSection({
                 window cannot make it more true). One tile could only lie about
                 one of them. */}
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Completed
               </span>
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
@@ -2084,7 +2034,7 @@ function FailureAnalyticsSection({
               </p>
             </div>
             <div>
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 Still running
               </span>
               <p
@@ -2100,7 +2050,7 @@ function FailureAnalyticsSection({
           {/* Exit-cause breakdown — magnitude only, one hue, direct-labelled */}
           {byExitCause.length > 0 && (
             <div className="px-4 py-3 space-y-2" data-testid="failure-exit-causes">
-              <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span className="text-meta font-medium text-text-muted">
                 By exit cause
               </span>
               {byExitCause.map((c) => (
@@ -2126,7 +2076,7 @@ function FailureAnalyticsSection({
           {signatures.length > 0 && (
             <div className="py-1" data-testid="failure-signatures">
               <div className="px-4 pt-2 pb-1">
-                <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                <span className="text-meta font-medium text-text-muted">
                   Failure signatures
                 </span>
               </div>
@@ -2221,7 +2171,7 @@ function FailureAnalyticsSection({
                 <div className="mt-3 space-y-4" data-testid="failure-breakdown">
                   {byRole.length > 0 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By role
                       </span>
                       {byRole.slice(0, 6).map((r) => (
@@ -2238,7 +2188,7 @@ function FailureAnalyticsSection({
 
                   {byWorkspace.length > 1 && (
                     <div className="space-y-1">
-                      <span className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                      <span className="text-meta font-medium text-text-muted">
                         By workspace
                       </span>
                       {byWorkspace.slice(0, 6).map((w) => (
@@ -2256,7 +2206,7 @@ function FailureAnalyticsSection({
                   {repeatFailureTasks.length > 0 && (
                     <div className="space-y-1">
                       <span
-                        className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                        className="text-meta font-medium text-text-muted"
                         title="Tasks that burned more than one worker inside the window"
                       >
                         Repeat-failure tasks

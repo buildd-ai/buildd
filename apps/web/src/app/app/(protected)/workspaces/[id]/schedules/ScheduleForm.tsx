@@ -6,6 +6,8 @@ import { Select } from '@/components/ui/Select';
 import { CronPresets } from '@/components/CronPresets';
 import { useBrowserTimezone } from '@/hooks/useBrowserTimezone';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
+import PrimaryAction from '@/components/ui/PrimaryAction';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 
 interface Props {
   workspaceId: string;
@@ -146,18 +148,18 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="border border-border-default rounded-lg p-6">
-        <h3 className="font-semibold text-lg mb-4">{isEdit ? 'Edit Schedule' : 'New Schedule'}</h3>
+      <div className="border border-border-default p-6">
+        <h3 className="font-semibold mb-4">{isEdit ? 'Edit schedule' : 'New schedule'}</h3>
 
         <div className="space-y-4">
           {/* Schedule name */}
           <div>
-            <label className="block text-sm font-medium mb-1">Schedule Name</label>
+            <label className="block text-sm font-medium mb-1">Schedule name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Nightly test suite"
               required
             />
@@ -165,16 +167,8 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
           {/* One-shot toggle */}
           <div className="flex items-center gap-3">
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={oneShot}
-                onChange={(e) => setOneShot(e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-surface-3 peer-focus:outline-none rounded-full peer peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
-            </label>
-            <span className="text-sm font-medium">Run once only</span>
+            <Switch checked={oneShot} onChange={setOneShot} labelledBy="schedule-one-shot-label" className={SWITCH_HIT_AREA} />
+            <span id="schedule-one-shot-label" className="text-sm font-medium">Run once only</span>
             {oneShot && (
               <span className="text-xs text-text-muted">Turns off after it runs</span>
             )}
@@ -183,20 +177,20 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
           {/* Schedule timing: datetime picker for one-shot, cron for recurring */}
           {oneShot ? (
             <div>
-              <label className="block text-sm font-medium mb-1">Run At</label>
+              <label className="block text-sm font-medium mb-1">Run at</label>
               <div className="flex gap-3">
                 <input
                   type="date"
                   value={runAtDate}
                   onChange={(e) => setRunAtDate(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+                  className="flex-1 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
                   required
                 />
                 <input
                   type="time"
                   value={runAtTime}
                   onChange={(e) => setRunAtTime(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+                  className="flex-1 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
                   required
                 />
               </div>
@@ -251,17 +245,17 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
       </div>
 
       {/* Task Template */}
-      <div className="border border-border-default rounded-lg p-6">
-        <h3 className="font-semibold text-lg mb-4">Task Template</h3>
+      <div className="border border-border-default p-6">
+        <h3 className="font-semibold mb-4">Task template</h3>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-1">Task Title</label>
+            <label className="block text-sm font-medium mb-1">Task title</label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Run nightly tests"
               required
             />
@@ -273,7 +267,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+              className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               placeholder="Run the full test suite and report any failures…"
             />
           </div>
@@ -299,7 +293,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
                 max={10}
                 value={priority}
                 onChange={(e) => setPriority(parseInt(e.target.value) || 0)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+                className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               />
             </div>
           </div>
@@ -311,22 +305,23 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="text-sm text-text-muted hover:text-text-secondary"
+          aria-expanded={showAdvanced}
+          className="btn btn-quiet"
         >
           {showAdvanced ? 'Hide' : 'Show'} advanced options
         </button>
 
         {showAdvanced && (
-          <div className="mt-4 border border-border-default rounded-lg p-6 space-y-4">
+          <div className="mt-4 border border-border-default p-6 space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Max Concurrent Tasks</label>
+              <label className="block text-sm font-medium mb-1">Max concurrent tasks</label>
               <input
                 type="number"
                 min={0}
                 max={10}
                 value={maxConcurrent}
                 onChange={(e) => setMaxConcurrent(parseInt(e.target.value) || 1)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+                className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
                 Skips a run while this many of its tasks are active. 0 = no limit.
@@ -334,14 +329,14 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1">Pause After Failures</label>
+              <label className="block text-sm font-medium mb-1">Pause after failures</label>
               <input
                 type="number"
                 min={0}
                 max={100}
                 value={pauseAfterFailures}
                 onChange={(e) => setPauseAfterFailures(parseInt(e.target.value) || 5)}
-                className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-base md:text-sm"
+                className="w-full px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm"
               />
               <p className="text-xs text-text-muted mt-1">
                 Pauses the schedule after this many failures in a row. 0 = never pause.
@@ -353,23 +348,19 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
 
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-4">
-        <button
-          type="submit"
-          disabled={saving}
-          className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : isEdit ? 'Update Schedule' : 'Create Schedule'}
-        </button>
+        <PrimaryAction type="submit" pending={saving}>
+          {saving ? 'Saving…' : isEdit ? 'Update schedule' : 'Create schedule'}
+        </PrimaryAction>
 
         <a
           href={`/app/workspaces/${workspaceId}/schedules`}
-          className="px-4 py-2 border border-border-default rounded-md hover:bg-surface-3"
+          className="btn btn-lg h-11 md:h-10"
         >
           Cancel
         </a>
 
         {error && (
-          <span className="text-status-error text-sm">{error}</span>
+          <span role="alert" className="text-status-error text-sm">{error}</span>
         )}
       </div>
     </form>

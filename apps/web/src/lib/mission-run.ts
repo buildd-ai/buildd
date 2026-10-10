@@ -1,5 +1,6 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { withoutLandingOverrideGrant } from '@/lib/landing-override-grant';
+import { withoutPrReachGrant } from '@/lib/pr-reach-grant';
 import { withoutReviewDispatchContext } from '@/lib/verdict-provenance';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core/db/schema';
@@ -536,7 +537,7 @@ export async function runMission(
 
   // Get template context from schedule if available
   // A landing grant is a person's call on one task, never a template's (landing-override-grant.ts).
-  const templateContext = withoutReviewDispatchContext(withoutLandingOverrideGrant((mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined));
+  const templateContext = withoutPrReachGrant(withoutReviewDispatchContext(withoutLandingOverrideGrant((mission.schedule as any)?.taskTemplate?.context as Record<string, unknown> | undefined)));
 
   // Build cycle context — default to cycle 1 with new chain if not provided
   const cycleCtx: CycleContext = options?.cycleContext || {

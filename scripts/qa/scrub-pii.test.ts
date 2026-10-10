@@ -171,7 +171,8 @@ const SAFE: Record<string, string[]> = {
     'chat_composer_prefs', // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
     'model_tier_ceilings'], // { admin, self }: tier names by fixed surface, audit of ISO times + user ids (same shape family as teams.model_tier_ceilings)
   users: ['timezone'],
-  workspaces: ['model_upgrade_policy'], // same shape as teams.model_upgrade_policy
+  workspaces: ['model_upgrade_policy', // same shape as teams.model_upgrade_policy
+    'new_starts_paused_by'], // a users.id (who paused new starts), never free text (lib/workspace-pause.ts)
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)

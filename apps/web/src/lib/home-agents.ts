@@ -78,8 +78,11 @@ export function homeHeadlineSentence(count: number): string {
   return count === 1 ? '1 decision needs you.' : `${count} decisions need you.`;
 }
 
-/** One sub-line: what is being repaired automatically, else that nothing else is needed. */
-export function homeSubline(count: number, repairs: number): string {
+/**
+ * One plain sub-line: what is being repaired automatically, else that nothing
+ * else is needed. Not narration of the fleet ("moving on its own").
+ */
+export function homeSubline(_count: number, repairs: number): string {
   if (repairs > 0) return repairs === 1 ? '1 automatic repair is running.' : `${repairs} automatic repairs are running.`;
-  return count > 0 ? 'Everything else is moving on its own.' : 'No other action needed.';
+  return 'No other action needed.';
 }

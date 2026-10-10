@@ -57,6 +57,7 @@ import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { landPr, resolveLandingMode, type LandingActor, type LandingOutcome } from '@/lib/pr-landing';
 import { grantAllows, LANDING_OVERRIDE_KINDS, type LandingOverrideKind } from '@/lib/landing-override-grant';
+import { requestingPerson } from '@/lib/request-person';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -695,7 +696,7 @@ export async function POST(req: NextRequest) {
 
     // An agent run opens or adopts a PR only from a head its task owns. The
     // PR number is not known yet; dedup below re-asks with it, in case the
-    // task names the PR it found.
+    // task's records link the PR it found.
     const ownershipApplied = ownershipApplies(prAccess.actor, account);
     const ownershipInput = ownershipApplied
       ? {
@@ -1450,14 +1451,14 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
     // A per-task token, and an agent run on its runner's key, may act only on a
-    // PR its task owns: its own worker's PR or one the task names.
+    // PR its task owns: its own worker's PR or one its task's records link.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: `A task token may ${isBodyUpdate ? 'update' : 'close'} only its own PR` }, { status: 403 });
     }
     if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-      return NextResponse.json({ error: `An agent run may ${isBodyUpdate ? 'update' : 'close'} only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
+      return NextResponse.json({ error: `An agent run may ${isBodyUpdate ? 'update' : 'close'} only its own PR (#${worker.prNumber ?? 'none'}) or one its task's records link` }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1737,7 +1738,7 @@ export async function PUT(req: NextRequest) {
       // A per-task token is held to the same rule below, with its own message.
       if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
         void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
-        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
+        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task's records link` }, { status: 403 });
       }
     } else {
       // workerId absent — resolve worker from prNumber across the account's workspaces.
@@ -1752,7 +1753,7 @@ export async function PUT(req: NextRequest) {
       worker = resolved;
     }
     // A per-task token, and an agent run on its runner's key, may merge only a
-    // PR its task owns: its own worker's PR or one the task names.
+    // PR its task owns: its own worker's PR or one its task's records link.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
@@ -1804,7 +1805,7 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ error: 'reason is required with overrides: say why this PR should merge past them' }, { status: 400 });
       }
       const override = Object.fromEntries(requestedOverrides.kinds.map((k) => [k, true])) as { freshness?: boolean; size?: boolean };
-      const personId = (account as { sessionUserId?: string | null }).sessionUserId ?? null;
+      const personId = requestingPerson(null, account);
       if (personId) {
         landingActor = { kind: 'human', userId: personId, override, overrideReason: reason };
         kernelOverride = { reason, kinds: requestedOverrides.kinds };

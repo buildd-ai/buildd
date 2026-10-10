@@ -9183,6 +9183,40 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(claimWhereExecutorExcludes()).toBeNull();
   });
 
+  // ── workspace "pause new starts" (task ad5d7e26) ───────────────────────────
+  // Rows are evaluated against real Postgres in tests/db/workspace-paused-gate.test.ts.
+  function claimWhereHasPauseGate(): boolean {
+    const call = (mockTasksFindMany.mock.calls as any[]).find(c => c[0]?.orderBy && c[0]?.limit >= 25);
+    const args: any[] = call?.[0]?.where?.args ?? [];
+    return args.some(a => a?.type === 'sql' && Array.isArray(a.strings) && a.strings.join('').includes('ws_p'));
+  }
+
+  it('workspace pause: a runner poll skips paused workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }));
+    expect(claimWhereHasPauseGate()).toBe(true);
+  });
+
+  it('workspace pause: a runner explicit claim is paused and the probe can name it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'runner-7' });
+    expect(probedGates()).toContain('workspacePaused');
+  });
+
+  it('workspace pause: a verified interactive session is never paused', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    expect(probedGates()).not.toContain('workspacePaused');
+    expect(claimWhereHasPauseGate()).toBe(false);
+  });
+
+  it('workspace pause: an admin force claim lifts it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(claimWhereHasPauseGate()).toBe(false);
+  });
+
   // ── friction 22b389df: a local mission's own audit task was unclaimable ────
   // The `[surface audit]` task ensureMissionSurfaceAudit appends carries
   // roleSlug='visual-auditor' (EXPLICIT_ROLE_SLUGS), which an interactive
@@ -9260,6 +9294,77 @@ describe('explicit taskId claims (organizer workflow)', () => {
     // has its own credentials and should not be blocked by account budget.
     expect(data.workers).toHaveLength(1);
     expect(data.diagnostics).toBeUndefined();
+  });
+
+  // Owner rule (task 69f5b7cd): a person's interactive session can always
+  // claim. The account's worker limit is the slots its runners are assigned;
+  // a full fleet must not lock the person out, and the person's own sessions
+  // must not eat a runner's slots.
+  describe('account worker limit: runners only', () => {
+    /** Flatten the stubbed `sql` tag (strings + nested fragments) to text. */
+    function sqlText(node: any): string {
+      if (!node || typeof node !== 'object') return node === undefined ? '' : String(node);
+      if (node.type !== 'sql') return '?';
+      if (node.raw !== undefined) return node.raw;
+      if (node.parts) return node.parts.map(sqlText).join(sqlText(node.sep));
+      return node.strings.reduce((acc: string, str: string, i: number) => acc + str + (i < node.values.length ? sqlText(node.values[i]) : ''), '');
+    }
+    function workerInsertSql(): string {
+      const texts = (mockDbExecute.mock.calls as any[]).map(c => sqlText(c[0]));
+      return texts.findLast(t => t.includes('INSERT INTO')) ?? '';
+    }
+    const runnerFleet = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `w${i}`, taskId: `t${i}`, runner: 'runner-7', status: 'running' }));
+    const sessions = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, taskId: `st${i}`, runner: 'mcp', status: 'running' }));
+
+    it('an interactive claim succeeds while runners fill the account limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth' });
+      mockWorkersFindMany.mockResolvedValue(runnerFleet(5));
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'mcp' }, interactiveHeaders());
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      // The atomic insert carries no account-count predicate for a session.
+      expect(workerInsertSql()).not.toContain('count(*)');
+    });
+
+    it('an interactive claim is not refused by the OAuth session limit either', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account(), authType: 'oauth', maxConcurrentSessions: 2, activeSessions: 2 });
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'mcp' }, interactiveHeaders());
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+    });
+
+    it("a runner's claim is not refused because a person's sessions are live", async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue([...runnerFleet(2), ...sessions(3)]);
+      mockTasksFindMany.mockResolvedValueOnce([task()]);
+      const res = await claim({ runner: 'runner-7' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+      // The insert's own count leaves interactive workers out as well.
+      const insert = workerInsertSql();
+      expect(insert).toContain('count(*)');
+      expect(insert).toContain('runner IS DISTINCT FROM mcp');
+    });
+
+    it('a runner is still refused at its own limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue([...runnerFleet(5), ...sessions(2)]);
+      const res = await claim({ runner: 'runner-7' });
+      expect(res.status).toBe(429);
+      const data = await res.json();
+      expect(data.error).toBe('Max concurrent workers limit reached');
+      expect(data.current).toBe(5);
+    });
+
+    it('an unverified "mcp" runner id gets no exemption', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(account());
+      mockWorkersFindMany.mockResolvedValue(runnerFleet(5));
+      const res = await claim({ runner: 'mcp' });
+      expect(res.status).toBe(429);
+    });
   });
 
   // The team pause log records a wall the RUNNER's seat hit (e.g. "You've hit

@@ -916,7 +916,8 @@ export interface QuestionRecommendation {
 }
 
 export interface WaitingFor {
-  type: 'question' | 'permission' | 'confirmation';
+  /** `pause`: a person paused a running agent; answering it (Resume) continues the same session. */
+  type: 'question' | 'permission' | 'confirmation' | 'pause';
   prompt: string;
   options?: (string | WaitingForOption)[];
   /**
@@ -1519,6 +1520,8 @@ export type ClaimTaskExclusionCode =
   | 'workspace_cap'
   /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
   | 'workspace_executor'
+  /** The workspace paused new starts until a set time (runner claims only). */
+  | 'workspace_paused'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -3568,6 +3571,8 @@ export interface LaneBar {
   prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
+  /** The task's mission, so a chart can light up one mission's runs; null when standalone. */
+  missionId?: string | null;
 }
 
 export interface Lane {
@@ -3680,6 +3685,8 @@ export interface PrListItem {
   // Present only when they matter (apps/web/src/lib/pr-list.ts prSignals):
   /** Why a person is needed: the escalation inbox's decision. */
   waitingOnYou?: string;
+  /** The escalation gate kept it from you: the next step Buildd is taking, in words. */
+  builddOwns?: string;
   /** An agent is already on it. */
   resolving?: 'conflict' | 'ci' | 'review';
   /** CI fix tasks buildd has dispatched for this PR (red only). */

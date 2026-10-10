@@ -185,9 +185,9 @@ export async function PATCH(
               conflictingRoleId: conflict.id,
               conflictingRoleSlug: conflict.slug,
               conflictingRoleName: conflict.name,
-              editTeamDefaultPath: `/app/team/${conflict.slug}/settings`,
+              editTeamDefaultPath: `/app/settings/roles/${conflict.slug}/edit`,
               resolution: [
-                `Edit the existing team default at /app/team/${conflict.slug}/settings`,
+                `Edit the existing team default at /app/settings/roles/${conflict.slug}/edit`,
                 'Or keep this role as a workspace-specific override (the current row is already a workspace override — only promote it if you want it to become the new team default)',
               ],
             },

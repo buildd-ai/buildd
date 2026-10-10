@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import SettingsSection from './SettingsSection';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import Section from '@/components/ui/Section';
+import Lede from '@/components/ui/Lede';
+import ChannelRow from './notifications/ChannelRow';
 
 interface Workspace {
   id: string;
@@ -17,6 +19,8 @@ interface Props {
    * which channels are set and which events fire, read-only. Defaults to true.
    */
   canManage?: boolean;
+  /** Your own channel (PersonalPushoverKey), listed between the team's two. */
+  personal?: ReactNode;
 }
 
 type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired';
@@ -34,12 +38,12 @@ const EVENT_LABELS: { key: NotifyEvent; label: string; hint: string }[] = [
 ];
 
 /**
- * Per-team notification settings. Alerts route to THIS team's own channel — the
- * team's own Pushover app token + user/group key, and/or a webhook URL — and each
- * event type can be toggled. Teams with no channel get nothing. Mirrors the
- * AgentBackendsSection team selector conventions.
+ * Settings › Notifications. One Channels list (the team's Pushover app, your
+ * own Pushover key, the team's webhook) as L1 rows with one state vocabulary,
+ * then "Team alerts": which events reach the team's channels. Team alerts route
+ * to THIS team's own channel; teams with no channel get nothing.
  */
-export default function NotificationsSection({ workspaces, currentTeamId, canManage = true }: Props) {
+export default function NotificationsSection({ workspaces, currentTeamId, canManage = true, personal }: Props) {
   const teamWorkspaces = useMemo(
     () => (currentTeamId ? workspaces.filter((w) => w.teamId === currentTeamId) : workspaces),
     [workspaces, currentTeamId],
@@ -53,6 +57,7 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
   const [pushoverAppToken, setPushoverAppToken] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [editing, setEditing] = useState<null | 'pushover' | 'webhook'>(null);
 
   const load = useCallback(async () => {
     if (!teamId) return;
@@ -96,22 +101,31 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
     }
   }
 
-  async function saveChannels() {
+  async function saveChannel(which: 'pushover' | 'webhook') {
     const body: Record<string, unknown> = {};
-    const appToken = pushoverAppToken.trim();
-    const userKey = pushoverKey.trim();
-    if (appToken || userKey) {
-      // Pushover needs BOTH — guard here so we don't send a half-set channel.
+    if (which === 'pushover') {
+      const appToken = pushoverAppToken.trim();
+      const userKey = pushoverKey.trim();
+      // Pushover needs BOTH; guard here so we don't send a half-set channel.
       if (!appToken || !userKey) {
-        setMsg({ type: 'error', text: 'Pushover needs both an app token and a user/group key.' });
+        setMsg({ type: 'error', text: 'Pushover needs both an app token and a user or group key.' });
         return;
       }
       body.pushoverAppToken = appToken;
       body.pushoverUserKey = userKey;
+    } else {
+      if (!webhookUrl.trim()) return;
+      body.webhookUrl = webhookUrl.trim();
     }
-    if (webhookUrl.trim()) body.webhookUrl = webhookUrl.trim();
-    if (Object.keys(body).length === 0) return;
     await put(body, 'Channel saved.');
+    setPushoverKey('');
+    setPushoverAppToken('');
+    setWebhookUrl('');
+    setEditing(null);
+  }
+
+  function cancelEdit() {
+    setEditing(null);
     setPushoverKey('');
     setPushoverAppToken('');
     setWebhookUrl('');
@@ -131,119 +145,122 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
     await put({ preferences: { [event]: value } }, 'Preferences updated.');
   }
 
-  if (teamWorkspaces.length === 0 || !teamId) return null;
+  const hasTeam = teamWorkspaces.length > 0 && !!teamId;
+  if (!hasTeam && !personal) return null;
 
   const hasPushover = state?.channels.pushover ?? false;
   const hasWebhook = state?.channels.webhook ?? false;
+  const inputClass = 'w-full h-10 px-3 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs';
+
+  function channelActions(which: 'pushover' | 'webhook', connected: boolean) {
+    if (!canManage || editing === which) return null;
+    return (
+      <>
+        <button className="btn btn-sm" onClick={() => { setEditing(which); setMsg(null); }} disabled={busy || loading}>
+          {connected ? 'Replace' : 'Set up'}
+        </button>
+        {connected && (
+          <button className="btn btn-sm btn-quiet" onClick={() => clearChannel(which)} disabled={busy}>Remove</button>
+        )}
+      </>
+    );
+  }
+
+  function formButtons(which: 'pushover' | 'webhook', ready: boolean) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => saveChannel(which)} disabled={busy || !ready} className="btn btn-primary">
+          {busy ? 'Saving…' : 'Save channel'}
+        </button>
+        <button onClick={cancelEdit} disabled={busy} className="btn btn-quiet">Cancel</button>
+      </div>
+    );
+  }
 
   return (
-    <SettingsSection title="Notifications">
-      <div className="space-y-5">
-        <p className="text-sm text-text-secondary">
-          Alerts for <strong className="text-text-primary">this team</strong>. Set a Pushover key, a webhook URL or both, then pick events.
-        </p>
+    <>
+      <Section title="Channels">
+        <ul className="divide-y divide-border-default" data-testid="notification-channels">
+          {hasTeam && (
+            <ChannelRow
+              title="Pushover · team"
+              connected={hasPushover}
+              sub="The team's own Pushover app. Team alerts go here."
+              actions={channelActions('pushover', hasPushover)}
+              testId="channel-pushover-team"
+            >
+              {canManage && editing === 'pushover' ? (
+                <>
+                  <input
+                    type="password"
+                    aria-label="Pushover app token"
+                    value={pushoverAppToken}
+                    onChange={(e) => setPushoverAppToken(e.target.value)}
+                    placeholder="App token (your Pushover application)"
+                    className={inputClass}
+                  />
+                  <input
+                    type="password"
+                    aria-label="Pushover user or group key"
+                    value={pushoverKey}
+                    onChange={(e) => setPushoverKey(e.target.value)}
+                    placeholder="u… (user or group key)"
+                    className={inputClass}
+                  />
+                  <p className="text-xs text-text-muted">
+                    Both are in your Pushover account. The app token comes from creating an application.
+                  </p>
+                  {formButtons('pushover', !!pushoverAppToken.trim() && !!pushoverKey.trim())}
+                </>
+              ) : null}
+            </ChannelRow>
+          )}
+          {personal}
+          {hasTeam && (
+            <ChannelRow
+              title="Webhook"
+              connected={hasWebhook}
+              sub="Team alerts as JSON to any URL: Slack, Discord or your own."
+              actions={channelActions('webhook', hasWebhook)}
+              testId="channel-webhook"
+            >
+              {canManage && editing === 'webhook' ? (
+                <>
+                  <input
+                    type="url"
+                    aria-label="Webhook URL"
+                    value={webhookUrl}
+                    onChange={(e) => setWebhookUrl(e.target.value)}
+                    placeholder="https://example.com/buildd-alerts"
+                    className={inputClass}
+                  />
+                  {formButtons('webhook', !!webhookUrl.trim())}
+                </>
+              ) : null}
+            </ChannelRow>
+          )}
+        </ul>
+      </Section>
 
-        {loading ? (
-          <div className="text-sm text-text-tertiary">Loading…</div>
-        ) : (
-          <>
-            {!canManage && (
-              <p data-testid="notifications-read-only" className="text-xs text-text-muted">Admins can change this.</p>
-            )}
-
-            {/* Channels */}
-            {!canManage ? (
-            <div className="space-y-3">
-              <h3 className="text-sm font-medium text-text-primary">Channels</h3>
-              <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
-                <dt className="text-text-secondary">Pushover</dt>
-                <dd>
-                  <span className={`status-pill ${hasPushover ? 'status-pill-ok' : 'status-pill-idle'}`}>{hasPushover ? 'Configured' : 'Not set'}</span>
-                </dd>
-                <dt className="text-text-secondary">Webhook</dt>
-                <dd>
-                  <span className={`status-pill ${hasWebhook ? 'status-pill-ok' : 'status-pill-idle'}`}>{hasWebhook ? 'Configured' : 'Not set'}</span>
-                </dd>
-              </dl>
-            </div>
-            ) : (
-            <div className="space-y-3">
-              <h3 className="text-sm font-medium text-text-primary">Channels</h3>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="field-label !mb-0">Pushover (your own app)</span>
-                  {hasPushover && (
-                    <span className="inline-flex items-center gap-2">
-                      <span className="status-pill status-pill-ok">Configured</span>
-                      <button onClick={() => clearChannel('pushover')} disabled={busy} className="btn btn-danger">
-                        Remove
-                      </button>
+      {hasTeam && (
+        <Section
+          title="Team alerts"
+          action={!canManage ? (
+            <span data-testid="notifications-read-only" className="text-xs text-text-muted">Admins can change this.</span>
+          ) : undefined}
+        >
+          <Lede className="mb-2">Which events reach this team&apos;s channels.</Lede>
+          {loading ? (
+            <p className="text-sm text-text-muted">Loading…</p>
+          ) : (
+            <ul className="divide-y divide-border-default" data-testid="notification-events">
+              {EVENT_LABELS.map(({ key, label, hint }) => (
+                <li key={key}>
+                  <label className={`flex items-start justify-between gap-3 py-3 ${canManage ? 'cursor-pointer' : ''}`}>
+                    <span className="min-w-0">
+                      <span className="block text-sm text-text-primary">{label}</span>
+                      <span className="block text-xs text-text-secondary">{hint}</span>
                     </span>
-                  )}
-                </div>
-                <input
-                  type="password"
-                  value={pushoverAppToken}
-                  onChange={(e) => setPushoverAppToken(e.target.value)}
-                  placeholder={hasPushover ? 'Replace app token…' : 'App token (your Pushover application)'}
-                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
-                />
-                <input
-                  type="password"
-                  value={pushoverKey}
-                  onChange={(e) => setPushoverKey(e.target.value)}
-                  placeholder={hasPushover ? 'Replace user/group key…' : 'u… (user or group key)'}
-                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
-                />
-                <p className="text-xs text-text-muted">
-                  Both are in your Pushover account. The app token comes from creating an application.
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="field-label">Webhook URL</label>
-                <div className="flex items-center gap-2">
-                  {hasWebhook && (
-                    <span className="status-pill status-pill-ok">Configured</span>
-                  )}
-                  {hasWebhook && (
-                    <button onClick={() => clearChannel('webhook')} disabled={busy} className="btn btn-danger">
-                      Remove
-                    </button>
-                  )}
-                </div>
-                <input
-                  type="url"
-                  value={webhookUrl}
-                  onChange={(e) => setWebhookUrl(e.target.value)}
-                  placeholder={hasWebhook ? 'Replace URL…' : 'https://example.com/buildd-alerts'}
-                  className="w-full h-10 px-3 bg-surface font-mono text-xs"
-                />
-              </div>
-
-              <button
-                onClick={saveChannels}
-                disabled={busy || (!pushoverAppToken.trim() && !pushoverKey.trim() && !webhookUrl.trim())}
-                className="btn btn-primary"
-              >
-                {busy ? 'Saving…' : 'Save channel'}
-              </button>
-            </div>
-            )}
-
-            <div className="border-t border-border-default" />
-
-            {/* Event toggles */}
-            <div className="space-y-3">
-              <h3 className="text-sm font-medium text-text-primary">Events</h3>
-              <div className="space-y-2">
-                {EVENT_LABELS.map(({ key, label, hint }) => (
-                  <label key={key} className={`flex items-start justify-between gap-3 inset-panel ${canManage ? 'cursor-pointer' : ''}`}>
-                    <div className="min-w-0">
-                      <div className="text-sm text-text-primary">{label}</div>
-                      <div className="text-xs text-text-muted">{hint}</div>
-                    </div>
                     <input
                       type="checkbox"
                       checked={state?.preferences[key] ?? true}
@@ -252,16 +269,16 @@ export default function NotificationsSection({ workspaces, currentTeamId, canMan
                       className="mt-1 h-4 w-4 flex-shrink-0"
                     />
                   </label>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+      )}
 
-        {msg && (
-          <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
-        )}
-      </div>
-    </SettingsSection>
+      {msg && (
+        <p role={msg.type === 'error' ? 'alert' : 'status'} className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</p>
+      )}
+    </>
   );
 }

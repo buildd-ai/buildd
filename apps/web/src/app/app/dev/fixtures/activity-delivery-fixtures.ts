@@ -89,7 +89,6 @@ export function activityFixture(step: number) {
     step: s,
     now: buildActivityNow({ ...args, now: ACTIVITY_FIXTURE_NOW }),
     history: buildActivityHistory(args),
-    latest: latestTask(tasks, rules),
   };
 }
 

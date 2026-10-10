@@ -50,6 +50,11 @@ describe('displayTaskTitle', () => {
     expect(displayTaskTitle(input)).toBe(out);
   });
 
+  it('strips a research: prefix like a conventional type', () => {
+    expect(displayTaskTitle('research: FX rate providers')).toBe('FX rate providers');
+    expect(displayTaskTitle('RESEARCH: FX rate providers')).toBe('FX rate providers');
+  });
+
   it('passes empty input through', () => {
     expect(displayTaskTitle(undefined)).toBe('');
     expect(displayTaskTitle(null)).toBe('');
@@ -74,4 +79,9 @@ describe('taskShortName', () => {
   it('is empty for nothing', () => {
     expect(taskShortName({ title: '' })).toBe('');
   });
+});
+
+it('strips research prefixes, scopes and retry wraps through the shared prefix pattern', () => {
+  expect(displayTaskTitle('research: compare providers')).toBe('Compare providers');
+  expect(displayTaskTitle('[retry] RESEARCH(api): compare providers')).toBe('Compare providers');
 });

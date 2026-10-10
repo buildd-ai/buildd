@@ -129,7 +129,7 @@ never see a credential value.
   overridable field, a new override row never inherits the team default's
   `metadata.operator` — the workspace's grant is its own opt-in, not a copy of
   the team's ceiling config.
-- The team-settings page (`apps/web/src/app/app/(protected)/team/[slug]/settings/`)
+- The role editor (`apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/`)
   renders `OperatorAccessSection` instead of the generic workspace-overrides
   editor when the role's slug holds any agent capability. It shows: a team
   kill switch and standard-capability/scope ceiling; per workspace, an
@@ -142,7 +142,7 @@ never see a credential value.
 
 **Code surface**: `apps/web/src/app/api/roles/[id]/route.ts`,
 `apps/web/src/app/api/roles/[id]/overrides/route.ts`,
-`apps/web/src/app/app/(protected)/team/[slug]/settings/OperatorAccessSection.tsx`.
+`apps/web/src/app/app/(protected)/settings/roles/[slug]/edit/OperatorAccessSection.tsx`.
 
 ## Operator persona
 

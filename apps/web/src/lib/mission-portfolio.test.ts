@@ -24,7 +24,10 @@ function task(id: string, over: Partial<MissionTaskRow> = {}): MissionTaskRow {
 const landedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, mergedAt: '2026-10-01', prLifecycleStatus: 'merged' }] });
 const buildingTask = (id: string) => task(id, { status: 'in_progress', workers: [{ status: 'running' }] });
 const auditTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'ci_pending' }] });
-const notLandedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
+// Closed unmerged after the supersession scan ran: a person decides.
+const notLandedTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed', supersessionScan: { scannedAt: '2026-10-08T10:00:00Z', suggestion: null } }] });
+// Closed unmerged with the scan still owed: Buildd is reconciling it.
+const reconcilingTask = (id: string) => task(id, { status: 'completed', workers: [{ status: 'completed', prUrl: PR, prLifecycleStatus: 'closed' }] });
 
 function row(id: string, tasks: MissionTaskRow[], over: Partial<PortfolioRow> & { status?: string; isHeld?: boolean } = {}): PortfolioRow {
   const { status = 'active', isHeld = false, ...rest } = over;
@@ -47,6 +50,7 @@ const audit = row('audit', [landedTask('a'), landedTask('b'), auditTask('c')], {
 const broken = row('broken', [landedTask('a'), notLandedTask('b')], { lastAdvancedAt: NOW - 2 * 3_600_000 });
 const waiting = row('waiting', [task('a'), task('b')], { lastAdvancedAt: NOW - 9 * 3_600_000, priority: 5 });
 const held = row('held', [task('a')], { isHeld: true, status: 'paused', lastAdvancedAt: null });
+const onDev = row('on-dev', [landedTask('a'), landedTask('b')]);
 const doneRecent = row('done-recent', [landedTask('a')], { status: 'completed', completedAt: NOW - 3_600_000 });
 const doneOld = row('done-old', [landedTask('a')], { status: 'completed', completedAt: NOW - 30 * 86_400_000 });
 const ALL = [building, audit, broken, waiting, held, doneRecent, doneOld];
@@ -103,12 +107,18 @@ describe('filterPortfolio', () => {
   const open = [building, audit, broken, waiting, held];
   const ids = (rows: PortfolioRow[]) => rows.map(r => r.delivery.id).sort();
 
-  it('status filters are the list’s own sections, so a chip shows exactly one section', () => {
+  it('status filters are the list sections, read from the projection', () => {
     expect(ids(filterPortfolio(open, { status: 'all' }))).toEqual(ids(open));
-    expect(ids(filterPortfolio(open, { status: 'needs' }))).toEqual([]);
-    // A closed PR still being reconciled is in motion, not an exception for a person (#4161).
-    expect(ids(filterPortfolio(open, { status: 'motion' }))).toEqual(['audit', 'broken', 'build']);
+    expect(ids(filterPortfolio(open, { status: 'needs' }))).toEqual(['broken']);
+    expect(ids(filterPortfolio(open, { status: 'motion' }))).toEqual(['audit', 'build']);
     expect(ids(filterPortfolio(open, { status: 'waiting' }))).toEqual(['held', 'waiting']);
+    expect(ids(filterPortfolio([...open, onDev], { status: 'landed' }))).toEqual(['on-dev']);
+  });
+
+  it('a closed PR still being reconciled filters as In motion, not Needs you', () => {
+    const rec = row('reconciling', [landedTask('a'), reconcilingTask('b')]);
+    expect(ids(filterPortfolio([rec], { status: 'needs' }))).toEqual([]);
+    expect(ids(filterPortfolio([rec], { status: 'motion' }))).toEqual(['reconciling']);
   });
 
   it('search matches title and workspace, case-insensitively', () => {
@@ -127,7 +137,7 @@ describe('filterPortfolio', () => {
   });
 
   it('counts each status filter on the same rows', () => {
-    expect(portfolioFilterCounts(open)).toEqual({ all: 5, needs: 0, motion: 3, waiting: 2 });
+    expect(portfolioFilterCounts([...open, onDev])).toEqual({ all: 6, needs: 1, motion: 2, waiting: 2, landed: 1 });
   });
 });
 

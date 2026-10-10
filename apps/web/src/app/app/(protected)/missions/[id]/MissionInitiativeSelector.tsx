@@ -87,7 +87,7 @@ export default function MissionInitiativeSelector({
         <span className="text-text-muted">Initiative:</span>
         <Link
           href={`/app/initiatives/${currentInitiativeId}`}
-          className="text-accent-text hover:underline"
+          className="text-text-primary underline underline-offset-4"
         >
           {currentInitiativeName}
         </Link>
@@ -102,7 +102,7 @@ export default function MissionInitiativeSelector({
         <span className="flex items-center gap-1">
           <Link
             href={`/app/initiatives/${currentInitiativeId}`}
-            className="text-accent-text hover:underline"
+            className="text-text-primary underline underline-offset-4"
             onClick={e => e.stopPropagation()}
           >
             {currentInitiativeName}
@@ -153,7 +153,7 @@ export default function MissionInitiativeSelector({
               placeholder="Filter initiatives…"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              className="w-full bg-surface-3 text-text-primary text-[12px] px-2 py-1.5 rounded border border-border-default focus:outline-none focus:border-accent-text placeholder:text-text-muted"
+              className="w-full bg-surface-3 text-text-primary text-[12px] px-2 py-1.5 rounded border border-border-default focus:outline-none focus:border-border-strong placeholder:text-text-muted"
             />
           </div>
           <div className="max-h-48 overflow-y-auto">

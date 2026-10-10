@@ -23,7 +23,7 @@ const FALLBACK_LABEL = 'untitled';
  * (`displayTaskTitle`) and task page header read this same pattern.
  */
 export const CONVENTIONAL_PREFIX_RE =
-  /^(feat|fix|chore|docs?|refactor|tests?|ci|perf|build|style|revert|hotfix|release|deps|polish|design)(?:\(([^)]*)\))?!?:\s*/i;
+  /^(feat|fix|chore|docs?|refactor|tests?|ci|perf|build|style|revert|hotfix|release|deps|polish|design|research)(?:\(([^)]*)\))?!?:\s*/i;
 const CONVENTIONAL_RE = CONVENTIONAL_PREFIX_RE;
 
 /** `[builder · after CI #1]`, `[CI Retry]`, `[friction]` … */

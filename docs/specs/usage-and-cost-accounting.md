@@ -280,6 +280,13 @@ defers that task and reports the reason.
   `maxCostPerDay` vs `totalCost` for `authType = 'api'`,
   `maxConcurrentSessions` vs `activeSessions` for `authType = 'oauth'`.
   A gate MUST NOT be applied to the other auth type.
+- `maxConcurrentWorkers` is the number of slots the account's runners are
+  assigned, not a cap on a person. A verified interactive session (the
+  `verifyInteractiveSession` marker) is never refused by it or by
+  `maxConcurrentSessions`, and its workers (`runner = 'mcp'`) are left out of
+  the count a runner claim is checked against, in the pre-check and in the
+  atomic insert. `mcp-unverified` is an ordinary runner. `maxCostPerDay` still
+  applies to every caller.
 - `activeSessions` is a seat counter, not a usage number: it is incremented by
   exactly the number of workers claimed and decremented on every path that moves
   a live worker to a terminal state, so it cannot ratchet upward and
@@ -295,8 +302,9 @@ defers that task and reports the reason.
   (`route.ts:932-987`). The router downshifts tiers in bands and returns
   `paused` for priority-0 work at ≥ 95%, which becomes a `routing_paused`
   deferral (`packages/core/model-router.ts:116-148`, `route.ts:1580-1585`).
-- OAuth pacing has exactly two exemptions, both deliberate: an explicit
-  single-task claim (`taskId` present) always wins over pacing, and
+- OAuth pacing has exactly three exemptions, all deliberate: an explicit
+  single-task claim (`taskId` present) always wins over pacing, a verified
+  interactive session runs on the person's own credentials, and
   `OAUTH_BUDGET_PACING=off` makes it fully inert. Below `MIN_SAMPLES` episodes
   the window is not even measured (`route.ts:953-987`,
   `packages/core/oauth-budget.ts:57-67`, `:187-229`).

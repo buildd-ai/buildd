@@ -94,7 +94,17 @@ export type MintTaskTokenFn = (taskId: string, ttlMs: number, signal: AbortSigna
 
 export type AgentBuilddAuth =
   | { source: 'task-token'; token: string; expiresAt: number; level: AgentTaskTokenLevel }
-  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'admin-role' | 'mint-failed'; detail?: string };
+  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'admin-role' | 'mint-failed'; detail?: string }
+  | { source: 'none'; token: ''; reason: 'runner-key-is-person-session'; detail?: string };
+
+/**
+ * Same shape test the server uses to recognise an OAuth access token
+ * (apps/web/src/lib/oauth/tokens.ts `looksLikeJwt`). A `bld_` key has no dots
+ * and a `bldt_` task token has one, so neither matches.
+ */
+export function looksLikePersonSessionBearer(token: string | null | undefined): boolean {
+  return typeof token === 'string' && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
+}
 
 /** Short, secret-free reason for a mint failure. */
 export function describeMintFailure(err: unknown, level: AgentTaskTokenLevel = 'worker'): string {
@@ -118,7 +128,24 @@ export function describeMintFailure(err: unknown, level: AgentTaskTokenLevel = '
  * Pick the credential for the agent's buildd MCP auth for one session.
  * Never throws: any failure is a fallback to the runner key with one warning.
  */
-export async function resolveAgentBuilddAuth(opts: {
+export async function resolveAgentBuilddAuth(opts: ResolveAgentBuilddAuthOpts): Promise<AgentBuilddAuth> {
+  const auth = await resolveAgentBuilddAuthInner(opts);
+  // A runner agent never acts as a person. The server reads a person only from
+  // an OAuth session bearer (`sessionUserId`); a runner started on one (e.g.
+  // BUILDD_API_KEY set to a signed-in session's access token) must not hand it
+  // to the agent on any fallback path. The agent gets no buildd credential
+  // instead, and its buildd calls are refused until the runner uses a key.
+  if (auth.source === 'runner-key' && looksLikePersonSessionBearer(auth.token)) {
+    const warn = opts.warn ?? ((l: string) => console.warn(l));
+    warn(`[agent-task-token] task ${(opts.taskId ?? '').slice(0, 8)}: the runner key is a person's sign-in session, which a runner agent may not carry; the agent's buildd MCP has no credential for this session. Run the runner on a buildd API key (buildd login).`);
+    return { source: 'none', token: '', reason: 'runner-key-is-person-session', detail: auth.reason };
+  }
+  return auth;
+}
+
+type ResolveAgentBuilddAuthOpts = Parameters<typeof resolveAgentBuilddAuthInner>[0];
+
+async function resolveAgentBuilddAuthInner(opts: {
   runnerKey: string;
   taskId: string;
   mint: MintTaskTokenFn | undefined;

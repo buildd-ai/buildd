@@ -9,6 +9,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import Switch from '@/components/ui/Switch';
+import Section from '@/components/ui/Section';
 
 export default function KeyboardHintsSetting({ initial }: { initial: boolean }) {
   const router = useRouter();
@@ -40,15 +41,12 @@ export default function KeyboardHintsSetting({ initial }: { initial: boolean }) 
   };
 
   return (
-    <section aria-labelledby="prefs-h">
-      <h2 id="prefs-h" className="section-label mb-3">Preferences</h2>
-      <div className="card flex items-start gap-4 p-4">
+    <Section title="Preferences">
+      <div className="flex min-h-14 items-start gap-4 border-y border-border-default py-2.5">
         <div className="min-w-0 flex-1">
-          <p id="keyboard-hints-label" className="text-[14px] font-medium text-text-primary">Show keyboard hints</p>
-          <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-            For example 1 and 2 on a question, Esc to close.
-          </p>
-          {error && <p role="alert" className="mt-2 text-xs text-status-error">{error}</p>}
+          <p id="keyboard-hints-label" className="text-sm font-medium text-text-primary">Show keyboard hints</p>
+          <p className="text-sm text-text-secondary">For example 1 and 2 on a question, Esc to close.</p>
+          {error && <p role="alert" className="mt-1 text-sm text-status-error">{error}</p>}
         </div>
         <Switch
           labelledBy="keyboard-hints-label"
@@ -58,6 +56,6 @@ export default function KeyboardHintsSetting({ initial }: { initial: boolean }) 
           className="mt-0.5"
         />
       </div>
-    </section>
+    </Section>
   );
 }

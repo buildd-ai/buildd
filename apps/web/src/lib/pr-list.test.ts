@@ -187,6 +187,13 @@ describe('prSignals', () => {
     expect(s.waitingOnYou).toBe('reviewer escalated');
   });
 
+  it('a PR the escalation gate kept from you says what Buildd is doing instead', () => {
+    const r = shapePrRows([row({ workerId: 'a', lastCheckedAt: now })], 'open')[0];
+    const s = prSignals(r, { ...noAttention, builddOwns: new Map([['a', 'waiting for CI to finish']]) }, now);
+    expect(s).toEqual({ builddOwns: 'waiting for CI to finish' });
+    expect(needsAttention({ status: 'pr_open', ...s })).toBe(false);
+  });
+
   it('an agent already on it: conflict fix, CI fix, or review', () => {
     const r = shapePrRows([row({ workerId: 'a', status: 'ci_failed' })], 'open')[0];
     const key = 'ws-a:1';
