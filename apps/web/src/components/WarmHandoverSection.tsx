@@ -4,7 +4,7 @@ import { isWarmHandover, type WarmHandover } from '@buildd/shared';
 import { Select } from '@/components/ui/Select';
 
 const COPY: Record<WarmHandover, string> = {
-  off: 'Each task starts in a fresh container.',
+  off: 'Each task starts from a clean copy of the repository.',
   repo: 'Reuse the repository; clear dependencies between tasks.',
   deps: 'Reuse the repository and verified dependencies between tasks.',
 };
