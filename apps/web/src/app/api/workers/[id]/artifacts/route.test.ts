@@ -642,7 +642,7 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
 
     it("cannot take over another task's artifact", async () => {
       mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
-      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-other' });
+      mockWorkersFindFirst.mockResolvedValueOnce(ownWorker).mockResolvedValueOnce({ taskId: 'task-other', task: { scheduleId: 'sched-other', missionId: 'm-other' } });
       mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'other-worker', content: 'theirs' });
       const set = updateSpy();
       const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
@@ -658,6 +658,20 @@ describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
       const res = await POST(createMockPostRequest({ type: 'content', title: 'T', key: 'plan', content: 'mine' }, 'bld_test'), { params: mockParams });
       expect(res.status).toBe(409);
       expect(set).not.toHaveBeenCalled();
+    });
+
+    it('may update the stable key an earlier run of its own schedule wrote, and one of its own mission', async () => {
+      for (const ownerTask of [{ scheduleId: 'sched-1', missionId: null }, { scheduleId: null, missionId: 'm-1' }]) {
+        mockAuthenticateApiKey.mockResolvedValue(tokenAccount);
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({ ...ownWorker, task: { id: 'task-1', scheduleId: 'sched-1', missionId: 'm-1' } })
+          .mockResolvedValueOnce({ taskId: 'task-earlier-run', task: ownerTask });
+        mockArtifactsFindFirst.mockResolvedValue({ id: 'artifact-1', workerId: 'earlier-run-worker', content: 'yesterday', title: 'T' });
+        const set = updateSpy();
+        const res = await POST(createMockPostRequest({ type: 'report', title: 'T', key: 'daily-digest', content: 'today' }, 'bld_test'), { params: mockParams });
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalled();
+      }
     });
 
     it("may re-create an earlier attempt's artifact on its own task", async () => {

@@ -12,6 +12,7 @@ import { assertDbConfigured, q, seedWorkspace } from './harness';
 const { db } = await import('@buildd/core/db');
 const { artifacts } = await import('@buildd/core/db/schema');
 const { getArtifactRevision, writeArtifactBody } = await import('../../src/lib/artifact-revisions');
+const { redactArtifactText } = await import('@buildd/core/artifact-redaction');
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -88,6 +89,46 @@ describe('every body write is a revision', () => {
     await db.update(artifacts).set({ content: 'b' }).where(eq(artifacts.id, a.id));
     await db.update(artifacts).set({ content: 'c', contentAuthor: 'account:k' }).where(eq(artifacts.id, a.id));
     expect((await revisionsOf(a.id)).map((r) => r.author)).toEqual(['user:first', null, 'account:k']);
+  });
+});
+
+describe('the same writer creating then editing', () => {
+  test('both revisions name that writer', async () => {
+    const a = await insertArtifact('first', { contentAuthor: 'account:k' });
+    await writeArtifactBody(a.id, { content: 'second', expectedRevision: 1, author: 'account:k' });
+    expect((await revisionsOf(a.id)).map((r) => r.author)).toEqual(['account:k', 'account:k']);
+  });
+});
+
+describe('redacting a value removes it from history too', () => {
+  test('the current body is rewritten and every revision holding the value is deleted, legacy snapshot included', async () => {
+    const secret = 'sk_live_9f_x%y_SECRET';
+    await q(sql`ALTER TABLE artifacts DISABLE TRIGGER artifacts_record_revision`);
+    await q(sql`ALTER TABLE artifacts DISABLE TRIGGER artifacts_record_first_revision`);
+    let legacyId: string;
+    try {
+      [{ id: legacyId }] = await q<{ id: string }>(sql`
+        INSERT INTO artifacts (workspace_id, type, title, content) VALUES (${workspaceId}::uuid, 'content', 'old', ${`token=${secret}`}) RETURNING id`);
+    } finally {
+      await q(sql`ALTER TABLE artifacts ENABLE TRIGGER artifacts_record_revision`);
+      await q(sql`ALTER TABLE artifacts ENABLE TRIGGER artifacts_record_first_revision`);
+    }
+    const a = await insertArtifact(`v1 ${secret}`);
+    await db.update(artifacts).set({ content: `v2 ${secret}` }).where(eq(artifacts.id, a.id));
+    // A near-miss that only LIKE would match (`_` and `%` are wildcards there) must survive.
+    const bystander = await insertArtifact('sk_live_9fAx-yASECRET');
+
+    const result = await redactArtifactText(secret, '[REDACTED]');
+    expect(result.bodies).toBe(2);
+    for (const id of [legacyId!, a.id]) {
+      const revs = await revisionsOf(id);
+      expect(revs.length).toBeGreaterThan(0);
+      expect(revs.every((r) => !r.content?.includes(secret))).toBe(true);
+      const [row] = await db.select({ content: artifacts.content }).from(artifacts).where(eq(artifacts.id, id));
+      expect(row.content).toContain('[REDACTED]');
+      expect((await getArtifactRevision(id, revs.at(-1)!.revision))?.content).toContain('[REDACTED]');
+    }
+    expect((await revisionsOf(bystander.id)).map((r) => r.content)).toEqual(['sk_live_9fAx-yASECRET']);
   });
 });
 

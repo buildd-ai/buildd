@@ -418,15 +418,22 @@ row in place (§1); its earlier bodies stay readable.
   storage key with a NULL hash until its bytes are verified.
 - A revision row is never rewritten (trigger `artifact_revisions_immutable`).
   The one permitted change fills a NULL hash or size, once.
+- Redacting a value from artifacts (a leaked secret) MUST go through
+  `redactArtifactText`: it rewrites the current body, which records a redacted
+  revision, then deletes every revision still holding the value. An UPDATE of
+  `artifacts.content` alone leaves the value in history, and snapshots a legacy
+  body into it.
 - A keyed re-create that sends no `content` keeps the stored body. An explicit
   `null` or `""` clears it, and the clearing is itself a revision.
 - `PATCH /api/artifacts/[id]` with `content` and `expectedRevision` writes only
   if the body is still at that revision. Otherwise it returns 409
   `revision_conflict` with `currentRevision`, and nothing in that PATCH is
   written. The author recorded is the writer of that statement only.
-- On the worker artifacts route, a per-task token may re-create by key only an
-  artifact of its own task's workers. A mission-, initiative- or other-task
-  artifact is a 409, as on the mission and initiative routes.
+- On the worker artifacts route, a per-task token may re-create by key a
+  worker artifact of its own task, its own schedule (each run is a new task
+  updating the same key) or its own mission. Another task's, or a mission-,
+  initiative- or workspace-level artifact, is a 409, as on the mission and
+  initiative routes.
 - Mission and initiative `contextArtifactIds` accept only artifacts the caller
   can read, in a workspace of the owning team. The planning-context read drops
   any stored id outside the mission's team.
@@ -445,6 +452,7 @@ row in place (§1); its earlier bodies stay readable.
 **Code surface**:
 - Trigger: `packages/core/drizzle/0289_artifact_revisions_trigger.sql`
 - Writer and reads: `apps/web/src/lib/artifact-revisions.ts` — `writeArtifactBody`, `getArtifactRevision`
+- Redaction: `packages/core/artifact-redaction.ts` — `redactArtifactText`
 - Context references: `apps/web/src/lib/context-artifact-ids.ts`
 
 ## Verification gaps

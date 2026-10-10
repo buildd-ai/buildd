@@ -80,6 +80,11 @@ BEGIN
       CASE WHEN NEW.content IS NULL THEN NULL ELSE octet_length(convert_to(NEW.content, 'UTF8')) END,
       NEW.worker_id, NEW.content_author
     );
+    -- content_author names one statement's writer; clear it so the same
+    -- writer's next edit is recorded as theirs, not read as a carried-over value.
+    IF NEW.content_author IS NOT NULL THEN
+      UPDATE artifacts SET content_author = NULL WHERE id = NEW.id;
+    END IF;
   END IF;
   RETURN NULL;
 END;
