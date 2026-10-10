@@ -9,6 +9,25 @@ surfaces: [packages/ai-kit/src/chat/react/Thread.tsx, packages/ai-kit/src/chat/r
 related: []
 keywords: [jumpy chat, cards jump, answer replace, compose turn, phase results, Referenced, Created, approval resume, scroll anchor, follow mode]
 verified_by: [packages/ai-kit/src/chat/react/turn.test.ts, packages/ai-kit/src/chat/react/turn.dom.test.tsx, apps/web/src/components/chat/feed-model.test.ts, apps/web/src/components/chat/ChatFeed.dom.test.tsx, apps/web/src/components/chat/ChatWorkspace.dom.test.tsx]
+assertions:
+  - id: compose-turn
+    type: symbol
+    name: composeTurn
+    path: packages/ai-kit/src/chat/react/model.ts
+  - id: turn-layout
+    type: symbol
+    name: turnLayout
+    path: apps/web/src/components/chat/feed-model.ts
+  - id: result-group-view
+    type: symbol
+    name: ResultGroupView
+    path: apps/web/src/components/chat/objects/registry.tsx
+  - id: compose-turn-dom-test
+    type: test_file
+    path: packages/ai-kit/src/chat/react/turn.dom.test.tsx
+  - id: feed-model-test
+    type: test_file
+    path: apps/web/src/components/chat/feed-model.test.ts
 ---
 
 # Chat Stream Composition

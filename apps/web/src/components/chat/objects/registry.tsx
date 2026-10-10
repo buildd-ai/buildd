@@ -152,8 +152,8 @@ export function ResultGroupView({ group }: { group: ResultGroup }) {
       aria-label={`${label}: ${what}`}
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2.5 border-l-2 border-[var(--chat-rule)] pl-3"
     >
-      <p data-testid="feed-group-label" className="font-mono text-[11px] tracking-[.08em] text-[var(--chat-muted)]">
-        <span className="font-semibold uppercase text-[var(--chat-text)]">{label}</span>
+      <p data-testid="feed-group-label" className="text-meta text-[var(--chat-muted)]">
+        <span className="font-semibold text-[var(--chat-text)]">{label}</span>
         <span>{` · ${what}`}</span>
       </p>
       <ObjectsSegment refs={group.refs} />
