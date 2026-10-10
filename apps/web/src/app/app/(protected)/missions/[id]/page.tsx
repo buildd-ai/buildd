@@ -1120,6 +1120,22 @@ export default async function MissionDetailPage({
   // started from ⋯ on any open mission with a workspace to run it in; once an
   // audit exists the footer's Screens row is where it is reviewed.
   const visualReviewEntry = !isTerminal && mission.workspaceId ? { initialOpen: visualReviewParam === '1' } : null;
+  const completionFailingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+  const completionFailingIndex = completionFailingState ? completionFailingState.index : null;
+  const completionDecision = isTerminal ? null : {
+    goalCriteria,
+    failingCriterionIndex: completionFailingIndex,
+    fileWorkHref: buildFileWorkHref({
+      missionId: id,
+      missionTitle: mission.title,
+      criterion: completionFailingIndex != null ? goalCriteria[completionFailingIndex] ?? null : null,
+      evidence: completionFailingState?.evidence ?? null,
+    }),
+    criteriaUnmet: goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass',
+    surfaceAudit: missionAnswer?.waitingOn?.kind === 'human_decision' && missionAnswer.waitingOn.surfaceAudit === true
+      ? { paths: missionAnswer.waitingOn.surfaceAuditPaths ?? [], executorLocal: (mission as any).executor === 'local' }
+      : null,
+  };
   const overflowMenu = (
     <MissionOverflowMenu
       missionId={id}
@@ -1132,6 +1148,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      completionDecision={completionDecision}
       executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
       visualReview={visualReviewEntry}
       settings={settings}
