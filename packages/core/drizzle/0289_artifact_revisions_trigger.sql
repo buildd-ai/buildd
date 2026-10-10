@@ -22,6 +22,9 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.content IS NULL AND NEW.storage_key IS NULL THEN
       NEW.current_revision := 0;
+      -- No body, no revision to name the writer on: drop it, or the same
+      -- writer's first body would read as a carried-over value (author NULL).
+      NEW.content_author := NULL;
       RETURN NEW;
     END IF;
     NEW.current_revision := 1;

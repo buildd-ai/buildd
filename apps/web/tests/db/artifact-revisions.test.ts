@@ -100,6 +100,14 @@ describe('the same writer creating then editing', () => {
   });
 });
 
+describe('a link-only artifact names no writer on its row', () => {
+  test("the same writer's first body is attributed to them", async () => {
+    const [a] = await db.insert(artifacts).values({ workspaceId, type: 'link', title: 'l', contentAuthor: 'account:k', metadata: { url: 'https://example.test' } }).returning();
+    await db.update(artifacts).set({ content: 'now a body', contentAuthor: 'account:k' }).where(eq(artifacts.id, a.id));
+    expect((await revisionsOf(a.id)).map((r) => r.author)).toEqual(['account:k']);
+  });
+});
+
 describe('redacting a value removes it from history too', () => {
   test('the current body is rewritten and every revision holding the value is deleted, legacy snapshot included', async () => {
     const secret = 'sk_live_9f_x%y_SECRET';
