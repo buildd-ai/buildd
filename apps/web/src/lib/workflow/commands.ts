@@ -4,6 +4,7 @@
  * is carried IN the command as evidence, so the reducer stays a pure function
  * of (view, command); the caller (fact ingestion, a route) does the read.
  */
+import type { BaseDeltaFact } from './base-delta';
 import type {
   Actor,
   AttemptFamily,
@@ -185,6 +186,16 @@ export type Command =
       refusal?: Record<string, unknown> | null;
       /** The repair's subject, carried on its effects (e.g. the migration collision: file, otherFile, otherPrNumber). */
       detail?: Record<string, unknown> | null;
+      /**
+       * S15, behind only: what the base gained since this head, read live by the seam
+       * (`observeConflict`). With it, an approved head whose base delta passes the
+       * disjoint-delta rule (base-delta.ts) is not refreshed or escalated:
+       * `rejected(behind_tolerated)` and a door lands it (T15 checks the same fact
+       * again at merge time). Absent: the treadmill as before.
+       */
+      baseDelta?: BaseDeltaFact | null;
+      /** The ordinary commit bound for a platform-refreshed head (`treadmillMaxBaseCommits`). */
+      maxBaseCommits?: number;
     })
   | (Base & {
       /**
@@ -242,6 +253,15 @@ export type Command =
       override?: { reason: string; kinds?: Array<'verdict' | 'freshness' | 'size'>; grantedBy?: string } | null;
       /** How GitHub combines the PR; carried to the `merge_call` effect. Default squash. */
       mergeMethod?: 'merge' | 'squash' | 'rebase';
+      /**
+       * S15: the door saw the head behind its base and asks to land it anyway
+       * under the disjoint-delta rule. The base delta read live at landing time;
+       * T15 lands only if the rule still holds (`rejected(behind_not_tolerated)`
+       * otherwise, and the door refreshes). Absent: the door's own freshness rail
+       * decided, as before. A freshness override skips it.
+       */
+      baseDelta?: BaseDeltaFact | null;
+      maxBaseCommits?: number;
     })
   | (Base & {
       type: 'MergeCallResult';
