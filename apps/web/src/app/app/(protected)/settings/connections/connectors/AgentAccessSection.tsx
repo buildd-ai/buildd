@@ -18,6 +18,7 @@ import {
   effectsFor,
   formatLease,
   leaseChoices,
+  policySummary,
   providerName,
   type AccessEffect,
   type AccessRequestView,
@@ -293,15 +294,21 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
       </p>
       <ul className="divide-y divide-border-default border-y border-border-default" data-testid="access-policy">
         {rows.map(p => (
-          <li key={p.slug} className="py-3" data-testid={`access-policy-${p.slug}`}>
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-sm font-medium text-text-primary">{p.name}</span>
-              {p.policy === 'blocked' && <TonePill tone="bad">Blocked</TonePill>}
-            </div>
+          <li key={p.slug} className="py-1" data-testid={`access-policy-${p.slug}`}>
             {p.policy === 'blocked' ? (
-              <p className="text-xs text-text-secondary">Blocked in the catalog, so every request is refused whatever the policy says.</p>
+              <div className="py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-text-primary">{p.name}</span>
+                  <TonePill tone="bad">Blocked</TonePill>
+                </div>
+                <p className="mt-0.5 text-xs text-text-secondary">Blocked in the catalog, so every request is refused whatever the policy says.</p>
+              </div>
             ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              // Folded to one line per provider: on a phone, four controls per provider is a wall.
+              <Disclosure
+                summary={<span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-left"><span className="text-sm font-medium text-text-primary">{p.name}</span><span className="text-xs text-text-secondary" data-testid={`access-policy-${p.slug}-summary`}>{policySummary(RISKS.flatMap(risk => { const r = teamWide.get(`${p.slug}|${risk}`); return r ? [r] : []; }))}</span></span>}
+              >
+              <div className="grid grid-cols-1 gap-2 pb-2 sm:grid-cols-2 lg:grid-cols-4">
                 {RISKS.map(risk => {
                   const rule = teamWide.get(`${p.slug}|${risk}`);
                   const current = rule ? rule.effect : DEFAULT;
@@ -332,6 +339,7 @@ function PolicySection({ rules, canManage, providers, workspaces, teamQuery, onC
                   );
                 })}
               </div>
+              </Disclosure>
             )}
           </li>
         ))}

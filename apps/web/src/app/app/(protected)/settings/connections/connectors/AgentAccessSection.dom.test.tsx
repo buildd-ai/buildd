@@ -80,6 +80,8 @@ describe('AgentAccessSection', () => {
     expect(button(el, /^Approve/)).toBeUndefined();
     expect(button(el, 'Deny')).toBeUndefined();
     expect(button(el, 'Revoke')).toBeUndefined();
+    expect(q(el, 'access-policy-axiom-summary')!.textContent).toBe('Defaults');
+    await click(button(el, /Axiom/));
     expect(q(el, 'access-policy-axiom-read')).toBeNull();
     expect(q(el, 'access-policy-axiom-write-value')!.textContent).toContain('Ask a person');
     expect(el.textContent).toContain('Only team owners and admins can change this.');
@@ -152,6 +154,7 @@ describe('AgentAccessSection', () => {
   it('policy: write offers no automatic allow, and a blocked provider has no controls', async () => {
     stubFetch({ requests: [], canDecide: true, canManage: true });
     const { el, unmount } = await mount();
+    await click(button(el, /Axiom/));
     expect(q(el, 'access-policy-axiom-read')).not.toBeNull();
     expect(q(el, 'access-policy-vercel')!.textContent).toContain('Blocked in the catalog');
     expect(q(el, 'access-policy-vercel-read')).toBeNull();

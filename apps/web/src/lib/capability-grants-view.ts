@@ -56,9 +56,17 @@ export function effectsFor(risk: AccessRisk): AccessEffect[] {
 
 /** What happens with no team rule, in the words of capability-grants.ts `defaultEffect`. */
 export function defaultEffectText(risk: AccessRisk): string {
-  return risk === 'write' || risk === 'admin'
-    ? 'Ask a person'
-    : 'Allowed where a role already uses it, else ask';
+  return risk === 'write' || risk === 'admin' ? 'Ask a person' : 'Allow if a role uses it';
+}
+
+/**
+ * One provider's policy on one line, for the folded row: only what differs
+ * from the default, else "Defaults".
+ */
+export function policySummary(rules: readonly { risk: AccessRisk; effect: AccessEffect }[]): string {
+  const order: AccessRisk[] = ['read', 'query', 'write', 'admin'];
+  const set = [...rules].sort((a, b) => order.indexOf(a.risk) - order.indexOf(b.risk));
+  return set.length === 0 ? 'Defaults' : set.map(r => `${RISK_LABEL[r.risk]}: ${EFFECT_LABEL[r.effect].toLowerCase()}`).join(' · ');
 }
 
 /** The provider's display name: the catalog's, else the slug as written. */

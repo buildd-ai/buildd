@@ -6,6 +6,7 @@ import {
   effectsFor,
   formatLease,
   leaseChoices,
+  policySummary,
   providerState,
   type AccessRequestView,
 } from './capability-grants-view';
@@ -28,6 +29,13 @@ describe('formatLease / leaseChoices', () => {
     expect(leaseChoices(4 * 3600)).toEqual([900, 3600, 4 * 3600]);
     expect(leaseChoices(4 * 3600 + 1).at(-1)).toBe(4 * 3600 + 1);
     expect(leaseChoices(600)).toEqual([600]);
+  });
+});
+
+describe('policySummary', () => {
+  it('names only what differs from the default', () => {
+    expect(policySummary([])).toBe('Defaults');
+    expect(policySummary([{ risk: 'write', effect: 'forbidden' }, { risk: 'read', effect: 'auto_grant' }])).toBe('Read: allow automatically · Write: never allow');
   });
 });
 
