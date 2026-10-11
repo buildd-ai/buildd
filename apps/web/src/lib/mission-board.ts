@@ -249,7 +249,12 @@ export interface BoardPhase {
   total: number;
 }
 
-export type BoardCriterionState = 'pass' | 'fail' | 'running' | 'partial' | 'pending';
+/**
+ * `unchecked`: a mechanical criterion whose live count is complete (`N/N`,
+ * `0 open`) but which has no verdict on record. Not met (the evaluator reads
+ * more than the board: supersession, trunk reach), not unmet either.
+ */
+export type BoardCriterionState = 'pass' | 'fail' | 'running' | 'partial' | 'pending' | 'unchecked';
 
 export interface BoardCriterion {
   label: string;
@@ -574,13 +579,19 @@ function criterionRow(
   ctx: { prsMerged: number; prsExpected: number; open: number; landed: number; total: number; artifacts: readonly BoardArtifactInput[] },
 ): BoardCriterion {
   const pass = verdict === 'pass';
+  // The circle and the ratio must not disagree: a complete live count with no
+  // verdict on record is "not checked", never drawn as unmet beside N/N.
+  const unchecked = verdict !== 'pass' && verdict !== 'fail' && verdict !== 'PENDING';
   switch (c.type) {
     case 'all_prs_merged': {
       const frac = ctx.prsExpected > 0 ? ctx.prsMerged / ctx.prsExpected : 0;
       return {
         label: 'PRs merged',
         value: `${ctx.prsMerged}/${ctx.prsExpected}`,
-        state: pass ? 'pass' : verdict === 'fail' && frac >= 1 ? 'fail' : ctx.prsMerged > 0 ? 'partial' : 'pending',
+        state: pass ? 'pass'
+          : verdict === 'fail' && frac >= 1 ? 'fail'
+          : unchecked && frac >= 1 ? 'unchecked'
+          : ctx.prsMerged > 0 ? 'partial' : 'pending',
         frac,
       };
     }
@@ -588,7 +599,11 @@ function criterionRow(
       return {
         label: 'open tasks',
         value: `${ctx.open} open`,
-        state: pass ? 'pass' : ctx.landed > 0 ? 'partial' : 'pending',
+        // A stored pass cannot stand beside "2 open": the figure is live, the
+        // verdict may predate the tasks that reopened.
+        state: pass && ctx.open === 0 ? 'pass'
+          : unchecked && ctx.total > 0 && ctx.open === 0 ? 'unchecked'
+          : ctx.landed > 0 ? 'partial' : 'pending',
         frac: ctx.total > 0 ? ctx.landed / ctx.total : 0,
       };
     case 'command':
