@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { estimatesHeadline, typicalLine, logPos, scatterBounds, medianBandRatio } from './estimates-view';
+import { coldStartNote, estimatesHeadline, typicalLine, logPos, scatterBounds, medianBandRatio } from './estimates-view';
 
 const score = (scored: number, withinP80: number | null, medianRatio: number | null = 1) =>
   ({ n: scored, scored, withinP80, medianRatio, medianAbsLogError: 0.2 });
@@ -36,5 +36,19 @@ describe('helpers', () => {
   test('medianBandRatio', () => {
     expect(medianBandRatio([{ p50: 10, p80: 20 }, { p50: 10, p80: 15 }, { p50: 10, p80: 30 }])).toBe(2);
     expect(medianBandRatio([])).toBe(1.5);
+  });
+});
+
+describe('coldStartNote', () => {
+  const g = (scored: number, withinP80: number | null, medianRatio: number | null = 1.9) => ({ bySource: [{ key: 'prior', score: { n: scored, scored, withinP80, medianRatio, medianAbsLogError: 0.6 } }] });
+  test('no prior-led estimates, no note', () => {
+    expect(coldStartNote({ bySource: [] })).toBeNull();
+    expect(coldStartNote(g(0, null))).toBeNull();
+  });
+  test('a few prior-led estimates are called rough, with no verdict', () => {
+    expect(coldStartNote(g(3, 0.33))).toBe('3 estimates had little history in the repo to go on. Treat those as rough.');
+  });
+  test('enough to judge: says how they did', () => {
+    expect(coldStartNote(g(20, 0.5))).toBe('20 estimates had little history in the repo to go on: 5 in 10 finished within the upper estimate, typically 1.9x longer.');
   });
 });
