@@ -1,6 +1,6 @@
 ---
 name: visual-review
-description: "Take phone- and desktop-width screenshots of buildd's web app and review them before calling UI work done. Use for any change that touches what a page renders. Covers the local recipe (scripts/qa/shoot.sh, needs a DATABASE_URL), the worker recipe (dispatch the Visual QA workflow on your branch and download the qa-screenshots artifact, no DB needed), and the preview recipe for workspaces with Vercel previews (get_page_source, and its two auth-wall failure modes)."
+description: "Take phone- and desktop-width screenshots of buildd's web app and review them before calling UI work done. Use for any change that touches what a page renders. Covers the local recipe (scripts/qa/shoot.sh, needs a DATABASE_URL), the worker recipe (dispatch the Visual QA workflow from trunk with your branch as capture_ref and download the qa-screenshots artifact, no DB needed), and the preview recipe for workspaces with Vercel previews (get_page_source, and its two auth-wall failure modes)."
 author: buildd
 ---
 
@@ -69,9 +69,18 @@ finding or an `ok` verdict. Report the named failure rather than swapping provid
 
 `.github/workflows/visual-qa.yml` stands the app up in CI on a copy-on-write Neon
 clone, captures, and uploads an artifact. Push your branch first, because the run
-checks out `--ref`.
+checks out `capture_ref`.
 
-**Which `--ref`, for a mission audit.** Your own branch when you check your own work.
+**Always dispatch from trunk (`--ref dev`); pass the branch you want shot as
+`-f capture_ref=<branch>`.** The clone is a copy of *current* prod, so the harness
+(the workflow, `scripts/qa/` scrub, guard and capture) must be as new as prod and
+always comes from the dispatched ref. Only the app, its route manifest, its plans and
+its migrations come from `capture_ref`. `--ref <your branch>` runs your branch's
+harness instead, and a branch cut before any newer prod trigger, constraint or table
+dies at the scrub (five incidents, one per invariant). `get_page_source` returns the
+exact command as `dispatch`.
+
+**Which `capture_ref`, for a mission audit.** Your own branch when you check your own work.
 For a mission's visual audit, the ref is `captureRef.ref` from `get_page_source`: the
 mission's integration branch on a `mission-branch` mission, trunk otherwise. Builder PRs
 on such a mission merge into the integration branch, not trunk, so a trunk shot shows the
@@ -91,11 +100,12 @@ renders at a realistic length. To review real copy, use the local recipe against
 a dev database.
 
 ```bash
-gh workflow run visual-qa.yml --ref <branch> \
+gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> \
   -f routes=/app/missions,/app/tasks/<id> -f viewport=mobile
-# Find your run. Dispatch prints no id; take the newest run on your branch.
-RUN=$(gh run list --workflow visual-qa.yml --branch <branch> --event workflow_dispatch \
-  --limit 1 --json databaseId -q '.[0].databaseId')
+# Find your run. Dispatch prints no id; the run is on dev, titled after its capture_ref.
+RUN=$(gh run list --workflow visual-qa.yml --branch dev --event workflow_dispatch \
+  --limit 20 --json databaseId,displayTitle \
+  -q 'map(select(.displayTitle == "Visual QA · <branch>"))[0].databaseId')
 gh run watch "$RUN" --exit-status
 # No TTY (most agent shells): gh run watch returns immediately instead of
 # blocking. Poll instead, still in the foreground:
@@ -130,6 +140,7 @@ don't turn it on by habit.
 
 | Input | Maps to | Notes |
 |---|---|---|
+| `capture_ref` | app checkout | The branch or commit to shoot. Empty = the dispatched ref. Never dispatch `--ref` anything but trunk. |
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
 | `plan` | `QA_PLAN` | A capture plan instead of `routes`: the JSON itself, or a repo path. See "Capture plans" below. |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
@@ -152,6 +163,15 @@ don't turn it on by habit.
 - A red `Guard scrubbed clone` step means the scrub missed something. No app, no
   shots, no artifact. The error names `table.column` only; fix the scrub, don't
   work around the guard.
+- **Fail fast on the harness stages.** A run that fails at `Create Neon prod-clone
+  branch`, `Run migrations`, `Scrub prod clone to placeholders` or `Guard scrubbed
+  clone` failed before the app booted: every other viewport and theme fails the same
+  way. Dispatch one viewport first, and if it dies there, stop: no more dispatches,
+  no retries. Name the step and its `::error` line in your report. Find it with
+  `gh run view "$RUN" --json jobs -q '.jobs[].steps[] | select(.conclusion=="failure") | .name'`.
+  `get_page_source`'s `freshness.needsSync` says the capture ref lacks trunk's
+  migrations, the usual cause of a red `Run migrations`: say the branch needs a
+  trunk merge.
 - If capture crashes, a dispatch run fails (on release PRs it's report-only). A
   single route failing does **not** fail the run, so a green run can still hold a
   bad shot. Check `captures.json`, which records `error`, `redirected` and
