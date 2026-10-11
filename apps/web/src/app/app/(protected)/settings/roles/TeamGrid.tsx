@@ -160,7 +160,7 @@ function PersonalRolesSections({ roles, canCreate }: { roles: PersonalRoleEntry[
           <div data-testid="team-mine-section">
             {mine.length === 0 ? (
               <p className="text-sm text-text-muted">
-                Roles only you run, shared with the team when ready.{' '}
+                Agents only you run, shared with the team when ready.{' '}
                 <Link href={NEW_PERSONAL_ROLE} className="font-medium text-text-primary underline underline-offset-2">Just for me</Link>
               </p>
             ) : (
@@ -206,13 +206,13 @@ export function TeamGrid({
               trailing={idleRoles.length > 0 && activeRoles.length > 0 ? `· ${idleRoles.length} idle` : undefined}
             />
           ) : <span />}
-          {canCreateAny && <PrimaryAction href={newRoleHref}>New role</PrimaryAction>}
+          {canCreateAny && <PrimaryAction href={newRoleHref}>New agent</PrimaryAction>}
         </div>
       )}
 
       {totalRoles === 0 ? (
         <p className="text-sm text-text-muted">
-          No roles.
+          No agents.
           {canCreateAny && <> <Link href={newRoleHref} className="font-medium text-text-primary underline underline-offset-2">Create one</Link></>}
         </p>
       ) : (
@@ -230,7 +230,7 @@ export function TeamGrid({
               <>
                 {unattributedWorkerCount > 0 && (
                   <p className="mb-2 text-sm text-text-muted">
-                    <span className="font-mono">{unattributedWorkerCount}</span> worker{unattributedWorkerCount !== 1 ? 's' : ''} running without a role
+                    <span className="font-mono">{unattributedWorkerCount}</span> worker{unattributedWorkerCount !== 1 ? 's' : ''} running without an agent
                   </p>
                 )}
                 <div className={ROWS}>

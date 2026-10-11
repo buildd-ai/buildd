@@ -710,7 +710,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, canEd
                             options={BACKEND_OPTIONS}
                         />
                         <p className="text-xs text-text-muted mt-1">
-                            Agent engine for new tasks in this workspace. Order: per-task <code>backend</code> → role default → this workspace default → Claude. Codex tasks need a connected ChatGPT/OpenAI credential.
+                            Agent engine for new tasks in this workspace. Order: per-task <code>backend</code> → agent default → this workspace default → Claude. Codex tasks need a connected ChatGPT/OpenAI credential.
                         </p>
                     </div>
                 </div>

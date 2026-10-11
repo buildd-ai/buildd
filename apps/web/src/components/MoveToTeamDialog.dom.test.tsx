@@ -266,7 +266,7 @@ describe('consequenceLine', () => {
       g('Mission dependency chains', 'WILL_BREAK', 1),
       g('Role delegation chains', 'WILL_BREAK', 2),
     ] as never)).toBe(
-      '1 connector needs reconnecting · 3 workspace secrets removed · 2 runner accounts lose access · 1 mission dependency breaks · 2 role delegations break',
+      '1 connector needs reconnecting · 3 workspace secrets removed · 2 runner accounts lose access · 1 mission dependency breaks · 2 agent delegations break',
     );
   });
 

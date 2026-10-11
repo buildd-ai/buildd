@@ -26,8 +26,8 @@ step. Thumbs keep reverting a shifted cell either way.
 ## Files (delete them)
 
 - `apps/web/src/lib/chat-retro/`: the whole directory (settings, vocab,
-  skeleton, lesson, proposals, store, run, deps, policy-signal, the settings
-  UI section, their tests, and this file)
+  skeleton, lesson, proposals, store, run, deps, policy-signal, their tests,
+  and this file)
 - `apps/web/src/app/api/cron/chat-retro/`: the cron route and its test
 - `apps/web/src/app/api/teams/[id]/chat-retro/`: the settings and lessons API
   and its test
@@ -44,8 +44,7 @@ for every team they own, read at query time (`store.ts` `dogfoodOwnerExists`),
 so a team they create later is covered with no write. It is set by:
 
 - the owner themselves, once: `POST /api/teams/<teamId>/chat-retro` with
-  `{ "accountDogfood": true }` (the "Keep on for every team I own" control in
-  Settings → AI features), signed in as a team owner; or
+  `{ "accountDogfood": true }`, signed in as a team owner; or
 - the daily pass, for every owner of a team in `CHAT_RETRO_DOGFOOD_TEAM_IDS`
   (`reconcileAccountDogfood`), which also writes lessons + proposals onto every
   team with such an owner so the stored value matches.
@@ -60,8 +59,6 @@ so a team they create later is covered with no write. It is set by:
   `buildModelPolicyCells` (and the matching mock + assertion in
   `route.test.ts`). Nothing in `packages/core` changes.
 
-- `apps/web/src/app/app/(protected)/settings/models/page.tsx`: the
-  `ChatRetroSection` import and its one JSX line.
 - `apps/web/src/components/chat/ChatConversation.tsx`: the `useTurnSignal`
   call and `turnSignal.onStop()` in `onStop`.
 - `apps/web/src/lib/chat/turn.ts`: `withTurnRef(...)` around the user

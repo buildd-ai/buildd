@@ -26,9 +26,12 @@ const objects = new Map<string, { bytes: Buffer; type: string }>();
 const storage = {
   head: async (k: string) => (objects.has(k) ? { sizeBytes: objects.get(k)!.bytes.byteLength, contentType: objects.get(k)!.type } : null),
   sha256: async (k: string) => ({ sha256: sha(objects.get(k)!.bytes), sizeBytes: objects.get(k)!.bytes.byteLength }),
+  copy: async (from: string, to: string) => { copies.push(to); objects.set(to, { ...objects.get(from)! }); },
   remove: async (k: string) => { objects.delete(k); },
 };
+const copies: string[] = [];
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+const { uploadStagingKey } = await import('../../src/lib/storage-keys');
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 async function member(teamId: string) {
@@ -44,11 +47,11 @@ async function saveMessage(conversationId: string, userId: string, parts: unknow
   const [m] = await db.insert(conversationMessages).values({ conversationId, role: 'user', authorUserId: userId, parts: parts as never }).returning();
   return m.id;
 }
-/** Start an upload and, unless told otherwise, store exactly its bytes. */
+/** Start an upload and, unless told otherwise, PUT exactly its bytes where its URL is signed for. */
 async function upload(teamId: string, userId: string, name: string, mediaType: string, bytes: Buffer, stored: { bytes?: Buffer; type?: string } | null = {}) {
   const r = await createChatUpload({ teamId, userId, name, mediaType, sizeBytes: bytes.byteLength });
   if (!r.ok) throw new Error(r.error);
-  if (stored) objects.set(r.storageKey, { bytes: stored.bytes ?? bytes, type: stored.type ?? mediaType });
+  if (stored) objects.set(uploadStagingKey(r.storageKey), { bytes: stored.bytes ?? bytes, type: stored.type ?? mediaType });
   return r;
 }
 const stateOf = async (id: string) => (await db.select({ s: artifacts.uploadState }).from(artifacts).where(eq(artifacts.id, id)))[0]?.s ?? 'gone';
@@ -132,6 +135,33 @@ describe('an image and a PDF, sent and reloaded', () => {
     expect(await checkChatFiles({ id: convB, teamId: teamB }, userB, d)).toMatchObject({ ok: false, status: 409, code: 'file_not_found' });
   });
 
+  test('a PUT through the upload URL after finalize changes nothing the download or the model read returns', async () => {
+    const u = await upload(teamA, userA, 'swap.png', 'image/png', PNG);
+    expect(await finalizeChatUpload(u.artifactId, userA, [teamA], { storage, expectedSha256: sha(PNG) })).toMatchObject({ state: 'ready', sha256: sha(PNG) });
+    const bound = await bindChatFiles({ id: convA, teamId: teamA }, userA, [{ kind: 'file' as const, id: u.artifactId, name: '', mediaType: '', sizeBytes: 0 }]);
+    if (!bound.ok) throw new Error(bound.error);
+    const messageId = await saveMessage(convA, userA, [{ type: 'text', text: 'swap?' }, ...bound.refs.map(fileRefPart)]);
+    await linkChatAttachments(messageId, teamA, userA, bound.refs);
+
+    // The URL is still valid for a while: other bytes, same size and type, PUT to what it is signed for.
+    const other = randomBytes(PNG.byteLength);
+    objects.set(uploadStagingKey(u.storageKey), { bytes: other, type: 'image/png' });
+    // A late finalize (the lazy one a read triggers) does not copy them in.
+    const copiesBefore = copies.length;
+    expect(await finalizeChatUpload(u.artifactId, userA, [teamA], { storage })).toMatchObject({ state: 'ready', sha256: sha(PNG) });
+    expect(copies.length).toBe(copiesBefore);
+
+    const file = await conversationFile(convA, u.artifactId);
+    const modelKey = await chatUploadKey(u.artifactId);
+    expect(modelKey).toBe(file!.storageKey);
+    for (const key of [file!.storageKey, modelKey!]) {
+      const got = objects.get(key)!.bytes;
+      expect(got.equals(PNG)).toBe(true);
+      expect(sha(got)).toBe(bound.refs[0]!.sha256);
+    }
+    expect(uploadStagingKey(u.storageKey)).not.toBe(file!.storageKey);
+  });
+
   test('no artifact route or workspace listing reaches a chat file', async () => {
     const files = await conversationFiles(convA);
     expect(files.length).toBeGreaterThan(0);
@@ -175,6 +205,7 @@ describe('never ready, never sent', () => {
     expect(await cancelChatUpload(u.artifactId, userA, [teamA], storage)).toEqual({ ok: true, removed: true });
     expect(await stateOf(u.artifactId)).toBe('gone');
     expect(objects.has(u.storageKey)).toBe(false);
+    expect(objects.has(uploadStagingKey(u.storageKey))).toBe(false);
     expect((await conversationFiles(convA)).map(f => f.artifactId)).not.toContain(u.artifactId);
   });
 
@@ -228,6 +259,8 @@ describe('only the uploader, only through the conversation', () => {
     expect(await storeChatUploadBytes(u.artifactId, userA, [teamA], PNG.subarray(0, 10), 'image/png', put)).toMatchObject({ ok: false, status: 400 });
     expect(await storeChatUploadBytes(u.artifactId, userA, [teamA], PNG, 'text/html', put)).toMatchObject({ ok: false, status: 400 });
     expect(await storeChatUploadBytes(u.artifactId, userA, [teamA], PNG, 'image/png', put)).toEqual({ ok: true });
+    expect(objects.has(uploadStagingKey(u.storageKey))).toBe(true);
+    expect(objects.has(u.storageKey)).toBe(false);
     expect((await finalizeChatUpload(u.artifactId, userA, [teamA], { storage })).state).toBe('ready');
     expect(await storeChatUploadBytes(u.artifactId, userA, [teamA], PNG, 'image/png', put)).toMatchObject({ ok: false, status: 409 });
   });

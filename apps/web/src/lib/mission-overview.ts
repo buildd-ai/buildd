@@ -55,9 +55,12 @@ export function overviewSelection(model: Model, order: readonly string[], select
   return { marks: sel.marks, reason: null };
 }
 
-/** `2 of 7 merged · 1 of 4 criteria`: the header's counts. */
+/** `2 of 7 landed · 1 of 4 criteria`: the header's counts. */
 export function overviewCounts(model: Pick<MissionBoardModel, 'landed' | 'criteria' | 'criteriaPassed'>): string {
-  const parts = [`${model.landed.done} of ${model.landed.total} merged`];
+  // "landed", not "merged": this counts every finished task, PR or not (the
+  // Board's LANDED cell), while the PRs merged criterion counts PR-bearing
+  // tasks only. Both called "merged" read as two contradictory merged counts.
+  const parts = [`${model.landed.done} of ${model.landed.total} landed`];
   if (model.criteria.length > 0) parts.push(`${model.criteriaPassed} of ${model.criteria.length} criteria`);
   return parts.join(' · ');
 }
