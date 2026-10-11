@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { LivePr } from './commands';
-import { constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, type GithubFactReader } from './facts';
+import { carryForwardReading, constituentEvidenceSql, factKeyFor, findFactSql, ingestFact, insertFactSql, lastAppliedHeadFactSql, ownRefreshSql, projectEquivalentHeadSql, type GithubFactReader } from './facts';
 import type { Exec } from './kernel';
 
 const dialect = new PgDialect();
@@ -223,5 +223,33 @@ describe('ingestFact', () => {
       expect(r.decision.evidence.factId).toBe('f5');
       expect(r.decision.patch.approvedHeads).toBeUndefined();
     }
+  });
+});
+
+// edc02148: a queued refresh is credited with any push that descends from its pinned head, so the
+// reducer needs to know when the compare actually read the PR's diff as changed.
+describe('carryForwardReading: diff evidence for an approved head that moved', () => {
+  const view = {
+    delivery: {
+      id: 'd1', workspaceId: 'w1', ownerTaskId: 't1', repoFullName: 'acme/widgets', prNumber: 7, baseRef: 'dev',
+      state: 'REPAIRING', stateReason: 'behind', version: 5, currentHeadSha: 'H1', currentRound: 1, maxRounds: 3,
+      boundAttemptId: 'm1', resumeState: null, trunkIncidentId: null, approvedHeads: ['H1'], approvalBasis: 'verdict',
+      compositionHeads: [], ci: null, ciHeadSha: null, mergeable: null, mergeableHeadSha: null, mergedAt: null,
+      mergeCommitSha: null, supersededByPr: null,
+    },
+    rounds: [], attempts: [],
+  } as unknown as Parameters<typeof carryForwardReading>[0];
+  const exec = (own: boolean): Exec => async () => ({ rows: own ? [{ '?column?': 1 }] : [] });
+  const reader = (same: boolean | null): GithubFactReader => ({ readPr: async () => null, contentEquivalent: async () => same } as unknown as GithubFactReader);
+
+  test('equivalent diff after the delivery\'s own refresh: own_refresh, not changed', async () => {
+    expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(true))).toEqual({ evidence: 'own_refresh', diffChanged: false });
+  });
+  test('a compare that read the diff as different: no evidence, diffChanged', async () => {
+    expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(false))).toEqual({ evidence: null, diffChanged: true });
+  });
+  test('an unread compare is not a changed diff', async () => {
+    expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), reader(null))).toEqual({ evidence: null, diffChanged: false });
+    expect(await carryForwardReading(view, 'acme/widgets', live('H2'), exec(true), undefined)).toEqual({ evidence: null, diffChanged: false });
   });
 });
