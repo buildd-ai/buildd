@@ -8,6 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/settings/models/page.tsx, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.tsx, packages/core/providers/policy.ts, packages/core/providers/resolve.ts]
 related: [model-routing-and-tiers, model-policy-cells, provider-failover, team-permissions, credential-isolation]
 keywords: [Models page, model providers, who pays, credential policy, personal_first, used for, provider routing, agent endpoint, LiteLLM gateway, decision model, workspace keys]
+verified_by: [packages/core/__tests__/provider-assignments.test.ts, packages/core/__tests__/provider-resolve.test.ts, apps/web/src/app/api/providers/assignments/route.test.ts, apps/web/src/app/app/(protected)/settings/providers/providers-view.test.ts, apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.dom.test.tsx, apps/web/src/app/app/(protected)/settings/models/page.test.ts]
 supersedes: []
 ---
 
@@ -25,7 +26,8 @@ is walled is `provider-failover`; who may change what is `team-permissions`.
 
 ## Sections
 
-The page has exactly two sections, in this order: **Providers** and **Tiers**.
+The page has, in this order: **Providers**, **Used for** (only with two or more
+connected providers) and **Tiers**.
 
 **Invariants**
 
@@ -38,7 +40,7 @@ The page has exactly two sections, in this order: **Providers** and **Tiers**.
 **Acceptance criteria**
 
 - AC-1: WHEN anyone opens `/app/settings/models` THEN the rendered headings are
-  Providers and Tiers, and none of "Features", "Routing", "Who pays",
+  Providers, Used for (at two or more) and Tiers, and none of "Features", "Routing", "Who pays",
   "Workspace keys", "Decision features", "Chat session retros" appear.
 - AC-2: GIVEN a member without `manage_inference_providers` WHEN they open the
   page THEN every provider row and picker is rendered without an editable
@@ -71,14 +73,17 @@ Decisions.
 **Invariants**
 
 - With **one** connected provider, it serves every surface it can serve and the
-  page shows no assignment UI. A surface it cannot serve is stated as one line
-  in words (e.g. "Codex runs need an OpenAI key or a ChatGPT sign-in").
+  page shows no assignment UI, only one line naming what it is used for. What
+  it cannot serve is not listed there; the limit shows where someone acts.
 - With **two or more**, a "Used for" table appears: one row per surface, one
-  picker per row over the connected providers. An option the surface cannot use
-  is shown disabled with the registry's reason; it is never hidden silently.
-- An unset row keeps the resolver's default ranking. A set row is passed to the
-  resolver as the provider order for that surface; it never makes the resolver
-  pick a credential it would otherwise refuse.
+  picker per row over the connected providers, plus Automatic (no pick). An
+  option the surface cannot use is shown disabled with what it needs; it is
+  never hidden silently.
+- An unset row keeps the resolver's default ranking. A set row
+  (`teams.provider_assignments`) puts that provider first within a scope and
+  lets it win the endpoint tie; it never beats a more specific scope (a
+  personal key still goes first) and never makes the resolver pick a
+  credential it would otherwise refuse.
 - The Claude/Codex provider switch is the Claude Code runs and Codex runs rows.
   It renders only when both backends are connected.
 - The decision model is the Decisions row.
@@ -86,11 +91,10 @@ Decisions.
 **Acceptance criteria**
 
 - AC-4: GIVEN only OpenRouter connected WHEN the page loads THEN no "Used for"
-  table renders, and chat, Claude Code runs and cloud coding resolve to
-  OpenRouter.
+  table renders, and one line reads "OpenRouter is used for …".
 - AC-5: GIVEN OpenRouter and a Claude subscription connected WHEN the page
-  loads THEN the "Used for" table renders five rows; on the Cloud coding row
-  the Claude subscription option is disabled with its reason.
+  loads THEN the "Used for" table renders a row per surface and a Decisions
+  row; on the Chat row the subscription option is disabled with what it needs.
 - AC-6: GIVEN Chat set to OpenRouter while an Anthropic key is also connected
   WHEN a chat turn resolves a credential THEN the OpenRouter credential is
   used.
@@ -141,7 +145,9 @@ Decisions.
 
 - Page: `apps/web/src/app/app/(protected)/settings/models/page.tsx`
 - Provider list: `apps/web/src/app/app/(protected)/settings/providers/ModelProvidersClient.tsx`,
-  `providers-view.ts`
+  `providers-view.ts` (`usedForView`, `loneProviderLine`), `UsedForSection.tsx`
+- Assignments: `packages/core/providers/assignments.ts`,
+  `apps/web/src/app/api/providers/assignments/route.ts`
 - Resolver and policy: `packages/core/providers/resolve.ts`
   (`resolveProviderCredential`), `packages/core/providers/policy.ts`
 - Claim injection: `apps/web/src/app/api/workers/claim/personal-credential-injection.ts`
@@ -151,4 +157,4 @@ Decisions.
 ## Verification gaps
 
 Draft until the slices that implement it land; each adds its tests to
-`verified_by` and the last one flips `status` to `active`.
+`supersedes: []` and the last one flips `status` to `active`.
