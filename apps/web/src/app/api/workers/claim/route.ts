@@ -60,7 +60,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, boundDeferralPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -1920,7 +1920,14 @@ export async function POST(req: NextRequest) {
             detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
           };
         }
-        if (bypassOrDefer('path_overlap', blockedByPr)) {
+        // The blocker task and the overlapping paths (bounded) go on the
+        // deferral row: a streak is per blocker (gate-events), and recovery
+        // reads which files the wait is about (failure-incident-recovery G7).
+        if (bypassOrDefer('path_overlap', {
+          ...blockedByPr,
+          blockingTaskId: blockingEntry?.taskId ?? null,
+          paths: boundDeferralPaths(intersectPaths(taskManifest, blockingEntry?.pathManifest ?? [])),
+        })) {
           // The blocker's own manifest paths, which its terminal release wakes.
           noteDeferralWaiter(task.workspaceId, task.id, blockingEntry?.taskId,
             intersectPaths(blockingEntry?.pathManifest ?? [], taskManifest));
@@ -1961,7 +1968,9 @@ export async function POST(req: NextRequest) {
               }
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
-              blockedByActiveClaim = bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
+              blockedByActiveClaim = bypassOrDefer('path_overlap', {
+                blockingTaskId: claimingTaskId, prNumber: null, prUrl: null, paths: boundDeferralPaths(overlapPaths),
+              });
               // The holder's lease paths, so a narrowing that gives one back
               // wakes this task too (narrow matches waiters by exact path).
               if (blockedByActiveClaim) {

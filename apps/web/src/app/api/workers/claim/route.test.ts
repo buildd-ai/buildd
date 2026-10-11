@@ -6734,6 +6734,33 @@ describe('path-overlap claim guard', () => {
     });
   });
 
+  // failure-incident-recovery G7 + §5 rule 3: the deferral row names the
+  // blocker task (a streak is per blocker) and the overlapping paths.
+  it('layer 1: the deferral row carries the blocker task and the overlapping paths', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockFireDeferralEvent.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+
+    const ev = mockFireDeferralEvent.mock.calls.map((c: any[]) => c[0]).find((e: any) => e.reason === 'path_overlap');
+    expect(ev?.detail).toEqual({
+      prNumber: 2700,
+      prUrl: 'https://github.com/org/repo/pull/2700',
+      blockingTaskId: 'sibling-task',
+      paths: ['apps/web/src/lib/mcp-oauth.ts'],
+    });
+  });
+
   it('layer 2: names the explicit task exclusion as path_overlap with the claiming task id and paths', async () => {
     mockAuthenticateApiKey.mockResolvedValue(apiAccount());
     setupForClaim();
@@ -8485,7 +8512,7 @@ describe('claim gate overrides', () => {
       const ev = mockFireDeferralEvent.mock.calls
         .map((c: any[]) => c[0])
         .find((e: any) => e.reason === 'path_overlap');
-      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null });
+      expect(ev?.detail).toEqual({ blockingTaskId: 'task-9', prNumber: null, prUrl: null, paths: ['apps/web/src/a.ts'] });
     });
 
     it('layer 2: a manifest of ["**","a.ts"] still respects a held path_claim on a.ts', async () => {
