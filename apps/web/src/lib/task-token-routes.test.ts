@@ -27,6 +27,8 @@ const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Init
 const OPTED_IN = [
   // Its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); spend also needs a live model.inference grant.
   'apps/web/src/app/api/agent-capabilities/model-inference/route.ts',
+  // Governed outcomes: confined to the workspace of its task (taskScopeAllowsWorkspace); lib/specs/outcome.ts lets it read its own task and record only on its parent, never itself.
+  'apps/web/src/app/api/specs/outcomes/[taskId]/route.ts',
   // Finalize an upload: only the token's own worker's artifact (taskScopeAllowsWorkspace + taskScopeAllowsWorker).
   'apps/web/src/app/api/artifacts/[artifactId]/finalize/route.ts',
   // Typed links: the route passes the token taskScope to the link caller, and lib/artifact-links.ts confines every artifact and subject to that workspace.
@@ -52,6 +54,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/github/pr/supersede/route.ts',
   'apps/web/src/app/api/health/dispatch/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
+  'apps/web/src/app/api/health/incidents/route.ts',
   'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
   // Connector gateway: its own worker only (taskScopeAllowsWorker + taskScopeAllowsWorkspace); every tools/call re-checked per call.
   'apps/web/src/app/api/mcp/c/[connectorId]/route.ts',

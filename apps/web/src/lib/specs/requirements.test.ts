@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { requirementIds } from './requirements';
+import { requirementIds, specCriteria } from './requirements';
 
 describe('requirementIds', () => {
   it('finds ids in the forms specs use, first definition wins, fenced code ignored', () => {
@@ -17,5 +17,13 @@ describe('requirementIds', () => {
       ['R-1', 'requirement', 2], ['AC-1', 'acceptance', 3], ['D-2', 'decision', 4], ['I-1', 'invariant', 5],
     ]);
     expect(requirementIds(body)[1].text).toBe('Given EUR, the total reads €.');
+  });
+});
+
+describe('specCriteria', () => {
+  it('is the requirements and acceptance criteria only: decisions and invariants are context', () => {
+    const body = ['R-1: a', '- AC-2: b', '### D-1 c', 'I-1: d', 'R-2: e'].join('\n');
+    expect(specCriteria(body).map((r) => r.id)).toEqual(['R-1', 'AC-2', 'R-2']);
+    expect(specCriteria('# No ids here\nJust prose.')).toEqual([]);
   });
 });
