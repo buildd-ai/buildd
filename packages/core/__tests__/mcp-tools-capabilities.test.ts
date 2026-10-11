@@ -48,3 +48,29 @@ describe('resolve_capability', () => {
     expect(api).not.toHaveBeenCalled();
   });
 });
+
+describe('request_capability', () => {
+  let api: ReturnType<typeof mock>;
+  beforeEach(() => { api = mock(); });
+
+  it('is a worker-level action beside resolve_capability, never trigger-level', () => {
+    expect(workerActions as readonly string[]).toContain('request_capability');
+    expect(triggerActions as readonly string[]).not.toContain('request_capability');
+    expect(mcpGroupOf('request_capability')).toBe(mcpGroupOf('resolve_capability'));
+    expect(requiredScopeForAction('request_capability')).toBe('tasks:write');
+  });
+
+  it('posts the semantic ask as this worker', async () => {
+    api.mockResolvedValueOnce({ outcome: 'pending_approval', grant: { id: 'g1' } });
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'request_capability', { capability: 'observability:query', provider: 'axiom', reason: 'trace latency' }, ctx());
+    expect(api.mock.calls[0][0]).toBe('/api/agent-capabilities/requests');
+    expect(api.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(api.mock.calls[0][1].body)).toEqual({ capability: 'observability:query', provider: 'axiom', reason: 'trace latency', workerId: '00000000-0000-0000-0000-000000000002' });
+    expect(JSON.parse(res.content[0].text).outcome).toBe('pending_approval');
+  });
+
+  it('requires a capability', async () => {
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'request_capability', {}, ctx())).rejects.toThrow(/capability is required/);
+    expect(api).not.toHaveBeenCalled();
+  });
+});
