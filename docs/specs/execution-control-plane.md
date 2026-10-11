@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/control-plane/src/index.ts, apps/control-plane/src/next-server-shim.ts, apps/control-plane/wrangler.jsonc]
 related: [workflow-state-kernel, task-dispatch-authority, artifacts-and-sharing]
 keywords: [control plane, extraction, cloudflare worker, web outage, execution path, ownership boundary, living specs, kernel, dispatch, cutover]
-verified_by: [apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
+verified_by: [packages/core/__tests__/state-ownership.test.ts, apps/control-plane/src/index.test.ts, apps/web/src/app/api/deploy-identity/route.test.ts, apps/web/src/lib/release-health-watcher.test.ts]
 supersedes: []
 ---
 # Execution Control Plane
@@ -93,6 +93,41 @@ runs, so the execution handlers never differ between the two hosts.
 - AC-3: GIVEN the Vercel project paused WHEN a runner claims through
   buildd.dev THEN the claim is answered by the Worker against production
   Postgres. Passed on 2026-10-10 (artifact `control-plane-cutover-evidence`).
+
+## 3. One owner per state machine
+
+**Capability statement**: Each table MUST have one owning system, so neither
+the kernel nor any other code advances state another system owns.
+
+**Invariants**:
+- Living Specs tables (`artifacts`, `artifact_revisions`, `artifact_reads`,
+  `artifact_links`, `specs`, `spec_revisions`, `spec_approvals`) are written only
+  by Living Specs modules: `apps/web/src/lib/artifact-*`,
+  `packages/core/artifact-*`, `apps/web/src/lib/specs/` and the artifact and
+  spec routes. The workflow kernel (`apps/web/src/lib/workflow/`) writes none
+  of them.
+- Writers outside Living Specs that predate the boundary are listed in
+  `LEGACY` in `state-ownership.test.ts`. The list may only shrink: a listed file
+  that stops writing fails the test until it is removed from the list.
+- Kernel tables (`workflow_deliveries`, `workflow_effects`,
+  `workflow_transitions`, ...) are written only under
+  `apps/web/src/lib/workflow/`, enforced by `workflow-write-sites.test.ts` with
+  an empty allowlist. `state-ownership.test.ts` pins that this guard exists,
+  runs on every diff and covers the delivery, effect and transition tables.
+
+**Out of scope, on purpose**:
+- Task and worker lifecycle *columns* (`tasks.status`, `workers.status`, ...).
+  Per `workflow-state-kernel.md` they are fact caches and projections that many
+  doors write today, not kernel-owned state, so claiming them here would be a
+  guard that fails on day one.
+- References held by other systems' rows, such as `missions.contextArtifactIds`.
+  A reference is an id, not Living Specs state: writing it does not write an
+  artifact. Typed links (`artifact_links`, artifacts-and-sharing.md §9) are the
+  canonical form, and the legacy column is read but no longer extended.
+
+**Code surface**:
+- `packages/core/__tests__/state-ownership.test.ts`
+- `packages/core/__tests__/workflow-write-sites.test.ts`
 
 ## Verification gaps
 
