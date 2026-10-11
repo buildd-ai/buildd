@@ -131,6 +131,20 @@ describe('in-app fallback flip', () => {
     expect(await fallBackToInApp([h.id])).toBe(0);
   });
 
+  test('a handed-off row with a pending twin merges into it instead of violating the pending-dedupe index', async () => {
+    const h = await handedOff(ORPHAN_CEILING_MS + 60_000);
+    const ok = await handedOff(ORPHAN_CEILING_MS + 60_000);
+    const [twin] = await q<{ id: string }>(sql`INSERT INTO task_dispatch_outbox (workspace_id, task_id, cause, causes, not_before, dedupe_key, metadata)
+      SELECT workspace_id, task_id, cause, causes, now(), dedupe_key, metadata FROM task_dispatch_outbox WHERE id = ${h.id}::uuid
+      RETURNING id`);
+    // One colliding row must not fail the batch.
+    expect(await fallBackToInApp([h.id, ok.id])).toBe(2);
+    expect(await rowOf(ok.taskId)).toMatchObject({ status: 'pending', handed_off_at: null });
+    const [r] = await q<{ status: string; delivered_via: string; merged_into: string }>(
+      sql`SELECT status, delivered_via, merged_into FROM task_dispatch_outbox WHERE id = ${h.id}::uuid`);
+    expect(r).toMatchObject({ status: 'delivered', delivered_via: 'merged_into_pending', merged_into: twin!.id });
+  });
+
   test('a row a receipt closed in the meantime is not flipped', async () => {
     const h = await handedOff(ORPHAN_CEILING_MS + 60_000);
     await applyReceipts([{ id: h.id, attempt: 1, event: 'delivered', via: 'relay:pusher', at: new Date().toISOString() }]);

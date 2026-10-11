@@ -540,6 +540,26 @@ describe('GET /api/tasks/[id]', () => {
     expect(callArgs?.columns?.rejectedCompletionPayload).toBe(true);
   });
 
+  it('include=milestones reads and returns worker milestones; include=workers alone does not', async () => {
+    const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    const milestones = [{ type: 'status', label: 'Pre-merge: already up to date with the base', ts: 1 }];
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w-1', status: 'completed', milestones }] as any);
+
+    const response = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, search: '?include=milestones' }), TASK_ID);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.workers[0].milestones).toEqual(milestones);
+    expect((mockWorkersFindMany.mock.calls[0]?.[0] as any)?.columns?.milestones).toBe(true);
+
+    mockWorkersFindMany.mockClear();
+    await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, search: '?include=workers' }), TASK_ID);
+    expect((mockWorkersFindMany.mock.calls[0]?.[0] as any)?.columns?.milestones).toBeUndefined();
+  });
+
   it('include=dispatch returns the task\'s outbox trail; not read otherwise', async () => {
     const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
     mockGetCurrentUser.mockResolvedValue(null);

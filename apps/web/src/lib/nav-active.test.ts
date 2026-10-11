@@ -25,8 +25,8 @@ describe('isNavActive', () => {
       expect(isNavActive('/app/missions/abc-123', '/app/missions')).toBe(true);
     });
 
-    // Releases and Initiatives left the nav for Missions (owner decision, Oct 9).
-    it.each(['/app/releases', '/app/releases/r-1', '/app/initiatives', '/app/initiatives/i-1'])('owns %s', (p) => {
+    // Releases left the nav for Missions (owner decision, Oct 9).
+    it.each(['/app/releases', '/app/releases/r-1'])('owns %s', (p) => {
       expect(isNavActive(p, '/app/missions')).toBe(true);
     });
 
@@ -92,7 +92,7 @@ describe('isNavActive', () => {
 describe('isAccountRoute', () => {
   // Settings (Profile included) is reached from the header avatar, not a tab;
   // the avatar carries the "you are here" state for them.
-  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connectors'])('%s is an account route', (p) => {
+  it.each(['/app/settings', '/app/settings/account', '/app/settings/workspace/ws-1', '/app/settings/connections'])('%s is an account route', (p) => {
     expect(isAccountRoute(p)).toBe(true);
   });
 

@@ -112,7 +112,7 @@ describe('one row, managed on Models', () => {
     body = { ...body, keyPolicy: 'own', providers: [card('anthropic', true, 'ab12')], chatUses: { provider: 'anthropic', scope: 'user' } };
     await mount();
     const links = [...host.querySelectorAll('a')];
-    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Manage', '/app/settings/models?scope=mine']]);
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Manage', '/app/settings/keys']]);
     expect(host.textContent).toContain('Your keys');
     expect(host.querySelector('input')).toBeNull();
     expect(host.querySelector('details')).toBeNull();

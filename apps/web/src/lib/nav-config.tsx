@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { settingsBackHref, settingsItemFor } from './settings-nav';
+import { settingsBackHref, settingsItemAs, settingsItemFor } from './settings-nav';
 
 export interface NavItem {
   label: string;
@@ -68,8 +68,9 @@ export const MOBILE_TAB_LIMIT = 5;
  * Health's sections, in sidebar order: the one list behind the Health sub-nav,
  * its phone link row and the mobile header title. Kept here, in core
  * navigation, because the mobile header (core) names these pages; the Health
- * module reads it through lib/health-nav.ts. Operator is buildd's own tooling
- * and only platform operators see it (lib/platform-operator.ts).
+ * module reads it through lib/health-nav.ts. Failures, Usage, Insights and
+ * Operator are buildd's own analytics, moved to the private admin app: only
+ * platform operators see them (lib/platform-operator.ts).
  */
 export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'usage' | 'insights' | 'operator';
 
@@ -85,10 +86,10 @@ export const HEALTH_INDEX_HREF = '/app/health';
 
 export const HEALTH_NAV: readonly HealthNavItem[] = [
   { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
-  { id: 'failures', label: 'Failures', href: '/app/health/failures' },
+  { id: 'failures', label: 'Failures', href: '/app/health/failures', operatorOnly: true },
   { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
-  { id: 'usage', label: 'Usage', href: '/app/health/usage' },
-  { id: 'insights', label: 'Insights', href: '/app/health/insights' },
+  { id: 'usage', label: 'Usage', href: '/app/health/usage', operatorOnly: true },
+  { id: 'insights', label: 'Insights', href: '/app/health/insights', operatorOnly: true },
   { id: 'operator', label: 'Operator', href: '/app/health/operator', operatorOnly: true },
 ];
 
@@ -109,12 +110,11 @@ const WORKSPACE_MEMORY_PATH = /^\/app\/workspaces\/([^/]+)\/memory$/;
  * Top-level pages get a mobile header (title + team switcher + account menu).
  * Detail pages return null — they render their own headers.
  */
-export function mobilePageTitle(pathname: string): string | null {
+export function mobilePageTitle(pathname: string, opts: { billing?: boolean } = {}): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/chat') return 'Chat';
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/releases') return 'Releases';
-  if (pathname === '/app/initiatives') return 'Initiatives';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';
@@ -122,13 +122,12 @@ export function mobilePageTitle(pathname: string): string | null {
   // keeps the section's name.
   const healthItem = healthItemFor(pathname);
   if (healthItem) return healthItem.id === 'overview' ? 'Health' : healthItem.label;
-  if (pathname === '/app/artifacts') return 'Artifacts';
   if (WORKSPACE_MEMORY_PATH.test(pathname)) return 'Memory';
   if (pathname === '/app/settings') return 'Settings';
   // Each settings section is a full page on a phone (list → detail); the
   // header names it and carries the back arrow (mobileBackHref).
   const section = settingsItemFor(pathname);
-  if (section) return section.label;
+  if (section) return settingsItemAs(section, { billing: opts.billing ?? false }).label;
   return null;
 }
 

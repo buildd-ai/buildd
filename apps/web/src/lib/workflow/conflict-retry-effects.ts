@@ -38,6 +38,7 @@ import { applyCommand, loadView, type Exec } from './kernel';
 import { ingestFact } from './facts';
 import { githubReader, workspaceRepo } from './github-facts';
 import { prWorkerWhere } from './pr-worker-where';
+import { acquireLane, laneOutcome, resolveLandingLaneMode, LANE_PARK_BACKSTOP_MS, LANE_PARKED_OUTCOME } from './landing-lane';
 import type { DeliverySnapshot, AttemptSnapshot } from './types';
 import type { LivePr } from './commands';
 
@@ -167,6 +168,17 @@ const refreshBranch: EffectHandler = async (e) => {
   // A dependency bot owns its branch: the platform never pushes to it (S27). A landing door reaches
   // here through T16 without the conflict doors' own check; no agent may push either, so a person lands it.
   if (isDependencyBotPrContext(owner?.context)) return mechanicalFailed(b, source, 'dependency_bot_pr: the platform does not push to a dependency bot\'s branch');
+  // The landing lane: one behind-refresh in flight per repo + base. A conflict refresh is not
+  // racing for a quiet base, so only `behind` repairs take it.
+  let laneNote = '';
+  const laneMode = b.attempt.triggerReason === 'behind' && b.d.baseRef ? resolveLandingLaneMode(b.repo.gitConfig) : 'off';
+  if (laneMode !== 'off') {
+    const lane = await acquireLane(dbExec, { repoFullName: b.d.repoFullName!, baseRef: b.d.baseRef!, deliveryId: b.d.id, headSha: b.attempt.boundHeadSha! });
+    if (!lane.acquired) {
+      if (laneMode === 'enforce') return { outcome: laneOutcome(LANE_PARKED_OUTCOME, lane.holder), park: { delayMs: LANE_PARK_BACKSTOP_MS } };
+      laneNote = `(${laneOutcome('lane:would_wait', lane.holder)})`;
+    }
+  }
   const prw = await prWorker(b.d.workspaceId, b.d.repoFullName!, b.d.prNumber!);
   const refresh = deps.refresh ?? (await import('@/lib/base-refresh')).refreshBehindPr;
   const out = await refresh({
@@ -180,7 +192,7 @@ const refreshBranch: EffectHandler = async (e) => {
       // so the common path does not wait for the webhook.
       await ingestFact({ kind: 'head_observed', workspaceId: b.d.workspaceId, source, repoFullName: b.d.repoFullName!, prNumber: b.d.prNumber! },
         { exec: dbExec, github: githubReader(b.repo.installationId) });
-      return { outcome: 'ok:updated' };
+      return { outcome: `ok:updated${laneNote}` };
     }
     case 'up_to_date':
       // Nothing to merge in: the "behind"/"dirty" reading was stale.

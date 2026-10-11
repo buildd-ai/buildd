@@ -110,13 +110,15 @@ describe('MergePolicyEditor — editable only with manage_workspace_settings', (
       />,
     );
 
-  it('member: the current tier and limit, inside a disabled fieldset, with no Save', () => {
+  it('member: the current tier and limit as text, with no controls and no Save', () => {
     const html = renderAs(false);
     expect(html).toContain('data-testid="merge-policy-read-only"');
-    expect(html).toContain('Admins can change this.');
-    expect(html).toMatch(/<fieldset[^>]*disabled=""/);
-    expect(html).toContain('value="500"');
+    expect(html).not.toContain('Admins can change this.');
+    expect(html).not.toMatch(/<fieldset|<input|<button/);
+    expect(html).toMatch(/>500</);
+    expect(html).toContain('Auto-threshold');
     expect(html).not.toContain('>Save<');
+    expect(html).not.toContain('merge-policy-rescan');
   });
 
   it('admin: Save, and no disabled fieldset', () => {

@@ -601,3 +601,23 @@ describe('get_task backend line', () => {
     expect(text).not.toContain('**Backend:**');
   });
 });
+
+describe('get_task — governed outcome (Living Specs V1)', () => {
+  const SPEC = '00000000-0000-4000-8000-000000000051';
+  it('a task pinned to a Living Spec shows its governed outcome beside, not instead of, its status', async () => {
+    const a = mock(async (path: string) => path.startsWith('/api/specs/outcomes/')
+      ? { outcome: { outcome: 'fail', reason: 'R-1 failed', revision: 1, currentHeadSha: 'c'.repeat(40), criteria: [] } }
+      : { id: TASK_ID, title: 'Build step', status: 'completed', context: { specSource: { specId: SPEC, specRevisionId: SPEC, revision: 1 } } }) as unknown as ApiFn;
+    const text = (await handleBuilddAction(a, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('**Status:** completed');
+    expect(text).toContain('**Governed outcome:** FAIL vs spec revision 1: R-1 failed');
+    expect((a as any).mock.calls.map((c: unknown[]) => c[0])).toContain(`/api/specs/outcomes/${TASK_ID}`);
+  });
+
+  it('a task with no Living Spec makes no outcome call', async () => {
+    const a = mock(async () => ({ id: TASK_ID, title: 'Build step', status: 'pending', context: { specSource: { specPath: 'docs/specs/x.md' } } })) as unknown as ApiFn;
+    const text = (await handleBuilddAction(a, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).not.toContain('Governed outcome');
+    expect((a as any).mock.calls.some((c: unknown[]) => String(c[0]).includes('/outcomes/'))).toBe(false);
+  });
+});

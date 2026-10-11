@@ -110,7 +110,7 @@ you are working in.
 
 ## Settings › Connected apps
 
-Open **Settings › Connected apps** (under "You and your team") to see every app
+Open **Settings › You › Connected apps** to see every app
 you connected. Each row shows the app name, whether it acts as you or as your
 agent, its workspaces, read or read-and-write, and when it was last active.
 

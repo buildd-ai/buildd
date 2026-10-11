@@ -1842,6 +1842,28 @@ export function behindTolerance(
   return v.tolerated ? { ...v, rule: spent ? 'spent_cycle' : 'bounded' } : v;
 }
 
+/** At most this many files are named in a refresh's freshness evidence. */
+const FRESHNESS_FILES_CAP = 20;
+
+/** The S15 verdict a behind refresh went ahead on, as transition evidence. */
+export function freshnessEvidence(
+  tolerance: ReturnType<typeof behindTolerance> | null,
+  fact: BaseDeltaFact | null,
+  state: string,
+): Record<string, unknown> {
+  if (!tolerance || !fact) return { tolerated: false, cause: 'unread' };
+  const size = {
+    ...(fact.baseCommits != null ? { behindBy: fact.baseCommits } : {}),
+    ...(fact.baseFiles ? { baseFileCount: fact.baseFiles.length } : {}),
+  };
+  // Tolerated, but only an APPROVED delivery skips the refresh (T12 from REPAIRING, LANDING...).
+  if (tolerance.tolerated) return { tolerated: true, rule: tolerance.rule ?? null, state, ...size };
+  return {
+    tolerated: false, cause: tolerance.cause, reason: tolerance.reason, ...size,
+    ...(tolerance.files ? { files: tolerance.files.slice(0, FRESHNESS_FILES_CAP) } : {}),
+  };
+}
+
 function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'migration', o: {
   key: string; mechanicalRefused: boolean; maxMechanical: number; maxAgent: number; patch: DeliveryPatch; maxBehindRefreshes?: number;
   refusal?: Record<string, unknown> | null;
@@ -1860,6 +1882,10 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
     attempts.push({ op: 'update', attemptId: openMech.id, whenStatus: ['queued', 'running'], set: { status: 'ended', outcome: 'failed', ended: true } });
   }
   const evidence = { repairKind: kind, headSha: head };
+  // Why a behind refresh happened: the verdict the rule gave (or that no base delta was read),
+  // so a refresh is explainable from the log rather than rebuilt from git. On the refresh only:
+  // the treadmill escalation states its own cause.
+  let freshness: Record<string, unknown> | null = null;
   if (kind === 'behind' && !o.mechanicalRefused) {
     const mechanical = c.ledger(family, 'mechanical');
     const maxRefreshes = o.maxBehindRefreshes ?? DEFAULT_MAX_BEHIND_REFRESHES;
@@ -1867,6 +1893,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
     // risk-free changes is not refreshed again (and never escalated for a moving base). Nothing
     // is recorded here: the door lands it through T15, which checks the same rule at merge time.
     const tolerance = o.baseDelta ? behindTolerance(d, mechanical, head, o.baseDelta, o.maxBaseCommits, maxRefreshes) : null;
+    freshness = freshnessEvidence(tolerance, o.baseDelta ?? null, d.state);
     if (tolerance?.tolerated && d.state === 'APPROVED') return c.rejected('behind_tolerated');
     // S15 treadmill: a base that keeps moving is refreshed a bounded number of times across
     // heads per cycle; a spent cycle escalates, and the landing sweep opens a new one after
@@ -1903,7 +1930,7 @@ function conflictRepair(c: Ctx, head: string, kind: 'conflict' | 'behind' | 'mig
       patch: { ...o.patch, stateReason: kind, boundAttemptId: id },
       attempts,
       effects: [{ kind: effectKind, dedupeKey: `${effectKind}:${d.id}:${head}:mechanical:${n}`, payload: { attemptId: id, attemptNo: n, headSha: head, expectedHead: head, repairKind: kind, maxAgent: o.maxAgent, detail: o.detail ?? null } }],
-      evidence: { ...evidence, mode: 'mechanical' },
+      evidence: { ...evidence, mode: 'mechanical', ...(freshness ? { freshness } : {}) },
     });
   }
   if (c.ledger(family, 'agent').some((a) => OPEN_ATTEMPT.has(a.status))) return c.rejected('fix_in_flight');

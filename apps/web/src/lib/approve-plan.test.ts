@@ -649,6 +649,23 @@ describe('approvePlan — specSource traceability for an emitsPlan-originated pl
     await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A' }] as any);
     expect(insertedValues[0].context.specSource).toBeUndefined();
   });
+
+  it('passes a planning task\'s Living Spec pin to every child, so the work keeps the revision the plan was made on', async () => {
+    const pin = { specId: 's-1', specRevisionId: 'r-1', revision: 1, contentHash: 'h1' };
+    planningTaskRow.mode = 'planning';
+    planningTaskRow.context = { ...(planningTaskRow.context ?? {}), specSource: pin };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A' }, { ref: 'b', title: 'Step B' }] as any);
+    for (const v of insertedValues) expect(v.context.specSource).toEqual({ ...pin, planningTaskId: PLANNING_TASK_ID });
+  });
+
+  it('an incomplete pin (no revision id or hash) is not passed on', async () => {
+    planningTaskRow.mode = 'planning';
+    planningTaskRow.context = { ...(planningTaskRow.context ?? {}), specSource: { specId: 's-1' } };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A' }] as any);
+    expect(insertedValues[0].context.specSource).toBeUndefined();
+  });
 });
 
 // ─── Mission phase stamping (docs/specs/mission-legibility.md §1) ─────────────

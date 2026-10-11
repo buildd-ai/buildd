@@ -249,17 +249,87 @@
       "breakpoints": true
     },
     {
+      "idx": 286,
+      "version": "7",
+      "when": 1791630254259,
+      "tag": "0286_wild_winter_soldier",
+      "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1791649905550,
+      "tag": "0287_special_darkhawk",
+      "breakpoints": true
+    },
+    {
       "idx": 288,
       "version": "7",
-      "when": 1791642045837,
-      "tag": "0288_spooky_bucky",
+      "when": 1791651678452,
+      "tag": "0288_cooing_agent_brand",
       "breakpoints": true
     },
     {
       "idx": 289,
       "version": "7",
-      "when": 1791650391170,
-      "tag": "0289_slimy_jigsaw",
+      "when": 1791651679082,
+      "tag": "0289_artifact_revisions_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1791656376294,
+      "tag": "0290_fat_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 291,
+      "version": "7",
+      "when": 1791671684142,
+      "tag": "0291_secret_doorman",
+      "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1791675255337,
+      "tag": "0294_gifted_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1791676896304,
+      "tag": "0295_absurd_moon_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791678489957,
+      "tag": "0298_lumpy_tony_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1791679016490,
+      "tag": "0299_thankful_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1791688760905,
+      "tag": "0301_cooing_songbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1791690707851,
+      "tag": "0302_tidy_oracle",
       "breakpoints": true
     }
   ]

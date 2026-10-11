@@ -31,6 +31,7 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
     where: eq(workers.id, input.workerId),
     columns: { prLifecycleStatus: true, prNumber: true, mergedAt: true },
   });
+  const shipped = input.alreadyShippedPrNumber ?? null;
   const existingCtx = (loopData?.context ?? {}) as Record<string, unknown>;
   const existingHistory = (existingCtx.loopHistory as LoopHistoryEntry[] | undefined) ?? [];
 
@@ -44,9 +45,11 @@ export async function loopPolicy(input: LoopInput): Promise<LoopVerdict> {
     workerLastCommitSha: input.workerLastCommitSha,
     verificationEvidence: input.verificationEvidence,
     structuredOutput: input.structuredOutput,
-    prLifecycleStatus: freshWorker?.prLifecycleStatus ?? null,
-    prNumber: freshWorker?.prNumber ?? null,
-    workerMergedAt: freshWorker?.mergedAt ?? null,
+    // A PR verified merged via alreadyShippedIn satisfies pr_checks_green /
+    // pr_merged even though this worker never owned it.
+    prLifecycleStatus: shipped ? 'merged' : freshWorker?.prLifecycleStatus ?? null,
+    prNumber: shipped ?? freshWorker?.prNumber ?? null,
+    workerMergedAt: shipped ? new Date() : freshWorker?.mergedAt ?? null,
   });
 
   const progress = { iteration: r.loopIteration, history: r.loopHistory };

@@ -81,7 +81,8 @@ export type CausalLinkSource =
   | 'tasks.context.entitlementBlock'
   | 'tasks.pathDeclaration.softOverlaps + gate_events'
   | 'gate_events.detail'
-  | 'DeliveryView.lastTransition';
+  | 'DeliveryView.lastTransition'
+  | 'artifacts.metadata.qa (replacedAudits)';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */

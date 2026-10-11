@@ -352,7 +352,7 @@ export default async function RolesPage() {
   const idleRoles = allRoles.filter(r => !r.currentTask);
 
   return (
-    <SettingsPage title="Roles" description={ROLES_DESCRIPTION}>
+    <SettingsPage title="Roles" description={ROLES_DESCRIPTION} readOnly={!canCreateTeamRole}>
       <TeamGrid
         activeRoles={JSON.parse(JSON.stringify(activeRoles))}
         idleRoles={JSON.parse(JSON.stringify(idleRoles))}

@@ -220,9 +220,9 @@ describe('mastheadBack', () => {
 
   it('otherwise names the nearest breadcrumb — the initiative when there is one', () => {
     expect(mastheadBack(undefined, [
-      { label: 'Initiatives', href: '/app/initiatives' },
-      { label: 'Example initiative', href: '/app/initiatives/i-1' },
-    ])).toEqual({ label: 'Example initiative', href: '/app/initiatives/i-1' });
+      { label: 'Missions', href: '/app/missions' },
+      { label: 'Example initiative', href: '/app/missions?group=i-1' },
+    ])).toEqual({ label: 'Example initiative', href: '/app/missions?group=i-1' });
     expect(mastheadBack('missions', [{ label: 'Missions', href: '/app/missions' }])).toEqual({ label: 'Missions', href: '/app/missions' });
   });
 });

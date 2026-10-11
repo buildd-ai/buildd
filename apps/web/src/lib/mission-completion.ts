@@ -16,7 +16,7 @@ import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
 import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
-import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, type VisualReviewModel } from '@buildd/shared';
 import { after } from 'next/server';
 
 /**
@@ -183,16 +183,36 @@ export function visualReviewGateEnforced(): boolean {
  * surface reads. Only called when the mission has an audit task, so a
  * mission without one costs no query. Fails open: a read error never blocks.
  */
-async function visualReviewHoldFor(mission: { id: string; workspaceId?: string | null }): Promise<VisualReviewHold | null> {
+async function visualReviewHoldFor(
+  mission: { id: string; workspaceId?: string | null },
+  loadModel: () => Promise<VisualReviewModel>,
+): Promise<VisualReviewHold | null> {
   try {
-    const { loadVisualReview } = await import('@/lib/visual-review-load');
-    const model = await loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null });
+    const model = await loadModel();
     const cells = model.summary.awaitingHuman;
     if (cells === 0 && !model.roundCapOpen) return null;
     return { cells, roundCapOpen: model.roundCapOpen, enforced: visualReviewGateEnforced() };
   } catch (err) {
     console.error(`[visual-review-shadow] ${mission.id.slice(0, 8)} hold check failed (not blocking):`, err);
     return null;
+  }
+}
+
+/**
+ * The ids of failed audits the visual review model records as replaced by a
+ * later completed audit (`replacedAudits`, visual-review-model.ts). Fails
+ * closed, unlike the hold: a read error leaves every stall blocking.
+ */
+async function replacedAuditIds(
+  mission: { id: string },
+  loadModel: () => Promise<VisualReviewModel>,
+): Promise<Set<string>> {
+  try {
+    const model = await loadModel();
+    return new Set((model.replacedAudits ?? []).map(r => r.auditTaskId));
+  } catch (err) {
+    console.error(`[mission-completion] ${mission.id.slice(0, 8)} replaced-audit check failed (stall still blocks):`, err);
+    return new Set();
   }
 }
 
@@ -234,7 +254,8 @@ export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
  *  3. the mission produced deliverables at all, UNLESS something proposed
  *     completion (a monitoring mission's output is its heartbeat cycles)
  *  4. no deliverable is infra-stalled (failed for infrastructure reasons after
- *     exhausting retries — completing would hide the stall)
+ *     exhausting retries — completing would hide the stall), except a visual
+ *     audit a later completed audit replaced with valid coverage
  *  5. no `completed` deliverable has an unmerged PR (open, conflicted,
  *     CI-failing, or closed without merging) — a task's status is not its
  *     terminal state, its PR's state is
@@ -411,9 +432,23 @@ export async function canCompleteMission(
     };
   }
 
-  const infraStalled = deliverables.filter(
+  // Read at most once per decision, and only for a mission with an audit: the
+  // replaced-audit check below and the visual review hold share it.
+  let modelLoad: Promise<VisualReviewModel> | null = null;
+  const loadModel = () => (modelLoad ??= import('@/lib/visual-review-load').then(({ loadVisualReview }) =>
+    loadVisualReview({ id: mission.id, workspaceId: mission.workspaceId ?? null })));
+  const isAuditRow = (t: { roleSlug?: string | null }) => t.roleSlug === VISUAL_AUDITOR_ROLE_SLUG;
+
+  let infraStalled = deliverables.filter(
     t => t.status === 'failed' && (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
   );
+  // A stalled audit a later completed audit replaced (its routes shot on phone
+  // and desktop, nothing unresolved) is history, not a blocker. The row stays
+  // failed. Only audit rows qualify: a stalled implementation task always blocks.
+  if (infraStalled.some(isAuditRow)) {
+    const replaced = await replacedAuditIds(mission, loadModel);
+    if (replaced.size > 0) infraStalled = infraStalled.filter(t => !(isAuditRow(t) && replaced.has(t.id)));
+  }
   if (infraStalled.length > 0) {
     base.infraStalledTitles = infraStalled.map(t => t.title);
     return {
@@ -628,10 +663,9 @@ export async function canCompleteMission(
   // a current unsure screen nobody decided, or the open round-cap question.
   // Open fixes already hold above through pending_deliverables, and ok and
   // issue screens never need a human. Shadow unless VISUAL_REVIEW_GATE=enforce.
-  const hasAudit = allTasks.some(t =>
-    (t as { roleSlug?: string | null }).roleSlug === VISUAL_AUDITOR_ROLE_SLUG || isSurfaceAuditTask(t.title ?? ''));
+  const hasAudit = allTasks.some(t => isAuditRow(t) || isSurfaceAuditTask(t.title ?? ''));
   if (hasAudit) {
-    const hold = await visualReviewHoldFor(mission as { id: string; workspaceId?: string | null });
+    const hold = await visualReviewHoldFor(mission, loadModel);
     if (hold) {
       base.visualReviewHold = hold;
       const what = [

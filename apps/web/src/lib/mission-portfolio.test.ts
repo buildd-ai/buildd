@@ -8,6 +8,8 @@ import { projectMissionDelivery, type MissionTaskRow } from './delivery-projecti
 import {
   COMPLETED_HISTORY_WINDOW_MS,
   filterPortfolio,
+  portfolioGroups,
+  NO_GROUP,
   portfolioCounts,
   portfolioFilterCounts,
   sortPortfolio,
@@ -147,5 +149,38 @@ describe('portfolioCounts', () => {
     expect(c.openMissions).toBe(5);
     expect(c.executingMissions).toBe(1);
     expect(c.slots).toEqual({ used: 3, total: 8 });
+  });
+});
+
+describe('group filter', () => {
+  const rows = [
+    row('a', [buildingTask('a1')], { groupId: 'g1', groupName: 'Auth' }),
+    row('b', [buildingTask('b1')], { groupId: 'g1', groupName: 'Auth' }),
+    row('c', [buildingTask('c1')], { groupId: 'g2', groupName: 'Billing' }),
+    row('d', [buildingTask('d1')]),
+  ];
+
+  it('lists only groups that have missions, with counts, then No group', () => {
+    expect(portfolioGroups(rows)).toEqual([
+      { id: 'g1', name: 'Auth', count: 2 },
+      { id: 'g2', name: 'Billing', count: 1 },
+      { id: NO_GROUP, name: 'No group', count: 1 },
+    ]);
+  });
+
+  it('omits No group when every mission is grouped', () => {
+    expect(portfolioGroups(rows.slice(0, 3)).map(g => g.id)).toEqual(['g1', 'g2']);
+  });
+
+  it('filters to one group', () => {
+    expect(filterPortfolio(rows, { groupId: 'g1' }).map(r => r.delivery.id)).toEqual(['a', 'b']);
+  });
+
+  it('filters to missions without a group', () => {
+    expect(filterPortfolio(rows, { groupId: NO_GROUP }).map(r => r.delivery.id)).toEqual(['d']);
+  });
+
+  it('shows everything with no group chosen', () => {
+    expect(filterPortfolio(rows, {})).toHaveLength(4);
   });
 });

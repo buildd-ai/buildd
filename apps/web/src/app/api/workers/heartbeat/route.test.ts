@@ -87,6 +87,16 @@ mock.module('@/lib/version-cache', () => ({
   getLatestVersion: mockGetLatestVersion,
 }));
 
+// The release logic is unit-tested in lib/lost-claim.test.ts; here only the
+// wiring: who is asked, with what, and that a failure never breaks the beat.
+const mockReleaseUnacknowledgedClaims = mock(async (_input: any) => 0);
+mock.module('@/lib/lost-claim', () => ({
+  parseClaimHandoff: (raw: any) => (raw && Array.isArray(raw.pendingStartIds) && typeof raw.claimInFlight === 'boolean'
+    ? { pendingStartIds: raw.pendingStartIds, claimInFlight: raw.claimInFlight }
+    : null),
+  releaseUnacknowledgedClaims: mockReleaseUnacknowledgedClaims,
+}));
+
 import { POST } from './route';
 
 function createMockRequest(options: {
@@ -1053,5 +1063,74 @@ describe('POST /api/workers/heartbeat — fleet identity of a --once run', () =>
     }));
     expect(capturedValues.maxConcurrentWorkers).toBe(5);
     expect(capturedValues.environment.fleet).toBeUndefined();
+  });
+});
+
+describe('POST /api/workers/heartbeat — claim handoff acknowledgement', () => {
+  const HOST = { id: 'account-1', maxConcurrentWorkers: 3 };
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({ onConflictDoUpdate: mock(() => Promise.resolve()) })),
+    });
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    mockReleaseUnacknowledgedClaims.mockReset();
+    mockReleaseUnacknowledgedClaims.mockResolvedValue(0);
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+  });
+
+  it('asks for lost claims with the runner identity, its pending and active ids', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    mockReleaseUnacknowledgedClaims.mockResolvedValue(1);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        localUiUrl: 'http://host-runner:8766',
+        activeWorkerIds: ['w-live'],
+        claimHandoff: { pendingStartIds: ['w-starting'], claimInFlight: false },
+      },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).claimsReleased).toBe(1);
+    const input = mockReleaseUnacknowledgedClaims.mock.calls[0][0];
+    expect(input.accountId).toBe('account-1');
+    expect(input.runner).toBe('http://host-runner:8766');
+    expect(input.report).toEqual({ pendingStartIds: ['w-starting'], claimInFlight: false });
+    expect(input.heldWorkerIds).toEqual(['w-live']);
+  });
+
+  it('an older runner that sends no handoff report is never asked', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://host-runner:8766', activeWorkerIds: [] },
+    }));
+    expect(res.status).toBe(200);
+    expect(mockReleaseUnacknowledgedClaims).not.toHaveBeenCalled();
+  });
+
+  it('a --once run is never asked (it exits on a failed claim)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...HOST, level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 } });
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://box/once/task-1', claimHandoff: { pendingStartIds: [], claimInFlight: false } },
+    }));
+    expect(res.status).toBe(200);
+    expect(mockReleaseUnacknowledgedClaims).not.toHaveBeenCalled();
+  });
+
+  it('a failing release never fails the heartbeat', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(HOST);
+    mockReleaseUnacknowledgedClaims.mockRejectedValue(new Error('db down'));
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://host-runner:8766', claimHandoff: { pendingStartIds: [], claimInFlight: false } },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).claimsReleased).toBe(0);
   });
 });

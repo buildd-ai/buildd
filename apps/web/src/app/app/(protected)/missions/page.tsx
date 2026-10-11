@@ -27,9 +27,9 @@ export const dynamic = 'force-dynamic';
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; completedCursor?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string }>;
 }) {
-  const { workspace: wsFilter, completedCursor: completedCursorParam } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -152,6 +152,8 @@ export default async function MissionsPage({
       status: obj.status,
       workspaceId: obj.workspaceId ?? null,
       workspaceName: (obj.workspace as { name?: string } | null)?.name ?? null,
+      groupId: obj.initiativeId ?? null,
+      groupName: (obj.initiative as { title?: string } | null)?.title ?? null,
       priority: obj.priority ?? 0,
       liveAgents: tasks.reduce((n, t) => n + (t.workers ?? []).filter(w => live.has(w.status)).length, 0),
       lastAdvancedAt: lastAdvancedAt > 0 ? lastAdvancedAt : null,
@@ -169,12 +171,9 @@ export default async function MissionsPage({
           Missions
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          {/* Releases and Initiatives left the primary nav; this is their door. */}
+          {/* Releases left the primary nav; this is its door. */}
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
-          </Link>
-          <Link href="/app/initiatives" data-testid="missions-initiatives-link" className="btn btn-quiet h-11 md:h-8">
-            Initiatives
           </Link>
           <NewWorkLink
             kind="mission"
@@ -190,7 +189,7 @@ export default async function MissionsPage({
       {rows.length === 0 ? (
         <p className="text-body text-text-secondary">No missions. A mission groups the tasks behind one goal.</p>
       ) : (
-        <MissionGrid rows={rows} slots={{ live: activeSeats, max: maxSeats }} now={now} />
+        <MissionGrid rows={rows} initialGroup={groupParam ?? null} slots={{ live: activeSeats, max: maxSeats }} now={now} />
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the
