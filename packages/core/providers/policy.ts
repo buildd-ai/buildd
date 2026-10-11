@@ -47,6 +47,8 @@ export type PolicyScope = 'personal' | 'workspace' | 'account' | 'team' | 'env';
 export interface TeamPolicyColumns {
   credentialPolicy?: unknown;
   inferenceKeyPolicy?: unknown;
+  /** `teams.provider_assignments`, read by the resolver (`./assignments`), not by the policy. */
+  providerAssignments?: unknown;
 }
 
 export function isAgentSurface(surface: Surface): boolean {

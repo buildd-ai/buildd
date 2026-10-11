@@ -51,6 +51,7 @@
     "./coding-policy-store": "./coding-policy-store.ts",
     "./providers": "./providers/index.ts",
     "./providers/resolve": "./providers/resolve.ts",
+    "./providers/assignments": "./providers/assignments.ts",
     "./providers/manage": "./providers/manage.ts",
     "./providers/agent-keys": "./providers/agent-keys.ts",
     "./entitlements": "./entitlements.ts",

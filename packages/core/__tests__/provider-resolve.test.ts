@@ -32,6 +32,7 @@ import {
   rankEndpointRows,
   validateAgentEndpointInput,
 } from '../agent-endpoint';
+import { assignedPreference } from '../providers/assignments';
 
 const W = 'ws-1';
 const W2 = 'ws-2';
@@ -284,6 +285,25 @@ describe('endpoints', () => {
     expect(pick([ep, wsKey], ctx({ surface: 'agent-claude' })).provider).toBe('anthropic');
     const r = pick([ep, key], ctx({ surface: 'agent-claude' }));
     expect(r.credential?.endpoint?.kind).toBe('anthropic-compatible');
+  });
+
+  it('a surface assignment beats the endpoint tie, but never a more specific scope', () => {
+    const ep = endpointRow(customBlob);
+    const key = anth();
+    const assigned = { surface: 'agent-claude' as const, providers: assignedPreference({ 'agent-claude': 'anthropic' }, 'agent-claude'), assigned: 'anthropic' as const };
+    expect(pick([ep, key], ctx(assigned)).provider).toBe('anthropic');
+    // A workspace endpoint is more specific than the team key: the pick only orders within a scope.
+    expect(pick([endpointRow(customBlob, { workspaceId: W }), key], ctx(assigned)).provider).toBe('custom-endpoint');
+    // Assigning the endpoint keeps it first.
+    expect(pick([ep, key], ctx({ surface: 'agent-claude', assigned: 'custom-endpoint' })).provider).toBe('custom-endpoint');
+  });
+
+  it('chat: an assignment orders providers within a scope and keeps a personal key first', () => {
+    const or = row({ purpose: 'inference_key', label: 'openrouter' });
+    const order = assignedPreference({ chat: 'openrouter' }, 'chat');
+    expect(pick([anth(), or], ctx({ surface: 'chat', providers: order })).provider).toBe('openrouter');
+    const mine = anth({ userId: U });
+    expect(pick([mine, or], ctx({ surface: 'chat', providers: order, requesterUserId: U })).provider).toBe('anthropic');
   });
 
   it('codex: an anthropic-compatible endpoint is refused with the registry reason; a gateway routes', () => {

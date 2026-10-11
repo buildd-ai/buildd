@@ -12,14 +12,15 @@ import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { ADVANCED_ANCHOR, coverageText, coverageView, groupProviders, keyRuleLine, storedPolicyLine } from './providers-view';
+import { connectedProviders, groupProviders, keyRuleLine, storedPolicyLine } from './providers-view';
+import UsedForSection from './UsedForSection';
 
 /**
  * The model keys, one scope per page. `scope="team"` is Settings › Team ›
- * Models: Keys (the team's), Workspace keys (one workspace at a time, picked
- * from a list) and Routing. `scope="mine"` is Settings › You › Keys: your own
- * keys and nothing of the team's to change, with the key rule as a line. No
- * page mixes the two.
+ * Models: Providers (the team's) and Used for (only once two or more are
+ * connected). `scope="mine"` is Settings › You › Keys: your own keys and
+ * nothing of the team's to change, with the key rule as a line. No page mixes
+ * the two.
  *
  * Every model provider in registry order, one row each (Claude and OpenAI each
  * group their key and subscription into one row). Whose key has no setting:
@@ -34,9 +35,9 @@ import { ADVANCED_ANCHOR, coverageText, coverageView, groupProviders, keyRuleLin
  * Claude and Codex logins, at the row's scope). There is no separate sign-ins
  * section.
  *
- * Routing: what the cards don't cover (gateway, agent endpoint, decision
- * model) and the provider routing toggle. A gateway change reloads the cards,
- * so both sections live in one component.
+ * The LiteLLM gateway and a custom endpoint are rows like any other; their
+ * forms open in the row. A gateway change reloads the rows and the decision
+ * model, so all of it lives in one component.
  */
 export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [], signIns, scope = 'team' }: {
   teamId: string;
@@ -98,6 +99,10 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
                 open={openRow === key}
                 onToggle={(o) => setOpenRow(o ? key : null)}
                 signIn={!slots ? null : g.id === 'claude' ? slots.claude : g.id === 'openai' ? slots.openai : null}
+                form={rowScope !== 'team' ? null
+                  : g.id === 'litellm' ? <GatewayCard teamId={teamId} canManage={canManageRouting} embedded onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
+                  : g.id === 'custom-endpoint' ? <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} embedded />
+                  : null}
               />
             );
           })}
@@ -135,7 +140,11 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 
   const render = (slots: SignInSlots | null, workspaceSlots: SignInSlots | null) => (
     <>
-      <Section title="Keys" id="keys" className="scroll-mt-20">
+      <Section title="Providers" id="keys" className="scroll-mt-20">
+        <span id="providers" aria-hidden="true" />
+        {/* Old links: #routing, #advanced (the removed Routing section; the gateway and endpoint are rows now). */}
+        <span id="routing" aria-hidden="true" />
+        <span id="advanced" aria-hidden="true" />
         {/* Old links: /app/settings/providers and #provider-keys land here. */}
         <span id="provider-keys" aria-hidden="true" />
         {/* Old links: #sign-ins, #agent-backends (the sign-ins section these rows now hold). */}
@@ -155,24 +164,19 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
             />
           )}
 
-          <div>
-            {data && (
-              <dl className="inset-panel mb-3 space-y-1 text-meta" data-testid="provider-coverage" aria-label="What is covered">
-                {coverageView(data).map((l) => (
-                  <div key={l.surface} className="flex flex-wrap gap-x-2" data-testid={`coverage-${l.surface}`} data-covered={l.usedBy.length > 0 ? 'true' : 'false'}>
-                    <dt className="w-44 shrink-0 text-text-secondary">{l.label}</dt>
-                    <dd className={`min-w-0 break-words ${l.usedBy.length ? 'text-text-primary' : 'text-text-muted'}`}>{coverageText(l)}</dd>
-                  </div>
-                ))}
-                <p className="pt-1 text-text-muted">
-                  Claude Code and cloud coding need an Anthropic-compatible route. A ChatGPT login signs in Codex only.
-                </p>
-              </dl>
-            )}
-            {list('team', slots, 'provider-list-team')}
-          </div>
+          {list('team', slots, 'provider-list-team')}
         </div>
       </Section>
+
+      {data && (
+        <UsedForSection
+          teamId={teamId}
+          data={data}
+          canManage={data.caller.can.manage_team_settings}
+          decisions={<DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} embedded />}
+          extra={slots && bothBackends(data) ? <div className="border-y border-border-default">{slots.routing}</div> : null}
+        />
+      )}
 
       {workspaces.length > 0 && (
         <Section title="Workspace keys" id="workspace-keys" className="scroll-mt-20">
@@ -193,17 +197,6 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
         </Section>
       )}
 
-      <Section title="Routing" id={ADVANCED_ANCHOR} className="scroll-mt-20">
-        {/* Old #advanced links (the section's previous name). */}
-        <span id="advanced" aria-hidden="true" />
-        <div className="space-y-8">
-          <p className="text-meta text-text-muted">Gateway, agent endpoint and the decision model.</p>
-          <GatewayCard teamId={teamId} canManage={canManageRouting} onChanged={() => { setGatewayRev((r) => r + 1); void load(); }} />
-          <DecisionModelPicker teamId={teamId} canManage={canManageRouting} rev={gatewayRev} />
-          <AgentEndpointSection teamId={teamId} canManage={canManageRouting} workspaces={workspaces} rev={gatewayRev} />
-          {slots && <div className="border-y border-border-default">{slots.routing}</div>}
-        </div>
-      </Section>
     </>
   );
 
@@ -226,3 +219,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 }
 
 const LOAD_ERROR = "Couldn't load your providers.";
+
+/** The Claude / Codex switch only means something when the team can run both. */
+function bothBackends(data: Pick<ListProvidersResponse, 'providers'>): boolean {
+  const ids = connectedProviders(data).map((p) => p.id);
+  return ids.some((id) => id === 'anthropic' || id === 'claude-subscription') && ids.some((id) => id === 'openai' || id === 'codex-subscription');
+}
