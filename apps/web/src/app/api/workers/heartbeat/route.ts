@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
       commitDrift = undefined,
       updating = undefined,
       updateAvailable = undefined,
+      updateDrain = undefined,
       trackedBranch = undefined,
       /**
        * The claim → session-start acknowledgement (lib/lost-claim.ts): workers
@@ -127,6 +128,14 @@ export async function POST(req: NextRequest) {
       ? (existing?.updateAvailable === true ? existing.updateAvailableSince ?? now : now)
       : null;
 
+    // Runner sends epoch ms; stored as ISO strings. Malformed input -> null.
+    const drainIn = updateDrain as { since?: unknown; endsAt?: unknown; busy?: unknown } | null | undefined;
+    const sinceD = typeof drainIn?.since === 'number' ? new Date(drainIn.since) : null;
+    const endsD = typeof drainIn?.endsAt === 'number' ? new Date(drainIn.endsAt) : null;
+    const storedUpdateDrain = sinceD && endsD && !isNaN(sinceD.getTime()) && !isNaN(endsD.getTime())
+      ? { since: sinceD.toISOString(), endsAt: endsD.toISOString(), busy: typeof drainIn?.busy === 'number' ? drainIn.busy : 0 }
+      : null;
+
     // Atomic upsert using unique index on (accountId, localUiUrl)
     // Only update timestamp and worker count - workspaces resolved on-demand
     await db.insert(workerHeartbeats)
@@ -148,6 +157,7 @@ export async function POST(req: NextRequest) {
         updating: (updating ?? null) as boolean | null,
         updateAvailable: newUpdateAvailable,
         updateAvailableSince,
+        updateDrain: storedUpdateDrain,
         trackedBranch: (trackedBranch ?? null) as string | null,
         lastHeartbeatAt: now,
       })
@@ -171,6 +181,7 @@ export async function POST(req: NextRequest) {
             updating: (updating ?? null) as boolean | null,
             updateAvailable: newUpdateAvailable,
             updateAvailableSince,
+            updateDrain: storedUpdateDrain,
             trackedBranch: (trackedBranch ?? null) as string | null,
           } : {}),
           lastHeartbeatAt: now,

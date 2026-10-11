@@ -1,0 +1,1 @@
+ALTER TABLE "worker_heartbeats" ADD COLUMN "update_drain" jsonb;

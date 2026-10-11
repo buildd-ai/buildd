@@ -3123,6 +3123,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   // stops being true — so "how long has it been behind" is measured from this
   // column instead of inferred from boot age or heartbeat cadence.
   updateAvailableSince: timestamp('update_available_since', { withTimezone: true }),
+  // Present while the runner has halted claims to drain busy workers before a
+  // self-update (update-drain.ts): ISO `since`, ISO `endsAt` (window expiry),
+  // and `busy` workers still running. Null/absent = claiming normally. Lets
+  // list_runners explain free slots + no claims without SSH.
+  updateDrain: jsonb('update_drain').$type<{ since: string; endsAt: string; busy: number } | null>(),
   // The branch this install tracks (BUILDD_BRANCH) — already sent on every
   // heartbeat to resolve latestCommit (see the heartbeat route), but not
   // persisted until now, so GET /api/workers/active can show it per runner.

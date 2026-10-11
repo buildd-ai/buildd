@@ -1065,6 +1065,7 @@ export class BuilddClient {
       payload.commitDrift = updateSnapshot.commitDrift;
       payload.updating = updateSnapshot.updating;
       payload.updateAvailable = updateSnapshot.updateAvailable;
+      payload.updateDrain = updateSnapshot.updateDrain ?? null;
       payload.trackedBranch = updateSnapshot.trackedBranch;
     }
     const data = await this.fetch('/api/workers/heartbeat', {

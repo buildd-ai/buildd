@@ -186,3 +186,16 @@ describe('post-update canary', () => {
     expect(after.probation?.toCommit).toBe(NEXT);
   });
 });
+
+describe('UpdateDrain.snapshot (reported on the heartbeat)', () => {
+  test('null until a drain opens, then since/endsAt/busy, null again after reset', () => {
+    const d = new UpdateDrain({ windowMs: WINDOW }, capture());
+    expect(d.snapshot()).toBeNull();
+    d.tick({ eligible: true, busy: 3, now: 1000 });
+    expect(d.snapshot()).toEqual({ since: 1000, endsAt: 1000 + WINDOW, busy: 3 });
+    d.tick({ eligible: true, busy: 2, now: 1000 + MIN });
+    expect(d.snapshot()?.busy).toBe(2);
+    d.tick({ eligible: false, busy: 2, now: 1000 + 2 * MIN });
+    expect(d.snapshot()).toBeNull();
+  });
+});

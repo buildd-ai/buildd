@@ -1364,6 +1364,8 @@ export interface RunnerUpdateSnapshot {
   commitDrift: boolean;
   updating: boolean;
   updateAvailable: boolean;
+  /** Set while claims are halted to drain busy workers before a self-update (epoch ms); null otherwise. */
+  updateDrain?: { since: number; endsAt: number; busy: number } | null;
   /** The branch this install tracks (its `BUILDD_BRANCH`). */
   trackedBranch: string;
 }

@@ -217,9 +217,13 @@ export async function runListRunners(
     ];
     if (r.updateAvailable) update.push(`updateAvailableSince=${r.updateAvailableSince ?? 'unknown'}`);
     if (r.trackedBranch === 'main') update.push(`upToDateWithDeployed=${r.upToDateWithDeployed ?? 'null'}`);
+    const drain = r.updateDrain as { since: string; endsAt: string; busy: number } | null | undefined;
+    const drainLine = drain
+      ? `\n  claims halted: draining for update since ${drain.since}, applies by ${drain.endsAt} or when ${drain.busy} busy worker(s) finish — free slots are expected, not a claim-gate bug`
+      : '';
     const runnerBuild = `runnerCommit=${r.runnerCommit ?? 'null'} runnerVersion=${r.runnerVersion ?? 'null'}`;
     const workspaces = ((r.workspaceNames as string[]) ?? []).join(', ') || 'none';
-    return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
+    return `- ${header}${drainLine}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
   });
 
   const count = groups.size > 0 ? `${hosts.length} runner(s), ${groups.size} elastic group(s):` : `${runners.length} runner(s):`;

@@ -240,4 +240,19 @@ describe('list_runners', () => {
     expect(res.content[0].text).toMatch(/"Nope"/);
     expect(mockApi.mock.calls.some((c: unknown[]) => String(c[0]).startsWith('/api/workers/active'))).toBe(false);
   });
+
+  it('says why a draining runner has free slots and is not claiming', async () => {
+    mockApi.mockResolvedValueOnce({
+      activeLocalUis: [{
+        localUiUrl: 'http://localhost:8766', accountName: 'Runner A', activeWorkers: 4, maxConcurrent: 10,
+        workspaceNames: [], updateAvailable: true, updating: false, trackedBranch: 'dev',
+        updateDrain: { since: '2026-10-11T10:00:00.000Z', endsAt: '2026-10-11T11:00:00.000Z', busy: 4 },
+        lastUpdated: '2026-10-11T10:05:00.000Z',
+      }],
+    });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx());
+    const out = res.content[0].text;
+    expect(out).toContain('claims halted: draining for update since 2026-10-11T10:00:00.000Z');
+    expect(out).toContain('applies by 2026-10-11T11:00:00.000Z or when 4 busy worker(s) finish');
+  });
 });

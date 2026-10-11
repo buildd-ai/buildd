@@ -79,6 +79,7 @@ type Logger = Pick<Console, 'log' | 'warn'>;
 export class UpdateDrain {
   private phase: Phase = 'idle';
   private startedAt: number | null = null;
+  private lastBusy = 0;
 
   constructor(readonly config: DrainConfig = readDrainConfig(), private readonly logger: Logger = console) {}
 
@@ -95,11 +96,22 @@ export class UpdateDrain {
     return this.startedAt;
   }
 
+  /**
+   * What the heartbeat reports so list_runners can say WHY a runner with free
+   * slots is not claiming. Null unless a drain is open (an idle apply restarts
+   * within the tick, so there is nothing to explain).
+   */
+  snapshot(): { since: number; endsAt: number; busy: number } | null {
+    if (this.phase !== 'draining' || this.startedAt === null) return null;
+    return { since: this.startedAt, endsAt: this.startedAt + this.config.windowMs, busy: this.lastBusy };
+  }
+
   /** One auto-update tick. Pure apart from logging and the phase it keeps. */
   tick(input: DrainTickInput): DrainDecision {
     // While an apply is in flight the updater owns the runner; the caller
     // reports the outcome via `applyFailed` (or never returns, on restart).
     if (this.phase === 'applying') return { action: 'none' };
+    this.lastBusy = input.busy;
 
     if (!input.eligible) {
       if (this.phase === 'draining') {
@@ -152,6 +164,7 @@ export class UpdateDrain {
   private reset(): void {
     this.phase = 'idle';
     this.startedAt = null;
+    this.lastBusy = 0;
   }
 }
 

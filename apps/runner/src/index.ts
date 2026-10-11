@@ -20,7 +20,7 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbac
   reapChild, withTimeout, TRACKED_BRANCH, setRunnerUpdateSnapshotProvider, type RunnerUpdateSnapshot } from './updater';
 import { evaluateManualUpdateGate, performManualUpdate, type ManualUpdateDeps } from './update-gate';
 import { initUpdateCanary, runCanaryTrip } from './update-canary';
-import { initUpdateDrain } from './update-drain';
+import { initUpdateDrain, getUpdateDrain } from './update-drain';
 import { saveWorker } from './worker-store';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
@@ -644,6 +644,7 @@ setRunnerUpdateSnapshotProvider((): RunnerUpdateSnapshot => {
     commitDrift: hasCommitDrift(diskCommit, updateState.currentCommit),
     updating: updateState.updating,
     updateAvailable: updateState.updateAvailable,
+    updateDrain: getUpdateDrain()?.snapshot() ?? null,
     trackedBranch: TRACKED_BRANCH,
   };
 });
