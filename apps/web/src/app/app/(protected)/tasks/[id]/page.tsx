@@ -919,7 +919,9 @@ export default async function TaskDetailPage({
     inRelease: !!shippedRelease,
     // §17.5: a kernel-owned PR's state is the delivery's, not the columns'.
     deliveryPrState: deliveryView?.prState ?? null,
-  }), review: reviewOutcome });
+  }), review: reviewOutcome,
+    // The platform updating the branch or merging: in progress, not "ready to merge".
+    deliveryActivity: deliveryView && ((deliveryView.state === 'REPAIRING' && deliveryView.stateReason === 'behind') || deliveryView.state === 'LANDING') ? deliveryView.headline : null });
   const verdict = rulesVerdict ? applyVerdictDecision(rulesVerdict, storedVerdictDecision) : null;
   // What each agent error means for the outcome. Every trace stays inspectable;
   // only the ones the record says still matter are counted or shown in red.

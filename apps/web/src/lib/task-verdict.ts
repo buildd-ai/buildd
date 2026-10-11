@@ -65,6 +65,11 @@ export interface VerdictInput {
    * its outcome is its verdict, and the PR it reviewed is the parent's, not its own.
    */
   review?: { verdict: ReviewVerdictWord | null } | null;
+  /**
+   * The platform is acting on the PR right now (the delivery's headline while it
+   * updates the branch or merges): nothing waits on a person until it finishes.
+   */
+  deliveryActivity?: string | null;
 }
 
 export interface TaskVerdict {
@@ -239,6 +244,16 @@ export function deriveTaskVerdict(input: VerdictInput): TaskVerdict | null {
         cause: input.openAttempt ? `${attemptName(input.openAttempt)} pushed; its checks are running.` : null,
         actions: [link('View checks', prChecksUrl(pr.url))],
         causeKey: 'in_progress:checks',
+      };
+    }
+    if (input.deliveryActivity) {
+      return {
+        ...base,
+        state: 'in_progress',
+        headline: input.deliveryActivity,
+        cause: null,
+        actions: [link(`View PR #${pr.number}`, pr.url)],
+        causeKey: 'in_progress:delivery',
       };
     }
     if (input.openAttempt) {

@@ -136,6 +136,8 @@ function mergeRow(v: ChecksInput): CheckRow | null {
 }
 
 export function deriveTaskChecks(v: ChecksInput): TaskChecks {
+  // Checks are checks on a PR: without one there is nothing to review, test or merge.
+  if (v.prNumber == null) return { current: [], history: [] };
   const rounds = [...v.rounds].sort((a, b) => a.round - b.round);
   const live = rounds.filter(r => r.status !== 'superseded');
   const onHead = live.filter(r => r.headSha === v.headSha);

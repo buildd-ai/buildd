@@ -156,3 +156,14 @@ describe('a review run judges its own outcome (docs/specs/task-page.md AC-1)', (
     expect(review(null, { taskStatus: 'in_progress', live: { status: 'running', waitingForInput: false } }).headline).toBe('Working');
   });
 });
+
+describe('the platform is acting on the PR (docs/specs/task-page.md, State mapping)', () => {
+  it('a green PR whose branch is being updated is in progress, not ready to merge', () => {
+    const v = deriveTaskVerdict(input({ pr: { ...PR, lifecycle: 'ci_green' }, checks: [], mismatch: [], deliveryActivity: 'Updating branch' }))!;
+    expect(v).toMatchObject({ state: 'in_progress', headline: 'Updating branch' });
+    expect(v.actions.some(a => a.tone === 'primary')).toBe(false);
+  });
+  it('red CI still outranks it', () => {
+    expect(deriveTaskVerdict(input({ deliveryActivity: 'Updating branch' }))!.state).toBe('blocked');
+  });
+});

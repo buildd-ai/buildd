@@ -193,7 +193,7 @@ never described as released.
 - AC-7: GIVEN a summary string that is valid JSON with a `summary` field WHEN `readableTaskResult` reads it THEN prose is the `summary` text and the verdict is normalised; GIVEN malformed JSON THEN prose is the original text and `malformed` is true; GIVEN plain text THEN prose is that text.
 - AC-8: GIVEN a verdict whose headline equals its label ("Done") WHEN the outcome row renders THEN the label appears once and no `h2` heading repeats it.
 - AC-9: GIVEN a reviewer task titled "[reviewer] PR #N: …" with role name "Reviewer" WHEN `taskHeading` runs THEN the eyebrow contains "Reviewer" exactly once.
-- AC-10: GIVEN no kernel-owned delivery WHEN the page renders THEN no checks list is drawn (no invented rows).
+- AC-10: GIVEN no kernel-owned delivery, or a delivery with no PR, WHEN the page renders THEN no checks list is drawn (no invented rows).
 
 ## Code surface
 

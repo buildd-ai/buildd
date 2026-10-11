@@ -96,6 +96,10 @@ describe('deriveTaskChecks', () => {
     expect(row(c, 'merge')).toMatchObject({ state: 'failed', result: 'Conflict with base', repair: { label: 'Conflict fix 1 of 3', status: 'queued', taskId: 'cf' } });
   });
 
+  test('AC-10: no PR, no checks: nothing is invented', () => {
+    expect(deriveTaskChecks(V({ state: 'FAILED', prNumber: null, prState: null }))).toEqual({ current: [], history: [] });
+  });
+
   test('closed without merging', () => {
     expect(row(deriveTaskChecks(V({ state: 'CLOSED_UNMERGED', prState: 'closed' })), 'merge')).toMatchObject({ state: 'closed', result: 'Closed without merging' });
   });

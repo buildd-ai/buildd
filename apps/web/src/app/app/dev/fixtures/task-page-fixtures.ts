@@ -89,7 +89,7 @@ export function taskPageFixture(c: TaskPageCase): TaskPageFixture {
     case 'branch-refresh':
       delivery = D({ state: 'REPAIRING', stateReason: 'behind', approvalBasis: 'verdict', approvedHeads: [HEAD_B], boundAttemptId: 'm1', ci: 'green', ciHeadSha: HEAD_B });
       attempts = [A({ id: 'm1', family: 'conflict', mode: 'mechanical', triggerReason: 'behind', taskId: null })];
-      verdict = deriveTaskVerdict(verdictInput({ pr: { ...pr, lifecycle: 'ci_running' } }))!;
+      verdict = deriveTaskVerdict(verdictInput({ pr, deliveryActivity: 'Updating branch' }))!;
       shipped = shippedInput({ summary: 'Landed both PRs behind the recovery fix.', shipped: false });
       break;
     case 'repair':
