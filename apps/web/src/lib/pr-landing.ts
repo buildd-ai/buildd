@@ -827,7 +827,18 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
         // unfinished run, or a non-passing commit status, is a wait.
         const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
-        return red ? needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix) : waiting(reason);
+        if (red) return needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix);
+        // Pending CI on an ESCALATED delivery is not "wait for green": green does not
+        // lift an escalation, so name the person's wait instead of promising a merge.
+        const kv = await kernelStatus();
+        if (kv?.current.state === 'ESCALATED') {
+          return waiting(
+            `${reason}; the delivery is ESCALATED${kv.stateReason ? ` (${kv.stateReason})` : ''} at v${kv.current.version}, head ${String(kv.current.head ?? '').slice(0, 7)}, so green CI alone will not land it`,
+            { deliveryState: kv.current.state, deliveryVersion: kv.current.version, stateReason: kv.stateReason ?? null },
+            true,
+          );
+        }
+        return waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
