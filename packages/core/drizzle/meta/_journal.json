@@ -324,6 +324,13 @@
       "when": 1791688760905,
       "tag": "0301_cooing_songbird",
       "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1791690195822,
+      "tag": "0302_smiling_the_watchers",
+      "breakpoints": true
     }
   ]
 }
