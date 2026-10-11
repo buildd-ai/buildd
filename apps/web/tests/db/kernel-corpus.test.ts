@@ -93,6 +93,45 @@ describe('export', () => {
     expect(ws.size).toBe(1);
   });
 
+  test('sanitized: date-only and zone-less timestamps across day boundary', async () => {
+    // Verify that date-only (e.g. "2026-10-11") and zone-less timestamps
+    // (e.g. "2026-10-11T12:30:00") are shifted, not left as-is.
+    // This catches the regression when the test runs near UTC midnight.
+    const { Pseudonymizer } = await import('../../src/lib/workflow/testing/sanitize');
+    const p = new Pseudonymizer();
+    const nearMidnight = Date.UTC(2026, 9, 11, 23, 59, 0); // 2026-10-11 23:59:00 UTC
+    const afterMidnight = Date.UTC(2026, 9, 12, 0, 1, 0); // 2026-10-12 00:01:00 UTC
+
+    // Date-only before midnight — should be shifted away from 2026
+    const beforeDate = p.value('2026-10-11', nearMidnight);
+    expect(beforeDate).not.toMatch(/\b2026-/);
+    expect(beforeDate).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+
+    // Date-only after midnight (different calendar day) — should also be shifted
+    const afterDate = p.value('2026-10-12', afterMidnight);
+    expect(afterDate).not.toMatch(/\b2026-/);
+    expect(afterDate).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+    // Different input dates shift to different output timestamps (24h apart)
+    expect(beforeDate).not.toBe(afterDate);
+
+    // Zone-less timestamp before midnight — should be shifted and have no timezone
+    const beforeZoneless = p.value('2026-10-11T23:50:00', nearMidnight);
+    expect(beforeZoneless).not.toMatch(/\b2026-/);
+    expect(beforeZoneless).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(beforeZoneless).not.toMatch(/Z|[+-]\d{2}:/);
+
+    // Zone-less timestamp after midnight
+    const afterZoneless = p.value('2026-10-12T00:10:00', afterMidnight);
+    expect(afterZoneless).not.toMatch(/\b2026-/);
+    expect(afterZoneless).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(afterZoneless).not.toMatch(/Z|[+-]\d{2}:/);
+
+    // Full ISO timestamps should still work
+    const fullIso = p.value('2026-10-11T12:30:45.123Z', nearMidnight);
+    expect(fullIso).not.toMatch(/\b2026-/);
+    expect(fullIso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
   test('--limit, --since and --errors-first', async () => {
     const limited = join(dir, 'limited.jsonl');
     expect((await exportCorpus({ query: query(), out: limited, workspaceId, limit: 2 })).written).toBe(2);
