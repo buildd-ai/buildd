@@ -68,7 +68,13 @@ function replyRecipe(m: WorkerMessage, type: WorkerMessageType, text: string): s
 }
 
 export function formatWorkerMessages(messages: WorkerMessage[]): string {
-  return messages.map(m => {
+  const seen = new Set<string>();
+  return messages.filter(m => {
+    if (!m.id) return true;
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  }).map(m => {
     const from = `from task ${m.fromTaskId}`;
     switch (m.type) {
       case 'path_released': {
