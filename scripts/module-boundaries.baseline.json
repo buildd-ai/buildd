@@ -274,9 +274,6 @@
     "apps/web/src/app/app/(protected)/tasks/[id]/execution-plan.ts": {
       "packages/core/mission-helpers.ts": "missions"
     },
-    "apps/web/src/app/app/(protected)/tasks/[id]/respond/respond-links.ts": {
-      "apps/web/src/lib/mission-task-href.ts": "missions"
-    },
     "apps/web/src/auth.ts": {
       "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
     },
@@ -450,6 +447,9 @@
     "packages/core/dispatch-model-guard.ts": {
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
+    "packages/core/estimate-backtest-source.ts": {
+      "packages/core/task-size-bucket-decision.ts": "jev-decisions"
+    },
     "packages/core/flight-strip-store.ts": {
       "packages/core/mission-helpers.ts": "missions"
     },
@@ -514,6 +514,9 @@
     },
     "packages/core/scripts/backfill-flight-strip-cache.ts": {
       "packages/core/mission-helpers.ts": "missions"
+    },
+    "packages/core/scripts/estimate-backtest.ts": {
+      "packages/core/knowledge-store/index.ts": "knowledge"
     },
     "packages/core/scripts/probe-graph-expansion.ts": {
       "packages/core/knowledge-store/pg-vector-store.ts": "knowledge"
@@ -676,12 +679,6 @@
       "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
-    },
-    "apps/web/src/app/app/(protected)/tasks/[id]/respond/page.tsx": {
-      "apps/web/src/lib/chat-availability.ts": "chat",
-      "apps/web/src/lib/chat-objects/load-question-object.ts": "chat",
-      "apps/web/src/lib/chat/conversations.ts": "chat",
-      "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/app/app/(protected)/tasks/page.tsx": {
       "packages/core/mission-helpers.ts": "missions"

@@ -1,0 +1,29 @@
+[
+  { "route": "/app/missions?new=1" },
+  { "route": "/app/home?pr=1" },
+  {
+    "route": "/app/settings/team",
+    "states": [
+      {
+        "key": "new-team-sheet",
+        "steps": [
+          { "action": "click", "selector": "testid:new-team-link" },
+          { "action": "waitFor", "selector": "testid:new-team-sheet", "timeoutMs": 15000 }
+        ]
+      }
+    ]
+  },
+  {
+    "route": "/app/settings/runners",
+    "states": [
+      {
+        "key": "new-token-sheet",
+        "steps": [
+          { "action": "click", "selector": "testid:new-token" },
+          { "action": "waitFor", "selector": "testid:new-token-sheet", "timeoutMs": 15000 }
+        ]
+      }
+    ]
+  },
+  { "route": "/app/settings/runners?new=1" }
+]

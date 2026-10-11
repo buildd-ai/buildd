@@ -12,7 +12,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import type { CreateConversationResponse } from '@buildd/shared';
+import type { ChatDraftAttachment, CreateConversationResponse } from '@buildd/shared';
 import ChatComposer, { type ComposerWorkspace } from './ChatComposer';
 import { parkPending } from './pending-message';
 import { chatErrorLine } from './chat-errors';
@@ -36,8 +36,10 @@ export default function HomeChatCard({
   const composer = useSharedComposer(teamId, workspaces, initialWorkspaceId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Long pastes (Living Specs C2): held here so a failed create puts them back.
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
 
-  async function send(text: string) {
+  async function send(text: string, sent: ChatDraftAttachment[] = []) {
     setBusy(true);
     setError(null);
     try {
@@ -49,11 +51,13 @@ export default function HomeChatCard({
       });
       if (!res.ok) throw new Error(await res.text());
       const { conversation } = (await res.json()) as CreateConversationResponse;
-      parkPending(conversation.id, text);
+      parkPending(conversation.id, text, sent);
       composer.setDraft('');
+      setAttachments([]);
       router.push(`/app/chat/${conversation.id}`);
     } catch (e) {
       setError(chatErrorLine(e));
+      setAttachments(sent);
       setBusy(false);
     }
   }
@@ -78,6 +82,8 @@ export default function HomeChatCard({
         value={composer.draft}
         onChange={composer.setDraft}
         onSend={send}
+        attachments={attachments}
+        onAttachmentsChange={setAttachments}
         busy={busy}
         disabled={busy}
         placeholder="Describe the work, or ask about your fleet…"

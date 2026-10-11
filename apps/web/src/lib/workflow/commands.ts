@@ -28,6 +28,8 @@ export interface LivePr {
   merged: boolean;
   headSha: string;
   headRepoFullName: string | null;
+  /** The head branch name, when GitHub reported it. A repair attempt resumes on exactly this branch. */
+  headRef?: string | null;
   baseRef: string | null;
   mergedAt?: string | null;
   mergeCommitSha?: string | null;

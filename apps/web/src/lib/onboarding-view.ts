@@ -75,7 +75,7 @@ export const NEXT_STEP_COPY: Record<WorkspaceReadinessNextStep, { title: string;
 };
 
 export function missionHref(workspaceId: string): string {
-  return `/app/missions/new?workspace=${encodeURIComponent(workspaceId)}`;
+  return `/app/missions?new=1&workspace=${encodeURIComponent(workspaceId)}`;
 }
 
 /**

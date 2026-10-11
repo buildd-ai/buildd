@@ -155,3 +155,10 @@ describe('path_regenerable_overlap', () => {
     expect(out).not.toContain('undefined');
   });
 });
+
+describe('duplicate deliveries', () => {
+  it('renders a message id once even if it was queued twice', () => {
+    const out = formatWorkerMessages([released('merged'), released('merged')]);
+    expect(out.match(/AGENT MESSAGE/g)?.length).toBe(1);
+  });
+});

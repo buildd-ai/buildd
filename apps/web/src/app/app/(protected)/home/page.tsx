@@ -47,6 +47,9 @@ import type { ChainPositionResult, ChainPositionDep } from '@/lib/task-presentat
 import * as missionHelpers from '@buildd/core/mission-helpers';
 import { crossedMilestone } from '@buildd/core/mission-helpers';
 import HomeAutoRefresh from './HomeAutoRefresh';
+import { Suspense } from 'react';
+import PrActionSheet from './PrActionSheet';
+import { parsePrParam, prSheetSignInHref } from './pr-sheet';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
 import type { BlockingTask } from '@/lib/mission-card-view';
@@ -104,12 +107,16 @@ import { getTeamPermissionOverrides } from '@/lib/permissions';
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams?: Promise<{ workspace?: string; initiative?: string }>;
+  searchParams?: Promise<{ workspace?: string; initiative?: string; pr?: string; t?: string }>;
 }) {
-  const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
+  const { workspace: wsFilter, initiative: initFilter, pr: prParam, t: prToken } = (await searchParams) ?? {};
   const user = await getCurrentUser();
+  // `?pr=<n>&t=<token>`: a landing alert's action sheet (the old /app/prs/:n/act).
+  // Signing in must not drop the single-use token, so it comes back here.
+  const sheetPr = parsePrParam(prParam);
 
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
+  if (sheetPr && !user && !isDev) redirect(prSheetSignInHref(sheetPr, prToken));
 
   let activeItems: {
     id: string;
@@ -2055,6 +2062,11 @@ export default async function HomePage({
   return (
     <main className="min-h-screen pt-14 px-4 pb-20 md:pt-8 md:px-8 md:pb-8">
       <HomeAutoRefresh workspaceIds={refreshWorkspaceIds} />
+      {sheetPr && user && (
+        <Suspense fallback={null}>
+          <PrActionSheet prNumber={sheetPr} token={prToken} userId={user.id} />
+        </Suspense>
+      )}
       {hostedRunnerBanner && (
         <div className="mx-auto max-w-[1320px]">
           <HostedRunnerBanner level={hostedRunnerBanner.level} text={hostedRunnerBanner.text} />

@@ -17,7 +17,7 @@ export function notifyParkedQuestion(p: ParkedQuestion, opts: { recordLedger: bo
   void notifyTeamOf({ workspaceId: p.workspaceId }, 'needsAttention', {
     title: note.title,
     message: note.message,
-    url: `${appBaseUrl}/app/tasks/${p.taskId}/respond`,
+    url: `${appBaseUrl}/app/tasks/${p.taskId}?respond=1`,
     urlTitle: 'Respond',
     priority: 0,
   });

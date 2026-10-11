@@ -1,12 +1,14 @@
 import { getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
-import { RUN_PROGRESS_READERS } from '@/modules';
+import { ANSWER_IN_CHAT, RUN_PROGRESS_READERS } from '@/modules';
 import { Suspense } from 'react';
 import { after } from 'next/server';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { compareTasksChrono, compareWorkersChrono, newestFirst, oldestFirst, selectTaskWorkers } from '@/lib/attempt-order';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases, missions, taskEstimates } from '@buildd/core/db/schema';
+import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
+import { buildTimeRow } from '@/lib/task-time-row';
 import { eq, desc, inArray, asc, ne, and, isNotNull, sql } from 'drizzle-orm';
 import { deriveTaskEyebrow, taskEyebrowText } from '@/lib/task-eyebrow';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied, findBlockingPrWorker } from '@/lib/task-presentation';
@@ -134,10 +136,12 @@ export default async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ artifact?: string }>;
+  searchParams: Promise<{ artifact?: string; respond?: string }>;
 }) {
   const { id } = await params;
-  const { artifact: initialOpenArtifactId } = await searchParams;
+  const { artifact: initialOpenArtifactId, respond } = await searchParams;
+  // `?respond=1`: an answer link. The reply box below gets focus.
+  const focusAnswer = respond === '1';
   if (!isValidTaskId(id)) notFound();
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
   const user = await getCurrentUser();
@@ -199,7 +203,7 @@ export default async function TaskDetailPage({
   // task's workers for a viewer who turns out not to have access is not a
   // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const [openQuestionRows, depTasks, taskWorkers, missionContextRow] = await Promise.all([
+  const [openQuestionRows, depTasks, taskWorkers, missionContextRow, taskEstimate, answerInChat] = await Promise.all([
     // Open question notes scoped to this task (drives the "Waiting on you"
     // badge, and lets the live worker view show the note and the worker's
     // waitingFor as ONE question). A mission task's questions carry its
@@ -266,7 +270,24 @@ export default async function TaskDetailPage({
           },
         })
       : Promise.resolve(null),
+    // The frozen estimate, only for a team that has the switch on.
+    (async () => {
+      const teamId = (task.workspace as { teamId?: string } | null)?.teamId;
+      if (!teamId) return null;
+      // Gate and row read side by side: one wait, not two.
+      return Promise.all([
+        taskEstimatesEnabled(teamId),
+        db.query.taskEstimates.findFirst({
+          where: eq(taskEstimates.taskId, id),
+          orderBy: desc(taskEstimates.createdAt),
+        }),
+      ]).then(([enabled, row]) => (enabled ? row ?? null : null));
+    })(),
+    // An answer link for a mission filed from the reader's own conversation
+    // opens that conversation instead, when chat is on for them.
+    focusAnswer && task.missionId ? ANSWER_IN_CHAT(id, user.id).catch(() => null) : Promise.resolve(null),
   ]);
+  if (answerInChat) redirect(answerInChat);
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
   const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
   // S35: the mission's failed deliverables read through the kernel, as its card does.
@@ -940,6 +961,15 @@ export default async function TaskDetailPage({
   const hasRelatedTasks = !!task.parentTask || childTasks.subtasks.length > 0 || relatedAttempts.length > 0;
   // Every worker on this task's PR, the CI-fix attempts' included.
   const workerHistory = lineageWorkerHistory(taskWorkers, ciAttemptTasks);
+  // Only with a frozen estimate, i.e. the team switch is on; off, the page is unchanged.
+  const timeRow = !taskEstimate ? null : buildTimeRow({
+    sessions: taskWorkers,
+    finished: isTerminal,
+    now: Date.now(),
+    p50Minutes: taskEstimate?.p50Minutes ?? null,
+    p80Minutes: taskEstimate?.p80Minutes ?? null,
+    summary: taskEstimate?.explanation?.summary ?? null,
+  });
   const factRows: FactRow[] = [
     ...(prOutcome && prWorker && isTerminal
       ? [{
@@ -976,6 +1006,18 @@ export default async function TaskDetailPage({
         : []),
     ...(factWorker?.branch && !(prOutcome && isTerminal)
       ? [{ key: 'branch', label: 'Branch', value: <span className="block truncate" title={factWorker.branch}>{factWorker.branch}</span> }]
+      : []),
+    ...(timeRow
+      ? [{
+          key: 'time',
+          label: 'Time',
+          value: (
+            <div className="space-y-0.5">
+              <div className={timeRow.overUpper ? 'text-status-warning' : 'text-text-primary'}>{timeRow.text}</div>
+              {timeRow.explanation && <div className="text-meta text-text-muted">{timeRow.explanation}</div>}
+            </div>
+          ),
+        }]
       : []),
     ...(depTasks.length > 0
       ? [{
@@ -1753,6 +1795,7 @@ export default async function TaskDetailPage({
               }}
               modelTier={modelSummary.tierLabel}
               questionNote={questionNote}
+              focusAnswer={focusAnswer}
               roleName={roleName}
             />
           </div>

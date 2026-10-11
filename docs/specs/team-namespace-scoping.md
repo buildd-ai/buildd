@@ -239,7 +239,7 @@ active team (not the personal/first team), while still allowing an explicit
 choice when the user belongs to multiple teams.
 
 **Invariants**:
-- The pre-selected team in `/app/workspaces/new` and `/app/missions/new` MUST be
+- The pre-selected team in `/app/workspaces/new` and `/app/missions?new=1` MUST be
   the active team.
 - Submitting without an explicit `teamId` MUST create the resource in the active
   team.
@@ -255,7 +255,7 @@ choice when the user belongs to multiple teams.
 **Code surface**:
 - `apps/web/src/app/app/(protected)/settings/workspaces/new/page.tsx` (`loadTeams` —
   currently defaults to personal team)
-- `apps/web/src/app/app/(protected)/missions/new/NewMissionForm.tsx` (reads
+- `apps/web/src/app/app/(protected)/missions/NewMissionForm.tsx` (reads
   `localStorage 'buildd:lastTeamId'` — replace with active-team cookie)
 - Routes: `api/workspaces/route.ts`, `api/missions/route.ts` (POST team
   resolution)

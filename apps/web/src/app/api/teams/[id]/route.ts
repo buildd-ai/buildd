@@ -12,6 +12,7 @@ import { isUuid } from '@/lib/uuid';
 import { isWarmHandover } from '@buildd/shared';
 import { isChatTierName } from '@buildd/shared';
 import { roleHas, sanitizeOverrides, type Permission, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { removeTeamChatAttachments } from '@/lib/artifact-attachment-cleanup';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
@@ -100,6 +101,7 @@ export async function GET(
         credentialPolicy: true,
         chatDefaultTier: true,
         chatCapNewSessionTier: true,
+        taskEstimates: true,
         timezone: true,
         warmHandover: true,
         permissionOverrides: true,
@@ -166,7 +168,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, codingPolicy } = body;
+    const { name, slug, enabledBackends, inferenceFeatureModes, enabledDecisionShadows, decisionModel, timezone, chatDailyBudgetUsd, chatUserDailyBudgetUsd, inferenceKeyPolicy, credentialPolicy, chatDefaultTier, chatCapNewSessionTier, taskEstimates, codingPolicy } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -289,6 +291,19 @@ export async function PATCH(
       }
       updates.chatCapNewSessionTier = chatCapNewSessionTier;
     }
+    // Task estimates experiment (packages/core/task-estimate-source.ts; removal
+    // in packages/core/TASK-ESTIMATES-REMOVAL.md): { enabled: boolean }, stamped
+    // with who set it and when. Gated like every field here: a session user
+    // holding manage_team_settings (owner/admin by default; no API key).
+    if (taskEstimates !== undefined) {
+      if (
+        !taskEstimates || typeof taskEstimates !== 'object' || Array.isArray(taskEstimates) ||
+        Object.keys(taskEstimates).some(k => k !== 'enabled') || typeof taskEstimates.enabled !== 'boolean'
+      ) {
+        return NextResponse.json({ error: 'taskEstimates must be { enabled: boolean }' }, { status: 400 });
+      }
+      updates.taskEstimates = { enabled: taskEstimates.enabled, setBy: user.id, setAt: new Date().toISOString() };
+    }
     // Chat is always on: there is no switch. A `chatDisabled` field (the old
     // kill switch; teams.chat_disabled is deprecated) is ignored.
     if (slug !== undefined) {
@@ -349,6 +364,9 @@ export async function DELETE(
     }
 
     await db.delete(teams).where(eq(teams.id, id));
+    // Its conversations went with it (cascade); their chat attachments do not
+    // cascade, so remove them now. Whatever is left, the maintenance sweep takes.
+    await removeTeamChatAttachments(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {

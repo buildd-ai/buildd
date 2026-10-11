@@ -46,7 +46,7 @@ const IDENTITY_PREFIXES = ['human', 'user', 'github', 'login'];
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const SHA_RE = /\b[0-9a-f]{40}\b/gi;
-const ISO_RE = /\b(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)\b/g;
+const ISO_RE = /\b(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}:\d{2}))?(?:(\.\d+))?(?:(Z|[+-]\d{2}(?::?\d{2})?))?\b/g;
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 const IDENTITY_RE = new RegExp(`\\b(${IDENTITY_PREFIXES.join('|')}):([^:\\s]+)`, 'g');
 /** A run or job id in a GitHub Actions URL path; a bare number elsewhere (a PR number) is not identifying. */
@@ -136,14 +136,37 @@ export class Pseudonymizer {
   }
 
   private shiftIso(createdAtMs: number) {
-    return (_m: string, date: string, time: string, frac: string | undefined, zone: string): string => {
-      const ms = Date.parse(`${date}T${time}${frac ?? ''}${zone.length === 3 ? `${zone}:00` : zone.length === 5 ? `${zone.slice(0, 3)}:${zone.slice(3)}` : zone}`);
+    return (_m: string, date: string, time: string | undefined, frac: string | undefined, zone: string | undefined): string => {
+      // Handle date-only strings (e.g., "2026-10-11")
+      // For dates without time, calculate day offset from the creation date, not millisecond offset
+      // This avoids negative offsets when the creation time is late in the day
+      if (!time) {
+        const inputDate = Date.parse(`${date}T00:00:00Z`);
+        const createdDate = new Date(createdAtMs);
+        // Get the date part of createdAtMs in UTC (YYYY-MM-DD)
+        const createdDateStr = createdDate.toISOString().slice(0, 10);
+        const createdDateMs = Date.parse(`${createdDateStr}T00:00:00Z`);
+
+        if (Number.isNaN(inputDate) || Number.isNaN(createdDateMs)) return REDACTED;
+
+        // Calculate day offset (in days, not milliseconds)
+        const dayOffset = (inputDate - createdDateMs) / (24 * 60 * 60 * 1000);
+        // Apply day offset to epoch base (shift to a date, preserving relative day distance)
+        const shifted = new Date(EPOCH_BASE_MS + dayOffset * 24 * 60 * 60 * 1000);
+        return shifted.toISOString().slice(0, 10);
+      }
+      // Handle zone-less timestamps (e.g., "2026-10-11T12:30:00") or full ISO
+      const zoneStr = zone || 'Z';
+      const zoneFormatted = zoneStr.length === 3 ? `${zoneStr}:00` : zoneStr.length === 5 ? `${zoneStr.slice(0, 3)}:${zoneStr.slice(3)}` : zoneStr;
+      const ms = Date.parse(`${date}T${time}${frac ?? ''}${zoneFormatted}`);
       if (Number.isNaN(ms)) return REDACTED;
-      const iso = new Date(EPOCH_BASE_MS + (ms - createdAtMs)).toISOString(); // YYYY-MM-DDTHH:MM:SS.sssZ
+      const iso = new Date(EPOCH_BASE_MS + (ms - createdAtMs)).toISOString();
       const [d2, rest] = iso.split('T');
       const t2 = rest.slice(0, 8);
       const f2 = frac ? `.${rest.slice(9, 12).padEnd(frac.length - 1, '0').slice(0, frac.length - 1)}` : '';
-      return `${d2}T${t2}${f2}${zone === 'Z' ? 'Z' : '+00:00'}`;
+      // If original had no zone (zone-less), return without zone; if it had 'Z', keep 'Z'; otherwise '+00:00'
+      const outZone = !zone ? '' : zone === 'Z' ? 'Z' : '+00:00';
+      return `${d2}T${t2}${f2}${outZone}`;
     };
   }
 

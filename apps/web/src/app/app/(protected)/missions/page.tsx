@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
+import { taskEstimatesEnabled } from '@buildd/core/task-estimate-source';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import * as missionHelpers from '@buildd/core/mission-helpers';
@@ -13,6 +14,7 @@ import { summarizeMissionForCard, type MissionCardRow } from '@/lib/mission-card
 import { projectMissionDelivery } from '@/lib/delivery-projection';
 import { taskRowsStripProjection } from '@/lib/mission-strip-order';
 import { MissionGrid, type PortfolioRow } from './MissionGrid';
+import NewMissionSheet from './NewMissionSheet';
 import { loadMissionVerdicts } from '@buildd/core/mission-verdicts';
 import {
   COMPLETED_MISSIONS_PAGE_SIZE,
@@ -27,9 +29,9 @@ export const dynamic = 'force-dynamic';
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string; group?: string; new?: string }>;
 }) {
-  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam, group: groupParam, new: newParam } = await searchParams;
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -39,7 +41,7 @@ export default async function MissionsPage({
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <h1 className="sr-only md:not-sr-only md:mb-4 text-heading font-semibold text-text-primary">Missions</h1>
         <p className="text-body text-text-secondary">
-          No team found. <Link href="/app/teams/new" className="text-text-primary underline underline-offset-4">Create a team</Link> to plan missions.
+          No team found. <Link href="/app/settings/team?new=1" className="text-text-primary underline underline-offset-4">Create a team</Link> to plan missions.
         </p>
       </div>
     );
@@ -75,6 +77,7 @@ export default async function MissionsPage({
     seats,
     activeRows,
     completedRowsPage,
+    planEnabled,
   ] = await Promise.all([
     // Seat utilization across the active team's accounts. The live-seat count
     // needs the account ids, so it genuinely follows the accounts read.
@@ -97,6 +100,8 @@ export default async function MissionsPage({
     })(),
     db.query.missions.findMany(buildActiveMissionsQueryArgs(missionsWhere) as any),
     db.query.missions.findMany(buildCompletedMissionsQueryArgs(missionsWhere, completedCursor) as any),
+    // "Plan ›" is behind the team's task-estimates switch, like the other estimate surfaces.
+    taskEstimatesEnabled(activeTeamId),
   ]);
 
   const { maxSeats, activeSeats } = seats;
@@ -165,6 +170,8 @@ export default async function MissionsPage({
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 pb-10 max-w-[1180px]">
+      {/* ?new=1: the New mission sheet (the form when chat is off, see NewWorkLink). */}
+      {newParam === '1' && <NewMissionSheet userId={user.id} teamId={activeTeamId} />}
       <div className="mb-4 flex items-center justify-between gap-3">
         {/* The mobile header already reads "Missions · Team"; show the h1 from md up only. */}
         <h1 data-testid="missions-headline" className="sr-only md:not-sr-only text-heading font-semibold text-text-primary">
@@ -172,6 +179,11 @@ export default async function MissionsPage({
         </h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
           {/* Releases left the primary nav; this is its door. */}
+          {planEnabled && (
+            <Link href="/app/missions/plan" data-testid="missions-plan-link" className="btn btn-quiet h-11 md:h-8">
+              Plan ›
+            </Link>
+          )}
           <Link href="/app/releases" data-testid="missions-releases-link" className="btn btn-quiet h-11 md:h-8">
             Releases
           </Link>

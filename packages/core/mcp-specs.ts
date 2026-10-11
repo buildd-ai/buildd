@@ -11,13 +11,17 @@
  * /api/specs/outcomes/[taskId] and /api/specs/[id]/conflicts: a task's governed
  * outcome against its pinned revision, one verdict on one criterion, and an
  * advisory conflict between two criteria. None of them blocks anything.
+ *
+ * repoRefs (on create_draft / revise) cite repo specs at an exact commit (D-1);
+ * read_ref reads one of them at that commit, bounded, over
+ * GET /api/specs/[id]/repo-ref.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict'] as const;
+export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref'] as const;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
@@ -69,8 +73,15 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
     case 'create_draft': {
       if (!workspaceId) throw new Error('workspaceId is required (no workspace in this session)');
       const payload: Record<string, unknown> = { workspaceId, title: need(params.title, 'title'), body: need(params.body, 'body (the spec text, Markdown)') };
-      for (const k of ['scope', 'parentSpecId', 'changeSummary'] as const) if (params[k] !== undefined) payload[k] = params[k];
-      const { spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) });
+      for (const k of ['scope', 'parentSpecId', 'changeSummary', 'repoRefs'] as const) if (params[k] !== undefined) payload[k] = params[k];
+      let spec;
+      try {
+        ({ spec } = await api('/api/specs', { method: 'POST', body: JSON.stringify(payload) }));
+      } catch (err) {
+        const e = apiError(err);
+        if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
       return text(`Spec draft created: "${spec.title}"\nID: ${spec.id}\nVersion: ${spec.version} (pass it as expectedVersion to revise)\nStatus: ${spec.status}. A person approves it (submit / approve from their own session).`);
     }
 
@@ -91,6 +102,9 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
         `Showing revision ${view.revision.revision} (sha256 ${view.revision.contentHash}). Revise with expectedVersion ${s.version}.`,
         reqs.length ? `Requirement ids: ${reqs.join(', ')}` : 'Requirement ids: none',
         `Revisions:\n${history}`,
+        ...(view.revision.repoRefs?.length
+          ? [`Repo specs cited (read one with manage_specs action=read_ref { specId, path }):\n${(view.revision.repoRefs as Array<{ path: string; commitSha: string }>).map((r) => `  ${r.path} @ ${r.commitSha}`).join('\n')}`]
+          : []),
         '',
         shown,
       ].join('\n'));
@@ -101,12 +115,14 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       if (!Number.isInteger(params.expectedVersion)) throw new Error('expectedVersion (the version you read with get) is required');
       const payload: Record<string, unknown> = { expectedVersion: params.expectedVersion, body: need(params.body, 'body') };
       if (params.changeSummary !== undefined) payload.changeSummary = params.changeSummary;
+      if (params.repoRefs !== undefined) payload.repoRefs = params.repoRefs;
       try {
         const r = await api(`/api/specs/${encodeURIComponent(specId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-        if (r.unchanged) return text(`Unchanged: the body matches revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.`);
+        if (r.unchanged) return text(`Unchanged: the body and repo references match revision ${r.revision.revision}, so no new revision was written. Version is still ${r.spec.version}.`);
         return text(`Revised: revision ${r.revision.revision}, version ${r.spec.version} (pass it as expectedVersion next time).`);
       } catch (err) {
         const e = apiError(err);
+        if (e?.status === 400 || e?.status === 502) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         if (e?.status === 409 && typeof e.body?.currentVersion === 'number') {
           return errorResult(`Version conflict: the spec is now at version ${e.body.currentVersion}, not ${params.expectedVersion}; nothing was written. Re-read it (manage_specs action=get), merge your change into that text, then revise with expectedVersion ${e.body.currentVersion}.\ncurrentVersion: ${e.body.currentVersion}`);
         }
@@ -163,6 +179,25 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'read_ref': {
+      const specId = need(params.specId, 'specId');
+      const q = new URLSearchParams({ path: need(params.path, 'path') });
+      for (const k of ['revision', 'view', 'section', 'offset', 'length', 'grep'] as const) if (params[k] !== undefined) q.set(k, String(params[k]));
+      try {
+        const r = await api(`/api/specs/${encodeURIComponent(specId)}/repo-ref?${q}`);
+        const read = r.read ?? {};
+        const head = `${r.path} @ ${r.commitSha} (cited by revision ${r.revision}), ${read.chars} characters, view ${read.view}.`;
+        if (read.view === 'outline') return text(`${head}\n${(read.sections ?? []).map((x: { id: string; title: string; chars: number }) => `  ${x.id} ${x.title} (${x.chars} chars)`).join('\n')}\nRead a part with view "section" and its id, or "grep".`);
+        if (read.view === 'grep') return text(`${head}\n${(read.matches ?? []).map((m: { line: number; text: string }) => `  L${m.line}: ${m.text}`).join('\n') || '  no matches'}${read.truncated ? '\n  (more matches not shown)' : ''}`);
+        if (read.view === 'meta') return text(`${head} ${read.sections} section(s).`);
+        return text(`${head}${read.truncated ? ' Truncated: read the rest with view "range".' : ''}\n\n${read.text ?? ''}`);
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }
