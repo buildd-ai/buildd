@@ -4339,13 +4339,20 @@ export async function PATCH(
           fallbackLocalHeadSha: lastCommitSha ?? worker.lastCommitSha ?? null,
           fallbackCommitCount: worker.commitCount ?? 0,
         });
-        if (!row?.deliveryId || taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null) || loop?.kind === 'hold' || releaseHeld) return;
+        // A loop hold sets shouldAutoRetry to requeue the TASK, not the delivery:
+        // a completed owner worker still ended its kernel attempt, or a verdict
+        // recorded while the delivery was WORKING is never re-entered. A
+        // non-completed end under a hold stays the loop's to retry.
+        const loopHold = loop?.kind === 'hold';
+        if (loopHold && end.status !== 'completed') return;
+        const retryCovers = !loopHold && taskRetryCoversAttemptEnd(end, shouldAutoRetry, row?.deliveryRole ?? null);
+        if (!row?.deliveryId || retryCovers || releaseHeld) return;
         await workflowAttemptEnded({
           task: { id: taskId, workspaceId: worker.workspaceId, deliveryId: row.deliveryId, deliveryRole: row.deliveryRole ?? null, context: row.context },
           workerId: id,
           ...end,
           source: 'runner',
-          taskRetryBudgetLeft: shouldAutoRetry,
+          taskRetryBudgetLeft: shouldAutoRetry && !loopHold,
           ...(kernelReviewFailure ? { reviewFailure: kernelReviewFailure } : {}),
         });
       });
