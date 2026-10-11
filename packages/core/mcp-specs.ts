@@ -18,13 +18,17 @@
  * repoRefs (on create_draft / revise) cite repo specs at an exact commit (D-1);
  * read_ref reads one of them at that commit, bounded, over
  * GET /api/specs/[id]/repo-ref.
+ *
+ * diff (read-only) says what changed between two revisions, over
+ * GET /api/specs/[id]/diff: sections added, removed and changed, then a capped
+ * unified line diff of them.
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
 
-export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref'] as const;
+export const SPEC_OPS = ['create_draft', 'get', 'revise', 'list', 'relate', 'submit', 'approve', 'outcome', 'verdict', 'conflict', 'read_ref', 'diff'] as const;
 export type SpecOp = (typeof SPEC_OPS)[number];
 
 /** A body longer than this is not inlined by `get`: read it in parts with get_artifact. */
@@ -205,6 +209,31 @@ export async function handleSpecsAction(api: ApiFn, params: Record<string, any>,
       } catch (err) {
         const e = apiError(err);
         if (e && [400, 404, 502].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
+        throw err;
+      }
+    }
+
+    case 'diff': {
+      const specId = need(params.specId, 'specId');
+      const q = new URLSearchParams();
+      for (const k of ['from', 'to'] as const) if (params[k] !== undefined) q.set(k, String(params[k]));
+      try {
+        const d = await api(`/api/specs/${encodeURIComponent(specId)}/diff${q.size ? `?${q}` : ''}`);
+        const side = (x: { revision: number; approved: boolean }) => `revision ${x.revision}${x.approved ? ' (approved)' : ''}`;
+        const head = `${side(d.from)} → ${side(d.to)}`;
+        if (d.identical) return text(`${head}: no change.`);
+        const sections = (d.sections as Array<{ kind: string; path: string; linesAdded: number; linesRemoved: number }>)
+          .map((x) => `  ${x.kind} ${x.path} (+${x.linesAdded} −${x.linesRemoved})`).join('\n');
+        return text([
+          `${head}: ${d.sections.length} section(s) changed.`,
+          sections,
+          '',
+          d.diff,
+          ...(d.omittedLines ? [`(${d.omittedLines} more diff line(s) not shown: read a section with get_artifact view "section", or diff a narrower pair of revisions)`] : []),
+        ].join('\n'));
+      } catch (err) {
+        const e = apiError(err);
+        if (e && [400, 404, 409].includes(e.status)) return errorResult(String(e.body?.error ?? `Refused (${e.status}).`));
         throw err;
       }
     }

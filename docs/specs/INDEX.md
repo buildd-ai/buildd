@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (67)
+## Active (69)
 
 ### auth (9)
 
@@ -67,8 +67,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-10-08
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
-### missions (3)
+### missions (4)
 
+- [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-11
+  A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
@@ -143,7 +145,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-03
   Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
-### tasks (12)
+### tasks (13)
 
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-10-11
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
@@ -153,6 +155,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The claim route MUST order auto-claims through planClaimBatch only when a workspace opts in, MUST never co-schedule across a hard edge, and MUST use predicted scope only above pinned, evidence-backed thresholds.
 - [Decision Kinds (First-Party Adapters and Migration Seam)](./decision-kinds.md) · @max — verified 2026-10-07
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
+- [Force Start Past a Coordination Wait](./force-start.md) · @max — verified 2026-10-11
+  A dashboard Start MUST name the real waiting reasons, and Force start MUST lift exactly the confirmed forceable ones through one audited, single-use intent a runner's claim honours.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-08
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-05
@@ -170,11 +174,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (7)
+## Draft (8)
 
+- [Claim Overlap Scheduling](./claim-overlap-scheduling.md) · @max — verified 2026-10-11
+  An inferred path-overlap hold MUST bind only to live work (a live worker, a held lease or an open PR on the same base); overlap between unstarted tasks is settled by the first claim's lease.
 - [Commercial Licensing Foundation](./commercial-licensing.md) · @builder — verified 2026-10-09
   The public core MUST verify a signed license offline and answer scoped capability checks for future commercial modules, denying only the premium capability and never core features or data.
-- [Execution Control Plane](./execution-control-plane.md) · @max — verified 2026-10-10
+- [Execution Control Plane](./execution-control-plane.md) · @max — verified 2026-10-11
   Authorized execution (claims, heartbeats, results, webhooks, Dispatch callbacks) MUST keep moving while the web app is down, served by a separate Worker running the same handlers.
 - [Living Specs](./living-specs.md) · @max — verified 2026-10-11
   Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.

@@ -10,14 +10,28 @@ export function formatTokens(n: number): string | null {
 /** Literal class names so Tailwind keeps them. */
 const MD_COLS: Record<number, string> = { 1: 'md:grid-cols-1', 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4', 5: 'md:grid-cols-5' };
 
-function Tile({ testId, value, unit, label }: { testId?: string; value: React.ReactNode; unit?: string; label: string }) {
-  return (
-    <div data-testid={testId} className="px-3 py-2.5 md:px-4 md:py-3 border-r border-b md:border-b-0 border-border-default last:border-r-0 min-w-0">
+/**
+ * One figure and its label. With `link`, the whole tile is the link: its
+ * negative margins cancel the tile's padding, so the tap target is the tile
+ * (never under 44px) and nothing moves on screen.
+ */
+function Tile({ testId, value, unit, label, link }: { testId?: string; value: React.ReactNode; unit?: string; label: string; link?: { href: string; testId: string } }) {
+  const body = (
+    <>
       <div className="font-mono text-[20px] md:text-[24px] font-semibold tracking-[-0.5px] leading-tight tabular-nums truncate">
         {value}
         {unit && <small className="ml-1 text-[12px] font-normal text-text-muted">{unit}</small>}
       </div>
       <div className="mt-1 font-mono text-meta text-text-muted truncate">{label}</div>
+    </>
+  );
+  return (
+    <div data-testid={testId} className="px-3 py-2.5 md:px-4 md:py-3 border-r border-b md:border-b-0 border-border-default last:border-r-0 min-w-0">
+      {link ? (
+        <a href={link.href} target="_blank" rel="noopener noreferrer" data-testid={link.testId} className="group block -mx-3 -my-2.5 px-3 py-2.5 md:-mx-4 md:-my-3 md:px-4 md:py-3">
+          {body}
+        </a>
+      ) : body}
     </div>
   );
 }
@@ -60,11 +74,8 @@ export default function StatRow({
       <Tile
         key="pr"
         testId="worker-stat-pr"
-        value={
-          <a href={pr.url} target="_blank" rel="noopener noreferrer" data-testid="worker-pr-link" className="text-accent-text hover:underline">
-            #{pr.number ?? 'PR'}
-          </a>
-        }
+        link={{ href: pr.url, testId: 'worker-pr-link' }}
+        value={<span className="text-accent-text group-hover:underline">#{pr.number ?? 'PR'}</span>}
         label={lifecycle?.label ?? 'PR open'}
       />
     ) : filesTouched > 0 && (

@@ -37,6 +37,7 @@ import { fullCut, heroLoop, type Stills } from './cuts';
 import { v5Film, v5Hero, type V5 } from './cuts-v5';
 import { speakPassage } from './tts';
 import { STEPS, V7_LINES, V7_VOICE, v7Captioned, v7Film, v7Hero, v7Steps } from './cuts-v7';
+import { V8_LINES, V8_VOICE, v8Captioned, v8Film } from './cuts-v8';
 import { askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
 import { copyFileSync, renameSync, statSync } from 'fs';
 import { cutDuration, frameCount, shotStarts, soundCues, type Cut, type Rect, type ShotImage } from './timeline';
@@ -187,6 +188,12 @@ export const FAMILIES: Record<string, Family> = {
   // v7.2's homepage clips: three steps and the hero, dark (v7s) and light (v7l), desktop and phone.
   v7s: { dir: 'v7s', prefix: 'buildd-demo-v7s', theme: 'dark', cuts: (s) => [...v7Steps(s), ...v7Steps(s, { mobile: true }), v7Hero(s), v7Hero(s, 'dark', { mobile: true })] },
   v7l: { dir: 'v7l', prefix: 'buildd-demo-v7l', theme: 'light', cuts: (s) => [...v7Steps(s, { theme: 'light' }), ...v7Steps(s, { mobile: true, theme: 'light' }), v7Hero(s, 'light'), v7Hero(s, 'light', { mobile: true })] },
+  // v8: v7's film with the agents chapter opened by the runner, then your own Claude Code session beside it.
+  v8: {
+    dir: 'v8', prefix: 'buildd-demo-v8', theme: 'dark',
+    prepare: async () => speakPassage(V8_LINES, V8_VOICE),
+    cuts: (s, spoken) => [v8Film(s, spoken), v8Captioned(s, spoken)],
+  },
   v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s), v6xHero(s, 'dark', { mobile: true })] },
 };
 
@@ -199,7 +206,7 @@ async function main() {
   }
   const manifest = JSON.parse(readFileSync(join(shotsDir, 'manifest.json'), 'utf8'));
   const board = manifest.storyboard ?? '';
-  const names = arg('cuts')?.split(',') ?? (/demo-v7\.ya?ml$/.test(board) ? ['v7', 'v7s', 'v7l'] : /demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x', 'v6l'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
+  const names = arg('cuts')?.split(',') ?? (/demo-v8\.ya?ml$/.test(board) ? ['v8'] : /demo-v7\.ya?ml$/.test(board) ? ['v7', 'v7s', 'v7l'] : /demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x', 'v6l'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
   // v6 promises: the floating Ask button never shows, and nothing below is drawn if a check fails.
   if (names.some((n) => n.startsWith('v6'))) {
     const asks = askButtonShots(manifest);
@@ -216,7 +223,7 @@ async function main() {
     if (!fam) throw new Error(`[render] unknown cut family "${name}" (${Object.keys(FAMILIES).join(', ')})`);
     const stills = stillsFrom(manifest, shotsDir, arg('theme') ?? fam.theme, files);
     const cuts = fam.cuts(stills, preps.get(name)).filter((c) => wantsCut(only, c.name));
-    if (name.startsWith('v6') || name.startsWith('v7')) for (const c of cuts) {
+    if (name.startsWith('v6') || name.startsWith('v7') || name.startsWith('v8')) for (const c of cuts) {
       const bad = [...captionCollisions(c).map((x) => `caption "${x.text}" covers a lit element or control in ${x.shot} at ${x.t}s`), ...fanoutEscapes(c)];
       if (bad.length) throw new Error(`[render] ${name} ${c.name}:\n  ${bad.join('\n  ')}`);
     }
@@ -367,7 +374,7 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
     server.stop(true);
   }
   const site = arg('site');
-  if (site) assembleSite(outRoot, resolve(site), names.includes('v7s') || names.includes('v7l') ? v72SiteFiles() : names.length === 1 && names[0] === 'v7' ? v7SiteFiles() : siteFiles());
+  if (site) assembleSite(outRoot, resolve(site), names.includes('v7s') || names.includes('v7l') ? v72SiteFiles() : names.length === 1 && names[0] === 'v7' ? v7SiteFiles() : names.length === 1 && names[0] === 'v8' ? v8SiteFiles() : siteFiles());
   // Optional: review the published clips' pixels (scripts/demo/review). Exits non-zero on a high finding.
   if (site && process.argv.includes('--review')) {
     const r = Bun.spawnSync(['bun', 'run', join(import.meta.dir, '../review/review.ts'), '--clips', resolve(site)], { stdout: 'inherit', stderr: 'inherit' });
@@ -419,6 +426,11 @@ export const BEAT_MAX_BYTES = 1.2 * 1024 * 1024;
 export function v7SiteFiles(): Array<[from: string, to: string]> {
   return [['v7/buildd-demo-v7.mp4', 'full.mp4'], ['v7/buildd-demo-v7-poster.jpg', 'full-poster.jpg'],
     ['v7/buildd-demo-v7-captioned.mp4', 'captioned.mp4'], ['v7/buildd-demo-v7-captioned-poster.jpg', 'captioned-poster.jpg']];
+}
+
+/** The v8 set: the same two films and posters as v7, from the v8 family. */
+export function v8SiteFiles(): Array<[from: string, to: string]> {
+  return v7SiteFiles().map(([from, to]) => [from.replace(/v7/g, 'v8'), to]);
 }
 
 /** The v7.2 homepage set: step1-3 and the hero in four looks each, and the voiced film. Same manifest as v6/site. */

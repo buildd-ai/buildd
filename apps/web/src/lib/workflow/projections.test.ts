@@ -76,10 +76,10 @@ describe('owner of the next move (§4)', () => {
 });
 
 describe('release composition', () => {
-  test('APPROVED on a composition basis reads "Release composition verified"', () => {
+  test('APPROVED on a composition basis reads "Composition verified"', () => {
     const v = view({ view: V(D({ state: 'APPROVED', approvalBasis: 'composition', compositionHeads: ['H1abcdef'] })) });
     expect(v.compositionVerified).toBe(true);
-    expect(v.headline).toBe('Release composition verified');
+    expect(v.headline).toBe('Composition verified');
     expect(v.owner).toBe('landing');
     expect(v.needsYou).toBe(false);
   });
@@ -88,7 +88,7 @@ describe('release composition', () => {
     const delta = R({ id: 'r2', round: 2, kind: 'delta', status: 'decided', verdict: 'approve', effectiveVerdict: 'approve', scope: { composition: true, novelDeltaPaths: ['a.sql', 'b.ts'] } });
     const v = view({ view: V(D({ state: 'APPROVED', currentRound: 2, approvalBasis: 'composition', compositionHeads: ['H1abcdef'] }), [R({ status: 'superseded' }), delta]) });
     expect(v.compositionVerified).toBe(true);
-    expect(v.headline).toBe('Release-only changes approved');
+    expect(v.headline).toBe('New changes approved');
     expect(v.headline).not.toBe('Approved');
     expect(v.detail).toBe('every other change was reviewed at its own head; this review covered only 2 new paths');
   });
@@ -295,6 +295,24 @@ describe('policy evidence (T28) in the view', () => {
     const v = view({ view: V(D({ state: 'REPAIRING', stateReason: 'migration', boundAttemptId: 'a1' }), [], [A({ family: 'migration', status: 'running' })]) });
     expect(v.owner).not.toBe('human');
     expect(v.needsYou).toBe(false);
+  });
+});
+
+describe('a behind refresh says what it is doing, and whom it waits for in the landing lane', () => {
+  const behind = (o: Partial<DeliveryViewInput> = {}) =>
+    view({ view: V(D({ state: 'REPAIRING', stateReason: 'behind', baseRef: 'dev', prNumber: 12, boundAttemptId: 'm1' }), [], [A({ id: 'm1', family: 'conflict', mode: 'mechanical', status: 'queued' })]), ...o });
+
+  test('refreshing: "Updating branch", not a bare "Repairing"', () => {
+    expect(behind()).toMatchObject({ headline: 'Updating branch', needsYou: false });
+  });
+
+  test('parked in the lane: names the PR landing first', () => {
+    expect(behind({ laneWait: { behindPr: 7 } })).toMatchObject({ headline: 'Waiting to update branch', detail: 'PR #7 is landing on dev first', needsYou: false });
+    expect(behind({ laneWait: { behindPr: null } }).detail).toBe('another PR is landing on dev first');
+  });
+
+  test('other repairs keep their copy', () => {
+    expect(view({ view: V(D({ state: 'REPAIRING', stateReason: 'ci' })) }).headline).toBe('Fixing CI');
   });
 });
 
