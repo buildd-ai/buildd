@@ -105,4 +105,38 @@ describe('manage_specs', () => {
     expect([r.isError, out(r).includes('currentVersion: 4')]).toEqual([true, true]);
     expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/submit`, { expectedVersion: 2 }]);
   });
+
+  const TASK = '00000000-0000-4000-8000-0000000000c1';
+  const HEAD = 'c'.repeat(40);
+  const outcome = (o: string, reason: string) => ({ outcome: { outcome: o, reason, revision: 1, currentHeadSha: HEAD, criteria: [{ criterionId: 'R-1', verdict: o === 'fail' ? 'fail' : null, headSha: HEAD, stale: false }] } });
+
+  it('outcome reads the task\'s governed outcome with a read scope; verdict POSTs one criterion at a head with a write scope', async () => {
+    expect(requiredScopeForAction('manage_specs', { action: 'outcome' })).toBe('tasks:read');
+    expect(requiredScopeForAction('manage_specs', { action: 'verdict' })).toBe('tasks:write');
+    api.mockResolvedValueOnce(outcome('unverified', 'R-1 has no verdict'));
+    const read = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'outcome', taskId: TASK }, ctx()));
+    expect(api.mock.calls[0][0]).toBe(`/api/specs/outcomes/${TASK}`);
+    expect(read).toContain('Governed outcome: UNVERIFIED');
+    expect(read).toContain('R-1: no verdict');
+
+    api.mockResolvedValueOnce(outcome('fail', 'R-1 failed'));
+    const rec = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, criterionId: 'R-1', verdict: 'fail', headSha: HEAD, evidenceRefs: [{ kind: 'file', ref: 'a.ts:3' }] }, ctx()));
+    const [endpoint, opts] = api.mock.calls[1];
+    expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/outcomes/${TASK}`, 'POST', { criterionId: 'R-1', verdict: 'fail', headSha: HEAD, evidenceRefs: [{ kind: 'file', ref: 'a.ts:3' }] }]);
+    expect(rec).toContain('Recorded fail on R-1');
+    expect(rec).toContain('Governed outcome: FAIL');
+  });
+
+  it('a refused verdict (a task grading itself) comes back as the route\'s error', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 403 - {"error":"a task never grades its own outcome"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'verdict', taskId: TASK, criterionId: 'R-1', verdict: 'pass', headSha: HEAD }, ctx());
+    expect([r.isError, out(r)]).toEqual([true, 'a task never grades its own outcome']);
+  });
+
+  it('conflict POSTs two criteria of an approved revision as an advisory discrepancy', async () => {
+    api.mockResolvedValueOnce({ discrepancyId: 'd-1' });
+    const r = out(await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'conflict', specId: SPEC, revision: 1, criterionIds: ['R-1', 'R-2'], note: 'disagree' }, ctx()));
+    expect([api.mock.calls[0][0], JSON.parse(api.mock.calls[0][1].body)]).toEqual([`/api/specs/${SPEC}/conflicts`, { revision: 1, criterionIds: ['R-1', 'R-2'], note: 'disagree' }]);
+    expect(r).toContain('advisory');
+  });
 });

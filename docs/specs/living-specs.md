@@ -3,12 +3,12 @@ title: Living Specs
 status: draft
 owner: max
 last_verified: 2026-10-10
-summary: A Living Spec MUST keep every revision immutable and readable as written, and two writers revising one draft MUST NOT silently overwrite each other; approval is a person's act on one revision.
+summary: Every Living Spec revision MUST stay immutable and no writer silently overwrites another; a person approves one revision, and work reads verified only when it passes that revision on its current head.
 domain: knowledge
 surfaces: [apps/web/src/lib/specs/store.ts, apps/web/src/lib/specs/approval.ts, apps/web/src/lib/specs/pin.ts, apps/web/src/app/api/specs/[specId]/route.ts]
 related: [artifacts-and-sharing]
-keywords: [living spec, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
-verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
+keywords: [living spec, governed outcome, verdict, verified, spec conflict, spec revision, expectedVersion, version conflict, normative, requirement id, approval, manage_specs, parent spec, pinned revision, specSource, approve_specs]
+verified_by: [apps/web/tests/db/specs.test.ts, apps/web/tests/db/spec-outcome-verification.test.ts, apps/web/src/app/api/specs/outcomes/[taskId]/route.test.ts, packages/core/__tests__/governed-outcome.test.ts, apps/web/tests/db/spec-approval.test.ts, apps/web/src/app/api/specs/[specId]/approve/route.test.ts, apps/web/src/lib/reviewer.test.ts, apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/specs/requirements.test.ts, apps/web/src/app/api/specs/[specId]/route.test.ts, apps/web/src/app/api/specs/[specId]/parent/route.test.ts, packages/core/__tests__/mcp-tools-specs.test.ts]
 supersedes: []
 ---
 # Living Specs
@@ -153,3 +153,73 @@ later ones are proposed (D-4).
   revision.
 - A repo document without `commitSha` (the legacy emitsPlan shape) is still
   read at the PR head.
+
+## 7. Verified outcomes
+
+**Capability statement**: A task pinned to an approved revision MUST read
+verified only when its outcome passes every criterion of that revision on
+the current PR head; a violated criterion MUST read fail, and anything not
+shown MUST read unverified, never pass (D-5). This is separate from whether
+the task completed or its PR merged.
+
+**Invariants**:
+- The criteria are the revision's requirements and acceptance criteria: lines
+  that start with `R-n` or `AC-n` (as a line, list item, heading or bold
+  label, outside fenced code; first definition wins;
+  `apps/web/src/lib/specs/requirements.ts` `specCriteria`). Decisions (`D-n`)
+  and invariants (`I-n`) are context, not criteria. They are read from the
+  pinned revision's body, so a later revision never changes what a running
+  task is judged against.
+- A verdict is one row in `spec_outcome_verdicts`: the task, the pinned
+  revision, the criterion, `pass | fail | inconclusive | unsupported` (the
+  verification-check vocabulary), the PR head it judged, and its evidence:
+  `[{kind, ref}]` pointers, the artifact read ids it relied on (F4 read
+  ledger, same workspace only) and who recorded it. Append-only; the newest
+  verdict per criterion stands. A criterion the revision lacks, a verdict
+  outside the vocabulary or a missing head is a 400 and nothing is written.
+- The outcome (`foldGovernedOutcome`, packages/core/verification-check.ts):
+  `fail` when any criterion's newest verdict is fail; `verified` only when
+  every criterion's newest verdict is a pass on the head the workflow kernel
+  observes for the task's PR delivery; `unverified` otherwise: a missing,
+  inconclusive or unsupported verdict, a pass on an older head, no PR head,
+  or no criteria.
+- Advisory: no outcome blocks completing a task or merging its PR. A failed
+  outcome is reported as failed beside a completed task and a merged PR.
+- Who records: a person or account with write access to the workspace, or the
+  per-task token of a task filed under the subject (its reviewer). A task's
+  own token reads its outcome but cannot record on it (403): a task never
+  grades itself. Another workspace can neither record nor read (404).
+- The reviewer of a pinned task is given the revision's criteria and asked to
+  record one verdict each at the head it reviews (`manage_specs action=verdict`).
+  Its review verdict still alone decides the merge.
+- `get_task` shows `Governed outcome` beside `Status` for a pinned task;
+  `manage_specs action=outcome` lists each criterion.
+- Two criteria of an approved revision that disagree are recorded as a
+  `conflict` discrepancy (`POST /api/specs/[id]/conflicts`,
+  `manage_specs action=conflict`): `spec_discrepancies` with
+  `spec_revision_id` set, `spec_path = living-spec:<specId>`, one row per
+  pair. Advisory: a person accepts it; it is never promoted or flipped, and a
+  repo-doc ledger run never resolves it.
+
+**Acceptance criteria**:
+- AC-5: GIVEN an approved R-1 and a completed task with a merged PR WHEN its
+  reviewer records R-1 fail THEN the outcome reads fail while the task stays
+  completed and the PR merged; WHEN the fix lands on a new head and every
+  criterion passes there THEN it reads verified, and a pass on the older head
+  alone reads unverified (`apps/web/tests/db/spec-outcome-verification.test.ts`).
+- AC-6: GIVEN no verdict, or an inconclusive or unsupported one WHEN the
+  outcome is read THEN it is unverified, never verified.
+- AC-7: GIVEN a caller in another workspace WHEN it records or reads a
+  verdict THEN 404 and nothing is written.
+
+**Code surface**:
+- `apps/web/src/lib/specs/outcome.ts` — `recordSpecVerdict`, `readGovernedOutcome`, `recordSpecConflict`
+- `apps/web/src/app/api/specs/outcomes/[taskId]/route.ts` — `GET`, `POST`
+- `apps/web/src/app/api/specs/[specId]/conflicts/route.ts` — `POST`
+- `packages/core/verification-check.ts` — `foldGovernedOutcome`
+
+**Not yet**:
+- Verdicts come from the reviewer agent or a person; no executor yet runs a
+  criterion as a mechanical check.
+- The dashboard does not show the governed outcome yet (U1); it is in
+  `get_task` and the API.
