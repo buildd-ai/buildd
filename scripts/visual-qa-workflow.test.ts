@@ -4,8 +4,9 @@ import { join } from 'path';
 
 /**
  * visual-qa.yml is the only way a worker sandbox (no DATABASE_URL, by design)
- * gets real-shaped screenshots: `gh workflow run visual-qa.yml --ref <branch>
- * -f routes=… -f viewport=mobile`, then `gh run download -n qa-screenshots`.
+ * gets real-shaped screenshots: `gh workflow run visual-qa.yml --ref dev
+ * -f capture_ref=<branch> -f routes=… -f viewport=mobile`, then
+ * `gh run download -n qa-screenshots`.
  * The visual-review skill documents exactly that contract, so these pin it.
  *
  * Parsed YAML, not grep, so a reformat cannot quietly defeat them.
@@ -142,6 +143,67 @@ describe('visual-qa.yml dispatch contract', () => {
   });
 });
 
+// The clone is CURRENT prod, so the harness that must agree with prod's schema,
+// triggers and constraints (this workflow, scripts/qa/**) always comes from the
+// dispatched ref, which is trunk. Only the app, its route manifest and its
+// migrations come from `capture_ref`. Five breakages came from a stale harness
+// on a lagging branch (exit_cause, local_ui_url, post_session_runs.facts,
+// migration high-water, artifact_revisions immutability).
+describe('visual-qa.yml: harness from trunk, app from capture_ref', () => {
+  const checkouts = steps.filter(s => String(s.uses ?? '').startsWith('actions/checkout@'));
+  const HARNESS = job.env?.QA_HARNESS;
+
+  test('dispatch takes the ref under audit as capture_ref', () => {
+    const input = on.workflow_dispatch?.inputs?.capture_ref;
+    expect(input?.type).toBe('string');
+    expect(input?.required).toBe(false);
+  });
+
+  test('the app is checked out at capture_ref (empty = the dispatched ref, as on a release PR)', () => {
+    expect(checkouts.length).toBe(2);
+    const app = checkouts[0];
+    expect(steps.indexOf(app)).toBe(0);
+    expect(app.with?.ref).toBe('${{ inputs.capture_ref }}');
+    expect(app.with?.path).toBeUndefined();
+  });
+
+  test('the harness is checked out separately at the dispatched ref, never at capture_ref', () => {
+    expect(HARNESS).toBe('.qa-harness');
+    const harness = checkouts[1];
+    expect(steps.indexOf(harness)).toBe(1);
+    expect(harness.with?.path).toBe(HARNESS);
+    // No ref: actions/checkout then takes github.sha, the trunk commit dispatched.
+    expect(harness.with?.ref).toBeUndefined();
+    expect(JSON.stringify(harness)).not.toContain('capture_ref');
+    // The scripts, and trunk's Drizzle snapshot for the known-column list.
+    const sparse = String(harness.with?.['sparse-checkout'] ?? '').split('\n').map(l => l.trim()).filter(Boolean);
+    expect(sparse).toEqual(['scripts/qa', 'packages/core/drizzle']);
+  });
+
+  test('every scripts/qa/ invocation resolves from the harness checkout', () => {
+    const runs = steps.map(s => String(s.run ?? '')).join('\n');
+    for (const m of runs.matchAll(/(\S*)scripts\/qa\/[\w.-]+\.(ts|sql)/g)) {
+      // An ::error file= annotation names the repo path, not a file read here.
+      if (m[1].endsWith('file=')) continue;
+      expect(m[1]).toMatch(/\$QA_HARNESS\/$/);
+    }
+    for (const name of [/^Scrub/, /^Guard/, /^Capture/, /^Prepare judge/, /^Build judge/]) {
+      expect(String(step(name).run)).toContain('$QA_HARNESS/scripts/qa/');
+    }
+  });
+
+  test('migrations, the app and its route manifest come from the capture ref', () => {
+    expect(step(/^Run migrations/).run).toContain('cd packages/core && bun db:migrate');
+    expect(step(/^Start app/).run).toMatch(/^\s*cd apps\/web\b/m);
+    expect(job.env.QA_MANIFEST).toBe('apps/web/src/qa/visual-qa-routes.json');
+    expect(step(/^Install dependencies/).run).toBe('bun install');
+  });
+
+  test('the run is named after its capture ref, so a dispatcher can find it on trunk', () => {
+    expect(String(wf['run-name'])).toContain('inputs.capture_ref');
+  });
+});
+
 // The artifact is downloadable by any signed-in GitHub user (public repo), so
 // the invariant is: CI QA screenshots contain no tenant-identifying text.
 describe('visual-qa.yml scrub + guard', () => {
@@ -150,18 +212,25 @@ describe('visual-qa.yml scrub + guard', () => {
   test('scrub runs the checked-in SQL quietly and stops on the first error', () => {
     const scrub = step(/^Scrub/);
     expect(scrub.id).toBe('scrub');
-    expect(scrub.run).toContain('-f scripts/qa/scrub-pii.sql');
+    expect(scrub.run).toContain('-f "$QA_HARNESS/scripts/qa/scrub-pii.sql"');
     expect(scrub.run).toContain('ON_ERROR_STOP=1');
     // Command tags carry row counts; these logs are public.
     expect(scrub.run).toMatch(/psql\s+"\$DATABASE_URL"\s+-q\s/);
   });
 
-  test('scrub is told which columns this checkout knows, so prod-ahead columns are overwritten', () => {
-    // A mission branch behind prod has no decision for prod's newer columns;
-    // the guard caught post_session_runs.facts that way.
+  test('scrub knows the union of the harness and capture-ref columns; anything else is overwritten', () => {
+    // Trunk's snapshot covers prod's schema; the capture ref's covers the
+    // columns its own migrations add. The guard caught post_session_runs.facts
+    // when the list came from a lagging branch alone.
     const run: string = step(/^Scrub/).run;
-    expect(run).toContain('KNOWN=$(bun scripts/qa/known-columns.ts)');
+    expect(run).toContain('KNOWN=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" "$QA_HARNESS/packages/core/drizzle" packages/core/drizzle)');
     expect(run).toContain('-v known="$KNOWN"');
+  });
+
+  test('scrub gets trunk\'s schema shape, so objects only trunk has are added empty instead of failing', () => {
+    const run: string = step(/^Scrub/).run;
+    expect(run).toContain('SHAPE=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" --shape "$QA_HARNESS/packages/core/drizzle")');
+    expect(run).toContain('-v shape="$SHAPE"');
   });
 
   test('the guard runs right after the scrub, before the app boots or anything is captured', () => {
@@ -169,7 +238,7 @@ describe('visual-qa.yml scrub + guard', () => {
     expect(guard.id).toBe('guard');
     expect(guard.if).toBeUndefined();
     expect(guard['continue-on-error']).toBeUndefined();
-    expect(guard.run).toContain('-f scripts/qa/scrub-guard.sql');
+    expect(guard.run).toContain('-f "$QA_HARNESS/scripts/qa/scrub-guard.sql"');
     expect(guard.run).toContain('ON_ERROR_STOP=1');
     const g = idx(/^Guard/);
     expect(g).toBe(idx(/^Scrub/) + 1);
@@ -206,7 +275,7 @@ describe('visual-qa.yml scrub + guard', () => {
 
   test('stale ci/visual-qa-* Neon branches older than 2h are swept first', () => {
     const sweep = step(/^Delete stale Visual QA Neon branches/);
-    expect(idx(/^Delete stale/)).toBe(1); // right after checkout
+    expect(idx(/^Delete stale/)).toBe(2); // right after the two checkouts
     expect(idx(/^Delete stale/)).toBeLessThan(idx(/^Create Neon/));
     expect(sweep['continue-on-error']).toBe(true);
     const run: string = sweep.run;
