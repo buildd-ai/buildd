@@ -4,6 +4,8 @@ export type WorkerExitCause =
   | 'code_failure'
   | 'budget_limited'
   | 'infra_failure'
+  /** The backend credential was rejected (failure-incident-recovery §18.2). */
+  | 'auth_failure'
   | 'never_started'
   | 'silent_start'
   | 'reassigned'
@@ -225,9 +227,16 @@ export function classifyReportedFailure(input: {
    * is cancelled no other signal describes an outcome anyone is waiting on.
    */
   taskCancelled?: boolean;
+  /**
+   * The backend credential was rejected (classifyAuthErrorSeverity). The
+   * credential's failure, not the work's: the task is held for the credential
+   * instead of failed (failure-incident-recovery §18.3).
+   */
+  authFailure?: boolean;
 }): WorkerExitCause {
   if (input.taskCancelled) return 'task_cancelled';
   if (input.budgetLimited) return 'budget_limited';
+  if (input.authFailure) return 'auth_failure';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
   if (input.githubThrottled) return 'infra_failure';
@@ -374,9 +383,27 @@ export function isBookkeepingExit(exitCause: WorkerExitCause | null | undefined)
     || exitCause === 'task_cancelled';
 }
 
+/**
+ * Exits owned by Buildd's machinery rather than the work (failure-incident-
+ * recovery §18.2/§18.7): a provider wall, a rejected credential, a lost or
+ * released session. Real failures, but once the task recovers they are noise
+ * to the failure rate, so the spike baseline drops them for a task no longer
+ * `failed`.
+ */
+export function isInfrastructureExit(exitCause: WorkerExitCause | string | null | undefined): boolean {
+  return exitCause === 'auth_failure'
+    || exitCause === 'infra_failure'
+    || exitCause === 'reassigned'
+    || exitCause === 'sandbox_mount_gap'
+    || exitCause === 'silent_start'
+    || exitCause === 'budget_limited';
+}
+
 export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefined): boolean {
   return exitCause !== 'budget_limited'
     && exitCause !== 'infra_failure'
+    // A rejected credential says nothing about the task (§18.2).
+    && exitCause !== 'auth_failure'
     && exitCause !== 'sandbox_mount_gap'
     && exitCause !== 'condition_unmet'
     // A row no runner ever started, and a session that streamed nothing, say

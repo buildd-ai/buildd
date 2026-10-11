@@ -2187,7 +2187,7 @@ export const workers = pgTable('workers', {
   // task_cancelled:     the task was cancelled while the session was still running — whatever
   //                     the session reported afterwards is moot. Bookkeeping; never charged.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'auth_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | 'server_refused' | 'output_unmet' | 'task_cancelled' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).

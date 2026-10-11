@@ -76,7 +76,7 @@ export function incidentCause(reasonCode: string | null | undefined, rule: Failu
 // ── The projection ─────────────────────────────────────────────────────────
 
 /** Rules whose incidents below critical Buildd recovers on its own: an unassessed one is never the person's. */
-export const BUILDD_RECOVERED_RULES: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall']);
+export const BUILDD_RECOVERED_RULES: ReadonlySet<FailureIncidentRule> = new Set(['path_overlap_stall', 'infrastructure_failure']);
 
 /** An assessment with no observation in this long reads as inconclusive (§5 rule 2, 2× the cron cadence). */
 const STALE_MINUTES = 60;

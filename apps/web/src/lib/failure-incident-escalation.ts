@@ -121,6 +121,10 @@ const BUILDD_RECOVERS: ReadonlySet<FailureIncidentRule> = BUILDD_RECOVERED_RULES
 const PATH_OVERLAP_WAIT =
   'A task is waiting for an overlapping change to land. Buildd wakes it when the paths free up and resolves this once it moves; a decision on the blocking PR shows on that PR.';
 
+/** failure-incident-recovery §16.2/§18.4: Buildd's own machinery failed; no workspace person's decision fixes it. */
+const INFRASTRUCTURE_WAIT =
+  "Buildd's own machinery failed for these tasks. Buildd retries them and tells the operator if it cannot recover; nothing here needs your decision.";
+
 /** Pure. The deterministic verdict for an incident. */
 export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
   if (s.status === 'resolved') return { owner: 'buildd', by: 'rule', action: 'hold', reason: 'Resolved, nothing to do.' };
@@ -128,7 +132,9 @@ export function incidentEscalationRule(s: IncidentSubject): EscalationVerdict {
     return { owner: 'person', by: 'rule', rail: 'critical_incident', reason: 'A critical platform incident: the owner is told once, whatever else is running.' };
   }
   if (s.recovery) return recoveryVerdict(s.status, s.recovery);
-  if (s.rule && BUILDD_RECOVERS.has(s.rule)) return { owner: 'buildd', by: 'rule', action: 'hold', reason: PATH_OVERLAP_WAIT };
+  if (s.rule && BUILDD_RECOVERS.has(s.rule)) {
+    return { owner: 'buildd', by: 'rule', action: 'hold', reason: s.rule === 'infrastructure_failure' ? INFRASTRUCTURE_WAIT : PATH_OVERLAP_WAIT };
+  }
   if (s.fixTask?.running) {
     return { owner: 'buildd', by: 'rule', action: 'wait_machine', reason: `Buildd is fixing it (task ${s.fixTask.id.slice(0, 8)}).` };
   }

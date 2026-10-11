@@ -7,6 +7,10 @@ import { describe, it, expect } from 'bun:test';
 import type { FailureIncidentRecovery } from '@buildd/shared';
 import { buildRecoveryCauseDetail, buildRecoveryPanel, type QueueFacts, type QueueIncident } from './queue';
 import { DEFAULT_RECOVERY_POLICY } from './automation';
+import { detectFailurePatterns } from '@/lib/failure-pattern-sentinel';
+import { mergeIncident } from '@/lib/failure-incident-store';
+import { planRecovery } from '@/lib/failure-incident-recovery';
+import { evaluateWorkerInfra } from '@/lib/failure-incident-recovery-worker-infra';
 
 const NOW = '2026-10-11T12:00:00.000Z';
 const H = 3_600_000;
@@ -211,5 +215,32 @@ describe('attempts, waste and recovered causes', () => {
     expect(t.stalePrompts).toEqual({ numerator: null, denominator: null, value: null });
     expect(t.missing).toContain('stale_prompts');
     expect(t.autoRecoverySuccess).toEqual({ numerator: 0, denominator: 0, value: null });
+  });
+});
+
+// failure-incident-recovery §18.4, AC-21: a task whose infra retries ran out is
+// a needs_operator cause in this queue, with the evidence, through the real
+// rule and policy — never a silent `failed`.
+describe('worker infrastructure: three lost sessions reach the operator queue', () => {
+  it('is one needs_operator row owned by the operator, with the gap as its sentence', () => {
+    const [candidate] = detectFailurePatterns({
+      workspaceId: WS_A, now: ago(1),
+      workerInfra: [{ taskId: id(3), component: 'worker.session_lost', key: 'stale_worker_expired', occurredAt: ago(2), attempts: 3, exhausted: true }],
+    });
+    const opened = { ...(mergeIncident(null, candidate).next as any), id: id(150), version: 1 };
+    const outcome = evaluateWorkerInfra(opened, {
+      component: 'worker.session_lost', key: 'stale_worker_expired', credentialHealthy: null,
+      subjects: [{ taskId: id(3), status: 'failed', hold: null, errorType: 'infra_stalled', infraRetryCount: 3, lastWorkerAt: ago(2), lastError: 'Stale worker expired (no update for 15+ minutes)' }],
+    }, ago(0.5));
+    const { recovery } = planRecovery({ incident: opened, outcome, evidenceRevision: 'r1', now: ago(0.5), source: 'sweep', complete: true });
+    const panel = buildRecoveryPanel(facts([{ ...opened, recovery } as QueueIncident]));
+    expect(panel.causes).toHaveLength(1);
+    const row = panel.causes[0];
+    expect(row.family).toBe('infrastructure_failure');
+    expect(row.causeCode).toBe('infrastructure.session_lost');
+    expect(row.state).toBe('needs_operator');
+    expect(row.owner).toBe('operator');
+    expect(row.impact.tasks.count).toBe(1);
+    expect(panel.totals.needsDecision).toBe(1);
   });
 });
