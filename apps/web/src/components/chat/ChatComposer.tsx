@@ -14,7 +14,8 @@
  */
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from 'react';
 import { ChatComposer as KitComposer, type ChatComposerHandle as KitComposerHandle } from '@builddai/ai-kit/chat/react';
-import { CHAT_MAX_MESSAGE_CHARS, CHAT_PASTE_ATTACHMENT_CHARS, type ChatAttachmentDraft, type ChatTierName } from '@buildd/shared';
+import { CHAT_MAX_MESSAGE_CHARS, CHAT_PASTE_ATTACHMENT_CHARS, type ChatDraftAttachment, type ChatTierName } from '@buildd/shared';
+import { discardChatUpload, uploadChatFile } from './upload-file';
 import ToolsMenu from './ToolsMenu';
 import TierSwitch from './TierSwitch';
 import { WorkspaceSwitcher } from '@/components/WorkspaceSwitcher';
@@ -28,11 +29,14 @@ export interface ChatComposerHandle { focus(): void }
 interface Props {
   value: string;
   onChange(value: string): void;
-  /** `attachments`: long pastes, shown as cards above the message (Living Specs C2). */
-  onSend(text: string, attachments: ChatAttachmentDraft[]): void;
+  /**
+   * `attachments`: long pastes (Living Specs C2) and uploaded images and files
+   * (C3), shown as cards above the message. A file is here only once ready.
+   */
+  onSend(text: string, attachments: ChatDraftAttachment[]): void;
   /** The draft's attachments, held by the caller so a refused send can put them back. */
-  attachments?: ChatAttachmentDraft[];
-  onAttachmentsChange?(attachments: ChatAttachmentDraft[]): void;
+  attachments?: ChatDraftAttachment[];
+  onAttachmentsChange?(attachments: ChatDraftAttachment[]): void;
   onStop?: () => void;
   /** A turn is streaming: Enter doesn't send, the button stops. */
   busy?: boolean;
@@ -120,6 +124,11 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
         onSend={onSend}
         maxLength={CHAT_MAX_MESSAGE_CHARS}
         attachFrom={CHAT_PASTE_ATTACHMENT_CHARS}
+        // Images and files need a team to upload under; the dev fixtures have none.
+        {...(teamId ? {
+          onUploadFile: (file: File, signal: AbortSignal) => uploadChatFile(file, signal, teamId),
+          onDiscardFile: (f: { id: string }) => { void discardChatUpload(f.id); },
+        } : {})}
         {...(attachments ? { attachments, onAttachmentsChange } : {})}
         onStop={onStop}
         busy={busy}
