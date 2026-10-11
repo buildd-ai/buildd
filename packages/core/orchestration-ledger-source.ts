@@ -19,6 +19,7 @@ import {
   workers,
 } from './db/schema';
 import type { OrchestrationDecisionRow } from './orchestration-decision';
+import { captureDecisionReplay, type DecisionReplayCapture } from './decision-replay';
 import {
   COLLISION_GATE,
   MERGE_BASE_GATE,
@@ -34,11 +35,21 @@ export const OUTCOME_JOIN_MAX_DECISIONS = 5_000;
 
 // ── Writes ───────────────────────────────────────────────────────────────────
 
-/** Persist one decision row. Never throws. */
-export async function recordOrchestrationDecision(row: OrchestrationDecisionRow): Promise<void> {
+/**
+ * Persist one decision row. Never throws. With `replay`, the row gets its id
+ * here, so the input the model saw is kept under that id once the row exists
+ * (decision-replay.ts).
+ */
+export async function recordOrchestrationDecision(
+  row: OrchestrationDecisionRow,
+  replay?: DecisionReplayCapture | null,
+  deps: { capture?: typeof captureDecisionReplay; newId?: () => string } = {},
+): Promise<void> {
+  const id = replay ? (deps.newId ?? (() => crypto.randomUUID()))() : null;
   try {
     await db.insert(orchestrationDecisions).values({
       ...row,
+      ...(id ? { id } : {}),
       missionId: uuidOrNull(row.missionId),
       taskId: uuidOrNull(row.taskId),
       workerId: uuidOrNull(row.workerId),
@@ -46,6 +57,20 @@ export async function recordOrchestrationDecision(row: OrchestrationDecisionRow)
     });
   } catch (err) {
     console.warn('[orchestration-ledger] decision insert failed (non-fatal):', (err as Error)?.message ?? err);
+    return;
+  }
+  if (id && replay) {
+    (deps.capture ?? captureDecisionReplay)({
+      ...replay,
+      decisionId: id,
+      source: 'orchestration_decisions',
+      teamId: row.teamId,
+      workspaceId: row.workspaceId ?? null,
+      capability: row.capability,
+      model: row.model ?? null,
+      ruleAnswer: row.ruleVerdict ?? null,
+      askedAt: new Date(),
+    });
   }
 }
 

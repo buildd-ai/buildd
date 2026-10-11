@@ -267,6 +267,24 @@ export function buildScoutRunEvidenceObjectKey(
  */
 export const EVIDENCE_PROBE_SEGMENT = '.buildd-probe';
 
+/** The segment every decision replay copy lives under, beside a backend's evidence. */
+export const DECISION_REPLAY_SEGMENT = 'decision-replay';
+
+/**
+ * `<prefix>/decision-replay/<teamId>/<capability>/<decisionId>.json.gz`
+ *
+ * A decision input kept for replay (`@buildd/core/decision-replay`). Keyed by
+ * the ledger row id alone (no day), so a copy written just after midnight is
+ * still found from its row.
+ */
+export function buildDecisionReplayKey(prefix: unknown, teamId: unknown, capability: unknown, decisionId: unknown): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const team = assertSafeKeySegment(teamId, 'teamId');
+  const cap = assertSafeKeySegment(capability, 'capability');
+  const id = assertSafeKeySegment(decisionId, 'decisionId');
+  return assertNormalizedObjectKey(`${safePrefix}/${DECISION_REPLAY_SEGMENT}/${team}/${cap}/${id}.json.gz`);
+}
+
 export function buildEvidenceProbeKey(prefix: unknown, probeId: unknown): string {
   const safePrefix = assertSafeKeySegment(prefix, 'prefix');
   const id = assertSafeKeySegment(probeId, 'probeId');

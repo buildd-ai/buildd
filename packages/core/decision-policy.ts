@@ -52,6 +52,7 @@ import {
 import { isMeasuredForKind, type BuilddDecisionKind, type BuilddDecisionKindBinding } from './decision-kinds';
 import type { ChallengerRunInput, DecisionLedgerInput } from './decision-ledger';
 import { assignExperimentArm, type ExperimentAssignment } from './experiment-randomizer';
+import type { DecisionReplayCapture } from './decision-replay';
 
 export interface BuilddDecisionScope {
   teamId: string;
@@ -304,6 +305,27 @@ export async function runBuilddChallenger<K extends string, F, D extends string,
   }
 }
 
+/**
+ * What a replay needs to ask another model the same thing (decision-replay.ts):
+ * the parsed features and the schema they were built against, not the derived
+ * state, so an eval rebuilds the question exactly as the kind does. Null when
+ * the features did not parse (nothing was asked).
+ */
+export function replayOf(
+  kind: { kind: string; questions?: Record<string, unknown> },
+  request: DecisionRequest<unknown>,
+  response: Pick<DecisionResponse, 'featureDigest' | 'featureSchemaVersion' | 'policyVersion' | 'promptFingerprint'>,
+): DecisionReplayCapture | null {
+  if (response.featureDigest === null || request.features === undefined) return null;
+  return {
+    state: request.features,
+    featureSchemaVersion: response.featureSchemaVersion ?? null,
+    questionIds: Object.keys(kind.questions ?? {}),
+    candidates: null,
+    promptRef: { id: kind.kind, version: response.policyVersion ?? null, contentHash: response.promptFingerprint ?? null },
+  };
+}
+
 /** Ask a kind for a team. The caller names the kind and its features, nothing else. */
 export async function runBuilddDecision<K extends string, F, D extends string, Q extends DecisionQuestions>(
   kind: BuilddDecisionKind<K, F, D, Q>,
@@ -320,7 +342,7 @@ export async function runBuilddDecision<K extends string, F, D extends string, Q
       if (!record) return;
       if (response.mode === 'disabled' && response.source !== 'rule') return;
       try {
-        recordId = (await record(toDecisionLedgerInput(response, scope))) ?? null;
+        recordId = (await record({ ...toDecisionLedgerInput(response, scope), replay: replayOf(kind, request, response) })) ?? null;
       } catch (e) {
         console.warn(`[decision-policy] ledger write failed for ${kind.kind} (non-fatal):`, (e as Error)?.message ?? e);
       }
