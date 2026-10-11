@@ -9,6 +9,7 @@ import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accou
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { keepsParkClock, recordInteractiveSessionSeen } from '@/lib/interactive-worker-liveness';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
@@ -1040,6 +1041,18 @@ export async function PATCH(
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
   };
+  // An interactive worker parked on a question (ask_human) expires on the
+  // waiting_input sweep's clock, measured from updated_at. The session's
+  // receive_messages polls while it waits must not keep pushing it forward.
+  // Rewriting the stored value (rather than dropping the key) keeps the SET
+  // non-empty for a PATCH that carries nothing else.
+  if (keepsParkClock(worker, { status, waitingFor })) {
+    updates.updatedAt = worker.updatedAt;
+    // The same poll is the session's heartbeat: /respond sends the answer
+    // cold once it goes stale (the terminal closed mid-wait). Its own write,
+    // so neither the park clock nor a just-cleared question is touched.
+    if (declaredConsumer === 'agent') await recordInteractiveSessionSeen(id);
+  }
 
   // Record the runner's protocol capability so /instruct and /cmd know whether a
   // delivery can ever be confirmed for this worker.
@@ -4455,6 +4468,16 @@ export async function PATCH(
   // History-entry ids of the served queue (+ note ids, appended below), for a
   // consumer that confirms by id.
   const instructionIds: string[] = [];
+
+  // A human answer /respond queued for an interactive session travels as an
+  // `answer` worker message whose id is also its instruction-history entry's
+  // id: the session's worker-message ack is that entry's read receipt.
+  const answerIdsAcknowledged = deliveredMessageIds.filter(msgId =>
+    Array.isArray(worker.instructionHistory)
+    && (worker.instructionHistory as Array<{ id?: string; type?: string }>).some(e => e?.type === 'instruction' && e.id === msgId));
+  if (answerIdsAcknowledged.length > 0) {
+    instructionIdsAcknowledged.push(...answerIdsAcknowledged.filter(i => !instructionIdsAcknowledged.includes(i)));
+  }
 
   if (instructionAckText || instructionIdsDelivered.length > 0 || instructionIdsAcknowledged.length > 0) {
     // A consumer confirmed delivery: this is the ONLY place 'delivered' is
