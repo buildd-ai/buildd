@@ -3,7 +3,7 @@ title: Mission Branch Refresh
 status: active
 owner: max
 last_verified: 2026-10-11
-summary: A mission's integration branch MUST be brought up to date with trunk when a mission task starts on it or by a daily backstop, never by a trunk merge alone; every writer to the branch and the mission PR is fenced, owned and reconciled; generated-file conflicts are regenerated.
+summary: A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 domain: missions
 surfaces: [apps/web/src/lib/mission-branch-refresh.ts, apps/web/src/lib/mission-subscribers.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/cron/pr-reconcile/route.ts]
 related: [mission-release-gate, mission-task-lifecycle, workflow-state-kernel]

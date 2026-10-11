@@ -70,7 +70,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 ### missions (4)
 
 - [Mission Branch Refresh](./mission-branch-refresh.md) · @max — verified 2026-10-11
-  A mission's integration branch MUST be brought up to date with trunk when a mission task starts on it or by a daily backstop, never by a trunk merge alone; every writer to the branch and the mission PR is fenced, owned and reconciled; generated-file conflicts are regenerated.
+  A mission's integration branch MUST be refreshed from trunk on task start or a daily backstop, never per trunk merge; every writer is fenced, owned and reconciled.
 - [Mission Goal Criteria Quality (Advisory Verdict)](./mission-goal-criteria-quality.md) · @max — verified 2026-10-03
   A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
