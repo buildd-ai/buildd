@@ -9,9 +9,17 @@
  */
 import { db } from '@buildd/core/db';
 import {
-  chatRetros, decisionRecords, experiments, orchestrationDecisions, tasks, teams, workers, workspaces,
+  chatRetros, decisionRecords, experiments, failureIncidents, gateEvents, missions, notificationDeliveries,
+  orchestrationDecisions, platformAdminAuditEvents, systemCache, tasks, teams, workers, workspaces,
 } from '@buildd/core/db/schema';
-import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, like, ne, or, sql, type SQL } from 'drizzle-orm';
+import { ESCALATION_GATE_CAPABILITY, verdictFromCode } from '@buildd/core/escalation-gate';
+import { GATE_SLUGS } from '@buildd/core/gate-events';
+import type { RecoveryCauseDetail, RecoveryFilter, RecoveryPanel } from '@buildd/shared';
+import { readSentinelLastRun, SENTINEL_LAST_RUN_KEY, type RecoveryAttemptDetail } from '@/lib/failure-incident-recovery-events';
+import { INCIDENT_SUBJECT_TYPE, incidentSubjectKey } from '@/lib/failure-incident-escalation';
+import { buildRecoveryCauseDetail, buildRecoveryPanel, type QueueFacts, type QueueIncident } from './recovery/queue';
+import { buildAutomationView, OPERATOR_RECOVERY_DECISION_KINDS, OPERATOR_RECOVERY_KEY_PREFIX } from './recovery/automation';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
 import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
@@ -377,4 +385,225 @@ export async function loadExperimentReadout(row: ExperimentRow) {
     return { policyVersion, readout: await runExperimentReadout({ id: row.id, policyVersion }, { minSamplePerArm }), health };
   }
   return { policyVersion, readout: null, health };
+}
+
+// ── Recovery queue (operator-recovery spec §7.1) ──────────────────────────────
+
+const RECOVERY_INCIDENT_LIMIT = 1000;
+const RECOVERY_ROW_LIMIT = 5000;
+const DAY_MS = 86_400_000;
+const WINDOW_DAYS = { '24h': 1, '7d': 7, '30d': 30 } as const;
+
+export interface RecoveryReadOpts {
+  workspaceIds: string[];
+  /** No team or workspace narrowing: other teams may be named, and platform incidents (no workspace) are included. */
+  platformWide: boolean;
+  window: AdminWindow;
+  now?: Date;
+}
+
+const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
+
+/**
+ * Every fact the queue needs, in a fixed number of batched reads: the scoped
+ * incidents in one query, then names, subject tasks, their workers, blocker PR
+ * owners, attempt events, the sweep's last run, stored person verdicts and the
+ * automation keys, each one query over the whole set. A read that fails comes
+ * back null and shows up as missing evidence; it never fails the panel.
+ */
+async function loadRecoveryFacts(opts: RecoveryReadOpts): Promise<QueueFacts> {
+  const now = opts.now ?? new Date();
+  const lookbackMs = Math.max(7, WINDOW_DAYS[opts.window]) * DAY_MS;
+  const since = new Date(now.getTime() - lookbackMs);
+  // Platform-wide is every incident, platform-scoped ones (no workspace) included;
+  // a team or workspace scope reads only its own workspaces' rows.
+  const scopeWhere = opts.platformWide
+    ? undefined
+    : opts.workspaceIds.length ? inArray(failureIncidents.workspaceId, opts.workspaceIds) : sql`false`;
+  const rows = await db.select().from(failureIncidents)
+    .where(and(scopeWhere, or(ne(failureIncidents.status, 'resolved'), gte(failureIncidents.resolvedAt, since))))
+    .orderBy(desc(failureIncidents.lastSeenAt))
+    .limit(RECOVERY_INCIDENT_LIMIT);
+  const incidents: QueueIncident[] = rows.map(r => ({
+    id: r.id, workspaceId: r.workspaceId, signature: r.signature, detectorVersion: r.detectorVersion, rule: r.rule,
+    reasonCode: r.reasonCode, title: r.title, severity: r.severity, status: r.status,
+    firstSeenAt: r.firstSeenAt.toISOString(), lastSeenAt: r.lastSeenAt.toISOString(),
+    occurrenceCount: r.occurrenceCount, recurrenceCount: r.recurrenceCount,
+    affectedRefs: r.affectedRefs ?? { taskIds: [], workerIds: [], prNumbers: [] }, evidenceRefs: r.evidenceRefs ?? [],
+    impact: r.impact ?? {}, lastAlertedAt: isoOrNull(r.lastAlertedAt), lastAlertSeverity: r.lastAlertSeverity,
+    linkedFixTaskId: r.linkedFixTaskId, acknowledgedAt: isoOrNull(r.acknowledgedAt), resolvedAt: isoOrNull(r.resolvedAt),
+    recovery: r.recovery ?? null, version: r.version,
+  }));
+
+  const wsIds = [...new Set(incidents.map(i => i.workspaceId).filter((x): x is string => !!x))];
+  const subjectIds = new Set<string>();
+  const fixIds = new Set<string>();
+  const prKeys: Array<{ workspaceId: string; prNumber: number }> = [];
+  for (const i of incidents) {
+    for (const id of i.recovery?.subjects?.filter(s => s.kind === 'task').map(s => s.id) ?? i.affectedRefs.taskIds) subjectIds.add(id);
+    for (const id of i.affectedRefs.taskIds) subjectIds.add(id);
+    if (i.linkedFixTaskId) fixIds.add(i.linkedFixTaskId);
+    for (const b of i.recovery?.blockers ?? []) {
+      if (b.kind === 'task') subjectIds.add(b.id);
+      if (b.kind === 'pr' && i.workspaceId && /^\d+$/.test(b.id)) prKeys.push({ workspaceId: i.workspaceId, prNumber: Number(b.id) });
+    }
+  }
+  const uuid = (id: string) => /^[0-9a-f-]{36}$/i.test(id);
+  const taskIds = [...new Set([...subjectIds, ...fixIds])].filter(uuid);
+  const incidentIds = incidents.map(i => i.id);
+  const prNumbers = [...new Set(prKeys.map(k => k.prNumber))];
+  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  const [wsRows, taskRows, workerRows, prRows, attemptRows, lastRunRow, verdictRows, automationRows, modelRows] = await Promise.all([
+    wsIds.length ? db.select({ id: workspaces.id, name: workspaces.name, teamId: workspaces.teamId }).from(workspaces).where(inArray(workspaces.id, wsIds)) : Promise.resolve([]),
+    (taskIds.length
+      ? db.select({ id: tasks.id, title: tasks.title, status: tasks.status, workspaceId: tasks.workspaceId, missionId: tasks.missionId, missionTitle: missions.title, missionWorkspaceId: missions.workspaceId })
+        .from(tasks).leftJoin(missions, eq(missions.id, tasks.missionId)).where(inArray(tasks.id, taskIds))
+      : Promise.resolve([])).catch(() => null),
+    (taskIds.length
+      ? db.select({
+        taskId: workers.taskId, createdAt: workers.createdAt, status: workers.status, costUsd: workers.costUsd, costBasis: workers.costBasis,
+        prNumber: workers.prNumber, prUrl: workers.prUrl, prState: workers.prLifecycleStatus, workspaceId: workers.workspaceId,
+      }).from(workers)
+        .where(and(inArray(workers.taskId, taskIds), or(gte(workers.createdAt, since), fixIds.size ? inArray(workers.taskId, [...fixIds].filter(uuid)) : sql`false`)))
+        .orderBy(desc(workers.createdAt)).limit(RECOVERY_ROW_LIMIT)
+      : Promise.resolve([])).catch(() => null),
+    (prNumbers.length && wsIds.length
+      ? db.select({ taskId: workers.taskId, prNumber: workers.prNumber, workspaceId: workers.workspaceId }).from(workers)
+        .where(and(inArray(workers.workspaceId, wsIds), inArray(workers.prNumber, prNumbers)))
+      : Promise.resolve([])).catch(() => []),
+    (incidentIds.length
+      ? db.select({ occurredAt: gateEvents.occurredAt, outcome: gateEvents.outcome, detail: gateEvents.detail }).from(gateEvents)
+        .where(and(eq(gateEvents.gate, GATE_SLUGS.INCIDENT_RECOVERY), gte(gateEvents.occurredAt, new Date(now.getTime() - 30 * DAY_MS)),
+          inArray(sql<string>`${gateEvents.detail}->>'incidentId'`, incidentIds)))
+        .limit(RECOVERY_ROW_LIMIT)
+      : Promise.resolve([])).catch(() => null),
+    db.select({ value: systemCache.value }).from(systemCache).where(eq(systemCache.key, SENTINEL_LAST_RUN_KEY)).limit(1).catch(() => null),
+    (incidentIds.length
+      ? db.select({ subjectId: decisionRecords.subjectId, appliedAnswer: decisionRecords.appliedAnswer }).from(decisionRecords)
+        .where(and(eq(decisionRecords.capability, ESCALATION_GATE_CAPABILITY), eq(decisionRecords.subjectType, INCIDENT_SUBJECT_TYPE),
+          inArray(decisionRecords.subjectId, incidentIds.map(incidentSubjectKey))))
+      : Promise.resolve([])).catch(() => null),
+    db.select({ key: systemCache.key, value: systemCache.value, expiresAt: systemCache.expiresAt }).from(systemCache)
+      .where(like(systemCache.key, `${OPERATOR_RECOVERY_KEY_PREFIX}%`)).catch(() => null),
+    db.select({ count: sql<number>`count(*)::int`, costUsd: sql<number>`coalesce(sum(${decisionRecords.costUsd}), 0)::float8` }).from(decisionRecords)
+      .where(and(inArray(decisionRecords.capability, [...OPERATOR_RECOVERY_DECISION_KINDS]), gte(decisionRecords.createdAt, startOfDay))).catch(() => null),
+  ]);
+
+  const teamIds = [...new Set(wsRows.map(w => w.teamId).filter((x): x is string => !!x))];
+  const teamRows = teamIds.length ? await db.select({ id: teams.id, name: teams.name }).from(teams).where(inArray(teams.id, teamIds)) : [];
+
+  const missionMap = new Map<string, { id: string; title: string; workspaceId: string | null }>();
+  for (const t of taskRows ?? []) if (t.missionId && t.missionTitle) missionMap.set(t.missionId, { id: t.missionId, title: t.missionTitle, workspaceId: t.missionWorkspaceId });
+  const fixPrs = new Map<string, { number: number; url: string; state: string; workspaceId: string }>();
+  for (const w of workerRows ?? []) {
+    if (!w.taskId || !fixIds.has(w.taskId) || fixPrs.has(w.taskId) || w.prNumber === null || !w.prUrl) continue;
+    fixPrs.set(w.taskId, { number: w.prNumber, url: w.prUrl, state: w.prState ?? 'unknown', workspaceId: w.workspaceId });
+  }
+  const personVerdicts = verdictRows === null ? null : new Set(verdictRows
+    .filter(v => verdictFromCode(v.appliedAnswer)?.owner === 'person' && v.subjectId)
+    .map(v => v.subjectId!.slice(INCIDENT_SUBJECT_TYPE.length + 1)));
+
+  return {
+    now: now.toISOString(),
+    window: opts.window,
+    platformWide: opts.platformWide,
+    incidents,
+    workspaces: new Map(wsRows.map(w => [w.id, w])),
+    teams: new Map(teamRows.map(t => [t.id, t])),
+    tasks: taskRows === null ? null : new Map(taskRows.map(t => [t.id, { id: t.id, title: t.title, status: t.status, workspaceId: t.workspaceId, missionId: t.missionId }])),
+    missions: missionMap,
+    workers: workerRows === null ? null : workerRows.filter(w => !!w.taskId).map(w => ({
+      taskId: w.taskId!, createdAt: w.createdAt.toISOString(), status: w.status, costUsd: w.costUsd === null ? null : Number(w.costUsd), costBasis: w.costBasis ?? null,
+    })),
+    prTasks: new Map(prRows.filter(r => r.taskId && r.prNumber !== null).map(r => [`${r.workspaceId}:${r.prNumber}`, r.taskId!])),
+    fixPrs,
+    attempts: attemptRows === null ? null : attemptRows
+      .filter(a => a.detail && typeof (a.detail as { actionKey?: unknown }).actionKey === 'string')
+      .map(a => ({ occurredAt: a.occurredAt.toISOString(), outcome: a.outcome, detail: a.detail as unknown as RecoveryAttemptDetail })),
+    lastRun: lastRunRow ? readSentinelLastRun(lastRunRow[0]?.value ?? null) : null,
+    personVerdicts,
+    automation: buildAutomationView({ rows: automationRows, model: modelRows?.[0] ?? null, now }),
+  };
+}
+
+/**
+ * The `recovery` panel: one ranked row per cause across the scoped workspaces.
+ * The route turns a throw into `recovery: null` (Can't confirm), like every
+ * other panel.
+ */
+export async function loadRecoveryQueue(opts: RecoveryReadOpts & { includeRecovered?: boolean; filter?: RecoveryFilter }): Promise<RecoveryPanel> {
+  const facts = await loadRecoveryFacts(opts);
+  return buildRecoveryPanel(facts, { includeRecovered: opts.includeRecovered, filter: opts.filter });
+}
+
+/** The `recoveryCause` drill-down, or null when no scoped incident groups under the key. */
+export async function loadRecoveryCause(opts: RecoveryReadOpts & { causeKey: string }): Promise<RecoveryCauseDetail | null> {
+  const facts = await loadRecoveryFacts(opts);
+  const probe = buildRecoveryCauseDetail(facts, opts.causeKey, { decisions: [], audit: [], notifications: { delivered: 0, suppressed: 0, lastDeliveredAt: null }, verdicts: new Map() });
+  if (!probe) return null;
+  const ids = probe.incidents.map(i => i.incidentId);
+  const subjectKeys = ids.map(incidentSubjectKey);
+  const [decisionRows, auditRows, deliveryRows] = await Promise.all([
+    db.select({
+      id: decisionRecords.id, capability: decisionRecords.capability, status: decisionRecords.status, appliedAnswer: decisionRecords.appliedAnswer,
+      confidence: decisionRecords.confidence, reason: decisionRecords.reason, model: decisionRecords.model, promptVersion: decisionRecords.promptVersion,
+      policyVersion: decisionRecords.policyVersion, costUsd: decisionRecords.costUsd, subjectId: decisionRecords.subjectId,
+    }).from(decisionRecords)
+      .where(or(
+        and(eq(decisionRecords.subjectType, INCIDENT_SUBJECT_TYPE), inArray(decisionRecords.subjectId, subjectKeys)),
+        and(eq(decisionRecords.subjectType, 'cause'), eq(decisionRecords.subjectId, opts.causeKey)),
+      ))
+      .orderBy(desc(decisionRecords.createdAt)).limit(100).catch(() => []),
+    db.select().from(platformAdminAuditEvents)
+      .where(or(
+        and(sql`${platformAdminAuditEvents.targetType} = 'cause'`, eq(platformAdminAuditEvents.targetId, opts.causeKey)),
+        and(sql`${platformAdminAuditEvents.targetType} = 'incident'`, inArray(platformAdminAuditEvents.targetId, ids)),
+      ))
+      .orderBy(desc(platformAdminAuditEvents.occurredAt)).limit(100).catch(() => []),
+    db.select({ status: notificationDeliveries.status, deliveredAt: notificationDeliveries.deliveredAt }).from(notificationDeliveries)
+      .where(or(...ids.map(id => like(notificationDeliveries.dedupeKey, `failure-incident:${id}:%`)), ...ids.map(id => like(notificationDeliveries.dedupeKey, `recovery:${id}:%`))))
+      .limit(500).catch(() => []),
+  ]);
+  const verdicts = new Map<string, { owner: 'buildd' | 'person' }>();
+  for (const d of decisionRows) {
+    if (d.capability !== ESCALATION_GATE_CAPABILITY || !d.subjectId) continue;
+    const id = d.subjectId.slice(INCIDENT_SUBJECT_TYPE.length + 1);
+    const v = verdictFromCode(d.appliedAnswer);
+    if (v && !verdicts.has(id)) verdicts.set(id, { owner: v.owner === 'person' ? 'person' : 'buildd' });
+  }
+  const alerted = facts.incidents.filter(i => ids.includes(i.id)).map(i => i.lastAlertedAt).filter((x): x is string => !!x);
+  const delivered = deliveryRows.filter(r => r.status === 'delivered' || r.status === 'read');
+  const lastDelivered = [...delivered.map(r => r.deliveredAt?.toISOString()).filter((x): x is string => !!x), ...alerted].sort().pop() ?? null;
+  return buildRecoveryCauseDetail(facts, opts.causeKey, {
+    verdicts,
+    decisions: decisionRows.map(d => ({
+      decisionId: d.id,
+      kind: d.capability,
+      // Every operator-recovery kind starts in shadow (B3); the escalation gate is live.
+      mode: (OPERATOR_RECOVERY_DECISION_KINDS as readonly string[]).includes(d.capability) ? 'shadow' as const : 'live' as const,
+      answer: d.appliedAnswer ?? d.status,
+      confidence: d.confidence,
+      rationale: d.reason,
+      model: d.model,
+      promptVersion: d.promptVersion,
+      policyVersion: d.policyVersion,
+      outcome: null,
+      costUsd: d.costUsd,
+    })),
+    audit: auditRows.map(a => ({
+      at: a.occurredAt.toISOString(),
+      actorAccountId: a.actorAccountId ?? '',
+      operatorLabel: typeof (a.after as { operatorLabel?: unknown } | null)?.operatorLabel === 'string' ? (a.after as { operatorLabel: string }).operatorLabel : null,
+      action: a.action,
+      before: a.before,
+      after: a.after,
+    })),
+    notifications: {
+      // Pages go through notifyTeam, outside this ledger: a page with no row still counts once.
+      delivered: Math.max(delivered.length, alerted.length),
+      suppressed: deliveryRows.filter(r => r.status === 'coalesced' || r.status === 'held' || r.status === 'dropped').length,
+      lastDeliveredAt: lastDelivered,
+    },
+  });
 }

@@ -265,8 +265,21 @@ recovery: {
   budget: { spent: number, limit: number, deadlineAt: string, spentKeys: string[] },   // spentKeys bounded, current generation only
   capabilityGap?: { capability: string, reason: string },   // operator-owned only (§16)
   attempts: Array<{ key, action, subject, at, generation }>,  // repairs actually run, all generations, bounded (20); never rewritten
+  causeGroup?: { key: string, source: 'rule' | 'model' | 'operator', decisionId: string | null,
+                 confidence: number | null, assignedAt: string, supersededBy?: string, ruleKey?: string },
 }
 ```
+
+- **Cause membership (additive, `v` stays 1).** `causeGroup` says which
+  cause the incident groups under in the platform owner's recovery queue
+  (operator-recovery spec in buildd-admin, §4). Every `assess` writes it:
+  `key` is the deterministic rule key
+  (`apps/web/src/lib/failure-incident-cause-key.ts`, `'c1:' +
+  sha256(rule|causeCode|scope|discriminator)` first 20 hex, scope `ws:<id>` for
+  path overlap and retry lineages, `platform` otherwise). An `operator` or
+  promoted `model` membership survives re-assessment while the rule key it was
+  assigned against (`ruleKey`) holds, and lapses when the cause code changes.
+  Readers treat an absent field as unknown and fall back to the rule key.
 
 - **Where it is stored.** It goes in a new nullable `recovery` jsonb column on
   `failure_incidents`, written only through the existing CAS on `version` in
@@ -489,8 +502,15 @@ offered.
     `wakeTask` exposes no key.
   - So a wake carries the action key only as outbox metadata, through
     `enqueueTaskDispatch`, for tracing.
-- **The audit row** is a `gate_events` row keyed with `recordDeferralOnce`'s
-  shape.
+- **The audit row** is one `gate_events` row per action key, gate
+  `incident_recovery` (`apps/web/src/lib/failure-incident-recovery-events.ts`),
+  written after the repair's writer ran (`accepted`) or threw (`rejected`).
+  Its `detail` is fixed-shape: `actionKey`, `incidentId`, `causeKey`,
+  `capability` (a RepairKind), `generation`, `attempt`, `subject`, `actor`,
+  `verify { predicate, passed, evidenceRevision }` and `costUsd`.
+  `verify.passed` is null until the next assessment re-checks the repair, then
+  set once, in place. These rows are pruned after 180 days by the full sweep,
+  which also stores its last run in `system_cache` (`failure-sentinel-last-run`).
 - **Push.** The push `dedupeKey` keeps today's per-claim form, made unique by
   the generation.
 
@@ -728,6 +748,8 @@ repair records as `wait_machine` with the assessment's own sentence.
 
 - `apps/web/src/lib/failure-incident-recovery.ts`: `planRecovery`, `assessIncident`, `assessDueIncidents`, `recoveryDue`, `evidenceRevision`, `recoveryActionKey`, `RecoveryFamily`, `RecoveryEffects`, `productionRecoveryEffects`, `claimRecoveryLease`, `RECOVERY_BUDGET_LIMIT`, `RECOVERY_BACKOFF_MINUTES`
 - `apps/web/src/lib/failure-incident-recovery-path-overlap.ts`: `evaluatePathOverlap`, `dbObservePathOverlapRecovery`, `pathOverlapRecoveryFamily`
+- `apps/web/src/lib/failure-incident-cause-key.ts`: `ruleCauseKey`, `causeDiscriminator`, `causeScope`, `nextCauseGroup`, `effectiveCauseKey`
+- `apps/web/src/lib/failure-incident-recovery-events.ts`: `buildAttemptEvent`, `verifyPriorAttempt`, `dbRecoveryEvents`, `pruneRecoveryEvents`, `writeSentinelLastRun`
 - `packages/shared/src/types.ts`: `FailureIncidentRecovery`, `FailureRecoveryState`, `FailureRecoveryOwner`, `FailureCauseOwnership`, `FailureRecoveryCapability`
 - `apps/web/src/lib/failure-pattern-sentinel.ts`: `detectFailurePatterns`, `rulePathOverlapStall`, `DEFAULT_SENTINEL_THRESHOLDS`, `FAILURE_PATTERN_DETECTOR_VERSION`
 - `apps/web/src/lib/failure-pattern-sweep.ts`: `runFailurePatternSweep`, `SWEEP_LOOKBACK_MINUTES`, `reassessIncidentsNamingPr`, `regateAlert`

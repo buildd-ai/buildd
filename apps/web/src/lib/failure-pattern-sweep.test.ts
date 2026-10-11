@@ -294,6 +294,33 @@ describe('runFailurePatternSweep', () => {
 
 // ── recovery backstop (docs/specs/failure-incident-recovery.md §12(a)) ────────
 
+describe('runFailurePatternSweep: last run and recovery event retention (operator-recovery §10)', () => {
+  it('a full sweep records its run and prunes; a triggered one-workspace sweep does neither', async () => {
+    const { deps } = fakeDeps([WS1], { incidentPort: memoryIncidentPort() });
+    const runs: any[] = [];
+    let prunes = 0;
+    deps.recordLastRun = async run => { runs.push(run); };
+    deps.pruneRecoveryEvents = async () => { prunes++; return 0; };
+
+    await runFailurePatternSweep(deps, { now, workspaceIds: [WS1] });
+    expect(runs).toHaveLength(0);
+    expect(prunes).toBe(0);
+
+    await runFailurePatternSweep(deps, { now });
+    expect(prunes).toBe(1);
+    expect(runs).toEqual([expect.objectContaining({ full: true, workspaces: 1, runFailures: 0 })]);
+    expect(Date.parse(runs[0].finishedAt)).toBeGreaterThanOrEqual(Date.parse(runs[0].startedAt));
+  });
+
+  it('a failing last-run write never fails the sweep', async () => {
+    const { deps } = fakeDeps([WS1], { incidentPort: memoryIncidentPort() });
+    deps.recordLastRun = async () => { throw new Error('cache down'); };
+    deps.pruneRecoveryEvents = async () => { throw new Error('db down'); };
+    const counters = await runFailurePatternSweep(deps, { now });
+    expect(counters.workspacesEvaluated).toBe(1);
+  });
+});
+
 describe('runFailurePatternSweep: open path-overlap incidents are assessed on fresh facts', () => {
   const STALL = 120;
   const minutesAgo = (m: number) => new Date(T0 - m * 60_000).toISOString();
