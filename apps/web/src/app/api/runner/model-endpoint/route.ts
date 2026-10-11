@@ -123,8 +123,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const team = await loadTeamPolicy(ws.teamId);
-    if (surfacePolicy(team, 'cloud-egress').enforced) {
-      const requesterUserId = await loadRequester(task.id);
+    // The resolver decides when a team chose a policy, or when a person the
+    // work is for may have their own key (the default, personal_first). Team
+    // work under the default keeps the path below, unchanged.
+    const requesterUserId = await loadRequester(task.id);
+    if (surfacePolicy(team, 'cloud-egress').source !== 'default' || requesterUserId) {
       const result = await resolveProviderCredential({
         teamId: ws.teamId,
         workspaceId: ws.id,
@@ -145,7 +148,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(answer.body, { headers: NO_STORE });
     }
 
-    // credential_policy NULL: exactly the decision this route always made.
+    // No policy chosen and no requester: exactly the decision this route always made.
     const decision = await resolveAgentModelRoute({ teamId: ws.teamId, workspaceId: ws.id, accountId: account.id });
     if (decision && decision.winner === 'endpoint') {
       const e = decision.endpoint;

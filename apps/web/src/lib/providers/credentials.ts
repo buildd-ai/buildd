@@ -256,8 +256,8 @@ export async function loadPolicySummary(teamId: string): Promise<ProviderPolicyS
 }
 
 /**
- * How many personal model keys anyone in the team has stored: decides whether
- * Settings shows "Who pays". A count only; never whose.
+ * How many personal model keys anyone in the team has stored. A count only;
+ * never whose.
  */
 export async function countPersonalKeys(teamId: string): Promise<number> {
   try {
@@ -526,7 +526,13 @@ export async function deleteProviderCredential(input: {
 
 // ── Policy ───────────────────────────────────────────────────────────────────
 
-export async function setCredentialPolicy(teamId: string, policy: CredentialPolicy): Promise<ProviderPolicySummary> {
-  await db.update(teams).set({ ...policyColumns(policy), updatedAt: new Date() }).where(eq(teams.id, teamId));
+/**
+ * Store a policy, or clear it with null. Cleared, both columns read as unset:
+ * `inferenceKeyPolicy` goes back to its column default `'team'`, which
+ * `effectiveKeyPolicy` treats as no choice.
+ */
+export async function setCredentialPolicy(teamId: string, policy: CredentialPolicy | null): Promise<ProviderPolicySummary> {
+  const columns = policy ? policyColumns(policy) : { credentialPolicy: null, inferenceKeyPolicy: 'team' as const };
+  await db.update(teams).set({ ...columns, updatedAt: new Date() }).where(eq(teams.id, teamId));
   return loadPolicySummary(teamId);
 }
