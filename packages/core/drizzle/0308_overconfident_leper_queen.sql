@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "branch_refreshed_at" timestamp with time zone;

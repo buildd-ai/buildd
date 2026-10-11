@@ -3,6 +3,7 @@ import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse, after } from 'next/server';
+import { emit } from '@/lib/core-emit';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
@@ -3210,6 +3211,18 @@ export async function POST(req: NextRequest) {
       } satisfies ClaimDiagnostics,
     });
   }
+
+  // The claimed set is final. Modules prepare what the workers start from: a
+  // mission task's integration branch is brought up to date with trunk before
+  // the worker cuts from it (docs/specs/mission-branch-refresh.md). Bounded and
+  // fail-open; nothing here refuses or fails the claim.
+  await emit({
+    type: 'tasks.claimed',
+    tasks: claimedWorkers.map(cw => {
+      const t = cw.task as { id: string; workspaceId: string; missionId?: string | null; context?: unknown };
+      return { id: t.id, workspaceId: t.workspaceId, missionId: t.missionId ?? null, context: t.context ?? null };
+    }),
+  });
 
   // Attach degradedConnectors to workers that claimed under advisory mode
   // and persist them to the DB for the audit trail on the task detail page.
