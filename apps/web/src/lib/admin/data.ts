@@ -2,16 +2,17 @@
  * Reads and writes behind the platform-owner API (/api/admin/*). Every
  * function here is cross-tenant by design: the gate is in front of the route
  * (lib/admin/owner-gate.ts), and the scope is whatever the owner asked for —
- * one workspace, one team, or every workspace.
+ * one workspace, one team, or every workspace. Routes read through the views
+ * in lib/admin/tenant-privacy.ts, which keep other teams aggregate-only.
  *
  * Nothing new is computed here: each loader is the same lib the team-scoped
  * route or the Health → Operator page already uses, given a wider scope.
  */
 import { db } from '@buildd/core/db';
 import {
-  chatRetros, decisionRecords, experiments, orchestrationDecisions, tasks, teams, workers, workspaces,
+  chatRetros, decisionRecords, experiments, orchestrationDecisions, tasks, teamMembers, teams, workers, workspaces,
 } from '@buildd/core/db/schema';
-import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
 import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
@@ -49,21 +50,32 @@ export { applyExperimentUpdate, findOtherRunning };
 
 // ── Scope ─────────────────────────────────────────────────────────────────────
 
-/** The workspaces a scope covers, or null when its team/workspace does not exist. */
-export async function resolveScopeWorkspaces(scope: AdminScope): Promise<{ workspaceIds: string[] } | null> {
+/** The workspaces a scope covers with their teams, or null when its team/workspace does not exist. */
+export async function resolveScopeWorkspaces(scope: AdminScope): Promise<{ workspaces: { id: string; teamId: string }[] } | null> {
+  const columns = { id: workspaces.id, teamId: workspaces.teamId };
   if (scope.workspaceId) {
     const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, scope.workspaceId), columns: { id: true, teamId: true } });
     if (!ws || (scope.teamId && ws.teamId !== scope.teamId)) return null;
-    return { workspaceIds: [ws.id] };
+    return { workspaces: [ws] };
   }
   if (scope.teamId) {
     const team = await db.query.teams.findFirst({ where: eq(teams.id, scope.teamId), columns: { id: true } });
     if (!team) return null;
-    const rows = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.teamId, scope.teamId));
-    return { workspaceIds: rows.map(r => r.id) };
+    return { workspaces: await db.select(columns).from(workspaces).where(eq(workspaces.teamId, scope.teamId)) };
   }
-  const rows = await db.select({ id: workspaces.id }).from(workspaces);
-  return { workspaceIds: rows.map(r => r.id) };
+  return { workspaces: await db.select(columns).from(workspaces) };
+}
+
+/**
+ * The teams the platform owner sees in full (lib/admin/tenant-privacy.ts):
+ * those the key's creator is a member of, and the key's own team.
+ */
+export async function loadOwnTeams(account: { teamId: string; createdByUserId: string | null }): Promise<{ id: string; name: string }[]> {
+  const memberOf = account.createdByUserId
+    ? db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, account.createdByUserId))
+    : null;
+  return db.select({ id: teams.id, name: teams.name }).from(teams)
+    .where(memberOf ? or(eq(teams.id, account.teamId), inArray(teams.id, memberOf)) : eq(teams.id, account.teamId));
 }
 
 // ── Decisions ─────────────────────────────────────────────────────────────────
@@ -198,9 +210,9 @@ export async function listChatRetros(opts: { teamId: string | null; since: Date;
  * The get_usage_stats backend over any set of workspaces, plus what the admin
  * app's Usage page needs beside it: the same-length window before this one
  * (totals and groups, so "this week vs last" needs no second call) and the five
- * most expensive tasks with their titles.
+ * most expensive tasks in topTaskWorkspaceIds, with their titles.
  */
-export async function loadUsage(opts: { workspaceIds: string[]; since: Date; groupBy: GroupDimension; now?: Date }) {
+export async function loadUsage(opts: { workspaceIds: string[]; topTaskWorkspaceIds: string[]; since: Date; groupBy: GroupDimension; now?: Date }) {
   const now = opts.now ?? new Date();
   const span = now.getTime() - opts.since.getTime();
   const previousStart = new Date(opts.since.getTime() - span);
@@ -211,7 +223,8 @@ export async function loadUsage(opts: { workspaceIds: string[]; since: Date; gro
       ])
     : [[], []];
   const previous = computeUsageStats(previousRows, opts.groupBy);
-  const ranked = rankTopTasks(rows, 5);
+  const topTaskScope = new Set(opts.topTaskWorkspaceIds);
+  const ranked = rankTopTasks(rows.filter(r => topTaskScope.has(r.workspaceId)), 5);
   const titles = ranked.length
     ? await db.select({ id: tasks.id, title: tasks.title }).from(tasks).where(inArray(tasks.id, ranked.map(t => t.taskId)))
     : [];

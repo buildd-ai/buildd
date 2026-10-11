@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beginAdminRead } from '@/lib/admin/scope';
-import { loadOperatorData } from '@/lib/admin/data';
+import { viewOperator } from '@/lib/admin/tenant-privacy';
 
 /**
  * GET /api/admin/operator — platform owner only (404 otherwise).
@@ -12,6 +12,6 @@ import { loadOperatorData } from '@/lib/admin/data';
 export async function GET(req: NextRequest) {
   const read = await beginAdminRead(req);
   if ('response' in read) return read.response;
-  const data = await loadOperatorData({ workspaceIds: read.workspaceIds, since: read.scope.since });
+  const data = await viewOperator(read.viewer, read.scope.since);
   return NextResponse.json({ ...read.scope, since: read.scope.since.toISOString(), ...data });
 }
