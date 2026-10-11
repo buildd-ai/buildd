@@ -16,6 +16,6 @@ export type RoleOf = (userId: string, teamId: string) => Role | Promise<Role>;
 export function fakeCan(roleOf: RoleOf) {
   return async (caller: TeamScopeCaller, permission: Permission, teamId: string): Promise<boolean> => {
     if (caller.kind === 'account') return caller.teamId === teamId && keyLevelHas(caller.level, permission);
-    return roleHas(await roleOf(caller.userId, teamId), permission, null);
+    return roleHas(await roleOf(caller.userId, teamId), permission);
   };
 }

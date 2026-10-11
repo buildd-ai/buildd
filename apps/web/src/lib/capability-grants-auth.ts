@@ -5,7 +5,7 @@
  * admin key included: an agent run holds keys, and a key that could approve
  * its own request or loosen its team's policy would let an agent escalate
  * itself. Changing anything needs `manage_connectors` in the team (owners and
- * admins by default, with the team's permission overrides applied); any team
+ * admins); any team
  * member may read.
  */
 import { NextRequest, NextResponse } from 'next/server';
