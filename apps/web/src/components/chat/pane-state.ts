@@ -29,7 +29,7 @@ export function popOutHref(ref: BuilddObjectRef, extra?: { missionId?: string | 
     case 'task':
       return taskPageHref({ taskId: ref.id, missionId: extra?.missionId ?? null });
     case 'question':
-      return `/app/tasks/${ref.taskId}/respond`;
+      return `/app/tasks/${ref.taskId}?respond=1`;
     case 'pr':
       return extra?.prUrl ?? ref.url ?? null;
     default:

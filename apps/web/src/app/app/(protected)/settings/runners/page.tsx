@@ -11,6 +11,7 @@ import type { FleetSnapshot } from '@buildd/shared';
 import FleetOverview from './FleetOverview';
 import CloudRunnerRow from './CloudRunnerRow';
 import SignInsAnchorRedirect from './SignInsAnchorRedirect';
+import NewRunnerTokenSheet from './NewRunnerTokenSheet';
 import { permsInAnyTeam, teamIdsHolding } from '../_lib/settings-permissions';
 import { settingsReadOnly } from '@/lib/settings-nav';
 
@@ -24,9 +25,15 @@ const SIGN_INS_HREF = '/app/settings/models#sign-ins';
 /**
  * Settings → Runners. Fleet first (what runs your tasks), then connections
  * (the Cloudflare account cloud runs use, and a pointer to the sign-ins on
- * Models), then runner tokens (how a runner reaches buildd).
+ * Models), then runner tokens (how a runner reaches buildd). `?new=1` opens the
+ * New runner token sheet over it.
  */
-export default async function RunnersSettingsPage() {
+export default async function RunnersSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ new?: string | string[] }>;
+}) {
+  const { new: newParam } = await searchParams;
   const { user, teams, currentTeamId, currentTeam, workspaces, permsByTeam } = await loadSettingsContext();
   const teamId = currentTeamId ?? teams[0]?.id ?? null;
   const teamWsIds = workspaces.filter((w) => w.teamId === teamId).map((w) => w.id);
@@ -58,6 +65,7 @@ export default async function RunnersSettingsPage() {
   return (
     <SettingsPage title="Runners" readOnly={settingsReadOnly('runners', permsInAnyTeam(permsByTeam))}>
       <SignInsAnchorRedirect />
+      {newParam === '1' && <NewRunnerTokenSheet />}
       <FleetOverview
         fleet={fleet}
         teamName={teams.length > 1 ? (currentTeam?.name ?? null) : null}

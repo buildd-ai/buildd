@@ -45,11 +45,11 @@ describe('RunnerTokensSection token details', () => {
   it('links token creation to the creation page from populated and empty states', async () => {
     await mount({});
     const newToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('+ New token'));
-    expect(newToken?.getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+    expect(newToken?.getAttribute('href')).toBe('/app/settings/runners?new=1');
 
     await act(async () => { root.render(<RunnerTokensSection accounts={[]} />); });
     const createToken = [...host.querySelectorAll('a')].find((link) => link.textContent?.includes('Create a runner token'));
-    expect(createToken?.getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+    expect(createToken?.getAttribute('href')).toBe('/app/settings/runners?new=1');
   });
 
   it('flags an expired token in the compact row and an unused one in the detail', async () => {
@@ -125,7 +125,7 @@ describe('RunnerTokensSection: one primary', () => {
   it('with tokens, the header "New token" is a plain button to the new-token page', async () => {
     await mount({});
     const link = host.querySelector<HTMLAnchorElement>('[data-testid="new-token"]')!;
-    expect(link.getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+    expect(link.getAttribute('href')).toBe('/app/settings/runners?new=1');
     expect(link.className).not.toContain('btn-primary');
     expect(host.querySelectorAll('.btn-primary').length).toBe(0);
   });
@@ -140,7 +140,7 @@ describe('RunnerTokensSection: one primary', () => {
     const primaries = host.querySelectorAll<HTMLAnchorElement>('.btn-primary');
     expect(primaries.length).toBe(1);
     expect(primaries[0].textContent).toBe('Create a runner token');
-    expect(primaries[0].getAttribute('href')).toBe('/app/settings/runners/tokens/new');
+    expect(primaries[0].getAttribute('href')).toBe('/app/settings/runners?new=1');
     expect(host.querySelector('[data-testid="new-token"]')).toBeNull();
   });
 });

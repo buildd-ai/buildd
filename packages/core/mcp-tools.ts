@@ -2686,7 +2686,7 @@ export async function handleBuilddAction(
             if (rc.summary) wlines.push(`  Rejected summary: ${rc.summary}`);
           }
           if (w.waitingFor) {
-            const actionUrl = `${taskUrl}/respond`;
+            const actionUrl = `${taskUrl}?respond=1`;
             wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
             wlines.push(`  Action URL: ${actionUrl}`);
           }
