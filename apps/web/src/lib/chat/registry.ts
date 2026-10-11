@@ -139,6 +139,8 @@ export const CHAT_TOOL_SPECS = withAreas({
 
   // ── workers: steering and fleet health ──
   send_agent_message: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  /** Answer (or re-answer) a worker's waiting question; the chat tool takes `answer`, MCP takes `message`. */
+  answer_question: one(write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/respond')),
   query_events: one(read('GET /api/workers/:id')),
   explain: one(read('GET /api/explain')),
   get_error_traces: one(read('GET /api/workspaces/:id/error-traces', 'GET /api/tasks/:id/error-traces', 'GET /api/workers/:id')),
@@ -261,8 +263,6 @@ export const CHAT_TOOL_SPECS = withAreas({
 
 /** Chat-only tools: no MCP action, same registry rules. */
 export const CHAT_NATIVE_TOOL_SPECS = {
-  /** Answer (or re-answer) a worker's waiting question. MCP has no action for this; the dashboard posts /respond. */
-  answer_question: single('workers', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'POST /api/workers/:id/respond')),
   /**
    * Hold or resume one task: no new claims while held, and a running agent is
    * told to stop at a safe point (or to carry on, on resume).
