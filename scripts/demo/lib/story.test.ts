@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { relFuture, scheduleBaseline, SCHEDULE_INTERVAL_MS, type Story } from './story';
+import { claimColumns, relFuture, shiftTimestampsSql, scheduleBaseline, SCHEDULE_INTERVAL_MS, type Story } from './story';
 
 const anchor = Date.UTC(2026, 0, 1, 12, 0, 0);
 
@@ -43,5 +43,28 @@ describe('relFuture', () => {
     expect(relFuture(anchor, '90m').getTime()).toBe(anchor + 90 * 60_000);
     expect(relFuture(anchor, '+2h').getTime()).toBe(anchor + 2 * 3_600_000);
     expect(relFuture(anchor, undefined, 5).getTime()).toBe(anchor + 5);
+  });
+});
+
+describe('claimColumns', () => {
+  const story = { runners: [{ key: 'atlas', runner: 'atlas', localUiUrl: 'http://atlas.local:8766' }] } as unknown as Story;
+  test('a runner claim reports its URL as both runner and localUiUrl', () => {
+    expect(claimColumns(story, 'atlas')).toEqual({ runner: 'http://atlas.local:8766', localUiUrl: 'http://atlas.local:8766' });
+  });
+  test("a person's own session (claim_task over MCP) is runner 'mcp' with no localUiUrl, as the platform writes it", () => {
+    expect(claimColumns(story, 'mcp')).toEqual({ runner: 'mcp', localUiUrl: null });
+  });
+});
+
+describe('shiftTimestampsSql', () => {
+  const q = shiftTimestampsSql('9.491');
+  test('moves every public timestamp column by the delta', () => {
+    expect(q).toContain("interval ''9.491 seconds''");
+    expect(q).toContain("data_type like 'timestamp%'");
+  });
+  test('runs with user triggers off, so an append-only table (artifact_revisions) does not refuse the clock move', () => {
+    const off = q.indexOf("set_config('session_replication_role', 'replica', true)");
+    expect(off).toBeGreaterThan(-1);
+    expect(off).toBeLessThan(q.indexOf('execute format'));
   });
 });

@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, inArray, isNull, like } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notLike } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
@@ -123,14 +123,32 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
     // The rewrite also drops a dependency that has left the mission since it
     // was added (an unlink that predates detachTaskFromMissionSurfaceAudits),
     // so the stored list is current membership, not a filing-time record.
-    const currentDeps = Array.isArray(existingAudit.dependsOn) ? existingAudit.dependsOn : [];
+    //
+    // Only a round-1 audit reviews builder work. A re-check round depends on
+    // its fixes alone: the evidence check derives required routes from every
+    // dependency's manifest, so a builder edge there demands that builder's
+    // whole route set while the round's description names only the fixed
+    // routes, and its retry clone inherits the edge.
+    const roundOne = surfaceAuditRound(existingAudit) > 1
+      ? await db.query.tasks.findFirst({
+          where: and(
+            eq(tasks.missionId, missionId),
+            like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`),
+            notLike(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}round %`),
+          ),
+          columns: { id: true, title: true, status: true, dependsOn: true, context: true },
+          orderBy: [desc(tasks.createdAt)],
+        })
+      : existingAudit;
+    if (!roundOne) return;
+    const currentDeps = Array.isArray(roundOne.dependsOn) ? roundOne.dependsOn : [];
     const members = await missionMemberIds(missionId, currentDeps);
     const nextDeps = members.includes(createdTask.id) ? members : [...members, createdTask.id];
     const changed = nextDeps.length !== currentDeps.length || nextDeps.some((d, i) => d !== currentDeps[i]);
     if (changed) {
       await db.update(tasks)
         .set({ dependsOn: nextDeps, updatedAt: new Date() })
-        .where(eq(tasks.id, existingAudit.id));
+        .where(eq(tasks.id, roundOne.id));
     }
     return;
   }

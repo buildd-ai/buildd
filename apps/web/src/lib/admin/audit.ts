@@ -3,8 +3,8 @@ import { platformAdminAuditEvents } from '@buildd/core/db/schema';
 
 export interface PlatformAdminAuditInput {
   actorAccountId: string;
-  action: 'experiment.update' | 'team.experiment_flags.update';
-  targetType: 'experiment' | 'team';
+  action: 'experiment.update' | 'team.experiment_flags.update' | 'decision_feature.mode.update';
+  targetType: 'experiment' | 'team' | 'decision_feature';
   targetId: string;
   teamId: string | null;
   before: Record<string, unknown>;

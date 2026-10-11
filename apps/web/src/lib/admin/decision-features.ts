@@ -4,6 +4,7 @@ import {
   type CapabilityKind,
   type InferenceCapability,
 } from '@buildd/core/inference-policy';
+import { describeFeatureMode, type FeatureModeView, type StoredFeatureMode } from '@buildd/core/decision-feature-modes';
 
 /** Ledger totals for one capability over the window (decision_records or orchestration_decisions). */
 export interface DecisionFeatureCount {
@@ -17,7 +18,7 @@ export interface DecisionFeatureCount {
   inputTokens: number;
 }
 
-export interface DecisionFeature extends Omit<DecisionFeatureCount, 'capability'> {
+export interface DecisionFeature extends Omit<DecisionFeatureCount, 'capability'>, FeatureModeView {
   id: InferenceCapability;
   kind: CapabilityKind;
   /** Another id with the same effect; its numbers are reported under that id. */
@@ -41,7 +42,7 @@ const round = (n: number) => Math.round(n * 1e6) / 1e6;
  * row for an id the registry no longer names is kept in `unregistered` so a
  * renamed call site cannot hide spend.
  */
-export function groupDecisionFeatures(counts: DecisionFeatureCount[]) {
+export function groupDecisionFeatures(counts: DecisionFeatureCount[], modes: ReadonlyMap<string, StoredFeatureMode> = new Map()) {
   const byId = new Map<string, Omit<DecisionFeatureCount, 'capability'>>();
   for (const { capability, ...c } of counts) {
     const prev = byId.get(capability) ?? ZERO;
@@ -59,7 +60,9 @@ export function groupDecisionFeatures(counts: DecisionFeatureCount[]) {
   const feature = (id: InferenceCapability): DecisionFeature => {
     const aliasOf = ALIASES[id] ?? null;
     const c = aliasOf ? ZERO : (byId.get(id) ?? ZERO);
-    return { id, kind: INFERENCE_CAPABILITIES[id].kind, aliasOf, retired: RETIRED.has(id), ...c, costUsd: round(c.costUsd) };
+    // What it does once a team has it on, and whether the owner can switch it (an alias reads as its target).
+    const mode = describeFeatureMode(aliasOf ?? id, modes.get(aliasOf ?? id));
+    return { id, kind: INFERENCE_CAPABILITIES[id].kind, aliasOf, retired: RETIRED.has(id), ...c, costUsd: round(c.costUsd), ...mode };
   };
 
   const groups = DECISION_FEATURE_KINDS.map(kind => ({

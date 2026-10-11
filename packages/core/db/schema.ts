@@ -5983,7 +5983,7 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
   actorAccountId: uuid('actor_account_id'),
   // e.g. 'experiment.update', 'team.experiment_flags.update'
   action: text('action').notNull(),
-  targetType: text('target_type').notNull().$type<'experiment' | 'team'>(),
+  targetType: text('target_type').notNull().$type<'experiment' | 'team' | 'decision_feature'>(),
   targetId: text('target_id').notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
   before: jsonb('before').$type<Record<string, unknown>>(),
@@ -5993,6 +5993,29 @@ export const platformAdminAuditEvents = pgTable('platform_admin_audit_events', {
 }));
 
 export type PlatformAdminAuditEvent = typeof platformAdminAuditEvents.$inferSelect;
+
+/**
+ * The platform owner's switch per decision feature: recording only, or acting
+ * (packages/core/decision-feature-modes.ts). One row per feature; no row means
+ * the feature's code default. A team still turns the feature on for itself
+ * (teams.enabledDecisionShadows); this decides what it does once on.
+ *
+ * `measuredFingerprint` and `threshold` pin what was switched: if the
+ * feature's questions or model change later, the row stops matching and the
+ * feature records again until it is switched on anew.
+ */
+export const decisionFeatureModes = pgTable('decision_feature_modes', {
+  feature: text('feature').primaryKey(),
+  mode: text('mode').notNull().$type<'acting' | 'recording'>(),
+  applyingFraction: real('applying_fraction').default(1).notNull(),
+  measuredFingerprint: text('measured_fingerprint'),
+  threshold: real('threshold'),
+  setByAccountId: uuid('set_by_account_id'),
+  setAt: timestamp('set_at', { withTimezone: true }).defaultNow().notNull(),
+  reason: text('reason'),
+});
+
+export type DecisionFeatureModeRow = typeof decisionFeatureModes.$inferSelect;
 
 /**
  * One row per worker session end, on every path — completed, failed, the
