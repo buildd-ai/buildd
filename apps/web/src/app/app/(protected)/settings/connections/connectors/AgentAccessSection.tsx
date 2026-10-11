@@ -107,7 +107,7 @@ export default function AgentAccessSection({
     <div id="agent-access" className="scroll-mt-20">
       <Section title="Agent access">
         <p className="mb-3 text-sm text-text-secondary">
-          Agents ask for tools their role lacks, and team policy answers.{' '}
+          Agents ask for tools they don't have, and team policy answers.{' '}
           Installing a connector grants agents nothing. Writes always need a person.
         </p>
         {message && (
