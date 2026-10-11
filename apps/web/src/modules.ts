@@ -51,6 +51,7 @@ import { verdictSubscribers } from '@/lib/verdict-decision-subscribers';
 import { surfaceAuditSubscribers } from '@/lib/surface-audit-subscribers';
 import { taskEstimateExperimentSubscribers } from '@/lib/task-estimate-experiment-subscribers';
 import { failurePatternSubscribers } from '@/lib/failure-pattern-subscribers';
+import { overrideStartSubscribers } from '@/lib/override-start-decision';
 import { answerInChatHref } from '@/lib/chat/answer-link';
 import { loadPrActionSheet } from '@/lib/pr-landing-sheet';
 
@@ -79,6 +80,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...taskEstimateExperimentSubscribers,
   // task.terminal: the failure-pattern sweep for the workspace, after the evidence record is written.
   ...failurePatternSubscribers,
+  // task.override_started: the graded decision row for a forced start.
+  ...overrideStartSubscribers,
   // Last: the verdict recompute reads the evidence record the knowledge
   // module wrote and the CI/PR state the reviews module settled.
   ...verdictSubscribers,
