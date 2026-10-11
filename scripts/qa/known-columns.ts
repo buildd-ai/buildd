@@ -1,12 +1,13 @@
 /**
- * Print this checkout's text-like columns as `table.column,…` for
- * scrub-pii.sql (`psql -v known="$(bun scripts/qa/known-columns.ts)"`).
+ * Print the text-like columns of one or more Drizzle dirs as `table.column,…`
+ * for scrub-pii.sql (`psql -v known="$(bun scripts/qa/known-columns.ts [dir…])"`).
  *
- * The Visual QA clone is prod's schema plus this branch's migrations. A branch
- * cut before a table or column reached prod has no scrub decision for it: the
- * coverage test (scrub-pii.test.ts) can only check this checkout's schema.ts.
- * scrub-pii.sql overwrites every text-like column NOT on this list, so prod
- * being ahead of the branch can never leak through.
+ * The Visual QA clone is prod's schema plus the capture ref's migrations. The
+ * workflow runs this harness from trunk and passes both snapshots: trunk's
+ * (prod's schema, which this scrub has decisions for) and the capture ref's
+ * (columns its own migrations add, which the app under audit reads).
+ * scrub-pii.sql overwrites every text-like column NOT on the list, so a column
+ * neither side knows can never leak through.
  *
  * Source: the newest Drizzle snapshot (CI's schema-drift job keeps it equal to
  * schema.ts). Same column types the guard scans.
@@ -37,12 +38,24 @@ export function textColumns(snapshot: Snapshot): string[] {
   return out.sort();
 }
 
-export function knownColumns(drizzleDir = join(__dirname, '..', '..', 'packages', 'core', 'drizzle')): string[] {
-  return textColumns(JSON.parse(readFileSync(latestSnapshotPath(drizzleDir), 'utf8')));
+const OWN_DRIZZLE_DIR = join(__dirname, '..', '..', 'packages', 'core', 'drizzle');
+
+/**
+ * The union of each Drizzle dir's latest snapshot (default: this checkout's).
+ * Visual QA passes two: the harness's (trunk, which covers prod's schema) and
+ * the capture ref's (columns its own migrations add, which its app reads).
+ */
+export function knownColumns(...drizzleDirs: string[]): string[] {
+  const dirs = drizzleDirs.length > 0 ? drizzleDirs : [OWN_DRIZZLE_DIR];
+  const out = new Set<string>();
+  for (const dir of dirs) {
+    for (const c of textColumns(JSON.parse(readFileSync(latestSnapshotPath(dir), 'utf8')))) out.add(c);
+  }
+  return [...out].sort();
 }
 
 if (import.meta.main) {
-  const cols = knownColumns();
+  const cols = knownColumns(...process.argv.slice(2));
   if (cols.length === 0) throw new Error('known-columns: no text columns found in the latest snapshot');
   process.stdout.write(cols.join(','));
 }

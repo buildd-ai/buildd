@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
 import { knownColumns, latestSnapshotPath, textColumns } from './known-columns';
@@ -423,6 +424,33 @@ describe('scrub-pii.sql covers the schema', () => {
     const lagging = textColumns(snap);
     expect(lagging).not.toContain('post_session_runs.facts');
     expect(lagging).toContain('tasks.title');
+  });
+
+  // The harness (this scrub) runs from trunk while the app and its migrations
+  // come from the capture ref, so the known list is the union of both
+  // snapshots: trunk's covers prod's schema, the capture ref's the columns its
+  // own migrations add to the clone, which its app reads.
+  test('known columns are the union of the harness and capture-ref snapshots', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'known-cols-'));
+    try {
+      const write = (name: string, tables: Record<string, string[]>) => {
+        const dir = join(tmp, name);
+        mkdirSync(join(dir, 'meta'), { recursive: true });
+        writeFileSync(join(dir, 'meta', '_journal.json'), JSON.stringify({ entries: [{ idx: 0 }, { idx: 3 }] }));
+        const snap = { tables: Object.fromEntries(Object.entries(tables).map(([t, cols]) => [`public.${t}`, {
+          name: t, schema: '', columns: Object.fromEntries(cols.map(c => [c, { name: c, type: 'text' }])),
+        }])) };
+        writeFileSync(join(dir, 'meta', '0003_snapshot.json'), JSON.stringify(snap));
+        return dir;
+      };
+      const trunk = write('trunk', { tasks: ['title'], artifact_revisions: ['body'] });
+      const branch = write('branch', { tasks: ['title', 'branch_only'] });
+      expect(knownColumns(trunk, branch)).toEqual(['artifact_revisions.body', 'tasks.branch_only', 'tasks.title']);
+      // One dir (shoot.sh, a single checkout) is just that snapshot.
+      expect(knownColumns(branch)).toEqual(['tasks.branch_only', 'tasks.title']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test('the CI QA user is designated before the general user scrub', () => {
