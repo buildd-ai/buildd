@@ -40,25 +40,25 @@ interface Props {
 
 const DENSITY = {
   hero: {
-    section: 'px-4 py-4 md:px-10 md:py-9',
-    headline: 'mt-2 md:mt-5 text-[24px] md:text-[40px] font-bold leading-[1.15] tracking-[-0.5px]',
-    body: 'mt-2 md:mt-4 text-[14px] md:text-[16px]',
-    grid: 'mt-3 md:mt-8 gap-2 md:gap-6',
-    option: 'px-3 py-2 md:px-7 md:py-6',
-    optionLabel: 'mt-0.5 md:mt-3 text-[20px] md:text-[25px]',
-    optionDesc: 'mt-1 md:mt-3 text-[13px] md:text-[15px]',
-    form: 'mt-3 md:mt-6',
-    input: 'min-h-12 md:min-h-14 px-4 md:px-5',
-    send: 'min-h-12 md:min-h-14 px-5 md:px-6',
+    section: 'px-4 py-4 @md:px-10 @md:py-9',
+    headline: 'mt-2 @md:mt-5 text-[24px] @md:text-[40px] font-bold leading-[1.15] tracking-[-0.5px]',
+    body: 'mt-2 @md:mt-4 text-[14px] @md:text-[16px]',
+    grid: 'mt-3 @md:mt-8 gap-2 @md:gap-6',
+    option: 'px-3 py-2 @md:px-7 @md:py-6',
+    optionLabel: 'mt-0.5 @md:mt-3 text-[20px] @md:text-[25px]',
+    optionDesc: 'mt-1 @md:mt-3 text-[13px] @md:text-[15px]',
+    form: 'mt-3 @md:mt-6',
+    input: 'min-h-12 @md:min-h-14 px-4 @md:px-5',
+    send: 'min-h-12 @md:min-h-14 px-5 @md:px-6',
   },
   feed: {
-    section: 'px-4 py-4 md:px-5 md:py-4',
-    headline: 'mt-3 text-[22px] md:text-[18px] font-bold leading-[1.2]',
-    body: 'mt-2 text-[14px] md:text-[13.5px]',
+    section: 'px-4 py-4 @md:px-5 @md:py-4',
+    headline: 'mt-3 text-[22px] @md:text-[18px] font-bold leading-[1.2]',
+    body: 'mt-2 text-[14px] @md:text-[13.5px]',
     grid: 'mt-4 gap-3',
     option: 'px-4 py-3',
-    optionLabel: 'mt-1 text-[17px] md:text-[15px]',
-    optionDesc: 'mt-1 text-[13.5px] md:text-[12.5px]',
+    optionLabel: 'mt-1 text-[17px] @md:text-[15px]',
+    optionDesc: 'mt-1 text-[13.5px] @md:text-[12.5px]',
     form: 'mt-3',
     input: 'min-h-11 px-3',
     send: 'min-h-11 px-4',
@@ -124,24 +124,25 @@ export default function QuestionHero({
   }, [enableKeys, sent, options, busy, onAnswer]);
 
   return (
+    <div className="@container min-w-0">
     <section
       ref={sectionRef}
       data-testid={testId}
       data-density={density}
-      className={`scroll-mt-16 md:scroll-mt-4 bg-card border-2 border-accent shadow-[var(--accent-shadow)] ${d.section}`}
+      className={`min-w-0 scroll-mt-16 md:scroll-mt-4 bg-card border-2 border-accent shadow-[var(--accent-shadow)] ${d.section}`}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px]">
         <span className="w-[9px] h-[9px] bg-accent shrink-0" aria-hidden="true" />
         <span data-testid="worker-needs-input-label" className="font-semibold text-accent-text">{askerLabel}</span>
-        {askedAgo && <span className="hidden md:inline text-text-muted" suppressHydrationWarning>· {askedAgo}</span>}
-        {stateNote && <span className="hidden md:inline text-text-muted">· {stateNote}</span>}
+        {askedAgo && <span className="hidden @md:inline text-text-muted" suppressHydrationWarning>· {askedAgo}</span>}
+        {stateNote && <span className="hidden @md:inline text-text-muted">· {stateNote}</span>}
         {aside && <span className="ml-auto text-text-muted">{aside}</span>}
       </div>
 
       {question.where && (
         <p
           data-testid="question-brief-where"
-          className="mt-3 font-mono text-[11px] md:text-[12px] text-text-muted [overflow-wrap:anywhere]"
+          className="mt-3 font-mono text-[11px] @md:text-[12px] text-text-muted [overflow-wrap:anywhere]"
         >
           {[question.where.taskTitle, question.where.branch, question.where.file].filter(Boolean).join(' · ')}
         </p>
@@ -175,7 +176,7 @@ export default function QuestionHero({
       ) : (
         <>
           {options.length > 0 && (
-            <div data-testid="worker-needs-input-options" className={`${d.grid} grid ${options.length === 2 ? 'md:grid-cols-2' : options.length > 2 ? 'md:grid-cols-2 xl:grid-cols-3' : ''}`}>
+            <div data-testid="worker-needs-input-options" className={`${d.grid} grid grid-cols-[minmax(0,1fr)] ${options.length === 2 ? '@md:grid-cols-[repeat(2,minmax(0,1fr))]' : options.length > 2 ? '@md:grid-cols-[repeat(2,minmax(0,1fr))] @3xl:grid-cols-[repeat(3,minmax(0,1fr))]' : ''}`}>
               {options.map((o, i) => (
                 <OptionCard
                   key={`${o.label}-${i}`}
@@ -209,7 +210,7 @@ export default function QuestionHero({
               onChange={(e) => setFreeText(e.target.value)}
               placeholder={options.length > 0 ? 'Or answer in your own words…' : 'Type your answer…'}
               disabled={busy}
-              className={`flex-1 min-w-0 ${d.input} bg-surface-2 border-2 border-dashed border-border-strong text-base md:text-[15px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-solid focus:border-accent`}
+              className={`flex-1 min-w-0 ${d.input} bg-surface-2 border-2 border-dashed border-border-strong text-base @md:text-[15px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-solid focus:border-accent`}
             />
             <button
               type="submit"
@@ -221,7 +222,7 @@ export default function QuestionHero({
           </form>
 
           {options.length > 0 && enableKeys && hints && (
-            <p className="hidden md:flex mt-4 items-center gap-1.5 font-mono text-[12px] text-text-muted">
+            <p className="hidden @md:flex mt-4 items-center gap-1.5 font-mono text-[12px] text-text-muted">
               Press
               {options.slice(0, Math.min(options.length, 3)).map((_, i) => (
                 <span key={i} className="inline-flex items-center gap-1.5">
@@ -235,6 +236,7 @@ export default function QuestionHero({
         </>
       )}
     </section>
+    </div>
   );
 }
 
@@ -265,7 +267,7 @@ function OptionCard({
   const clamp = o.recommended ? 'line-clamp-3' : 'line-clamp-2';
   return (
     <div
-      className={`relative flex flex-col border-2 transition-transform hover:-translate-y-px ${
+      className={`relative flex min-w-0 flex-col border-2 transition-transform hover:-translate-y-px ${
         o.recommended
           ? 'bg-accent text-[var(--on-accent)] border-[var(--on-accent)] shadow-[5px_5px_0_0_var(--on-accent)]'
           : 'bg-surface-2 text-text-primary border-border-strong'
@@ -282,7 +284,7 @@ function OptionCard({
         {showKey && density === 'hero' && (
           <kbd
             aria-hidden="true"
-            className={`hidden md:grid absolute top-4 right-4 w-8 h-8 place-items-center border-2 font-mono text-[13px] font-semibold ${
+            className={`hidden @md:grid absolute top-4 right-4 w-8 h-8 place-items-center border-2 font-mono text-[13px] font-semibold ${
               o.recommended ? 'border-[var(--on-accent)]' : 'border-border-strong text-text-secondary'
             }`}
           >
@@ -290,16 +292,16 @@ function OptionCard({
           </kbd>
         )}
         <span className={`block font-mono text-chip font-semibold ${o.recommended ? '' : 'text-text-muted'}`}>
-          {o.recommended ? <>Recommended<span className="hidden md:inline"> by the agent</span></> : 'Alternative'}
+          {o.recommended ? <>Recommended<span className="hidden @md:inline"> by the agent</span></> : 'Alternative'}
         </span>
-        <span className={`block ${d.optionLabel} ${density === 'hero' && showKeyPad ? 'pr-0 md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
+        <span className={`block ${d.optionLabel} ${density === 'hero' && showKeyPad ? 'pr-0 @md:pr-10' : ''} font-semibold leading-tight [overflow-wrap:anywhere]`}>
           {sending === o.label ? 'Sending…' : o.label}
         </span>
         {o.description && (
           <span
             ref={ref as React.RefObject<HTMLSpanElement>}
             data-clamped={open ? 'false' : 'true'}
-            className={`block ${d.optionDesc} leading-snug md:leading-relaxed [overflow-wrap:anywhere] ${open ? '' : `${clamp} md:line-clamp-none`} ${o.recommended ? '' : 'text-text-secondary'}`}
+            className={`block ${d.optionDesc} leading-snug @md:leading-relaxed [overflow-wrap:anywhere] ${open ? '' : `${clamp} @md:line-clamp-none`} ${o.recommended ? '' : 'text-text-secondary'}`}
           >
             {o.description}
           </span>
@@ -311,7 +313,7 @@ function OptionCard({
           data-testid="clamp-toggle"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
-          className="md:hidden self-start px-3 pb-1 min-h-8 font-mono text-chip font-semibold underline"
+          className="@md:hidden self-start px-3 pb-1 min-h-8 font-mono text-chip font-semibold underline"
         >
           {open ? 'less' : 'more'}
         </button>
