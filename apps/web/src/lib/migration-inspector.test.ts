@@ -243,6 +243,18 @@ describe('inspectPullRequestMigrations', () => {
     });
   });
 
+  // Spec workflow-state-kernel §13.11 rule 5: "superseded predecessor migration reservation".
+  it('a predecessor this PR replaces does not hold its migration slot', async () => {
+    github({
+      files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],
+      head: { [`${DIR}/0094_safe.sql`]: SAFE },
+      peers: [{ number: 40, files: [{ filename: `${DIR}/0094_older_attempt.sql`, status: 'added' }] }],
+    });
+    await expect(inspectPullRequestMigrations({
+      installationId: 1, repoFullName: 'acme/app', prNumber: 42, headSha: 'abc123', files: [], ignorePrNumbers: [40],
+    })).resolves.toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
   it('does not report a collision when this PR is not the deterministic owner (lower PR number)', async () => {
     github({
       files: [{ filename: `${DIR}/0094_safe.sql`, status: 'added' }],

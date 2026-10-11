@@ -101,6 +101,7 @@ import type { CiRedChain } from './ci-red-chain';
 import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
+import type { LandingBlocker, LandingBlockCause } from './landing-blocker';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -123,7 +124,8 @@ export type MissionStateSource =
   | 'gateEvents.claimLoopDeferral'
   | 'workers.prUrl + workers.mergedAt'
   | 'workers.prLifecycleStatus + tasks.parentTaskId'
-  | 'tasks.parentTaskId + tasks.taskClass';
+  | 'tasks.parentTaskId + tasks.taskClass'
+  | 'deriveLandingBlocker';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -262,6 +264,26 @@ export type WaitingOnDescriptor =
       attempts: number;
       /** Failing checks, when the fix attempts' failure summary named them. */
       failing: string[];
+      prNumbers: number[];
+      prUrls: string[];
+      taskIds: string[];
+    }
+  /**
+   * Every unmerged PR has a reason it cannot land right now: it conflicts, its
+   * migration collides, a repair is queued or running, the repairs ran out, a
+   * person must decide, or CI is still running. Deliberately not a flag on
+   * `merge`: "ready to merge" over a dirty PR sends the owner to a merge GitHub
+   * refuses (spec workflow-state-kernel §13.11 rule 3). `owner` says whose move
+   * it is; `nextAction` is the step that clears it.
+   */
+  | {
+      kind: 'landing_blocked';
+      tone: WaitingOnTone;
+      label: string;
+      count: number;
+      cause: LandingBlockCause;
+      owner: 'platform' | 'person';
+      nextAction: string;
       prNumbers: number[];
       prUrls: string[];
       taskIds: string[];
@@ -558,6 +580,12 @@ export interface MissionStateInput {
    */
   ciRed?: CiRedChain[];
   /**
+   * Why each unmerged PR cannot land right now (`deriveLandingBlocker`), one
+   * entry per PR that has a reason. When every unmerged PR has one, the merge
+   * fact is `landing_blocked`, not ready-for-review.
+   */
+  landingBlocked?: LandingBlocker[];
+  /**
    * An open fix attempt (taskClass `attempt`) on this subject — the builder a
    * request-changes review or a red CI run queued. While one exists the PR is
    * not ready to merge: the platform owes the next push, not the owner.
@@ -613,6 +641,7 @@ export const OUTSTANDING_RANK: Record<WaitingOnDescriptor['kind'], number> = {
   human_decision: 1,
   dependency: 2,
   ci_red: 3,
+  landing_blocked: 3,
   merge: 3,
   // Ranked below a genuinely open, mergeable PR: both need the owner, but a PR
   // GitHub closed months ago is not a live merge tap the way an open one is,
@@ -1060,6 +1089,43 @@ function ciRedFact(
   };
 }
 
+/**
+ * Not ready: every named unmerged PR has a landing blocker. A mixed set keeps
+ * the ordinary `merge` reading, since one of those PRs really is mergeable.
+ * A person-owned blocker outranks a platform-owned one in the same set.
+ */
+function landingFact(
+  blockers: readonly LandingBlocker[] | undefined,
+  prs: ReadonlyArray<{ taskId: string; prNumber: number | null; prUrl: string | null }>,
+): Resolution | null {
+  if (!blockers || blockers.length === 0 || prs.length === 0) return null;
+  const matched: LandingBlocker[] = [];
+  for (const pr of prs) {
+    const b = blockers.find(x => x.taskId === pr.taskId && (pr.prNumber == null || x.prNumber == null || x.prNumber === pr.prNumber));
+    if (!b) return null;
+    matched.push(b);
+  }
+  const lead = matched.find(b => b.owner === 'person') ?? matched[0];
+  const person = lead.owner === 'person';
+  return {
+    kind: person ? 'blocked' : 'waiting',
+    waitingOn: {
+      kind: 'landing_blocked',
+      tone: person ? 'error' : 'info',
+      label: matched.length === 1 ? lead.label : `${matched.length} PRs cannot land yet: ${lead.label}`,
+      count: matched.length,
+      cause: lead.cause,
+      owner: lead.owner,
+      nextAction: lead.nextAction,
+      prNumbers: matched.map(b => b.prNumber).filter((n): n is number => typeof n === 'number'),
+      prUrls: matched.map(b => b.prUrl).filter((u): u is string => typeof u === 'string'),
+      taskIds: matched.map(b => b.taskId),
+    },
+    displayState: person ? 'blocked' : 'active',
+    source: 'deriveLandingBlocker',
+  };
+}
+
 /** Rule 7 — the work is done and has not reached trunk. */
 function mergeFact(input: MissionStateInput): Resolution | null {
   // An open fix attempt means the PR is about to change; asking the owner to
@@ -1149,6 +1215,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
     }
 
     if (!missionPr) {
+      const landing = landingFact(input.landingBlocked, details.filter(d => !d.closedUnsuperseded));
+      if (landing) return landing;
       const red = ciRedFact(input.ciRed, details);
       if (red) return red;
     }
@@ -1205,6 +1273,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
   if (openMissionPr || rowPrs.length > 0) {
     const missionPr = openMissionPr !== null;
     if (!missionPr) {
+      const landing = landingFact(input.landingBlocked, rowPrs);
+      if (landing) return landing;
       const red = ciRedFact(input.ciRed, rowPrs);
       if (red) return red;
     }
@@ -1644,6 +1714,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
     }
     case 'ci_red':
       return ciRedPhrase(d);
+    case 'landing_blocked':
+      return d.label;
     case 'pr_closed_unmerged': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
       const only = d.count === 1 ? d.suggestions?.[0]?.suggestion : undefined;
@@ -1856,6 +1928,8 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         : 'Resolve and merge the open PR(s). A completed task has not shipped until its PR merges.';
     case 'ci_red':
       return 'The automatic fix attempts are used up and CI is still red, so this is not ready to review. Open the failing check, fix it or take the branch over, then push.';
+    case 'landing_blocked':
+      return waitingOn.nextAction;
     case 'pr_closed_unmerged':
       if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
         return 'GitHub will not let this PR merge. Confirm the suggested PR if the work shipped there, or mark the PR abandoned with a reason if the work is not shipping.';
@@ -1939,7 +2013,7 @@ export function missionNeedsYou(view: MissionStateView): boolean {
   if (view.kind === 'awaiting_merge' && view.escalationGateVerdict?.owner === 'machine') return false;
   if (NEEDS_YOU_KINDS.has(view.kind)) return true;
   const holdAsk = view.kind === 'held' ? view.waitingOn : null;
-  if (view.outstanding.some(f => f !== holdAsk && OWNER_FACT_KINDS.has(f.kind))) return true;
+  if (view.outstanding.some(f => f !== holdAsk && (OWNER_FACT_KINDS.has(f.kind) || (f.kind === 'landing_blocked' && f.owner === 'person')))) return true;
   // needsYou follows the situation. With no work in flight (not `running`) and
   // no hold, a failing criterion the headline leads with is the owner's to
   // clear, even when it did not win precedence: a paused mission whose open

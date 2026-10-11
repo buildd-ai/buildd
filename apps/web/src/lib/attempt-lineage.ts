@@ -84,3 +84,27 @@ export async function collectLineage<T extends LineageRow>(
   }
   return [...all.values()];
 }
+
+/**
+ * What a fix attempt may never be blocked by: its own chain. The ancestor
+ * tasks it descends from (`parentTaskId`, `context.rootTaskId`) and every PR
+ * the chain has opened (`context.lineagePrNumbers`). Empty for anything that
+ * is not an attempt, so ordinary tasks keep every exemption they had and
+ * gain none. docs/specs/workflow-state-kernel.md §13.11 rule 4: a pending
+ * retry sat deferred behind its own predecessor's still-open PR.
+ */
+export function ownLineage(task: {
+  taskClass?: string | null;
+  parentTaskId?: string | null;
+  context?: unknown;
+}): { taskIds: ReadonlySet<string>; prNumbers: ReadonlySet<number> } {
+  if (task.taskClass !== 'attempt') return { taskIds: new Set(), prNumbers: new Set() };
+  const ctx = (task.context ?? {}) as { rootTaskId?: unknown; lineagePrNumbers?: unknown };
+  const taskIds = new Set<string>();
+  if (task.parentTaskId) taskIds.add(task.parentTaskId);
+  if (typeof ctx.rootTaskId === 'string' && ctx.rootTaskId) taskIds.add(ctx.rootTaskId);
+  const prNumbers = new Set(
+    Array.isArray(ctx.lineagePrNumbers) ? ctx.lineagePrNumbers.filter((n): n is number => typeof n === 'number') : [],
+  );
+  return { taskIds, prNumbers };
+}
