@@ -177,7 +177,7 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
   });
 
   it('keeps the status badge testid (AC-19)', () => {
-    expect(pageSource).toContain('<span data-testid="task-header-status" data-status={displayStatus}>');
+    expect(pageSource).toContain('<span data-testid="task-header-status" data-status={displayStatus}');
   });
 });
 
@@ -276,5 +276,20 @@ describe('one verdict — tasks/[id]/page.tsx (lib/task-verdict.ts)', () => {
 
   it('every captured error stays inspectable through the full-evidence list', () => {
     expect(pageSource).toContain('<TaskErrorEvidence items={errorEvidenceItems}');
+  });
+});
+
+// U1 audit (task 01e6293b): below md the actions row (⋯ menu) stacked above the
+// title, left-aligned on a running task. It sits at the right of the title row
+// at every width.
+describe('task header — the menu stays on the title row', () => {
+  const header = pageSource.slice(pageSource.indexOf('data-testid="task-header"'), pageSource.indexOf('data-testid="task-subline"'));
+  it('the title and actions share one row at every width', () => {
+    expect(header).not.toContain('flex-col-reverse');
+    expect(header).toContain('data-testid="task-header-actions"');
+  });
+  it('the actions are right-aligned, never spread', () => {
+    const actions = header.slice(header.indexOf('data-testid="task-header-actions"') - 200, header.indexOf('data-testid="task-header-actions"'));
+    expect(actions).not.toContain('justify-between');
   });
 });
