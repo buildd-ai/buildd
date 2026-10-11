@@ -43,10 +43,6 @@ export const teams = pgTable('teams', {
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
 
-  // Unused: which roles hold a permission is fixed in permission-registry.ts
-  // (docs/specs/team-permissions.md, "No per-team grants"). Nothing reads or
-  // writes it; a follow-up migration drops the column.
-  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   // Hosted plan assignment for Buildd-managed runners: { plan, ...overrides }.
   // NULL = the deployment default (BUILDD_DEFAULT_MANAGED_PLAN), unlimited when
   // that is unset, so a self-hosted install has no commercial limit. Written by
@@ -130,6 +126,10 @@ export const teams = pgTable('teams', {
   // credentialPolicyOf (apps/web/src/lib/inference-key-policy.ts), which maps
   // team/team_or_own/own one-to-one. inferenceKeyPolicy is dropped later.
   credentialPolicy: text('credential_policy').$type<'team' | 'personal_first' | 'personal_only'>(),
+  // Which connected provider serves each surface (packages/core/providers/assignments.ts).
+  // NULL or a missing surface = the resolver's own ranking. A set surface puts
+  // that provider first within a scope; it never widens what the resolver may pick.
+  providerAssignments: jsonb('provider_assignments').$type<import('../providers/assignments').ProviderAssignments | null>(),
   // Which model answers the team's decision calls (packages/core/decision-model.ts).
   // NULL = Jev on OpenRouter. Otherwise any chat model, via OpenRouter or the
   // team's LiteLLM gateway, with confidence from token logprobs.
