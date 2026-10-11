@@ -564,7 +564,7 @@ boundary: the agent runs unprivileged and cannot forge file change times, which
 is what the manifest check rests on. A container escape defeats it, as it
 defeats every other isolation here. buildd's runner-size answer can only lower
 the mode: a workspace that set `gitConfig.warmHandover: 'off'` (Settings →
-the workspace → Fresh container for every task) gets fresh containers, and a
+the workspace → Start every task from a clean copy) gets fresh containers, and a
 dispatch buildd did not answer runs fresh too.
 
 A task that follows another in the same

@@ -41,15 +41,15 @@ export default function FreshContainerSection({ workspaceId, initial, canEdit }:
     <div id="fresh-container" className="py-4 first:pt-0 last:pb-0 scroll-mt-20">
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-text-primary">Fresh container for every task</h3>
-          <p className="text-xs text-text-secondary mt-0.5">Cloud tasks normally start in the one the last task left, wiped first, so they start faster. Turn this on if tasks here act on outside input, like public issues.</p>
+          <h3 id="fresh-container-label" className="text-sm font-medium text-text-primary">Start every task from a clean copy</h3>
+          <p className="text-xs text-text-secondary mt-0.5">Tasks normally reuse the copy of the repository the last task cleaned up, so they start faster. Turn this on if tasks here act on outside input, like public issues.</p>
         </div>
         {canEdit ? (
           <Switch
             checked={on}
             onChange={toggle}
             disabled={saving}
-            label="Fresh container for every task"
+            labelledBy="fresh-container-label"
             className={SWITCH_HIT_AREA}
           />
         ) : (
