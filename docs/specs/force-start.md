@@ -9,6 +9,38 @@ surfaces: [apps/web/src/app/api/tasks/[id]/start/route.ts, packages/core/waiting
 related: [claim-ordering, mission-task-lifecycle, orchestration-decisions-shadow]
 keywords: [run now, force start, forceStart, forceStartHistory, reasons_changed, reasonsDigest, coordination_hold, WaitingReason, inferred dependency, migration slot, human_force_start]
 verified_by: [apps/web/src/app/api/tasks/[id]/start/route.test.ts, apps/web/src/lib/force-start.test.ts, apps/web/src/lib/coordination-probe.test.ts, packages/core/__tests__/waiting-reason.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/claim/deps-gate.test.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskActionZone.coordination.dom.test.tsx, packages/core/__tests__/start-outcome-grade.test.ts]
+assertions:
+  - id: start-route
+    type: route
+    method: POST
+    path: /api/tasks/[id]/start
+    file: apps/web/src/app/api/tasks/[id]/start/route.ts
+  - id: waiting-reason-model
+    type: symbol
+    name: WAITING_KIND_SPEC
+    path: packages/core/waiting-reason.ts
+  - id: reasons-digest
+    type: symbol
+    name: waitingReasonsDigest
+    path: packages/core/waiting-reason.ts
+  - id: start-reads-probe
+    type: symbol_reachable
+    symbol: probeCoordination
+    entry: apps/web/src/app/api/tasks/[id]/start/route.ts
+  - id: claim-consumes-intent
+    type: symbol_reachable
+    symbol: consumeForceStart
+    entry: apps/web/src/app/api/workers/claim/route.ts
+  - id: claim-records-force
+    type: symbol_reachable
+    symbol: recordForceStartClaim
+    entry: apps/web/src/app/api/workers/claim/route.ts
+  - id: start-route-tests
+    type: test_file
+    path: apps/web/src/app/api/tasks/[id]/start/route.test.ts
+  - id: force-start-tests
+    type: test_file
+    path: apps/web/src/lib/force-start.test.ts
 ---
 
 # Force Start Past a Coordination Wait
