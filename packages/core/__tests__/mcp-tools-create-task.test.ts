@@ -301,7 +301,8 @@ describe('create_task — parentTaskId support', () => {
     );
 
     expect(result.content[0].text).not.toContain('Status: pending');
-    expect(result.content[0].text).toContain('Queued');
+    expect(result.content[0].text).toContain('Created and queued; pickup is asynchronous');
+    expect(result.content[0].text).not.toMatch(/no runner has claimed|next poll/i);
     expect(result.content[0].text).toContain('get_task');
     expect(result.content[0].text).toContain('task-new');
   });
