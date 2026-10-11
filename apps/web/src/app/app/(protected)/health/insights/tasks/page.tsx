@@ -14,7 +14,7 @@ import { resolveBandDrillQaState, sampleBandSelection } from './sample-band';
 
 /** Insights owns historical band selection and lists it as Activity-style rows. Team admins only, like Insights. */
 export default async function InsightsTasksPage({ searchParams }: {
-  searchParams: Promise<{ band?: string; from?: string; to?: string; at?: string; workspace?: string; state?: string }>;
+  searchParams: Promise<{ band?: string; split?: string; from?: string; to?: string; at?: string; workspace?: string; state?: string }>;
 }) {
   const params = await searchParams;
   const user = await getCurrentUser();
