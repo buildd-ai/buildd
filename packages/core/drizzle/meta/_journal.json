@@ -303,6 +303,13 @@
       "when": 1791676896304,
       "tag": "0295_absurd_moon_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1791677392594,
+      "tag": "0296_careful_thing",
+      "breakpoints": true
     }
   ]
 }

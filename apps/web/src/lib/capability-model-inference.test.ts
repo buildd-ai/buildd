@@ -7,6 +7,9 @@ import {
   parseModelInferenceRequest,
   reserveRefusal,
   defaultModelInferenceDeps,
+  capabilityGrantsGrantSource,
+  durableModelInferenceLedger,
+  modelInferenceUsageRow,
   NO_GRANT_SERVICE,
   NO_LEDGER,
   type GrantUsage,
@@ -204,12 +207,19 @@ describe('invokeModelInference — refusals make no provider call', () => {
     await expectNoSpend(setup({ route: null }), 'missing_key');
   });
 
-  it('refuses when no ledger exists (the default) rather than spending unaccounted', async () => {
+  it('refuses when no ledger exists rather than spending unaccounted', async () => {
     const s = setup({ ledger: NO_LEDGER });
     const r = await expectNoSpend(s, 'ledger_unavailable');
     expect(r.ok === false && r.status).toBe(503);
-    expect(defaultModelInferenceDeps(() => {}).ledger).toBe(NO_LEDGER);
-    expect(defaultModelInferenceDeps(() => {}).grants).toBe(NO_GRANT_SERVICE);
+  });
+
+  it('production deps are the grant service and the durable ledger, never the null seams', () => {
+    const d = defaultModelInferenceDeps(() => {});
+    expect(d.grants).toBe(capabilityGrantsGrantSource);
+    expect(d.ledger).toBe(durableModelInferenceLedger);
+    expect(d.grants).not.toBe(NO_GRANT_SERVICE);
+    expect(d.ledger).not.toBe(NO_LEDGER);
+    expect(typeof d.usage).toBe('function');
   });
 
   it('a throwing ledger reads as unavailable', async () => {
@@ -331,6 +341,40 @@ describe('invokeModelInference — an allowed call', () => {
     const sent = s.decide.mock.calls[0][0];
     expect(sent.endpoint).toEqual(route.endpoint!);
     expect(sent.fetch).toBe(gatewayFetch);
+  });
+
+  it('receipts a sent call to ai_usage with what the grant was charged, never a key', async () => {
+    const s = setup({ decide: jevResponder({ costUsd: null }) });
+    const usage = mock((_u: unknown) => {});
+    await invokeModelInference(PRINCIPAL, REQUEST, { ...s.deps, usage });
+    expect(usage).toHaveBeenCalledTimes(1);
+    const row = modelInferenceUsageRow(usage.mock.calls[0][0] as Parameters<typeof modelInferenceUsageRow>[0]);
+    expect(row).toMatchObject({
+      teamId: PRINCIPAL.teamId, accountId: PRINCIPAL.accountId, surface: 'decision', kind: 'model.inference',
+      provider: 'openrouter', model: 'typesafe/jev-1.13-20260917', inputTokens: 120, outputTokens: 4,
+      costUsd: BUDGET.maxUsdPerCall.toFixed(6), costSource: 'estimated', outcome: 'ok',
+    });
+    expect(JSON.stringify(row)).not.toContain(FAKE_KEY);
+  });
+
+  it('a reported cost is receipted as reported; a call that never left is not receipted', async () => {
+    const ok = setup();
+    const usage = mock((_u: unknown) => {});
+    await invokeModelInference(PRINCIPAL, REQUEST, { ...ok.deps, usage });
+    expect(modelInferenceUsageRow(usage.mock.calls[0][0] as Parameters<typeof modelInferenceUsageRow>[0]))
+      .toMatchObject({ costUsd: '0.000200', costSource: 'reported' });
+
+    const decide = mock(async () => ({ ok: false as const, error: { kind: 'sdk_missing' as const, message: 'x' }, latencyMs: 0, attempts: 0 }));
+    const notSent = setup({ decide: decide as unknown as FakeDecide });
+    const none = mock((_u: unknown) => {});
+    await invokeModelInference(PRINCIPAL, REQUEST, { ...notSent.deps, usage: none });
+    expect(none).toHaveBeenCalledTimes(0);
+  });
+
+  it('a throwing usage sink does not fail the call', async () => {
+    const s = setup();
+    const r = await invokeModelInference(PRINCIPAL, REQUEST, { ...s.deps, usage: () => { throw new Error('db down'); } });
+    expect(r.ok).toBe(true);
   });
 
   it('a settle failure does not fail the call, and the reservation stays held', async () => {

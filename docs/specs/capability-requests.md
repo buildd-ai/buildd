@@ -157,8 +157,8 @@ fact it was granted under still holds; revoking it MUST stop the next call.
   dead; no rule now forbids it; and a policy-made grant still auto-grants
   under current policy. Each use is audited (`capability.use`).
 - The `model.inference` route reads its grant through `capabilityGrantSource`
-  under the same checks. Its budget ledger is still `NO_LEDGER`, so a granted
-  inference call is refused 503 `ledger_unavailable` until a ledger ships.
+  under the same checks, and spends through the durable per-grant ledger
+  ([model-inference-agent-capability](model-inference-agent-capability.md)).
 
 **Acceptance criteria**:
 - AC-6: GIVEN an approved grant WHEN an admin revokes it THEN the next `authorizeCapabilityUse` is refused.
@@ -169,7 +169,7 @@ fact it was granted under still holds; revoking it MUST stop the next call.
 **Out of scope**: mounting a granted connector into a running session, or a
 gateway that proxies provider calls (the runtime follow-up calls
 `authorizeCapabilityUse`); the settings UI for policy and requests; the
-model-inference budget ledger. A connector a role already mounts at claim is
+model-inference budget ledger (its own spec). A connector a role already mounts at claim is
 governed by role `connectorRefs` and catalog policy, not by grants.
 
 **Code surface**:
