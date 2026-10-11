@@ -24,7 +24,9 @@ import { assertDbConfigured, q, seedWorkspace } from './harness';
 
 const ROOT = join(import.meta.dir, '..', '..', '..', '..');
 const SCRUB = readFileSync(join(ROOT, 'scripts/qa/scrub-pii.sql'), 'utf8');
-const { knownColumns } = await import('../../../../scripts/qa/known-columns');
+const { knownColumns, latestSnapshotPath, schemaShape } = await import('../../../../scripts/qa/known-columns');
+// -v shape, as visual-qa.yml passes it: this checkout's schema (`known-columns.ts --shape`).
+const SHAPE = JSON.stringify(schemaShape(JSON.parse(readFileSync(latestSnapshotPath(join(ROOT, 'packages/core/drizzle')), 'utf8'))));
 
 // Matches nothing a seeded row holds; the scrub refuses an empty pattern.
 const IDS = 'qa-scrub-test-never-matches';
@@ -40,7 +42,7 @@ function runScrub(opts: { script: string; known: string[] }) {
     return spawnSync('psql', [
       process.env.DATABASE_URL!, '-X', '-q',
       '-v', 'ON_ERROR_STOP=1', '-v', `ids=${IDS}`, '-v', `known=${opts.known.join(',')}`,
-      '-f', file,
+      '-v', `shape=${SHAPE}`, '-f', file,
     ], { encoding: 'utf8' });
   } finally {
     rmSync(dir, { recursive: true, force: true });

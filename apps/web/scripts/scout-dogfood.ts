@@ -80,6 +80,7 @@ const toRun = (r: Record<string, unknown>): VisualQaRun => ({
   conclusion: (r.conclusion as string | null) ?? null,
   headSha: r.head_sha as string,
   headBranch: (r.head_branch as string | null) ?? null,
+  displayTitle: (r.display_title as string | null) ?? null,
   createdAt: r.created_at as string,
 });
 
@@ -90,6 +91,9 @@ function ghVisualQaActions(repo: string): VisualQaActions {
     repoFullName: repo,
     async workflowExists() {
       try { await gh(['api', wf]); return true; } catch { return false; }
+    },
+    async harnessRef() {
+      return JSON.parse(await gh(['api', `repos/${repo}`])).default_branch as string;
     },
     async dispatch(ref, inputs) {
       await gh(['workflow', 'run', 'visual-qa.yml', '--repo', repo, '--ref', ref, ...Object.entries(inputs).flatMap(([k, v]) => ['-f', `${k}=${v}`])]);

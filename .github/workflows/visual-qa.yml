@@ -11,14 +11,24 @@ name: Visual QA
 # Judge: anthropics/claude-code-action on CLAUDE_CODE_OAUTH_TOKEN (team OAuth
 # seat, no per-token API billing). Read/Glob/Write inside /tmp/qa only.
 #
+# Harness from trunk, app from the capture ref. The clone is CURRENT prod, so
+# this workflow and scripts/qa/** (scrub, guard, known-columns, capture) must be
+# as new as prod: always dispatch from trunk (--ref dev). The branch or sha under
+# audit goes in as capture_ref; only the app, its route manifest, its plans and
+# its migrations come from it. Dispatching --ref <branch> instead runs that
+# branch's harness, which breaks on any prod invariant newer than the branch.
+#
 # Ad-hoc screenshots (humans and worker agents — workers have no DATABASE_URL):
-#   gh workflow run visual-qa.yml --ref <branch> -f routes=/app/missions -f viewport=mobile
+#   gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> -f routes=/app/missions -f viewport=mobile
 #   gh run download <run-id> -n qa-screenshots
 # Run-activity regression (fixture states; fails on overflow / sub-44px targets):
-#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780
-#   gh workflow run visual-qa.yml --ref <branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=desktop
+#   gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=360x780
+#   gh workflow run visual-qa.yml --ref dev -f capture_ref=<branch> -f plan=scripts/qa/plans/run-activity.json -f viewport=desktop
 # See .claude/skills/visual-review/SKILL.md. Dispatch defaults to capture +
 # artifact only; the dispatching agent reads the PNGs and judges them itself.
+
+# Dispatchers find their run on trunk by this title (capture_ref is a sha or a branch).
+run-name: Visual QA${{ inputs.capture_ref && format(' · {0}', inputs.capture_ref) || '' }}
 
 on:
   pull_request:
@@ -26,6 +36,11 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
+      capture_ref:
+        description: "Branch or commit to capture: its app, route manifest, plans and migrations. The harness (this workflow, scripts/qa/**) always comes from the dispatched ref, which should be trunk. Empty = the dispatched ref."
+        type: string
+        required: false
+        default: ""
       routes:
         description: "Comma-separated paths to capture (e.g. /app/missions,/app/tasks/<id>). Empty = full manifest."
         type: string
@@ -95,9 +110,28 @@ jobs:
       QA_OUTPUT: /tmp/qa
       QA_BASE_URL: http://localhost:3000
       QA_MANIFEST: apps/web/src/qa/visual-qa-routes.json
+      # The trunk checkout every scripts/qa/ file runs from (see the header).
+      QA_HARNESS: .qa-harness
 
     steps:
-      - uses: actions/checkout@v7
+      # The app under audit, at capture_ref. Empty (a release PR, or a dispatch
+      # without one) checks out the triggering ref, as before.
+      - name: Check out the app (capture ref)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.capture_ref }}
+
+      # The harness, at the dispatched commit (trunk), never at capture_ref. It
+      # sits inside the app checkout so its scripts resolve the app's node_modules.
+      # Cone mode also brings the files directly under packages/core (capture.ts
+      # imports visual-qa-page-source.ts from there).
+      - name: Check out the QA harness (trunk)
+        uses: actions/checkout@v7
+        with:
+          path: .qa-harness
+          sparse-checkout: |
+            scripts/qa
+            packages/core/drizzle
 
       # --- Self-heal: delete prod clones leaked by earlier runs ---
       # The always-run cleanup below can still miss (runner lost, job cancelled
@@ -272,22 +306,26 @@ jobs:
             echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to scrub without it"
             exit 1
           fi
-          # This checkout's text columns: the scrub overwrites any other text
-          # column the clone has (prod ahead of a lagging branch). Schema
-          # names only, from this repo's own Drizzle snapshot.
-          KNOWN=$(bun scripts/qa/known-columns.ts)
+          # Text columns of trunk's snapshot (prod's schema) and the capture
+          # ref's (columns its migrations add, which its app reads); the scrub
+          # overwrites every other text column the clone has. Schema names only.
+          KNOWN=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" "$QA_HARNESS/packages/core/drizzle" packages/core/drizzle)
+          # Trunk's tables and columns with their types: any the clone lacks
+          # (trunk ahead of prod and the capture ref) are added empty for the
+          # scrub and dropped before it commits.
+          SHAPE=$(bun "$QA_HARNESS/scripts/qa/known-columns.ts" --shape "$QA_HARNESS/packages/core/drizzle")
           # The scrub is one transaction, so a failure leaves the clone untouched.
           # psql reports the line where the failing statement ends; name that
           # statement from our own file (never from row data) so the next
           # breakage is self-diagnosing. A plpgsql body opens with a bare
           # `BEGIN` at column 0 too, so only `BEGIN;` names the transaction.
-          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -f scripts/qa/scrub-pii.sql 2> scrub.err; then
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -v known="$KNOWN" -v shape="$SHAPE" -f "$QA_HARNESS/scripts/qa/scrub-pii.sql" 2> scrub.err; then
             cat scrub.err >&2
             mkdir -p /tmp/qa-errors && cp scrub.err /tmp/qa-errors/scrub.txt
             line=$(grep -oE 'scrub-pii\.sql:[0-9]+' scrub.err | head -1 | cut -d: -f2)
             stmt=""
             if [ -n "$line" ]; then
-              stmt=$(head -n "$line" scripts/qa/scrub-pii.sql | grep -E '^((UPDATE|DELETE|TRUNCATE|DO|CREATE|SET)\b|(BEGIN|COMMIT);)' | tail -1 | cut -c1-80)
+              stmt=$(head -n "$line" "$QA_HARNESS/scripts/qa/scrub-pii.sql" | grep -E '^((UPDATE|DELETE|TRUNCATE|DO|CREATE|SET)\b|(BEGIN|COMMIT);)' | tail -1 | cut -c1-80)
             fi
             echo "::error file=scripts/qa/scrub-pii.sql,line=${line:-1}::scrub-pii.sql failed in: ${stmt:-unknown statement} (clone rolled back, nothing rendered)"
             exit 1
@@ -312,7 +350,7 @@ jobs:
             echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to capture an unverified clone"
             exit 1
           fi
-          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-guard.sql 2> guard.err; then
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f "$QA_HARNESS/scripts/qa/scrub-guard.sql" 2> guard.err; then
             cat guard.err >&2
             mkdir -p /tmp/qa-errors && cp guard.err /tmp/qa-errors/guard.txt
             exit 1
@@ -371,7 +409,7 @@ jobs:
         id: capture
         continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         timeout-minutes: 10
-        run: bun scripts/qa/capture.ts
+        run: bun "$QA_HARNESS/scripts/qa/capture.ts"
         env:
           QA_BASE_URL: ${{ env.QA_BASE_URL }}
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
@@ -393,12 +431,12 @@ jobs:
       - name: Classify capture failure
         if: always()
         continue-on-error: true
-        run: QA_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" bun scripts/qa/capture-failure.ts
+        run: QA_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" bun "$QA_HARNESS/scripts/qa/capture-failure.ts"
         env:
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_ERRORS_DIR: /tmp/qa-errors
           QA_RUN_ID: ${{ github.run_id }}
-          QA_REF: ${{ github.head_ref || github.ref_name }}
+          QA_REF: ${{ inputs.capture_ref || github.head_ref || github.ref_name }}
           STEP_BROWSER_INSTALL: ${{ steps.browser_install.outcome }}
           STEP_CLONE: ${{ steps.neon.outcome }}
           STEP_MIGRATE: ${{ steps.migrate.outcome }}
@@ -414,7 +452,7 @@ jobs:
       - name: Prepare judge input
         if: github.event_name == 'pull_request' || inputs.judge
         continue-on-error: true
-        run: bun scripts/qa/judge.ts prepare
+        run: bun "$QA_HARNESS/scripts/qa/judge.ts" prepare
         env:
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
@@ -461,7 +499,7 @@ jobs:
       - name: Build judge report
         if: github.event_name == 'pull_request' || inputs.judge
         continue-on-error: true
-        run: bun scripts/qa/judge.ts report
+        run: bun "$QA_HARNESS/scripts/qa/judge.ts" report
         env:
           QA_OUTPUT: ${{ env.QA_OUTPUT }}
 
