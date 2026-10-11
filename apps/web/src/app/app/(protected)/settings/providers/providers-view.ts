@@ -167,27 +167,29 @@ export function cardView(p: ProviderListing, scope: ProviderApiScope, res: Pick<
   return { ...base, closed: null, edit, readOnly: null };
 }
 
-// ── Credential policy ────────────────────────────────────────────────────────
+// ── Whose key ────────────────────────────────────────────────────────────────
 
-export const POLICY_OPTIONS: readonly { value: CredentialPolicyValue; label: string; hint: string }[] = [
-  { value: 'team', label: 'Team key', hint: "Everyone uses the team's key." },
-  { value: 'personal_first', label: "Mine, then the team's", hint: "Uses your key when you've added one." },
-  { value: 'personal_only', label: 'Mine only', hint: 'You need your own key to start work.' },
-];
+/** The one rule, for chat and agent runs alike. There is no setting for it. */
+export const KEY_RULE = "Your key goes first. The team's key is the fallback.";
+
+const STORED_POLICY_LABEL: Partial<Record<CredentialPolicyValue, string>> = {
+  team: 'team keys only',
+  personal_only: 'personal keys only',
+};
 
 /**
- * The policy in effect. Unset behaves as team keys only, so the page shows
- * Team key as chosen rather than a prompt to pick (copy rule
- * `warning-instead-of-default`).
+ * A team that stored a policy other than the default (before the setting was
+ * removed) gets one line saying so, e.g. "This team uses team keys only.".
+ * Null for every other team: the rule needs no line on Models.
  */
-export function effectivePolicy(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): CredentialPolicyValue {
-  return policy.credentialPolicy ?? 'team';
+export function storedPolicyLine(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string | null {
+  const label = policy.credentialPolicy ? STORED_POLICY_LABEL[policy.credentialPolicy] : undefined;
+  return label ? `This team uses ${label}.` : null;
 }
 
-/** One line for whoever can't change the policy: "Who pays: Team key. Everyone uses the team's key." */
-export function policySentence(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
-  const opt = POLICY_OPTIONS.find((o) => o.value === effectivePolicy(policy))!;
-  return `${opt.label}. ${opt.hint}`;
+/** The line on You › Keys: the stored exception if there is one, else the rule. */
+export function keyRuleLine(policy: Pick<ProviderPolicySummary, 'credentialPolicy'>): string {
+  return storedPolicyLine(policy) ?? KEY_RULE;
 }
 
 // ── Rows ─────────────────────────────────────────────────────────────────────

@@ -7,24 +7,25 @@ import { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButt
 import { Select } from '@/components/ui/Select';
 import Section from '@/components/ui/Section';
 import Notice from '@/components/ui/Notice';
-import CredentialPolicySelector from './CredentialPolicySelector';
+import StoredPolicyNotice from './StoredPolicyNotice';
 import ProviderRow from './ProviderCard';
 import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentBackendsSection, { type SignInSlots } from '../AgentBackendsSection';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
-import { ADVANCED_ANCHOR, coverageText, coverageView, groupProviders, policySentence } from './providers-view';
+import { ADVANCED_ANCHOR, coverageText, coverageView, groupProviders, keyRuleLine, storedPolicyLine } from './providers-view';
 
 /**
  * The model keys, one scope per page. `scope="team"` is Settings › Team ›
  * Models: Keys (the team's), Workspace keys (one workspace at a time, picked
  * from a list) and Routing. `scope="mine"` is Settings › You › Keys: your own
- * keys and nothing of the team's to change, with the team's "Who pays" as a
- * line. No page mixes the two.
+ * keys and nothing of the team's to change, with the key rule as a line. No
+ * page mixes the two.
  *
  * Every model provider in registry order, one row each (Claude and OpenAI each
- * group their key and subscription into one row). "Who pays" shows on Models
- * only once it matters: a personal key exists in the team, or the policy is no
- * longer the default. Built on `/api/providers`: what a provider serves, the
+ * group their key and subscription into one row). Whose key has no setting:
+ * a person's own key goes first, the team's is the fallback. Only a team that
+ * stored another policy sees a line about it, with a way back to the default.
+ * Built on `/api/providers`: what a provider serves, the
  * scopes it can be stored at and what each stored row serves today come from
  * the response, never from a copy here. Keys never come back beyond last4.
  *
@@ -124,9 +125,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
         <div className="space-y-6">
           {status}
           {data && (
-            <p className="text-body text-text-secondary" data-testid="credential-policy-line">
-              <span className="font-semibold text-text-primary">Who pays: </span>{policySentence(data.policy)}
-            </p>
+            <p className="text-body text-text-secondary" data-testid="credential-policy-line">{keyRuleLine(data.policy)}</p>
           )}
           {list('mine', null, 'provider-list-mine')}
         </div>
@@ -147,8 +146,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 
           {slots?.notice}
 
-          {data && showWhoPays(data) && (
-            <CredentialPolicySelector
+          {data && storedPolicyLine(data.policy) && (
+            <StoredPolicyNotice
               teamId={teamId}
               policy={data.policy}
               canManage={data.caller.can.manage_team_settings}
@@ -227,10 +226,3 @@ export default function ModelProvidersClient({ teamId, isAdmin, workspaces = [],
 }
 
 const LOAD_ERROR = "Couldn't load your providers.";
-
-/** "Who pays" matters once someone in the team has a personal key, or the policy was changed. */
-export function showWhoPays(data: Pick<ListProvidersResponse, 'policy' | 'personalKeyCount' | 'providers'>): boolean {
-  if (data.policy.credentialPolicy && data.policy.credentialPolicy !== 'team') return true;
-  if ((data.personalKeyCount ?? 0) > 0) return true;
-  return data.providers.some((p) => (p.set.mine?.length ?? 0) > 0);
-}

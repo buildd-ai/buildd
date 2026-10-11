@@ -52,7 +52,7 @@ export default async function NewTeamRolePage({
 
   return (
     <SettingsPage
-      title={kinds.length === 1 && initialKind === 'personal' ? 'New role, just for you' : 'New role'}
+      title={kinds.length === 1 && initialKind === 'personal' ? 'New agent, just for you' : 'New agent'}
       description="Define an agent persona with a model, tools, and instructions."
     >
       <TeamRoleForm
