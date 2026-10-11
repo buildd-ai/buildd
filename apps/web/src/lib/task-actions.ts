@@ -208,8 +208,11 @@ export async function requestTaskStart(taskId: string, req: StartRequest = {}): 
     }
     const error = typeof body.error === 'string' ? body.error : 'Failed to start task';
     // 409 = the coordination reasons changed under a confirmation: re-render the fresh ones.
-    const refusal = (res.status === 422 || res.status === 409) && typeof body.gateReason === 'string'
-      ? ({ ...body, gateReason: body.gateReason } as GateRefusal)
+    // A 409 `reasons_changed` is the same coordination refusal, re-rendered with
+    // the fresh reasons and a note that they moved.
+    const gateReason = res.status === 409 && body.gateReason === 'reasons_changed' ? 'coordination_hold' : body.gateReason;
+    const refusal = (res.status === 422 || res.status === 409) && typeof gateReason === 'string'
+      ? ({ ...body, gateReason, ...(res.status === 409 ? { reasonsChanged: true } : {}) } as GateRefusal)
       : null;
     return { ok: false, status: res.status, refusal, error };
   } catch (err) {

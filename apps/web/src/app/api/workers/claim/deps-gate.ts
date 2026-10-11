@@ -133,10 +133,12 @@ export function dependencySatisfied(depId: SQL): SQL {
  * The edit-time path lease still serializes the shared files.
  */
 function forceStartLiftsEdge(depId: SQL): SQL {
+  // A constant key, inlined so the gate's bound parameters stay the contract's.
+  const key = sql.raw(`'${FORCE_START_CONTEXT_KEY}'`);
   return sql`(
     ${tasks.pathDeclaration}->'inferredDependsOn' ? (${depId})::text
-    AND ${tasks.context}->${FORCE_START_CONTEXT_KEY}->'liftDependsOn' ? (${depId})::text
-    AND (${tasks.context}->${FORCE_START_CONTEXT_KEY}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    AND ${tasks.context}->${key}->'liftDependsOn' ? (${depId})::text
+    AND (${tasks.context}->${key}->>'expiresAt') > to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
   )`;
 }
 
