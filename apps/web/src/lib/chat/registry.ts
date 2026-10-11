@@ -268,6 +268,12 @@ export const CHAT_NATIVE_TOOL_SPECS = {
    * told to stop at a safe point (or to carry on, on resume).
    */
   hold_task: single('tasks', write({ param: 'taskId', is: 'task' }, 'GET /api/tasks/:id', 'PATCH /api/tasks/:id', 'POST /api/workers/:id/instruct')),
+  /**
+   * The long pastes of this conversation (Living Specs C2): list them, or read
+   * one in bounded form (outline, section, range, grep). Only this
+   * conversation's own attachments, by its owner; no route, no other subject.
+   */
+  read_attachment: single('tasks', read()),
   /** Knowledge search (the MCP `recall` tool). */
   recall: single('memory', read()),
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */
@@ -302,7 +308,7 @@ export type ChatToolName = keyof typeof CHAT_TOOL_SPECS | keyof typeof CHAT_NATI
 
 export const ALL_CHAT_TOOL_SPECS: Record<string, ChatToolSpec> = { ...CHAT_TOOL_SPECS, ...CHAT_NATIVE_TOOL_SPECS };
 
-export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only';
+export type NotInChatReason = 'secret' | 'worker-only' | 'deprecated' | 'connection-only' | 'not-yet';
 
 /** MCP actions chat never offers, and why. */
 export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string; deepLink?: string }> = {
@@ -329,6 +335,7 @@ export const NOT_IN_CHAT: Record<string, { reason: NotInChatReason; note: string
   record_pr_supersession: { reason: 'worker-only', note: 'Recorded by the worker that superseded a PR.' },
   post_note: { reason: 'worker-only', note: 'Posts to the calling worker\'s task feed.' },
   suggest_schedule_update: { reason: 'worker-only', note: 'A scheduled worker suggests changes to its own schedule.' },
+  update_incident: { reason: 'not-yet', note: 'Acknowledging or resolving a sentinel incident is an MCP/API action for now; chat has no incident target or approval card.' },
   list_workspaces: { reason: 'connection-only', note: 'Discovery for an MCP connection that reaches several workspaces; a chat conversation is already bound to its team and workspace.' },
 };
 

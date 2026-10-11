@@ -213,3 +213,37 @@ describe('resolveWorktreeBase', () => {
     expect(result).toBe('origin/dev');
   });
 });
+
+// Spec workflow-state-kernel §13.11 rule 1: a repair target is the PR's own head.
+describe('resolveWorktreeBase — repair target', () => {
+  const target = { prNumber: 7, headRef: 'mission/x-1a2b3c4d', headSha: 'abc', baseRef: 'dev' };
+
+  it('a diverged repair target is used as-is, never abandoned', async () => {
+    const fallbacks: unknown[] = [];
+    const result = await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: target.headRef, repairTarget: target },
+      fetchBranch: async () => 'diverged' as const,
+      onFallback: (i) => fallbacks.push(i),
+    });
+    expect(result).toBe(`origin/${target.headRef}`);
+    expect(fallbacks).toEqual([]);
+  });
+
+  it('a missing repair target throws repair_target_missing', async () => {
+    await expect(resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: target.headRef, repairTarget: target },
+      fetchBranch: async () => 'missing' as const,
+    })).rejects.toThrow('repair_target_missing');
+  });
+
+  it('a stamp whose headRef no longer matches resumeBranch grants nothing', async () => {
+    const result = await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: 'buildd/other', repairTarget: target },
+      fetchBranch: async () => 'diverged' as const,
+    });
+    expect(result).toBe('origin/dev');
+  });
+});

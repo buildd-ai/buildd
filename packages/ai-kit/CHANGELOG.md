@@ -12,6 +12,65 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.26.0 — 2026-10-11
+
+Minor: images and files attach to a message.
+
+- `ChatComposer` takes `onUploadFile(file, signal)`: paste, drop and an Attach
+  button send each image or file through it. A file shows as a `FileCard` with
+  its state; it joins `attachments` (as a `FileDraft`) only once the promise
+  resolves with the verified upload. While any file is uploading or has failed,
+  Send waits, so nothing unready is sent and nothing is silently left out. A
+  failure shows its reason and Retry; Remove while uploading aborts `signal`;
+  Remove of a ready, unsent file calls `onDiscardFile`. `fileTypes` and
+  `maxFileBytes` refuse a file before any upload. Without `onUploadFile` the
+  composer takes no files, as before.
+- `onSend(text, attachments)` and `attachments` are now `DraftAttachment[]`:
+  pastes (`AttachmentDraft`) and files (`FileDraft`). `maxLength` counts paste
+  text only.
+- New contract: `FILE_PART_TYPE` (`data-file`), `FILE_MEDIA_TYPES`,
+  `MAX_FILE_BYTES` (20 MB), `FileDraft` (`{ kind: 'file', id, name, mediaType,
+  sizeBytes, previewUrl? }`), `FileRef` (`{ artifactId, revision, sha256, name,
+  mediaType, sizeBytes }`), `DraftAttachment`, `isFilePart`, `isFileDraft`,
+  `fileId`, `fileMediaType`, `isImageMediaType`, `fileSizeLabel`,
+  `fileKindLabel`.
+- `useKitChat().send` sends files as `data-file` parts; the browser-local
+  `previewUrl` never leaves the client.
+- `ChatThread` draws `data-file` parts as a fixed-height `FileCard`;
+  `onOpenFile` makes it a button, `fileImageUrl` gives an image its thumbnail,
+  `renderFile` replaces it. A long name truncates inside the card.
+- The kit's own server turn does not store files: an app that sets
+  `onUploadFile` handles the part in its own turn (buildd verifies the upload
+  and links it to the message; see its artifacts-and-sharing spec section 11).
+
+## 0.25.0 — 2026-10-11
+
+Minor: a long paste becomes an attachment.
+
+- `ChatComposer` takes `attachFrom` (characters): a paste longer than that
+  becomes an `AttachmentCard` above the message instead of text in the box,
+  with Remove. `onSend(text, attachments)` now passes the drafts, `[]` when
+  there are none; an attachment alone can be sent. `maxLength` counts the text
+  and the attachments together. `attachments` + `onAttachmentsChange` make
+  them controlled, so an app can put a refused draft back with the same ids.
+  A draft holding an attachment never steers a running turn.
+- Each draft gets its id when the paste happens (a UUID) and keeps it through
+  retries, so a server can keep one attachment per paste.
+- New contract: `ATTACHMENT_PART_TYPE` (`data-attachment`),
+  `PASTE_ATTACHMENT_CHARS` (8,000), `AttachmentDraft` (`{ id, title, text }`,
+  what the composer sends), `AttachmentRef` (`{ artifactId, revision, sha256,
+  chars, title }`, what a stored message keeps), `isAttachmentPart`,
+  `isAttachmentDraft`, `attachmentChars`, `attachmentId`, `pasteTitle`.
+- `useKitChat().send(text, attachments?)` sends them as `data-attachment`
+  parts after the text.
+- `ChatThread` draws a message's `data-attachment` parts as a fixed-height
+  `AttachmentCard` (56px; the message never changes size while the reply
+  streams). `onOpenAttachment` makes the card a button for the app's reader;
+  `renderAttachment` replaces it.
+- The kit's own server turn does not store attachments: an app that turns
+  `attachFrom` on handles the part in its own turn (buildd stores the text as
+  an artifact and quotes it to the model).
+
 ## 0.24.0 — 2026-10-10
 
 Minor: the history budget counts tokens, not characters.

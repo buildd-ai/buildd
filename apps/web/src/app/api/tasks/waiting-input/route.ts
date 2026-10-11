@@ -67,7 +67,7 @@ export async function GET() {
           // the worker stays waiting_input until the runner resumes it. The
           // answer is on its way, so this no longer needs the person.
           answerSent: !worker?.waitingFor,
-          actionUrl: `${appBaseUrl}/app/tasks/${t.id}/respond`,
+          actionUrl: `${appBaseUrl}/app/tasks/${t.id}?respond=1`,
         };
       });
 

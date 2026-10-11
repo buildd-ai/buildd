@@ -1,3 +1,4 @@
+import { ownLineage } from '@/lib/attempt-lineage';
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { constrainToGranted, isGrantSession } from '@/lib/grant-scope';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
@@ -1880,7 +1881,11 @@ export async function POST(req: NextRequest) {
       const taskMission = (task as any).missionId ? missionClaimMap.get((task as any).missionId) : null;
       const trunk = workspaceTrunk(task.workspace?.gitConfig);
       const filterOpenPrTasks = partitionOpenPrsByLandingBase(
-        { base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest },
+        {
+          base: candidateLandingBase({ task: task as any, mission: taskMission, trunk }), trunk, manifest: taskManifest,
+          repairsOpenPr: (task as any).taskClass === 'attempt'
+            && ((task as any).conflictRetryPrNumber ?? (task as any).ciRetryPrNumber ?? (task as any).reviewerRetryPrNumber) != null,
+        },
         splitOwnOpenPrs(task, openPrTasks).others,
       ).sameBase;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
@@ -1938,8 +1943,11 @@ export async function POST(req: NextRequest) {
         const activeClaims = activePathClaimsByWorkspace.get(task.workspaceId);
         if (activeClaims) {
           let blockedByActiveClaim = false;
+          // A fix attempt's own ancestors never block it (§13.11 rule 4).
+          const lineageTaskIds = ownLineage(task as any).taskIds;
           for (const [claimingTaskId, claimedPaths] of activeClaims) {
             if (claimingTaskId === task.id) continue; // own claims never block self
+            if (lineageTaskIds.has(claimingTaskId)) continue;
             const concreteClaimed = claimedPaths.filter(p => p !== REPO_WIDE_SENTINEL);
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {

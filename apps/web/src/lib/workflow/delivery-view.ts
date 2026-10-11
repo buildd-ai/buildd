@@ -177,6 +177,29 @@ WHERE d.authority = 'kernel' AND ${workspaceKernelOnSql(sql`d.workspace_id`)}
 }
 
 /**
+ * Each workspace PR's delivery state and merge time, for the path-overlap
+ * incident reconcile (lib/failure-pattern-sweep.ts): has the blocker landed?
+ * Any authority: a merge recorded on a legacy-owned delivery is still a merge.
+ * A SELECT, like the rest of this file. Throws on a read failure; the caller
+ * decides how to fail.
+ */
+export async function deliveryPrStates(
+  workspaceId: string,
+  prNumbers: number[],
+  exec: Exec = dbExec,
+): Promise<Array<{ prNumber: number; state: string; mergedAt: string | null }>> {
+  const nums = [...new Set(prNumbers.filter((n) => Number.isInteger(n)))];
+  if (nums.length === 0) return [];
+  const res = await exec(sql`-- workflow:delivery_pr_states
+SELECT d.pr_number AS "prNumber", d.state AS state, d.merged_at AS "mergedAt"
+FROM workflow_deliveries d
+WHERE d.workspace_id = ${workspaceId}
+  AND d.pr_number IN (SELECT x::int FROM jsonb_array_elements_text(${JSON.stringify(nums)}::jsonb) x)`);
+  return ((res.rows ?? []) as Array<{ prNumber: unknown; state: unknown; mergedAt: unknown }>).flatMap(r =>
+    r.prNumber == null || typeof r.state !== 'string' ? [] : [{ prNumber: Number(r.prNumber), state: r.state, mergedAt: r.mergedAt == null ? null : String(r.mergedAt) }]);
+}
+
+/**
  * Slice E (§17.5): taskId → the serialisable `DeliveryDisplay` for each given
  * task that OWNS a kernel-owned delivery. The one load a list surface makes;
  * every chip, tile and badge it draws for those rows projects from it. Never

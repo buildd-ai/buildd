@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai';
-import { isSteerPart, isTurnErrorPart, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason, type TurnErrorData } from '@builddai/ai-kit/chat/contract';
+import { ATTACHMENT_PART_TYPE, FILE_PART_TYPE, isFileDraft, isSteerPart, isTurnErrorPart, type DraftAttachment, type ChatMessage, type ChatUnavailableBody, type ChatUnavailableReason, type TurnErrorData } from '@builddai/ai-kit/chat/contract';
 
 const REASONS = new Set<ChatUnavailableReason>(['no_key', 'budget_exhausted', 'rate_limited']);
 
@@ -53,7 +53,11 @@ export interface KitChat {
   unavailable: ChatUnavailableBody | null;
   /** Why the latest turn failed mid-stream (its `data-turn-error` part), else null. */
   turnError: TurnErrorData | null;
-  send(text: string): Promise<void>;
+  /**
+   * `attachments`: long pastes (0.25.0), sent as `data-attachment` parts, and
+   * ready uploads (0.26.0), sent as `data-file` parts, after the text.
+   */
+  send(text: string, attachments?: readonly DraftAttachment[]): Promise<void>;
   stop(): Promise<void>;
   /** Answer an approval card (`<ApprovalCard onRespond>` / `<ChatThread onApprovalResponse>`). */
   respond(approvalId: string, approved: boolean, reason?: string): void;
@@ -105,9 +109,17 @@ export function useKitChat(opts: UseKitChatOptions): KitChat {
   const { messages, sendMessage, status, error, stop, addToolApprovalResponse, setMessages, clearError } = chat;
   const busy = status === 'submitted' || status === 'streaming';
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, attachments: readonly DraftAttachment[] = []) => {
     setUnavailable(null);
-    await sendMessage({ text });
+    if (attachments.length === 0) { await sendMessage({ text }); return; }
+    const parts = [
+      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...attachments.map(a => (isFileDraft(a)
+        // The browser-local preview never leaves the client.
+        ? { type: FILE_PART_TYPE, data: { kind: 'file' as const, id: a.id, name: a.name, mediaType: a.mediaType, sizeBytes: a.sizeBytes } }
+        : { type: ATTACHMENT_PART_TYPE, data: { id: a.id, title: a.title, text: a.text } })),
+    ];
+    await sendMessage({ role: 'user', parts } as unknown as Parameters<typeof sendMessage>[0]);
   }, [sendMessage]);
 
   const respond = useCallback((approvalId: string, approved: boolean, reason?: string) => {

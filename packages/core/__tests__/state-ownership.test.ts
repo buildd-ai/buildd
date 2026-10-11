@@ -20,8 +20,8 @@ const isTest = (f: string) => /\.test\.tsx?$/.test(f) || /__tests__\//.test(f) |
 const files = tracked.filter((f) => !isTest(f));
 
 /** Living Specs tables: artifacts and their history, links and reads; spec revisions and approvals. */
-const TABLES = 'artifacts|artifact_revisions|artifact_reads|artifact_links|specs|spec_revisions|spec_approvals';
-const SYMBOLS = 'artifacts|artifactRevisions|artifactReads|artifactLinks|specs|specRevisions|specApprovals';
+const TABLES = 'artifacts|artifact_revisions|artifact_reads|artifact_links|specs|spec_revisions|spec_approvals|spec_outcome_verdicts';
+const SYMBOLS = 'artifacts|artifactRevisions|artifactReads|artifactLinks|specs|specRevisions|specApprovals|specOutcomeVerdicts';
 const SQL_WRITE = new RegExp(`\\b(?:INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE)\\s+(?:ONLY\\s+)?(?:"?public"?\\.)?"?(?:${TABLES})\\b`, 'i');
 const DRIZZLE_WRITE = new RegExp(`\\b(?:insert|update|delete)\\(\\s*(?:${SYMBOLS})\\b`);
 

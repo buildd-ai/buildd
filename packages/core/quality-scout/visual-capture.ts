@@ -1,9 +1,14 @@
 /**
  * Quality Scout's UI/surface capture port (`ScoutProbePorts.capture`),
  * implemented on the Visual Auditor's own capture: the `visual-qa.yml`
- * workflow (`scripts/qa/capture.ts`), dispatched on the candidate ref, one run
- * per viewport, and read back from the `captures.json` in its `qa-screenshots`
- * artifact. No second capture stack.
+ * workflow (`scripts/qa/capture.ts`), one run per viewport, read back from the
+ * `captures.json` in its `qa-screenshots` artifact. No second capture stack.
+ *
+ * Dispatched from trunk (the repo's default branch) with the candidate commit
+ * as `capture_ref`: the harness (the workflow, scrub, guard, capture) must be
+ * as new as the prod clone it runs against, so it never comes from the
+ * candidate. Only the app and its migrations do. The run is found on trunk by
+ * its title, which names that commit (`visualQaRunName`).
  *
  * Read-only toward the product: the dispatch passes `judge=false`, so the run
  * posts no PR comment and no check run, and capture aborts page writes. What
@@ -38,6 +43,15 @@ export const VISUAL_QA_WORKFLOW_FILE = 'visual-qa.yml';
 export const VISUAL_QA_ARTIFACT = 'qa-screenshots';
 export const VISUAL_QA_CAPTURES_FILE = 'captures.json';
 
+/**
+ * The workflow's `run-name` for a dispatch with this `capture_ref`
+ * (.github/workflows/visual-qa.yml; scripts/visual-qa-workflow.test.ts pins
+ * both sides). How a dispatcher finds its run among trunk's.
+ */
+export function visualQaRunName(captureRef: string): string {
+  return `Visual QA · ${captureRef}`;
+}
+
 /** Scout viewport → the workflow's `viewport` input. */
 const WORKFLOW_VIEWPORT: Record<ScoutViewport, string> = { phone: 'mobile', desktop: 'desktop' };
 
@@ -54,6 +68,8 @@ export interface VisualQaRun {
   conclusion: string | null;
   headSha: string;
   headBranch: string | null;
+  /** The run's title: `visualQaRunName(capture_ref)` for a dispatch with one. */
+  displayTitle: string | null;
   createdAt: string;
 }
 
@@ -62,6 +78,8 @@ export interface VisualQaActions {
   repoFullName: string;
   /** False on a 404: the repo has no Visual QA workflow. */
   workflowExists(): Promise<boolean>;
+  /** The ref the harness is dispatched from: the repo's default branch (trunk). */
+  harnessRef(): Promise<string>;
   dispatch(ref: string, inputs: Record<string, string>): Promise<void>;
   /** Recent `workflow_dispatch` runs of the workflow on `ref`, newest first. */
   listDispatchRuns(ref: string): Promise<VisualQaRun[]>;
@@ -76,6 +94,7 @@ export interface RawRun {
   conclusion: string | null;
   head_sha: string;
   head_branch: string | null;
+  display_title?: string | null;
   created_at: string;
 }
 
@@ -85,6 +104,7 @@ export const toRun = (r: RawRun): VisualQaRun => ({
   conclusion: r.conclusion,
   headSha: r.head_sha,
   headBranch: r.head_branch,
+  displayTitle: r.display_title ?? null,
   createdAt: r.created_at,
 });
 
@@ -206,17 +226,19 @@ export function createVisualQaCapturePort(actions: VisualQaActions, opts: Visual
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const claimed = new Set<number>();
 
-  async function runFor(req: ScoutCaptureRequest, viewport: ScoutViewport): Promise<VisualQaRun> {
+  async function runFor(req: ScoutCaptureRequest, viewport: ScoutViewport, trunk: string): Promise<VisualQaRun> {
     const dispatchedAt = now();
     const deadline = Math.min(dispatchedAt + timeoutMs, opts.deadlineMs ?? Infinity);
     if (now() >= deadline) throw new Error(`no time left to capture before the run's deadline`);
-    await actions.dispatch(req.ref, { routes: req.routes.join(','), viewport: WORKFLOW_VIEWPORT[viewport], judge: 'false' });
+    // The harness from trunk; the app pinned to the candidate commit.
+    await actions.dispatch(trunk, { capture_ref: req.sha, routes: req.routes.join(','), viewport: WORKFLOW_VIEWPORT[viewport], judge: 'false' });
 
+    const title = visualQaRunName(req.sha);
     let run: VisualQaRun | undefined;
     while (!run) {
-      // Ours: created after the dispatch, on the candidate commit, not already read.
-      run = (await actions.listDispatchRuns(req.ref)).find((r) =>
-        Date.parse(r.createdAt) >= dispatchedAt - CLOCK_SKEW_MS && r.headSha === req.sha && !claimed.has(r.id));
+      // Ours: created after the dispatch, titled with the candidate commit, not already read.
+      run = (await actions.listDispatchRuns(trunk)).find((r) =>
+        Date.parse(r.createdAt) >= dispatchedAt - CLOCK_SKEW_MS && r.displayTitle === title && !claimed.has(r.id));
       if (run) break;
       if (now() >= deadline) throw new Error(`no ${VISUAL_QA_WORKFLOW_FILE} run on ${req.sha.slice(0, 7)} appeared`);
       await sleep(pollMs);
@@ -236,9 +258,12 @@ export function createVisualQaCapturePort(actions: VisualQaActions, opts: Visual
         throw new Error(`page source ${req.pageSource} is captured by a browser runner, not ${VISUAL_QA_WORKFLOW_FILE}`);
       }
       const shots: ScoutCaptureShot[] = [];
+      const deadline = Math.min(now() + timeoutMs, opts.deadlineMs ?? Infinity);
+      if (now() >= deadline) throw new Error(`no time left to capture before the run's deadline`);
+      const trunk = await actions.harnessRef();
       // One viewport at a time: two dispatches on the same commit would be indistinguishable.
       for (const viewport of req.viewports) {
-        const run = await runFor(req, viewport);
+        const run = await runFor(req, viewport, trunk);
         // A run that failed (e.g. on an auth wall) still uploads what it captured.
         const text = await actions.readArtifactFile(run.id, VISUAL_QA_ARTIFACT, VISUAL_QA_CAPTURES_FILE);
         if (text === null) continue;
@@ -251,7 +276,8 @@ export function createVisualQaCapturePort(actions: VisualQaActions, opts: Visual
         shots.push(...captureRecordsToShots(records, {
           routes: req.routes,
           viewport,
-          ref: run.headBranch ?? req.ref,
+          // The ref under audit; the run itself is on trunk.
+          ref: req.ref,
           runId: run.id,
           repoFullName: actions.repoFullName,
         }));
@@ -353,6 +379,11 @@ export function tokenVisualQaActions(opts: {
       if (res.status === 404) return false;
       if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
       return true;
+    },
+    async harnessRef() {
+      const data = await json(repo) as { default_branch?: unknown } | null;
+      if (typeof data?.default_branch !== 'string' || !data.default_branch) throw new Error('repository has no default branch');
+      return data.default_branch;
     },
     async dispatch(ref, inputs) {
       await json(`${workflow}/dispatches`, {

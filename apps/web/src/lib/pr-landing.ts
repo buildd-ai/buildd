@@ -255,6 +255,8 @@ export interface LandPrDeps {
    * Defaults to the seam's `kernelLandingView`.
    */
   kernelLandingView?: typeof import('@/lib/workflow/seam').kernelLandingView;
+  /** Runs a delivery's due effects (a REPAIRING delivery's backed-off repair). Defaults to the seam's `drainDelivery`. */
+  drainDelivery?: (deliveryId: string) => Promise<unknown>;
 }
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
@@ -827,7 +829,18 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         // timed_out / startup_failure are red like failure (ci-verdict.ts); a cancelled or
         // unfinished run, or a non-passing commit status, is a wait.
         const red = (observed.checkRuns ?? []).some(isFailingCheckRun);
-        return red ? needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix) : waiting(reason);
+        if (red) return needsFix('ci_fix', reason, deps.dispatchFix ?? defaultFix);
+        // Pending CI on an ESCALATED delivery is not "wait for green": green does not
+        // lift an escalation, so name the person's wait instead of promising a merge.
+        const kv = await kernelStatus();
+        if (kv?.current.state === 'ESCALATED') {
+          return waiting(
+            `${reason}; the delivery is ESCALATED${kv.stateReason ? ` (${kv.stateReason})` : ''} at v${kv.current.version}, head ${String(kv.current.head ?? '').slice(0, 7)}, so green CI alone will not land it`,
+            { deliveryState: kv.current.state, deliveryVersion: kv.current.version, stateReason: kv.stateReason ?? null },
+            true,
+          );
+        }
+        return waiting(reason);
       }
       case 'stale_head':
       case 'github_read':
@@ -872,7 +885,16 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   // row must not block, stall or re-review it: a composition- or human-approved
   // delivery has no reviewer row at all (incident #2574). A read error falls back to
   // the legacy gate, which can only hold a landing, never authorise one past T15.
-  const kernelView = await kernelStatus();
+  let kernelView = await kernelStatus();
+  if (kernelView?.current.state === 'REPAIRING') {
+    // edc02148: a repair whose effect backed off (a refresh that threw once) is owed again once due,
+    // and the outbox floor drains only hourly. The door runs the delivery's due effects itself
+    // (bounded: the effect's own attempt cap, then EffectDead escalates) and reads the state again.
+    const drain = deps.drainDelivery ?? (await import('@/lib/workflow/seam')).drainDelivery;
+    await drain(kernelView.deliveryId).catch(() => null);
+    kernelViewPromise = null;
+    kernelView = await kernelStatus();
+  }
   if (kernelView) {
     const { state, head } = kernelView.current;
     const extra = { deliveryState: state, deliveryVersion: kernelView.current.version };

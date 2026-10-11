@@ -165,3 +165,31 @@ export async function sha256Object(key: string): Promise<{ sha256: string; sizeB
   }
   return { sha256: hash.digest('hex'), sizeBytes };
 }
+
+/**
+ * A stored object's bytes, buffered, refusing anything larger than `maxBytes`
+ * (null then) so a caller never holds an unbounded body. Null when missing.
+ */
+export async function readObject(key: string, maxBytes: number): Promise<Buffer | null> {
+  const client = getClient();
+  let res;
+  try {
+    res = await client.send(new GetObjectCommand({ Bucket: config.storageBucket, Key: key }));
+  } catch (err) {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    const name = (err as { name?: string })?.name;
+    if (status === 404 || name === 'NotFound' || name === 'NoSuchKey') return null;
+    throw err;
+  }
+  if (Number(res.ContentLength ?? 0) > maxBytes) return null;
+  const body = res.Body as AsyncIterable<Uint8Array> | undefined;
+  if (!body) return null;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    if (size > maxBytes) return null;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}

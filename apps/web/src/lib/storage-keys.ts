@@ -149,6 +149,22 @@ export function buildAttachmentKey(
 }
 
 /**
+ * `chat/<teamId>/<uploadId>/<name>`: an image or file attached to a chat
+ * message (Living Specs C3). Not a tenant prefix: a chat upload has no
+ * workspace, so `isOwnedStorageKey` never accepts one from a caller, and it is
+ * read only through its own conversation.
+ */
+export function buildChatUploadKey(
+  teamId: unknown,
+  uploadId: unknown,
+  filename: unknown,
+): string {
+  const team = assertSafeKeySegment(teamId, 'teamId');
+  const upload = assertSafeKeySegment(uploadId, 'uploadId');
+  return assertNormalizedObjectKey(`chat/${team}/${upload}/${safeObjectFilename(filename)}`);
+}
+
+/**
  * `qa/<workspaceId>/<uploadId>/<name>` — a visual-audit screenshot
  * (docs/design/visual-qa-auditor.md, "Decay").
  *
