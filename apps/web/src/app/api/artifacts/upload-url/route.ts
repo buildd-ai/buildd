@@ -182,6 +182,8 @@ export async function POST(req: NextRequest) {
       type: artifactType,
       title: artifactTitle,
       storageKey,
+      // Ready only once its bytes are verified (lib/artifact-upload.ts).
+      uploadState: 'pending',
       // Private until an explicit Share: a token is a bearer credential and
       // POST /api/artifacts/[artifactId]/share is the only thing that mints one.
       shareToken: null,

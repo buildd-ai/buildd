@@ -51,6 +51,8 @@ export interface LoopInput {
   workerLastCommitSha: string | null;
   verificationEvidence: unknown;
   structuredOutput: unknown;
+  /** A merged PR the pr_required gate accepted via `alreadyShippedIn`; the worker row carries no PR of its own. */
+  alreadyShippedPrNumber?: number | null;
 }
 export interface LoopProgress { iteration: number; history: LoopHistoryEntry[] }
 /**

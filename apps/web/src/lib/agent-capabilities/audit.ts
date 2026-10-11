@@ -25,6 +25,9 @@ export type CapabilityName =
   | 'capability.deny'
   | 'capability.revoke'
   | 'capability.use'
+  // Written by the connector gateway (connector-gateway-store.ts), awaited for writes.
+  | 'connector.tool_call'
+  | 'connector.tool_result'
   | 'task_token.mint'
   | 'runner.size'
   | 'pr.create'

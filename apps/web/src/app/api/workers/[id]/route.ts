@@ -3244,6 +3244,7 @@ export async function PATCH(
           workerId: id,
           workerBranch: worker.branch ?? null,
           workerLastCommitSha: worker.lastCommitSha ?? null,
+          alreadyShippedPrNumber: alreadyShipped?.prNumber ?? null,
           // The runner's own completion carries evidence in the body; the
           // agent's complete_task does not, so use what the runner recorded
           // on the row before that call (see the verificationEvidence column).

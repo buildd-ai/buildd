@@ -196,6 +196,8 @@ export const CHAT_TOOL_SPECS = withAreas({
   list_artifact_templates: one(read()),
   create_artifact: one(write({ param: 'missionId', is: 'mission' }, 'POST /api/missions/:id/artifacts', 'POST /api/initiatives/:id/artifacts')),
   update_artifact: one(deferred(KEY_ONLY)),
+  link_artifact: one(deferred(KEY_ONLY)),
+  list_artifact_links: one(deferred(KEY_ONLY)),
   manage_specs: one(deferred('Living Specs are drafted and revised by agents first; chat gets them with the approval flow (G2)')),
 
   // ── admin: workspace config, roles, experiments, models ──

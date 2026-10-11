@@ -614,6 +614,9 @@ export const workerActions = [
   'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
+  // Typed links (Living Specs): attach an artifact to a task, mission or chat
+  // without copying it, and read what is linked. Same checks as the REST routes.
+  'link_artifact', 'list_artifact_links',
   // The visual auditor's own read: where its pages come from (sandbox or a
   // Vercel preview), resolved server-side with the workspace's GitHub App.
   'get_page_source',
@@ -984,10 +987,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_experiments: '{ action (required): "list" | "get" | "readout" | "create" | "update" | "start" | "pause" | "conclude", experimentId? (required except list/create), key?, title?, kind? ("model_routing" default), hypothesis?, treatmentFraction? (0-1 exclusive, share of ELIGIBLE tasks sent to the treatment arm; default 0.5), config? (model_routing: { arms: { treatment: { tier } }, eligibility: { maxBudgetPressure }, minSamplePerArm }), visibility? ("admins" default | "team"), decision? (required for conclude), policyVersion? (readout of an earlier version), workspaceId? } — team experiments. model_routing compares model tiers. heartbeat_triage and question_gate are retired kinds: existing rows stay listable/readable, but create and start are refused. create makes a draft; nothing enrolls until start. start (model_routing): from the next claim, eligible tasks (plain standard-tier routing, no pinned model, low budget pressure; the mission is the unit when there is one) are randomly split between the tier the router chose and the treatment tier, and every assignment is recorded. Only one experiment of each kind can run per team. pause stops new enrolment within a minute; conclude is final and records the decision. Changing treatmentFraction or config after the first start bumps policyVersion, and readout reports one version at a time. readout gives per-arm n, clean-completion rate with a 95% interval, the difference, and a verdict (insufficient_n until both arms reach minSamplePerArm). Every kind config also takes an optional duration cap, maxDurationDays and/or endsAt (ISO date); editing only the cap never bumps policyVersion, and a daily check pauses a running experiment once it is past its cap. list and readout also report enrolment health for running experiments: nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit (mission) holding most of an arm, past its cap. list/get/readout at worker level see only visibility="team" experiments; create/update/start/pause/conclude [admin]',
     manage_model_tiers: '{ action: "list" | "set" | "delete" | "policy" | "set_policy" | "adopt" | "model", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default; policy/set_policy/adopt: only an explicit workspaceId scopes to the workspace, omit for the team), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai"|"openai-codex"|"openrouter" — "openai" is the API-key provider for server-side calls such as chat; runners cannot use it), model? (required for set and model: full model ID, e.g. "claude-fable-5"), surface? (set/delete: "agent"|"chat" — scopes the row to agent runs or to chat and inference calls; omit for the row that serves both), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer), mode? (set_policy: "latest-compatible"|"soak"|"manual"|"inherit"), soakHours? (set_policy with soak: default 72) } — manage team model tier registry and model upgrades. list returns the effective map (workspace+surface → workspace → team+surface → team → catalog → code fallback) with source annotation, one line per surface when a tier is split. set upserts a registry row (a pin: the tier stays on that model whatever the upgrade policy) — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. policy reads the upgrade policy in effect and where it comes from (workspace/team/default), and per tier: the model, why it was chosen, any newer centrally certified model and why it is withheld (pinned/manual/soak), and deprecation. set_policy sets how catalog-resolved tiers move to newly certified models: latest-compatible adopts on certification, soak after soakHours with no compatibility incident, manual never on its own (adopt moves it); mode "inherit" clears the level. adopt (manual policy) takes every model certified so far. model shows one model\'s central certification: state, CLI floor, release/certification time, deprecation. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key?, taskId? } — workerId auto-resolved from context if omitted; for worker artifacts, taskId is auto-resolved from worker data if not provided. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context. taskId enables artifact notifications when the artifact is meant for review.',
-    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
+    upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata?, missionId? (defaults to the task mission) } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown. After the PUT, upload_artifact { artifactId, sha256? } verifies the bytes and marks it ready.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required), revision? (read that immutable revision instead of the current body), view? ("outline"|"section"|"range"|"grep"|"meta"; default: the whole body when it is short, its outline when long), section? (id from the outline, with view section), offset? + length? (view range), grep? (literal text, with view grep), full? (true: the whole body however long) } — fetch an artifact by ID with its current revision and sha256. A long body comes back as an outline you read part by part, so a large reference never floods your context; what you read is recorded. File artifacts include a short-lived presigned download URL',
-    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate", specId? (get/revise/relate), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), expectedVersion? (revise, required: the version get showed), revision? (get: read that revision exactly as written) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. Nothing here approves: approving a revision is a person\'s act.',
+    link_artifact: '{ artifactId (required), subjectKind ("task"|"mission"|"plan"|"conversation"|"message"), subjectId, relation ("context"|"requirement"|"normative_reference"|"design_reference"|"evidence"|"output"), revision? (pin; a normative_reference always pins, the current revision when omitted), linkId? + unlink: true (remove that link instead) } — attach an artifact to something it informs, in the same team, without copying it. Linking twice updates the link',
+    list_artifact_links: '{ artifactId? (this artifact\'s links) | subjectKind + subjectId (what is linked to that subject), relation? (comma-separated filter, with subjectKind) } — a reference manifest: id, title, type, relation, pinned revision, size and sha256, never the bodies; read one with get_artifact',
+    manage_specs: '{ action (required): "create_draft" | "get" | "revise" | "list" | "relate" | "submit" | "approve" | "outcome" | "verdict" | "conflict", specId? (all but create_draft/list/outcome/verdict), workspaceId? (create_draft/list; defaults to the session workspace), title? (create_draft), body? (create_draft/revise: the spec text, Markdown, at most 400,000 characters), scope? (create_draft: product|domain|feature|mission, default feature), parentSpecId? (create_draft; relate: a spec id, or null to clear), changeSummary? (create_draft/revise), expectedVersion? (revise/submit/approve, required: the version get showed), revision? (get: read that revision exactly as written; approve, required: the head revision; conflict, required: the approved revision), taskId? (outcome/verdict: the task whose outcome it is), criterionId? + verdict? (pass|fail|inconclusive|unsupported) + headSha? (verdict, required: the PR head judged), evidenceRefs? ([{kind, ref}]) + readIds? (artifact read ids) + observed? (verdict), criterionIds? ([a, b], conflict), note? (conflict) } — Living Specs: governed intent with immutable revisions. revise writes only if the spec is still at expectedVersion; otherwise nothing is written and the reply carries currentVersion: re-read, merge, revise on top. relate refuses a parent in another workspace or one that would form a cycle. get inlines a body up to 20,000 characters, else points at get_artifact views. submit and approve are a person\'s act (team owner/admin or a delegated approver, from their own session): an agent run or API key gets a 403. Approval puts the head revision in force; later revisions stay proposed until approved. outcome reads a task\'s governed outcome against the approved revision it is pinned to: verified only when every R-n/AC-n criterion passes on the current PR head, fail when one fails, else unverified; it never blocks completing or merging. verdict records one criterion\'s verdict at headSha; a task cannot grade itself (its reviewer or a person does). conflict flags two criteria of an approved revision as disagreeing: an advisory discrepancy, never a block.',
     update_artifact: '{ artifactId (required), title?, content?, metadata?, expectedRevision? (with content: write only if the body is still at that revision, else refused with the current one — pass the currentRevision get_artifact showed) } — every content change is kept as a new immutable revision',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, roleSlug? (role every spawned task runs as; applied only while that role exists in the workspace, else the task files role-less), trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId?, delegation? ({ grants: [{ workspaceId (UUID), capabilities: (\"analytics:read\" | \"tasks:create\")[] }] } or null to clear) } [admin] — delegation lets the tasks this schedule spawns read the named workspaces\' analytics (decision ledger, decision/coordination stats, gate ledger) and/or file tasks there, and nothing else. Same team only; team admin or owner only; recorded with who granted it and when.',
@@ -1003,7 +1008,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_evidence_backends: '{ action: "list" | "get" | "create" | "update" | "delete" | "verify", backendId? (required except list/create), workspaceId? (create: scope the backend to one workspace; omit for the team default), provider? (create: "s3" | "r2" | "s3_compatible" | "buildd_default"), endpoint? (https URL; required for r2 and s3_compatible; must resolve to a public address), region?, bucket? (required except buildd_default), prefix? (one path segment, default "evidence"), forcePathStyle?: boolean, sse? ("none" | "AES256" | "aws:kms"), kmsKeyId? (only with aws:kms), retentionDays? (1-3650, default 30), maxBytesPerTask? (bytes, default 8 MiB), credentials? ({ accessKeyId, secretAccessKey, sessionToken? }; required for create, replaces the stored credential on update; never returned) } — where a team\'s run evidence is written: a workspace backend beats the team backend, which beats the buildd-managed bucket. create and update verify the bucket on save (PUT, GET, DELETE of one probe object under {prefix}/.buildd-probe/, never a list) and report it; a failing probe does not reject the save or affect any task. verify re-runs the probe and warns when the probe object is readable without credentials. provider and workspaceId cannot change after create. [admin]',
     manage_providers: '{ action: "list" | "set" | "delete" | "explain" | "set_policy", provider? (required for set/delete: anthropic | claude-subscription | openai | codex-subscription | openrouter | litellm | custom-endpoint), scope? ("team" | "workspace" | "mine"; set/delete default: mine for a signed-in person, else team), workspaceId? (required with scope workspace), shape? (api_key | setup_token | gateway | endpoint; default the provider\'s pasteable one), value? (set: the key or token; never echoed back), config? (set: gateway { baseUrl }; endpoint { baseUrl, authHeader?, models?, appliesTo?, capabilities? }), surface? (explain, required: chat | agent-claude | agent-codex | cloud-egress; set: refuse unless the provider serves it), as? (explain: "self" your own work, default for a person | "team" team work), policy? (set_policy: team | personal_first | personal_only) } — model providers and their credentials, one write path for every surface. list: each provider, what it serves and why not (registry reasons), per scope the rows set (last four, health, legacy storage, what reads them today), and the credential policy. set validates and verifies before storing; a subscription login (oauth) is refused with a link to finish in the browser. explain: what the resolver would pick for a surface and why, never a value. Impossible provider×surface or scope pairs are refused with the registry reason. list/explain: worker level (a task token: its own workspace). set/delete scope mine: a signed-in person (OAuth session), never a task token or API key. set/delete scope team|workspace and set_policy [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
-    list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
+    list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"|"conflict" — conflict: two Living Spec criteria disagree, advisory), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
     get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
     adjudicate_discrepancy: '{ discrepancyId (required), action: "accept" | "flip_direction", reason (required, non-blank), newDirection? ("spec_ahead"|"code_ahead" — required when action="flip_direction") } — accept parks the row (status=accepted) with `reason` recorded; flip_direction is the only path off a `contradicted` row and requires newDirection. [admin]',
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
@@ -2332,6 +2337,39 @@ function renderArtifactRead(read: any): string {
   }
 }
 
+/**
+ * One-line state for a freshly created task, built only from fields the create
+ * response actually carries (dispatch outbox receipt, gate-ledger blocker,
+ * claim status). Anything not grounded falls back to a positive, async-neutral
+ * line — never "no runner has claimed it yet".
+ */
+export function describeCreatedTaskState(task: any): string {
+  if (task.startAt) return `Deferred until ${new Date(task.startAt).toISOString()}`;
+  if (task.status === 'assigned') return 'Claimed — a runner has picked it up';
+  if (task.status === 'in_progress') return 'Running';
+  if (task.status === 'completed' || task.status === 'failed') return `Terminal (${task.status})`;
+  const blocker = task.blockedByPr ?? task.deferral?.blockedByPr;
+  if (blocker?.prNumber || task.deferral?.reason) {
+    const reason = task.deferral?.reason ?? 'path_overlap';
+    const on = [
+      blocker?.prNumber ? `PR #${blocker.prNumber}` : null,
+      task.deferral?.blockingTaskId ? `task ${task.deferral.blockingTaskId}` : null,
+    ].filter(Boolean).join(' / ');
+    return `Created; currently deferred (${reason}${on ? ` — ${on}` : ''}). Pickup resumes when that clears.`;
+  }
+  const d = task.dispatch as { status?: string; deliveredVia?: string; deliveredAt?: string | null; handedOffAt?: string | null; target?: string } | undefined;
+  if (d?.status === 'delivered' && d.deliveredAt) {
+    return `Created and queued; wake delivered${d.deliveredVia ? ` via ${d.deliveredVia}` : ''} (delivery is not a claim — pickup is asynchronous)`;
+  }
+  if (d?.status === 'handed_off' || d?.handedOffAt) {
+    return `Created and queued; dispatch handed off${d.target ? ` to ${d.target}` : ''} (not yet confirmed delivered — pickup is asynchronous)`;
+  }
+  if (d?.status === 'pending' || d?.status === 'delivering') {
+    return 'Created and queued; dispatch enqueued, wake not yet delivered (pickup is asynchronous)';
+  }
+  return 'Created and queued; pickup is asynchronous';
+}
+
 export async function handleBuilddAction(
   api: ApiFn,
   action: string,
@@ -2523,6 +2561,15 @@ export async function handleBuilddAction(
       lines.push(`**Task:** ${task.title} (${task.id})`);
       lines.push(`**Status:** ${task.status}${task.category ? ` [${task.category}]` : ''} (priority ${task.priority ?? 0})`);
       lines.push(`**Task URL:** ${taskUrl}`);
+      // Governed outcome (Living Specs V1): only for a task pinned to a Living
+      // Spec. Separate from Status: a completed task can still read FAIL here.
+      const pinnedSpecId = (task.context as { specSource?: { specId?: unknown } } | null)?.specSource?.specId;
+      if (typeof pinnedSpecId === 'string') {
+        const governed = await api(`/api/specs/outcomes/${encodeURIComponent(task.id)}`).catch(() => null);
+        lines.push(governed?.outcome
+          ? `**Governed outcome:** ${String(governed.outcome.outcome).toUpperCase()} vs spec revision ${governed.outcome.revision}: ${governed.outcome.reason} (manage_specs action=outcome for each criterion)`
+          : '**Governed outcome:** unavailable (the pinned spec revision could not be read)');
+      }
       // Stored legibility facts — the mission phase this task belongs to and the
       // shape of its work. Printed rather than left to the JSON body so a reader
       // asking "which phase is this in?" gets an answer without a second call.
@@ -4046,11 +4093,7 @@ export async function handleBuilddAction(
         return text(`${how}: "${task.title}" (ID: ${task.id})\nYour report has been attached rather than dispatching a second agent onto a separate branch. Follow progress with get_task (taskId ${task.id}), or re-file with fileAnywayReason if this is genuinely distinct work.`);
       }
 
-      const statusLabel = task.startAt
-        ? `Deferred until ${new Date(task.startAt).toISOString()}`
-        : task.status === 'assigned'
-          ? 'Assigned — a runner has already claimed it'
-          : 'Queued — no runner has claimed it yet';
+      const statusLabel = describeCreatedTaskState(task);
 
       // Surface prior incidents/lessons/PRs related to this filing so the author
       // doesn't have to remember to run recall themselves — the CTA-derives-from-
@@ -4072,7 +4115,7 @@ export async function handleBuilddAction(
         ? `\nModel routing: ${task.routing.reason}`
         : '';
 
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}\nFollow progress at the Task URL below or with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${routingLine}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${taskBody.callbackUrl ? '\nCallback: callbackUrl receives one best-effort HTTPS POST when the task completes or fails; it is not a progress feed.' : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -4835,6 +4878,16 @@ export async function handleBuilddAction(
     }
 
     case 'upload_artifact': {
+      // Follow-up after the PUT: verify the stored bytes (size, content type,
+      // and sha256 when sent) and mark the upload ready, or failed.
+      if (typeof params.artifactId === 'string' && params.artifactId) {
+        const sha256 = typeof params.sha256 === 'string' && params.sha256 ? params.sha256 : undefined;
+        const data = await api(`/api/artifacts/${encodeURIComponent(params.artifactId)}/finalize`, {
+          method: 'POST',
+          body: JSON.stringify(sha256 ? { sha256 } : {}),
+        });
+        return text(`Upload ${data.state}: artifact ${data.artifactId}${data.sha256 ? ` (sha256 ${data.sha256}, ${data.sizeBytes} bytes)` : ''}`);
+      }
       const workerId = resolveWorkerId(params.workerId, ctx);
       if (!params.filename || !params.mimeType || !params.sizeBytes) {
         throw new Error('filename, mimeType, and sizeBytes are required');
@@ -4864,6 +4917,7 @@ export async function handleBuilddAction(
         ``,
         `Upload the file:`,
         `curl -X PUT -H "Content-Type: ${mimeStr}" --data-binary @./${params.filename} "${data.uploadUrl}"`,
+        `It is served only once its bytes arrive at exactly ${params.sizeBytes} bytes. Then call upload_artifact { artifactId, sha256? } to verify it now; otherwise the first read does (get_artifact shows uploadState).`,
         ``,
         `Download URL (permanent, for markdown embedding):`,
         data.downloadUrl,
@@ -4991,6 +5045,38 @@ export async function handleBuilddAction(
 
       const updatedArt = updated.artifact;
       return text(`Artifact updated: "${updatedArt.title}" (${updatedArt.type})\nID: ${updatedArt.id}\nRevision: ${updatedArt.currentRevision ?? 'n/a'}\nShare URL: ${updatedArt.shareUrl || 'N/A'}`);
+    }
+
+    case 'link_artifact': {
+      if (!params.artifactId) throw new Error('artifactId is required');
+      if (params.unlink === true) {
+        if (!params.linkId) throw new Error('linkId is required with unlink: true (list_artifact_links shows it)');
+        await api(`/api/artifacts/${params.artifactId}/links?linkId=${encodeURIComponent(String(params.linkId))}`, { method: 'DELETE' });
+        return text(`Link ${params.linkId} removed.`);
+      }
+      for (const k of ['subjectKind', 'subjectId', 'relation'] as const) if (!params[k]) throw new Error(`${k} is required`);
+      const linked = await api(`/api/artifacts/${params.artifactId}/links`, {
+        method: 'POST',
+        body: JSON.stringify({ subjectKind: params.subjectKind, subjectId: params.subjectId, relation: params.relation, ...(params.revision !== undefined ? { revision: params.revision } : {}) }),
+      });
+      const l = linked.link;
+      return text(`Linked artifact ${l.artifactId} to ${l.subjectKind} ${l.subjectId} as ${l.relation}${l.artifactRevision ? `, pinned to revision ${l.artifactRevision}` : ' (follows the current body)'}.\nLink ID: ${l.id}`);
+    }
+
+    case 'list_artifact_links': {
+      if (params.artifactId) {
+        const data = await api(`/api/artifacts/${params.artifactId}/links`);
+        const links = (data.links ?? []) as Array<Record<string, any>>;
+        if (!links.length) return text('This artifact has no links you can see.');
+        return text(`${links.length} link(s):\n${links.map(l => `- ${l.relation} → ${l.subjectKind} ${l.subjectId}${l.artifactRevision ? ` (rev ${l.artifactRevision} pinned)` : ''}. link: ${l.id}`).join('\n')}`);
+      }
+      if (!params.subjectKind || !params.subjectId) throw new Error('Pass artifactId, or subjectKind + subjectId');
+      const qs = new URLSearchParams({ subjectKind: String(params.subjectKind), subjectId: String(params.subjectId) });
+      if (params.relation) qs.set('relation', String(params.relation));
+      const data = await api(`/api/artifacts/linked?${qs}`);
+      const arts = (data.artifacts ?? []) as Array<Record<string, any>>;
+      if (!arts.length) return text(`Nothing is linked to ${params.subjectKind} ${params.subjectId}.`);
+      return text(`${arts.length} linked artifact(s):\n${arts.map(a => `- ${a.title || '(untitled)'} — ${a.relation}, ${a.type}${a.sizeBytes != null ? `, ${a.sizeBytes} bytes` : ''}, ${a.pinnedRevision ? `rev ${a.pinnedRevision} pinned` : `rev ${a.currentRevision || 'current'}`}${a.contentHash ? `, sha256 ${a.contentHash}` : ''}. id: ${a.artifactId}, link: ${a.linkId}`).join('\n')}`);
     }
 
     case 'list_artifact_templates': {

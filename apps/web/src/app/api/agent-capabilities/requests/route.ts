@@ -22,6 +22,9 @@ import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { parseCapabilityRequest, GRANT_STATUSES } from '@/lib/capability-grants';
 import { listTeamRequests, requestCapability } from '@/lib/capability-grants-store';
 import { resolveCapabilityAdminCaller } from '@/lib/capability-grants-auth';
+import { notifyAccessRequest } from '@/lib/capability-grants-needs-you';
+import { withRequestContext } from '@/lib/capability-grants-context';
+import type { AccessRequestView } from '@/lib/capability-grants-view';
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -76,6 +79,12 @@ export async function POST(req: NextRequest) {
   const out = await requestCapability(principal, parsed.request);
   if (!out.ok) return fail(out.status, out.error, out.code);
   const { resolution, grant, deduped } = out;
+  // A new request a person must decide pages the team once (the escalation
+  // gate's fixed rule, lib/capability-grants-needs-you.ts). A repeat ask is the
+  // same row and is not new; an auto-grant is informative and never pages.
+  if (resolution.kind === 'pending_approval' && !deduped && grant && principal.teamId) {
+    void notifyAccessRequest(principal.teamId, grant as unknown as AccessRequestView);
+  }
   return NextResponse.json({
     outcome: resolution.kind,
     reasonCode: resolution.reasonCode,
@@ -104,6 +113,6 @@ export async function GET(req: NextRequest) {
   if (workspaceId && !UUID_RE.test(workspaceId)) return fail(400, 'invalid workspaceId');
   const limit = Number(params.get('limit') ?? '50');
 
-  const requests = await listTeamRequests(caller.teamId, { status, workspaceId, limit: Number.isFinite(limit) ? limit : 50 });
+  const requests = await withRequestContext(await listTeamRequests(caller.teamId, { status, workspaceId, limit: Number.isFinite(limit) ? limit : 50 }));
   return NextResponse.json({ teamId: caller.teamId, canDecide: caller.canManage, requests }, { headers: NO_STORE });
 }

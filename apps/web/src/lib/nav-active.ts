@@ -7,11 +7,8 @@ export function isNavActive(pathname: string, href: string): boolean {
     return pathname === '/app/home' || pathname === '/app/dashboard';
   }
   if (href === '/app/missions') {
-    // Releases and Initiatives live under Missions (no nav item of their own).
-    return ['/app/missions', '/app/releases', '/app/initiatives'].some(p => pathname === p || pathname.startsWith(`${p}/`));
-  }
-  if (href === '/app/initiatives') {
-    return pathname.startsWith('/app/initiatives');
+    // Releases live under Missions (no nav item of their own).
+    return ['/app/missions', '/app/releases'].some(p => pathname === p || pathname.startsWith(`${p}/`));
   }
   if (href === '/app/tasks') {
     return pathname.startsWith('/app/tasks');

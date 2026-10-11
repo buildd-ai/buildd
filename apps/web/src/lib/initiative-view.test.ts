@@ -223,7 +223,7 @@ describe('what needs you comes from the missions', () => {
 
   it('a running initiative with nothing to ask offers Open', () => {
     const card = buildInitiativeCard(initiative({ id: 'i2', missions: [mission('a')] }), { now: NOW });
-    expect(card.action).toEqual({ kind: 'open', label: 'Open', href: '/app/initiatives/i2', missionId: null });
+    expect(card.action).toEqual({ kind: 'open', label: 'Open', href: '/app/missions?group=i2', missionId: null });
     expect(card.section).toBe('active');
   });
 });
