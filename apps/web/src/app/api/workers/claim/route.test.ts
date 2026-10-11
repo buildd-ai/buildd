@@ -148,6 +148,9 @@ mock.module('@buildd/core/db', () => ({
       // No team blocks a catalog entry here; blocked_by_policy is covered in
       // connector-prefilter / connector-gate / mcp-connector-injection tests.
       connectorCatalogTeamPolicies: { findMany: async () => [] },
+      // Claim injection reads the team catalog to know which connectors are
+      // brokered by the connector gateway (built-in Axiom/Vercel entries).
+      connectorCatalogEntries: { findMany: async () => [] },
       missions: { findMany: mockMissionsFindMany, findFirst: mockMissionsFindFirst },
       oauthBudgetEpisodes: { findMany: mockOauthEpisodesFindMany },
     },
@@ -242,6 +245,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectorWorkspaces: { connectorId: 'connectorId', workspaceId: 'workspaceId', enabled: 'enabled' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId', grantedByAccountId: 'grantedByAccountId' },
   connectorCatalogTeamPolicies: { teamId: 'teamId', slug: 'slug', policy: 'policy' },
+  connectorCatalogEntries: { teamId: 'teamId', slug: 'slug' },
 }));
 
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
