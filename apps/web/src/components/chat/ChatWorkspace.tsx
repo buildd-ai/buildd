@@ -20,7 +20,7 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { MOBILE_TOP_BAR_SLOT_ID } from '@/components/MobileTopBar';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
-import type { ChatTierName } from '@buildd/shared';
+import type { ChatAttachmentDraft, ChatTierName } from '@buildd/shared';
 import BottomSheet from '@/components/BottomSheet';
 import { refKey, type BuilddObjectRef, type ChatMessage } from './chat-contract';
 import { ChatActionsProvider, DEFAULT_CHAT_ACTIONS, type ChatActions, type OpenVisualReview } from './ChatActions';
@@ -48,7 +48,8 @@ export interface ChatWorkspaceProps {
   error?: string | null;
   /** Shown under the feed: the setup card when a turn was refused for want of a key. */
   notice?: ReactNode;
-  onSend(text: string): void;
+  /** `attachments`: the long pastes the message carries (Living Specs C2). */
+  onSend(text: string, attachments?: ChatAttachmentDraft[]): void;
   onStop?: () => void;
   onApproval(approvalId: string, approved: boolean, reason?: string): void;
   /** Override how a question is answered (fixtures). Default: the respond route. */
@@ -232,6 +233,10 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   }, []);
   const wide = useMinWidth(1280);
   const [ownDraft, setOwnDraft] = useState('');
+  // The draft's long pastes (Living Specs C2), and what was last sent, so a
+  // refused send puts the whole draft back, the same attachment ids included.
+  const [attachments, setAttachments] = useState<ChatAttachmentDraft[]>([]);
+  const lastSent = useRef<{ text: string; attachments: ChatAttachmentDraft[] } | null>(null);
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
   // The overline's date, fixed at mount (the server's clock may differ: suppressHydrationWarning below).
@@ -308,6 +313,18 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const lastLen = useRef(0);
   const wasBusy = useRef(false);
   const busy = status === 'submitted' || status === 'streaming';
+  // A send refused before any reply (a 400, a 409, a 429): the draft comes back
+  // unless the person has started a new one.
+  useEffect(() => {
+    if (status !== 'error' || !lastSent.current) return;
+    if (messages.at(-1)?.role !== 'user') return;
+    const back = lastSent.current;
+    lastSent.current = null;
+    if (draft || attachments.length > 0) return;
+    setDraft(back.text);
+    setAttachments(back.attachments);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on the transition to error only
+  }, [status]);
   // The scrollTop that puts the anchored line at the top, once it exists.
   const anchorTop = (el: HTMLElement): number | null => {
     const f = follow.current;
@@ -395,9 +412,11 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     onApproval(approvalId, approved, reason);
   }, [onApproval]);
 
-  const send = (text: string) => {
-    onSend(text);
+  const send = (text: string, sentAttachments: ChatAttachmentDraft[] = []) => {
+    onSend(text, sentAttachments);
+    lastSent.current = { text, attachments: sentAttachments };
     setDraft('');
+    setAttachments([]);
     follow.current = { mode: 'bottom' };
   };
 
@@ -650,7 +669,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
           {messages.length === 0 && emptyState && historyOpen && (
             <div data-testid="chat-empty-state" className="lg:hidden">{emptyState}</div>
           )}
-          <ChatFeed messages={messages} agent={agent} status={status} error={error} />
+          <ChatFeed messages={messages} agent={agent} status={status} error={error} conversationId={conversationId ?? null} />
           {notice && <div className="mt-6">{notice}</div>}
         </div>
       </div>
@@ -662,6 +681,8 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
             value={draft}
             onChange={setDraft}
             onSend={send}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
             onStop={onStop}
             busy={busy}
             placeholder={composerPlaceholder ?? (pin ? 'Ask about this, or anything else…' : messages.length === 0 ? canvasPlaceholder(suggestions) : undefined)}
