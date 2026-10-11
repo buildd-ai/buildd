@@ -61,6 +61,14 @@ describe('manage_specs', () => {
     expect([endpoint, opts.method, JSON.parse(opts.body)]).toEqual([`/api/specs/${SPEC}`, 'PATCH', { expectedVersion: 2, body: 'new' }]);
   });
 
+  it('a revise refused because the body moved outside a revise gives the reason, not retry advice', async () => {
+    api.mockRejectedValueOnce(new Error('API error: 409 - {"error":"The spec body was changed outside a spec revise","code":"spec_body_moved"}'));
+    const r: any = await handleBuilddAction(api as unknown as ApiFn, 'manage_specs', { action: 'revise', specId: SPEC, expectedVersion: 2, body: 'new' }, ctx());
+    expect(r.isError).toBe(true);
+    expect(out(r)).toContain('changed outside a spec revise');
+    expect(out(r)).not.toContain('expectedVersion');
+  });
+
   it('revise with section or heading sends only that section, byte for byte, and says which section changed', async () => {
     api.mockResolvedValueOnce({ spec: { ...spec, version: 3 }, revision: { revision: 3 }, unchanged: false });
     const text = '## Caching\nR-2: 5 minutes.\n\n';
