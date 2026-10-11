@@ -914,7 +914,7 @@ async function handlePullRequestEvent(event: {
         type: 'pr.review_ready',
         installationId: event.installation.id,
         repoFullName: repository.full_name,
-        pr: { number: pr.number, headRef: pr.head.ref, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
+        pr: { number: pr.number, headRef: pr.head.ref, headSha: pr.head.sha, additions: pr.additions ?? null, deletions: pr.deletions ?? null },
         worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId },
       });
     }

@@ -16,7 +16,7 @@ import {
   verifyWorkspaceAccess,
   verifyAccountWorkspaceAccess,
 } from '@/lib/team-access';
-import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 
 // Resolve the teamId for a given workspaceId.
 async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null> {
@@ -85,7 +85,7 @@ export async function resolveTeam(
 
   if (opts.write) {
     if (!role) role = await getUserTeamRole(user.id, teamId);
-    if (!roleHas(role, 'manage_model_tiers', await getTeamPermissionOverrides(teamId))) {
+    if (!roleHas(role, 'manage_model_tiers')) {
       return fail(403, 'Only a team owner or admin can change model tiers');
     }
   }

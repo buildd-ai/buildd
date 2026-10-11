@@ -51,7 +51,7 @@ import { DEFAULT_HISTORY_TOKENS, fitHistoryToBudget, messageFitsModel, modelTooB
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
-import { roleHas, getTeamPermissionOverrides, type PermissionOverrides } from '@/lib/permissions';
+import { roleHas } from '@/lib/permissions';
 import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirectiveHooks } from './directives';
 import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
@@ -61,8 +61,8 @@ import {
   attachmentBodies, attachmentDraftsOf, attachmentRefOf, attachmentRefPart, linkChatAttachments, messageChars,
   quoteAttachment, storeChatAttachments, conversationAttachments, readChatAttachment,
 } from '@/lib/artifact-chat-attachments';
-import { bindChatFiles, chatUploadKey, fileDraftsOf, fileRefOf, fileRefPart } from '@/lib/artifact-chat-files';
-import { earlierFileNote, modelFileParts, modelInputs } from './file-input';
+import { bindChatFiles, chatUploadKey, checkChatFiles, fileDraftsOf, fileRefOf, fileRefPart } from '@/lib/artifact-chat-files';
+import { earlierFileNote, modelFileParts, modelInputs, textFileParts } from './file-input';
 import { readObject } from '@/lib/storage';
 import type { ChatAttachmentDraft, ChatAttachmentRef, ChatFileDraft, ChatFileRef } from '@buildd/shared';
 import { loadTierCeiling } from '@buildd/core/model-tier-ceiling-store';
@@ -101,8 +101,6 @@ export interface TurnUser {
 }
 
 export interface TurnDeps {
-  /** The team's permission overrides; defaults to the per-request cached read. */
-  permissionOverrides?: (teamId: string) => Promise<PermissionOverrides>;
   now?: () => Date;
   /**
    * Tool groups this person set to "Allow" (permissions-store.ts). A write in
@@ -172,10 +170,13 @@ export interface TurnDeps {
 
 /** Uploaded images and files: bound to the conversation at send, read for the model. */
 export interface TurnFiles {
+  /** The bound references, read-only: checked before any spend. */
+  check: typeof checkChatFiles;
   bind: typeof bindChatFiles;
   read(ref: ChatFileRef, maxBytes: number): Promise<Buffer | null>;
 }
 const DB_FILES: TurnFiles = {
+  check: checkChatFiles,
   bind: bindChatFiles,
   // The key is the bound upload's own; never one a caller named.
   read: async (ref, maxBytes) => {
@@ -322,6 +323,21 @@ export async function runChatTurn(args: {
   if (modelText && !messageFitsModel(modelText)) {
     const tooBig = modelTooBig(modelText, DEFAULT_HISTORY_TOKENS);
     return Response.json({ error: tooBig.error, ...tooBig.extra }, { status: 400 });
+  }
+  // Quoted text files ride in the same model call, so they count too: each is
+  // read now, at the length the model will get, and that text is what is sent.
+  // Checked without binding, so a refusal leaves the files free to attach again.
+  let textParts: Map<string, string> | undefined;
+  if (fileDrafts.length > 0) {
+    const files = deps.files ?? DB_FILES;
+    const checkedFiles = await files.check({ id: conv.id, teamId: conv.teamId }, user.id, fileDrafts);
+    if (!checkedFiles.ok) return Response.json({ error: checkedFiles.error, code: checkedFiles.code }, { status: checkedFiles.status });
+    textParts = await textFileParts(checkedFiles.refs, files.read);
+    const withFiles = [modelText ?? '', ...textParts.values()].filter(Boolean).join('\n\n');
+    if (textParts.size > 0 && !messageFitsModel(withFiles)) {
+      const tooBig = modelTooBig(withFiles, DEFAULT_HISTORY_TOKENS);
+      return Response.json({ error: tooBig.error, ...tooBig.extra }, { status: 400 });
+    }
   }
   // Limits (budget, then atomic admission), history and the routing call's
   // policy + key lookup run in parallel: the lookup spends nothing, and doing it
@@ -509,13 +525,13 @@ export async function runChatTurn(args: {
     if (refs.length + fileRefs.length > 0) await attachments.link(saved.id, conv.teamId, user.id, [...refs, ...fileRefs]);
     void pingConversation(conv.id, 'message', saved.id);
     // Images and PDFs as file input where the model takes them; otherwise a note naming each.
-    const fileParts = fileRefs.length > 0 ? await modelFileParts(fileRefs, modelInputs(resolved.provider, resolved.modelId), files.read) : [];
+    const fileParts = fileRefs.length > 0 ? await modelFileParts(fileRefs, modelInputs(resolved.provider, resolved.modelId), files.read, { textParts }) : [];
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [...(modelText ? [{ type: 'text' as const, text: modelText }] : []), ...fileParts] } as UIMessage];
   } else {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }
 
-  const canAdmin = roleHas(user.teamRole, 'use_chat_admin_tools', await (deps.permissionOverrides ?? getTeamPermissionOverrides)(conv.teamId));
+  const canAdmin = roleHas(user.teamRole, 'use_chat_admin_tools');
   const docked = await dockedPromise;
   const previewEnv = {
     read,
@@ -612,7 +628,7 @@ export async function runChatTurn(args: {
     conversationId: conv.id,
     workspace: scopeWs,
     ...(!scopeWs && args.workspaces ? { workspaces: args.workspaces } : {}),
-    user: { name: user.name, teamRole: user.teamRole, isOperator: roleHas(user.teamRole, 'view_team_usage', await (deps.permissionOverrides ?? getTeamPermissionOverrides)(conv.teamId)) },
+    user: { name: user.name, teamRole: user.teamRole, isOperator: roleHas(user.teamRole, 'view_team_usage') },
     tier: resolved.tier,
     budgetWarning: verdict.budgetWarning,
     entry,

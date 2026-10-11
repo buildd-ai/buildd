@@ -23,7 +23,7 @@ let ts: typeof TS;
 async function loadTs(): Promise<void> {
   ts ??= (await import('typescript')) as typeof TS;
 }
-import type { CopyReviewConfig, CopyReviewMode } from '@buildd/shared';
+import { copyReviewConfigOf, type CopyReviewConfig, type CopyReviewMode } from '@buildd/shared';
 import { copyViolations } from '@buildd/core/copy-rules';
 import type { GithubPrFile } from './reviewer-patch';
 
@@ -165,6 +165,20 @@ export async function changedCopyStrings(
     }
   }
   return out;
+}
+
+/** True when the workspace opted into copy review and the PR adds user-facing strings. */
+export async function prNeedsCopyReview(
+  gitConfig: unknown,
+  files: Array<Pick<GithubPrFile, 'filename' | 'patch' | 'status'>>,
+): Promise<boolean> {
+  const config = copyReviewConfigOf(gitConfig);
+  if (!config) return false;
+  try {
+    return (await changedCopyStrings(files, config)).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Fallback when the workspace has no Copy Editor role. */

@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
-import { getTeamPermissionOverrides } from '@/lib/permissions';
+
 import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 // Generalized CLI OAuth flow:
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
       errorUrl.searchParams.set('error', 'Not a member of the target team');
       return NextResponse.redirect(errorUrl.toString());
     }
-    const grantedLevel = clampKeyLevel(role, requestedLevel, await getTeamPermissionOverrides(teamId));
+    const grantedLevel = clampKeyLevel(role, requestedLevel);
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();

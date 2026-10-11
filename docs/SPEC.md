@@ -65,7 +65,7 @@ always wins.
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
 (`owner | admin | member`). Invited via `team_invitations`; only the invited
 email may accept. Every team-role decision is a named permission in one
-registry with per-team overrides (`docs/specs/team-permissions.md`): admins move
+registry, the same in every team (`docs/specs/team-permissions.md`): admins move
 people between member and admin, only owners touch `owner` (assign, remove,
 transfer), any member may leave except the last owner, and a person's keys drop
 to what their new role may mint when their role drops or they leave. Members
@@ -185,7 +185,10 @@ Notable fields:
   `refresh_branch`), and by a daily backstop while the mission is in use. A conflicting
   refresh dispatches one conflict task per mission. That task runs `bun run
   conflicts:generated` to regenerate generated files before resolving the rest, and its
-  PR is reviewed only on what the merge decided (§5.9 composition). Contract:
+  PR is reviewed only on what the merge decided (§5.9 composition). A paused or held
+  mission gets no backstop refresh, and a mission state change mid-refresh stops it at
+  the commit boundary. The same contract maps every writer to the integration branch and
+  the mission PR, and how each unfinished refresh is reconciled. Contract:
   `docs/specs/mission-branch-refresh.md`.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission

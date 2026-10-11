@@ -57,7 +57,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id' },
   workers: 'workers',
 }));
 

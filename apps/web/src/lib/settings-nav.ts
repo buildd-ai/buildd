@@ -101,11 +101,11 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         label: 'Members',
         href: '/app/settings/team',
         description: 'Who is on the team, what each person can change, and the team timezone.',
-        manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'manage_team_permissions', 'delete_team'],
+        manage: ['manage_team_members', 'assign_team_roles', 'assign_team_owner', 'manage_team_settings', 'delete_team'],
       },
       {
         id: 'roles',
-        label: 'Roles',
+        label: 'Agents',
         href: '/app/settings/roles',
         description: 'The agents on the team: what each one does, its model and its tools.',
         manage: ['manage_agent_roles'],
@@ -183,7 +183,7 @@ export function settingsItemAs(item: SettingsNavItem, opts: { billing: boolean }
 
 /**
  * True when a team section shows the viewer values only: they hold none of
- * the permissions behind its controls (team overrides applied). Your own
+ * the permissions behind its controls. Your own
  * sections are never read-only. The server enforces each write either way;
  * this only decides what renders.
  */

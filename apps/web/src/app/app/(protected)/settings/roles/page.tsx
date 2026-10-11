@@ -77,7 +77,7 @@ export interface PersonalRoleEntry {
   ownerName: string | null;
 }
 
-const ROLES_DESCRIPTION = 'Agent personas: the model, tools and instructions each one runs with.';
+const ROLES_DESCRIPTION = 'The model, tools and instructions each agent uses.';
 
 export default async function RolesPage() {
   const user = await getCurrentUser();
@@ -88,7 +88,7 @@ export default async function RolesPage() {
   const cookieStore = await cookies();
   const activeTeamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
   const teamIds = activeTeamId ? [activeTeamId] : [];
-  // What "New role" offers in the active team, with its overrides applied.
+  // What "New role" offers in the active team.
   const caller = { kind: 'user' as const, userId: user.id };
   const [canCreatePersonalRole, canCreateTeamRole] = activeTeamId
     ? await Promise.all([
@@ -101,7 +101,7 @@ export default async function RolesPage() {
     : await getUserWorkspaceIds(user.id);
   if (wsIds.length === 0) {
     return (
-      <SettingsPage title="Roles" description={ROLES_DESCRIPTION}>
+      <SettingsPage title="Agents" description={ROLES_DESCRIPTION}>
         <p className="text-sm text-text-muted">No workspaces.</p>
       </SettingsPage>
     );
@@ -352,7 +352,7 @@ export default async function RolesPage() {
   const idleRoles = allRoles.filter(r => !r.currentTask);
 
   return (
-    <SettingsPage title="Roles" description={ROLES_DESCRIPTION} readOnly={!canCreateTeamRole}>
+    <SettingsPage title="Agents" description={ROLES_DESCRIPTION} readOnly={!canCreateTeamRole}>
       <TeamGrid
         activeRoles={JSON.parse(JSON.stringify(activeRoles))}
         idleRoles={JSON.parse(JSON.stringify(idleRoles))}

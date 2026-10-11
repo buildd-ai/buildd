@@ -19,8 +19,11 @@ const storedTypes = new Map<string, string>();
 const storage = {
   head: async (k: string) => (objects.has(k) ? { sizeBytes: objects.get(k)!.byteLength, contentType: storedTypes.get(k) ?? 'application/pdf' } : null),
   sha256: async (k: string) => ({ sha256: createHash('sha256').update(objects.get(k)!).digest('hex'), sizeBytes: objects.get(k)!.byteLength }),
+  copy: async (from: string, to: string) => { copies.push(to); objects.set(to, objects.get(from)!); if (storedTypes.has(from)) storedTypes.set(to, storedTypes.get(from)!); },
   remove: async (k: string) => { removed.push(k); objects.delete(k); },
 };
+const copies: string[] = [];
+const { uploadStagingKey } = await import('../../src/lib/storage-keys');
 
 let workspaceId: string;
 let teamId: string;
@@ -91,6 +94,61 @@ describe('finalizeArtifactUpload', () => {
     expect((await finalizeArtifactUpload(ok.id, { storage })).state).toBe('ready');
   });
 
+  test('bytes PUT where the URL is signed for are copied to the key every reader uses, then the staged copy goes', async () => {
+    const u = await pendingUpload(11);
+    const bytes = Buffer.from('hello there');
+    objects.set(uploadStagingKey(u.key), bytes);
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    expect(await finalizeArtifactUpload(u.id, { storage, expectedSha256: sha })).toEqual({ state: 'ready', sha256: sha, sizeBytes: 11 });
+    expect(objects.get(u.key)!.equals(bytes)).toBe(true);
+    expect(objects.has(uploadStagingKey(u.key))).toBe(false);
+    expect(await revHash(u.id)).toEqual({ content_hash: sha, size_bytes: 11 });
+    const [row] = await db.select({ metadata: artifacts.metadata }).from(artifacts).where(eq(artifacts.id, u.id));
+    expect((row!.metadata as Record<string, unknown>).finalizingAt).toBeUndefined();
+  });
+
+  test('a PUT through the upload URL after finalize changes nothing a reader gets', async () => {
+    const u = await pendingUpload(11, { mimeType: 'application/pdf' });
+    const bytes = Buffer.from('%PDF-honest');
+    objects.set(uploadStagingKey(u.key), bytes);
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    expect((await finalizeArtifactUpload(u.id, { storage })).state).toBe('ready');
+
+    // Same size, another type: the artifact URL signs only the length.
+    objects.set(uploadStagingKey(u.key), Buffer.from('<html>evil<'));
+    storedTypes.set(uploadStagingKey(u.key), 'text/html');
+    const before = copies.length;
+    expect(await finalizeArtifactUpload(u.id, { storage })).toEqual({ state: 'ready', sha256: sha, sizeBytes: 11 });
+    expect(copies.length).toBe(before);
+    // Every reader (download, link pin, model read) reads storageKey.
+    const [row] = await db.select({ storageKey: artifacts.storageKey }).from(artifacts).where(eq(artifacts.id, u.id));
+    expect(row!.storageKey).toBe(u.key);
+    expect(objects.get(u.key)!.equals(bytes)).toBe(true);
+    expect((await storage.sha256(u.key)).sha256).toBe((await revHash(u.id)).content_hash!);
+    expect(storedTypes.get(u.key) ?? 'application/pdf').toBe('application/pdf');
+  });
+
+  test('a type swapped on the staged object before finalize is caught on the copy', async () => {
+    const u = await pendingUpload(4, { mimeType: 'image/png' });
+    objects.set(uploadStagingKey(u.key), Buffer.from('data'));
+    storedTypes.set(uploadStagingKey(u.key), 'text/html');
+    const r = await finalizeArtifactUpload(u.id, { storage });
+    expect(r).toMatchObject({ state: 'failed', reason: expect.stringContaining('content_type_mismatch') });
+  });
+
+  test('while another finalize holds the copy, a second one neither copies nor reads ready', async () => {
+    const u = await pendingUpload(4);
+    objects.set(uploadStagingKey(u.key), Buffer.from('data'));
+    await db.update(artifacts).set({ metadata: sql`${artifacts.metadata} || ${JSON.stringify({ finalizingAt: new Date().toISOString() })}::jsonb` }).where(eq(artifacts.id, u.id));
+    const before = copies.length;
+    expect(await finalizeArtifactUpload(u.id, { storage })).toEqual({ state: 'pending', reason: 'finalizing' });
+    expect(copies.length).toBe(before);
+    expect(await state(u.id)).toBe('pending');
+    // A lease nobody released in time is taken over.
+    await db.update(artifacts).set({ metadata: sql`${artifacts.metadata} || ${JSON.stringify({ finalizingAt: new Date(Date.now() - 11 * 60_000).toISOString() })}::jsonb` }).where(eq(artifacts.id, u.id));
+    expect((await finalizeArtifactUpload(u.id, { storage })).state).toBe('ready');
+  });
+
   test('an inline artifact is simply ready', async () => {
     const [a] = await db.insert(artifacts).values({ workspaceId, type: 'content', title: 't', content: 'x' }).returning();
     expect((await finalizeArtifactUpload(a.id, { storage })).state).toBe('ready');
@@ -105,6 +163,8 @@ describe('sweepStaleUploads', () => {
     const never = await pendingUpload(4, { ageMs: STALE_UPLOAD_MS + 60_000 });
     const bad = await pendingUpload(9, { ageMs: STALE_UPLOAD_MS + 60_000 });
     objects.set(bad.key, Buffer.from('nope'));
+    const badStaged = await pendingUpload(9, { ageMs: STALE_UPLOAD_MS + 60_000 });
+    objects.set(uploadStagingKey(badStaged.key), Buffer.from('nope'));
 
     const r = await sweepStaleUploads(new Date(), storage, 1_000);
     expect(r.finalized).toBeGreaterThanOrEqual(1);
@@ -113,6 +173,10 @@ describe('sweepStaleUploads', () => {
     expect(await state(never.id)).toBe('gone');
     expect(await state(bad.id)).toBe('gone');
     expect(removed).toEqual(expect.arrayContaining([never.key, bad.key]));
+    // Whichever key holds a removed upload's bytes goes: the staged one and the copy.
+    expect(await state(badStaged.id)).toBe('gone');
+    expect(objects.has(badStaged.key)).toBe(false);
+    expect(objects.has(uploadStagingKey(badStaged.key))).toBe(false);
     expect(removed).not.toContain(arrived.key);
   });
 });

@@ -309,6 +309,9 @@ DELETE FROM platform_admin_audit_events;
 -- The platform owner's per-feature acting switch: an owner note in `reason`;
 -- a QA clone runs every decision feature at its code default.
 DELETE FROM decision_feature_modes;
+-- Stored model measurements: owner notes in `reason`; a QA clone runs every
+-- decision on Jev at its code default.
+DELETE FROM decision_model_measurements;
 -- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
 DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.

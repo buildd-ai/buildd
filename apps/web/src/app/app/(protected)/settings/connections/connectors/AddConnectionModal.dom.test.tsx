@@ -165,9 +165,9 @@ describe('AddConnectionModal "All my teams"', () => {
       const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
       if (url === '/api/workspaces') return json({ workspaces: [{ id: 'w1', name: 'One' }] });
       if (url === '/api/teams') return json({ teams: [
-        { id: 't1', name: 'Owned', role: 'owner', permissionOverrides: null },
-        { id: 't2', name: 'Admined', role: 'admin', permissionOverrides: null },
-        { id: 't3', name: 'Joined', role: 'member', permissionOverrides: null },
+        { id: 't1', name: 'Owned', role: 'owner' },
+        { id: 't2', name: 'Admined', role: 'admin' },
+        { id: 't3', name: 'Joined', role: 'member' },
       ] });
       if (url === '/api/connectors' && init?.method === 'POST') {
         return json({ connector: { id: 'c1', teamId: 't1', name: 'Neon', url: 'https://mcp.neon.tech/mcp', authMode: 'oauth', discoveredMetadata: { authMode: 'oauth' } } }, 201);

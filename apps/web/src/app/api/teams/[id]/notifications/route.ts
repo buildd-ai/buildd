@@ -20,7 +20,7 @@ const EVENTS: NotifyEvent[] = ['taskClaimed', 'taskCompleted', 'taskFailed', 'cr
  * Resolve the caller and confirm they belong to the target team. Membership
  * comes from getUserTeamIds, which includes the caller's personal team (it
  * has no teamMembers row). getUserTeamsWithDetails does NOT include it.
- * `canManage` = holds manage_team_notifications there (team overrides apply).
+ * `canManage` = holds manage_team_notifications there.
  */
 async function authorize(teamId: string): Promise<{ ok: true; canManage: boolean } | { status: number; error: string }> {
   const user = await getCurrentUser();

@@ -75,12 +75,25 @@ export const WARM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ReuseEnv {
   CONTAINER_REUSE?: string;
+  CONTAINER_REUSE_DEPS?: string;
   CONTAINER_REUSE_WINDOW_MS?: string;
   CONTAINER_REUSE_SLOTS?: string;
 }
 
 export function containerReuseEnabled(env: ReuseEnv, mode: unknown = 'off'): boolean {
   return env.CONTAINER_REUSE === '1' && (mode === 'repo' || mode === 'deps');
+}
+
+/**
+ * The warm handover mode a dispatch runs under. The platform decides it:
+ * CONTAINER_REUSE=1 turns reuse on (`repo`), CONTAINER_REUSE_DEPS=1 also keeps
+ * verified dependencies (`deps`). buildd's answer can only lower it: a workspace
+ * that opted out answers `off`, and no answer (an older buildd, a failed call)
+ * stays off.
+ */
+export function effectiveWarmHandover(env: ReuseEnv, answer: unknown): 'off' | 'repo' | 'deps' {
+  if (env.CONTAINER_REUSE !== '1' || (answer !== 'repo' && answer !== 'deps')) return 'off';
+  return env.CONTAINER_REUSE_DEPS === '1' ? 'deps' : 'repo';
 }
 
 export function resolveReuseWindowMs(env: ReuseEnv): number {

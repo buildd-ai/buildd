@@ -623,6 +623,9 @@ stored — it is derived on read from the state of associated tasks via
 - Health is computed from deliverable tasks only (`isDeliverableTask` filters out
   `kind = 'coordination'`, `mode = 'planning'`, and housekeeping titles).
 - A paused mission MUST NOT spawn new tasks from its schedule while paused.
+  Nor does it get unsolicited integration-branch refresh work: the backstop skips
+  a paused, held or budget-exhausted mission, and only a start (the resume) or
+  the kernel's landing refreshes it (`mission-branch-refresh.md`, Eligibility).
 - A mission's `activeHoursStart/End/Timezone` fields restrict when its heartbeat
   schedule fires. When set, the cron skips firing outside the active window.
   `activeHours` gates firing cadence only — it does NOT change mission status.

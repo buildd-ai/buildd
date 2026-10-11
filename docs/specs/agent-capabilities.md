@@ -114,8 +114,8 @@ surface used for every other role field, never a parallel admin system, and
 never see a credential value.
 
 **Invariants**:
-- Writing a grant needs `manage_agent_roles` in the role's team, with the
-  team's permission overrides applied; anyone else sees the section read-only.
+- Writing a grant needs `manage_agent_roles` in the role's team; anyone else
+  sees the section read-only.
   A personal role never holds a grant (`operatorGrant` on one is a 400), and
   operator grants are never read from a personal row.
 - `PATCH /api/roles/[id]` accepts `operatorGrant` (an `OperatorGrantConfig`, or

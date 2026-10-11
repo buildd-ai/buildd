@@ -43,6 +43,13 @@ mock.module('@/lib/member-repo-access', () => ({
   memberRepoAccessSubject: (a: { sessionUserId?: string } | null, u: { id: string } | null) => (a ? a.sessionUserId ?? null : u?.id ?? null),
 }));
 
+// Which artifact is a Living Spec body (lib/specs/body-guard.ts has real-PG tests).
+let specBodyOf: string | null = null;
+mock.module('@/lib/specs/body-guard', () => ({
+  SPEC_BODY_WRITE_REFUSED: 'This artifact is the body of a Living Spec. Change it with manage_specs action=revise.',
+  specIdForBodyArtifact: async () => specBodyOf,
+}));
+
 // What the read ledger was handed (lib/artifact-reads.ts writes it after the response).
 const ledger: any[] = [];
 mock.module('@/lib/artifact-reads', () => ({ recordArtifactRead: (row: any) => { ledger.push(row); } }));
@@ -423,6 +430,29 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
     const data = await res.json();
     expect(data.error).toContain('UUID');
     expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('refuses any write to a Living Spec body, title and metadata included, and writes nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1', workerId: null, workspaceId: 'ws-1', type: 'content', title: 'Spec: Checkout',
+      content: 'body', metadata: { livingSpec: true }, worker: null,
+    });
+    specBodyOf = 'spec-1';
+    try {
+      for (const patch of [{ content: 'x' }, { title: 'y' }, { metadata: { a: 1 } }]) {
+        lastSet = null;
+        const res = await PATCH(createMockPatchRequest(patch, 'bld_test'), { params: mockParams });
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect([data.code, data.specId]).toEqual(['spec_body', 'spec-1']);
+        expect(data.error).toContain('manage_specs action=revise');
+        expect(lastSet).toBeNull();
+      }
+    } finally {
+      specBodyOf = null;
+    }
   });
 
   it('allows update when requester owns the worker', async () => {

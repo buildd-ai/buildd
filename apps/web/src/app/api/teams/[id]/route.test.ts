@@ -13,6 +13,7 @@ let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', s
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
 let deletedTeams = 0;
+const batches: any[][] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -23,7 +24,8 @@ mock.module('@buildd/core/db', () => ({
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
-    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return Promise.resolve(); } }),
+    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return 'delete-team'; } }),
+    batch: (stmts: any[]) => { batches.push(stmts); return Promise.resolve(stmts.map(() => [])); },
   },
 }));
 
@@ -41,6 +43,12 @@ mock.module('@buildd/core/db/schema', () => ({
 const chatCleanups: string[] = [];
 mock.module('@/lib/artifact-attachment-cleanup', () => ({
   removeTeamChatAttachments: async (teamId: string) => { chatCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
+}));
+
+const fileCleanups: string[] = [];
+mock.module('@/lib/artifact-team-files', () => ({
+  detachTeamStoredFiles: (teamId: string) => `detach:${teamId}`,
+  removeTeamStoredFiles: async (teamId: string) => { fileCleanups.push(teamId); return { removed: 0, objectsRemoved: 0 }; },
 }));
 
 import { DELETE, GET, PATCH } from './route';
@@ -407,13 +415,14 @@ describe('DELETE /api/teams/[id]', () => {
   const del = () =>
     DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
 
-  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; });
+  beforeEach(() => { deletedTeams = 0; chatCleanups.length = 0; fileCleanups.length = 0; batches.length = 0; });
 
   it('a member cannot delete the team', async () => {
     membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
     expect((await del()).status).toBe(403);
     expect(deletedTeams).toBe(0);
     expect(chatCleanups).toEqual([]);
+    expect(fileCleanups).toEqual([]);
   });
 
   it('an admin cannot delete the team', async () => {
@@ -434,6 +443,14 @@ describe('DELETE /api/teams/[id]', () => {
     expect(deletedTeams).toBe(1);
     // Its conversations cascade; their chat attachments are removed in the same request.
     expect(chatCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('the team delete runs in one batch with the detach of its stored files, then removes them', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    expect((await del()).status).toBe(200);
+    // Detach first, in the same transaction as the delete: a failed delete detaches nothing.
+    expect(batches).toEqual([['detach:11111111-1111-4111-8111-111111111111', 'delete-team']]);
+    expect(fileCleanups).toEqual(['11111111-1111-4111-8111-111111111111']);
   });
 
   it('an owner still cannot delete a personal team', async () => {
@@ -491,11 +508,18 @@ describe('PATCH /api/teams/[id] — task estimates experiment switch', () => {
   });
 });
 describe('warm handover team settings', () => {
-  it('stores all supported modes and rejects invalid policy', async () => {
-    for (const mode of ['off', 'repo', 'deps']) {
-      expect((await PATCH(patchReq({ warmHandover: mode }), ctx)).status).toBe(200);
-      expect(capturedUpdates.at(-1).warmHandover).toBe(mode);
+  it('is no longer a team setting: a PATCH that sends it is refused by name, not ignored', async () => {
+    for (const mode of ['off', 'repo', 'deps', null]) {
+      const res = await PATCH(patchReq({ warmHandover: mode }), ctx);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('warmHandover');
     }
-    for (const value of [null, true, 'unknown']) expect((await PATCH(patchReq({ warmHandover: value }), ctx)).status).toBe(400);
+  });
+  it('GET no longer reads it', async () => {
+    principal = { kind: 'user', user: { id: 'user-1' } };
+    teamQueries.length = 0;
+    await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
+    expect(teamQueries[0].columns.warmHandover).toBeUndefined();
+    principal = null;
   });
 });

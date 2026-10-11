@@ -6,16 +6,16 @@ import {
   ADMINS_ONLY,
   MINE_NEEDS_PERSON,
   POLICY_BLOCKS_MINE,
-  POLICY_OPTIONS,
   cardView,
-  coverageText,
-  coverageView,
+  connectedProviders,
+  loneProviderLine,
+  usedForView,
   detectPaste,
-  effectivePolicy,
   groupProviders,
+  keyRuleLine,
   maskedValue,
   rowState,
-  policySentence,
+  storedPolicyLine,
   servesLine,
   surfaceList,
   usedFor,
@@ -134,8 +134,9 @@ describe('cardView', () => {
   it('Mine is read-only under team-only policy, and for a caller who is not a person', () => {
     const team = fixtureResponse({ credentialPolicy: 'team' });
     expect(cardView(listing(team, 'anthropic'), 'mine', team).readOnly).toBe(POLICY_BLOCKS_MINE);
+    // Unset is the default, your own key first: a person may add one.
     const unset = fixtureResponse({ credentialPolicy: null });
-    expect(cardView(listing(unset, 'anthropic'), 'mine', unset).readOnly).toBe(POLICY_BLOCKS_MINE);
+    expect(cardView(listing(unset, 'anthropic'), 'mine', unset).readOnly).toBeNull();
     const key = fixtureResponse({ canSetMine: false, credentialPolicy: 'personal_first' });
     expect(cardView(listing(key, 'anthropic'), 'mine', key).readOnly).toBe(MINE_NEEDS_PERSON);
   });
@@ -159,18 +160,22 @@ describe('cardView', () => {
   });
 });
 
-describe('policy copy', () => {
-  it('offers the three policies in plain words', () => {
-    expect(POLICY_OPTIONS.map((o) => o.label)).toEqual(['Team key', "Mine, then the team's", 'Mine only']);
-    expect(POLICY_OPTIONS.map((o) => o.hint)).toEqual(["Everyone uses the team's key.", "Uses your key when you've added one.", 'You need your own key to start work.']);
+describe('whose key copy', () => {
+  it('the default needs no line on Models; You › Keys states the rule', () => {
+    for (const credentialPolicy of [null, 'personal_first'] as const) {
+      expect(storedPolicyLine({ credentialPolicy })).toBeNull();
+      expect(keyRuleLine({ credentialPolicy })).toBe("Your key goes first. The team's key is the fallback.");
+    }
   });
-  it('an unset policy is Team key, not a prompt to pick one', () => {
-    expect(effectivePolicy({ credentialPolicy: null })).toBe('team');
-    expect(policySentence({ credentialPolicy: null })).toBe("Team key. Everyone uses the team's key.");
-    expect(policySentence({ credentialPolicy: 'personal_first' })).toBe("Mine, then the team's. Uses your key when you've added one.");
+  it('a stored exception is one plain line', () => {
+    expect(storedPolicyLine({ credentialPolicy: 'team' })).toBe('This team uses team keys only.');
+    expect(storedPolicyLine({ credentialPolicy: 'personal_only' })).toBe('This team uses personal keys only.');
+    expect(keyRuleLine({ credentialPolicy: 'team' })).toBe('This team uses team keys only.');
   });
-  it('never uses an em dash', () => {
-    for (const o of POLICY_OPTIONS) expect(`${o.label}${o.hint}`).not.toContain('—');
+  it('never says who pays, never uses an em dash', () => {
+    for (const p of [null, 'team', 'personal_first', 'personal_only'] as const) {
+      expect(keyRuleLine({ credentialPolicy: p })).not.toMatch(/who pays|—/i);
+    }
   });
 });
 
@@ -212,34 +217,37 @@ describe('rows', () => {
   });
 });
 
-describe('coverageView', () => {
-  const line = (res: ReturnType<typeof fixtureResponse>, s: string) => coverageView(res).find((l) => l.surface === s)!;
-
-  it('only an OpenAI key: serves chat and Codex, and names what cloud and Claude Code need instead', () => {
-    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'team' }] });
-    expect(line(res, 'chat').usedBy.map((u) => u.provider)).toEqual(['openai']);
-    expect(line(res, 'agent-codex').usedBy.map((u) => u.provider)).toEqual(['openai']);
-    for (const s of ['agent-claude', 'cloud-egress']) {
-      expect(line(res, s).usedBy).toEqual([]);
-      const ids = line(res, s).couldUse.map((c) => c.provider);
-      expect(ids).not.toContain('openai');
-      expect(ids).toContain('openrouter');
-    }
-    expect(coverageText(line(res, 'cloud-egress'))).toMatch(/^Not set up\. Add .*OpenRouter/);
-    expect(coverageText(line(res, 'chat'))).toBe('OpenAI (team)');
+describe('Used for: a choice only once there is one', () => {
+  it('nothing or one provider connected: no rows; one provider says what it is used for', () => {
+    expect(usedForView(fixtureResponse({}), {})).toBeNull();
+    const one = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }] });
+    expect(usedForView(one, {})).toBeNull();
+    expect(loneProviderLine(one)).toMatch(/^OpenRouter is used for chat/);
+    expect(loneProviderLine(fixtureResponse({}))).toBeNull();
   });
 
-  it('a personal key shows as yours; a ChatGPT seat serves Codex but never chat', () => {
-    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'mine' }, { provider: 'codex-subscription', scope: 'team', shape: 'oauth_managed' }] });
-    expect(coverageText(line(res, 'chat'))).toBe('OpenAI (yours)');
-    expect(line(res, 'agent-codex').usedBy.map((u) => u.provider).sort()).toEqual(['codex-subscription', 'openai']);
+  it('a personal key alone is not a team provider', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openai', scope: 'mine' }, { provider: 'openrouter', scope: 'team' }] });
+    expect(connectedProviders(res).map((p) => p.id)).toEqual(['openrouter']);
+    expect(usedForView(res, {})).toBeNull();
   });
 
-  it('nothing set: every surface lists the providers that could serve it', () => {
-    const res = fixtureResponse({});
-    for (const l of coverageView(res)) {
-      expect(l.usedBy).toEqual([]);
-      expect(l.couldUse.length).toBeGreaterThan(0);
-    }
+  it('two connected: one row per surface, impossible options disabled with what they need', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'codex-subscription', scope: 'team', shape: 'oauth_managed' }] });
+    const rows = usedForView(res, {})!;
+    expect(rows.map((r) => r.surface)).toEqual(['chat', 'agent-claude', 'agent-codex', 'cloud-egress']);
+    const chat = rows.find((r) => r.surface === 'chat')!;
+    const seat = chat.options.find((o) => o.value === 'codex-subscription')!;
+    expect(seat.disabled).toBe(true);
+    expect(seat.description).toBeTruthy();
+    expect(chat.options.find((o) => o.value === 'openrouter')!.disabled).toBe(false);
+    expect(rows.every((r) => r.value === null)).toBe(true);
+  });
+
+  it('a stored pick shows; a pick the surface cannot use reads as automatic', () => {
+    const res = fixtureResponse({ rows: [{ provider: 'openrouter', scope: 'team' }, { provider: 'anthropic', scope: 'team' }] });
+    const rows = usedForView(res, { chat: 'openrouter', 'agent-codex': 'anthropic' })!;
+    expect(rows.find((r) => r.surface === 'chat')!.value).toBe('openrouter');
+    expect(rows.find((r) => r.surface === 'agent-codex')!.value).toBeNull();
   });
 });

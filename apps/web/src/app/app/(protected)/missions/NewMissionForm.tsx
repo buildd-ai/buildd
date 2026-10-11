@@ -533,7 +533,7 @@ export default function NewMissionForm({
         <BackendSelect value={backend} onChange={setBackend} inheritLabel="Default" />
         {backend === null ? (
           <p className="text-xs text-text-muted/70 mt-1.5">
-            Uses Claude by default, or the role&apos;s backend if set.
+            Uses Claude by default, or the agent&apos;s backend if set.
           </p>
         ) : (
           <BackendStatusRow status={activeStatus} backend={backend} />
