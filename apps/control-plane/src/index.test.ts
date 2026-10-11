@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import worker, { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './index';
+import worker from './index';
+import * as mainModule from './index';
+import { anonymousGithubProbe, executionMode, matchRoute, ROUTES, SERVED_BY } from './router';
 import { NextRequest, NextResponse, after } from './next-server-shim';
 import { runInRequest } from './request-context';
+
+describe('the main module', () => {
+  it('exports only the default handler: workerd treats every named export as an entrypoint and will not start on a non-handler one', () => {
+    expect(Object.keys(mainModule)).toEqual(['default']);
+  });
+});
 
 describe('the execution routes the control plane serves', () => {
   it('matches exactly the execution path, with path params', () => {
@@ -84,6 +92,35 @@ describe('outbound fetch', () => {
     await f(new Request('https://api.github.com/zen'));
     await f('https://x.example', { headers: { 'User-Agent': 'mine' } });
     expect(seen).toEqual([CONTROL_PLANE_USER_AGENT, CONTROL_PLANE_USER_AGENT, 'mine']);
+  });
+
+  it('GITHUB_API_ORIGIN sends GitHub API calls to a loopback fake (the web-down e2e), and nothing else moves', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const r = input instanceof Request ? input : new Request(String(input), init);
+      seen.push(`${r.method} ${r.url} ${r.headers.get('authorization') ?? ''}`);
+      return new Response('ok');
+    }) as typeof fetch;
+    const f = withGithubApiOrigin(base, () => 'http://127.0.0.1:8798');
+    await f('https://api.github.com/repos/o/r/pulls/1?x=1', { method: 'GET', headers: { Authorization: 'Bearer t' } });
+    await f(new Request('https://api.github.com/graphql', { method: 'POST', body: '{}' }));
+    await f('https://hooks.example/a');
+    expect(seen).toEqual([
+      'GET http://127.0.0.1:8798/repos/o/r/pulls/1?x=1 Bearer t',
+      'POST http://127.0.0.1:8798/graphql ',
+      'GET https://hooks.example/a ',
+    ]);
+  });
+
+  it('GITHUB_API_ORIGIN is ignored unless it is loopback, so a stray var cannot redirect production GitHub calls', async () => {
+    const { withGithubApiOrigin } = await import('./outbound-fetch');
+    const seen: string[] = [];
+    const base = (async (input: RequestInfo | URL) => { seen.push(String(input instanceof Request ? input.url : input)); return new Response('ok'); }) as typeof fetch;
+    for (const origin of [undefined, '', 'https://evil.example', 'http://10.0.0.1:80']) {
+      await withGithubApiOrigin(base, () => origin)('https://api.github.com/zen');
+    }
+    expect(seen).toEqual(Array(4).fill('https://api.github.com/zen'));
   });
 });
 

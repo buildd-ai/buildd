@@ -3147,6 +3147,60 @@ describe('PATCH /api/workers/[id]', () => {
     });
   });
 
+  describe('terminal status replaces the last tool call as the current action', () => {
+    function captureSets(status: string) {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          sets.push(updates);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status, accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          };
+        }),
+      });
+      return sets;
+    }
+
+    async function patchTerminal(body: Record<string, unknown>) {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        currentAction: 'Running: echo final-marker',
+        pendingInstructions: null,
+      });
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body,
+      });
+      return PATCH(req, { params: mockParams });
+    }
+
+    it('a completed worker reads Completed', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed' });
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(true);
+    });
+
+    it('a failed worker reads Failed', async () => {
+      const sets = captureSets('failed');
+      await patchTerminal({ status: 'failed', error: 'boom' });
+      expect(sets.some(s => s.currentAction === 'Failed')).toBe(true);
+    });
+
+    it('an explicit currentAction on the terminal write is kept', async () => {
+      const sets = captureSets('completed');
+      await patchTerminal({ status: 'completed', currentAction: 'Done: opened PR' });
+      expect(sets.some(s => s.currentAction === 'Done: opened PR')).toBe(true);
+      expect(sets.some(s => s.currentAction === 'Completed')).toBe(false);
+    });
+  });
+
   it('includes phases and lastQuestion in task.result on completion', async () => {
     let capturedTaskSet: any = null;
     mockTasksUpdate.mockReturnValue({
