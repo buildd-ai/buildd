@@ -573,7 +573,7 @@ async function loadTeamPolicy(teamId: string): Promise<TeamPolicyColumns | null>
     })) ?? null;
   } catch (e) {
     console.warn('[providers/resolve] team policy lookup failed:', e);
-    // Unreadable reads as unset: chat falls back to personal_first, agents to team.
+    // Unreadable reads as unset: personal_first, as for a team that chose none.
     return null;
   }
 }

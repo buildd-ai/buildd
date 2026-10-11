@@ -288,21 +288,24 @@ team-level, `visibility` `private` (its owner only) or `team` (shared).
 
 ## Credential policy
 
-**Capability statement**: A team MUST opt in explicitly before any agent run
-uses a person's own model key, and then a run MUST use only the key of the
-person the task is for.
+**Capability statement**: Chat and agent runs MUST use the own model key of
+the person the work is for when they have stored one, and the team's key
+otherwise; a run MUST never use anyone else's personal key.
 
 **Invariants**:
 - `teams.credential_policy` is one of `team`, `personal_first`,
-  `personal_only`, or NULL (not opted in). It is written through
-  `PATCH /api/teams/[id]` or `PATCH /api/providers` (both `manage_team_settings`)
-  as `credentialPolicy`. The
-  legacy chat-only name `inferenceKeyPolicy` keeps it in step only once it is
-  set; it never opts a team in.
-- With NULL or `team`, agent runs use team credentials and nothing personal is
-  read. Under `personal_first` / `personal_only` the claim resolves the
-  requester's own key (`decidePersonalCredential`); `personal_only` defers the
-  task when there is none.
+  `personal_only`, or NULL (no choice: read as `personal_first`). It is
+  written through `PATCH /api/teams/[id]` or `PATCH /api/providers` (both
+  `manage_team_settings`) as `credentialPolicy`; `PATCH /api/providers` with
+  `null` clears it back to the default. Settings offers no selector: a team
+  that stored `team` or `personal_only` sees one line with a way back to the
+  default. The legacy `inferenceKeyPolicy` is read only when
+  `credential_policy` is NULL, and its NOT NULL default `team` reads as no
+  choice.
+- Under `personal_first` (the default) and `personal_only` the claim resolves
+  the requester's own key (`decidePersonalCredential`); work with no requester
+  (schedules, webhooks) uses team credentials, and `personal_only` defers a
+  task that has no personal key. Under `team` nothing personal is read.
 - A personal key reaches only a runner that declares `personal_credentials`,
   and that runner never caches it across workers or people.
 - Writing a team- or workspace-wide credential needs `manage_team_credentials`
